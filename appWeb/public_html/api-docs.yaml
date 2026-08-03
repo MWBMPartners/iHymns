@@ -370,6 +370,50 @@ tags:
       `includes/organisation_validation.php` — every endpoint
       refuses cross-org POSTs at the server side regardless of how
       the caller mounted the request.
+  - name: Editor API v2
+    description: |
+      The INTERNAL admin Song-Editor v2 backend (`/manage/editor/api2.php`,
+      #1200) — a granular, atomic, CSRF-guarded, audited editor API consumed
+      by the in-app editor client (`manage/editor/v2/*`). This is NOT a
+      3rd-party / native-app public contract like the `?action=` surface on
+      `api.php` elsewhere in this document — it exists purely to serve
+      iHymns' own web admin UI and is documented here for completeness /
+      internal-consumer reference, per **#1201** (Part A of the #1200 v2
+      rollout's doc debt).
+
+      **Auth**: every action requires `isAuthenticated()` (`401` otherwise)
+      AND the `editor` role (`hasRole($role,'editor')` — i.e. `editor`,
+      `admin`, or `global_admin`; `403` otherwise). A handful of actions
+      layer a further **entitlement** check via `userHasEntitlement()` on
+      top of that role gate (`403` with a named-entitlement message when
+      missing): `delete_song` → `delete_songs`; `song_link_add` /
+      `song_link_remove` / `song_link_suggestion_dismiss` → `edit_songs`;
+      `bulk_verify` / `bulk_tag_attach` / `bulk_tag_detach` →
+      `bulk_edit_songs`. Every other action — including
+      `song_external_id_add`/`song_external_id_delete` — rides the
+      file-level editor-role gate only (curation, not a destructive class).
+
+      **CSRF**: every POST requires the `X-Requested-With: XMLHttpRequest`
+      header (`403` "Cross-site POST blocked" otherwise) — the same
+      same-origin AJAX defence as the public `api.php` (#293), chosen over a
+      baked per-form session token because that token goes stale under a
+      long-lived editor tab / cross-subdomain adopted session (#1307). GET
+      reads do not need it.
+
+      **Wire format**: `action` always travels in the query string
+      (`?action=<name>`, hence the distinct path per action below); POST
+      bodies are JSON (`application/json`) EXCEPT `media_upload`,
+      `import_file` and `import_zip`, which are `multipart/form-data`. Every
+      response is the envelope `{ ok: true, ... }` on success or
+      `{ ok: false, error: "..." }` on failure, with a MEANINGFUL HTTP
+      STATUS the client branches on (never the error sentence, rule #35):
+      `400` bad/missing params, `401`/`403` auth or CSRF/entitlement, `404`
+      not found, `409` conflict / un-migrated table or column, `422`
+      unprocessable / unknown value, `500` server error (with `error_detail`
+      for `admin`/`global_admin` callers). An unknown `action` is `400`.
+
+      Full per-action breakout below is **#1201**; the narrative summary
+      lives in this file's top-level `description` (search "Editor API v2").
   - name: Admin — Credit People
     description: |
       Credit-people CRUD parity (#719 PR 2d, #545). Catalogue-wide
@@ -12354,6 +12398,2208 @@ paths:
           description: POST method required
         "503":
           description: Session control tokens are not available yet (tblSessionControlTokens not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+# =============================================================================
+# Editor API v2 (admin) — #1201 per-action breakout
+# =============================================================================
+# All 50 actions dispatched by manage/editor/api2.php's switch($action). See
+# the "Editor API v2" tag description above for the shared auth / CSRF /
+# entitlement / wire-format conventions referenced by every entry below.
+
+  /manage/editor/api2.php?action=load_index:
+    get:
+      operationId: editorLoadIndex
+      tags: [Editor API v2]
+      summary: Sidebar bootstrap — the slim song index + the full songbook list
+      description: |
+        GET, editor role only. `songbooks` is the REAL catalogue (every book,
+        including ones with zero songs) so a brand-new empty songbook is a
+        reachable move target (#1679 A2) — it is NOT derived from the song
+        index. `songs` reuses `SongData::getSongsSlimIndex()`, never a
+        whole-corpus materialisation (CLAUDE.md rule #17).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [load_index] }
+      responses:
+        "200":
+          description: Sidebar index + songbook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songs:
+                    type: array
+                    description: Slim id/number/title/songbook index (SongData::getSongsSlimIndex()).
+                    items: { type: object }
+                  songbooks:
+                    type: array
+                    description: Every songbook, including empty ones.
+                    items:
+                      type: object
+                      properties:
+                        abbr: { type: string, description: "tblSongbooks.Abbreviation — the value to POST back as `songbook`." }
+                        name: { type: string }
+
+  /manage/editor/api2.php?action=easyworship_export:
+    get:
+      operationId: editorEasyworshipExport
+      tags: [Editor API v2]
+      summary: Stream an EasyWorship Songs.db for one song or a whole songbook (#1059/#1678)
+      description: |
+        GET, editor role only. Binary response — streams
+        `application/x-sqlite3` and exits rather than returning JSON on
+        success. Exactly one of `id` (a single song) or `abbr` (a whole
+        songbook) selects the source; `id` wins if both are given.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [easyworship_export] }
+        - name: id
+          in: query
+          schema: { type: string, example: CP-0202 }
+          description: A single SongId to export.
+        - name: abbr
+          in: query
+          schema: { type: string, example: MP }
+          description: A songbook abbreviation — exports every song in it.
+        - name: maxLinesPerSlide
+          in: query
+          schema: { type: integer, default: 0 }
+          description: Optional slide line-wrap cap (0 = no wrap).
+      responses:
+        "200":
+          description: "EasyWorship Songs.db (application/x-sqlite3), Content-Disposition attachment; X-Song-Count header carries the exported count"
+        "404":
+          description: No songs found for the given id/abbr
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Export failed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=load_song:
+    get:
+      operationId: editorLoadSong
+      tags: [Editor API v2]
+      summary: Load one song's full editable record
+      description: |
+        GET, editor role only. The purpose-built v2 payload: song scalars +
+        components + credits (each carrying its row `id`, plus
+        first/surname/suffix once `musicianNamePartsColumnsExist()`) + tags +
+        links + media (metadata only, never bytes) + per-line
+        `lineTranslations`/`lineAnnotations` (#1235 P3, empty on an
+        un-migrated install). The SAME snapshot builder a revision restore
+        re-hydrates from, so `load_song` and a restored revision look
+        identical.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [load_song] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Full editable song record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  song: { type: object }
+                  components: { type: array, items: { type: object } }
+                  credits: { type: object, description: "Keyed by role (writers/composers/arrangers/adaptors/translators/artists)." }
+                  tags: { type: array, items: { type: object } }
+                  links: { type: array, items: { type: object } }
+                  media: { type: array, items: { type: object } }
+                  lineTranslations: { type: array, items: { type: object } }
+                  lineAnnotations: { type: array, items: { type: object } }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=create_song:
+    post:
+      operationId: editorCreateSong
+      tags: [Editor API v2]
+      summary: Create a new song with a server-owned canonical SongId
+      description: |
+        POST, editor role only. `songbook` defaults to `MISC`, `title`
+        defaults to `"New Song"` (clamped to 500 chars). Mints the id via
+        the shared `<ABBR>-<NNNNNN>` allocator (never a client-supplied id),
+        recomputes the songbook's cached `SongCount` best-effort, and writes
+        the create revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                songbook: { type: string, example: MISC, description: "Songbook Abbreviation; defaults to MISC." }
+                title: { type: string, example: New Song, description: "Defaults to \"New Song\"; clamped to 500 chars." }
+      responses:
+        "200":
+          description: Song created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string, example: MISC-000001 }
+                  title: { type: string }
+                  songbook: { type: string }
+        "400":
+          description: Unknown songbook abbreviation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=delete_song:
+    post:
+      operationId: editorSoftDeleteSong
+      tags: [Editor API v2]
+      summary: SOFT-delete one song — hidden and restorable, never destroyed (#1694)
+      description: |
+        POST, entitlement `delete_songs`. Sets `IsDeleted=1` (+ who/when/why)
+        rather than the destructive cascade — restorable at
+        `/manage/deleted-songs`; the irreversible purge lives there instead.
+        `redirectTo` is accepted-and-ignored (a `notice` says so): a redirect
+        is written only at purge time, never at soft delete, so restore stays
+        a true no-op. `reason` is optional and validated against
+        `songDeleteReasons()`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string, example: CP-0202 }
+                reason: { type: string, nullable: true, description: "Optional songDeleteReasons() key; unknown values 422." }
+                note: { type: string, description: Optional free-text note. }
+                redirectTo: { type: string, description: Accepted and IGNORED — the relink happens at purge (#1694). }
+      responses:
+        "200":
+          description: Song soft-deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, example: 1 }
+                  softDeleted: { type: boolean, example: true }
+                  songId: { type: string }
+                  redirectTo: { type: "null" }
+                  notice: { type: string, description: Present only when a redirectTo was supplied. }
+        "400":
+          description: songId missing/empty
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Soft-delete migration not applied, or the song is already deleted
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Unknown delete reason
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=metadata_field_update:
+    post:
+      operationId: editorMetadataFieldUpdate
+      tags: [Editor API v2]
+      summary: Update one scalar tblSongs field
+      description: |
+        POST, editor role only. `field` is allow-listed against
+        `ED2_META_FIELDS` (title, number, songbook, language, copyright,
+        ccli, iswc, isrc, tuneName, subtitle, disambiguation,
+        firstPublishedYear, copyrightYears, copyrightHolder, originCity,
+        originCityId, verified, lyricsPublicDomain, musicPublicDomain,
+        hasAudio, hasSheetMusic). Three fields branch to a dedicated write
+        path rather than a bare column UPDATE: `field=songbook` RE-KEYS the
+        SongId via the shared songbook-move helper (#1679; response carries
+        `previousId`); `field=tuneName` is retired-by-alias into the SAME
+        lockstep core `song_tune_set` uses (never TuneName without TuneId);
+        `field=isrc` canonicalises + shape-validates the value (#1741 P5a)
+        and dual-writes the canonical form into `tblSongExternalIds` in the
+        same transaction (#1749 P5d). The five #1741 P1 identity columns
+        (subtitle/disambiguation/firstPublishedYear/copyrightYears/
+        copyrightHolder) answer `409` on an install that hasn't run that
+        migration card yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, field]
+              properties:
+                songId: { type: string, example: CP-0202 }
+                field: { type: string, example: title }
+                value: {}
+      responses:
+        "200":
+          description: Field updated. `songbook` moves echo `{ok,field,songId,previousId}`; `tuneName` echoes `{ok,field:'tuneName',tuneId}`; everything else echoes `{ok,field,value}`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string }
+                  value: {}
+                  songId: { type: string, description: "Present on a songbook move (may differ from the request's songId)." }
+                  previousId: { type: string, description: Present on a songbook move. }
+                  tuneId: { type: integer, nullable: true, description: Present on a tuneName write. }
+        "400":
+          description: Missing songId/field, or (songbook move) an empty target abbreviation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The song-identity-fields migration card has not been run for one of the five #1741 P1 columns
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Bad ISRC shape, or an invalid/unresolvable target songbook on a move
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=component_upsert:
+    post:
+      operationId: editorComponentUpsert
+      tags: [Editor API v2]
+      summary: Create or update one lyric component (verse/chorus/etc.)
+      description: |
+        POST, editor role only. Read-modify-write through the shared
+        drop-safe component writer (#1235 P4/C5) — omitting `chords`/
+        `languages` on an update preserves the stored arrays. A new
+        component (no `component.id`) is always appended last; reorder via
+        `component_reorder`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, component]
+              properties:
+                songId: { type: string, example: CP-0202 }
+                component:
+                  type: object
+                  properties:
+                    id: { type: integer, description: Omit to create a new component. }
+                    type: { type: string, example: verse }
+                    number: { type: integer }
+                    sortOrder: { type: integer }
+                    lines: { type: array, items: { type: string } }
+                    chords: { type: array, items: {}, nullable: true }
+                    language: { type: string, nullable: true }
+                    languages: { type: array, items: {}, nullable: true }
+      responses:
+        "200":
+          description: Component saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  componentId: { type: integer }
+        "400":
+          description: Missing songId/component
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=component_delete:
+    post:
+      operationId: editorComponentDelete
+      tags: [Editor API v2]
+      summary: Delete one lyric component
+      description: |
+        POST, editor role only. Read-modify-write: drops the target
+        component and persists the remainder through the shared writer
+        (cascade-removes its lines).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, componentId]
+              properties:
+                songId: { type: string }
+                componentId: { type: integer }
+      responses:
+        "200":
+          description: Component removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/componentId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=component_reorder:
+    post:
+      operationId: editorComponentReorder
+      tags: [Editor API v2]
+      summary: Reorder a song's components
+      description: |
+        POST, editor role only. Components named in `order` come first (in
+        that order); any not named are appended in their current order. The
+        shared writer reassigns contiguous SortOrder.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, order]
+              properties:
+                songId: { type: string }
+                order: { type: array, items: { type: integer }, description: Component ids in the desired order. }
+      responses:
+        "200":
+          description: Reordered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  count: { type: integer }
+        "400":
+          description: Missing songId or empty order[]
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=components_replace:
+    post:
+      operationId: editorComponentsReplace
+      tags: [Editor API v2]
+      summary: Atomically replace or append a song's whole component set
+      description: |
+        POST, editor role only. For Paste & Reflow + single-song import
+        (both produce a whole section set at once) — one transaction, one
+        LyricsText rebuild, one revision row, instead of an N-request
+        granular loop. `mode=replace` (default) wipes existing components
+        first; `mode=append` adds after the current max SortOrder. On
+        replace, a pasted component that omits `chords`/`languages`
+        reclaims the position-matched original's values (FIFO by
+        type+number+line-count) so structural re-paste never silently drops
+        enrichment; a client-sent value always wins.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, components]
+              properties:
+                songId: { type: string }
+                components: { type: array, items: { type: object } }
+                mode: { type: string, enum: [replace, append], default: replace }
+      responses:
+        "200":
+          description: Components persisted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  count: { type: integer }
+                  components: { type: array, items: { type: object }, description: The persisted set, with real ids. }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=arrangement_update:
+    post:
+      operationId: editorArrangementUpdate
+      tags: [Editor API v2]
+      summary: Save the song's running order (#161/#1627)
+      description: |
+        POST, editor role only. `arrangement` is an array of section
+        (component) indexes, or `null`/`[]` to clear — clearing is always
+        allowed. Ordinals are validated against the ASSEMBLED (published)
+        component count, not the editable one; while a song has empty
+        sections the two counts diverge and a non-null arrangement is
+        refused (422) rather than persisting ordinals that mean different
+        things to the editor and the renderer. Echoes the STORED value, not
+        the request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+                arrangement: { type: array, items: { type: integer }, nullable: true, description: Section indexes, or null to clear. }
+      responses:
+        "200":
+          description: Arrangement saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string }
+                  arrangement: { type: array, items: { type: integer }, nullable: true }
+        "400":
+          description: Missing songId, arrangement not an array, or a malformed/out-of-range section index
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The ArrangementJson migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: The song has empty sections, so editor/published section numbering diverges — remove them before setting an arrangement
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=credit_upsert:
+    post:
+      operationId: editorCreditUpsert
+      tags: [Editor API v2]
+      summary: Create or update one song credit (writer/composer/arranger/adaptor/translator/artist)
+      description: |
+        POST, editor role only. Accepts either the legacy flat `{name}`
+        shape or the structured `{first,surname,suffix}` shape
+        (`creditEntryNormalise()` reassembles/decomposes either way).
+        Promotes the name into the `tblMusicians` registry in the SAME
+        transaction as the role-table write (#960). The response echoes the
+        REGISTRY's parts, never the caller's input — the registry backfill
+        never overwrites a curated value, so echoing input would show a
+        silent no-op as if it had saved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, role, credit]
+              properties:
+                songId: { type: string }
+                role: { type: string, enum: [writers, composers, arrangers, adaptors, translators, artists] }
+                credit:
+                  type: object
+                  properties:
+                    id: { type: integer, description: Omit to create a new credit row. }
+                    name: { type: string }
+                    first: { type: string }
+                    surname: { type: string }
+                    suffix: { type: string }
+      responses:
+        "200":
+          description: Credit saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  creditId: { type: integer }
+                  name: { type: string }
+                  first: { type: string }
+                  surname: { type: string }
+                  suffix: { type: string }
+                  registryPersonId: { type: integer }
+        "400":
+          description: Missing songId / unknown role / credit, or a credit with no usable name
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=credit_delete:
+    post:
+      operationId: editorCreditDelete
+      tags: [Editor API v2]
+      summary: Remove one song credit
+      description: POST, editor role only. Deletes by (role table, Id, SongId).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, role, creditId]
+              properties:
+                songId: { type: string }
+                role: { type: string, enum: [writers, composers, arrangers, adaptors, translators, artists] }
+                creditId: { type: integer }
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId / unknown role / creditId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=credit_search:
+    get:
+      operationId: editorV2CreditSearch
+      tags: [Editor API v2]
+      summary: Autocomplete over credited names
+      description: |
+        GET, editor role only. UNIONs the five song-credit tables (grouped
+        by name, with combined usage count + the roles each name appears
+        in) plus the `tblMusicians` registry when `kind=any`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [credit_search] }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [any, writer, composer, arranger, adaptor, translator, artist], default: any }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 12, minimum: 1, maximum: 20 }
+      responses:
+        "200":
+          description: Suggestions (empty array for an empty q)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        usage: { type: integer }
+                        kinds: { type: array, items: { type: string } }
+        "400":
+          description: Unknown kind
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=user_search:
+    get:
+      operationId: editorV2UserSearch
+      tags: [Editor API v2]
+      summary: Live-search users by display name / username (#498)
+      description: |
+        GET, editor role only. NOT an editor feature — its only consumer is
+        the Content Restrictions name-first picker
+        (`manage/restrictions.php`); it lives on this file only because it
+        needs the same admin/editor+ gate api2.php already enforces (#1629).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_search] }
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 20 }
+      responses:
+        "200":
+          description: Suggestions (empty array for an empty q)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        label: { type: string, description: DisplayName, falling back to Username. }
+                        hint: { type: string, example: "@admin · admin" }
+
+  /manage/editor/api2.php?action=org_search:
+    get:
+      operationId: editorV2OrgSearch
+      tags: [Editor API v2]
+      summary: Live-search organisations by name/slug (#498)
+      description: |
+        GET, editor role only. NOT an editor feature — the "organisation"
+        source in the Content Restrictions picker (#1629, same reasoning as
+        `user_search`). An empty `q` returns a page of active orgs (browse
+        mode) instead of nothing.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Suggestions (active organisations only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        label: { type: string }
+                        hint: { type: string, example: "licence: ccli · slug: my-church" }
+
+  /manage/editor/api2.php?action=tag_list:
+    get:
+      operationId: editorTagList
+      tags: [Editor API v2]
+      summary: Tags currently attached to one song
+      description: GET, editor role only.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tag_list] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Attached tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string }
+                        description: { type: string }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=tag_search:
+    get:
+      operationId: editorV2TagSearch
+      tags: [Editor API v2]
+      summary: Typeahead over the tag registry
+      description: |
+        GET, editor role only. Empty `q` browses the top-N tags by usage;
+        otherwise a case-insensitive substring match, still ranked by usage.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tag_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 20 }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string }
+                        usage: { type: integer }
+
+  /manage/editor/api2.php?action=tag_attach:
+    post:
+      operationId: editorTagAttach
+      tags: [Editor API v2]
+      summary: Attach a tag to a song, auto-creating the registry row if needed
+      description: |
+        POST, editor role only. Returns the CANONICAL `{id,name,slug}` so
+        the client adopts the server's stored (Title-Cased) form.
+        `attached=false` means the (SongId,TagId) pair already existed — a
+        no-op, not an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, name]
+              properties:
+                songId: { type: string }
+                name: { type: string }
+      responses:
+        "200":
+          description: Tag attached (or already was)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  tag:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      slug: { type: string }
+                  attached: { type: boolean }
+        "400":
+          description: Missing songId/name, or the name has no usable characters
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=tag_detach:
+    post:
+      operationId: editorTagDetach
+      tags: [Editor API v2]
+      summary: Remove a tag from a song
+      description: POST, editor role only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, tagId]
+              properties:
+                songId: { type: string }
+                tagId: { type: integer }
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  removed: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/tagId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=link_save_all:
+    post:
+      operationId: editorLinkSaveAll
+      tags: [Editor API v2]
+      summary: Reconcile a song's whole external-links sub-form
+      description: |
+        POST, editor role only. DELETE-then-INSERT reconcile via the shared
+        `saveExternalLinksForRow()` (#833/#845) — the same contract every
+        other entity's external-links editor uses. Each row is validated
+        (typeId>0, http(s) URL, ≤2048 chars) and an invalid row is skipped
+        rather than failing the whole save.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+                links:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      typeId: { type: integer }
+                      url: { type: string }
+                      note: { type: string }
+                      verified: { type: boolean }
+      responses:
+        "200":
+          description: Links reconciled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  count: { type: integer }
+                  links: { type: array, items: { type: object }, description: The canonical persisted rows. }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_links:
+    get:
+      operationId: editorSongLinks
+      tags: [Editor API v2]
+      summary: A song's cross-book counterpart group ("same hymn, different songbook")
+      description: |
+        GET, editor role only (page view). Port of the legacy `get_song_links`
+        (#1608). `groupId=0` means the song isn't grouped yet; `links` lists
+        every OTHER member of the group (soft-deleted counterparts excluded).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_links] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Counterpart group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  groupId: { type: integer }
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        songId: { type: string }
+                        note: { type: string }
+                        verified: { type: boolean }
+                        title: { type: string }
+                        number: { type: integer, nullable: true }
+                        songbook: { type: string }
+                        songbookName: { type: string }
+                        language: { type: string }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_link_add:
+    post:
+      operationId: editorSongLinkAdd
+      tags: [Editor API v2]
+      summary: Link two songs as cross-book counterparts
+      description: |
+        POST, entitlement `edit_songs`. Port of the legacy `add_song_link`
+        (#1608). Group-merge semantics: neither song grouped → mint a new
+        group; exactly one grouped → the other joins it; both already in the
+        SAME group → no-op (note refreshed if supplied); both in DIFFERENT
+        groups → `409` (unlink one side first, or use the Merge tool at
+        `/manage/duplicate-songs` — this endpoint never grows a merge).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceSongId, targetSongId]
+              properties:
+                sourceSongId: { type: string }
+                targetSongId: { type: string }
+                note: { type: string }
+      responses:
+        "200":
+          description: Linked (created a new group, extended an existing one, or a same-group no-op)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  groupId: { type: integer }
+                  created: { type: boolean }
+                  extended: { type: boolean }
+                  noop: { type: boolean }
+        "400":
+          description: Missing sourceSongId/targetSongId, or the two ids are identical
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: One or both songs were not found (or not visible)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The two songs are already in different counterpart groups
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_link_remove:
+    post:
+      operationId: editorSongLinkRemove
+      tags: [Editor API v2]
+      summary: Drop one song from its counterpart group
+      description: |
+        POST, entitlement `edit_songs`. Port of the legacy `remove_song_link`
+        (#1608). Either `id` (the tblSongLinks row) or `songId` identifies
+        the row to drop; a resulting group of fewer than 2 members is
+        cleaned up too. Already-gone is a successful no-op
+        (`{ok:true,deleted:0}`), not a `404` — a double-click on Unlink must
+        not surface an error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: integer }
+                songId: { type: string }
+      responses:
+        "200":
+          description: Removed (or already gone)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Neither id nor songId supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_link_suggestions:
+    get:
+      operationId: editorSongLinkSuggestions
+      tags: [Editor API v2]
+      summary: Up to 5 highest-scoring pending counterpart suggestions for a song
+      description: |
+        GET, editor role only (page view). Port of the legacy
+        `suggest_song_links` (#1608). Reads the PRE-SCORED
+        `tblSongLinkSuggestions` table the offline batch
+        `build-song-link-suggestions.php` fills — the ONE consumer of
+        `includes/song_similarity.php`'s scorer (CLAUDE.md rule #22); this
+        endpoint never scores live. `tableMissing:true` (empty list, not a
+        500) on an install that hasn't run that later migration.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_link_suggestions] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Up to 5 pending suggestions involving this song
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        score: { type: number }
+                        titleScore: { type: number }
+                        lyricsScore: { type: number }
+                        other:
+                          type: object
+                          properties:
+                            songId: { type: string }
+                            title: { type: string }
+                            number: { type: integer, nullable: true }
+                            songbook: { type: string }
+                  tableMissing: { type: boolean, description: True on an un-migrated install. }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_link_suggestion_dismiss:
+    post:
+      operationId: editorSongLinkSuggestionDismiss
+      tags: [Editor API v2]
+      summary: Dismiss a suggested counterpart pair ("no, different hymns")
+      description: |
+        POST, entitlement `edit_songs`. Port of the legacy
+        `dismiss_song_link_suggestion` (#1608). Canonicalises
+        (`songIdA < songIdB` lexicographically) server-side and writes
+        `tblSongLinkSuggestionsDismissed` — the SAME table
+        `/manage/duplicate-songs`'s dismiss action writes, so a dismissal
+        from either surface suppresses the pair on both (CLAUDE.md rule
+        #22). Drops the matching pending suggestion row too.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIdA, songIdB]
+              properties:
+                songIdA: { type: string }
+                songIdB: { type: string }
+                reason: { type: string }
+      responses:
+        "200":
+          description: Dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing songIdA/songIdB, or the two ids are identical
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_external_ids:
+    get:
+      operationId: editorSongExternalIds
+      tags: [Editor API v2]
+      summary: A song's external recording/release identifiers (#1741 P5b)
+      description: |
+        GET, editor role only. `tblSongExternalIds`' first UI read path.
+        Row shape carries a friendly `label` and a per-id `url` derived from
+        the `RECORDING_EXTERNAL_ID_TYPES` registry — never invented for a
+        provider whose registry entry has no URL pattern.
+        `tableMissing:true` (empty list, not a 500) on an un-migrated
+        install.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_external_ids] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: External ids for the song
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  externalIds:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        idType: { type: string }
+                        idValue: { type: string }
+                        scope: { type: string }
+                        source: { type: string }
+                        label: { type: string }
+                        url: { type: string, nullable: true }
+                  tableMissing: { type: boolean }
+
+  /manage/editor/api2.php?action=song_external_id_add:
+    post:
+      operationId: editorSongExternalIdAdd
+      tags: [Editor API v2]
+      summary: Add one manual external recording/release id (#1741 P5b)
+      description: |
+        POST, editor role only (curation, not `edit_songs` — adding/removing
+        an external id is ordinary curation, not a destructive class like
+        `delete_song`). `idType='isrc'` is canonicalised via
+        `ihymns_canonical_isrc()` first, then shape-validated; `idScope` is
+        SERVER-DERIVED from `idType`, never a client param. `INSERT IGNORE`
+        on the `(SongId,IdType,IdValue)` unique key — a duplicate re-selects
+        the existing row, so the echo is always the canonical stored row;
+        `created` tells the client whether a NEW row actually landed. An
+        `isrc` add also dual-writes the canonical value back into
+        `tblSongs.Isrc` in the same transaction (#1749) — the response then
+        carries `isrcDenorm`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, idType, idValue]
+              properties:
+                songId: { type: string }
+                idType: { type: string, example: isrc }
+                idValue: { type: string }
+      responses:
+        "200":
+          description: Added (or re-selected an existing matching row)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  externalId:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      idType: { type: string }
+                      idValue: { type: string }
+                      scope: { type: string }
+                      source: { type: string }
+                      label: { type: string }
+                      url: { type: string, nullable: true }
+                  created: { type: boolean }
+                  isrcDenorm: { type: string, nullable: true, description: "Present only when idType=isrc." }
+        "400":
+          description: Missing songId/idType/idValue
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The song external IDs (#1741 D5) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Unrecognised idType, or a value that fails the registry's documented shape
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_external_id_delete:
+    post:
+      operationId: editorSongExternalIdDelete
+      tags: [Editor API v2]
+      summary: Remove one external recording/release id row (#1741 P5b)
+      description: |
+        POST, editor role only (same posture as `song_external_id_add`).
+        `songId` is part of the WHERE (cross-song defence-in-depth, not just
+        `id`). Already-gone is a successful no-op (`{ok:true,deleted:0}`),
+        matching `song_link_remove`'s idempotent-double-click posture.
+        Deleting an ISRC row re-syncs `tblSongs.Isrc` from the store's
+        remaining primary value in the same transaction — the response then
+        carries `isrcDenorm`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Removed (or already gone)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+                  isrcDenorm: { type: string, nullable: true, description: Present only when the deleted row was an isrc row. }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The song external IDs (#1741 D5) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=tune_search:
+    get:
+      operationId: editorTuneSearch
+      tags: [Editor API v2]
+      summary: Typeahead over the tune registry (#1741 P5c)
+      description: |
+        GET, editor role only. Mirrors `tag_search`'s shape. Alias-JOINed
+        (`tblTuneAliases`, when present) so a spelling variant surfaces its
+        CANONICAL tune — `matchedAlias` is non-null only when an ALIAS (not
+        the tune's own name) matched a non-empty `q`. `meter` folds both
+        sides through `ihymns_meter_normalize()` and filters PHP-side
+        (MeterCode is free-text, so the fold can't run in SQL).
+        `tableMissing:true` (empty list, not a 500) on an install without
+        `tblTunes`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tune_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 20 }
+        - name: meter
+          in: query
+          schema: { type: string, example: "8.6.8.6" }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string }
+                        meterCode: { type: string, nullable: true }
+                        usage: { type: integer }
+                        matchedAlias: { type: string, nullable: true }
+                  tableMissing: { type: boolean }
+
+  /manage/editor/api2.php?action=song_tune_set:
+    post:
+      operationId: editorSongTuneSet
+      tags: [Editor API v2]
+      summary: The ONE tune write — TuneName + TuneId in lockstep (#1741 P5c)
+      description: |
+        POST, editor role only. `tuneName` MAY be an empty string — that is
+        a legal clear (both TuneName and TuneId → null), distinct from the
+        key being absent (a caller mistake, 400). Shares the exact write
+        core `metadata_field_update`'s `tuneName` alias branch delegates to,
+        so a song's tune has exactly one write path regardless of which
+        action a (current or stale-cached) client uses.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, tuneName]
+              properties:
+                songId: { type: string }
+                tuneName: { type: string, description: "Empty string clears the tune." }
+      responses:
+        "200":
+          description: Tune saved (or cleared)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string, example: tune }
+                  tuneId: { type: integer, nullable: true }
+                  tuneName: { type: string, nullable: true }
+                  slug: { type: string, nullable: true }
+                  meterCode: { type: string, nullable: true }
+        "400":
+          description: Missing songId, or the tuneName key is absent
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=media_list:
+    get:
+      operationId: editorMediaList
+      tags: [Editor API v2]
+      summary: List a song's media files (metadata only)
+      description: |
+        GET, editor role only. Never returns file bytes — playback is via
+        the gated `/song-media/<id>` stream route (#853); `streamUrl` in
+        each row points there.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [media_list] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: Media rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  media:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        kind: { type: string }
+                        fileName: { type: string }
+                        mimeType: { type: string }
+                        sizeBytes: { type: integer }
+                        annotation: { type: string }
+                        sortOrder: { type: integer }
+                        storageBackend: { type: string }
+                        uploadedAt: { type: string }
+                        streamUrl: { type: string }
+
+  /manage/editor/api2.php?action=media_upload:
+    post:
+      operationId: editorMediaUpload
+      tags: [Editor API v2]
+      summary: Upload one media file (audio/sheet music/etc.) for a song
+      description: |
+        POST, `multipart/form-data`, editor role only. Reads `$_POST` +
+        `$_FILES`, NOT the JSON body. MIME is SNIFFED on the bytes (never
+        the declared content-type); size is capped per `kind`; the file is
+        staged FS-or-DB by `SongMediaStorage`. An FS file staged before an
+        INSERT that then fails is unlinked so nothing orphans.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [songId, kind, file]
+              properties:
+                songId: { type: string }
+                kind: { type: string, description: "One of SongMediaStorage::allKinds()." }
+                annotation: { type: string, description: Clamped to 255 chars. }
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  media:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      kind: { type: string }
+                      fileName: { type: string }
+                      mimeType: { type: string }
+                      sizeBytes: { type: integer }
+                      annotation: { type: string }
+                      sortOrder: { type: integer }
+                      storageBackend: { type: string }
+                      uploadedAt: { type: string }
+                      streamUrl: { type: string }
+        "400":
+          description: Missing/invalid songId or kind, no file / upload error, or an upload that fails validation (unrecognised MIME, oversize for its kind)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Upload failed for a non-user-facing reason
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: The Song Media migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=media_update:
+    post:
+      operationId: editorMediaUpdate
+      tags: [Editor API v2]
+      summary: Update a media file's annotation
+      description: |
+        POST, editor role only. Only the `Annotation` column is mutable
+        post-upload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaId]
+              properties:
+                mediaId: { type: integer }
+                annotation: { type: string, description: Clamped to 255 chars. }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  mediaId: { type: integer }
+        "400":
+          description: Missing mediaId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Media not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: The Song Media migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=media_delete:
+    post:
+      operationId: editorMediaDelete
+      tags: [Editor API v2]
+      summary: Delete a media file (row + underlying bytes)
+      description: |
+        POST, editor role only. The row is deleted first, then the
+        underlying bytes — an orphan file is recoverable; an orphan row
+        after "delete me" is worse.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaId]
+              properties:
+                mediaId: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer }
+                  songId: { type: string }
+        "400":
+          description: Missing mediaId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Media not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: The Song Media migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=media_reorder:
+    post:
+      operationId: editorMediaReorder
+      tags: [Editor API v2]
+      summary: Rewrite SortOrder for one song's media of one kind
+      description: |
+        POST, editor role only. The scoped WHERE (Id+SongId+Kind) prevents
+        cross-song/cross-kind tampering via a forged id list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, kind, ids]
+              properties:
+                songId: { type: string }
+                kind: { type: string, description: "One of SongMediaStorage::allKinds()." }
+                ids: { type: array, items: { type: integer }, description: Media ids in the desired order. }
+      responses:
+        "200":
+          description: Reordered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  reordered: { type: integer }
+        "400":
+          description: Missing/invalid songId or kind
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: The Song Media migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=import_file:
+    post:
+      operationId: editorImportFile
+      tags: [Editor API v2]
+      summary: Single-file bulk import (7 legacy song-file formats)
+      description: |
+        POST, `multipart/form-data`, editor role only. Routes the upload to
+        the shared parser + universal saver (INSERT-only, skips existing).
+        `format=auto` (default) detects from the file extension; `.json`
+        content-sniffs between VideoPsalm and the iHymns interchange format
+        (#1633); `.xml`/`.opensong` resolve via the shared auto-router
+        (#882), which sniffs OpenLyrics vs OpenSong and retries the other
+        parser once on a primary parse failure — the response's `format`
+        echoes back whichever actually parsed. Max 25 MB.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                format:
+                  type: string
+                  default: auto
+                  enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, proclaim, freeshow, chordpro, pptx, easyworship]
+                dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+      responses:
+        "200":
+          description: Import parsed and processed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  format: { type: string, description: The format actually used to parse. }
+                  songs_created: { type: integer }
+                  songs_skipped_existing: { type: integer }
+                  songs_failed: { type: integer }
+        "400":
+          description: No file / upload error, file too large, unknown/undetected format, or the file failed to parse (a genuine client error — wrong/bad file)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Import failed for a non-user-facing reason
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=import_zip:
+    post:
+      operationId: editorImportZip
+      tags: [Editor API v2]
+      summary: Async multi-song ZIP import
+      description: |
+        POST, `multipart/form-data`, editor role only. Max 100 MB. An
+        EasyWorship export zip (contains `Songs.db`) is detected and handled
+        SYNCHRONOUSLY. Otherwise: when async job tracking
+        (`tblBulkImportJobs`) is available, the upload is persisted, a job
+        row is queued, the response returns immediately with `{async:true,
+        job_id, poll_url}`, and a background worker processes the zip after
+        the HTTP connection is released (`fastcgi_finish_request`). Without
+        job tracking, or if persisting the upload fails, falls back to a
+        SYNCHRONOUS import that returns the full summary in the same
+        response.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: A .zip archive. }
+                dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+      responses:
+        "200":
+          description: Either an async job handle, or a completed synchronous summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  async: { type: boolean, description: True on the queued-job response. }
+                  job_id: { type: integer, description: Present when async. }
+                  status: { type: string, example: queued }
+                  poll_url: { type: string }
+                  songs_created: { type: integer, description: Present on a synchronous (non-async) response. }
+                  songs_skipped_existing: { type: integer }
+                  songs_failed: { type: integer }
+        "400":
+          description: No file / upload error, or an EasyWorship/synchronous import that failed to parse
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: Uploaded zip exceeds the 100 MB import limit
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Server missing the PHP zip extension, or the import/job creation failed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=import_zip_status:
+    get:
+      operationId: editorImportZipStatus
+      tags: [Editor API v2]
+      summary: Poll an async ZIP import job (own jobs only)
+      description: |
+        GET, editor role only. Scoped to the calling user's own jobs
+        (`UserId` in the WHERE).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [import_zip_status] }
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Job status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  job:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      status: { type: string, example: completed }
+                      filename: { type: string }
+                      size_bytes: { type: integer }
+                      total_entries: { type: integer }
+                      processed_entries: { type: integer }
+                      percent: { type: number }
+                      songs_created: { type: integer }
+                      songs_skipped_existing: { type: integer }
+                      songs_failed: { type: integer }
+                      songbooks_created: { type: array, items: {} }
+                      songbooks_existing: { type: array, items: {} }
+                      errors: { type: array, items: {} }
+                      per_songbook: { type: object, nullable: true }
+                      skip_reason: { type: string, example: existing-in-db }
+                      skipped_csv_url: { type: string }
+                      phase_label: { type: string, nullable: true }
+                      started_at: { type: string, nullable: true }
+                      completed_at: { type: string, nullable: true }
+                      created_at: { type: string }
+                      updated_at: { type: string }
+        "400":
+          description: Missing job_id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Bulk-import job tracking not enabled on this deployment, or no job with that id owned by the caller
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=import_zip_skipped_csv:
+    get:
+      operationId: editorImportZipSkippedCsv
+      tags: [Editor API v2]
+      summary: CSV of the SongIds an async ZIP import job skipped
+      description: |
+        GET, editor role only. Own jobs only. Streams `text/csv` (with a
+        UTF-8 BOM for Excel), not JSON.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [import_zip_skipped_csv] }
+        - name: job_id
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: "CSV: SongId, Title, SongbookAbbr, SongbookName, Reason"
+          content:
+            text/csv: {}
+        "400":
+          description: Missing job_id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Job tracking not enabled, no such job owned by the caller, or no skipped SongIds recorded
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The job has not yet completed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=revision_list:
+    get:
+      operationId: editorRevisionList
+      tags: [Editor API v2]
+      summary: A song's revision history (metadata only, newest first)
+      description: |
+        GET, editor role only. Metadata rows only — the full `NewData`
+        snapshot is fetched on `revision_restore`, not here.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [revision_list] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Revision rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        action: { type: string }
+                        createdAt: { type: string }
+                        userId: { type: integer, nullable: true }
+                        username: { type: string, nullable: true }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=revision_restore:
+    post:
+      operationId: editorRevisionRestore
+      tags: [Editor API v2]
+      summary: Restore a song to a prior revision's full snapshot
+      description: |
+        POST, editor role only. Restores scalars + components + credits +
+        tags + links atomically from the revision's stored `NewData`
+        snapshot, then records a forced `restore` revision so the trail
+        stays linear. `songId`, if supplied, is a defense-in-depth check
+        that the revision belongs to the expected song.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revisionId]
+              properties:
+                revisionId: { type: integer }
+                songId: { type: string, description: "Optional — must match the revision's own SongId if given." }
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string }
+        "400":
+          description: Missing revisionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Revision not found, or its song no longer exists
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "The supplied songId doesn't match the revision's own song, or the revision has no stored snapshot to restore"
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=save_song:
+    post:
+      operationId: editorV2SaveSong
+      tags: [Editor API v2]
+      summary: Whole-song save — the editor's primary save path
+      description: |
+        POST, editor role only. Delegates to the SAME shared
+        `editorSaveSongCore()` (#1200) the legacy `manage/editor/api.php`
+        save uses — one save implementation, no forked logic, no drift
+        between v1 and v2 (CLAUDE.md modularity rule). Body is the whole
+        song object (scalars + components + credits + …); `id` and `title`
+        are the only hard requirements, everything else is optional and
+        defaulted (songbook defaults to the song's own book, or `Misc` for
+        a brand-new song; language validated as IETF BCP 47 and defaults to
+        `en`). A save that promotes a draft id to a canonical one, or moves
+        the song to a new songbook (both are re-keys), echoes `assignedId`
+        + `previousId` + `number`; both are OMITTED on an ordinary save so
+        the wire shape stays byte-identical for the common case.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, title]
+              properties:
+                id: { type: string, example: CP-0202 }
+                title: { type: string }
+                songbook: { type: string }
+                songbookName: { type: string }
+                language: { type: string, example: en, description: IETF BCP 47 tag. }
+                copyright: { type: string }
+                number: { type: integer, nullable: true }
+                tuneName: { type: string, nullable: true }
+                ccli: { type: string }
+                iswc: { type: string }
+                originCity: { type: string, nullable: true }
+                originCityId: { type: integer, nullable: true }
+              description: |
+                Additional optional scalar/component/credit fields are accepted
+                per the whole-song shape `load_song` returns — not exhaustively
+                enumerated here; see `save_song_core.php`.
+      responses:
+        "200":
+          description: Saved; a coalesced revision snapshot is written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string }
+                  action: { type: string, enum: [create, edit] }
+                  assignedId: { type: string, description: Present only on a draft-id promotion or a songbook move. }
+                  previousId: { type: string, description: Present alongside assignedId. }
+                  number: { type: integer, nullable: true, description: Present alongside assignedId — the authoritative Number after the rename. }
+                  translationWarnings: { type: array, items: { type: string }, description: Present only when a staged translation link could not be persisted. }
+        "400":
+          description: Missing required id/title, or an invalid IETF BCP 47 language tag
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Save failed; details in server log (admin/global_admin callers get error_detail/error_class)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=line_translation_upsert:
+    post:
+      operationId: editorLineTranslationUpsert
+      tags: [Editor API v2]
+      summary: Create or update a per-line translation/transliteration (#1235 P3/#1088)
+      description: |
+        POST, editor role only. `translation.lineId` anchors to
+        `tblLyricLines.Id`, the normalized-line read/write path (CLAUDE.md
+        rule #21). Not a component-content change, so no revision row is
+        written. `translation` shape:
+        `{id?, lineId, kind, targetLanguage, text, translationType?,
+        isPrimary?, sortOrder?, status?}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, translation]
+              properties:
+                songId: { type: string }
+                translation:
+                  type: object
+                  required: [lineId, kind, targetLanguage, text]
+                  properties:
+                    id: { type: integer, description: Omit to create. }
+                    lineId: { type: integer }
+                    kind: { type: string }
+                    targetLanguage: { type: string, description: Free-text BCP-47-ish tag. }
+                    text: { type: string }
+                    translationType: { type: string }
+                    isPrimary: { type: boolean }
+                    sortOrder: { type: integer }
+                    status: { type: string }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  translation: { type: object }
+        "400":
+          description: Missing songId, or the translation payload fails validation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or the referenced lineId does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The line-enrichment tables are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=line_translation_delete:
+    post:
+      operationId: editorLineTranslationDelete
+      tags: [Editor API v2]
+      summary: Delete a per-line translation/transliteration
+      description: POST, editor role only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Row not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The line-enrichment tables are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=line_annotation_upsert:
+    post:
+      operationId: editorLineAnnotationUpsert
+      tags: [Editor API v2]
+      summary: Create or update a per-line/per-span annotation (#1235 P3/#1088)
+      description: |
+        POST, editor role only. `annotation.startLineId` anchors to
+        `tblLyricLines.Id`; `startOffset`/`endOffset` are UTF-8 CODE-POINT
+        indices, never byte or UTF-16 offsets (CLAUDE.md rule #21).
+        `annotation` shape: `{id?, startLineId, endLineId?, startOffset?,
+        endOffset?, annotationType, body, bodyFormat?, languageCode?,
+        sortOrder?, status?}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, annotation]
+              properties:
+                songId: { type: string }
+                annotation:
+                  type: object
+                  required: [startLineId, annotationType, body]
+                  properties:
+                    id: { type: integer, description: Omit to create. }
+                    startLineId: { type: integer }
+                    endLineId: { type: integer, nullable: true }
+                    startOffset: { type: integer, nullable: true, description: UTF-8 code-point index. }
+                    endOffset: { type: integer, nullable: true, description: UTF-8 code-point index. }
+                    annotationType: { type: string }
+                    body: { type: string }
+                    bodyFormat: { type: string }
+                    languageCode: { type: string }
+                    sortOrder: { type: integer }
+                    status: { type: string }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  annotation: { type: object }
+        "400":
+          description: Missing songId, or the annotation payload fails validation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or the referenced line(s) do not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The line-enrichment tables are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=line_annotation_delete:
+    post:
+      operationId: editorLineAnnotationDelete
+      tags: [Editor API v2]
+      summary: Delete a per-line/per-span annotation
+      description: POST, editor role only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Row not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The line-enrichment tables are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=bulk_verify:
+    post:
+      operationId: editorBulkVerify
+      tags: [Editor API v2]
+      summary: Set/clear the Verified flag on many songs in one transaction
+      description: |
+        POST, entitlement `bulk_edit_songs`. Audited once via the activity
+        log (no per-song revision row — a bulk flag flip isn't per-song
+        content history).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds]
+              properties:
+                songIds: { type: array, items: { type: string } }
+                verified: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  count: { type: integer }
+                  verified: { type: integer, description: 0 or 1 (the value applied). }
+        "400":
+          description: songIds missing/empty
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=bulk_tag_attach:
+    post:
+      operationId: editorBulkTagAttach
+      tags: [Editor API v2]
+      summary: Attach one tag (auto-created) to many songs in one transaction
+      description: |
+        POST, entitlement `bulk_edit_songs`. `INSERT IGNORE` skips
+        already-tagged or missing songs — no per-id error surfaces from
+        those.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds, name]
+              properties:
+                songIds: { type: array, items: { type: string } }
+                name: { type: string }
+      responses:
+        "200":
+          description: Applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  tag:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      name: { type: string }
+                      slug: { type: string }
+                  attached: { type: integer, description: Count of songs newly tagged. }
+                  count: { type: integer, description: Total songIds submitted. }
+        "400":
+          description: songIds/name missing, or the name has no usable characters
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=bulk_tag_detach:
+    post:
+      operationId: editorBulkTagDetach
+      tags: [Editor API v2]
+      summary: Remove one tag from many songs in one transaction (#1628 item 3)
+      description: |
+        POST, entitlement `bulk_edit_songs`. Resolves the tag by SLUG (not
+        Id), matching the same human-typed name `bulk_tag_attach` accepts.
+        An unknown tag is NOT an error — detaching a tag nothing carries is
+        a successful no-op (`{ok:true,detached:0}`), not a 404. Never
+        deletes the tag row itself when the last song loses it (a curated
+        vocabulary, not garbage-collected).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds, name]
+              properties:
+                songIds: { type: array, items: { type: string } }
+                name: { type: string }
+      responses:
+        "200":
+          description: Applied (or a no-op if nothing carried the tag)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  tag:
+                    type: object
+                    properties:
+                      id: { type: integer, nullable: true }
+                      name: { type: string }
+                      slug: { type: string }
+                  detached: { type: integer, description: Count of songs the tag was actually removed from. }
+                  count: { type: integer, description: Total songIds submitted. }
+        "400":
+          description: songIds/name missing, or the name has no usable characters
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
 # =============================================================================

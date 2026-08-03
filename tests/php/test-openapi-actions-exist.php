@@ -192,44 +192,63 @@ foreach ($UNDOCUMENTED_OK as $a => $why) {
         in_array($a, $publicActions, true) && !in_array($a, $documented, true));
 }
 
-/* ---- 3. NARROW api2 contract-documentation guard (#1608) -----------------
+/* ---- 3. api2 (v2 editor) per-action coverage — #1201 breakout landed --------
 
-   The reverse direction — "every api2 action must be documented" — is
-   DELIBERATELY NOT asserted wholesale. api2.php dispatches ~45 actions and only
-   a minority are part of the published native-app contract; the rest are
-   internal editor plumbing no client consumes. A blanket reverse guard would
-   fail on ~39 actions today and get weakened or deleted — rule #34's other
-   failure mode, the guard so blunt it flags correct code. The full per-action
-   OpenAPI breakout is the proper fix and is tracked as #1201.
+   HISTORY (why this used to be narrow): before #1201 this guarded ONLY the five
+   #1608 song-link actions and explicitly deferred the rest, because api2.php's
+   ~50 actions were documented as a single PROSE block and a blanket reverse
+   guard ("every api2 action must be documented") would have failed on ~45
+   still-undocumented actions — rule #34's other failure mode, the guard so blunt
+   it flags correct code, which gets weakened or deleted. The old check therefore
+   asserted only that those 5 were MENTIONED in the spec, and said "the full
+   per-action OpenAPI breakout is tracked as #1201".
 
-   So this guards only the SPECIFIC api2 actions the 2026-08-01 wave committed to
-   documenting, after the completeness audit found all five #1608 cross-book
-   counterpart actions absent from api-docs.yaml WHILE the v2 editor is the
-   DEFAULT — i.e. a live native-app-contract gap, not a theoretical one.
+   #1201 landed that breakout: every api2 action is now its own
+   `/manage/editor/api2.php?action=…` PATH ITEM (not prose). So the blanket
+   reverse guard is now CORRECT rather than too-blunt — it locks the breakout in
+   and goes red the moment a NEW api2 action ships without a per-action doc entry
+   (the silent-native-contract-gap shape this file exists to catch, one step
+   earlier). This strictly SUPERSEDES the old "mentioned in prose" check with the
+   stronger "is a real path item" check.
 
-   Each entry is asserted BOTH to still exist in a dispatcher (so the list
-   self-cleans if an action is renamed or removed — rule #34) AND to be
-   MENTIONED in the spec. "Mentioned", not "is a path item", because the v2
-   editor API is documented as one prose block pending the #1201 breakout, not
-   as individual /…?action= paths — matching the actual convention rather than an
-   aspirational one. Comments are stripped first so a `#`-commented tombstone
-   can never satisfy the check (the near-miss that produced 5 phantom "ghost"
-   findings earlier this session — verify against real spec, not prose).
+   Tree-derived (rule #34): the required set is the dispatcher's OWN cases via the
+   shared parser, never a hand list. The phantom direction (a documented api2
+   action that does not exist) is already covered by section 2 above, whose regex
+   now sees the api2 path items too. */
 
-   This list only ever grows toward #1201; it is not a substitute for it. */
-$yamlNoComments = preg_replace('/^\s*#.*$/m', '', $yaml) ?? $yaml;
-$API2_CONTRACT_ACTIONS = [
-    'song_links'                   => '#1608 list a song\'s cross-book counterparts',
-    'song_link_add'                => '#1608 manual counterpart link',
-    'song_link_remove'             => '#1608 manual counterpart unlink',
-    'song_link_suggestions'        => '#1608 fuzzy scored counterpart suggestions',
-    'song_link_suggestion_dismiss' => '#1608 dismiss a suggestion',
+$api2Actions = $casesForSwitch($pub . '/manage/editor/api2.php', '$action');
+
+/* Per-action path items for api2 — top-level path keys only (two-space indent),
+   NOT prose/description mentions. */
+preg_match_all('#^  /manage/editor/api2\.php\?action=([a-z0-9_]+):#mi', $yaml, $m2);
+$api2Documented = array_values(array_unique($m2[1] ?? []));
+
+ok('api2 per-action breakout present as path items (>= 45 — #1201)',
+    count($api2Documented) >= 45);
+
+/* Self-cleaning exemption, same contract as the lists above: an api2 action
+   deliberately kept OUT of the published spec must say why, and is asserted to
+   still exist AND still be undocumented, so the list cannot quietly rot into a
+   dumping ground. Empty today — #1201 documented every api2 action per-action. */
+$API2_UNDOCUMENTED_OK = [
+    /* (empty — every api2 action has a per-action path item. Add an entry ONLY
+       for an action that genuinely must not appear in the spec, with a reason.) */
 ];
-foreach ($API2_CONTRACT_ACTIONS as $a => $why) {
-    ok("api2 contract action '{$a}' still exists in a dispatcher ({$why})",
-        isset($realActions[$a]));
-    ok("api2 contract action '{$a}' is documented in api-docs.yaml ({$why})",
-        str_contains($yamlNoComments, $a));
+
+$api2Undoc = [];
+foreach ($api2Actions as $a) {
+    if (in_array($a, $api2Documented, true) || isset($API2_UNDOCUMENTED_OK[$a])) { continue; }
+    $api2Undoc[] = $a;
+}
+ok('every api2 (v2 editor) action has a per-action OpenAPI path item ('
+    . count($api2Actions) . ' actions, ' . count($api2Documented) . ' documented) — #1201',
+    $api2Undoc === []);
+foreach ($api2Undoc as $a) {
+    echo "       manage/editor/api2.php dispatches ?action={$a} — no per-action path item in api-docs.yaml (#1201 breakout gap)\n";
+}
+foreach ($API2_UNDOCUMENTED_OK as $a => $why) {
+    ok("api2 undocumented-exemption '{$a}' is still needed ({$why})",
+        in_array($a, $api2Actions, true) && !in_array($a, $api2Documented, true));
 }
 
 echo "\n{$passed} passed, {$failed} failed\n";
