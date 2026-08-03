@@ -273,7 +273,22 @@ export async function apiFetch(input, init = {}) {
  * @throws {Error} On network failure, non-OK status, or an HTML response.
  */
 export async function apiFetchJson(input, init = {}) {
-    const response = await apiFetch(input, init);
+    /* #1201/#1761 — opt into the v2 uniform response envelope. The
+       `X-API-Version: 2` header is sent ONLY here (never in raw `apiFetch`),
+       because ONLY this path knows how to unwrap it: the ~10 modules that call
+       `apiFetch(...)` + `.json()` directly stay on legacy v1 bare payloads and
+       are unaffected. Injected as a CALLER header so `buildHeaders()` preserves
+       it (step 2, "caller wins") and still layers on X-Requested-With /
+       X-Preferred-Languages. `apiFetch` only forwards it same-origin. */
+    const v2Init = {
+        ...init,
+        headers: (() => {
+            const h = new Headers(init.headers || {});
+            if (!h.has('X-API-Version')) h.set('X-API-Version', '2');
+            return h;
+        })(),
+    };
+    const response = await apiFetch(input, v2Init);
     const contentType = response.headers.get('Content-Type') || '';
 
     if (!contentType.includes('json')) {
@@ -284,10 +299,44 @@ export async function apiFetchJson(input, init = {}) {
             + `shell with status 200 — check the URL is root-absolute (#1566).`
         );
     }
-    if (!response.ok) {
-        throw new Error(`Request to ${requestUrlOf(input)} failed with HTTP ${response.status}`);
+
+    const body = await response.json();
+
+    /* #1761 — unwrap the v2 envelope TRANSPARENTLY, so every existing caller
+       keeps receiving exactly the payload it always did. A v2 server answers:
+         success → { ok:true,  data:<payload> }
+         error   → { ok:false, error:{ code, message, … } }  (with HTTP >= 400)
+       Errors throw with `.status` + `.code` + `.error` so callers branch on the
+       HTTP STATUS / stable code, never the server's prose (#1677, rule #35).
+       A response WITHOUT the envelope (a legacy/cached/streaming action, or an
+       action that already returned its own ad-hoc `{ok}` without `data`) falls
+       through to the tolerant branch and is returned as-is — so a mixed v1/v2
+       surface never breaks an opted-in caller. */
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+        if (body.ok === true && 'data' in body) {
+            return body.data;
+        }
+        if (body.ok === false && body.error) {
+            const err = new Error(
+                (body.error && body.error.message)
+                || `Request to ${requestUrlOf(input)} failed with HTTP ${response.status}`
+            );
+            err.status = response.status;
+            err.code = (body.error && body.error.code) || null;
+            err.error = body.error;
+            throw err;
+        }
     }
-    return response.json();
+
+    /* Legacy v1 / non-envelope: preserve the old contract — throw on a non-OK
+       status (now carrying `.status` so callers can still branch), else return
+       the bare body unchanged. */
+    if (!response.ok) {
+        const err = new Error(`Request to ${requestUrlOf(input)} failed with HTTP ${response.status}`);
+        err.status = response.status;
+        throw err;
+    }
+    return body;
 }
 
 /**

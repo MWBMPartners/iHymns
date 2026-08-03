@@ -57,6 +57,11 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+/* #1201/#1761 — public/PWA API response-envelope helpers (apiContractVersion /
+   apiEnvelopeWrap / apiEnvelopeError). Loaded early so sendJson() can wrap the
+   v2 envelope; extracted from this file so the contract is unit-testable
+   (tests/php/test-api-envelope.php) without running the dispatcher. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_envelope.php';
 
 /* =========================================================================
  * GLOBAL JSON ERROR HANDLER (#803)
@@ -17743,6 +17748,16 @@ sendJson(['error' => 'Missing required parameter: page or action'], 400);
 /**
  * Send a JSON response with appropriate headers.
  *
+ * For v2 clients (opt-in via `X-API-Version: 2`, see `apiContractVersion()` in
+ * `includes/api_envelope.php`) the payload is wrapped in the uniform envelope —
+ * success → `{ ok:true, data:$data }`, any `$statusCode` >= 400 → the
+ * `{ ok:false, error:{…} }` shape (#1201/#1761). v1 clients get the bare
+ * `$data` exactly as before. This ONE chokepoint carries the whole envelope
+ * for all ~971 call sites (rule #35); the handful of non-`sendJson` responses
+ * (streaming exports, CSV, the health probe) are legitimately outside the JSON
+ * envelope and documented as such. The wrap DECISION lives in the pure,
+ * unit-tested `apiEnvelopeWrap()` (`tests/php/test-api-envelope.php`).
+ *
  * @param array $data       Data to encode as JSON
  * @param int   $statusCode HTTP status code (default: 200)
  */
@@ -17752,7 +17767,19 @@ function sendJson(array $data, int $statusCode = 200): void
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    $version = apiContractVersion();
+    if ($version >= 2) {
+        // Echo the negotiated version + Vary so any intermediary keys a cache
+        // entry by it (sendJson is already no-cache, so this is belt-and-braces).
+        header('X-API-Version: 2');
+        header('Vary: X-API-Version', false);
+    }
+
+    echo json_encode(
+        apiEnvelopeWrap($data, $statusCode, $version),
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+    );
 }
 
 /**

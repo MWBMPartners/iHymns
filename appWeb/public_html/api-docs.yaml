@@ -11,7 +11,24 @@ info:
 
     Most endpoints are served from a single PHP entry point (`api.php`) and are
     routed via the `action` query parameter. Responses are JSON unless otherwise
-    noted. Three further surfaces share the action-query pattern:
+    noted.
+
+    **Response versioning — the v2 envelope (#1201/#1761).** By default every
+    endpoint returns the bare payload documented on it (v1). A client that sends
+    the request header `X-API-Version: 2` (or `?v=2` for curl / this page's
+    "Try it out") instead receives a UNIFORM envelope: success →
+    `{ "ok": true, "data": <the documented payload> }` (`ApiEnvelope`), and any
+    error → `{ "ok": false, "error": { "code", "message", … } }` (`ApiError`)
+    with a meaningful HTTP status. Clients branch on the HTTP status and the
+    stable `error.code`, never the human message. v2 is **opt-in** so
+    already-deployed and offline-cached clients keep getting v1 byte-for-byte —
+    it is a versioned migration, not a flag day. The web PWA (`apiFetchJson`)
+    and the Apple client transport send the header and transparently unwrap
+    `data`, so the payloads documented per-endpoint below are what a caller sees
+    under either version. (The handful of non-JSON responses — streaming/CSV
+    exports, the `health` probe — are outside the envelope by nature.)
+
+    Three further surfaces share the action-query pattern:
 
     - The legacy admin **Editor API** (`/manage/editor/api.php`) — gated by the
       `/manage/` PHP session. `/manage/editor/` no longer routes here by
@@ -16282,13 +16299,67 @@ components:
 
     Error:
       type: object
-      description: Error response
+      description: >-
+        Legacy (v1) error response — a bare `{ error }`. When the client sends
+        `X-API-Version: 2` this is replaced by `ApiError` (see Response
+        versioning in the API description).
       required: [error]
       properties:
         error:
           type: string
           description: Human-readable error message
           example: Something went wrong.
+
+    ApiError:
+      type: object
+      description: >-
+        The uniform v2 error envelope (#1201/#1761). Returned for every
+        `sendJson` error when the client sent `X-API-Version: 2`, alongside a
+        meaningful HTTP status. Clients branch on the HTTP status and/or the
+        stable `error.code` — never the human `error.message` (the #1677
+        lesson). Any legacy keys the v1 error carried (`gone`, `request_id`, …)
+        are preserved inside `error`.
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          enum: [false]
+          example: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: >-
+                Stable machine-branchable code — the endpoint's own code when it
+                sets one, else `http_<status>` (e.g. `http_404`).
+              example: http_404
+            message:
+              type: string
+              description: Human-readable message (do not branch on this).
+              example: Song not found.
+
+    ApiEnvelope:
+      type: object
+      description: >-
+        The uniform v2 SUCCESS envelope (#1201/#1761). When the client sends
+        `X-API-Version: 2`, EVERY documented 2xx payload in this spec is
+        returned inside `data` of this envelope — e.g. the `song_data` payload
+        below becomes `{ "ok": true, "data": { …that payload… } }`. Without the
+        header, the bare payload is returned exactly as documented (legacy v1),
+        so already-deployed and offline-cached clients are unaffected. The web
+        PWA (`apiFetchJson`) and the Apple client transport send the header and
+        unwrap `data` transparently, so call sites see the documented payload
+        either way.
+      required: [ok, data]
+      properties:
+        ok:
+          type: boolean
+          enum: [true]
+          example: true
+        data:
+          description: The endpoint's documented 2xx payload, verbatim.
 
     SongGone:
       type: object

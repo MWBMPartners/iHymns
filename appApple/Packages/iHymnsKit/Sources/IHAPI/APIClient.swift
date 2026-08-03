@@ -207,6 +207,16 @@ public actor APIClient {
         // call for any state-changing action.
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
 
+        // #1201/#1761 — opt into the v2 uniform response envelope
+        // (`{ ok, data }` / `{ ok:false, error }`). Sent on EVERY request
+        // because EVERY response flows back through this actor's transport
+        // (`performOnce`), which unwraps the envelope centrally
+        // (`unwrapEnvelope`) before any `*Decoding.swift` decoder sees the
+        // bytes — so all decoders decode their own type UNCHANGED from the
+        // `data` payload. The server treats v2 as opt-in, so an older build
+        // that never sends this keeps receiving legacy bare payloads.
+        request.setValue("2", forHTTPHeaderField: "X-API-Version")
+
         if endpoint.requiresAuth, let bearerToken {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }
