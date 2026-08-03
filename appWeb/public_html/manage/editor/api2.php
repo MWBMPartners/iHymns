@@ -52,6 +52,16 @@ declare(strict_types=1);
  *   POST metadata_field_update  { songId, field, value }    -> { ok }
  *                               field=songbook RE-KEYS the SongId (#1679) and
  *                               answers { ok, field, songId, previousId }
+ *                               field=isrc canonicalises + shape-validates the
+ *                               value (#1741 P5a; 422 on a bad shape) and, in
+ *                               the SAME transaction, dual-writes the canonical
+ *                               form into tblSongExternalIds (#1749 P5d mirror,
+ *                               includes/song_external_ids.php). The five
+ *                               #1741 P1 identity columns (subtitle/
+ *                               disambiguation/firstPublishedYear/
+ *                               copyrightYears/copyrightHolder) answer 409 on
+ *                               an install that hasn't applied that migration
+ *                               card yet (ed2_songIdentityColsPresent()).
  *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
@@ -190,6 +200,19 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    lyrics_ingest.php) now delegates to, so v2's granular credit saves stop
    silently skipping tblMusicians (the #960 regression). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1741 P5a / #1749 P5d — the canonical-identifier fold (ihymns_canonical_isrc())
+   and the recording/release/product IdType vocabulary
+   (mediaIdentifierValidateValue()) the metadata_field_update ISRC branch below
+   needs to write the SAME canonical form `/isrc/`'s resolver indexes on, plus
+   the dual-write mirror funnel (songExternalIdMirrorIsrc()) that keeps
+   tblSongExternalIds from drifting once a curator edits tblSongs.Isrc through
+   this editor. Loaded at module scope — like song_relocate.php above — rather
+   than lazily inside one branch, because ed2_applySongSnapshot() (a DIFFERENT
+   function, the revision-restore path) needs the same fold + mirror for the
+   #1749 §4.3 restore funnel. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -296,7 +319,25 @@ const ED2_META_FIELDS = [
     'copyright'          => ['Copyright', 's'],
     'ccli'               => ['Ccli', 's'],
     'iswc'               => ['Iswc', 's'],
+    /* #1741 P5a — isrc predates the P1 batch (#1064: Isrc VARCHAR(15) NULL is
+       already on every install), so it needs no existence gate — but it DOES
+       get its own coercion branch below (canonicalise + shape-validate +
+       #1749 P5d mirror), never the plain trim-or-empty-to-null generic path. */
+    'isrc'               => ['Isrc', 's'],
     'tuneName'           => ['TuneName', 's'],
+    /* #1741 P1 — the five identity columns below may not exist on an
+       un-migrated install (the "song-identity-fields" migration card);
+       metadata_field_update 409s via ed2_songIdentityColsPresent() before
+       writing any of them, and ed2_applySongSnapshot() silently skips a
+       restore of one that isn't there. Kept in ED2_META_FIELDS unconditionally
+       (not behind a runtime check) because the ALLOW-LIST itself is static —
+       it is the WRITE that is gated, exactly like every other existence-gated
+       column probe in this file (rule #5). */
+    'subtitle'           => ['Subtitle', 's'],
+    'disambiguation'     => ['Disambiguation', 's'],
+    'firstPublishedYear' => ['FirstPublishedYear', 'i'],
+    'copyrightYears'     => ['CopyrightYears', 's'],
+    'copyrightHolder'    => ['CopyrightHolder', 's'],
     'originCity'         => ['OriginCity', 's'],
     'originCityId'       => ['OriginCityId', 'i'],   // FK to tblPlaces (nullable int, NOT a flag)
     'verified'           => ['Verified', 'i'],
@@ -355,6 +396,46 @@ function ed2_songMediaTableExists(\mysqli $db): bool {
         $exists = false;
     }
     return $exists;
+}
+
+/**
+ * Per-column present-map for the #1741 P1 tblSongs identity columns — ONE
+ * INFORMATION_SCHEMA.COLUMNS query (IN-list of hardcoded constants, rule #5),
+ * memoised like ed2_songMediaTableExists() just above. `Isrc` (#1064) is
+ * deliberately NOT in this map — it predates the P1 batch and every install
+ * already has it; see the dedicated ISRC branch inside metadata_field_update
+ * instead of this gate.
+ *
+ * ELI5: "which of the five new song-identity columns does THIS install
+ * actually have yet?" — an install that hasn't run the migration card gets
+ * `false` for all five; metadata_field_update uses that to 409 instead of
+ * throwing a raw mysqli_sql_exception under STRICT (rule #5's "never treat a
+ * query as returning false on error" also cuts the other way: check BEFORE
+ * writing to an absent column, don't rely on the throw).
+ *
+ * @return array<string,bool> e.g. ['Subtitle'=>true, 'Disambiguation'=>false, …]
+ * @link .claude/catalogue-1741-P5-plan.md §1.2 item 3
+ */
+function ed2_songIdentityColsPresent(\mysqli $db): array {
+    static $presence = null;
+    if ($presence !== null) { return $presence; }
+    $cols = ['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder'];
+    $presence = array_fill_keys($cols, false);
+    try {
+        $r = $db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs'
+                AND COLUMN_NAME IN ('Subtitle','Disambiguation','FirstPublishedYear','CopyrightYears','CopyrightHolder')"
+        );
+        if ($r) {
+            while ($row = $r->fetch_row()) { $presence[$row[0]] = true; }
+            $r->close();
+        }
+    } catch (\Throwable $_e) {
+        /* Degrade to "not migrated" (all false) on any probe failure — the
+           safe direction, matching every other existence probe in this file. */
+    }
+    return $presence;
 }
 
 /** Shape a tblSongMedia row for the v2 client (camelCase, like the other slices).
@@ -740,9 +821,16 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
 
     /* Scalars — only the allow-listed editable columns (same coercion as
        metadata_field_update). */
+    $ed2IdentityPresence = ed2_songIdentityColsPresent($db);   // #1741 P1 gate
+    $ed2WroteIsrc = false;
     foreach (ED2_META_FIELDS as $field => [$column, $type]) {
         /* #1679 — never restore the songbook (see the doc-block above). */
         if ($column === 'SongbookAbbr') { continue; }
+        /* #1741 P1 — silently skip an absent identity column so the REST of
+           the snapshot still restores; never abort a whole restore over one
+           optional field on an un-migrated install (mirrors works.php's
+           partial-apply posture, P4 plan §2 gating note). */
+        if (array_key_exists($column, $ed2IdentityPresence) && !$ed2IdentityPresence[$column]) { continue; }
         if (!array_key_exists($column, $songRow)) { continue; }
         $raw = $songRow[$column];
         if ($type === 'i') {
@@ -751,13 +839,14 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
                 : (int)((bool)$raw);
         } else {
             $value = $raw === null ? '' : trim((string)$raw);
-            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity'], true) && $value === '') { $value = null; }
+            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
         }
         $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
         if ($value === null) { $np = null; $u->bind_param('ss', $np, $songId); }
         else { $u->bind_param($type . 's', $value, $songId); }
         $u->execute();
         $u->close();
+        if ($column === 'Isrc') { $ed2WroteIsrc = true; }
     }
     if (array_key_exists('Title', $songRow)) {
         $norm = ed2_normalizeTitle((string)$songRow['Title']);
@@ -765,6 +854,18 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         $un->bind_param('ss', $norm, $songId);
         $un->execute();
         $un->close();
+    }
+    /* #1749 P5d — a revision restore is an Isrc write funnel too: when the
+       scalar loop actually wrote Isrc (i.e. the snapshot carried the key —
+       Isrc is never gate-skipped, it predates P1), mirror the SAME canonical
+       value into tblSongExternalIds so the store never drifts from a
+       restored tblSongs.Isrc. Canonicalise again here rather than trusting
+       the snapshot's stored text is already canonical — an OLD revision
+       (pre-#1741 P5a) could carry a pre-canonicalisation raw value. */
+    if ($ed2WroteIsrc) {
+        $isrcRestoreRaw   = $songRow['Isrc'] === null ? '' : (string)$songRow['Isrc'];
+        $isrcRestoreCanon = ihymns_canonical_isrc($isrcRestoreRaw);
+        songExternalIdMirrorIsrc($db, $songId, $isrcRestoreCanon === '' ? null : $isrcRestoreCanon);
     }
 
     /* Components — replace the whole set (only if the snapshot carries them). #1235
@@ -1086,6 +1187,42 @@ try {
         [$column, $type] = ED2_META_FIELDS[$field];
         $raw = $body['value'] ?? null;
 
+        /* ---- #1741 P1 existence gate ---------------------------------------
+           Five of the identity columns above may not exist yet on an install
+           that hasn't run the "song-identity-fields" migration card. `Isrc`
+           (#1064) is NOT in this map (it predates P1), so it always falls
+           through. A write to an absent column would otherwise throw a raw
+           mysqli_sql_exception under STRICT (500) instead of the clear,
+           branchable 409 rule #35 asks for. */
+        $ed2IdentityPresence = ed2_songIdentityColsPresent($db);
+        if (array_key_exists($column, $ed2IdentityPresence) && !$ed2IdentityPresence[$column]) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the song-identity-fields migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* ---- #1741 P5a / #1749 P5d — ISRC: canonicalise + shape-validate --
+           ISRC is a recording-grain code the app must normalise BEFORE it is
+           stored, never the curator's raw text — `/isrc/`'s indexed exact
+           match (identifier_resolve.php) and the P1 canonical backfill both
+           assume every stored value already went through
+           ihymns_canonical_isrc(). Re-assigning the canonical form into $raw
+           feeds it through the SAME generic coercion + UPDATE + transaction
+           every other field uses below (incl. the empty-string → NULL fold),
+           rather than forking a second UPDATE/transaction/response for one
+           field. The dual-write mirror (§4.3) hooks into that shared
+           transaction further down, right after the UPDATE executes. */
+        if ($column === 'Isrc') {
+            $isrcCanon = ihymns_canonical_isrc((string)($raw ?? ''));
+            if ($isrcCanon !== '' && !mediaIdentifierValidateValue('isrc', $isrcCanon)) {
+                /* A decided default (P5 plan §1.2-2), trivially loosenable if a
+                   curator ever hits a genuine nonstandard code — the RESOLVE
+                   path (identifier_resolve.php) stays tolerant by design; only
+                   the WRITE is strict. Status is the contract, not this prose
+                   (rule #35). */
+                ed2_respond(['ok' => false, 'error' => 'ISRC must be a 12-character code (2-letter country + 3-character registrant + 7 digits), e.g. USABC1234567.'], 422);
+            }
+            $raw = $isrcCanon;
+        }
+
         /* ---- #1679 — SONGBOOK MOVE is not a scalar update ----------------
            `tblSongbooks.Abbreviation` IS the SongId prefix (rule #27), so
            writing SongbookAbbr through the generic UPDATE below would leave the
@@ -1141,17 +1278,27 @@ try {
         }
 
         /* Coerce per the allow-listed type; numberless/empty → NULL where the
-           column allows it (Number/TuneName/Iswc/OriginCity are nullable). */
+           column allows it (Number/originCityId/firstPublishedYear/TuneName/
+           Iswc/OriginCity/Isrc/Subtitle are nullable). */
         if ($type === 'i') {
             if ($field === 'number' || $field === 'originCityId') {
                 /* nullable ints (song number / place FK): empty or <=0 → NULL */
                 $value = ($raw === null || $raw === '' || (int)$raw <= 0) ? null : (int)$raw;
+            } elseif ($field === 'firstPublishedYear') {
+                /* #1741 P1 — SMALLINT UNSIGNED, nullable; empty/<=0 → NULL,
+                   else a 500..2100 range check (mirrors works.php's identical
+                   SMALLINT-not-YEAR bounds, P4 plan §2.4.3 — YEAR starts 1901
+                   and hymns predate it). Status is the contract (rule #35). */
+                $value = ($raw === null || $raw === '' || (int)$raw <= 0) ? null : (int)$raw;
+                if ($value !== null && ($value < 500 || $value > 2100)) {
+                    ed2_respond(['ok' => false, 'error' => 'First published year must be a year between 500 and 2100.'], 422);
+                }
             } else {
                 $value = (int)((bool)$raw);   // flags
             }
         } else {
             $value = $raw === null ? '' : trim((string)$raw);
-            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity'], true) && $value === '') { $value = null; }
+            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
         }
 
         $db->begin_transaction();
@@ -1166,6 +1313,15 @@ try {
             }
             $u->execute();
             $u->close();
+            /* #1749 P5d — dual-write the canonical ISRC into tblSongExternalIds,
+               INSIDE this same transaction as the tblSongs UPDATE above (a
+               rollback must never leave the mirror row alone with a stale
+               tblSongs.Isrc, or vice versa). Table-absent is already a no-op
+               inside the helper (its own memoised probe) — unswallowed here,
+               so a genuine DB fault still rolls the whole save back honestly. */
+            if ($column === 'Isrc') {
+                songExternalIdMirrorIsrc($db, $songId, $value);
+            }
             /* Title drives NormalizedTitle too. */
             if ($field === 'title') {
                 $norm = ed2_normalizeTitle((string)$value);

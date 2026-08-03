@@ -32,19 +32,36 @@ const SAVE_DEBOUNCE_MS = 500;
  * wrong rather than as a check after the fact. */
 const FIELDS = [
     ['title',              'Song Title',        'Title',              'text'],
+    ['subtitle',           'Subtitle',          'Subtitle',           'text'],
+    ['disambiguation',     'Disambiguation (short parenthetical)', 'Disambiguation', 'text'],
     ['number',             'Song Number',       'Number',             'number'],
     ['songbook',           'Songbook',          'SongbookAbbr',       'select'],
     ['language',           'Language (BCP 47)', 'Language',           'text'],
     ['ccli',               'CCLI Number',       'Ccli',               'text'],
     ['iswc',               'ISWC',              'Iswc',               'text'],
+    ['isrc',               'ISRC',              'Isrc',               'text'],
     ['tuneName',           'Tune Name',         'TuneName',           'text'],
     ['copyright',          'Copyright',         'Copyright',          'text'],
+    ['copyrightYears',     'Copyright year(s)', 'CopyrightYears',     'text'],
+    ['copyrightHolder',    'Copyright holder',  'CopyrightHolder',    'text'],
+    ['firstPublishedYear', 'First published (year)', 'FirstPublishedYear', 'number'],
     ['verified',           'Verified',          'Verified',           'check'],
     ['lyricsPublicDomain', 'Lyrics Public Domain', 'LyricsPublicDomain', 'check'],
     ['musicPublicDomain',  'Music Public Domain',  'MusicPublicDomain',  'check'],
     ['hasAudio',           'Has audio',         'HasAudio',           'check'],
     ['hasSheetMusic',      'Has sheet music',   'HasSheetMusic',      'check'],
 ];
+
+/* #1741 P1 — these five tblSongs columns may not exist yet on an install that
+ * hasn't run the "song-identity-fields" migration card (`ISRC` is #1064 —
+ * pre-P1 — and is deliberately NOT in this set). load_song's `song` slice is
+ * a raw `SELECT *` (api2.php ed2_buildSongSnapshot(), #1741 P5a §0.5), so an
+ * absent column simply never appears as a key in `song` on an un-migrated
+ * install — checking `column in song` is a zero-extra-request client gate
+ * that gives a curator no dead control to click (the server's 409 remains
+ * for a stale Service-Worker-cached client that tries anyway).
+ */
+const GATED_COLUMNS = new Set(['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder']);
 
 export function mountMetadataTab(container, opts) {
     const { store, api, songId } = opts;
@@ -227,6 +244,9 @@ export function mountMetadataTab(container, opts) {
         row.className = 'row g-3';
 
         FIELDS.forEach(([field, label, column, kind]) => {
+            /* #1741 P1 gate — skip a field the server would 409 on rather
+               than render a control that can never save. */
+            if (GATED_COLUMNS.has(column) && !(column in song)) { return; }
             const col = document.createElement('div');
             col.className = kind === 'check' ? 'col-12 col-sm-6 col-md-4' : 'col-12 col-md-6';
 
