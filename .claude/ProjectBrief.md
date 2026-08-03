@@ -71,8 +71,19 @@ node + my own 3 mutations + live probe). Epic follow-ups (non-blocking): #1748/#
   SourceRef); the five keys are the frozen **#1752 native contract** (noted on #1752). New guard
   `test-song-identity-render.php` (schema-derived, comment-stripped, `tsirVariableUsageCount` catches
   a deleted render). 104 PHP / 49 node green; live data-layer probe + own mutations verified.
-- **STILL QUEUED (drain before Meedya):** #1748 → #1752 (specs written in `.claude/`; #1752 depends on
-  the #1750 payload shape, now frozen).
+- **#1748 — DONE + CLOSED** (`761a5e63`). `/manage/tunes` CRUD + `manage_tunes` + `admin_tune_*` API +
+  shared `tune_admin.php` core + external-links tick UI. The adversarial verify caught **two real
+  STRICT-mode gating bugs** (Subtitle/Disambiguation are tune-enrichment-card columns; MusicianId is
+  post-musicians-rename) — fixed with a `tuneAdminColumnExists()` column probe and **proven live**
+  against a scratch pre-enrichment schema. Guard hardened (scans the shared core; PHP-only projection
+  kills a JS-comment decoy; both whitelists; gating locks) — all mutations red-then-green. 105 PHP / 49
+  node green. ⚠️ Process note: a backup-timing slip during mutation testing (backed up pre-fix, then
+  cp/`git checkout`-restored) transiently wiped the fixes; caught + fully recovered before commit — the
+  lesson (back up the FIXED state; never `git checkout` to restore uncommitted work) is reinforced.
+- **STILL QUEUED (drain before Meedya):** #1752 (last item — native Apple+Android; spec written;
+  depends on the #1750 payload shape, now frozen). No Swift/Android toolchain in-sandbox, so its native
+  code is source-review + the node/PHP guards + the §4.1 web change verified live; native compile is a
+  tracked CI step.
 
 **Remaining on the branch after the queue:** the owner's next major directive, the
 **3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation next, per repo,
