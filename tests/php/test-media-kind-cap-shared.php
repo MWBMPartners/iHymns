@@ -76,16 +76,19 @@ if (!function_exists('contentGatingMediaKindCap')) {
  * ========================================================================= */
 $cgFile   = $repoRoot . '/appWeb/public_html/includes/content_gating.php';
 $arFile   = $repoRoot . '/appWeb/public_html/includes/access_resolver.php';
+$spgFile  = $repoRoot . '/appWeb/public_html/includes/song_page_gating.php';
 $songFile = $repoRoot . '/appWeb/public_html/includes/pages/song.php';
 $cgSrc    = (string)file_get_contents($cgFile);
 $arSrc    = (string)file_get_contents($arFile);
+$spgSrc   = (string)file_get_contents($spgFile);
 $songSrc  = (string)file_get_contents($songFile);
 
 /* The media-kind switch's signature line. It should appear exactly once, inside
    contentGatingMediaKindCap() in content_gating.php, and NOWHERE else — not in
-   song.php and not in the enforcement pipeline (access_resolver.php). */
+   song.php, the song-page gating seam, or the enforcement pipeline. */
 $cgSwitch   = substr_count($cgSrc, "case 'sheet-music':");
 $arSwitch   = substr_count($arSrc, "case 'sheet-music':");
+$spgSwitch  = substr_count($spgSrc, "case 'sheet-music':");
 $songSwitch = substr_count($songSrc, "case 'sheet-music':");
 if ($cgSwitch !== 1) {
     $failures[] = "content_gating.php contains {$cgSwitch} `case 'sheet-music':` blocks — expected exactly 1 "
@@ -97,13 +100,25 @@ if ($arSwitch !== 0) {
                 . "media filter + byte gate must call contentGatingMediaKindCap() rather than re-inline the switch "
                 . "(#1769 P2 regression).";
 }
+if ($spgSwitch !== 0) {
+    $failures[] = "song_page_gating.php contains {$spgSwitch} `case 'sheet-music':` block(s) — expected 0; the "
+                . "song-page gating seam must call contentGatingMediaKindCap() rather than re-inline the switch "
+                . "(#1769 P3 regression).";
+}
 if ($songSwitch !== 0) {
-    $failures[] = "song.php contains {$songSwitch} `case 'sheet-music':` block(s) — expected 0; it must call "
+    $failures[] = "song.php contains {$songSwitch} `case 'sheet-music':` block(s) — expected 0; it must go through "
                 . "contentGatingMediaKindCap() rather than re-inline its own copy (the #1769 P0 regression).";
 }
-if (!str_contains($songSrc, 'contentGatingMediaKindCap(')) {
-    $failures[] = "song.php does not call contentGatingMediaKindCap() — its media-affordance gate must use the "
-                . "shared map so the page and the API agree.";
+/* #1769 P3 — the song page's media-affordance gate moved into the shared seam
+   song_page_gating.php (songPageGatingDecideLegacy), which song.php includes. The
+   seam is where the page now calls the ONE kind→cap map. */
+if (!str_contains($spgSrc, 'contentGatingMediaKindCap(')) {
+    $failures[] = "song_page_gating.php does not call contentGatingMediaKindCap() — the song-page gating seam must "
+                . "use the shared map so the page and the API agree (#1769 P3).";
+}
+if (!str_contains($songSrc, "song_page_gating.php")) {
+    $failures[] = "song.php does not include song_page_gating.php — its gating decision must route through the "
+                . "shared seam (#1769 P3), which is where the kind→cap map is consulted.";
 }
 /* content_gating.php DEFINES the function (≥1 reference — the definition). */
 if (substr_count($cgSrc, 'contentGatingMediaKindCap') < 1) {

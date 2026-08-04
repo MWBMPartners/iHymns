@@ -231,128 +231,78 @@ $serviceCcliNumber = null;   /* #1335 — set when a present congregant rides th
 if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
     && function_exists('checkContentAccess')) {
     try {
-        $gateViewer = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+        /* #1769 P3 — the gating DECISION maths is extracted to the ONE shared seam
+           includes/song_page_gating.php (songPageGatingDecideLegacy), so the page
+           can't drift from the API and the decision is replayable DB-free against a
+           golden matrix. This file keeps only the I/O RESOLUTION (entity gate, tier,
+           ccli, presence) and hands the resolved scalars to the seam. Commit A is a
+           VERBATIM code-motion; Commit C rewrites both sides onto the #1769 viewer
+           struct. Still entirely dormant behind content_gating_enabled; fail-open via
+           the outer catch (a thrown lookup leaves the entity verdict untouched). */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_page_gating.php';
+
+        $gateViewer   = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+        $tierViewerId = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
+
         /* #1335 — a congregant following a live service carries an opaque presence
-           token (set as a same-origin cookie by service-follow.js on join). It
-           lets them ride the org's live CCLI licence for gated lyrics while
-           present, and is revoked the moment they leave / it expires. */
+           token (set as a same-origin cookie by service-follow.js on join). It lets
+           them ride the org's live CCLI licence for gated lyrics while present, and is
+           revoked the moment they leave / it expires. */
         $presenceTok = '';
         if (isset($_COOKIE['ihymns_sf_presence_token'])
             && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
             $presenceTok = (string)$_COOKIE['ihymns_sf_presence_token'];
         }
-        $gateAccess = checkContentAccess(
-            'song', (string)$songId,
-            isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null,
-            'PWA',
+
+        /* ENTITY gate (per-song legal restriction — the authoritative denial). */
+        $gateAccess    = checkContentAccess(
+            'song', (string)$songId, $tierViewerId, 'PWA',
             $presenceTok !== '' ? $presenceTok : null
         );
-        if (empty($gateAccess['allowed'])) {
-            $lyricsGated = true;
-            $gateReason  = (string)($gateAccess['reason'] ?? '');
-        } elseif ($presenceTok !== '' && !$fullyPublicDomain && function_exists('serviceMode_presenceCcliNumber')) {
-            /* Allowed + a present congregant viewing a copyrighted song → the CCL
-               requires the licence-holder's copyright notice on each device. */
-            $serviceCcliNumber = serviceMode_presenceCcliNumber(
+        $entityAllowed = !empty($gateAccess['allowed']);
+        $entityReason  = (string)($gateAccess['reason'] ?? '');
+
+        /* Service-Mode presence number resolved ONCE, PD-independent — the seam
+           derives BOTH the copyrighted-only CCL notice number AND the media-presence
+           flag from it (provably identical to the old two-step derivation). NOT
+           inner-caught: a throw hits the outer catch, exactly as before. */
+        $presenceNumber = null;
+        if ($presenceTok !== '' && function_exists('serviceMode_presenceCcliNumber')) {
+            $presenceNumber = serviceMode_presenceCcliNumber(
                 getDbMysqli(), $presenceTok,
                 function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
             );
         }
 
-        /* #1357 — TIER resolution, HOISTED so BOTH the lyric gate (below) and the
-           media-affordance gate (further below) share ONE tier/ccli lookup rather than
-           resolving the viewer's plan twice. resolveEffectiveTier() touches the DB, so
-           computing it once also halves the cost on the hot song-page path when gating
-           is on. Defaults: anonymous → 'public'; a thrown lookup is swallowed by the
-           catch below, leaving the entity verdict untouched (fail-open). */
-        $viewerTier    = 'public';   /* the viewer's PLAN axis (public/free/ccli/premium/pro) */
-        $viewerHasCcli = false;      /* a verified live CCLI number unlocks the ccli tier */
-        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+        /* Viewer PLAN axis (public/free/ccli/premium/pro) + verified-CCLI. Defaults:
+           anonymous → 'public'; a thrown lookup is swallowed by the outer catch. */
+        $viewerTier    = 'public';
+        $viewerHasCcli = false;
         if (function_exists('resolveEffectiveTier')) {
-            $tierViewerId  = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
             $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
             $viewerHasCcli = function_exists('contentGating_userHasCcli')
                 ? contentGating_userHasCcli($tierViewerId)
                 : false;
         }
 
-        /* #1357 — TIER lyric gate, composed with the entity model above so the web page
-           (and the offline bundle, which renders THROUGH this file) gate consistently
-           with the song_detail API (#1353). The two axes are independent:
-             • ENTITY (require_licence rows) — the per-song legal restriction, handled
-               above ($lyricsGated from checkContentAccess); a denial here is authoritative.
-             • TIER — the viewer's PLAN axis, which always governs COPYRIGHTED lyrics.
-           A valid Service-Mode presence unlock ($serviceCcliNumber) overrides the tier
-           (the rule #26 in-service exception). So a copyrighted song is additionally
-           gated when the viewer's tier can't view copyrighted AND there is no presence
-           unlock. Still entirely dormant behind content_gating_enabled; fail-open via the
-           catch below (a thrown tier lookup leaves the entity verdict untouched). */
-        if (!$lyricsGated && !$lyricsPublicDomain && $serviceCcliNumber === null
-            && function_exists('checkTierAccess')) {
-            $tierVerdict = checkTierAccess($viewerTier ?: 'public', 'view_copyrighted', $viewerHasCcli);
-            if (empty($tierVerdict['allowed'])) {
-                $lyricsGated = true;
-                $gateReason  = 'A higher access tier is required to view these lyrics.';
-            }
-        }
-
-        /* #1357 — MEDIA-affordance gate. The lyric body above is gated by the
-           song_detail API (#1353) when fetched over the API, but the WEB song page
-           renders its media buttons (Audio / Sheet Music) + the inline <audio> + the
-           MIDI/PDF/MusicXML download chips straight from $song['media'] in this file,
-           so without this they'd survive even when the tier can't use them. Mirror
-           content_gating.php's kind→cap mapping (lines 214-228) so the affordances
-           disappear in lockstep with the API. A Service-Mode presence unlock overrides
-           the tier (rule #26 in-service exception). Still dormant behind the flag; a
-           thrown tier lookup is swallowed by the catch (fail-open → media stays). */
-        if (function_exists('checkTierAccess')) {
-            /* The presence override here must mirror the API (content_gating.php), which
-               resolves the Service-Mode unlock INDEPENDENT of public-domain status.
-               $serviceCcliNumber above is only set for COPYRIGHTED songs (it drives the
-               per-device CCL notice), so for a fully public-domain song a present congregant
-               would be stripped here while the API keeps their media — a web/API divergence
-               (#1357 review). Resolve a PD-independent media-presence flag for parity. */
-            $mediaPresenceOk = ($serviceCcliNumber !== null);
-            if (!$mediaPresenceOk && $presenceTok !== '' && function_exists('serviceMode_presenceCcliNumber')) {
-                $mediaPresenceOk = serviceMode_presenceCcliNumber(
-                    getDbMysqli(), $presenceTok,
-                    function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
-                ) !== null;
-            }
-            $audioOk = $mediaPresenceOk
-                || !empty(checkTierAccess($viewerTier ?: 'public', 'play_audio', $viewerHasCcli)['allowed']);
-            $sheetOk = $mediaPresenceOk
-                || !empty(checkTierAccess($viewerTier ?: 'public', 'download_pdf', $viewerHasCcli)['allowed']);
-            $midiOk  = $mediaPresenceOk
-                || !empty(checkTierAccess($viewerTier ?: 'public', 'download_midi', $viewerHasCcli)['allowed']);
-
-            /* Toolbar buttons (Audio ~743, Sheet Music ~754) key off these flags. */
-            if (!$audioOk) { $hasAudio = false; }
-            if (!$sheetOk) { $hasSheet = false; }
-
-            /* The "Recordings & resources" section (inline <audio> ~1202, download
-               chips ~1237) renders directly from $song['media']; drop the rows the
-               tier can't use, keyed by the ONE shared kind→cap map
-               contentGatingMediaKindCap() (content_gating.php, required at ~:270
-               above) so the page and the API can never diverge (#1769 P0, OV-11 —
-               this used to be a third hand-copied switch held in sync by a
-               stale line-number comment). audio→play_audio, midi→download_midi,
-               sheet-music/musicxml→download_pdf; unknown kinds are left untouched. */
-            if (!empty($song['media']) && is_array($song['media'])) {
-                $capBool = [
-                    'play_audio'    => $audioOk,
-                    'download_midi' => $midiOk,
-                    'download_pdf'  => $sheetOk,
-                ];
-                $song['media'] = array_values(array_filter(
-                    $song['media'],
-                    static function ($m) use ($capBool): bool {
-                        $kind = is_array($m) ? (string)($m['kind'] ?? '') : '';
-                        $cap  = contentGatingMediaKindCap($kind);
-                        return $cap === null ? true : ($capBool[$cap] ?? true);
-                    }
-                ));
-            }
+        /* ONE decision (extracted maths — entity + tier lyric gate + media affordances). */
+        $__gate = songPageGatingDecideLegacy(
+            $viewerTier, $viewerHasCcli, $presenceNumber,
+            $entityAllowed, $entityReason,
+            $lyricsPublicDomain, $fullyPublicDomain,
+            $hasAudio, $hasSheet,
+            (!empty($song['media']) && is_array($song['media'])) ? $song['media'] : []
+        );
+        $lyricsGated       = $__gate['lyricsGated'];
+        $gateReason        = $__gate['gateReason'];
+        $serviceCcliNumber = $__gate['serviceCcliNumber'];
+        $hasAudio          = $__gate['hasAudio'];
+        $hasSheet          = $__gate['hasSheet'];
+        /* Only re-apply the filtered media when the payload actually carried it, so an
+           absent 'media' key is never materialised (byte-identical to the old guard). */
+        if (!empty($song['media']) && is_array($song['media'])) {
+            $song['media'] = $__gate['media'];
         }
     } catch (\Throwable $_e) {
         /* Gating must never break a song render — fail open (show lyrics). */
