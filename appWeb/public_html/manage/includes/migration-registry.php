@@ -3629,4 +3629,62 @@ return [
                !_migProbe_columnExists($db, 'tblWorks', 'Bowi')
             || !_migProbe_indexExists($db, 'tblWorks', 'uq_bowi'),
     ],
+
+    'gating-facts-licence-types' => [
+        'script' => 'migrate-add-gating-facts-and-licence-types.php',
+        'card' => [
+            'title'  => 'Gating facts + licence-type registry (#1769 P1)',
+            'body'   => 'One-pass additive-dormant batch (rule #20) for the'
+                      . ' Model-2 access consolidation: creates'
+                      . ' <code>tblLicenceTypes</code> (the #459 licence'
+                      . ' vocabulary — seeds <code>ccli</code>/<code>mrl</code>/'
+                      . '<code>ihymns_basic</code>/<code>ihymns_pro</code>/'
+                      . '<code>custom</code> with coverage + tier conferral'
+                      . ' declared), the per-song rights-requirement FACT columns'
+                      . ' (<code>tblSongs.LyricsRightsLicenceKey</code> /'
+                      . ' <code>MusicRightsLicenceKey</code>), the songbook'
+                      . ' editor-default pair, the RESERVED arrangement-grain'
+                      . ' pair on <code>tblSongArrangements</code> (#1768 Q2),'
+                      . ' and <code>tblGatingCapabilities.EnforceJson</code>;'
+                      . ' seeds <code>feature_gating_rules_enabled=0</code>'
+                      . ' (deferred from P0). Everything is DORMANT — nothing'
+                      . ' reads any of it until #1769 P2 — and idempotent;'
+                      . ' INSERT IGNORE seeds never clobber curator edits. Safe'
+                      . ' to re-run. Prerequisites: the #1066 iLyricsDB-alignment'
+                      . ' card (tblSongArrangements) and the #1481 gating-registry'
+                      . ' card (tblGatingCapabilities).',
+            'button' => 'Run Gating Facts + Licence Types Migration',
+        ],
+        /* Multi-object OR-probe (rule #19/#20): pending until EVERY schema
+           object in the batch exists AND both data legs are seeded — a partial
+           apply (an ALTER failed, or a prerequisite table was warn-skipped)
+           never shows the card green. The data legs are probed as bound
+           live-data reads, never a static true (CI test-migration-registry). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblLicenceTypes')
+                || !_migProbe_columnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongs', 'MusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongbooks', 'DefaultLyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongbooks', 'DefaultMusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongArrangements', 'MusicRightsStatus')
+                || !_migProbe_columnExists($db, 'tblSongArrangements', 'MusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblGatingCapabilities', 'EnforceJson')) {
+                return true;
+            }
+            $key  = 'mrl';
+            $stmt = $db->prepare('SELECT 1 FROM tblLicenceTypes WHERE LicenceKey = ? LIMIT 1');
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $haveMrl = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if (!$haveMrl) { return true; }
+            $key  = 'feature_gating_rules_enabled';
+            $stmt = $db->prepare('SELECT 1 FROM tblAppSettings WHERE SettingKey = ? LIMIT 1');
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $haveFlag = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$haveFlag;
+        },
+    ],
 ];
