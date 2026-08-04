@@ -73,12 +73,26 @@ if ($failures) {
 $songbooks = $strip((string)file_get_contents($songbooksPath));
 $partial   = $strip((string)file_get_contents($partialPath));
 
-/* 1. Both forms must pull the shared partial: require'd ≥ 2× (create + edit). */
-$requireCount = preg_match_all('/require\b[^;]*songbook-form-fields\.php/', $songbooks);
+/* 1. Both forms must pull the shared partial — verified by BOUNDING each
+      <form>…</form> region (HTML forms don't nest) and requiring the partial
+      to appear inside AT LEAST TWO DISTINCT forms (the create form AND the
+      edit modal). Counting total require()s (the previous check) under-
+      reported: both requires could sit in ONE form, leaving the OTHER form
+      with no shared fields at all — the exact Add/Edit gap this guards
+      against (#1765 review). */
+$countPartialForms = static function (string $src): int {
+    preg_match_all('#<form\b[^>]*>.*?</form>#is', $src, $m);
+    $n = 0;
+    foreach ($m[0] as $block) {
+        if (strpos($block, 'songbook-form-fields.php') !== false) { $n++; }
+    }
+    return $n;
+};
+$formsWithPartial = $countPartialForms($songbooks);
 $check(
-    $requireCount >= 2,
-    "the shared field partial must be require()d at least twice in songbooks.php "
-    . "(create form + edit modal); found {$requireCount}"
+    $formsWithPartial >= 2,
+    'the shared field partial must be require()d inside at least TWO distinct <form> regions '
+    . "(the create form AND the edit modal); found it in {$formsWithPartial} form(s)"
 );
 
 /* 2. Derive the field set from the partial (tree-derived, not a typed list). */
@@ -106,10 +120,18 @@ $check(
     in_array('publisher', array_intersect($partialFields, $fieldNames($mutantInline)), true),
     'SELF-TEST failed: guard did not detect a re-inlined field (assertion 3 is dead)'
 );
-$mutantMissing = preg_replace('/require\b[^;]*songbook-form-fields\.php[^;]*;/', '', $songbooks, 1) ?? $songbooks;
+/* Region self-test: two requires collapsed into ONE <form> must read 1 (the
+   under-report the previous count-based check missed), and one require per
+   form across two forms must read 2. */
+$oneFormFixture = '<form a> require "songbook-form-fields.php"; require "songbook-form-fields.php"; </form><form b> no partial here </form>';
+$twoFormFixture = '<form a> require "songbook-form-fields.php"; </form><form b> require "songbook-form-fields.php"; </form>';
 $check(
-    preg_match_all('/require\b[^;]*songbook-form-fields\.php/', $mutantMissing) < 2,
-    'SELF-TEST failed: removing one require did not drop the count below 2 (assertion 1 is dead)'
+    $countPartialForms($oneFormFixture) === 1,
+    'SELF-TEST failed: two requires inside ONE <form> should count as 1 form (region check is dead)'
+);
+$check(
+    $countPartialForms($twoFormFixture) === 2,
+    'SELF-TEST failed: one require in each of two <form>s should count as 2 (region check is dead)'
 );
 
 if ($failures) {
@@ -119,5 +141,5 @@ if ($failures) {
 }
 
 echo "PASS: songbook Add + Edit forms share the ONE songbook-form-fields.php partial "
-    . "(" . count($partialFields) . " fields, require'd {$requireCount}×); no field inlined.\n";
+    . "(" . count($partialFields) . " fields, in {$formsWithPartial} distinct <form> regions); no field inlined.\n";
 exit(0);

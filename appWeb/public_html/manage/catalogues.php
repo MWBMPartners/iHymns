@@ -639,13 +639,18 @@ if ($hasSchema && !empty($catalogues)) {
                                                    from this row's values ($pifValues). Same partial the
                                                    create form + series page use (rule #22). */
                                                 $pifMode = 'edit'; $pifShowIsbnIssn = false; $pifHasOpenLibraryCols = true;
+                                                /* #1765 review — this partial is rendered once PER Collection row
+                                                   (all edit forms are in the DOM at load; Bootstrap .collapse only
+                                                   hides via CSS), so give each row's fields a unique id suffix to
+                                                   avoid duplicate element ids + broken <label for> association. */
+                                                $pifIdSuffix = '-' . (int)$c['Id'];
                                                 $pifValues = [
                                                     'ark_id'                 => $c['ArkId'] ?? '',
                                                     'openlibrary_work_id'    => $c['OpenLibraryWorkId'] ?? '',
                                                     'openlibrary_edition_id' => $c['OpenLibraryEditionId'] ?? '',
                                                 ];
                                                 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
-                                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols, $pifValues);
+                                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols, $pifValues, $pifIdSuffix);
                                             ?>
                                         </div>
                                         <?php endif; ?>

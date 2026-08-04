@@ -278,6 +278,34 @@ if (is_array($reparsed) && count($reparsed) === 1) {
 }
 
 /* =========================================================================
+ * GENERATE HARDENING (#1765 review) — two low-severity export defects the
+ * adversarial review found + fixed. Locked in here so they cannot regress.
+ * ========================================================================= */
+
+/* (a) XML-illegal C0 control chars in a field must be stripped, so the
+   exported document stays reparseable (was: raw 0x0B/0x0C corrupted it). */
+$ctrlXml = marcxmlGenerate(['fields' => ['Name' => "Bad\x0BName\x0CHere"], 'altTitles' => [], 'links' => []], 'songbook');
+mxCheck('generate() output containing a stripped control char re-parses without throwing',
+    (static function () use ($ctrlXml): bool { try { marcxmlParse($ctrlXml); return true; } catch (\Throwable $e) { return false; } })());
+mxCheck('generate() strips XML-1.0-illegal control chars (0x0B/0x0C) from field values',
+    strpos($ctrlXml, "\x0B") === false && strpos($ctrlXml, "\x0C") === false && strpos($ctrlXml, 'BadNameHere') !== false);
+mxCheck('generate() keeps XML-legal whitespace (tab/newline) in field values',
+    strpos(marcxmlGenerate(['fields' => ['Name' => "A\tB"]], 'songbook'), "A\tB") !== false);
+
+/* (b) 041 $a must carry a 3-letter ISO 639-2 code, not the stored 2-letter
+   BCP-47 tag; an unresolvable code omits 041 rather than emit an invalid one. */
+mxCheck("041 \$a resolves stored 'en' to the 3-letter 'eng'",
+    strpos(marcxmlGenerate(['fields' => ['Name' => 'X', 'Language' => 'en']], 'songbook'), '<subfield code="a">eng</subfield>') !== false);
+mxCheck("041 \$a passes an already-3-letter 'eng' through unchanged",
+    strpos(marcxmlGenerate(['fields' => ['Name' => 'X', 'Language' => 'eng']], 'songbook'), '<subfield code="a">eng</subfield>') !== false);
+mxCheck('041 is OMITTED for an unresolvable 2-letter language (no invalid code emitted)',
+    strpos(marcxmlGenerate(['fields' => ['Name' => 'X', 'Language' => 'zz']], 'songbook'), 'tag="041"') === false);
+mxCheck('marcxmlBcp47ToLanguageCode() prefers the bibliographic /B code on a collision (fa -> per)',
+    marcxmlBcp47ToLanguageCode('fa') === 'per');
+mxCheck("language round-trips: exported 041 'eng' imports back to Language 'en'",
+    (marcxmlMapToEntity(marcxmlParse(marcxmlGenerate(['fields' => ['Name' => 'X', 'Language' => 'en']], 'songbook'))[0], 'songbook')['fields']['Language'] ?? null) === 'en');
+
+/* =========================================================================
  * COLLECTION — marcxmlCollection() wraps multiple generated records; the
  * result round-trips through marcxmlParse() to the same count.
  * ========================================================================= */

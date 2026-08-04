@@ -70,8 +70,18 @@ $pifShowIsbnIssn       = isset($pifShowIsbnIssn)       ? (bool)$pifShowIsbnIssn 
 $pifHasOpenLibraryCols = isset($pifHasOpenLibraryCols) ? (bool)$pifHasOpenLibraryCols : false;
 $pifOpen               = isset($pifOpen)               ? (bool)$pifOpen               : false;
 $pifValues             = (isset($pifValues) && is_array($pifValues)) ? $pifValues     : [];
+/* Optional per-instance id suffix (#1765 review). Appended to every element
+   id + its <label for>. Default '' keeps the single-instance ids the create
+   forms and the JS-driven songbook-series/songbook edit modals depend on
+   (openSeriesEditModal() looks up 'edit-ark-id' etc. by exact id). The
+   catalogues page renders THIS partial once per Collection row (an in-flow
+   edit form, not a shared modal), so it passes $pifIdSuffix = '-<Id>' to keep
+   each row's ids unique and its <label for> correctly associated. */
+$pifIdSuffix           = isset($pifIdSuffix) ? (string)$pifIdSuffix : '';
 /* Local helper: HTML-escaped pre-fill value for a field (empty when none). */
 $pifVal = static fn(string $k): string => htmlspecialchars((string)($pifValues[$k] ?? ''), ENT_QUOTES);
+/* Local helper: an element id / label-for, mode-prefixed + optionally suffixed. */
+$pifId = static fn(string $base): string => $pifMode . '-' . $base . $pifIdSuffix;
 ?>
 <details class="mb-2"<?= $pifOpen ? ' open' : '' ?>>
     <summary class="form-label small text-muted" style="cursor:pointer;">
@@ -80,35 +90,35 @@ $pifVal = static fn(string $k): string => htmlspecialchars((string)($pifValues[$
     <div class="row g-2 mt-1">
         <?php if ($pifShowIsbnIssn): ?>
         <div class="col-sm-6">
-            <label class="form-label small" for="<?= $pifMode ?>-isbn">ISBN</label>
+            <label class="form-label small" for="<?= $pifId('isbn') ?>">ISBN</label>
             <input type="text" class="form-control form-control-sm"
-                   name="isbn" id="<?= $pifMode ?>-isbn" value="<?= $pifVal('isbn') ?>"
+                   name="isbn" id="<?= $pifId('isbn') ?>" value="<?= $pifVal('isbn') ?>"
                    maxlength="20" placeholder="978-0-86065-654-1">
         </div>
         <div class="col-sm-6">
-            <label class="form-label small" for="<?= $pifMode ?>-issn">ISSN</label>
+            <label class="form-label small" for="<?= $pifId('issn') ?>">ISSN</label>
             <input type="text" class="form-control form-control-sm"
-                   name="issn" id="<?= $pifMode ?>-issn" value="<?= $pifVal('issn') ?>"
+                   name="issn" id="<?= $pifId('issn') ?>" value="<?= $pifVal('issn') ?>"
                    maxlength="20" placeholder="1234-5678">
         </div>
         <?php endif; ?>
         <div class="col-sm-6">
-            <label class="form-label small" for="<?= $pifMode ?>-ark-id">ARK ID</label>
+            <label class="form-label small" for="<?= $pifId('ark-id') ?>">ARK ID</label>
             <input type="text" class="form-control form-control-sm"
-                   name="ark_id" id="<?= $pifMode ?>-ark-id" value="<?= $pifVal('ark_id') ?>"
+                   name="ark_id" id="<?= $pifId('ark-id') ?>" value="<?= $pifVal('ark_id') ?>"
                    maxlength="80" placeholder="ark:/13960/t8jf3w89z">
         </div>
         <?php if ($pifHasOpenLibraryCols): ?>
         <div class="col-sm-6">
-            <label class="form-label small" for="<?= $pifMode ?>-openlibrary-work-id">OpenLibrary Work ID</label>
+            <label class="form-label small" for="<?= $pifId('openlibrary-work-id') ?>">OpenLibrary Work ID</label>
             <input type="text" class="form-control form-control-sm"
-                   name="openlibrary_work_id" id="<?= $pifMode ?>-openlibrary-work-id" value="<?= $pifVal('openlibrary_work_id') ?>"
+                   name="openlibrary_work_id" id="<?= $pifId('openlibrary-work-id') ?>" value="<?= $pifVal('openlibrary_work_id') ?>"
                    maxlength="20" placeholder="OL102749W">
         </div>
         <div class="col-sm-6">
-            <label class="form-label small" for="<?= $pifMode ?>-openlibrary-edition-id">OpenLibrary Edition ID</label>
+            <label class="form-label small" for="<?= $pifId('openlibrary-edition-id') ?>">OpenLibrary Edition ID</label>
             <input type="text" class="form-control form-control-sm"
-                   name="openlibrary_edition_id" id="<?= $pifMode ?>-openlibrary-edition-id" value="<?= $pifVal('openlibrary_edition_id') ?>"
+                   name="openlibrary_edition_id" id="<?= $pifId('openlibrary-edition-id') ?>" value="<?= $pifVal('openlibrary_edition_id') ?>"
                    maxlength="20" placeholder="OL7357422M">
         </div>
         <?php endif; ?>

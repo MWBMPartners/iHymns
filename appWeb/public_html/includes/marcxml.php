@@ -224,6 +224,45 @@ function marcxmlLanguageCodeToBcp47(string $code3): string
     return MARCXML_LANGUAGE_CODE_MAP[$code3] ?? $code3;
 }
 
+/**
+ * Reverse of marcxmlLanguageCodeToBcp47() — resolve a stored BCP-47 primary
+ * subtag to the MARC 041/008 3-letter ISO 639-2 code for EXPORT. PURE.
+ * (#1765 review.)
+ *
+ * ELI5: MARC 041 $a must be a 3-letter code ("eng"), but iHymns stores the
+ * 2-letter BCP-47 tag ("en"). This turns "en" back into "eng" for export;
+ * an already-3-letter code is handed back unchanged, and anything we can't
+ * resolve to a valid 3-letter code returns '' so the caller can OMIT 041
+ * rather than emit an invalid 2-letter value.
+ *
+ * The inverse table is built from MARCXML_LANGUAGE_CODE_MAP with "first
+ * 3-letter wins per 2-letter"; that table lists the bibliographic (639-2/B)
+ * code first for every 2-way collision (per/fas, chi/zho, geo/kat, arm/hye,
+ * bur/mya, may/msa), so the preferred /B code is what comes back.
+ *
+ * @param string $code A stored language value (BCP-47 tag, or already a
+ *                     3-letter code), any case.
+ * @return string The 3-letter ISO 639-2 code, or '' when it cannot be
+ *                resolved to a valid one.
+ */
+function marcxmlBcp47ToLanguageCode(string $code): string
+{
+    $code = strtolower(trim($code));
+    if ($code === '') return '';
+    /* Already a 3-letter alpha code → honest passthrough (mirrors
+       marcxmlLanguageCodeToBcp47()'s unknown-code fallback). */
+    if (strlen($code) === 3 && ctype_alpha($code)) return $code;
+
+    static $inverse = null;
+    if ($inverse === null) {
+        $inverse = [];
+        foreach (MARCXML_LANGUAGE_CODE_MAP as $three => $two) {
+            if (!isset($inverse[$two])) { $inverse[$two] = $three; }
+        }
+    }
+    return $inverse[$code] ?? '';
+}
+
 /* =========================================================================
  * MARCXML_FIELD_MAPS — the field mapping table AS DATA (marcxmlFieldMap()'s
  * backing store). One entry per publication entity kind
@@ -956,7 +995,17 @@ function marcxmlGenerate(array $entity, string $entityKind): string
         foreach ($subfields as $code => $value) {
             $sf = $doc->createElement('subfield');
             $sf->setAttribute('code', (string)$code);
-            $sf->appendChild($doc->createTextNode($value));
+            /* Strip XML-1.0-illegal C0 control characters before the text
+               node (#1765 review). createTextNode() escapes markup
+               metacharacters (&, <, ") but passes a raw 0x0B/0x0C/etc.
+               through, which then makes saveXML() emit a document that
+               marcxmlParse() (and any conformant MARC importer) rejects with
+               "PCDATA invalid Char value". Tab (0x09), LF (0x0A) and CR
+               (0x0D) are the only C0 chars XML 1.0 permits, so they are kept;
+               everything else in 0x00-0x1F is removed. */
+            $sf->appendChild($doc->createTextNode(
+                preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/u', '', $value) ?? $value
+            ));
             $df->appendChild($sf);
         }
         $record->appendChild($df);
@@ -990,9 +1039,15 @@ function marcxmlGenerate(array $entity, string $entityKind): string
         $addDatafield('035', ' ', ' ', ['a' => '(OCoLC)' . $fields['OclcNumber']]);
     }
 
-    /* 041 language. */
+    /* 041 language — MARC 041 $a is a 3-letter ISO 639-2 code, but iHymns
+       stores the 2-letter BCP-47 tag, so resolve it on the way out (#1765
+       review). If it cannot be resolved to a valid 3-letter code, omit 041
+       rather than emit an invalid 2-letter value. */
     if (!empty($fields['Language'])) {
-        $addDatafield('041', '0', ' ', ['a' => (string)$fields['Language']]);
+        $lang041 = marcxmlBcp47ToLanguageCode((string)$fields['Language']);
+        if ($lang041 !== '') {
+            $addDatafield('041', '0', ' ', ['a' => $lang041]);
+        }
     }
 
     /* 264 publication (city/publisher/year) — MARC21 prefers 264 over the
