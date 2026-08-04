@@ -986,6 +986,11 @@ if ($action !== null) {
                     && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                     $rndPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
+                /* #1769 P3 — single-song call stays on the contentGatingApply
+                   delegate BY DECISION: the delegate IS the #1769 pipeline, and
+                   one call has no viewer to hoist (unlike songbook_export). Do
+                   not "finish migrating" this to accessViewerContext — it would
+                   only re-copy the delegate's bail/try/fail-open surface. */
                 $song    = contentGatingApply($song, $rndUid, $rndPlat, $rndPresence);
                 sendJson(['song' => $song]);
             }
@@ -1161,6 +1166,8 @@ if ($action !== null) {
                     && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                     $sdPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
+                /* #1769 P3 — single-song read stays on the delegate by decision
+                   (see the random-song note): one call, no viewer to hoist. */
                 $song   = contentGatingApply($song, $sdUid, $sdPlat, $sdPresence);
                 /* #1679 — `redirectedFrom` is present ONLY when the requested id
                    was a dead permalink we followed, so the wire shape stays
@@ -1265,14 +1272,27 @@ if ($action !== null) {
                    in one request. A per-song gate that the bulk endpoint beside
                    it doesn't honour is not a gate.
 
-                   contentGatingApply() is the same registry-backed resolver the
+                   The pipeline is the same registry-backed resolver the
                    single-song path uses (rule #28B — never a second matrix), and
                    fail-opens per song, so a malformed row degrades to unchanged
                    rather than emptying the export. The presence token rides along
                    for the Service-Mode CCLI unlock (rule #26), read from the same
-                   cookie and shape-validated exactly as :857/:974 do. */
+                   cookie and shape-validated exactly as :857/:974 do.
+
+                   #1769 P3 — this loop builds the #1769 viewer ONCE (it is
+                   song-independent) and maps accessApplySong per song, instead of
+                   contentGatingApply rebuilding the whole viewer
+                   (resolveEffectiveTier's recursive CTE + userHasValidCcli +
+                   licences + presence + api-key probe) N times — a pure perf win.
+                   Byte-identical: same (uid, plat, pres) → same viewer →
+                   accessApplySong(s, V) === contentGatingApply(s, …) per song
+                   (proven by test-gating-equivalence). apiKeyScopes stays the
+                   default null so the content:gated bypass is self-resolved once,
+                   exactly as the per-song delegate did. */
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
-                if (function_exists('contentGatingApply')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_context.php';
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_resolver.php';
+                if (function_exists('accessViewerContext') && function_exists('accessApplySong')) {
                     $exAuth2 = $exAuth ?? getAuthenticatedUser();
                     $exUid2  = $exAuth2 ? (int)$exAuth2['Id'] : null;
                     $exPlat2 = $exPlat ?? trim((string)($_GET['platform'] ?? 'PWA'));
@@ -1281,10 +1301,22 @@ if ($action !== null) {
                         && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                         $exPres = (string)$_COOKIE['ihymns_sf_presence_token'];
                     }
-                    $sbSongs = array_map(
-                        static fn(array $s): array => contentGatingApply($s, $exUid2, $exPlat2, $exPres),
-                        $sbSongs
-                    );
+                    /* Viewer built ONCE, in try/catch: a bypass/tier-resolution
+                       throw fails open for the whole export (leave $sbSongs
+                       unstripped) + logs — the delegate's per-song fail-open,
+                       collapsed to all-or-nothing (a mid-loop transient can no
+                       longer yield a mixed export; the deterministic output is
+                       unchanged). Per-song accessApplySong keeps its own
+                       try/catch, so a malformed row still degrades alone. */
+                    try {
+                        $exViewer = accessViewerContext($exUid2, $exPlat2, $exPres);
+                        $sbSongs  = array_map(
+                            static fn(array $s): array => accessApplySong($s, $exViewer),
+                            $sbSongs
+                        );
+                    } catch (\Throwable $_e) {
+                        error_log('[content_gating] apply failed: ' . $_e->getMessage());
+                    }
                 }
             }
             sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
@@ -2025,6 +2057,10 @@ if ($action !== null) {
                             && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                             $audioPres = (string)$_COOKIE['ihymns_sf_presence_token'];
                         }
+                        /* #1769 P3 — the bulk_audio gate stays on the delegate by
+                           decision: it resolves ONE 'audio' verdict per request
+                           (emptying the whole manifest), not per row, so there is
+                           no viewer to hoist. Do not migrate this to accessMediaAllowed. */
                         if (!contentGatingMediaAllowed('audio', $audioUid, $audioPres)) {
                             $manifest = [];
                         }
