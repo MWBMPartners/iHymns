@@ -7976,7 +7976,13 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'admin_restrictions':
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: this LIST action was raw-role-gated while its
+               sibling create/delete restriction actions already use
+               userHasEntitlement('manage_content_restrictions', …) — the same
+               entitlement the /manage/restrictions page and nav advertise. Align
+               it so a role that clears the page also clears its list API and vice
+               versa. Behaviour-neutral at the default entitlements. */
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -10554,14 +10560,36 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $targetUserId = (int)($body['user_id'] ?? 0);
             $newTier = trim($body['tier'] ?? '');
-            $validTiers = ['public', 'free', 'ccli', 'premium', 'pro'];
 
-            if ($targetUserId <= 0 || !in_array($newTier, $validTiers)) {
-                sendJson(['error' => 'Valid user_id and tier (public/free/ccli/premium/pro) required.'], 400);
+            if ($targetUserId <= 0 || $newTier === '') {
+                sendJson(['error' => 'Valid user_id and tier required.'], 400);
                 break;
             }
 
             $db = getDbMysqli();
+
+            /* #1769 P0, OV-10: validate the tier against the LIVE tblAccessTiers
+               catalogue, not a hardcoded five-name list. A curator-created tier is
+               assignable from /manage/users (which validates against the live
+               table), so the API must accept it too — the old list silently
+               rejected every custom tier, the same operation with two different
+               validity rules. Degrade-safe (rule #28C): if the catalogue can't be
+               read, fall back to the reserved names rather than throwing. */
+            $tierValid = false;
+            try {
+                $tchk = $db->prepare('SELECT 1 FROM tblAccessTiers WHERE Name = ? LIMIT 1');
+                $tchk->bind_param('s', $newTier);
+                $tchk->execute();
+                $tierValid = $tchk->get_result()->num_rows > 0;
+                $tchk->close();
+            } catch (\Throwable $_e) {
+                $tierValid = in_array($newTier, ['public', 'free', 'ccli', 'premium', 'pro'], true);
+            }
+            if (!$tierValid) {
+                sendJson(['error' => "Unknown access tier '{$newTier}'."], 400);
+                break;
+            }
+
             $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = NOW() WHERE Id = ?');
             $stmt->bind_param('si', $newTier, $targetUserId);
             $stmt->execute();
@@ -13750,7 +13778,11 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: gate on the SAME entitlement the /manage/tiers page
+               and its nav entry use (manage_access_tiers), not a raw role list —
+               otherwise narrowing that entitlement locks the page but not this API.
+               Behaviour-neutral at the default entitlements (admin+global_admin). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -13858,7 +13890,8 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: entitlement-gated to match the page (see admin_tier_create). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -13982,7 +14015,8 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: entitlement-gated to match the page (see admin_tier_create). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
