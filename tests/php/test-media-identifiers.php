@@ -112,6 +112,24 @@ const MI_EXPECTED_PUBLICATION_TYPES = [
     'ark', 'openlibrary-work', 'openlibrary-edition', 'isbn', 'issn',
 ];
 
+/** Storage-column WIDTH each publication identifier binds into, INDEPENDENTLY
+ *  transcribed from schema.sql (NOT read from the code map) — the same
+ *  three-way-agreement discipline the MI_EXPECTED_* key lists use. The code
+ *  map's `maxlen` MUST equal this (rule #19 byte-mirror) so a format-valid
+ *  but over-length value is rejected by mediaIdentifierPublicationClean()
+ *  BEFORE it overflows the column under STRICT mysqli (#1765 review). Each
+ *  entry names the representative table the width is read from (ArkId/Isbn/
+ *  OpenLibrary* live on tblSongbooks; Issn is the one identifier that is
+ *  absent from tblSongbooks and lives on tblSongbookSeries — see the schema
+ *  comments and the epic plan's "Adversarial notes"). */
+const MI_EXPECTED_PUBLICATION_MAXLEN = [
+    'ark'                 => ['ArkId',                'tblSongbooks',      80],
+    'openlibrary-work'    => ['OpenLibraryWorkId',    'tblSongbooks',      20],
+    'openlibrary-edition' => ['OpenLibraryEditionId', 'tblSongbooks',      20],
+    'isbn'                => ['Isbn',                 'tblSongbooks',      20],
+    'issn'                => ['Issn',                 'tblSongbookSeries', 20],
+];
+
 /**
  * PURE core: diff an actual key list against an expected key list, returning
  * human-readable mismatch strings (empty = clean). Both mutation self-tests
@@ -336,6 +354,28 @@ function miColumnIsVarchar(string $schemaSql, string $table, string $column): ?b
     return strtoupper($colMatch[1]) === 'VARCHAR';
 }
 
+/**
+ * PURE core: the declared VARCHAR width of $table.$column in $schemaSql, or
+ * null when the column (or its VARCHAR width) can't be found. Sibling of
+ * miColumnIsVarchar() — shares the same "first `) ENGINE=` bounds the table
+ * block" bound, proven against the same tables. Used by the maxlen byte-mirror
+ * assertion + its FAILS-HIGH mutation self-test below (#1765 review).
+ */
+function miColumnVarcharWidth(string $schemaSql, string $table, string $column): ?int
+{
+    if (!preg_match(
+        '/CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+' . preg_quote($table, '/') . '\s*\((.*?)\)\s*ENGINE\s*=/is',
+        $schemaSql,
+        $tableMatch
+    )) {
+        return null;
+    }
+    if (!preg_match('/\b' . preg_quote($column, '/') . '\s+VARCHAR\s*\(\s*(\d+)\s*\)/i', $tableMatch[1], $colMatch)) {
+        return null;
+    }
+    return (int)$colMatch[1];
+}
+
 $idScopeIsVarchar = miColumnIsVarchar($schemaSql, 'tblSongExternalIds', 'IdScope');
 $idTypeIsVarchar  = miColumnIsVarchar($schemaSql, 'tblSongExternalIds', 'IdType');
 
@@ -414,6 +454,72 @@ if (mediaIdentifierPublicationValidate('isbn', '   ') !== false) {
 }
 
 /* =========================================================================
+ * CLEAN + COLUMN-WIDTH GUARD — mediaIdentifierPublicationClean() (#1765
+ * review). This is the storage-ready wrapper the three admin pages' create/
+ * update + MARCXML-import handlers call. Beyond the validate truth table
+ * above it must ALSO reject a value that is format-VALID but longer than its
+ * storage column (an unbounded ARK name part / OpenLibrary digit run), so a
+ * STRICT-mysqli overflow can never white-screen the handler. Each row is
+ * [slug, raw, expectValue, expectError] — both the accept AND the reject
+ * direction for the SAME slug at the length boundary (rule #34).
+ * ========================================================================= */
+$overArk  = 'ark:/13960/' . str_repeat('t', 100);              // valid shape, 111 chars > 80
+$overOlw  = 'OL' . str_repeat('9', 30) . 'W';                  // valid shape, 33 chars  > 20
+$publicationCleanCases = [
+    /* blank / whitespace → null value, NO error (means "not recorded") */
+    ['ark',              '',                    null,                   false],
+    ['ark',              '   ',                 null,                   false],
+    /* valid + within width → the trimmed value, no error */
+    ['ark',              ' ark:/13960/t8jf3w89z ', 'ark:/13960/t8jf3w89z', false],
+    ['isbn',             '019852663X',          '019852663X',           false],
+    ['openlibrary-work', 'OL102749W',           'OL102749W',            false],
+    /* format-INVALID → null value + error */
+    ['ark',              'not-an-ark',          null,                   true],
+    ['isbn',             '12345',               null,                   true],
+    /* format-VALID but OVER the column width → null value + error (the
+       #1765 fix — without the maxlen guard these return the value + no error
+       and overflow the column). */
+    ['ark',              $overArk,              null,                   true],
+    ['openlibrary-work', $overOlw,              null,                   true],
+];
+foreach ($publicationCleanCases as [$slug, $raw, $expectValue, $expectError]) {
+    $res = mediaIdentifierPublicationClean($slug, $raw);
+    /* Compare via array_key_exists, NOT `?? sentinel` — `value` is legitimately
+       null on the blank / invalid / over-length cases, and null-coalescing
+       would mask a present-null as "missing". */
+    $gotValue = array_key_exists('value', $res) ? $res['value'] : '__missing__';
+    if ($gotValue !== $expectValue) {
+        $failures[] = "mediaIdentifierPublicationClean('{$slug}', " . var_export($raw, true) . ")['value'] = "
+                    . var_export($gotValue, true) . ', expected ' . var_export($expectValue, true);
+    }
+    $gotError = ($res['error'] ?? null) !== null;
+    if ($gotError !== $expectError) {
+        $failures[] = "mediaIdentifierPublicationClean('{$slug}', " . var_export($raw, true) . ") error-present = "
+                    . var_export($gotError, true) . ', expected ' . var_export($expectError, true)
+                    . ($gotError ? " (error: {$res['error']})" : '');
+    }
+}
+
+/* maxlen BYTE-MIRROR — the code map's `maxlen` for each publication
+   identifier must equal the storage column's VARCHAR width in schema.sql,
+   three-way (code map == this test's independently-transcribed expectation ==
+   schema.sql), so the guard above can never be silently mis-tuned to a width
+   that does not match the real column (rule #19). */
+foreach (MI_EXPECTED_PUBLICATION_MAXLEN as $slug => [$col, $table, $width]) {
+    $def     = mediaIdentifierPublicationTypes()[$slug] ?? null;
+    $codeMax = $def['maxlen'] ?? null;
+    if ($codeMax !== $width) {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}']['maxlen'] = " . var_export($codeMax, true)
+                    . " but this test expects {$width} (the {$table}.{$col} column width) — must be byte-identical (rule #19)";
+    }
+    $schemaWidth = miColumnVarcharWidth($schemaSql, $table, $col);
+    if ($schemaWidth !== $width) {
+        $failures[] = "schema.sql {$table}.{$col} is VARCHAR(" . var_export($schemaWidth, true)
+                    . ") but this test expects VARCHAR({$width}) — the code map's maxlen mirror would be validating against the wrong width";
+    }
+}
+
+/* =========================================================================
  * MUTATION SELF-TESTS (rule #34) — run on EVERY invocation, entirely in
  * memory. A guard that has never been proven able to fail is not trustworthy.
  * ========================================================================= */
@@ -467,6 +573,21 @@ if ($mutatedSchema === null || $mutatedSchema === $schemaSql) {
     $mutatedResult = miColumnIsVarchar($mutatedSchema, 'tblSongExternalIds', 'IdScope');
     if ($mutatedResult !== false) {
         $mutationFailures[] = 'schema VARCHAR-not-ENUM FAILS-HIGH self-test did not go red — mutating IdScope to ENUM in memory was not detected';
+    }
+}
+
+/* --- maxlen width extractor: FAILS-HIGH. Mutate a COPY of schema.sql,
+   shrinking tblSongbooks.ArkId from VARCHAR(80) to VARCHAR(40), and confirm
+   miColumnVarcharWidth() now reads 40 (not the real 80) — proving the byte-
+   mirror assertion above can actually go red on a real width drift. --- */
+$mutatedWidth = preg_replace('/(ArkId\s+)VARCHAR\(80\)/', '$1VARCHAR(40)', $schemaSql, 1);
+if ($mutatedWidth === null || $mutatedWidth === $schemaSql) {
+    $mutationFailures[] = 'maxlen width mutation self-test could not run — the "ArkId VARCHAR(80)" text pattern was not found to mutate';
+} else {
+    $mutatedW = miColumnVarcharWidth($mutatedWidth, 'tblSongbooks', 'ArkId');
+    if ($mutatedW !== 40) {
+        $mutationFailures[] = 'maxlen width FAILS-HIGH self-test did not go red — shrinking ArkId to VARCHAR(40) in memory read '
+                            . var_export($mutatedW, true) . ', expected 40';
     }
 }
 

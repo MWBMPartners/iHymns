@@ -1236,8 +1236,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $imPublisher = mb_substr((string)($parsed['fields']['Publisher'] ?? ''), 0, 255) ?: null;
                 $imYear      = mb_substr((string)($parsed['fields']['PublicationYear'] ?? ''), 0, 50) ?: null;
                 $imLang      = mb_substr((string)($parsed['fields']['Language'] ?? ''), 0, 35) ?: null;
-                $imLccn      = mb_substr((string)($parsed['fields']['Lccn'] ?? ''), 0, 30) ?: null;
-                $imOclc      = mb_substr((string)($parsed['fields']['OclcNumber'] ?? ''), 0, 30) ?: null;
+                $imLccn      = mb_substr((string)($parsed['fields']['Lccn'] ?? ''), 0, 20) ?: null;   /* tblSongbooks.Lccn VARCHAR(20) — cap matches the column, not 30 (#1765 review) */
+                $imOclc      = mb_substr((string)($parsed['fields']['OclcNumber'] ?? ''), 0, 30) ?: null; /* OclcNumber VARCHAR(30) */
                 $imIsbn      = $ids['Isbn']; $imArk = $ids['ArkId'];
 
                 $colour = pickAutoSongbookColour($db, $abbr);

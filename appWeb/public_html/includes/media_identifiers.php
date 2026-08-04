@@ -504,19 +504,25 @@ function mediaIdentifierRoyaltyAuthorities(): array
  * ========================================================================= */
 const PUBLICATION_IDENTIFIER_TYPES = [
     'ark' => [
-        'label' => 'ARK', 'storage' => 'column', 'column' => 'ArkId', 'authorityCode' => null,
+        /* `maxlen` mirrors the storage column width (rule #19) so an
+           over-length-but-format-valid value is rejected by
+           mediaIdentifierPublicationClean() BEFORE it reaches a bind and
+           overflows the column under STRICT mysqli (#1765 review). ARK's
+           name part is unbounded in the format regex, so this is the real
+           guard. */
+        'label' => 'ARK', 'storage' => 'column', 'column' => 'ArkId', 'maxlen' => 80, 'authorityCode' => null,
         'authority' => 'ARK Alliance / California Digital Library',
         'validate' => '#^ark:/\d{5,9}/[!-~]+$#',
         'url' => 'https://n2t.net/%s',
     ],
     'openlibrary-work' => [
-        'label' => 'OpenLibrary Work', 'storage' => 'column', 'column' => 'OpenLibraryWorkId', 'authorityCode' => null,
+        'label' => 'OpenLibrary Work', 'storage' => 'column', 'column' => 'OpenLibraryWorkId', 'maxlen' => 20, 'authorityCode' => null,
         'authority' => 'Internet Archive / Open Library',
         'validate' => '/^OL\d+W$/',
         'url' => 'https://openlibrary.org/works/%s',
     ],
     'openlibrary-edition' => [
-        'label' => 'OpenLibrary Edition', 'storage' => 'column', 'column' => 'OpenLibraryEditionId', 'authorityCode' => null,
+        'label' => 'OpenLibrary Edition', 'storage' => 'column', 'column' => 'OpenLibraryEditionId', 'maxlen' => 20, 'authorityCode' => null,
         'authority' => 'Internet Archive / Open Library',
         'validate' => '/^OL\d+M$/',
         'url' => 'https://openlibrary.org/books/%s',
@@ -531,13 +537,13 @@ const PUBLICATION_IDENTIFIER_TYPES = [
        has for 'isrc'/'ccli'. includes/marcxml.php does this cleaning inline
        for the one caller this commit ships. */
     'isbn' => [
-        'label' => 'ISBN', 'storage' => 'column', 'column' => 'Isbn', 'authorityCode' => null,
+        'label' => 'ISBN', 'storage' => 'column', 'column' => 'Isbn', 'maxlen' => 20, 'authorityCode' => null,
         'authority' => 'International ISBN Agency',
         'validate' => '/^(?:\d{9}[\dX]|\d{13})$/',
         'url' => null,
     ],
     'issn' => [
-        'label' => 'ISSN', 'storage' => 'column', 'column' => 'Issn', 'authorityCode' => null,
+        'label' => 'ISSN', 'storage' => 'column', 'column' => 'Issn', 'maxlen' => 20, 'authorityCode' => null,
         'authority' => 'ISSN International Centre',
         'validate' => '/^\d{7}[\dX]$/',
         'url' => 'https://portal.issn.org/resource/ISSN/%s',
@@ -547,7 +553,7 @@ const PUBLICATION_IDENTIFIER_TYPES = [
 /**
  * The whole publication-identifier registry.
  *
- * @return array<string,array{label:string,storage:string,column:?string,authorityCode:?string,authority:string,validate:?string,url:?string}>
+ * @return array<string,array{label:string,storage:string,column:?string,maxlen?:int,authorityCode:?string,authority:string,validate:?string,url:?string}>
  */
 function mediaIdentifierPublicationTypes(): array
 {
@@ -647,6 +653,22 @@ function mediaIdentifierPublicationClean(string $slug, string $raw): array
     if (!mediaIdentifierPublicationValidate($slug, $value)) {
         $label = PUBLICATION_IDENTIFIER_TYPES[$slug]['label'] ?? $slug;
         return ['value' => null, 'error' => "'{$value}' doesn't look like a valid {$label}."];
+    }
+    /* Column-width guard (#1765 review). A value can be format-VALID yet longer
+       than its storage column: the ARK name part `[!-~]+` and the OpenLibrary
+       `OL\d+W`/`OL\d+M` digit runs are unbounded in the `validate` regex, so a
+       200-char ARK passes validation but overflows `ArkId VARCHAR(80)` at
+       bind time — and mysqli runs STRICT (rule #19), so that overflow THROWS
+       rather than truncating, white-screening the create/update handler. We
+       reject over-length here (→ a friendly error on the form, or a skip into
+       the MARCXML import's "skipped" note, like any other invalid value)
+       BEFORE it ever reaches bind_param(). `maxlen` mirrors the column width
+       declared in schema.sql; an entry without one (none today) is unbounded.
+       @link https://www.php.net/manual/en/mysqli-driver.report-mode.php  STRICT throws, not truncates */
+    $maxlen = PUBLICATION_IDENTIFIER_TYPES[$slug]['maxlen'] ?? null;
+    if ($maxlen !== null && mb_strlen($value) > $maxlen) {
+        $label = PUBLICATION_IDENTIFIER_TYPES[$slug]['label'] ?? $slug;
+        return ['value' => null, 'error' => "That {$label} is too long (max {$maxlen} characters)."];
     }
     return ['value' => $value, 'error' => null];
 }
