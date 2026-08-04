@@ -66,6 +66,13 @@ check('https://hymnalplus.com/song/123',                              'hymnal-pl
 check('https://www.hymntime.com/tch/htm/a/m/a/amazingg.htm',          'cyber-hymnal');
 check('https://archive.org/details/hymns123',                         'internet-archive');
 check('https://openlibrary.org/books/OL123M',                         'open-library');
+/* Google Books (#1765 Feature 4) — both real URL shapes; the RULES fallback
+   mirrors the tblExternalLinkPatterns seed. */
+check('https://books.google.com/books?id=abc123',                     'google-books');
+check('https://books.google.co.uk/books?id=abc123',                   'google-books');
+check('https://books.google.com.au/books?id=abc123',                  'google-books');
+check('https://www.google.com/books/edition/Some_Book/abc123',        'google-books'); /* subdomain-suffix + path */
+check('https://google.de/books/edition/x/y',                          'google-books');
 check('https://www.worldcat.org/oclc/12345',                          'oclc-worldcat');
 check('https://viaf.org/viaf/123/',                                   'viaf');
 check('https://id.loc.gov/authorities/names/n12345',                  'loc-name-authority');
@@ -103,6 +110,10 @@ check('not a url',                                                    null);
 check('   https://en.wikipedia.org/wiki/Foo  ',                       'wikipedia'); /* trimmed */
 check('https://example.com/random',                                   null);
 check('https://notyoutube.com/watch?v=abc',                           null);         /* boundary check */
+/* Google Books path-discrimination: plain google.com (no /books/edition/)
+   must NOT match — we only claim the Books URL shapes, not all of Google. */
+check('https://www.google.com/search?q=hymns',                        null);
+check('https://google.com/',                                          null);
 
 /* Path-discriminated rules: musicbrainz.org root URL has no slug. */
 check('https://musicbrainz.org/',                                     null);
