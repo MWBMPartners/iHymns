@@ -65,6 +65,39 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'gating_rules.php';     /* gatingRu
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';         /* userHasValidCcli() — the ONE CCLI resolver, #1668 */
 
 /**
+ * Media-kind → tier-capability-action map — the ONE definition (#1769 P0, OV-11).
+ *
+ * ELI5: "which permission does this kind of file need?" An audio file needs
+ * `play_audio`, a MIDI needs `download_midi`, and sheet music + MusicXML both
+ * need `download_pdf`. An unrecognised kind needs nothing (it stays visible).
+ *
+ * DETAILED / WHY THIS EXISTS: this mapping was copy-pasted in THREE places —
+ * the payload strip in contentGatingApply(), the byte gate in
+ * contentGatingMediaAllowed(), and the HTML song page
+ * (includes/pages/song.php) — each "kept in sync" by a comment citing the
+ * others' line numbers, which had already drifted (rule #35: a keep-in-sync
+ * comment is the failure, not the fix). All three now call THIS. It returns the
+ * cap-action string checkTierAccess() understands, or null for an unrecognised
+ * kind meaning "no capability gates it — leave the row". Presence-token
+ * OR-grants (a congregant may hear audio without the tier cap) stay at each
+ * call site, since they differ per surface — this map is only the
+ * kind→capability half they all share.
+ *
+ * @param string $kind A tblSongMedia.Kind value (audio|midi|sheet-music|musicxml|…).
+ * @return 'play_audio'|'download_midi'|'download_pdf'|null
+ */
+function contentGatingMediaKindCap(string $kind): ?string
+{
+    switch ($kind) {
+        case 'audio':       return 'play_audio';
+        case 'midi':        return 'download_midi';
+        case 'sheet-music': return 'download_pdf';
+        case 'musicxml':    return 'download_pdf'; /* notation download = PDF family */
+        default:            return null;           /* unknown kind — no capability gates it */
+    }
+}
+
+/**
  * Is server-side content gating switched ON for this environment?
  *
  * The master gate for everything in this module. When this is false EVERY
@@ -268,17 +301,19 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA',
            the tier can't use (rather than null its URL) so the affordance
            disappears entirely. Kinds: audio | sheet-music | midi | musicxml. */
         if (!empty($song['media']) && is_array($song['media'])) {
+            /* kind→cap via the ONE shared map (contentGatingMediaKindCap, OV-11);
+               each cap resolves to the tier boolean already computed above. */
+            $capBool = [
+                'play_audio'    => $canPlayAudio,
+                'download_midi' => $canDownloadMidi,
+                'download_pdf'  => $canDownloadPdf,
+            ];
             $song['media'] = array_values(array_filter(
                 $song['media'],
-                static function ($m) use ($canPlayAudio, $canDownloadMidi, $canDownloadPdf): bool {
+                static function ($m) use ($capBool): bool {
                     $kind = is_array($m) ? (string)($m['kind'] ?? '') : '';
-                    switch ($kind) {
-                        case 'audio':       return $canPlayAudio;
-                        case 'midi':        return $canDownloadMidi;
-                        case 'sheet-music': return $canDownloadPdf;
-                        case 'musicxml':    return $canDownloadPdf;  /* notation download = PDF family */
-                        default:            return true;             /* unknown kind — leave it */
-                    }
+                    $cap  = contentGatingMediaKindCap($kind);
+                    return $cap === null ? true : ($capBool[$cap] ?? true);
                 }
             ));
         }
@@ -391,13 +426,12 @@ function contentGatingMediaAllowed(string $kind, ?int $userId, ?string $presence
             return !empty($r['allowed']);
         };
 
-        switch ($kind) {
-            case 'audio':       return $can('play_audio') || $presenceCcli;
-            case 'midi':        return $can('download_midi');
-            case 'sheet-music': return $can('download_pdf');
-            case 'musicxml':    return $can('download_pdf');  /* notation download = PDF family */
-            default:            return true;                  /* unknown kind — leave it */
-        }
+        /* kind→cap via the ONE shared map (OV-11). Audio keeps its Service-Mode
+           presence OR-grant: a present congregant may hear audio even without
+           the tier cap (this OR is byte-gate-specific, so it stays here). */
+        $cap = contentGatingMediaKindCap($kind);
+        if ($cap === null) { return true; }  /* unknown kind — leave it */
+        return $can($cap) || ($cap === 'play_audio' && $presenceCcli);
     } catch (\Throwable $_e) {
         /* Fail open + log, matching contentGatingApply()'s (C) branch. */
         error_log('[content_gating] media gate failed: ' . $_e->getMessage());

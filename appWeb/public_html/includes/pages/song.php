@@ -332,21 +332,24 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
 
             /* The "Recordings & resources" section (inline <audio> ~1202, download
                chips ~1237) renders directly from $song['media']; drop the rows the
-               tier can't use — SAME kind→cap mapping as content_gating.php:214-228 so
-               the page + the API agree. audio→play_audio, midi→download_midi,
+               tier can't use, keyed by the ONE shared kind→cap map
+               contentGatingMediaKindCap() (content_gating.php, required at ~:270
+               above) so the page and the API can never diverge (#1769 P0, OV-11 —
+               this used to be a third hand-copied switch held in sync by a
+               stale line-number comment). audio→play_audio, midi→download_midi,
                sheet-music/musicxml→download_pdf; unknown kinds are left untouched. */
             if (!empty($song['media']) && is_array($song['media'])) {
+                $capBool = [
+                    'play_audio'    => $audioOk,
+                    'download_midi' => $midiOk,
+                    'download_pdf'  => $sheetOk,
+                ];
                 $song['media'] = array_values(array_filter(
                     $song['media'],
-                    static function ($m) use ($audioOk, $midiOk, $sheetOk): bool {
+                    static function ($m) use ($capBool): bool {
                         $kind = is_array($m) ? (string)($m['kind'] ?? '') : '';
-                        switch ($kind) {
-                            case 'audio':       return $audioOk;
-                            case 'midi':        return $midiOk;
-                            case 'sheet-music': return $sheetOk;
-                            case 'musicxml':    return $sheetOk;  /* notation download = PDF family */
-                            default:            return true;       /* unknown kind — leave it */
-                        }
+                        $cap  = contentGatingMediaKindCap($kind);
+                        return $cap === null ? true : ($capBool[$cap] ?? true);
                     }
                 ));
             }
