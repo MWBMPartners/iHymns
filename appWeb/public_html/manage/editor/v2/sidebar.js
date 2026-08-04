@@ -1,9 +1,10 @@
 /* ==========================================================================
  *  sidebar.js — the v2 Song Editor song-list sidebar (#1200, Phase 5)
  *
- *  Loads the lightweight song index (api2.php load_index → SongData slim index)
- *  once, renders a searchable list, and calls onSelect(id) when a song is
- *  clicked. A "Select" mode swaps the rows for checkboxes so the shell can run
+ *  Loads the lightweight song index once (api2.php load_index → SongData's slim
+ *  index, plus the real songbook catalogue), renders a searchable list, and calls
+ *  onSelect(id) when a song is clicked. A "Select" mode swaps the rows for
+ *  checkboxes so the shell can run
  *  bulk ops on a selection (onSelectionChange reports the count). Client-side
  *  filter + a render cap keep a multi-thousand-song corpus responsive.
  *
@@ -22,8 +23,15 @@ export function mountSidebar(container, opts) {
     const toast = opts.toast || function () {};
 
     let songs = [];          // slim index: [{ id, number, title, songbook, songbookName, ... }]
+    /* The AUTHORITATIVE songbook catalogue, straight from load_index (#1679 A2):
+       [{ abbr, name }] for every book, INCLUDING books with no songs. Empty until
+       the index lands — songbookList() falls back to the index-derived set until
+       then, and on any older server that does not send the key. */
+    let books = [];
     let activeId = null;
     let filter = '';
+    let bookFilter = '';     // '' = all songbooks (#1628 item 2)
+    let sortMode = 'title';  // 'title' | 'number' | 'songbook'
     let selectMode = false;
     const selected = new Set();
 
@@ -32,10 +40,38 @@ export function mountSidebar(container, opts) {
 
     const head = document.createElement('div');
     head.className = 'p-2 border-bottom';
+    /* Songbook filter + sort order (#1628 item 2, restoring v1's #251).
+       ELI5: pick one songbook, and choose how the list is ordered.
+       Detail: v2 shipped with text search and a 300-row render cap only. That is
+       not a substitute for "browse songbook X by number" — the core curatorial
+       motion of working through a book song by song. Searching "412" matches any
+       song whose title or number contains 412, in any book, and the cap then
+       hides the rest; filtering to one book and sorting by number gives the
+       actual sequence. */
+    const bookSel = document.createElement('select');
+    bookSel.className = 'form-select form-select-sm mb-1';
+    bookSel.setAttribute('aria-label', 'Filter by songbook');
+    bookSel.title = 'Filter songs by songbook';
+
     const search = document.createElement('input');
     search.type = 'search';
     search.className = 'form-control form-control-sm';
     search.placeholder = 'Search songs…';
+
+    const sortSel = document.createElement('select');
+    sortSel.className = 'form-select form-select-sm mt-1';
+    sortSel.setAttribute('aria-label', 'Sort songs by');
+    sortSel.title = 'Sort order';
+    [
+        ['title',    'Sort by Title (A–Z)'],
+        ['number',   'Sort by Number'],
+        ['songbook', 'Sort by Songbook, then Number'],
+    ].forEach(([value, label]) => {
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = label;
+        sortSel.appendChild(o);
+    });
 
     const controls = document.createElement('div');
     controls.className = 'd-flex align-items-center gap-1 mt-1';
@@ -54,7 +90,7 @@ export function mountSidebar(container, opts) {
     noneBtn.className = 'btn btn-sm btn-outline-secondary py-0 d-none';
     noneBtn.textContent = 'None';
     controls.append(count, allBtn, noneBtn, selBtn);
-    head.append(search, controls);
+    head.append(bookSel, search, sortSel, controls);
 
     const listEl = document.createElement('div');
     listEl.className = 'list-group list-group-flush flex-grow-1 overflow-auto';
@@ -65,14 +101,108 @@ export function mountSidebar(container, opts) {
         const hay = ((s.songbook || '') + ' ' + (s.number != null ? s.number : '') + ' ' + (s.title || '')).toLowerCase();
         return hay.indexOf(q) !== -1;
     }
+    /**
+     * Comparators ported from v1 (editor.js:287-296) so the two editors order a
+     * list identically — a curator switching editors mid-task should not see the
+     * same book in a different sequence.
+     *
+     * `Number(x) || 0` is load-bearing, not laziness: song numbers arrive from
+     * the slim index as strings, and a plain string compare puts "10" before
+     * "2", which silently mis-orders every book. `|| 0` also folds null/''
+     * (unnumbered songs, common in unofficial books) to the top rather than
+     * NaN-ing the comparator into an unstable order.
+     *
+     * `localeCompare(..., { sensitivity: 'base' })` makes the title sort
+     * case- and accent-insensitive, so "Ábide" files with "Abide".
+     * https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String/localeCompare
+     */
+    function compare(a, b) {
+        if (sortMode === 'number') {
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        }
+        if (sortMode === 'songbook') {
+            const sb = (a.songbook || '').localeCompare(b.songbook || '', undefined, { sensitivity: 'base' });
+            if (sb !== 0) { return sb; }
+            return (Number(a.number) || 0) - (Number(b.number) || 0);
+        }
+        return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+    }
+
     function filtered() {
         const q = filter.trim().toLowerCase();
-        return songs.filter((s) => matches(s, q));
+        /* Filter BEFORE sort: the songbook filter is what makes the RENDER_CAP
+           survivable on a multi-thousand-song corpus — sorting the whole index
+           and then capping would still show the wrong 300 rows. */
+        return songs
+            .filter((s) => (!bookFilter || s.songbook === bookFilter) && matches(s, q))
+            .sort(compare);
     }
     function notifySelection() { onSelectionChange(selected.size, Array.from(selected)); }
     function updateCount(list, shownLen) {
         count.textContent = (selectMode && selected.size ? selected.size + ' selected · ' : '')
             + list.length + (list.length > shownLen ? ' (showing ' + shownLen + ')' : '');
+    }
+
+    /* The distinct songbooks PRESENT IN THE LOADED INDEX. Hoisted to a local so
+       the filter dropdown and songbookList()'s fallback derive from ONE
+       implementation — the alternative was a second copy of this loop, which is
+       the duplication the modularity rule exists to stop. (Until #1679 A2 this
+       WAS the exported getSongbooks(); see songbookList() below for why "books
+       with songs in them" turned out to be the wrong answer to "which songbooks
+       can I move a song into".) */
+    function derivedSongbookList() {
+        const seen = Object.create(null);
+        const out = [];
+        songs.forEach((s) => {
+            const abbr = s.songbook || '';
+            if (abbr && !seen[abbr]) { seen[abbr] = 1; out.push({ abbr: abbr, name: s.songbookName || abbr }); }
+        });
+        out.sort((a, b) => a.abbr.localeCompare(b.abbr));
+        return out;
+    }
+
+    /**
+     * "Which songbooks exist?" — the one answer this module gives (#1679 A2).
+     *
+     * ELI5: prefer the real list of books the server sent; if it has not arrived,
+     * fall back to the books the loaded songs happen to belong to.
+     *
+     * Detail: derivedSongbookList() answers a DIFFERENT question — "which books
+     * are represented in the loaded index" — and for the sidebar's own filter
+     * that is exactly right. It is wrong for the Metadata tab's move target and
+     * for the New-song modal, because a book with ZERO songs contributes no row:
+     * a curator who had just created a songbook could not put the first song in
+     * it, which v1 has never had a problem with (its load_index returns the real
+     * catalogue). The fallback is not defensive padding — it is what keeps the
+     * sidebar usable in the window before load_index resolves, and against a
+     * server that predates the `songbooks` key.
+     */
+    function songbookList() {
+        return books.length ? books.slice() : derivedSongbookList();
+    }
+
+    /* Rebuild the filter options, preserving the current selection if that book
+       still exists (a deleted song can remove the last member of a book).
+       Deliberately derivedSongbookList(), NOT songbookList(): this dropdown
+       filters the list on screen, so offering a book with no songs would only
+       ever produce an empty result. The MOVE target (getSongbooks) is the
+       opposite case and takes the full catalogue — same data, different question
+       (#1679 A2). */
+    function renderBookOptions() {
+        const previous = bookFilter;
+        bookSel.innerHTML = '';
+        const all = document.createElement('option');
+        all.value = '';
+        all.textContent = 'All Songbooks';
+        bookSel.appendChild(all);
+        derivedSongbookList().forEach((b) => {
+            const o = document.createElement('option');
+            o.value = b.abbr;
+            o.textContent = b.name === b.abbr ? b.abbr : (b.name + ' (' + b.abbr + ')');
+            bookSel.appendChild(o);
+        });
+        bookFilter = Array.prototype.some.call(bookSel.options, (o) => o.value === previous) ? previous : '';
+        bookSel.value = bookFilter;
     }
 
     function refLabel(s) {
@@ -146,11 +276,25 @@ export function mountSidebar(container, opts) {
     allBtn.addEventListener('click', () => { filtered().slice(0, RENDER_CAP).forEach((s) => selected.add(s.id)); notifySelection(); renderList(); });
     noneBtn.addEventListener('click', () => { selected.clear(); notifySelection(); renderList(); });
 
+    /* Resolves once the index has loaded (or failed). The shell's #1680
+       Missing-Numbers prefill needs the song list before it can tell "song 412
+       of CP is missing" from "it exists and should just be opened" — and
+       load() is async, so without a handle to await, the prefill would race the
+       fetch and mint a duplicate whenever the index was a moment slow. */
+    let resolveLoaded;
+    const loadedPromise = new Promise((r) => { resolveLoaded = r; });
+
     async function load() {
         listEl.innerHTML = '<div class="text-muted small p-3">Loading…</div>';
         try {
             const res = await api.loadIndex();
             songs = Array.isArray(res.songs) ? res.songs : [];
+            /* `songbooks` is the api2 load_index key added in #1679 A2 — the same
+               two field names (abbr/name) the consumers read, so there is exactly
+               one spelling to get right. Guarded rather than assumed: a cached
+               older api2.php simply leaves songbookList() on its fallback. */
+            books = Array.isArray(res.songbooks) ? res.songbooks : [];
+            renderBookOptions();
             renderList();
         } catch (e) {
             listEl.innerHTML = '';
@@ -159,35 +303,69 @@ export function mountSidebar(container, opts) {
             err.textContent = 'Could not load song list: ' + e.message;
             listEl.appendChild(err);
             toast('Could not load song list: ' + e.message, 'danger');
+        } finally {
+            /* `finally`, not the success branch: a waiter must be released even
+               when the index FAILED, or the #1680 prefill hangs forever on a
+               spinner with no explanation. It then finds no match and reports a
+               real error instead — a wrong answer beats a silent stall. */
+            resolveLoaded();
         }
     }
 
     search.addEventListener('input', () => { filter = search.value; renderList(); });
+    bookSel.addEventListener('change', () => { bookFilter = bookSel.value; renderList(); });
+    sortSel.addEventListener('change', () => { sortMode = sortSel.value; renderList(); });
     load();
 
     return {
         setActive(id) { activeId = id; if (!selectMode) { renderList(); } },
         refresh: load,
-        addSong(stub) { if (stub && stub.id) { songs.unshift(stub); renderList(); } },
+        /* Both mutators refresh the filter options: a new song can introduce a
+           songbook the dropdown has never listed, and deleting the last song of
+           a book must not strand a filter pinned to a book with no members —
+           which would show an empty list with no obvious cause. */
+        addSong(stub) { if (stub && stub.id) { songs.unshift(stub); renderBookOptions(); renderList(); } },
         removeSong(id) {
             songs = songs.filter((s) => s.id !== id);
             if (selected.delete(id)) { notifySelection(); }
             if (activeId === id) { activeId = null; }
+            renderBookOptions();
             renderList();
         },
-        getFirstId() { return songs.length ? songs[0].id : null; },
-        getSongbooks() {
-            const seen = Object.create(null);
-            const out = [];
-            songs.forEach((s) => {
-                const abbr = s.songbook || '';
-                if (abbr && !seen[abbr]) { seen[abbr] = 1; out.push({ abbr: abbr, name: s.songbookName || abbr }); }
-            });
-            out.sort((a, b) => a.abbr.localeCompare(b.abbr));
-            return out;
+        /* getFirstId() answers "what should we open after a delete?", so it must
+           follow what the curator is actually LOOKING at — the filtered, sorted
+           list — not the raw index order. Before the filter existed those were
+           the same thing; with a book filter applied, songs[0] can be a song
+           from a different book that is not on screen. */
+        getFirstId() { const l = filtered(); return l.length ? l[0].id : null; },
+        getSongbooks: songbookList,
+        /* Resolves once the index has loaded OR failed — see the note by
+           loadedPromise. Callers that need the corpus (the #1680 prefill) await
+           this instead of racing load(). */
+        whenLoaded() { return loadedPromise; },
+        /* Exact (songbook, number) lookup -> SongId, or null (#1680).
+           Numbers arrive from the slim index as strings, so compare NUMERICALLY:
+           `'412' === 412` is false, and a string compare here would report every
+           existing song as missing and mint a duplicate on its number — the one
+           outcome the Missing Numbers flow must never produce. */
+        findByBookAndNumber(abbr, number) {
+            const n = Number(number);
+            if (!abbr || !Number.isFinite(n)) { return null; }
+            const hit = songs.find((s) => s.songbook === abbr && Number(s.number) === n);
+            return hit ? hit.id : null;
         },
         getSelectedIds() { return Array.from(selected); },
         clearSelection() { selected.clear(); notifySelection(); renderList(); },
+        /* getAllSongs() (#1608) — the raw slim index, unfiltered/unsorted, for a
+         * tab that needs "every song, as an id->label lookup" rather than
+         * anything about what's currently on screen in THIS sidebar. First
+         * consumer: counterparts-panel.js's add-by-SongId datalist, mirroring
+         * v1's own datalist source (editor.js:3269 iterated `songData.songs`,
+         * the legacy editor's equivalent whole-corpus client array). Returns
+         * the live array reference's shallow copy so a caller can never mutate
+         * this module's internal `songs` state by accident.
+         */
+        getAllSongs() { return songs.slice(); },
         teardown() { container.innerHTML = ''; },
     };
 }

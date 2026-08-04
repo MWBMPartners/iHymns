@@ -285,18 +285,21 @@ $csrf = csrfToken();
                                 <?php endforeach; ?>
                                 <td class="text-center"><?= (int)$g['MemberCount'] ?></td>
                                 <td class="text-end">
-                                    <a href="?edit=<?= (int)$g['Id'] ?>" class="btn btn-sm btn-outline-info" title="Edit and manage members">
-                                        <i class="bi bi-pencil"></i>
+                                    <a href="?edit=<?= (int)$g['Id'] ?>" class="btn btn-sm btn-outline-info" title="Edit and manage members"
+                                       aria-label="Edit and manage members of <?= htmlspecialchars($g['Name'], ENT_QUOTES) ?>">
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </a>
                                     <?php if ((int)$g['MemberCount'] === 0): ?>
                                         <form method="POST" class="d-inline" onsubmit="return confirm('Delete group <?= htmlspecialchars($g['Name'], ENT_QUOTES) ?>?')">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="id" value="<?= (int)$g['Id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete (empty group)"><i class="bi bi-trash"></i></button>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete (empty group)"
+                                                    aria-label="Delete group <?= htmlspecialchars($g['Name'], ENT_QUOTES) ?>"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                         </form>
                                     <?php else: ?>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Group has members — move them first"><i class="bi bi-trash"></i></button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Group has members — move them first"
+                                                aria-label="Delete group <?= htmlspecialchars($g['Name'], ENT_QUOTES) ?> — disabled, it has members, move them first"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -407,8 +410,9 @@ $csrf = csrfToken();
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action"     value="remove_member">
                                             <input type="hidden" name="user_id"    value="<?= (int)$u['Id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove from group">
-                                                <i class="bi bi-x"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove from group"
+                                                    aria-label="Remove <?= htmlspecialchars($u['Username'], ENT_QUOTES) ?> from this group">
+                                                <i class="bi bi-x" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     </li>
@@ -439,8 +443,8 @@ $csrf = csrfToken();
                                         </option>
                                     <?php endforeach; ?>
                                 </select>
-                                <button type="submit" class="btn btn-sm btn-amber-solid">
-                                    <i class="bi bi-plus"></i>
+                                <button type="submit" class="btn btn-sm btn-amber-solid" aria-label="Add selected user to this group">
+                                    <i class="bi bi-plus" aria-hidden="true"></i>
                                 </button>
                             </form>
                         <?php endif; ?>

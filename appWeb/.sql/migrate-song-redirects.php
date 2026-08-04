@@ -76,7 +76,7 @@ try {
                 NewSongId  VARCHAR(20)  NULL DEFAULT NULL
                            COMMENT 'Resolve target (FK->tblSongs); NULL = tombstone (removed, no replacement).',
                 Reason     VARCHAR(20)  NOT NULL DEFAULT 'merge'
-                           COMMENT 'merge | delete | rename — VARCHAR not ENUM (rule #20).',
+                           COMMENT 'merge | delete | rename | move — VARCHAR not ENUM (rule #20); move = songbook re-key (#1679).',
                 Note       VARCHAR(255) NOT NULL DEFAULT '',
                 CreatedBy  INT UNSIGNED NULL DEFAULT NULL
                            COMMENT 'tblUsers.Id of the curator who created the redirect, if signed in',

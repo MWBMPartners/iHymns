@@ -64,6 +64,55 @@ $longLookup = static function (string $id) { return 'X' . ((int)substr($id, 1) +
 $r = songRedirectFollow($longLookup, 'X0', 5);
 ok('over-long chain degrades to tombstone (maxed)', $r['tombstone'] === true && ($r['maxed'] ?? false) === true);
 
+/* ---------------------------------------------------------------------------
+ * #1679 — SONGBOOK MOVE chains.
+ *
+ * A move re-keys the SongId to the new book's prefix and writes a redirect row
+ * (Reason='move', includes/song_relocate.php). The properties that must hold —
+ * and that a naive "one row, one hop" resolver would get wrong — are:
+ *
+ *   1. A song moved TWICE (MP -> CP -> HA) resolves from its ORIGINAL id
+ *      straight to its CURRENT id. Curators do move a song again after
+ *      realising the first destination was wrong; a resolver that stopped at
+ *      the first hop would hand out an id that is itself dead.
+ *   2. A merge redirect that pre-dates the move still lands on the live song.
+ *      This is the case the FK does NOT cover in the same way: an OLD row's
+ *      NewSongId is re-pointed by ON UPDATE CASCADE, but a row whose OldSongId
+ *      is the moved id can only be resolved by FOLLOWING, and it exists
+ *      whenever the song was merged into before it moved.
+ *   3. A song moved and then deleted (tombstoned) reads as REMOVED (410), not
+ *      as a live target and not as a plain 404.
+ * ------------------------------------------------------------------------- */
+$moveMap = [
+    'MP-0100' => 'CP-0007',   // move 1: MP -> CP
+    'CP-0007' => 'HA-0042',   // move 2: CP -> HA (HA-0042 is live)
+    'OL-0009' => 'MP-0100',   // an older MERGE into the song, written before it moved
+    'FS-0003' => 'PS-0011',   // moved…
+    'PS-0011' => null,        // …then deleted with no replacement
+];
+$moveLookup = static function (string $id) use ($moveMap) {
+    return array_key_exists($id, $moveMap) ? $moveMap[$id] : false;
+};
+
+$r = songRedirectFollow($moveLookup, 'MP-0100');
+ok('#1679 twice-moved song resolves from its original id to the live id',
+   $r['redirected'] === true && $r['target'] === 'HA-0042' && $r['tombstone'] === false);
+
+$r = songRedirectFollow($moveLookup, 'CP-0007');
+ok('#1679 the intermediate id also resolves to the live id',
+   $r['redirected'] === true && $r['target'] === 'HA-0042');
+
+$r = songRedirectFollow($moveLookup, 'OL-0009');
+ok('#1679 a pre-move merge redirect still lands on the live song',
+   $r['redirected'] === true && $r['target'] === 'HA-0042');
+
+$r = songRedirectFollow($moveLookup, 'HA-0042');
+ok('#1679 the live id itself is not redirected', $r['redirected'] === false);
+
+$r = songRedirectFollow($moveLookup, 'FS-0003');
+ok('#1679 moved-then-deleted reads as removed, not as a live target',
+   $r['redirected'] === true && $r['target'] === null && $r['tombstone'] === true);
+
 if ($fail === 0) { echo "\nAll song-redirect follow assertions passed.\n"; exit(0); }
 fwrite(STDERR, "\n{$fail} assertion(s) failed.\n");
 exit(1);

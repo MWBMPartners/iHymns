@@ -53,6 +53,7 @@ if (PHP_SAPI === 'cli') {
    includes/song_similarity.php so the builder, the duplicate-songs review page
    and the editor panel all score identically (CLAUDE.md modularity rule). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_similarity.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
 
 function _bsls_out(string $line): void
@@ -126,8 +127,9 @@ $res = $db->query(
        FROM tblSongs s
        LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
        LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
+      WHERE " . songVisibleSql($db, 's') . "
       GROUP BY s.SongId"
-);
+);   /* #1694 — a hidden song must not be scored into new suggestions */
 if (!$res) {
     _bsls_out('ERROR: failed to read tblSongs: ' . $db->error);
     exit(1);

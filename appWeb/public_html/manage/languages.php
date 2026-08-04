@@ -22,7 +22,7 @@ declare(strict_types=1);
  * Database access uses mysqli prepared statements throughout (project
  * policy, set 2026-04-27). Mutating actions emit a tblActivityLog row
  * with EntityType='language' so the audit trail mirrors songbooks /
- * credit-people / users.
+ * musicians / users.
  *
  * Gating:
  *   - manage_languages entitlement (admin + global_admin by default).
@@ -32,7 +32,7 @@ declare(strict_types=1);
  *     CHECK constraint), so a row can technically be deleted while
  *     songs still cite it. We pre-flight the count and refuse the
  *     delete unless ?force=1 is sent — same convention as
- *     credit-people / songbooks.
+ *     musicians / songbooks.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
@@ -299,6 +299,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    row 'en' surfaces every 'en', 'en-GB', 'en-US' that
                    uses it. */
                 $likePrefix = $code . '-%';
+                /* @deleted-visible: refuse-on-cite integrity count (#1694) — a
+                   soft-deleted song still cites the language and would come
+                   back citing it on restore, so it must keep blocking the
+                   delete. */
                 $stmt = $db->prepare(
                     'SELECT
                         (SELECT COUNT(*) FROM tblSongs     WHERE Language = ? OR Language LIKE ?) AS songs,

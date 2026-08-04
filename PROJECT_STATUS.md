@@ -11,10 +11,10 @@
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
 | 📖 Help Documentation | ✅ Complete | 8 guides in `help/` + in-app help (21 public topics, 39 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1624+ — see GitHub for live open/closed counts |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1680+ — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
-| 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — bulk import (ZIP / VideoPsalm / OpenSong), structure tab, media uploads, per-component language overrides |
+| 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
 | 🛠 Admin Portal | ✅ Active | 38 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions) |
 | 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, version-bump, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
@@ -75,10 +75,24 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Shared API client, fetch monkey-patch deleted** (#1031) — new `js/utils/api-client.js` (`apiFetch`/`apiFetchJson`) replaces the site-wide `window.fetch` override that `songbook-language-filter.js` installed; fixes an anonymous user's saved language filter being silently ignored on a cold `/search` load.
 - **Setlist playback mode** (#1533) — tap a song in an own or shared setlist to arm a floating prev/next nav bar with keyboard navigation and an aria-live announcement; fixes shared setlists being unnavigable. Alongside a Revisions Audit "Open in editor" link fix (#1623).
 - **Dead code + doc-accuracy cleanup** (#1612, #1615, #1618) — removed the unused `js/utils/transpose.js` (and its stale service-worker precache entry); corrected the lyrics-cutover verifier's gate-count claim from "10/13" to the actual nine implemented gates, tracking the real gap as #1618.
+- **Song Editor v2 becomes the default** (#1601 scope item 2) — `/manage/editor/` now 302-redirects to the granular, per-edit v2 editor; the legacy whole-song editor remains available via `?legacy=1` and is deliberately not yet retired. Shipped once every parity gap found along the way closed: a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels (#1627); `?tab=` / `?songbook=` / `#number=` / `?open=` deep links, the sidebar songbook filter + sort, `bulk_tag_detach`, and the export lines-per-slide setting (#1628, #1680); and a P0 fix (#1677) for a bug that had made every v2 write return 403 since the shell first shipped.
+- **Setlist collaboration finished** (#1638) — invited collaborators are now notified, see shared setlists under "Shared with me," and their view/edit permission is actually enforced (it had shipped write-only and decorative).
+- **Cross-device sync data-loss fixes** (#1649) — capped per-user syncs (set lists / favourites / custom tags) no longer silently delete rows that were only dropped by the cap; a new sync watermark stops an older device from deleting another device's newer, unseen writes.
+- **Accessibility + security sweep** (#1643–#1648, #1665) — high-contrast/CVD modes restored across the whole `/manage` admin surface (they had never been styled there at all); Present mode is a real focus-trapping dialog; Service Mode announces section changes and no longer races the page render; sortable table headers keep their `columnheader` role; SPA navigation stopped reading whole pages aloud on every route change; the setlist Arrangement editor works by keyboard and touch; the SortableJS and Bootstrap CDN loads gained SRI + vendored fallbacks; eight admin pages' access gates now match what the nav actually advertises.
+- **iHymns interchange JSON importer** (#1633) — a new additive/merge-only importer writes iHymns's own JSON export format straight to the database, following the same never-truncate contract as the ZIP importer.
 
 ---
 
 ## 📌 Next Milestones
+
+### Milestone 0 (blocking, not a feature): runtime verification of `claude/wave3-fixes`
+
+~90 commits of correctness work sit on that branch, **none of it ever run against a database or a
+browser** — the container has neither. Migrations applied, one v2 editor write, a real songbook
+move, two-device setlist sync, and the CCLI gate flipped on in a controlled window. Ranked P0 with
+the full sequence in `.claude/proposals-2026-07-31.md`; it outranks everything below because a
+runtime surprise there invalidates assumptions the rest build on.
+
 
 ### Milestone 4 & 5: Apple App (consolidated, unreleased)
 
@@ -105,7 +119,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1624+ — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
 - **Version**: 0.4001.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
@@ -125,4 +139,4 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ---
 
-Last updated: 2026-07-29
+Last updated: 2026-07-30

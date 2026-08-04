@@ -42,6 +42,8 @@ mkdir -p "$VENDOR_DIR/tone"
 mkdir -p "$VENDOR_DIR/pdfjs"
 mkdir -p "$VENDOR_DIR/swagger-ui"
 mkdir -p "$VENDOR_DIR/qrcode-generator"
+mkdir -p "$VENDOR_DIR/sortablejs"
+mkdir -p "$VENDOR_DIR/bootstrap-icons/fonts"
 
 # Helper: download a file, verify it's not empty
 download() {
@@ -68,7 +70,7 @@ download() {
 # ---------------------------------------------------------------------------
 # Bootstrap 5.3.6
 # ---------------------------------------------------------------------------
-echo "[1/7] Bootstrap 5.3.6"
+echo "[1/10] Bootstrap 5.3.6"
 download "https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" \
          "$VENDOR_DIR/bootstrap/bootstrap.min.css" \
          "bootstrap.min.css"
@@ -79,7 +81,7 @@ download "https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.
 # ---------------------------------------------------------------------------
 # Font Awesome 6.7.2
 # ---------------------------------------------------------------------------
-echo "[2/7] Font Awesome 6.7.2"
+echo "[2/10] Font Awesome 6.7.2"
 download "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" \
          "$VENDOR_DIR/fontawesome/css/all.min.css" \
          "all.min.css"
@@ -106,7 +108,7 @@ fi
 # ---------------------------------------------------------------------------
 # jQuery 3.7.1
 # ---------------------------------------------------------------------------
-echo "[3/7] jQuery 3.7.1"
+echo "[3/10] jQuery 3.7.1"
 download "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js" \
          "$VENDOR_DIR/jquery/jquery.min.js" \
          "jquery.min.js"
@@ -114,7 +116,7 @@ download "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js" \
 # ---------------------------------------------------------------------------
 # Animate.css 4.1.1
 # ---------------------------------------------------------------------------
-echo "[4/7] Animate.css 4.1.1"
+echo "[4/10] Animate.css 4.1.1"
 download "https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" \
          "$VENDOR_DIR/animate/animate.min.css" \
          "animate.min.css"
@@ -122,7 +124,7 @@ download "https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.c
 # ---------------------------------------------------------------------------
 # Fuse.js 7.1.0
 # ---------------------------------------------------------------------------
-echo "[5/7] Fuse.js 7.1.0"
+echo "[5/10] Fuse.js 7.1.0"
 download "https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs" \
          "$VENDOR_DIR/fuse/fuse.min.mjs" \
          "fuse.min.mjs"
@@ -130,7 +132,7 @@ download "https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs" \
 # ---------------------------------------------------------------------------
 # Tone.js 15.1.22
 # ---------------------------------------------------------------------------
-echo "[6/7] Tone.js 15.1.22"
+echo "[6/10] Tone.js 15.1.22"
 download "https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js" \
          "$VENDOR_DIR/tone/Tone.min.js" \
          "Tone.min.js"
@@ -138,7 +140,7 @@ download "https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js" \
 # ---------------------------------------------------------------------------
 # PDF.js 4.9.124
 # ---------------------------------------------------------------------------
-echo "[7/8] PDF.js 4.9.124"
+echo "[7/10] PDF.js 4.9.124"
 download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.min.mjs" \
          "$VENDOR_DIR/pdfjs/pdf.min.mjs" \
          "pdf.min.mjs"
@@ -155,7 +157,7 @@ download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.m
 # blank pane with only a console message. api-docs.php now pins the exact
 # version with an integrity hash and falls back to these local copies.
 # ---------------------------------------------------------------------------
-echo "[8/9] Swagger UI 5.32.11"
+echo "[8/10] Swagger UI 5.32.11"
 download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui.css" \
          "$VENDOR_DIR/swagger-ui/swagger-ui.css" \
          "swagger-ui.css"
@@ -175,10 +177,50 @@ download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standa
 # import(), so this local copy is the fallback service-projection.php's own
 # JS falls through to when the CDN import fails — never a blank QR box.
 # ---------------------------------------------------------------------------
-echo "[9/9] QR Code Generator 2.0.4"
+echo "[9/10] QR Code Generator 2.0.4"
 download "https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.mjs" \
          "$VENDOR_DIR/qrcode-generator/qrcode.mjs" \
          "qrcode.mjs"
+
+# ---------------------------------------------------------------------------
+# SortableJS 1.15.2 (#1647)
+#
+# The card-layout reorder editor injects this from the CDN at runtime WITH an
+# integrity attribute. This local copy is the fallback its onerror path uses.
+#
+# The fallback is what makes the SRI safe to add at all, and that is the whole
+# point of vendoring it. SRI was previously removed from this load because a
+# PLACEHOLDER hash was committed, silently blocked the script, and killed the
+# reorder feature outright -- so the fix was to drop the integrity attribute
+# rather than compute the right hash. With a local fallback in place, a hash
+# mismatch now degrades to this file instead of to a dead feature.
+# ---------------------------------------------------------------------------
+echo "[10/10] SortableJS 1.15.2"
+download "https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" \
+         "$VENDOR_DIR/sortablejs/Sortable.min.js" \
+         "Sortable.min.js"
+
+# ---------------------------------------------------------------------------
+# Bootstrap-Icons 1.11.3 (#1676)
+#
+# Registered in APP_CONFIG['libraries']['bootstrap_icons'] and emitted by
+# ihymns_bootstrap_css_links(). Previously it had no registry entry and no
+# vendored copy at all — four pages hardcoded the CDN URL directly.
+#
+# The two woff/woff2 files are NOT optional. bootstrap-icons.min.css references
+# them with RELATIVE url(./fonts/...) rules, so a local fallback that ships only
+# the stylesheet renders every bi-* glyph as an empty box — a fallback that is
+# worse than no fallback, because it looks like the CSS loaded fine.
+# ---------------------------------------------------------------------------
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" \
+         "$VENDOR_DIR/bootstrap-icons/bootstrap-icons.min.css" \
+         "bootstrap-icons.min.css"
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff2" \
+         "$VENDOR_DIR/bootstrap-icons/fonts/bootstrap-icons.woff2" \
+         "bootstrap-icons.woff2"
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff" \
+         "$VENDOR_DIR/bootstrap-icons/fonts/bootstrap-icons.woff" \
+         "bootstrap-icons.woff"
 
 echo ""
 echo "=== Done. Vendor libraries downloaded to: $VENDOR_DIR ==="

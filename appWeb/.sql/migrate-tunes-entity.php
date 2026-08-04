@@ -19,6 +19,40 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT.
  *
+ * NOT DESTRUCTIVE. Nothing is dropped or overwritten: TuneName is left in place
+ * as the denorm display mirror (so every existing reader keeps working with no
+ * JOIN), and the backfill only ever writes TuneId where it is currently NULL.
+ * The "undo" is DROP the two tables + the column; no song data is at risk.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED — five independent guards, because this migration
+ * has five separately-failable steps and a re-run must resume from wherever the
+ * last one stopped:
+ *   1. tblTunes        — _migTunes_tableExists()
+ *   2. tblTuneAliases  — _migTunes_tableExists()
+ *   3. tblSongs.TuneId — _migTunes_colExists()
+ *   4. idx_TuneId      — SHOW INDEX … WHERE Key_name
+ *   5. fk_Songs_Tune   — _migTunes_fkExists() (INFORMATION_SCHEMA)
+ * The BACKFILL has no guard and does not need one: it is INSERT IGNORE against
+ * `UNIQUE KEY uq_Name`, then an UPDATE restricted to `TuneId IS NULL`. Running
+ * it a second time creates 0 tunes and links 0 songs; running it after new songs
+ * have been imported picks up exactly the new ones. That is why it is labelled
+ * "re-runnable" rather than "skipped" — re-running is the intended repair.
+ * The registry probe is the multi-object OR form (table AND column), per
+ * CLAUDE.md rule #19, so a partial apply never shows the card green.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "Tune + meter entity (#1090 P4)"
+ * → button "Run Tune Entity Migration". A first run ends with a line like
+ * "Created 412 tunes; linked 5 130 songs to a TuneId"; a repeat run reports
+ * "Created 0 tunes; linked 0 songs".
+ *
+ * SCHEMA MIRROR: tblTunes / tblTuneAliases / tblSongs.TuneId + idx_TuneId +
+ * fk_Songs_Tune are all mirrored in appWeb/.sql/schema.sql, which is what a
+ * FRESH install reads instead of running this script. The declarations must
+ * stay byte-identical (COMMENT text included) or fresh and migrated installs
+ * diverge and the Schema Audit page (#518) flags it — CLAUDE.md rule #19. Note
+ * schema.sql has to add fk_Songs_Tune as a TRAILING ALTER because tblSongs is
+ * declared before tblTunes in that file; here the ordering is natural.
+ *
  * @migration-adds tblSongs.TuneId
  *
  * USAGE:
@@ -55,6 +89,20 @@ function _migTunes_fkExists(\mysqli $db, string $name): bool {
     );
     return (bool)($r && $r->num_rows > 0);
 }
+/* Tune name → URL handle ("HYFRYDOL" → "hyfrydol", "St. Anne" → "st-anne").
+   Deliberately NOT ihymns_normalize_title(): that fold is the exact-dedup key
+   for song titles and keeps spaces, whereas this has to produce something
+   URL-safe and unique-able.
+
+   Note iconv() here is plain ASCII//TRANSLIT with no //IGNORE, so on a name it
+   cannot transliterate it returns false rather than a partial string; the
+   `$s === false ? $name : $s` line falls back to the raw name and the
+   [^a-z0-9]+ strip then removes whatever was left. A name made entirely of
+   non-Latin characters therefore collapses to '' and is renamed 'tune' — the
+   caller's collision loop turns the second such name into 'tune-2', so this
+   degrades to ugly-but-unique rather than to a duplicate-key failure.
+   The 130-char cap leaves headroom inside Slug's VARCHAR(140) for that
+   '-N' suffix. */
 function _migTunes_slugify(string $name): string {
     $s = iconv('UTF-8', 'ASCII//TRANSLIT', $name);
     $s = $s === false ? $name : $s;
@@ -145,6 +193,28 @@ try {
     } else { _migTunes_output("  [SKIP] fk_Songs_Tune present."); }
 
     _migTunes_output("--- Backfill tblTunes from DISTINCT TuneName (re-runnable) ---");
+    /* ── The one non-obvious data-shaping decision in this file ─────────────
+       The whole promote-to-entity step turns on the table COLLATION, not on
+       anything visible in this loop.
+
+       tblTunes is utf8mb4_unicode_ci — case- AND accent-INSENSITIVE. So:
+         · DISTINCT TuneName below is itself CI, and the UNIQUE KEY uq_Name is
+           CI, which is what folds "HYFRYDOL" / "Hyfrydol" / "hyfrydol" —
+           thirty hymnals' worth of inconsistent capitalisation — into ONE tune
+           row. That de-duplication is the entire point of #1090 P4; a binary
+           collation here would create three tunes and de-duplicate nothing.
+         · The `JOIN tblTunes t ON s.TuneName = t.Name` further down matches
+           under the same CI rules, so every capitalisation variant links to
+           the single surviving row.
+       Which variant WINS is whichever the DISTINCT scan reaches first — i.e.
+       arbitrary. That is acceptable because Name is a display string a curator
+       can correct once, in one place, which is the improvement over 30 rows of
+       free text. https://dev.mysql.com/doc/refman/8.0/en/charset-collation-names.html
+
+       On a RE-RUN the slug-collision loop below still runs for every existing
+       tune and computes a throwaway '-2' slug; the INSERT IGNORE then discards
+       the row on uq_Name before that slug is ever used. Wasted work, not a bug
+       — no orphan slug is created, and no duplicate tune. */
     $sel = $mysql->query("SELECT DISTINCT TuneName FROM tblSongs WHERE TuneName IS NOT NULL AND TuneName <> ''");
     $insTune = $mysql->prepare("INSERT IGNORE INTO tblTunes (Name, Slug) VALUES (?, ?)");
     $slugTaken = $mysql->prepare("SELECT 1 FROM tblTunes WHERE Slug = ? LIMIT 1");
@@ -164,6 +234,10 @@ try {
         if ($insTune->affected_rows > 0) $created++;
     }
     $insTune->close(); $slugTaken->close();
+    /* `WHERE s.TuneId IS NULL` is what makes the link step re-runnable AND
+       non-destructive in the same clause: it fills in songs that have no tune
+       yet, and never overwrites a TuneId a curator has since re-pointed by hand
+       to a different tune than its stale TuneName text implies. */
     $mysql->query("UPDATE tblSongs s JOIN tblTunes t ON s.TuneName = t.Name SET s.TuneId = t.Id WHERE s.TuneId IS NULL AND s.TuneName IS NOT NULL AND s.TuneName <> ''");
     $linked = $mysql->affected_rows;
     _migTunes_output("  [OK] Created {$created} tunes; linked {$linked} songs to a TuneId.");

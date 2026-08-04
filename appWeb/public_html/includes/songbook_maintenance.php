@@ -78,6 +78,9 @@ function songIdPrefixProbeAndFixup(\mysqli $db): array
         /* Single indexed SELECT — same shape the migration probe uses.
            On a clean catalogue this returns 0 rows in ~5ms. */
         $stale = [];
+        /* @deleted-visible: integrity fixup (#1694) — prefix/abbr drift is a
+           PHYSICAL defect that must be repaired on hidden rows too, or a
+           restore brings the drift back. */
         $res   = $db->query(
             "SELECT SongId, SongbookAbbr
                FROM tblSongs
@@ -114,6 +117,9 @@ function songIdPrefixProbeAndFixup(\mysqli $db): array
         /* Inline rewrite path — small N. Same multi-step UPDATE the
            migration uses: four non-cascading child tables first, then
            tblSongs (FK cascade handles the rest). */
+        /* @deleted-visible: taken-check (#1694) — a soft-deleted song's id IS
+           taken (the row still holds the UNIQUE key); filtering would propose
+           an id the INSERT/UPDATE then collides on. */
         $takenStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
         $proposed  = [];
         foreach ($stale as $row) {

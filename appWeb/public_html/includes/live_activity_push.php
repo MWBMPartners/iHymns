@@ -305,10 +305,15 @@ function liveActivitySessionPush(\mysqli $db, int $sessionId, string $event = 'u
            file-header note), so THIS is where the channel filter actually
            applies. */
         $channel = serviceMode_channel();
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $sStmt = $db->prepare(
+            /* #1694 — the visibility predicate lives in the LEFT JOIN's ON
+               clause, NOT the WHERE: in the WHERE it would turn the LEFT JOIN
+               inner and drop the whole SESSION row when its current song is
+               hidden — killing the push instead of just blanking the title. */
             'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision, s.IsActive, t.Title
                FROM tblLiveFollowSessions s
-               LEFT JOIN tblSongs t ON t.SongId = s.CurrentSongId
+               LEFT JOIN tblSongs t ON t.SongId = s.CurrentSongId AND ' . songVisibleSql($db, 't') . '
               WHERE s.Id = ? AND s.Channel = ?'
         );
         $sStmt->bind_param('is', $sessionId, $channel);

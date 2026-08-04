@@ -62,6 +62,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php';      /* getAppSetting() */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'ccli_validator.php';   /* resolveEffectiveTier / checkTierAccess */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'gating_rules.php';     /* gatingRulesApply() — #1481 P2 */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';         /* userHasValidCcli() — the ONE CCLI resolver, #1668 */
 
 /**
  * Is server-side content gating switched ON for this environment?
@@ -81,13 +82,35 @@ function contentGatingEnabled(): bool
 }
 
 /**
- * Resolve `$hasCcli` for a user the SAME way the tier_check endpoint does:
- * a non-empty CcliNumber AND CcliVerified truthy. Anonymous (null id) is
- * always false. Wrapped so a missing column / DB blip degrades to false
- * (deny the ccli-only unlock — the safe direction for a copyright gate).
+ * Resolve `$hasCcli` for a user — a thin, deny-on-error wrapper around the
+ * ONE resolver, `userHasValidCcli()` in includes/licences.php (#1668).
+ *
+ * ELI5: this used to ask the database its own question and got a different
+ * answer from the rest of the site. Now it asks the one place that knows.
+ *
+ * WHY the delegation (#1668): this function used to run its own
+ * `SELECT CcliNumber, CcliVerified FROM tblUsers` — a personal-only check.
+ * That made it structurally incapable of honouring the owner's requirement
+ * that a member of an ORGANISATION holding a valid CCLI licence also passes,
+ * and it disagreed with licences.php about the personal half too (it demanded
+ * `CcliVerified`; licences.php accepted anything non-empty).
+ * `userHasValidCcli()` answers both halves: a WELL-FORMED personal number
+ * (format-checked by `validateCcliNumber()` — deliberately NOT gated on
+ * `CcliVerified`, which nothing can set truthfully; see licenceCcliQualifies()
+ * for the full reasoning), or a live `ccli` licence on any org in the user's
+ * inheritance chain, read from both org stores.
+ *
+ * Anonymous (null id) is always false.
+ *
+ * DENY-ON-ERROR IS PRESERVED — deliberately. The rest of this module is
+ * fail-OPEN (rule C: an un-migrated read degrades to "the song unchanged"),
+ * but this one predicate goes the other way: on any throw we return false,
+ * i.e. we do NOT hand out the CCLI unlock. A licensing gate must fail CLOSED,
+ * and a false here can only ever REMOVE an unlock, never grant one.
  *
  * @param int|null $userId Authenticated user id, or null for anonymous.
  * @return bool
+ * @see includes/licences.php  userHasValidCcli() — the resolver
  */
 function contentGating_userHasCcli(?int $userId): bool
 {
@@ -95,17 +118,9 @@ function contentGating_userHasCcli(?int $userId): bool
         return false;
     }
     try {
-        $db   = getDbMysqli();
-        $stmt = $db->prepare('SELECT CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $row = $stmt->get_result()->fetch_assoc();
-        $stmt->close();
-        /* ELI5: a CCLI unlock needs BOTH a number AND that it's verified.
-           WHY: mirrors api.php:6837 ($hasCcli) so gating + tier_check agree. */
-        return !empty($row['CcliNumber']) && !empty($row['CcliVerified']);
+        return userHasValidCcli($userId);
     } catch (\Throwable $_e) {
-        /* Un-migrated tblUsers / DB blip — deny the ccli unlock (safe). */
+        /* Un-migrated schema / DB blip — deny the ccli unlock (safe). */
         return false;
     }
 }

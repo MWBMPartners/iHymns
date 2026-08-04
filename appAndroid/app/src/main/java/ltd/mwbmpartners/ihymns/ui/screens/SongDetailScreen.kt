@@ -104,12 +104,40 @@ fun SongDetailScreen(
         // -----------------------------------------------------------------
         TopAppBar(
             title = {
-                Text(
-                    text = song?.title ?: "Song",
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
+                // #1752 Slice E — the title bar becomes a two-line title +
+                // subtitle stack when the song has a #1741 P1 subtitle,
+                // matching Apple `SongDetailView.header(for:)`'s
+                // title/disambiguation/subtitle stack (#1752 §1.3); a
+                // single-line `Text` (unchanged) whenever `subtitle` is
+                // blank — the overwhelmingly common case today, since
+                // nothing populates this field on Android yet (see
+                // `Song.kt`'s header + `copyrightDisplay()` below for the
+                // full "why land this now" honesty clause).
+                Column {
+                    Text(
+                        // Disambiguation appended to the title string, e.g.
+                        // "Amazing Grace (Christmas version)" — mirrors
+                        // Apple's separate parenthetical `Text` line, folded
+                        // into one line here since the toolbar title is
+                        // already ellipsis-truncated single-line space.
+                        text = (song?.title ?: "Song") + if (song?.disambiguation?.isNotBlank() == true) {
+                            " (${song.disambiguation})"
+                        } else {
+                            ""
+                        },
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    if (song?.subtitle?.isNotBlank() == true) {
+                        Text(
+                            text = song.subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                    }
+                }
             },
             navigationIcon = {
                 // Back arrow — returns to the song list or previous screen
@@ -179,13 +207,19 @@ fun SongDetailScreen(
                     }
                 }
 
-                // Copyright notice at the bottom of the lyrics
-                if (song.copyright.isNotBlank()) {
+                // Copyright notice at the bottom of the lyrics — #1752 Slice
+                // E routes this through copyrightDisplay(song) (below)
+                // instead of the raw song.copyright, so a future data
+                // source that populates copyrightYears/copyrightHolder
+                // renders the split fields automatically, with zero further
+                // UI change.
+                val copyrightLine = copyrightDisplay(song)
+                if (copyrightLine.isNotBlank()) {
                     Spacer(modifier = Modifier.height(24.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = song.copyright,
+                        text = copyrightLine,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontStyle = FontStyle.Italic
@@ -264,6 +298,19 @@ private fun SongMetadataSection(song: Song) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+
+    // First-published year (#1741 P1, #1752 Slice E) — after CCLI, same
+    // relative position Apple's `SongMetadataView.rightsSection` gives it
+    // (right before the copyright line, which renders separately below the
+    // lyrics on this screen rather than in this metadata block).
+    if (song.firstPublishedYear != null) {
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = "First published ${song.firstPublishedYear}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 // =============================================================================
@@ -319,6 +366,54 @@ private fun LyricComponentSection(component: SongComponent) {
 }
 
 // =============================================================================
+// COPYRIGHT DISPLAY FOLD (#1741 P1, #1752 Slice E)
+// =============================================================================
+
+/**
+ * The copyright line to actually display for [song]: the #1741 split
+ * (`copyrightYears` + `copyrightHolder`) when either half is present, else
+ * the legacy free-text `copyright` string. NEVER both.
+ *
+ * ELI5: "What copyright line should I actually show?" — prefers the new
+ * split years+holder fields when a curator has filled them in, otherwise
+ * falls back to the old one-line copyright text.
+ *
+ * DETAILED: The Kotlin twin of `SongDetail.copyrightDisplay`/`ihCopyrightDisplay`
+ * (Apple, `IHModels/CopyrightDisplay.swift`) and `$copyrightDisplay`
+ * (web, `includes/pages/song.php`) — SAME precedence rule, THREE
+ * independent implementations (Kotlin has no code-sharing mechanism with
+ * the Swift package or PHP, so a shared FUNCTION isn't possible across
+ * platforms; a shared CONTRACT is). Deliberately a plain top-level `fun`,
+ * not a `Song` extension/method or a `Song`-owned computed property, to
+ * keep the pure "what string do I show" logic separate from the data
+ * model — matching this file's own "screen owns presentation logic, model
+ * owns data" split (`Song` has no other derived/computed members).
+ * `tests/test-native-identity-contract.js` (#1752 §7) is what keeps this
+ * function, `SongDetail.copyrightDisplay`, and `$copyrightDisplay` in
+ * provable lockstep (rule #35 — "cross-file agreement needs a mechanism,
+ * not a comment"), asserting the literal `copyrightDisplay` appears in
+ * this file whenever `Song.kt` carries ANY of the five derived P1 keys.
+ *
+ * No `lyricsPublicDomain`/`musicPublicDomain` branch exists here (unlike
+ * Apple's `SongMetadataView.rightsSection`'s "Public Domain wins" case) —
+ * `Song.kt` carries neither flag, so there is nothing to branch on; adding
+ * that pair is out of this task's #1741 P1 scope.
+ *
+ * @param song The song whose copyright line to compute.
+ * @return The years+holder split (trimmed, single-spaced) when either half
+ *   is non-blank; otherwise the trimmed legacy `copyright` string. Both may
+ *   be blank, in which case the result is `""` — callers gate rendering on
+ *   `isNotBlank()`.
+ */
+fun copyrightDisplay(song: Song): String {
+    val split = listOf(song.copyrightYears, song.copyrightHolder)
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+    return split.ifEmpty { song.copyright.trim() }
+}
+
+// =============================================================================
 // SHARE FUNCTIONALITY
 // =============================================================================
 
@@ -358,9 +453,12 @@ private fun shareSong(context: android.content.Context, song: Song) {
             appendLine()
         }
 
-        // Copyright and attribution
-        if (song.copyright.isNotBlank()) {
-            appendLine(song.copyright)
+        // Copyright and attribution — #1752 Slice E routes this through the
+        // SAME copyrightDisplay() fold the on-screen render uses (above),
+        // so shared lyrics never disagree with what the screen just showed.
+        val copyrightLine = copyrightDisplay(song)
+        if (copyrightLine.isNotBlank()) {
+            appendLine(copyrightLine)
             appendLine()
         }
         append("Shared from iHymns — ihymns.app")

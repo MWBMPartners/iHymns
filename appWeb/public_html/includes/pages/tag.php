@@ -60,14 +60,15 @@ if ($tagSlug !== '') {
                SongbookAbbr rides along so the list can group by source
                book below, the same cross-songbook shape writer.php uses
                for the same reason (one theme spans many hymnals). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
             $stmt = $tdb->prepare(
                 'SELECT s.SongId AS id, s.Title AS title,
                         s.SongbookAbbr AS songbook, s.Number AS number
                    FROM tblSongTagMap tm
                    JOIN tblSongs s ON s.SongId = tm.SongId
-                  WHERE tm.TagId = ?
+                  WHERE tm.TagId = ? AND ' . songVisibleSql($tdb, 's') . '
                   ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC'
-            );
+            );   /* #1694 — visible songs only */
             $stmt->bind_param('i', $tagInfo['id']);
             $stmt->execute();
             $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);

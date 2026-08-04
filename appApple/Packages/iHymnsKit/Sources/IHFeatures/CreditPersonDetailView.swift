@@ -101,6 +101,7 @@ public struct CreditPersonDetailView: View {
     private func loadedContent(_ person: CreditPerson) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             header(for: person)
+            identifiersDisclosure(for: person)
             ExternalLinksSection(links: person.links)
 
             ForEach(person.discography) { group in
@@ -148,6 +149,40 @@ public struct CreditPersonDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// IPI/ISNI authority identifiers (#1741 P2, #1752 Slice D) behind a
+    /// disclosure — same "Song Identifiers" treatment
+    /// `SongMetadataView.authorityIdsDisclosure`/`WorkDetailView.
+    /// identifiersDisclosure` give CCLI/ISWC/royaltyIds/externalIds and
+    /// CCLI/BOWI respectively, including the SAME tvOS/watchOS
+    /// always-expanded fallback (`DisclosureGroup` UNAVAILABLE on both).
+    @ViewBuilder
+    private func identifiersDisclosure(for person: CreditPerson) -> some View {
+        let identifiers = person.identifiers ?? []
+        if !identifiers.isEmpty {
+            #if os(tvOS) || os(watchOS)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Identifiers").font(.headline)
+                identifiersContent(identifiers)
+            }
+            #else
+            DisclosureGroup("Identifiers") {
+                identifiersContent(identifiers)
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private func identifiersContent(_ identifiers: [MusicianIdentifier]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(identifiers.enumerated()), id: \.offset) { _, identifier in
+                Text("\(identifier.type.uppercased()): \(identifier.value)")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     /// "1779–1847" / "b. 1779" / "d. 1847" for an individual, "Active

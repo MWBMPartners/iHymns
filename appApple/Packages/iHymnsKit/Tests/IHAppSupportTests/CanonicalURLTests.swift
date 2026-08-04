@@ -44,9 +44,12 @@ struct CanonicalURLTests {
         #expect(CanonicalURL.work(slug: "amazing-grace")?.absoluteString == "https://ihymns.app/work/amazing-grace")
     }
 
-    @Test("Builds the canonical credit-person URL")
+    @Test("Builds the canonical credit-person URL — now the /musician/ path (#1752 Slice B, #1741 P2-B)")
     func buildsPersonURL() {
-        #expect(CanonicalURL.person(slug: "fanny-crosby")?.absoluteString == "https://ihymns.app/person/fanny-crosby")
+        // Asserting the literal string (not just "resolves to something")
+        // is deliberate — a silent revert back to `/person/` would
+        // otherwise slip past every other test here (rule #34).
+        #expect(CanonicalURL.person(slug: "fanny-crosby")?.absoluteString == "https://ihymns.app/musician/fanny-crosby")
     }
 
     @Test("Builds the canonical compare URL")

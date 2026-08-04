@@ -221,16 +221,22 @@ function autoLinkHardIdCounterparts(\mysqli $db, ?int $createdBy): array
         /* All members of cross-book groups that share a non-empty value of $col.
            TRIM(col) <> '' excludes both NULL (Iswc/Isrc) and '' (Ccli's NOT-NULL
            placeholder) in one predicate. $col is a hardcoded constant (allow-list). */
+        /* #1694 — both the outer scan AND the shared-keys subquery are
+           filtered: a hidden song must neither be auto-linked nor keep a
+           group alive by contributing to the HAVING counts. */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $sql =
             "SELECT LOWER(TRIM(s.`{$col}`)) AS HardKey, s.SongId,
                     s.SongbookAbbr, COALESCE(sb.IsOfficial, 0) AS IsOfficial
                FROM tblSongs s
                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
               WHERE TRIM(s.`{$col}`) <> ''
+                AND " . songVisibleSql($db, 's') . "
                 AND LOWER(TRIM(s.`{$col}`)) IN (
                       SELECT k FROM (
                         SELECT LOWER(TRIM(s2.`{$col}`)) AS k FROM tblSongs s2
                          WHERE TRIM(s2.`{$col}`) <> ''
+                           AND " . songVisibleSql($db, 's2') . "
                          GROUP BY LOWER(TRIM(s2.`{$col}`))
                         HAVING COUNT(DISTINCT s2.SongId) > 1
                            AND COUNT(DISTINCT s2.SongbookAbbr) > 1

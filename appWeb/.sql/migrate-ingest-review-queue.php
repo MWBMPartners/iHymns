@@ -21,6 +21,38 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (table existence guarded).
  *
+ * NOT DESTRUCTIVE. Nothing here drops, renames, truncates or rewrites an
+ * existing object — it only CREATEs two brand-new tables. There is therefore no
+ * recovery path to document: the "undo" is DROP TABLE, and losing the tables
+ * loses only queue state, never corpus data.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED (the case that matters — a re-run is normal):
+ * each CREATE sits behind its own _migReviewQ_tableExists() probe, so a second
+ * run is two SHOW TABLES queries and two [SKIP] lines. There is deliberately NO
+ * `CREATE TABLE IF NOT EXISTS` here: the explicit probe is what lets the script
+ * print [SKIP] vs [OK], which is the only feedback an operator gets on the
+ * setup-database page (the script never rethrows — see the catch at the bottom).
+ *
+ * INTERACTION WITH THE SETUP-DASHBOARD PROBE: the registry probe for this card
+ * is single-table — `!tableExists('tblLyricsReviewQueue')` (migration-registry
+ * .php). That is safe ONLY because the queue is created SECOND: if the first
+ * CREATE succeeds and the second throws, the queue is still absent, so the card
+ * correctly stays pending and a re-run finishes the job. Reordering the two
+ * CREATE blocks would silently turn the card green on a half-applied schema.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "Lyrics review queue + conflicts
+ * (#1066)" → button "Run Lyrics Review Queue Migration". Output is the [OK] /
+ * [SKIP] transcript below; a failure appears as an "[ERROR] …" line in that
+ * transcript rather than an HTTP error, because the catch swallows the throw.
+ * The card is the real status signal, not the transcript.
+ *
+ * SCHEMA MIRROR: both CREATE TABLE statements are mirrored verbatim in
+ * appWeb/.sql/schema.sql (which a FRESH install reads instead of running
+ * migrations). They must stay byte-identical — including every COMMENT '…'
+ * string — or a fresh install lands structurally different from a migrated one
+ * and the Schema Audit page (#518) reports the difference as drift nobody
+ * introduced on purpose. See CLAUDE.md rule #19.
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-ingest-review-queue.php
  *   Web:  /manage/setup-database → "Lyrics review queue + conflicts" button
@@ -41,6 +73,17 @@ function _migReviewQ_output(string $msg): void {
     if (!$isCli) flush();
 }
 
+/* The idempotency gate. ELI5: "does this table already exist?" — if yes, the
+   CREATE below is skipped and the whole run is a no-op.
+
+   Caveat worth knowing before reusing this helper for a new table: the argument
+   is a LIKE *pattern*, not a literal, so `_` matches any single character and
+   `%` matches any run (https://dev.mysql.com/doc/refman/8.0/en/show-tables.html).
+   Every table name in this migration is camelCase with no underscore, so the
+   pattern is effectively a literal here — but a future `tbl_Foo` would match a
+   sibling and produce a false [SKIP], i.e. a silently un-created table. Prefer
+   the INFORMATION_SCHEMA form (see migrate-backfill-songbook-links.php) if a
+   name ever contains a wildcard character. */
 function _migReviewQ_tableExists(\mysqli $db, string $table): bool {
     $r = $db->query("SHOW TABLES LIKE '{$table}'");
     return (bool)($r && $r->num_rows > 0);
@@ -73,6 +116,22 @@ try {
     if (_migReviewQ_tableExists($mysql, 'tblLyricsConflicts')) {
         _migReviewQ_output("  [SKIP] tblLyricsConflicts already present.");
     } else {
+        /* Two data-shaping choices here that the DDL alone does not explain:
+
+           1. ExistingData / IncomingData are JSON SNAPSHOTS, not FKs to the
+              live rows. A moderator reviewing a conflict weeks later must see
+              what the two sides looked like AT DETECTION TIME; re-reading the
+              live tblSongs/tblLyrics would show whatever has since been edited,
+              which makes the diff UI lie about what was actually in conflict.
+              This is why the pair is NOT NULL — a conflict with no evidence is
+              not reviewable.
+
+           2. The three FKs deliberately use DIFFERENT delete actions. The song
+              CASCADEs (a conflict about a deleted song is meaningless), the
+              incoming lyrics SET NULL (the conflict record survives its source
+              being purged, since the snapshot above still carries the evidence),
+              and the resolver SET NULL (deleting a curator account must not
+              erase the moderation history they produced). */
         $mysql->query(
             "CREATE TABLE tblLyricsConflicts (
                 Id               INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -114,6 +173,31 @@ try {
     if (_migReviewQ_tableExists($mysql, 'tblLyricsReviewQueue')) {
         _migReviewQ_output("  [SKIP] tblLyricsReviewQueue already present.");
     } else {
+        /* `UNIQUE KEY uq_LyricsId (LyricsId)` is the load-bearing constraint of
+           this table: ONE queue row per lyrics version. It makes the ingest
+           write an upsert rather than an append, so a source that retries (or a
+           curator who re-submits) cannot fan one item out into a queue full of
+           duplicates a moderator then has to reject one at a time. It is also
+           what lets the queue be re-driven safely from a batch job.
+
+           SongId and Source are DENORMS of tblLyrics — carried here so the queue
+           list view filters and sorts without joining tblLyrics for every row.
+           They are written by the app, never by a trigger; the FK on SongId
+           keeps the denorm honest against deletion, not against edits.
+
+           Priority is a signed INT (not TINYINT) purely so the -1/0/+1 vocab in
+           its COMMENT can widen later without an ALTER — the same growable-
+           vocabulary instinct that makes QueuedReason / ReviewDecision VARCHAR
+           rather than ENUM (CLAUDE.md rule #20).
+
+           Note on idx_Priority (Priority, CreatedAt): it is ASC/ASC, while the
+           documented queue order is `Priority DESC, CreatedAt ASC`. A mixed-
+           direction sort cannot be satisfied by a forward or backward scan of a
+           same-direction composite index, so this index prunes and groups but
+           does not remove the filesort. MySQL 8.0 supports descending index
+           parts (https://dev.mysql.com/doc/refman/8.0/en/descending-indexes.html)
+           if that ever shows up in a slow query; changing it is a paired
+           schema.sql + migration edit, not a local tweak. */
         $mysql->query(
             "CREATE TABLE tblLyricsReviewQueue (
                 Id              INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,

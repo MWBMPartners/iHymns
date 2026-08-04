@@ -18,8 +18,9 @@ declare(strict_types=1);
  * consistent and that schema.sql mirrors every migration-created table.
  *
  * Required helpers (defined in setup-database.php at include time):
- *   _migProbe_tableExists, _migProbe_columnExists,
- *   _migProbe_columnIsNullable, _migProbe_triggerExists
+ *   _migProbe_tableExists, _migProbe_columnExists, _migProbe_indexExists,
+ *   _migProbe_columnIsNullable, _migProbe_triggerExists,
+ *   _migProbe_columnDataType (#1741 P1 — ENUM/SET->VARCHAR widening probes)
  *
  * Required globals (set by setup-database.php at include time):
  *   $hasCredentials  — used by the IANA card's extra_html block
@@ -31,6 +32,74 @@ declare(strict_types=1);
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
     exit('Access denied.');
+}
+
+/* The FK expectations two of the probes below need (#1690).
+ *
+ * ELI5: the list of "which links to a song's id should exist" lives in one
+ * place; the migration cards that create those links read it from there rather
+ * than each keeping their own copy.
+ *
+ * Detail: `SONG_RELOCATE_EXPECTED_SONGID_FKS` + `songRelocateFksFixedBy()` are
+ * declared in includes/song_relocate.php, which is where the songbook move
+ * consumes them. Sourcing the probes from the same const is what stops a card's
+ * pendency, the move's refusal and the migration's own DDL from drifting apart —
+ * the exact drift that left `songid-prefix-fixup` permanently "already applied"
+ * on an install whose four FKs were still RESTRICT (rule #35).
+ *
+ * Loading is side-effect-free: the file declares functions and constants, and
+ * its own require of db_mysql.php only reads a credentials file if one exists —
+ * it opens no connection. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+           . DIRECTORY_SEPARATOR . 'song_relocate.php';
+
+/**
+ * Does a live FK constraint exist on this table, and if so is its UPDATE_RULE
+ * something other than CASCADE?
+ *
+ * ELI5: "is this link set up so a rename follows through?" — used by the two
+ * cards that create or repair such links.
+ *
+ * Detail: returns FALSE when the constraint is absent (that is the other
+ * probe's question) and TRUE only for a constraint that is really there and
+ * really not cascading. Names are BOUND, never interpolated (rule #5).
+ */
+function _migProbe_fkUpdateRuleNotCascade(\mysqli $db, string $table, string $constraint): bool
+{
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = DATABASE()
+            AND TABLE_NAME        = ?
+            AND CONSTRAINT_NAME   = ?
+            AND UPDATE_RULE      <> 'CASCADE'
+          LIMIT 1"
+    );
+    $stmt->bind_param('ss', $table, $constraint);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit;
+}
+
+/**
+ * Is a named FK constraint present in the live schema?
+ *
+ * ELI5: "has this link been created yet?"
+ */
+function _migProbe_constraintExists(\mysqli $db, string $table, string $constraint): bool
+{
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = DATABASE()
+            AND TABLE_NAME        = ?
+            AND CONSTRAINT_NAME   = ?
+          LIMIT 1"
+    );
+    $stmt->bind_param('ss', $table, $constraint);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit;
 }
 
 return [
@@ -245,6 +314,9 @@ return [
         'probe' => static function (\mysqli $db): bool {
             if (!_migProbe_tableExists($db, 'tblWorks')) return false;
             try {
+                /* @deleted-visible: migration probe (#1694) — backfill
+                   completeness is PHYSICAL; a hidden song's ISWC still needs
+                   its Work row so the link is intact on restore. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Iswc IS NOT NULL AND TRIM(s.Iswc) <> ''
@@ -432,6 +504,8 @@ return [
                 $colB->close();
                 /* Detect any single-language songbook with at least one
                    member whose primary language subtag differs. */
+                /* @deleted-visible: migration probe (#1694) — language
+                   backfill is PHYSICAL; a hidden row still needs the tag. */
                 $res = $db->query(
                     "SELECT 1
                        FROM tblSongs s
@@ -470,11 +544,37 @@ return [
                       . ' Re-runnable.',
             'button' => 'Run SongId Prefix Fixup',
         ],
+        /* TWO reasons to be pending, OR'd (#1690).
+         *
+         * (a) is the data fix the card was written for. (b) is the migration's
+         * STEP 1, which runs unconditionally and adds ON UPDATE CASCADE to four
+         * FKs created without it — and which the probe used to be blind to. On
+         * an install with clean prefixes but RESTRICT FKs, (a) alone answered
+         * "not pending", so the card sat in the collapsed "already applied"
+         * expander, "Apply all pending" skipped it, and the only thing that
+         * would repair those FKs was never offered — while /manage/editor
+         * refused to move any song that had a media row, an external link, an
+         * alternative title or a work membership. A probe must detect actual
+         * completion of everything its migration does (rule #19), not just the
+         * part that named the card.
+         *
+         * The four constraint names come from SONG_RELOCATE_EXPECTED_SONGID_FKS
+         * so the probe, the move's refusal and the migration cannot disagree
+         * about which FKs this card owns. */
         'probe' => static function (\mysqli $db): bool {
+            /* Read OUTSIDE the try, deliberately. `catch (\Throwable)` would also
+               swallow an `Error` from a missing/renamed helper, and this probe's
+               fail-shape is `false` = "already applied" — so a typo would hide
+               the card forever, which is the very failure #1690 fixed. A DB
+               error degrades quietly; a code error must not. */
+            $targets = songRelocateFksFixedBy('songid-prefix-fixup');
             try {
-                /* Pending whenever any row\'s SongId prefix disagrees with
+                /* (a) Pending whenever any row's SongId prefix disagrees with
                    its declared SongbookAbbr. Self-clears once the migration
                    has run. */
+                /* @deleted-visible: migration probe (#1694) — prefix/abbr
+                   agreement is PHYSICAL integrity; a hidden drifted row still
+                   needs the fixup. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongs
                       WHERE SongbookAbbr IS NOT NULL
@@ -484,7 +584,16 @@ return [
                 );
                 $needs = $res && $res->fetch_row() !== null;
                 if ($res) $res->close();
-                return $needs;
+                if ($needs) { return true; }
+
+                /* (b) …or whenever one of the four cascade targets is present
+                   but still not ON UPDATE CASCADE. A constraint that is ABSENT
+                   is not this card's business — the migration only re-ALTERs
+                   existing FKs, and it reports a missing one as [skip]. */
+                foreach ($targets as [$table, , $constraint, ]) {
+                    if (_migProbe_fkUpdateRuleNotCascade($db, $table, $constraint)) { return true; }
+                }
+                return false;
             } catch (\Throwable $_e) {
                 return false;
             }
@@ -1604,14 +1713,34 @@ return [
                       . ' SongId references. Idempotent.',
             'button' => 'Run Soft-Reference FK Hardening',
         ],
-        /* Pending until the representative FK constraint exists in the live schema. */
+        /* A MULTI-OBJECT probe: pending until ALL FOUR constraints exist (#1690).
+         *
+         * It used to ask about the "representative" fk_Revisions_Song alone, so
+         * a PARTIAL apply — the revisions FK added, then one of the dismissed-
+         * suggestion ALTERs failing on dangling data — showed the card green
+         * with two FKs still missing. That is precisely the multi-object case
+         * rule #19 requires an OR-probe for, and it matters more than usual
+         * here: a column with no FK leaves no INFORMATION_SCHEMA row at all, so
+         * a songbook move stranded every row in it SILENTLY.
+         *
+         * Each constraint is gated on its own table+column existing, because
+         * the migration itself only adds an FK to a column that is there — a
+         * minimal install missing tblSongLinkSuggestionsDismissed entirely must
+         * not be reported as pending forever. Names come from
+         * SONG_RELOCATE_EXPECTED_SONGID_FKS (rule #35). */
         'probe' => static function (\mysqli $db): bool {
-            $res = $db->query(
-                "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-                  WHERE CONSTRAINT_SCHEMA = DATABASE()
-                    AND CONSTRAINT_NAME = 'fk_Revisions_Song' LIMIT 1"
-            );
-            return !($res && $res->num_rows > 0);
+            /* Outside the try — see the songid-prefix-fixup probe for why a code
+               error must not degrade to "already applied". */
+            $targets = songRelocateFksFixedBy('song-softref-fks');
+            try {
+                foreach ($targets as [$table, $column, $constraint, ]) {
+                    if (!_migProbe_columnExists($db, $table, $column))         { continue; }
+                    if (!_migProbe_constraintExists($db, $table, $constraint)) { return true; }
+                }
+                return false;
+            } catch (\Throwable $_e) {
+                return false;
+            }
         },
     ],
 
@@ -1800,6 +1929,218 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblTunes')
             || !_migProbe_columnExists($db, 'tblSongs', 'TuneId'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Epic #1741 P1 — additive/idempotent/dormant schema batch for the
+     * MusicBrainz-shaped catalogue expansion (Musicians/Works/Tunes/Songs).
+     * Four cards, one per entity family, per
+     * .claude/catalogue-expansion-1741-plan.md §2. Nothing reads or writes
+     * any of these new columns/tables yet — zero behaviour change until the
+     * later phases (P2 rename, P3 resolver, P4 pages, P5 editor) consume
+     * them. 'works-identity' and 'tune-enrichment' both FK to tblTunes, so
+     * they are placed AFTER 'tunes-entity' above; each also tolerates being
+     * run before it (skip-and-warn on the FK / whole script respectively)
+     * rather than erroring, so out-of-order clicks are safe.
+     * -------------------------------------------------------------------- */
+    'musician-profile' => [
+        'script' => 'migrate-musician-profile.php',
+        'card' => [
+            'title'  => 'Musician profile schema (#1741 P1)',
+            'body'   => 'Adds <code>tblCreditPeople.Type/Disambiguation/Biography</code>'
+                      . ' (entity-type vocabulary + bio field, backfilled from'
+                      . ' <code>IsGroup</code>/<code>IsSpecialCase</code>/<code>Notes</code> — Notes is'
+                      . ' copied, not cleared, so the live bio on <code>/people/&lt;slug&gt;</code> keeps'
+                      . ' working unchanged), extends <code>tblCreditPersonMembers</code> with a dated'
+                      . ' <code>RelationType</code> (member | portrays) and re-keys its UNIQUE constraint,'
+                      . ' and widens <code>tblCreditPersonAliases.Type</code> from ENUM to VARCHAR.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Musician Profile Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until every column, the
+           re-keyed UNIQUE (new one present AND old one gone), and the
+           widened alias Type all agree the migration fully landed. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblCreditPeople', 'Type')
+            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Biography')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'RelationType')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFrom')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFromPrecision')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateTo')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateToPrecision')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'Note')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'UpdatedAt')
+            || !_migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member_rel')
+            || _migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member')
+            || _migProbe_columnDataType($db, 'tblCreditPersonAliases', 'Type') !== 'varchar',
+    ],
+
+    'works-identity' => [
+        'script' => 'migrate-works-identity.php',
+        'card' => [
+            'title'  => 'Works identity schema (#1741 P1)',
+            'body'   => 'Adds <code>tblWorks.Ccli</code> (+ <code>uq_ccli</code>),'
+                      . ' <code>Subtitle</code>, <code>Disambiguation</code>,'
+                      . ' <code>TuneName</code>/<code>TuneId</code> (+ <code>idx_TuneId</code> and the'
+                      . ' trailing <code>fk_Works_Tune</code> FK), <code>FirstPublishedYear</code>, and'
+                      . ' <code>CopyrightYears</code>/<code>CopyrightHolder</code> — the Work side of the'
+                      . ' catalogue-identity expansion, mirroring the tblSongs/tblTunes shapes. The FK'
+                      . ' needs <code>tblTunes</code> to exist first (run &ldquo;Tune + meter entity&rdquo;'
+                      . ' above if this card warns about it); every other column applies regardless.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Works Identity Migration',
+        ],
+        /* Multi-object OR-probe. fk_Works_Tune can never exist before
+           tblTunes does, so — correctly — this card stays pending on an
+           install that hasn't run 'tunes-entity' yet, even though every
+           column this script CAN apply already has been; the registry
+           ORDER (this entry after 'tunes-entity') is what resolves that
+           for "Apply all pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'Ccli')
+            || !_migProbe_columnExists($db, 'tblWorks', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblWorks', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblWorks', 'TuneName')
+            || !_migProbe_columnExists($db, 'tblWorks', 'TuneId')
+            || !_migProbe_columnExists($db, 'tblWorks', 'FirstPublishedYear')
+            || !_migProbe_columnExists($db, 'tblWorks', 'CopyrightYears')
+            || !_migProbe_columnExists($db, 'tblWorks', 'CopyrightHolder')
+            || !_migProbe_indexExists($db, 'tblWorks', 'idx_TuneId')
+            || !_migProbe_indexExists($db, 'tblWorks', 'uq_ccli')
+            || !_migProbe_constraintExists($db, 'tblWorks', 'fk_Works_Tune'),
+    ],
+
+    'tune-enrichment' => [
+        'script' => 'migrate-tune-enrichment.php',
+        'card' => [
+            'title'  => 'Tune enrichment schema (#1741 P1)',
+            'body'   => 'Adds <code>tblTunes.Subtitle</code>/<code>Disambiguation</code>, creates'
+                      . ' <code>tblTuneCredits</code> (Role-discriminated composer/arranger/harmoniser/'
+                      . 'source credits, with a reserved dormant <code>CreditPersonId</code> FK) and'
+                      . ' <code>tblTuneExternalLinks</code> (mirrors'
+                      . ' <code>tblWorkExternalLinks</code>), and widens'
+                      . ' <code>tblExternalLinkTypes.Category</code> (ENUM) and'
+                      . ' <code>.AppliesTo</code> (SET) to VARCHAR so a future <code>tune</code> value never'
+                      . ' needs its own ALTER. Requires <code>tblTunes</code> to exist — run &ldquo;Tune +'
+                      . ' meter entity&rdquo; above first if this card warns about it. Additive, idempotent,'
+                      . ' dormant — safe to re-run.',
+            'button' => 'Run Tune Enrichment Migration',
+        ],
+        /* Multi-object OR-probe. The whole script is gated on tblTunes
+           existing (unlike works-identity, every object here either ALTERs
+           tblTunes or FKs to it), so — correctly — this stays pending until
+           'tunes-entity' has run; the registry order resolves that. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblTunes', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblTunes', 'Disambiguation')
+            || !_migProbe_tableExists($db, 'tblTuneCredits')
+            || !_migProbe_tableExists($db, 'tblTuneExternalLinks')
+            || _migProbe_columnDataType($db, 'tblExternalLinkTypes', 'Category') !== 'varchar'
+            || _migProbe_columnDataType($db, 'tblExternalLinkTypes', 'AppliesTo') !== 'varchar',
+    ],
+
+    'song-identity-fields' => [
+        'script' => 'migrate-song-identity-fields.php',
+        'card' => [
+            'title'  => 'Song identity fields (#1741 P1)',
+            'body'   => 'Adds <code>tblSongs.Subtitle</code>, <code>Disambiguation</code>,'
+                      . ' <code>CopyrightYears</code>/<code>CopyrightHolder</code> (legacy'
+                      . ' <code>Copyright</code> kept as-is, not auto-parsed), and'
+                      . ' <code>FirstPublishedYear</code>; canonicalises existing'
+                      . ' <code>Iswc</code> (to <code>T-NNN.NNN.NNN-C</code>) and <code>Isrc</code> (to a'
+                      . ' bare 12-character code) values in place, then adds'
+                      . ' <code>idx_Iswc</code>/<code>idx_Ccli</code> so the future /iswc/ and /ccli/'
+                      . ' resolvers get an indexed exact match. Unparseable identifier values are left'
+                      . ' untouched and logged, never guessed at. Additive, idempotent, dormant — safe'
+                      . ' to re-run.',
+            'button' => 'Run Song Identity Fields Migration',
+        ],
+        /* Multi-object OR-probe. The two indexes are created LAST in the
+           migration (after both backfills), so their presence is the
+           probe's proof the backfills also completed — rule #19 step
+           order. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblSongs', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightYears')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightHolder')
+            || !_migProbe_columnExists($db, 'tblSongs', 'FirstPublishedYear')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_Iswc')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_Ccli'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Epic #1741 P2-A — Musicians rename: SCHEMA + compat views ONLY. App
+     * code (routes/actions/log keys/PHP+JS identifiers/entitlement name) is
+     * NOT touched here — that is #1741 P2-B, a deliberately separate, later
+     * step. Placed immediately after the 4 P1 entries above because it
+     * REQUIRES all four to be fully applied first (migrate-musicians-rename
+     * .php's own precondition gate refuses to run otherwise, since
+     * tune-enrichment's tblTuneCredits carries a foreign key to
+     * tblCreditPeople, and a foreign key may only ever reference a base
+     * table — never a view, which is what tblCreditPeople becomes the
+     * moment this card lands).
+     * -------------------------------------------------------------------- */
+    'musicians-rename' => [
+        'script' => 'migrate-musicians-rename.php',
+        'card' => [
+            'title'  => 'Musicians rename — schema + compat views (#1741 P2)',
+            'body'   => 'Renames the 7 <code>tblCreditPe*/tblCreditPerson*</code> tables to'
+                      . ' <code>tblMusician*</code>, renames every <code>CreditPersonId</code>-family'
+                      . ' column to <code>MusicianId</code> (or <code>Subject/ObjectMusicianId</code> on'
+                      . ' the relation table, renamed from <code>tblCreditPersonMembers</code> to'
+                      . ' <code>tblMusicianRelations</code>), renames the indexes/FK constraints that'
+                      . ' named the old vocabulary, and creates an UPDATABLE compat <code>VIEW</code>'
+                      . ' under every OLD table name so existing app code — every current read and'
+                      . ' write against <code>tblCreditPeople</code> etc. — keeps working completely'
+                      . ' unchanged. Also widens <code>tblExternalLinkTypes.AppliesTo</code> to carry a'
+                      . ' <code>musician</code> token ALONGSIDE the retained legacy <code>person</code>'
+                      . ' token (never a destructive rewrite — see the migration file for why).'
+                      . ' <strong>Requires</strong> all four #1741 P1 cards above (Musician profile /'
+                      . ' Works identity / Tune enrichment / Song identity fields) to be fully applied'
+                      . ' first; refuses to run and explains why otherwise. Idempotent — safe to'
+                      . ' re-run. The compat views are permanent until a dedicated later drop card'
+                      . ' (#1741 P2b, not this one) runs once every docroot serves renamed app code.',
+            'button' => 'Run Musicians Rename Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the table rename, every
+           FK-carrying table's column rename, the re-keyed relation UNIQUE index, a
+           sample renamed FK constraint (proof Step 4 landed, not just Step 3), AND
+           the AppliesTo back-compat token addition have ALL completed.
+           NOTE the AppliesTo check is deliberately NOT "has the legacy 'person'
+           token been removed" — this migration's whole point is that 'person' is
+           KEPT permanently (see migrate-musicians-rename.php's file doc-block) so
+           old app code's FIND_IN_SET('person', …) calls never stop matching. The
+           real completion signal is "does every row that carries 'person' also
+           carry 'musician'" — mirroring the migration's own UPDATE …WHERE guard. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblMusicians'))                              { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianIdentifiers', 'MusicianId'))     { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianExternalLinks', 'MusicianId'))   { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianAliases', 'MusicianId'))         { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianLinks', 'MusicianId'))           { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianIPI', 'MusicianId'))             { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianRelations', 'SubjectMusicianId')){ return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianRelations', 'ObjectMusicianId')) { return true; }
+            if (!_migProbe_columnExists($db, 'tblSongbookCompilers', 'MusicianId'))       { return true; }
+            if (!_migProbe_columnExists($db, 'tblTuneCredits', 'MusicianId'))             { return true; }
+            if (!_migProbe_columnExists($db, 'tblVocalParts', 'MusicianId'))              { return true; }
+            if (!_migProbe_indexExists($db, 'tblMusicianRelations', 'uq_subject_object_rel')) { return true; }
+            if (!_migProbe_constraintExists($db, 'tblMusicians', 'fk_Musicians_BirthPlace'))  { return true; }
+            try {
+                if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')) { return false; }
+                $res = $db->query(
+                    "SELECT 1 FROM tblExternalLinkTypes
+                      WHERE FIND_IN_SET('person', AppliesTo) > 0
+                        AND FIND_IN_SET('musician', AppliesTo) = 0
+                      LIMIT 1"
+                );
+                $needsToken = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needsToken;
+            } catch (\Throwable $_e) { return false; }
+        },
     ],
 
     'usage-events' => [
@@ -2470,6 +2811,8 @@ return [
            SongId is canonical. Detects real completion from live data (never always-true). */
         'probe' => static function (\mysqli $db): bool {
             try {
+                /* @deleted-visible: migration probe (#1694) — a hidden
+                   draft-id row still needs its canonical id minted. */
                 $r = $db->query("SELECT 1 FROM tblSongs WHERE SongId LIKE 'song-%' LIMIT 1");
                 $pending = ($r && $r->fetch_row() !== null);
                 if ($r) { $r->close(); }
@@ -2651,6 +2994,204 @@ return [
             || !_migProbe_tableExists($db, 'tblApnsTokens'),
     ],
 
+    /* ----------------------------------------------------------------------
+     * #1668 — remove the dead, self-misdescribing `ccli_validation_enabled`
+     * setting. Nothing has ever read the key, but its seeded description
+     * presented it as the CCLI enforcement switch, so an operator flipping it
+     * to 1 would believe copyright enforcement was live when nothing had
+     * changed. schema.sql's copy was corrected in #1640, but INSERT IGNORE
+     * means existing installs kept the false text — only a migration reaches
+     * them. Non-destructive in any meaningful sense (zero readers), so NOT
+     * flagged `manual`: it should run as part of "Apply all pending".
+     * -------------------------------------------------------------------- */
+    'remove-ccli-validation-setting' => [
+        'script' => 'migrate-remove-ccli-validation-setting.php',
+        'card' => [
+            'title'  => 'Remove dead ccli_validation_enabled setting (#1668)',
+            'body'   => 'Deletes the <code>ccli_validation_enabled</code> row from'
+                      . ' <code>tblAppSettings</code>. Nothing in the codebase has ever read'
+                      . ' this key, yet its description called it the CCLI enforcement switch —'
+                      . ' so setting it to <code>1</code> enforced nothing while looking like it'
+                      . ' did. The real controls are <code>content_gating_enabled</code> plus'
+                      . ' <code>require_licence:ccli</code> rows in'
+                      . ' <code>tblContentRestrictions</code>, with the licence itself resolved'
+                      . ' by <code>userHasValidCcli()</code> (#1668). No tables, no columns, no'
+                      . ' readers — deleting the row cannot change behaviour. Idempotent.',
+            'button' => 'Remove ccli_validation_enabled Setting',
+        ],
+        /* Pending while the row STILL EXISTS; applied once it is gone — the
+           inverse polarity of the seeding migrations, mirroring the DROP cards.
+           Detects real completion from live data (rule #19), never static-true,
+           and self-clears after a successful run. A fresh install passes
+           trivially because schema.sql no longer seeds the row. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'ccli_validation_enabled' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            return $row !== null;   /* row present → still pending */
+        })($db),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * X6 / #1685 — reword the captcha_* / ads_* seed descriptions as RESERVED.
+     * Six tblAppSettings rows described providers/toggles that no code in
+     * this repo has ever read (orphan inventory §6.2) — the same species of
+     * doc-vs-code lie #1668 fixed for ccli_validation_enabled, except these
+     * six describe plausible FUTURE features rather than an actively
+     * misleading security switch, so the remediation plan's default is
+     * REWORD, not delete. schema.sql's INSERT IGNORE seed already carries
+     * the corrected text for fresh installs; only a migration reaches the
+     * Description column on an existing row. Never touches SettingValue —
+     * no operator-set value changes, nothing here can alter behaviour (the
+     * six keys have no reader either way). Not `manual`: safe inside
+     * "Apply all pending".
+     * -------------------------------------------------------------------- */
+    'fix-captcha-ads-descriptions' => [
+        'script' => 'migrate-fix-captcha-ads-descriptions.php',
+        'card' => [
+            'title'  => 'Reword captcha/ads seed descriptions (#1685)',
+            'body'   => 'Rewords the <code>Description</code> of six'
+                      . ' <code>tblAppSettings</code> rows — <code>captcha_provider</code>,'
+                      . ' <code>captcha_site_key</code>, <code>captcha_secret_key</code>,'
+                      . ' <code>ads_enabled</code>, <code>ads_provider</code>,'
+                      . ' <code>ads_publisher_id</code> — to say plainly that nothing reads'
+                      . ' them yet, instead of describing bot-protection / advertisement'
+                      . ' features that do not exist in this codebase. Only the description'
+                      . ' text changes; operator-set values are untouched. Idempotent.',
+            'button' => 'Reword Captcha/Ads Descriptions',
+        ],
+        /* Multi-row probe (rule #19 discipline applied to a data migration —
+           not just DDL): pending while ANY of the six rows still carries text
+           that is not the reworded RESERVED text, so a partial run (e.g. the
+           connection dropped after row 3 of 6) never shows the card green. A
+           fresh install passes trivially because schema.sql already seeds the
+           corrected text; a very old install missing one of the six rows
+           entirely also can't block "applied" — a missing row has nothing
+           misleading to reword. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $keys = ['captcha_provider', 'captcha_site_key', 'captcha_secret_key',
+                     'ads_enabled', 'ads_provider', 'ads_publisher_id'];
+            $placeholders = implode(',', array_fill(0, count($keys), '?'));
+            $stmt = $db->prepare(
+                "SELECT COUNT(*) AS c FROM tblAppSettings"
+                . " WHERE SettingKey IN ({$placeholders})"
+                . " AND Description NOT LIKE 'RESERVED —%'"
+            );
+            $stmt->bind_param(str_repeat('s', count($keys)), ...$keys);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return ((int)($row['c'] ?? 0)) > 0;   /* any non-reworded row → still pending */
+        })($db),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1661 — setlist tombstones + optional expiry. The storage half of sync
+     * protocol 2: deletion becomes something a client SAYS (a tombstone row)
+     * rather than something the server INFERS from a setlist being absent
+     * from a payload — the inference that made a truncated payload look like
+     * a mass deletion (#1649). The 50-setlist cap goes away in the same
+     * change; over-size bodies are REJECTED (413), never silently clipped.
+     *
+     * Additive and dormant-safe: every reader is existence-gated
+     * (userSyncTombstonesReady() / userSyncExpiryReady() in
+     * includes/user_sync.php), so an install that has not run this card keeps
+     * exactly today's behaviour instead of throwing under STRICT (#1228).
+     * -------------------------------------------------------------------- */
+    'setlist-tombstones' => [
+        'script' => 'migrate-setlist-tombstones.php',
+        'card' => [
+            'title'  => 'Setlist tombstones + optional expiry (#1661)',
+            'body'   => 'Creates <code>tblUserSetlistTombstones</code> (an explicit, permanent'
+                      . ' record that a set list was deleted — so a deletion can never again be'
+                      . ' inferred from a truncated sync payload, #1649) and adds the optional'
+                      . ' <code>tblUserSetlists.ExpiresAt</code> column (<code>NULL</code> ='
+                      . ' never expires, which is what every existing row gets, so no set list'
+                      . ' changes behaviour). An expiry that passes is converted server-side'
+                      . ' into a tombstone with <code>Reason=\'expired\'</code>, so expiry and'
+                      . ' deletion propagate through one mechanism. Until this card is applied'
+                      . ' the sync path is existence-gated and behaves exactly as before —'
+                      . ' native app sync is unaffected either way. Additive, idempotent — safe'
+                      . ' to re-run.',
+            'button' => 'Run Setlist Tombstones Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): the migration creates a table AND
+           alters another, so a partial apply (connection lost between the two)
+           must NOT show the card green — otherwise "Apply all pending" would
+           skip the half that never ran, and the expiry gate would sit
+           permanently false with nothing indicating why. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblUserSetlistTombstones')
+            || !_migProbe_columnExists($db, 'tblUserSetlists', 'ExpiresAt'),
+    ],
+
+    /* ---- #301 / #1671 F4 — set-list service plans (template slots) -------------
+       Adds tblUserSetlists.SlotsJson, the storage half that #1671 Batch 8 found
+       missing: tblSetlistTemplates has stored a template's SlotsJson since #301,
+       but user_setlists_sync had nowhere to keep the plan once a template was
+       applied, so slots round-tripped and came back GONE for signed-in users.
+       ONE column, ONE object, so the probe is a single columnExists — a
+       multi-object OR-probe would be dishonest here (rule #19 asks for one only
+       when a partial apply is possible). */
+    'setlist-slots' => [
+        'script' => 'migrate-setlist-slots.php',
+        'card' => [
+            'title'  => 'Set-list service plans (#301)',
+            'body'   => 'Adds the optional <code>tblUserSetlists.SlotsJson</code> column so a'
+                      . ' set list can remember the service-order plan it was built from'
+                      . ' (<code>{templateId, templateName, slots[]}</code>). Without it,'
+                      . ' applying a set-list <em>template</em> produced slots that the very'
+                      . ' next sync silently discarded — the reason the template UI was'
+                      . ' deliberately not built in the #1671 Batch-8 pass. <code>NULL</code> ='
+                      . ' no plan, which is what every existing set list gets, so applying'
+                      . ' this changes the behaviour of zero existing rows. Until it is'
+                      . ' applied the sync path is existence-gated and behaves exactly as'
+                      . ' before. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Set-list Service Plans Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblUserSetlists', 'SlotsJson'),
+    ],
+
+    /* ---- #1698 — account lifecycle: disabled vs deleted ------------------------
+       Adds tblUsers.Status + tblUsers.StatusChangedAt + idx_Status. `IsActive`
+       remains THE lock on every authenticated path (getAuthenticatedUser() filters
+       IsActive = 1, and manage/includes/auth.php has thirteen more enforcement
+       points); Status exists ONLY to distinguish a reversible DISABLE from an
+       irreversible anonymised-tombstone ERASE.
+
+       THREE objects, so a THREE-clause OR-probe (rule #19). The migration applies
+       them as three separate guarded statements precisely so a dropped connection
+       leaves a partial state — and a partial apply must NOT show the card green,
+       or "Apply all pending" skips the half that never ran while
+       userStatusColumnReady() sits true and the erasure core writes a Status the
+       index cannot serve. */
+    'user-account-status' => [
+        'script' => 'migrate-user-account-status.php',
+        'card' => [
+            'title'  => 'Account lifecycle status (#1698)',
+            'body'   => 'Adds <code>tblUsers.Status</code> (<code>active | disabled | deleted</code>)'
+                      . ' + <code>StatusChangedAt</code> + an index, so a <strong>disabled</strong>'
+                      . ' account (switched off, fully reversible) is distinguishable from an'
+                      . ' <strong>erased</strong> one (anonymised tombstone). Existing'
+                      . ' <code>IsActive = 0</code> rows are backfilled to <code>disabled</code>,'
+                      . ' which is what they are. Adds no new lock — <code>IsActive</code> is still'
+                      . ' what every auth path checks — so applying this changes the behaviour of'
+                      . ' zero existing accounts. Until it is applied every reader is'
+                      . ' existence-gated and falls back to <code>IsActive</code>, and account'
+                      . ' <em>erasure</em> deliberately REFUSES rather than falling back to the old'
+                      . ' irreversible hard delete. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Account Lifecycle Status Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblUsers', 'Status')
+            || !_migProbe_columnExists($db, 'tblUsers', 'StatusChangedAt')
+            || !_migProbe_indexExists($db, 'tblUsers', 'idx_Status'),
+    ],
+
     /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
        tblSongChords (#299) has zero PHP/JS references — chord notation now lives
        per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only
@@ -2683,5 +3224,409 @@ return [
            gone, so the probe self-clears after a successful run. Detects real completion —
            never a hardcoded static-true. */
         'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblSongChords'),
+    ],
+
+    'drop-user-preferences' => [
+        'script' => 'migrate-drop-user-preferences.php',
+        /* #1671 F5 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and from the pending counter; the single run
+           still requires confirm=1. Same convention as drop-song-chords / C6 above —
+           setup-database.php honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '⚠ Drop superseded tblUserPreferences (#1671 F5)',
+            'body'   => 'DESTRUCTIVE — drops <code>tblUserPreferences</code> (#310), an'
+                      . ' un-namespaced duplicate of <code>tblUsers.Settings</code>. Its only two'
+                      . ' endpoints (<code>user_preferences</code>,'
+                      . ' <code>user_preferences_sync</code>) had no caller anywhere in the tree'
+                      . ' and were removed; preference sync now lives solely on'
+                      . ' <code>action=user_settings</code>, which gained a namespaced write'
+                      . ' contract so a second product can share the row. REFUSES to drop unless'
+                      . ' the live table is verifiably EMPTY (checked independent of'
+                      . ' confirmation), so a row written by an out-of-repo caller is a hard stop'
+                      . ' rather than silent data loss. Idempotent — a no-op once the table is'
+                      . ' gone.',
+            'button' => 'Drop tblUserPreferences (gated)',
+        ],
+        /* Pending while the table STILL EXISTS — a DROP is "applied" once the table is gone,
+           so the probe self-clears after a successful run (the same inverted polarity as
+           drop-song-chords). Reads the live schema; never a hardcoded static-true. */
+        'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblUserPreferences'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1590 — entitlement truth-up: clear the three stale saved overrides.
+     *
+     * Nine entitlement checkboxes on /manage/entitlements were decorative —
+     * nothing anywhere called userHasEntitlement() with them, so an operator's
+     * tick changed nothing, silently. Batch 6 wired them all, with defaults
+     * chosen to equal the raw role gates they replace, so that nothing changes
+     * until an operator deliberately overrides.
+     *
+     * That equality holds for the SHIPPED defaults. It does not hold for a
+     * saved override — and `saveEntitlementOverrides()` writes the entire map,
+     * every key, on every save, so an install where the page has ever been
+     * saved carries an explicit stored value for all of them. For the three
+     * keys whose default had to move to match reality, that stale stored value
+     * would start being obeyed the moment the checks went live and would take
+     * away abilities curators use today. This clears exactly those three.
+     *
+     * Data-only: no DDL, so nothing to mirror into schema.sql beyond the
+     * sentinel seed (which is there so a fresh install — which has no stale
+     * override by construction — shows the card already applied).
+     * -------------------------------------------------------------------- */
+    'entitlement-truthup' => [
+        'script' => 'migrate-entitlement-truthup.php',
+        'card' => [
+            'title'  => 'Entitlement truth-up — clear stale overrides (#1590)',
+            'body'   => 'Nine permission checkboxes on <code>/manage/entitlements</code> were'
+                      . ' decorative — nothing read them, so ticking or unticking one changed'
+                      . ' nothing. They are now enforced. This clears the three saved overrides'
+                      . ' whose stored value no longer means what it did —'
+                      . ' <code>delete_songs</code>, <code>bulk_edit_songs</code> and'
+                      . ' <code>run_db_backup</code> — so they fall back to the corrected'
+                      . ' shipped defaults instead of silently removing access curators have'
+                      . ' today. Every other saved permission is left untouched. Idempotent;'
+                      . ' a no-op on an install that has never saved that page.',
+            'button' => 'Clear stale entitlement overrides',
+        ],
+        /* Sentinel probe, deliberately NOT "are the three keys absent?".
+           Re-saving /manage/entitlements legitimately writes all three keys back,
+           so a key-absence probe would flip this card from applied to pending for
+           the rest of time — the "pending counter can never reach zero" failure
+           rule #19 exists to prevent. The sentinel records that the one-off prune
+           HAPPENED, which is the thing that cannot un-happen. It is real evidence
+           read from live data, never a hardcoded `static fn() => true`. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'entitlement_truthup_applied' LIMIT 1"
+            );
+            $stmt->execute();
+            $seen = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$seen;   /* no sentinel row → still pending */
+        })($db),
+    ],
+
+    /* ---- #1695 (epic #1692 stage 3) — let the re-widened default take effect --
+       A DATA-ONLY card: no DDL, no new object. It exists because widening
+       `delete_songs` back to editor+ in PHP is a SILENT NO-OP on any install
+       where /manage/entitlements has ever been saved — a stored override
+       replaces the code default outright, and saveEntitlementOverrides() writes
+       the whole map. Conditional by design: it prunes ONLY the exact stage-1
+       interim value, because in the database that is byte-identical to a
+       deliberate operator lockdown, and blanket-clearing would silently WIDEN a
+       privilege on a site that had decided otherwise. */
+    'delete-songs-rewiden' => [
+        'script' => 'migrate-delete-songs-rewiden.php',
+        'card' => [
+            'title'  => 'Re-widen song deletion to curators (#1695)',
+            'body'   => 'Deleting a song is now recoverable (#1694), so <code>delete_songs</code>'
+                      . ' returns to editor+ — the interim admin-only restriction existed only'
+                      . ' because deletion used to be permanent. The permissions screen stores its'
+                      . ' own copy of every rule, and a stored copy beats the shipped default, so'
+                      . ' this clears the remembered interim value. <strong>Only</strong> if it is'
+                      . ' exactly the value we shipped: a deliberate lockdown you chose yourself'
+                      . ' is preserved untouched. Idempotent; a no-op on an install that has never'
+                      . ' saved that page.',
+            'button' => 'Apply the re-widened delete permission',
+        ],
+        /* Sentinel probe, for the same reason as #1590's: re-saving
+           /manage/entitlements legitimately writes the key back, so a
+           key-absence probe would flip this card pending again forever (rule
+           #19's un-reachable-zero failure). The sentinel records that the
+           one-off prune HAPPENED — real evidence from live data, never a
+           hardcoded `static fn() => true`. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'delete_songs_rewiden_applied' LIMIT 1"
+            );
+            $stmt->execute();
+            $seen = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$seen;   /* no sentinel row → still pending */
+        })($db),
+    ],
+
+    /* ---- #1694 (epic #1692) — song soft delete -------------------------------
+       Five columns + one index + one FK on tblSongs so a "deleted" song is
+       HIDDEN and restorable instead of gone: 38 of the 41 FKs referencing
+       tblSongs(SongId) CASCADE, so the old hard delete destroyed components,
+       lyric lines, credits, media, tags and the whole revision history in one
+       irreversible stroke. Additive and DORMANT — nothing reads the columns
+       until the #1694 read-path sweep + write cores land, so applying this
+       card changes the behaviour of zero existing reads (rule #20 one-pass).
+
+       The card also redefines the three SongCount triggers (#793) so the
+       cached per-songbook count means VISIBLE songs (owner decision D1a) —
+       but the triggers are deliberately NOT in this probe: they are
+       host-optional (shared hosts deny CREATE TRIGGER, #815), so a
+       trigger-presence clause would pin this card pending forever on exactly
+       the hosts the friendly-skip path exists for. #793's own card already
+       owns trigger pendency via its sentinel. */
+    'song-soft-delete' => [
+        'script' => 'migrate-song-soft-delete.php',
+        'card' => [
+            'title'  => 'Song soft delete (#1694)',
+            'body'   => 'Adds the soft-delete columns to <code>tblSongs</code>'
+                      . ' (<code>IsDeleted</code>, <code>DeletedAt</code>, <code>DeletedBy</code>,'
+                      . ' <code>DeletedReason</code>, <code>DeleteNote</code>) plus the'
+                      . ' <code>idx_IsDeleted</code> index and the <code>fk_Songs_DeletedBy</code>'
+                      . ' attribution FK, so deleting a song hides it (restorable from the'
+                      . ' forthcoming <code>/manage/deleted-songs</code>) instead of cascading away'
+                      . ' its components, credits, media and revision history. Also redefines the'
+                      . ' SongCount triggers (#793) to count visible songs only, with the same'
+                      . ' friendly skip on trigger-denied hosts. Additive and dormant until the'
+                      . ' #1694 read/write sweep ships. Idempotent — safe to re-run.',
+            'button' => 'Run Song Soft Delete Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): SEVEN separately-guarded objects,
+           so a partial apply (connection dropped between ALTERs) must never
+           show the card green — "Apply all pending" would otherwise skip the
+           half that never ran while songSoftDeleteReady() (which requires all
+           five columns in lockstep) sits false with nothing indicating why. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'IsDeleted')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedAt')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedBy')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedReason')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeleteNote')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_IsDeleted')
+            || !_migProbe_constraintExists($db, 'tblSongs', 'fk_Songs_DeletedBy'),
+    ],
+
+    /* ---- #1725/#1727 — MWBM-IntAppsAPI gateway sync cache ---------------
+       ONE dormant table. Nothing in the tree reads or writes it until the
+       client module (includes/intapps_client.php, a later commit in this
+       same batch) ships AND an admin lists the current channel in
+       tblAppSettings.intappsapi_enabled_channels — so applying this card
+       changes the behaviour of zero existing reads (rule #20 one-pass:
+       Scope/Channel/AppSlug are all reserved-multiplicity columns baked in
+       up front, so a second scope, a per-channel gateway app, or a second
+       registered app slug is a data change, never a second migration). See
+       .claude/intappsapi-integration-plan.md §4 for the full design and
+       .claude/wave4-prelaunch-plan.md §6 Block D for the pre-launch delta
+       this card is part of. */
+    'intapps-sync' => [
+        'script' => 'migrate-add-intapps-sync.php',
+        'card' => [
+            'title'  => 'IntAppsAPI Gateway Sync Cache (#1725/#1727)',
+            'body'   => 'Creates <code>tblIntAppsSync</code>, the local snapshot +'
+                      . ' refresh-bookkeeping table for the MWBM-IntAppsAPI gateway'
+                      . ' integration (server-proxied feature-flag kill switches).'
+                      . ' Entirely dormant until an admin lists the current channel'
+                      . ' in the IntAppsAPI card on <code>/manage/configuration</code>'
+                      . ' — until then this card being applied or pending changes'
+                      . ' nothing observable anywhere in the app. Idempotent — safe'
+                      . ' to re-run.',
+            'button' => 'Create IntApps Sync Table',
+        ],
+        /* Single-object probe (one CREATE TABLE, nothing else) — a real
+           live-schema check, never a `true`-returning stub (rule #19). */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblIntAppsSync'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Epic #1741 D5 — comprehensive external/catalogue ID storage foundation
+     * (media-identifiers-spec.md §4b taxonomy, §4c decisions A=c / B=yes).
+     * Two additive/idempotent/dormant cards; nothing reads or writes either
+     * new object yet — the P3 alias-URL resolver is what starts consuming
+     * them, and is explicitly out of scope for this storage-layer batch.
+     * -------------------------------------------------------------------- */
+    'song-external-ids' => [
+        'script' => 'migrate-song-external-ids.php',
+        'card' => [
+            'title'  => 'Song external IDs (#1741 D5)',
+            'body'   => 'Creates <code>tblSongExternalIds</code>, a key/value'
+                      . ' (SongId, IdType, IdValue) successor to the'
+                      . ' one-column-per-provider <code>tblSongIdentityMap</code>'
+                      . ' shape — absorbs the ~13 DSP + ~10 database + legacy'
+                      . ' provider IDs (ISRC, Spotify, Apple Music, MusicBrainz,'
+                      . ' Discogs, ICPN, …) at zero further ALTER cost per new'
+                      . ' provider. The 4 existing <code>tblSongIdentityMap</code>'
+                      . ' columns are untouched (grandfathered reads). Entirely'
+                      . ' dormant until the P3 alias-URL resolver lands.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Create Song External IDs Table',
+        ],
+        /* Single-object probe (one CREATE TABLE + its keys, all created in
+           the same statement — nothing to partially apply), plus the two
+           indexes as an extra guard so a hand-edited/truncated DDL on some
+           future fork still shows pending rather than a false green. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblSongExternalIds')
+            || !_migProbe_indexExists($db, 'tblSongExternalIds', 'uq_Song_Type_Value')
+            || !_migProbe_indexExists($db, 'tblSongExternalIds', 'idx_Type_Value'),
+    ],
+
+    /* #1747 D5 backfill (owner-confirmed 2026-08-02) — data-only follow-up to
+       'song-external-ids' immediately above. MUST be ordered after it: the
+       backfill INSERTs into tblSongExternalIds, so the card is meaningless
+       (and its own probe would read a missing table) until that table
+       exists. Creates no schema object itself — see the script's own
+       doc-block for why "no schema.sql change" is correct here, not an
+       oversight. */
+    'backfill-song-external-ids' => [
+        'script' => 'migrate-backfill-song-external-ids.php',
+        'card' => [
+            'title'  => 'Backfill song external IDs (#1747 D5)',
+            'body'   => 'Copies the existing data out of the grandfathered'
+                      . ' <code>tblSongs.Isrc</code> column and'
+                      . ' <code>tblSongIdentityMap</code>&rsquo;s four'
+                      . ' recording-ID columns'
+                      . ' (<code>MusicBrainzRecordingMBID</code> /'
+                      . ' <code>SpotifyTrackId</code> / <code>GeniusTrackId</code> /'
+                      . ' <code>IsrcCode</code>) into the new'
+                      . ' <code>tblSongExternalIds</code> key/value store, so'
+                      . ' the new table becomes the comprehensive single home'
+                      . ' for recording IDs rather than starting empty next'
+                      . ' to columns that already had data. The old columns'
+                      . ' are left untouched (still readable) — this only'
+                      . ' adds rows, never deletes or alters anything.'
+                      . ' Idempotent — safe to re-run at any time; already-'
+                      . 'present rows are silently skipped via'
+                      . ' <code>INSERT IGNORE</code>. Requires the'
+                      . ' &ldquo;Song external IDs&rdquo; card above to be'
+                      . ' applied first.',
+            'button' => 'Backfill Song External IDs',
+        ],
+        /* Real data-derived probe (rule #19 — never `=> true`): pending when
+           the target table is missing entirely, OR when ANY grandfathered
+           source value the backfill copies lacks its mirror row in
+           tblSongExternalIds. It checks EVERY source the migration writes —
+           tblSongs.Isrc plus all four tblSongIdentityMap columns (each to its
+           own IdType) — rather than ISRC alone: an install could one day
+           (post the #1010 iLyricsDB merge) carry a MusicBrainz/Spotify/Genius
+           value with no ISRC anywhere, and an ISRC-only probe would then show
+           a false "applied" green while that data sat un-mirrored. Checking
+           all five sources keeps the probe a true completion detector with no
+           false-green window, at negligible cost against the tiny/dormant
+           tblSongIdentityMap. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongExternalIds')) return true;
+            try {
+                /* @deleted-visible: migration probe (#1694) — backfill
+                   completeness is PHYSICAL; a hidden/soft-deleted song's ISRC
+                   still needs its tblSongExternalIds mirror row so the link
+                   is intact if that song is ever restored. Deliberately not
+                   scoped to visible-only rows. */
+                $r = $db->query(
+                    "SELECT 1 FROM tblSongs s
+                      WHERE s.Isrc IS NOT NULL AND s.Isrc <> ''
+                        AND NOT EXISTS (
+                            SELECT 1 FROM tblSongExternalIds e
+                             WHERE e.SongId = s.SongId AND e.IdType = 'isrc' AND e.IdValue = s.Isrc
+                        )
+                      LIMIT 1"
+                );
+                if ($r && $r->fetch_row() !== null) return true;
+
+                if (_migProbe_tableExists($db, 'tblSongIdentityMap')) {
+                    /* All four tblSongIdentityMap columns, each vs its own
+                       IdType — one row un-mirrored on ANY of them = pending.
+                       Column names + IdType literals are hardcoded PHP
+                       constants (rule #5), never request input. */
+                    $r2 = $db->query(
+                        "SELECT 1 FROM tblSongIdentityMap m WHERE
+                            (m.IsrcCode IS NOT NULL AND m.IsrcCode <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'isrc' AND e.IdValue = m.IsrcCode))
+                         OR (m.MusicBrainzRecordingMBID IS NOT NULL AND m.MusicBrainzRecordingMBID <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'musicbrainz-recording' AND e.IdValue = m.MusicBrainzRecordingMBID))
+                         OR (m.SpotifyTrackId IS NOT NULL AND m.SpotifyTrackId <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'spotify' AND e.IdValue = m.SpotifyTrackId))
+                         OR (m.GeniusTrackId IS NOT NULL AND m.GeniusTrackId <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'genius' AND e.IdValue = m.GeniusTrackId))
+                         LIMIT 1"
+                    );
+                    if ($r2 && $r2->fetch_row() !== null) return true;
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+
+    /* #1749 full unification (epic #1741) — the ONE cutover reconciliation
+     * card: makes tblSongs.Isrc and tblSongExternalIds agree in BOTH
+     * directions, once, for every song a pre-#1749 live edit or the P5d
+     * mirror hadn't already kept in lockstep. See
+     * appWeb/.sql/migrate-reconcile-isrc-denorm.php's own doc-block for the
+     * two-step algorithm; this registry entry is rule #19's required single
+     * point of truth (script/card/probe co-located, never four independently
+     * hand-typed facts). */
+    'reconcile-isrc-denorm' => [
+        'script' => 'migrate-reconcile-isrc-denorm.php',
+        'card' => [
+            'title'  => 'Reconcile ISRC denorm ↔ external-ID store (#1749)',
+            'body'   => 'One-shot cutover pass for the #1749 full unification:'
+                      . ' <code>tblSongExternalIds</code> becomes the authority for'
+                      . ' recording ISRCs and <code>tblSongs.Isrc</code> its'
+                      . ' kept-in-sync projection. Re-mints the mirror row from any'
+                      . ' column the pre-cutover era left drifted, then projects'
+                      . ' store-only ISRCs into empty columns. Data-only (no DDL);'
+                      . ' idempotent — safe to re-run; the probe doubles as a live'
+                      . ' drift detector afterwards. Requires the two D5 cards above.',
+            'button' => 'Reconcile ISRC Denorm',
+        ],
+        /* Real, data-derived probe (rule #19): pending when the store table is
+           missing (chain not applied yet — the backfill probe's own posture), when
+           any song carries >1 marker rows (§2.1 anomaly), or when any song's
+           column disagrees with the ONE projection. The projection SQL is BUILT by
+           songExternalIdIsrcProjectionSql() — never a second copy (rule #22). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongExternalIds')) return true;
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblSongExternalIds e
+                      WHERE e.IdType = 'isrc' AND e.SourceRef = 'tblSongs.Isrc'
+                      GROUP BY e.SongId HAVING COUNT(*) > 1 LIMIT 1"
+                );
+                if ($r && $r->fetch_row() !== null) return true;
+                /* @deleted-visible: migration probe (#1694) — reconcile
+                   completeness is PHYSICAL, the SAME posture as the sibling
+                   backfill probe a few hundred lines up: a hidden/soft-
+                   deleted song's ISRC still needs its tblSongs.Isrc column
+                   projected from the store correctly, so the value is right
+                   the moment that song is ever restored. Deliberately not
+                   scoped to visible-only rows. */
+                $r2 = $db->query(
+                    'SELECT 1 FROM tblSongs s WHERE NOT (NULLIF(s.Isrc, \'\') <=> ('
+                    . songExternalIdIsrcProjectionSql('s.SongId')
+                    . ')) LIMIT 1'
+                );
+                if ($r2 && $r2->fetch_row() !== null) return true;
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+
+    'work-bowi' => [
+        'script' => 'migrate-work-bowi.php',
+        'card' => [
+            'title'  => 'Work BOWI identifier (#1741 D5)',
+            'body'   => 'Adds <code>tblWorks.Bowi</code> (Best Open Work'
+                      . ' Identifier, Luminate Data&rsquo;s open ISWC'
+                      . ' alternative) + the <code>uq_bowi</code> unique key,'
+                      . ' mirroring the existing <code>uq_iswc</code>/'
+                      . '<code>uq_ccli</code> shape (NULL, not empty string,'
+                      . ' so absent values coexist). Its own tiny migration'
+                      . ' rather than folded into the already-committed'
+                      . ' &ldquo;Works identity schema&rdquo; card above.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Work BOWI Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until BOTH the column
+           and its UNIQUE key exist. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'Bowi')
+            || !_migProbe_indexExists($db, 'tblWorks', 'uq_bowi'),
     ],
 ];

@@ -396,6 +396,19 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
             ? (json_decode((string)$r['line_chords'], true) ?? null) : null;
         $byCid[$cid]['langs'][]  = ($r['line_lang'] !== null && $r['line_lang'] !== '')
             ? (string)$r['line_lang'] : null;
+        /* #1627 — carry the tblLyricLines PK through to the editor shape.
+           ELI5: each line's database id, so the editor can attach a translation
+           or an annotation to that exact line.
+           Detail: this is the ONE thing that was blocking the whole of #1088's
+           per-line enrichment in the v2 editor. The row already carries
+           `line_id` (lyricLinesFetchPrimary, line ~200) and the public/assembler
+           shape already emits `lineIds` (line ~132); only this editor shape
+           dropped it — so v2 had no anchor to hang a translation on, while v1
+           (which reads the assembler shape) did. Rule #21: enrichment anchors on
+           tblLyricLines.Id, never on a LinesJson array index, because indices
+           shift the moment a line is inserted and the annotation would silently
+           drift onto a different line. */
+        $byCid[$cid]['ids'][]    = (int)$r['line_id'];
     }
 
     $out = [];
@@ -429,6 +442,12 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
             'chords'    => $anyChord ? $chords : null,
             'language'  => $compLang,
             'languages' => $anyLang ? $langOut : null,
+            /* Parallel to `lines`, same order (#1627). Empty on a pre-mirror
+               install, where lyricLinesFetchPrimary has no rows to report — the
+               enrichment endpoints 409 on those installs anyway, so the editor
+               degrades to "no add controls" rather than offering a button that
+               cannot work. */
+            'lineIds'   => $byCid[$cid]['ids'] ?? [],
         ];
     }
     return $out;

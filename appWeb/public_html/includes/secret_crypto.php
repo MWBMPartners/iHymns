@@ -453,6 +453,26 @@ function secretSettingKeys(): array
            .p8 custody pattern").
          */
         'apple_apns_private_key',
+        /* #311/#1671 F6 — the Web Push VAPID private key. Registered the moment
+           anything can write it (the "Generate keypair" button on
+           /manage/notifications), so it is encrypted at rest from its very first
+           save rather than being retro-fitted later. Its PUBLIC half
+           (`webpush_vapid_public`) is deliberately NOT here: that value is
+           designed to be handed to every browser as `applicationServerKey`, and
+           listing a non-secret would make secretInventory() report a false
+           exposure every time it is read. */
+        'webpush_vapid_private',
+        /* #1725/#1728/#1729 — MWBM-IntAppsAPI gateway credentials. Registered
+           the moment the /manage/configuration card can write them, so both
+           are encrypted at rest from their very first save, mirroring the
+           apple_siwa_private_key / webpush_vapid_private custody pattern
+           exactly. `intappsapi_api_key` verifies the X-API-Key header;
+           `intappsapi_hmac_secret` signs POST/PATCH/DELETE bodies
+           (includes/intapps_client.php::intappsSign()). Both are read back
+           transparently decrypted via getAppSetting() — intapps_client.php
+           never touches the encryption layer directly. */
+        'intappsapi_api_key',
+        'intappsapi_hmac_secret',
     ];
 }
 
@@ -460,6 +480,54 @@ function secretSettingKeys(): array
 function isSecretSettingKey(string $key): bool
 {
     return in_array($key, secretSettingKeys(), true);
+}
+
+/**
+ * What should actually be STORED in tblAppSettings for this key/value pair?
+ *
+ * ELI5: if this setting is a secret and encryption is switched on, hand back
+ * the encrypted version — and if we cannot encrypt it, refuse outright rather
+ * than saving the secret in the clear.
+ *
+ * WHY THIS IS A SEPARATE, PURE FUNCTION (#1671 F6). The rule below used to live
+ * ONLY inside `manage/configuration.php`'s `$saveSetting` closure. The moment a
+ * second page needed to store a secret (the VAPID private key) that closure was
+ * about to be copy-pasted, and a second copy of "encrypt secrets at rest" is the
+ * kind of duplication whose divergence is invisible until a secret is sitting in
+ * the database as plaintext. Extracting it also makes it TESTABLE: the decision
+ * is now a function of three arguments and
+ * `tests/php/test-secret-crypto-admin.php` can call it, where a closure inside a
+ * page could only ever be pattern-matched in source.
+ *
+ * ⚠️ FAIL CLOSED, DELIBERATELY, AND WITH NO function_exists() GUARD. Guarding on
+ * the engine being present would fail OPEN — a missing `secret_crypto.php` would
+ * silently store plaintext. Instead, an active-encryption install whose master
+ * key is unavailable on THIS docroot throws, and the caller surfaces the error.
+ * A refused save is recoverable; a secret written in the clear is not.
+ *
+ * An EMPTY value is passed through unchanged: "" means "unset this", and
+ * encrypting the empty string would store an envelope that decrypts to "" —
+ * indistinguishable in behaviour, larger, and confusing to anyone reading the
+ * row.
+ *
+ * @param string $key              The tblAppSettings key.
+ * @param string $value            The plaintext the operator entered.
+ * @param bool   $encryptionActive The `secret_encryption_active` cutover flag.
+ * @return string The exact bytes to store.
+ * @throws \RuntimeException When a secret must be encrypted and cannot be.
+ */
+function appSettingValueForStorage(string $key, string $value, bool $encryptionActive): string
+{
+    if ($value === '' || !isSecretSettingKey($key) || !$encryptionActive) {
+        return $value;
+    }
+    if (!secretCryptoReady()) {
+        throw new \RuntimeException(
+            'Secret encryption is active but the master key is unavailable on this server '
+            . '(.auth/secrets_master_key.php) — refusing to store "' . $key . '" unencrypted.'
+        );
+    }
+    return secretEncrypt($value);
 }
 
 /* =========================================================================

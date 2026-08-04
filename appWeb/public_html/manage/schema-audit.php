@@ -39,8 +39,21 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    sites working unchanged. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'schema_audit.php';
 
-requireGlobalAdmin();
+requireAuth();
 $currentUser = getCurrentUser();
+/* Gate on the SAME entitlement the nav advertises (#1648 item 1).
+   ELI5: the menu says this page needs the "drop_legacy_tables" permission, so the page must
+   check that exact permission rather than a role that happens to match it today.
+   Detail: the gate here was role-based while admin-links.php advertises
+   `drop_legacy_tables`, which is admin-editable at runtime via /manage/entitlements. A
+   narrowed override hid the nav link while the page still admitted the old
+   role — the UI presented a revocation that never happened. The default map for
+   `drop_legacy_tables` is exactly the role set this replaced, so behaviour is unchanged
+   until someone overrides it. Rule #1587's red flag. */
+if (!$currentUser || !userHasEntitlement('drop_legacy_tables', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The drop_legacy_tables entitlement is required.');
+}
 $activePage  = 'schema-audit';
 
 /* =========================================================================

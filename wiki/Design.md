@@ -85,9 +85,20 @@ Used in the arrangement editor and song display:
 ## Accessibility
 
 ### Colour Contrast
-- All text meets **WCAG 2.1 AA** minimum contrast ratios (4.5:1 for normal text, 3:1 for large text)
+- **Target:** all text meets **WCAG 2.1 AA** minimum contrast ratios (4.5:1 normal, 3:1 large).
+  ⚠️ This is the design INTENT and, since #1151, is believed true — but it has **never been
+  measured in a browser**. Every ratio quoted on this page is derived from the CSS custom-property
+  cascade, which models the spec faithfully yet cannot account for `backdrop-filter`, shadow
+  layering or renderer differences. No axe, WAVE or devtools contrast pass has been run.
+  **This bullet previously stated the compliance flatly, while High Contrast mode was in fact
+  producing ~1.44:1** — so read it as a goal with a known verification gap, not as a result.
+  #1150 / #1151 stay open for exactly that measurement.
 - Songbook badge text contrast is calculated automatically using relative luminance
 - Badge colours checked against both light and dark backgrounds
+- High Contrast mode (`data-ihymns-contrast="high"`) redefines both Bootstrap's own `--bs-*` tokens AND the app's parallel `--text-primary` / `--text-secondary` / `--text-muted` / `--glass-bg` / `--card-border` custom properties, so a component reading the app's own tokens directly (the bottom nav, header icons, footer) can't silently fall through to its ordinary light-theme values while High Contrast is on. That gap was a real regression (#1151): the bottom nav computed to ~1.8:1 and the header icons to ~1.44:1 — both well under AA — specifically *because* High Contrast mode was switched on, in the one mode whose entire purpose is legibility.
+
+### Keyboard Alternatives to Drag
+- Card layout reorder (the admin dashboard and the home page's card order) has a keyboard/switch alternative to dragging — Move up / Move down buttons alongside the drag handle — satisfying WCAG 2.2 SC 2.5.7 (Dragging Movements) (#1151)
 
 ### Focus Indicators
 - Visible focus outlines on all interactive elements

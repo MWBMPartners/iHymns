@@ -23,6 +23,23 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
+ * #1748 §5.2 — the entity types a link-type may apply to (the CSV tokens stored
+ * in `tblExternalLinkTypes.AppliesTo`).
+ *
+ * ELI5: "which kinds of thing can a provider link be attached to?" — songs,
+ * songbooks, musicians, works, and (new in #1748) tunes.
+ *
+ * DETAILED / WHY ONE CENTRAL CONST (rule #20/#35): `AppliesTo` is a growable
+ * VARCHAR vocabulary (widened from a SET by #1741 P1), NOT an ENUM — growing it
+ * is one line HERE, and `manage/external-link-types.php`'s tick UI + save both
+ * read this list rather than each carrying a page-local copy. A legacy token
+ * that predates this const (e.g. the pre-rename `'person'`) is deliberately
+ * PRESERVED by the save path (it array_diff()s tokens NOT in this list and keeps
+ * them), so introducing the const never zeroes an existing row's AppliesTo.
+ */
+const IHYMNS_LINK_ENTITY_TYPES = ['song', 'songbook', 'musician', 'work', 'tune'];
+
+/**
  * Attach a `patterns` array to each link-type row in $types.
  *
  * @param \mysqli              $db
@@ -98,7 +115,7 @@ function attachExternalLinkPatterns(\mysqli $db, array $types): array
 
 /**
  * Load the active `tblExternalLinkTypes` registry for a given surface
- * (songbook / work / song / credit-person / …) and attach URL → provider
+ * (songbook / work / song / musician / …) and attach URL → provider
  * patterns. Returns a list shaped for `window._iHymnsLinkTypes` consumption
  * by the shared `external-links-editor.js` module.
  *
@@ -108,7 +125,7 @@ function attachExternalLinkPatterns(\mysqli $db, array $types): array
  * @param \mysqli $db
  * @param string  $appliesTo  Value to test against tblExternalLinkTypes.AppliesTo
  *                            via FIND_IN_SET. Common values: 'songbook',
- *                            'work', 'song', 'credit-person'.
+ *                            'work', 'song', 'musician'.
  * @return list<array{id:int,slug:string,name:string,category:string,iconClass:string,allowMultiple:int,patterns:array}>
  */
 function loadExternalLinkTypesFor(\mysqli $db, string $appliesTo): array
@@ -202,7 +219,8 @@ function saveExternalLinksForRow(
         'tblSongbookExternalLinks'     => 'SongbookId',
         'tblWorkExternalLinks'         => 'WorkId',
         'tblSongExternalLinks'         => 'SongId',
-        'tblCreditPersonExternalLinks' => 'CreditPersonId',
+        'tblMusicianExternalLinks' => 'MusicianId',
+        'tblTuneExternalLinks'         => 'TuneId',   // #1748 §5.1 — tune-entity external links
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
@@ -277,7 +295,8 @@ function loadExternalLinksForRow(
         'tblSongbookExternalLinks'     => 'SongbookId',
         'tblWorkExternalLinks'         => 'WorkId',
         'tblSongExternalLinks'         => 'SongId',
-        'tblCreditPersonExternalLinks' => 'CreditPersonId',
+        'tblMusicianExternalLinks' => 'MusicianId',
+        'tblTuneExternalLinks'         => 'TuneId',   // #1748 §5.1 — tune-entity external links
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");

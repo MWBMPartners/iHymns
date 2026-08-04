@@ -6,8 +6,8 @@
  * and removes the just-edited duplicate row. Shared across every
  * surface that exposes an external-links editor — the canonical one
  * (songs / songbooks / works via includes/partials/external-links-section.php
- * + js/modules/external-links-editor.js) AND the credit-people inline
- * editor (manage/credit-people.php's bespoke `cp-link-row` rows).
+ * + js/modules/external-links-editor.js) AND the musicians inline
+ * editor (manage/musicians.php's bespoke `cp-link-row` rows).
  *
  * Comparison is host + path only (no query, no hash, www. stripped,
  * trailing slash trimmed, case-folded) so curators don't end up with
@@ -137,12 +137,12 @@
      *        CSS selector for the URL input inside the row + its
      *        siblings. Default matches both the canonical
      *        `name="ext_link_urls[]"` field used by the shared
-     *        partial / editor module AND the credit-people inline
+     *        partial / editor module AND the musicians inline
      *        `name="links[i][url]"` field.
      * @param {string}   [opts.rowSelector]
      *        Selector for sibling rows in the same container. Default
      *        matches `.ihymns-ext-link-row` (shared) and `.cp-link-row`
-     *        (credit-people).
+     *        (musicians).
      * @param {HTMLElement} [opts.container]
      *        Override the container we search for duplicates within.
      *        Defaults to rowEl.parentElement.

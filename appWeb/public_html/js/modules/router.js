@@ -14,20 +14,21 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
-import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { announce } from '../utils/announce.js';
+import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch.
    Page loads (loadPage) and the song/related/translation fetches below are
    exactly the requests that need the language filter applied. */
 import { apiFetch } from '../utils/api-client.js';
+import { shouldRenderErrorBody } from '../utils/error-response.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
     STORAGE_HISTORY,
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
-    songbookLabel,
     EVT_AUTH_CHANGED,
 } from '../constants.js';
 
@@ -161,7 +162,6 @@ export class Router {
      */
     async handleCurrentRoute(opts = {}) {
         const path = window.location.pathname || '/';
-        const previousPath = this.currentPath;
         this.currentPath = path;
 
         /* Parse the route into an API request */
@@ -222,6 +222,28 @@ export class Router {
            rather than the stale nav link they activated. preventScroll so this
            doesn't fight the scroll-restore below; #main-content has tabindex="-1". */
         document.getElementById('main-content')?.focus({ preventScroll: true });
+
+        /* a11y (WCAG 4.1.3): say WHAT the user has landed on (#1645).
+         *
+         * ELI5: tell the screen reader the name of the page we just moved to —
+         * one short line, not the whole page.
+         *
+         * Detail: <main> used to be a live region, so every navigation read the
+         * entire injected fragment aloud, including all the lyrics, while
+         * competing with the focus announcement above. Removing that left a
+         * real gap — an SPA route change is invisible to assistive tech — and
+         * this fills it with the announcement that was actually wanted.
+         *
+         * Ordering is deliberate: focus FIRST, then announce. The focus move
+         * triggers its own announcement of the newly-focused region, and a
+         * polite live region queues behind whatever is already being spoken
+         * rather than interrupting it — so the user hears the landing, then the
+         * page name. Announcing first would put the two in the opposite,
+         * less useful order. No extra deferral is needed: announce() already
+         * defers its own write by a frame (that empty-then-fill is what makes
+         * the mutation observable at all), which is comfortably after focus. */
+        const heading = document.querySelector('#page-content h1');
+        announce((heading?.textContent || '').trim() || toTitleCase(String(page || 'page')));
 
         /* Scroll handling. On popstate-back / forward to a previously-
            seen path, restore the saved scroll position with a smooth
@@ -295,13 +317,18 @@ export class Router {
                 return { page: 'stats', params: {} };
             case 'writer':
                 return { page: 'writer', params: { id: segments[1] || '' } };
+            case 'musician':
             case 'people':
             case 'person':
-                /* Credit Person public page (#588). Both /people/<slug>
-                   and /person/<slug> resolve to the same page so the URL
-                   is forgiving — Wikipedia-style /wiki/Foo + linked-data
-                   habits both work. */
-                return { page: 'person', params: { slug: segments[1] || '' } };
+                /* Musician public page (#588, renamed from Credit Person
+                   by #1741 P2-B). /musician/<slug> is canonical;
+                   /musician/<slug> and /person/<slug> resolve to the same
+                   page as forgiving back-compat aliases — years of
+                   external links + the shipped Apple client's
+                   CanonicalURL.person(slug:) still emit the old
+                   spellings (Wikipedia-style /wiki/Foo + linked-data
+                   habits both work too). */
+                return { page: 'musician', params: { slug: segments[1] || '' } };
             case 'work':
             case 'works':
                 /* Work public page (#840). /work/<slug> is canonical;
@@ -328,6 +355,18 @@ export class Router {
                    url-encoded; the page handler decodes and strips
                    non-T/digit characters defensively. */
                 return { page: 'iswc', params: { code: segments[1] || '' } };
+            case 'ipi':
+            case 'isni':
+            case 'ccli':
+            case 'bowi':
+            case 'isrc':
+                /* #1741 P3 — the five siblings of /iswc/ above, sharing the
+                   same unified resolver + page (includes/pages/identifier.php,
+                   api.php's identifier.php case group). Same shape as
+                   'iswc': the raw URL segment is forwarded as `code` and the
+                   page handler canonicalises + resolves it per scheme
+                   (includes/identifier_normalize.php's IHYMNS_ID_SCHEMES). */
+                return { page: segments[0], params: { code: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'whats-new':
@@ -466,8 +505,49 @@ export class Router {
                 }
             });
 
+            /* #1705 — AN ERRORED RESPONSE MAY STILL CARRY A REAL EXPLANATION.
+             *
+             * ELI5: if the server said "this song was removed", show that —
+             * don't replace it with "check your connection".
+             *
+             * This used to be `if (!response.ok) throw`, with the body never
+             * read, so the catch block below rendered a generic connection
+             * warning. Six surfaces send a themed, accessible card with a
+             * helpful message and action buttons — song.php (410 for a removed
+             * song, 404 otherwise), songbook.php, musician.php, work.php, tag.php
+             * and maintenance.php's 503 — and NOT ONE had ever been seen by a
+             * user. They render perfectly in curl.
+             *
+             * The old fallback was not just generic, it was WRONG: it blamed the
+             * reader's network for a server that had answered clearly. Somebody
+             * following an old link to a merged song was told to check their
+             * wifi.
+             *
+             * The decision is a PURE function (status + content-type + body
+             * length) so a test can call it — never a prose match on the body,
+             * which is the rule #35 anti-pattern. An errored JSON response is
+             * deliberately NOT injected: showing a reader `{"error":"…"}` would
+             * be worse than the alert it replaced. */
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+                const errorBody = await response.text();
+                if (!shouldRenderErrorBody(
+                    response.status,
+                    response.headers.get('Content-Type'),
+                    errorBody.length
+                )) {
+                    /* Nothing usable came back — fall through to the generic
+                       alert, which for a genuine network or empty-body failure
+                       is the honest answer. */
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                this.app.transitions.completeLoading();
+                content.innerHTML = errorBody;
+                this.app.transitions.pageIn(content);
+                /* Deliberately no afterPageLoad(): an error card has no page
+                   module to hydrate, and running one against a fragment whose
+                   expected data-* attributes are absent is how a cleanup routine
+                   throws on a page that is already failing. */
+                return;
             }
 
             const html = await response.text();
@@ -501,7 +581,7 @@ export class Router {
                  *     feature for ~7 weeks (#1565).
                  *   - It had nothing left to run: the only <script> in any
                  *     fragment is an inert `application/ld+json` block in
-                 *     person.php, which needs parsing, not executing.
+                 *     musician.php, which needs parsing, not executing.
                  *   - tests/php/test-fragment-inline-scripts.php now fails the
                  *     build on any executable inline script in a fragment, and
                  *     its allowlist is empty (#1572).
@@ -567,6 +647,16 @@ export class Router {
             'link': 'Link a Device — ' + appName,
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
+            'musician': 'Musician — ' + appName,
+            /* #1741 P3 — the six external-identifier alias pages (iswc had
+               no title entry before this either; added here for
+               consistency with its five new siblings). */
+            'iswc': 'ISWC — ' + appName,
+            'ipi': 'IPI — ' + appName,
+            'isni': 'ISNI — ' + appName,
+            'ccli': 'CCLI — ' + appName,
+            'bowi': 'BOWI — ' + appName,
+            'isrc': 'ISRC — ' + appName,
             'help': 'Help — ' + appName,
             'whats-new': "What's New — " + appName,
             'terms': 'Terms of Use — ' + appName,
@@ -605,6 +695,49 @@ export class Router {
            .page-song, which is what stops it stranding over the home screen.
            Must run before the early `return`s in the song branch below. */
         this.app.setList?.renderSongNavigation();
+
+        /* #1741 P4a-3 — a legacy /writer/<name-slug> (or a name-slug /musician/
+           credit link, or a /person|/people alias path) whose fragment resolved to
+           a registry musician carries the canonical path on .page-musician.
+           Soft-canonicalise the URL bar — the #1343-B data-song-canonical pattern:
+           replaceState (no reload, no back-button trap), then retitle as Musician.
+
+           ELI5: if you land on an old writer link (or a name-based musician link)
+           and the page you get IS a real registry profile, quietly tidy the address
+           bar to the profile's real /musician/<slug> URL — without reloading the
+           page or breaking the Back button.
+
+           DETAILED / WHY: `.page-musician[data-musician-canonical]` is only emitted
+           by musician.php when a registry row actually rendered (musician.php's
+           `$person !== null` guard) — a bare fallback-discography page has no
+           canonical URL to point at, so this simply no-ops for it. `replaceState`
+           (never `pushState` or `this.navigate()`) matches the #1343-B precedent:
+           no second fetch, no new history entry, no reload — the fragment already
+           on screen IS the right content, only the bar was stale.
+           @link https://developer.mozilla.org/docs/Web/API/History/replaceState
+           @link .claude/catalogue-1741-P4a3-plan.md §1.1 leg C */
+        if (page === 'writer' || page === 'musician') {
+            const _mCanon = document.querySelector('.page-musician[data-musician-canonical]');
+            if (_mCanon) {
+                const _mto = _mCanon.getAttribute('data-musician-canonical');
+                if (_mto && _mto !== window.location.pathname) {
+                    window.history.replaceState({ path: _mto }, '', _mto);
+                    this.currentPath = _mto;
+                    this.updateTitle('musician', params);
+                }
+            }
+            /* #1753 — the #btn-edit-musician reveal was stranded inside the
+               page === 'song' branch since #1348 and never ran on musician pages
+               (the element only exists in the musician fragment, never the song
+               one); it lives here now, where the element actually renders. */
+            const editMusicianBtn = document.getElementById('btn-edit-musician');
+            if (editMusicianBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('manage_musicians', role)) {
+                    editMusicianBtn.classList.remove('d-none');
+                }
+            }
+        }
 
         /* Initialise favourites state on song pages */
         if (page === 'song') {
@@ -660,6 +793,18 @@ export class Router {
             import('./song-translations.js')
                 .then(m => m.initLineTranslations())
                 .catch(err => console.error('[Router] song-translations init failed:', err));
+            /* Musical key / tempo / time signature (#298, wired #1671 F3).
+               Runs AFTER this.app.transpose.initSongPage() above deliberately:
+               transpose.js reads `dataset.key` once at init, and `data-key` has
+               never actually been emitted by song.php (SongData sets no `key`
+               field at all), so its key-display branch has never executed. This
+               module fetches the key, sets the attribute and re-runs
+               initSongPage() so that branch finally has an input. Most songs
+               have no key row and the endpoint answers 404, which the module
+               treats as "nothing to show" rather than as an error. */
+            import('./song-key.js')
+                .then(m => m.initSongKey(exportSongId))
+                .catch(err => console.error('[Router] song-key init failed:', err));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant
@@ -682,16 +827,6 @@ export class Router {
                 const role = this.app.userAuth?.getUser()?.role;
                 if (userHasEntitlement('edit_songs', role)) {
                     editBtn.classList.remove('d-none');
-                }
-            }
-
-            /* Edit button on the person page (#1348) — same affordance, gated on
-               manage_credit_people (admin / global_admin); the admin page re-checks. */
-            const editPersonBtn = document.getElementById('btn-edit-person');
-            if (editPersonBtn) {
-                const role = this.app.userAuth?.getUser()?.role;
-                if (userHasEntitlement('manage_credit_people', role)) {
-                    editPersonBtn.classList.remove('d-none');
                 }
             }
 
@@ -774,6 +909,22 @@ export class Router {
                 .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
         }
 
+        /* Per-tile "Export songbook ▾" dropdowns on the /songbooks LIST
+           (#1607 — owner decision: whole-songbook export lives on
+           /songbooks and /songbook/<abbr>, NOT inside the single-song
+           view, to keep that dropdown uncluttered). Same CSP/shared-cache
+           reasoning as the song/songbook Export wiring above: the fragment
+           can never carry an inline <script>, so this is a real ES module
+           imported here. `initSongbookListExport()` wires every tile's own
+           menu to its own `data-songbook-id` — it does not take an abbr,
+           unlike the single-menu `initSongbookExport()` used on
+           /songbook/<abbr> below. */
+        if (page === 'songbooks') {
+            import('./export-ui.js')
+                .then(m => m.initSongbookListExport())
+                .catch(err => console.error('[Router] export-ui init failed:', err));
+        }
+
         /* Settings page — language preferences picker (#736). The
            settings page hosts a duplicate of the language filter UI
            inside the Language Preferences section, so the user can
@@ -809,6 +960,26 @@ export class Router {
         /* Initialise settings controls on settings page */
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
+
+            /* Signed-in devices card (#1671 F1). Same rule-#30 wiring as
+               home-page.js / export-ui.js: the settings fragment can never
+               carry an executable inline <script> (enforcing nonce CSP #117 +
+               a fragment that never sees the nonce), so the behaviour is a
+               real ES module imported here. The module finds its own card via
+               [data-devices-card] and no-ops when it is absent, so this costs
+               nothing on any other route. */
+            /* Push notifications card (#311 server / #1671 F6). Same rule-#30
+               wiring, same DOM-first hook ([data-push-card]), and it reads its
+               two inputs — the VAPID public key and the server's kind registry —
+               from data-* the fragment already emits, so no extra API round trip
+               and no hardcoded copy of the kind list. */
+            import('./push-notifications.js')
+                .then(m => m.bootPushCard())
+                .catch(err => console.error('[Router] push-notifications init failed:', err));
+
+            import('./devices.js')
+                .then(m => m.bootDevicesCard())
+                .catch(err => console.error('[Router] devices init failed:', err));
         }
 
         /* Device-code pairing "Link a device" page (#1407). */
@@ -841,6 +1012,16 @@ export class Router {
             import('./request-a-song.js')
                 .then(m => m.initRequestASong(params))
                 .catch(err => console.error('[Router] request-a-song init failed:', err));
+
+            /* "Your requests" (#1671 F2) — the outcome side of the form above.
+               Same rule-#30 wiring, and for the same reason: `request` is in
+               api.php's $_cacheablePages, so this fragment can never carry the
+               document's per-request CSP nonce and an inline <script> in it
+               would be refused silently. The module finds its own section via
+               [data-my-requests] and no-ops when it is absent. */
+            import('./my-song-requests.js')
+                .then(m => m.initMySongRequests())
+                .catch(err => console.error('[Router] my-song-requests init failed:', err));
         }
 
         /* After the new page HTML is in the DOM, broadcast the current auth
@@ -858,6 +1039,23 @@ export class Router {
         /* Initialise set list page controls (#94) */
         if (page === 'setlist') {
             this.app.setList.initSetListPage();
+
+            /* Set-list templates / service plans (#301, wired #1671 F4).
+               Same rule-#30 wiring as home-page.js / export-ui.js: the set-list
+               fragment can never carry an executable inline <script> (enforcing
+               nonce CSP #117 + a fragment that never sees the nonce), so the
+               behaviour is a real ES module imported here. The module finds its
+               own hook (#template-dropdown) and no-ops when it is absent, so
+               this costs nothing on any other route.
+
+               The dropdown's markup has existed since #301 behind
+               `display:none !important` with NO JS referencing it anywhere —
+               the same orphan shape as #298's song-key container. It is
+               revealed by the module, not by the fragment, so it can never
+               again be visible without something behind it. */
+            import('./setlist-templates.js')
+                .then(m => m.bootSetlistTemplates(this.app.setList))
+                .catch(err => console.error('[Router] setlist-templates init failed:', err));
         }
 
         /* Initialise shared set list page (#147) */

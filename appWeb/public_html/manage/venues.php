@@ -635,8 +635,9 @@ function venuesUrl(array $overrides = []): string
                                     <a class="btn btn-sm btn-outline-primary" href="<?= htmlspecialchars(venuesUrl(['venue' => (int)$v['Id'], 'edit_venue' => null, 'edit_schedule' => null])) ?>#schedules" title="Manage service times">
                                         <i class="bi bi-clock-history"></i><span class="d-none d-md-inline ms-1">Service times</span>
                                     </a>
-                                    <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => (int)$v['Id'], 'venue' => null])) ?>#venue-form" title="Edit venue">
-                                        <i class="bi bi-pencil"></i>
+                                    <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => (int)$v['Id'], 'venue' => null])) ?>#venue-form" title="Edit venue"
+                                       aria-label="Edit venue <?= htmlspecialchars($v['Name'], ENT_QUOTES) ?>">
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </a>
                                     <form method="post" action="/manage/venues" class="d-inline"
                                           onsubmit="return confirm('Delete venue “<?= htmlspecialchars(addslashes($v['Name'])) ?>” and all its service times?');">
@@ -644,7 +645,8 @@ function venuesUrl(array $overrides = []): string
                                         <input type="hidden" name="action" value="venue_delete">
                                         <input type="hidden" name="org_id" value="<?= $selectedOrgId ?>">
                                         <input type="hidden" name="venue_id" value="<?= (int)$v['Id'] ?>">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete venue"><i class="bi bi-trash"></i></button>
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete venue"
+                                                aria-label="Delete venue <?= htmlspecialchars($v['Name'], ENT_QUOTES) ?>"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                     </form>
                                 </td>
                             </tr>
@@ -788,13 +790,15 @@ function venuesUrl(array $overrides = []): string
                                             : '<span class="badge text-bg-secondary-subtle text-secondary-emphasis">Hidden</span>' ?>
                                     </td>
                                     <td data-col-priority="primary" class="text-end text-nowrap">
-                                        <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => (int)$s['Id']])) ?>#schedule-form" title="Edit"><i class="bi bi-pencil"></i></a>
+                                        <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => (int)$s['Id']])) ?>#schedule-form" title="Edit"
+                                           aria-label="Edit service time <?= htmlspecialchars($s['Title'], ENT_QUOTES) ?>"><i class="bi bi-pencil" aria-hidden="true"></i></a>
                                         <form method="post" action="/manage/venues" class="d-inline"
                                               onsubmit="return confirm('Delete this service time?');">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="schedule_delete">
                                             <input type="hidden" name="schedule_id" value="<?= (int)$s['Id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"
+                                                    aria-label="Delete service time <?= htmlspecialchars($s['Title'], ENT_QUOTES) ?>"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                         </form>
                                     </td>
                                 </tr>

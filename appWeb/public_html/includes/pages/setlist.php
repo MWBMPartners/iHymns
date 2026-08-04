@@ -31,7 +31,25 @@ declare(strict_types=1);
                 <i class="fa-solid fa-plus me-1" aria-hidden="true"></i>
                 New Set List
             </button>
-            <div class="dropdown d-inline-block" id="template-dropdown" style="display:none !important">
+            <!-- Service-order templates (#301; wired #1671 F4).
+
+                 This block shipped with #301 and was invisible for its whole
+                 life: `style="display:none !important"` with NOT ONE line of JS
+                 in the tree referencing its ids — the same orphan shape as
+                 #298's hidden song-key container. `d-none` replaces the inline
+                 `!important` because an !important inline style cannot be
+                 overridden by ANY class toggle, which is part of why the block
+                 stayed invisible even to somebody trying to revive it (Batch 8
+                 made the identical fix for #298).
+
+                 js/modules/setlist-templates.js reveals it, imported from
+                 router.js's afterPageLoad(). There is no inline <script> here
+                 and there can never be one: the document sends an enforcing
+                 nonce CSP (#117), this fragment is a separate HTTP response
+                 that never sees the per-request nonce, and the browser refuses
+                 a nonce-less inline script SILENTLY (#1565, rule #30). CI
+                 guard: tests/php/test-fragment-inline-scripts.php. -->
+            <div class="dropdown d-inline-block d-none" id="template-dropdown">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
                     <i class="fa-solid fa-file-lines me-1"></i>From Template
                 </button>

@@ -31,15 +31,25 @@ extension APIClient {
         }
     }
 
-    /// Decodes a `credit_person` response body into a `CreditPerson`.
+    /// Decodes a `musician` response body into a `CreditPerson`.
     ///
-    /// - Parameter data: The raw HTTP response body — `{"person": {...}}`.
+    /// - Parameter data: The raw HTTP response body — `{"musician": {...}}`.
+    ///
+    /// #1752 Slice D UPDATE (#1741 P2-B) — the envelope key changed from
+    /// `person` to `musician` alongside `Endpoint.creditPerson(_:)`'s switch
+    /// to the canonical action (`WorkAndCreditPersonEndpoints.swift`); both
+    /// changes must move together — a client requesting `action=musician`
+    /// but still decoding a `person` key would throw `.decoding` on every
+    /// real response. The `credit_person`/`{"person":{…}}` legacy shape is
+    /// permanently frozen server-side but has no live decoder left in this
+    /// client — see `api.php`'s comment on why that's fine (old already-
+    /// shipped binaries are the only consumers left).
     nonisolated public static func decodeCreditPerson(from data: Data) throws -> CreditPerson {
         struct Envelope: Decodable {
-            let person: CreditPerson
+            let musician: CreditPerson
         }
         do {
-            return try JSONDecoder().decode(Envelope.self, from: data).person
+            return try JSONDecoder().decode(Envelope.self, from: data).musician
         } catch {
             throw APIError.decoding
         }

@@ -19,6 +19,86 @@ declare(strict_types=1);
  *   $songbooks = $songData->getSongbooks();
  *   $song = $songData->getSongById('CP-0001');
  *   $results = $songData->searchSongs('amazing grace');
+ *
+ * ---------------------------------------------------------------------------
+ * WHERE THIS SITS (read this before changing anything below)
+ * ---------------------------------------------------------------------------
+ * ELI5: this is the ONE door between "the app wants songs" and "MySQL has
+ * songs". Nearly every public page, every PWA request and both editors walk
+ * through it, so a mistake here is a mistake everywhere at once.
+ *
+ * It is the READ side only — nothing in this file writes. Its consumers are
+ * `api.php` (the whole public JSON surface + the SPA page fragments under
+ * `includes/pages/*`), `manage/editor/api.php` + `api2.php`, the sitemap, the
+ * exporters and the OG-image renderer. Writes live elsewhere:
+ * `manage/editor/save_song_core.php`, `includes/song_importers.php`,
+ * `includes/lyric_lines_sync.php`, `includes/song_soft_delete.php`.
+ *
+ * THE FIVE LOAD-BEARING RULES THIS FILE ENCODES
+ *
+ * 1. NOTHING MAY MATERIALISE THE WHOLE CORPUS (CLAUDE.md rule #17, epic #1010
+ *    WS-J #1020). `exportAsJson()` and the `songs.json` file cache were
+ *    DELETED — a full hydration was ~140 MB of PHP arrays and OOM-killed
+ *    shared hosting (#929). Reads are scoped by construction:
+ *      • `getSongsSlimIndex()`  — id/number/title/songbook only, whole
+ *                                 catalogue or one book (#1037);
+ *      • `getSongs($abbr)`      — ONE songbook, fully hydrated;
+ *      • `getSongById()`        — ONE record, fully hydrated;
+ *      • `getSongsIndex()`      — a paginated window.
+ *    `getSongs(null)` still exists and still hydrates everything; it is the one
+ *    loaded gun in the file. Callers are expected to pass a songbook (see the
+ *    rule-#17 comment at api.php:1474). A DB outage is a graceful 503 from the
+ *    caller, NEVER a stale-file fallback.
+ *
+ * 2. SOFT-DELETED SONGS ARE INVISIBLE (#1694, epic #1692). Every SELECT against
+ *    `tblSongs` glues on `$this->_visible($alias)`, which delegates to the one
+ *    shared `songVisibleSql()`. Two documented exceptions, each carrying a
+ *    `@deleted-visible:` tag explaining itself: `getMissingSongNumbers()` (a
+ *    hidden song still OCCUPIES its number slot) and `_songIdForPublicId()` (a
+ *    pure id resolver — filtering it would decay a 410 into a 404).
+ *
+ * 3. THE SCHEMA IS NOT GUARANTEED TO MATCH `schema.sql`. Three docroots share
+ *    ONE MySQL and migrations are web-run from `/manage/setup-database`, never
+ *    auto-applied on deploy — so "it's in schema.sql" ≠ "it exists on alpha".
+ *    mysqli runs under `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT`
+ *    (`includes/db_mysql.php`), so naming an absent column does not return
+ *    false, it THROWS and white-screens the page (the #1228 lesson). Hence the
+ *    idiom repeated ~15 times below:
+ *
+ *        probe INFORMATION_SCHEMA once → cache the answer on the instance →
+ *        return either a SELECT tail / JOIN fragment or an empty string.
+ *
+ *    Cached because `getSongbook()` + `getSongbooks()` (and a 14k-row editor
+ *    load) commonly run in the same request and must not pay a round-trip
+ *    each. The fragments are hardcoded PHP constants, never runtime data —
+ *    CLAUDE.md rule #5 clause (a). Same reasoning for the `try/catch → empty
+ *    map` wrappers on the optional side-table loaders.
+ *
+ * 4. LYRIC LINES HAVE EXACTLY ONE READ PATH (#1235 P4, CLAUDE.md rule #25).
+ *    `tblLyricLines` is authoritative; this file NEVER parses
+ *    `tblSongComponents.LinesJson` itself except in the explicitly-gated
+ *    un-migrated fallback (`_getComponentsFromJson()` /
+ *    `_getComponentsMapFromJson()`). Assembly is delegated to the shared
+ *    `includes/lyric_lines_read.php`.
+ *
+ * 5. NO N+1. Anything attached to a LIST of songs/songbooks is loaded by a
+ *    `*Map()` helper — one `IN (...)` query per side table, keyed by SongId or
+ *    Abbreviation — not by calling the per-song helper in a loop (#533,
+ *    #EditorLoad). The per-song helpers survive because for ONE song a single
+ *    round-trip beats building a placeholder list.
+ *
+ * A NOTE ON `$jsonMode` / `$jsonData`: dead since WS-J #1020. `jsonMode` can
+ * never become true — the constructor always connects. The `if ($this->jsonMode)`
+ * branches are inert and kept only to keep that removal a separate, reviewable
+ * change; do not add new ones, and do not trust them as documentation of any
+ * live behaviour.
+ *
+ * @see appWeb/public_html/includes/song_soft_delete.php   the #1694 visibility unit
+ * @see appWeb/public_html/includes/lyric_lines_read.php   the ONE lyric-line reader
+ * @see appWeb/public_html/includes/song_redirects.php     consulted by getSongById()
+ * @see appWeb/public_html/includes/db_mysql.php           STRICT mode + getDbMysqli()
+ * @link https://www.php.net/manual/en/book.mysqli.php
+ * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-columns-table.html
  */
 
 /* =========================================================================
@@ -214,12 +294,47 @@ class SongData
         $this->db = getDbMysqli();
     }
 
+    /**
+     * #1694 — the soft-delete visibility predicate, for every SELECT this
+     * class builds against tblSongs.
+     *
+     * ELI5: the little "and it isn't deleted" clause each song query glues
+     * onto its WHERE — or a harmless "1=1" before the migration has run.
+     *
+     * ONE delegate to the ONE shared unit (songVisibleSql(), which gates on
+     * songSoftDeleteReady() — the #1228 STRICT-mode lesson: an ungated
+     * IsDeleted reference on an un-migrated docroot would THROW and
+     * white-screen every song surface). Call sites embed it UNCONDITIONALLY
+     * after WHERE/AND: migrated it reads `s.IsDeleted = 0`, un-migrated it
+     * degrades to `1=1`, so the SQL stays valid either way with zero
+     * per-site branching. Same require_once + $this->db delegate shape as
+     * the songRedirectClaimsId() consult in getSongById().
+     *
+     * @param string $alias Table alias to prefix ('' for un-aliased queries).
+     * @return string SQL predicate fragment — a hardcoded constant from PHP
+     *                source (rule #5 clause a), never runtime data.
+     */
+    private function _visible(string $alias = 's'): string
+    {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        return songVisibleSql($this->db, $alias);
+    }
+
     /* =====================================================================
      * METADATA METHODS
      * ===================================================================== */
 
     /**
      * Get metadata about the song collection.
+     *
+     * ELI5: the two headline numbers ("N songs across M songbooks") the home
+     * page and the PWA's cached meta block show.
+     *
+     * These are LIVE `COUNT(*)`s, deliberately — unlike `getStats()`, which
+     * sums the denormalised `tblSongbooks.SongCount` column. The two agree only
+     * while every write path keeps `SongCount` current, so prefer this one
+     * whenever the number is user-facing and correctness beats the two extra
+     * aggregate queries.
      *
      * @return array Metadata including totalSongs, totalSongbooks, etc.
      */
@@ -229,7 +344,10 @@ class SongData
             return $this->jsonData['meta'] ?? [];
         }
 
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs");
+        /* #1694 D1 — totalSongs means VISIBLE songs (owner: "ideally
+           accessible", deliberately NOT per-user), so the soft-delete
+           predicate applies here exactly as it does on the tiles. */
+        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs WHERE " . $this->_visible(''));
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongs = (int)$result->fetch_assoc()['total'];
@@ -238,13 +356,15 @@ class SongData
         /* #963 — only count songbooks that have at least one song.
            Empty placeholder rows in tblSongbooks would otherwise
            inflate the home-page "N Songbooks" badge and the PWA
-           cache's meta.totalSongbooks. */
+           cache's meta.totalSongbooks. #1694 — "at least one song" now
+           means at least one VISIBLE song, matching totalSongs above. */
         $stmt = $this->db->prepare(
             "SELECT COUNT(*) AS total
                FROM tblSongbooks b
               WHERE EXISTS (
                   SELECT 1 FROM tblSongs s
                    WHERE s.SongbookAbbr = b.Abbreviation
+                     AND " . $this->_visible() . "
               )"
         );
         $stmt->execute();
@@ -265,11 +385,6 @@ class SongData
      * ===================================================================== */
 
     /**
-     * Get all songbooks with their details, sorted alphabetically.
-     *
-     * @return array List of songbook objects (id, name, songCount)
-     */
-    /**
      * Other-language versions of a song (#281) — the translation cluster: songs
      * THIS one translates to (outward), the source it translates FROM (inward),
      * and that source's other translations (siblings). Used by the song page's
@@ -285,12 +400,21 @@ class SongData
             return [];
         }
         try {
+            /* #1694 — every branch hides soft-deleted songs. The inward branch
+               already joins tblSongs (src) and just gains the predicate; the
+               outward + sibling branches list TranslatedSongId WITHOUT touching
+               tblSongs, so each gains a visibility JOIN — otherwise a deleted
+               translation target would still be OFFERED in the language picker
+               and the click would land on a 410 (the wrong-content class). The
+               joins are semantically neutral pre-delete: tblSongTranslations
+               rows always reference existing tblSongs rows (FK). */
             $sql = '
                 /* Outward — this song has translations to other languages */
                 SELECT t.TranslatedSongId AS song_id, t.TargetLanguage AS target_language,
                        l.Name AS language_name, l.NativeName AS native_name,
                        l.TextDirection AS text_direction, t.Translator AS translator, t.Verified AS verified
                   FROM tblSongTranslations t
+                  JOIN tblSongs tgt ON tgt.SongId = t.TranslatedSongId AND ' . $this->_visible('tgt') . '
                   JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  WHERE t.SourceSongId = ? AND l.IsActive = 1
                 UNION
@@ -299,7 +423,7 @@ class SongData
                        srcLang.Name AS language_name, srcLang.NativeName AS native_name,
                        srcLang.TextDirection AS text_direction, "" AS translator, 1 AS verified
                   FROM tblSongTranslations selfT
-                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId
+                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId AND ' . $this->_visible('src') . '
                   JOIN tblLanguages srcLang ON srcLang.Code = src.Language
                  WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
                 UNION
@@ -311,6 +435,7 @@ class SongData
                   JOIN tblSongTranslations sibling
                        ON sibling.SourceSongId = selfT2.SourceSongId
                       AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                  JOIN tblSongs sib ON sib.SongId = sibling.TranslatedSongId AND ' . $this->_visible('sib') . '
                   JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
                  WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
             ';
@@ -332,6 +457,37 @@ class SongData
         }
     }
 
+    /**
+     * Every songbook with its display metadata, alphabetically by Name.
+     *
+     * ELI5: the one call behind the home-page tiles, `/songbooks`, the
+     * songbook picker and the PWA's songbook list.
+     *
+     * FOUR THINGS A READER USUALLY GETS WRONG HERE:
+     *
+     * 1. `songCount` is the DENORMALISED `tblSongbooks.SongCount` column, not a
+     *    live `COUNT(*)`. It is recomputed by the WRITERS (`save_song_core.php`,
+     *    `song_importers.php`, `song_relocate.php`, and `song_soft_delete.php`'s
+     *    D1 recompute, which counts VISIBLE songs only). That is why there is no
+     *    `_visible()` predicate in the SQL below — this query touches no
+     *    `tblSongs` row at all. If a count ever looks stale, the bug is in a
+     *    write path, not here. Contrast `getMeta()`, which counts live.
+     * 2. UNOFFICIAL BOOKS ARE NOT FILTERED OUT and must never be (CLAUDE.md
+     *    rule #24 / #1223). `isOfficial` is returned so the caller can render
+     *    the shared `.songbook-unofficial-badge`; hiding `IsOfficial = 0` rows
+     *    here would erase every curated collection from the site.
+     * 3. THE FOUR `{$…Select}` HOLES are probe-gated SELECT tails (see the
+     *    file doc-block, rule 3). On an un-migrated docroot they are empty
+     *    strings and the query simply returns fewer keys — never a 500.
+     * 4. THE FIVE BATCH MAPS at the bottom are the N+1 defence: series,
+     *    compilers, alt names, external links and contained-languages are each
+     *    ONE query for ALL books (#782 phase D, #831, #832, #833, #857), not
+     *    one query per tile. `getSongbook()` is the same shape scoped to one
+     *    abbreviation — keep the two in step when adding an attachment.
+     *
+     * @return array List of songbook objects (id, name, songCount, isOfficial,
+     *               colour, series, compilers, alternativeNames, links, languages…)
+     */
     public function getSongbooks(): array
     {
         if ($this->jsonMode) {
@@ -506,6 +662,30 @@ class SongData
      * is added by migrate-songbook-display-abbr.php; until that runs (migrations
      * aren't auto-applied on deploy) the SELECT must not name it, or every
      * getSongbooks() call 500s. `b.`-qualified for the parent self-join.
+     *
+     * ELI5: some books want a prettier badge than their code — "Psalty" rather
+     * than "PSALTY" — so there's an optional label column, and this quietly
+     * leaves it out on installs that haven't grown it yet.
+     *
+     * WHY A SECOND COLUMN AT ALL, rather than just relaxing `Abbreviation`
+     * (CLAUDE.md rule #27): `tblSongbooks.Abbreviation` **is** the SongId
+     * prefix. `MP-1008` is parsed as `<letters>-<digits>` by the PWA router's
+     * `normalizeSongId()`, by the OG-image renderer and by the
+     * `related_songs` / `remove_favorite` / `song_view` API validators.
+     * Widening its charset to allow `- _ :` would re-key all ~14k
+     * `tblSongs.SongId` values and break every URL, bookmark and cached OG
+     * image in existence. So `DisplayAbbr` is DISPLAY-ONLY: URLs, `data-*`
+     * attributes and SongIds always use the real `Abbreviation`.
+     *
+     * Consumers render it through `ihymns_songbook_abbr_label()` plus the
+     * `ihymns_songbook_show_abbr()` hide-when-it-equals-the-title check, both
+     * in `includes/songbook_display.php` — never by reading the key directly,
+     * so the "no DisplayAbbr on this install" case has one fallback and not
+     * one per page. This method is that contract's read half: it is why a
+     * consumer can treat `displayAbbr` as merely absent instead of guarding a
+     * column-not-found exception.
+     *
+     * @return string '' or a leading-comma SELECT tail (a PHP constant, rule #5a)
      */
     private function _songbookDisplayAbbrSelect(): string
     {
@@ -738,7 +918,16 @@ class SongData
                primary-subtag extraction lives in SQL because the
                sub-string is cheap there and avoids a per-row
                PHP regex on a result set that can be tens of
-               thousands of rows. */
+               thousands of rows.
+
+               GROUP_CONCAT's usual footgun — silent truncation at
+               `group_concat_max_len` (1024 bytes by default, and it warns
+               rather than errors) — cannot bite here, because DISTINCT is
+               applied to the 2–3 character PRIMARY subtag, not the full tag.
+               Even a wildly multilingual book yields a handful of values. If
+               this is ever widened to concatenate whole tags or titles, that
+               limit becomes a real ceiling and the query needs revisiting.
+               https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html#function_group-concat */
             $sql = "SELECT SongbookAbbr,
                            GROUP_CONCAT(
                                DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1))
@@ -746,7 +935,8 @@ class SongData
                            ) AS langs
                       FROM tblSongs
                      WHERE Language IS NOT NULL AND Language <> ''
-                     GROUP BY SongbookAbbr";
+                       AND " . $this->_visible('') . "
+                     GROUP BY SongbookAbbr";   /* #1694 — a hidden song's language must not mint a chip */
             $res = $this->db->query($sql);
             $out = [];
             if ($res) {
@@ -769,7 +959,7 @@ class SongData
 
     /**
      * Pull `[abbr => [{id, name, slug, note}, ...]]` from
-     * tblSongbookCompilers joined to tblCreditPeople. Same shape +
+     * tblSongbookCompilers joined to tblMusicians. Same shape +
      * caching strategy as _songbookSeriesMap(): single query covers
      * the home grid + every songbook page on a single request.
      *
@@ -805,7 +995,7 @@ class SongData
                                c.Note         AS note,
                                c.SortOrder    AS sortOrder
                           FROM tblSongbookCompilers c
-                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblMusicians p ON p.Id = c.MusicianId
                           JOIN tblSongbooks    b ON b.Id = c.SongbookId
                          ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC';
                 $stmt = $this->db->prepare($sql);
@@ -823,7 +1013,7 @@ class SongData
                                c.Note         AS note,
                                c.SortOrder    AS sortOrder
                           FROM tblSongbookCompilers c
-                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblMusicians p ON p.Id = c.MusicianId
                           JOIN tblSongbooks    b ON b.Id = c.SongbookId
                          WHERE b.Abbreviation IN ($ph)
                          ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC";
@@ -1075,13 +1265,13 @@ class SongData
      *
      *   'songbook' → tblSongbookExternalLinks      keyed by Abbreviation
      *   'song'     → tblSongExternalLinks          keyed by SongId
-     *   'person'   → tblCreditPersonExternalLinks  keyed by CreditPersonId (int)
+     *   'musician' → tblMusicianExternalLinks      keyed by MusicianId (int)
      *
      * Schema-probed; pre-migration deployments get an empty map. The
      * registry join (tblExternalLinkTypes) drops link-type rows that
      * have been deactivated — IsActive = 0 acts as a soft delete.
      *
-     * @param string         $entityType  'songbook' | 'song' | 'person'
+     * @param string         $entityType  'songbook' | 'song' | 'musician'
      * @param array|null     $keys        Limit to these keys; null = all
      * @return array<string|int, array<int, array{slug:string,name:string,category:string,url:string,note:string,verified:bool,iconClass:string,sortOrder:int}>>
      */
@@ -1102,11 +1292,11 @@ class SongData
                 $keyExpr = 'el.SongId';
                 $bindT   = 's';
                 break;
-            case 'person':
-                $table   = 'tblCreditPersonExternalLinks';
-                $entCol  = 'CreditPersonId';
+            case 'musician':
+                $table   = 'tblMusicianExternalLinks';
+                $entCol  = 'MusicianId';
                 $joinSql = '';
-                $keyExpr = 'el.CreditPersonId';
+                $keyExpr = 'el.MusicianId';
                 $bindT   = 'i';
                 break;
             default:
@@ -1210,8 +1400,10 @@ class SongData
             return null;
         }
         try {
+            /* #1694 — filtered: this powers the public parent-songbook deep
+               link (pages/song.php), and a hidden song must not be linked to. */
             $stmt = $this->db->prepare(
-                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1'
+                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? AND ' . $this->_visible('') . ' LIMIT 1'
             );
             $stmt->bind_param('si', $abbr, $number);
             $stmt->execute();
@@ -1226,6 +1418,27 @@ class SongData
 
     /**
      * Get a single songbook by its abbreviation ID.
+     *
+     * ELI5: the same thing `getSongbooks()` returns, for one book.
+     *
+     * The SELECT below is `getSongbooks()`'s with a `WHERE` bolted on, and the
+     * attachments are FOUR of its five maps scoped to `[$id]` — series,
+     * compilers, alt names and external links. That duplication is intentional
+     * (the bulk path must not be forced through a single-row query, nor vice
+     * versa) but it means the two DRIFT SILENTLY: add a column or an
+     * attachment to one and the songbook page and the home tile start
+     * disagreeing with nothing failing. Change both, always.
+     *
+     * ⚠️ THEY HAVE ALREADY DRIFTED, and this comment previously asserted the
+     * parity it was warning you to protect — which is worse than saying
+     * nothing, because it stops you checking at exactly the point checking
+     * pays. `getSongbooks()` also attaches `_songbookSongLanguagesMap()` and
+     * emits a `languages` key; this method does NOT. Verified harmless TODAY —
+     * the only `languages` readers (`includes/pages/home.php`,
+     * `includes/pages/songbooks.php`) both come through the plural path — but
+     * any future single-book caller wanting language badges gets an empty
+     * `?? []` and no error. (The `colour`
+     * fallback chain below is a worked example: #1181 had to be written twice.)
      *
      * @param string $id Songbook abbreviation (e.g., 'CP', 'MP')
      * @return array|null Songbook object or null if not found
@@ -1571,7 +1784,8 @@ class SongData
             /* Step 1 — pull the source song's (SongbookAbbr, Number).
                Cheap, no joins. */
             $stmt = $this->db->prepare(
-                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? LIMIT 1'
+                /* #1694 — a hidden song has no counterparts panel to hang off. */
+                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? AND ' . $this->_visible('') . ' LIMIT 1'
             );
             $stmt->bind_param('s', $songId);
             $stmt->execute();
@@ -1611,7 +1825,8 @@ class SongData
                             b.Language AS bookLanguage
                        FROM tblSongs s
                        JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
-                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)";
+                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)
+                        AND " . $this->_visible();   /* #1694 — hidden counterparts stay hidden */
             $stmt = $this->db->prepare($sql);
             $types = 'i' . str_repeat('s', count($candidates));
             $args  = array_merge([$number], $candidates);
@@ -1663,6 +1878,15 @@ class SongData
      * the page). A missing DB is an error, never a stale-file fallback —
      * per the live/online-first governing rule.
      *
+     * ⚠️ NOT THE SAME METHOD as `getSongsSlimIndex()` a few lines below, despite
+     * the names. This one PAGINATES (limit/offset + a matching `total` so a
+     * caller can say "showing 50 of 812") and language-filters; that one
+     * returns EVERY row of a scope in one go with no filtering, for clients
+     * that keep their own index in memory (the PWA, the editor sidebars).
+     * Picking the wrong one gives you a working page with subtly wrong paging.
+     * The COUNT and the row query share `$whereClause` deliberately — if they
+     * ever diverge, `total` starts lying and "load more" breaks.
+     *
      * @param string|null  $bookId      Optional songbook abbreviation filter.
      * @param int          $limit       Page size (clamped 1..500).
      * @param int          $offset      Row offset (>= 0).
@@ -1691,6 +1915,10 @@ class SongData
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $where[] = 's.LyricsPublicDomain = 1';
         }
+
+        /* #1694 — hidden songs never reach the paginated index (and the COUNT
+           above the page rows shares this $where, so `total` agrees). */
+        $where[] = $this->_visible();
 
         [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
 
@@ -1784,13 +2012,16 @@ class SongData
                        s.Language AS language,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
                 FROM tblSongs s
-                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr";
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE " . $this->_visible();   /* #1694 — the PWA index and the
+                editor sidebar both go dark on a hidden song (restore-first
+                workflow); '1=1' un-migrated keeps the clause always valid */
 
         /* Scoped variant (#1037). The abbreviation is BOUND, never interpolated
            (rule #5) — it reaches here from a URL segment. */
         $scoped = ($songbookAbbr !== null && $songbookAbbr !== '');
         if ($scoped) {
-            $sql .= " WHERE s.SongbookAbbr = ?";
+            $sql .= " AND s.SongbookAbbr = ?";
         }
 
         $sql .= " ORDER BY s.SongbookAbbr ASC,
@@ -1798,6 +2029,19 @@ class SongData
                          s.Number ASC,
                          LOWER(s.Title) ASC";
 
+        /* Two execution shapes for one SQL string, and the asymmetry is
+           deliberate rather than an oversight:
+
+           ELI5: when there's a value to fill in we use a prepared statement;
+           when there isn't, we just run the query.
+
+           The scoped branch MUST prepare + bind — `$songbookAbbr` arrives from
+           a URL segment, and rule #5 admits no interpolated value ever. The
+           unscoped branch has NO bound values at all (every fragment in $sql is
+           a PHP constant), so `query()` skips a prepare/execute round-trip on
+           what is the single biggest read in the app: ~14k rows for the PWA
+           index and both editor sidebars. Do NOT "tidy" this into one prepared
+           path without measuring it. */
         $rows = [];
         if ($scoped) {
             $stmt = $this->db->prepare($sql);
@@ -1808,6 +2052,9 @@ class SongData
             $res = $this->db->query($sql);
         }
 
+        /* Not a false-check (STRICT mode throws instead of returning false —
+           the #1228 red flag); it narrows the union type the two branches
+           produce so static analysis and the loop below agree. */
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_assoc()) {
                 $row['number']        = normaliseSongNumber($row['number']);
@@ -1828,6 +2075,25 @@ class SongData
      *
      * When the hidden 'public_domain_only' feature flag is enabled,
      * only songs with lyrics_public_domain = 1 are returned.
+     *
+     * ⚠️ PASS A SONGBOOK. ELI5: this returns WHOLE songs — every verse, every
+     * credit — so asking for all of them at once is how the site runs out of
+     * memory.
+     *
+     * This is the FULL hydration: NINE bulk side-table loads on top of the
+     * main SELECT. Scoped to one book (`getSongs('MP')`) that is exactly right
+     * and is what `songbook_export`, `bulk_songs`, `bulk_audio` and the
+     * editor's per-book load all use. Called with `null` it materialises the
+     * entire corpus — the ~140 MB PHP-array shape that OOM-killed shared
+     * hosting in #929 and that CLAUDE.md rule #17 exists to forbid; the
+     * whole-corpus `exportAsJson()` / `songs.json` cache it used to feed was
+     * deleted in WS-J #1020 and must not come back in another guise.
+     * `api.php:1474` carries the matching caller-side rule-#17 comment.
+     *
+     * If you want a list rather than the contents, the scoped replacements are
+     * `getSongsSlimIndex($abbr)` (id/number/title only) and `getSongsIndex()`
+     * (a paginated window) — `includes/pages/songbook.php` moved to the former
+     * in #1037 for precisely this reason.
      *
      * @param string|null $songbookId Filter by songbook abbreviation (null = all)
      * @return array List of song objects
@@ -1857,6 +2123,12 @@ class SongData
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $where[] = "s.LyricsPublicDomain = 1";
         }
+
+        /* #1694 — soft-deleted songs are invisible to every consumer of this
+           bulk read (songbook page, songbook_export, bulk_songs, bulk_audio,
+           sitemap). Unconditional: '1=1' un-migrated, so $where is now never
+           empty and the clause below always renders a WHERE. */
+        $where[] = $this->_visible();
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
@@ -1889,6 +2161,7 @@ class SongData
            round-trip surfaces the persisted custom order. Pre-
            migration deploys keep the legacy column list. */
         $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
+        $idSelect  = $this->_songIdentitySelect();   /* #1750 — gated, may be '' pre-migration; same fold as _fetchSongRow() */
         /* WS-E (#1013): songbookName from the LIVE tblSongbooks JOIN (b),
            not the denormalised s.SongbookName, so songbook renames
            propagate immediately. (b is LEFT JOINed below.) */
@@ -1899,6 +2172,7 @@ class SongData
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                        {$arrSelect}
+                       {$idSelect}
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                 {$whereClause}
@@ -1930,6 +2204,18 @@ class SongData
                text inputs without null-checking every reader. */
             $row['tuneName'] = $row['tuneName'] ?? '';
             $row['iswc']     = $row['iswc']     ?? '';
+            /* #1750 — same always-present, shape-blind defaults as
+               _fetchSongRow() (rule #22, ONE fold conceptually — the two
+               call sites can't literally share a loop body since one is a
+               single row and the other iterates $result, but the five
+               lines are identical by design; see _fetchSongRow() for the
+               full rationale). */
+            $row['subtitle']           = (string)($row['subtitle'] ?? '');
+            $row['disambiguation']     = (string)($row['disambiguation'] ?? '');
+            $row['firstPublishedYear'] = isset($row['firstPublishedYear']) && $row['firstPublishedYear'] !== null
+                ? (int)$row['firstPublishedYear'] : null;
+            $row['copyrightYears']     = (string)($row['copyrightYears'] ?? '');
+            $row['copyrightHolder']    = (string)($row['copyrightHolder'] ?? '');
             /* #892 — decode the JSON int-array column when present.
                Surfaces as `arrangement` to match the shape that the
                Song Editor (`editor.js`) and pages/song.php both read. */
@@ -1943,7 +2229,7 @@ class SongData
 
         /* Bulk-load every many-to-one collection in one query per table
            instead of N per song (#EditorLoad). For the full catalogue
-           (≈3,600 songs) this cuts thousands of round-trips down to six
+           (≈3,600 songs) this cuts thousands of round-trips down to nine
            and is the single biggest win for `exportAsJson()` (Song
            Editor load) and any page that calls `getSongs()` without a
            songbook filter. The per-song private helpers are still used
@@ -2000,13 +2286,34 @@ class SongData
      * writer.php: the catalogue must NEVER materialise in full (CLAUDE.md
      * rule #17 / the #929 OOM). The match is pushed into SQL using the same
      * IN-subquery shape already used by searchSongs() and the credit→songs
-     * JOIN in person.php; only the (small) matched set is then hydrated, one
+     * JOIN in musician.php; only the (small) matched set is then hydrated, one
      * record at a time, via the canonical getSongById().
+     *
+     * ELI5: "show me everything this person wrote or composed", without
+     * loading the whole catalogue to find it.
+     *
+     * WHY NAME VARIANTS RATHER THAN AN ID: there is no FK from
+     * `tblSongWriters` / `tblSongComposers` to `tblMusicians` today — the
+     * link is a name-string match. A caller assembles the spellings a
+     * person is credited under and passes them all; see `getMusician()`'s
+     * section header, which reads the same tables the same way and must be
+     * changed in step if that FK is ever added.
+     *
+     * CALLER-LESS SINCE #1741 P4a-3 (#1754 doc-note): the historic caller,
+     * `includes/pages/writer.php`, was retired when P4a-3 consolidated the
+     * writer page into the musician profile — this method has had no caller
+     * since. RETAINED DELIBERATELY (#1754) as the documented scoped-read
+     * exemplar of rule #17 — credit-name → bounded id set → per-record
+     * `getSongById()` hydration, never a corpus materialisation — and as the
+     * ready-made read for a future credits API action. Do not resurrect a
+     * whole-corpus scan instead of reusing this; do not delete without an
+     * issue.
      *
      * @param string[] $nameVariants Candidate names in any case; matched
      *                 case-insensitively against tblSongWriters /
      *                 tblSongComposers `.Name`.
      * @return array<int,array> Full song records (same shape as getSongs()).
+     * @see #1754
      */
     public function getSongsByCreditName(array $nameVariants): array
     {
@@ -2027,10 +2334,14 @@ class SongData
            placeholder string is built from a hardcoded count() (never from
            user input) and every value is bound (CLAUDE.md SQL rule). */
         $placeholders = implode(',', array_fill(0, count($variants), '?'));
+        /* #1694 — the OR pair is PARENTHESISED so the visibility predicate
+           applies to BOTH branches (AND binds tighter than OR — appended bare,
+           it would only filter the composer branch). */
         $sql = "SELECT DISTINCT s.SongId
                   FROM tblSongs s
-                 WHERE s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
-                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders))";
+                 WHERE (s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
+                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders)))
+                   AND " . $this->_visible();
         $stmt = $this->db->prepare($sql);
         /* Variants are bound twice — once for each subquery. */
         $types  = str_repeat('s', count($variants) * 2);
@@ -2067,6 +2378,33 @@ class SongData
      *
      * Supports flexible ID formats: 'MP-1', 'MP-01', 'MP-001', and 'MP-0001'
      * all resolve to the same song.
+     *
+     * ELI5: someone typed or bookmarked an id; work out which song they meant,
+     * and — this is the important half — refuse to guess when guessing could
+     * hand back the wrong song.
+     *
+     * FOUR RESOLUTION STRATEGIES, IN THIS ORDER. The order is the design:
+     *
+     *   1. EXACT `SongId` (the PK) — first, so a legacy `/song/<SongId>` link
+     *      resolves even if every later strategy would have misfired.
+     *   2. OPAQUE `PublicId` permalink (#1343-B) — only for hyphen-less
+     *      all-caps input, and only when the column exists.
+     *   3. SUPPRESSION CHECKS — a redirect row (#1689) or a soft-deleted row
+     *      (#1694) that CLAIMS this id stops resolution dead and returns null.
+     *   4. NUMBER HEURISTIC (`getSongByNumber()`) — the forgiving fallback for
+     *      drift between a song's `Number` and the digits in its SongId.
+     *
+     * Strategy 4 is the dangerous one and 3 is its leash. `(SongbookAbbr,
+     * Number)` is NON-unique and `Number` is editable independently of the id,
+     * so for a dead or moved id the heuristic can match whatever occupies that
+     * slot NOW — HTTP 200, wrong song, nothing logged anywhere. Returning null
+     * from step 3 rather than following the redirect here is also deliberate;
+     * the reasoning is spelled out at the guard itself.
+     *
+     * Note what this method does NOT do: it does not gate content by tier. A
+     * record returned here is stripped of gated fields later by
+     * `contentGatingApply()` (CLAUDE.md rule #28) — visibility (#1694) and
+     * entitlement are separate concerns and are enforced in separate places.
      *
      * @param string $id Song ID in the format 'BOOK-NUMBER' (zero-padding optional)
      * @return array|null Song object or null if not found
@@ -2105,6 +2443,69 @@ class SongData
         if ($song === null && preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $matches)) {
             $prefix = $matches[1];
             $number = (int)$matches[2];
+
+            /* #1689 — A REDIRECT OUTRANKS THIS HEURISTIC.
+             *
+             * ELI5: if we have a forwarding note for this id, use it — don't
+             * hand back whoever happens to have that number now.
+             *
+             * The fallback below exists to be forgiving about drift between a
+             * song's `Number` and the digits in its SongId. But `tblSongs`'
+             * `(SongbookAbbr, Number)` index is NON-UNIQUE and a Number can be
+             * edited independently of the id (v2 `metadata_field_update
+             * field=number`, v1 `#edit-number`), so for a DEAD or MOVED id it
+             * can match whatever now occupies that slot in that book. The
+             * result was HTTP 200 with a DIFFERENT SONG and no `redirectedFrom`
+             * — silently wrong, which is the class this codebase keeps getting
+             * caught by, and it got likelier when #1679 made re-keying a routine
+             * curation action.
+             *
+             * A redirect row is a DEFINITE STATEMENT about where this id went; a
+             * number match is a guess. The definite statement wins.
+             *
+             * Returning NULL rather than resolving the redirect here is
+             * deliberate. Both readers — `api.php`'s song_detail/song_data and
+             * `includes/pages/song.php` — already consult the redirect layer on
+             * a null, and they need to KNOW they redirected so they can emit
+             * `redirectedFrom` (so a client can rewrite what it stored) or the
+             * SPA's [data-song-redirect] marker, and so a tombstone answers 410
+             * rather than 404. Following it silently here would return the right
+             * song while destroying that contract — a subtler regression than
+             * the bug being fixed. So this only ever SUPPRESSES the guess and
+             * lets the existing, correct path answer.
+             *
+             * Cost lands only on requests that already missed twice, and the
+             * probe fails OPEN: an un-migrated install (where no redirect can
+             * exist) and a transient probe failure both degrade to exactly the
+             * pre-#1689 behaviour rather than turning a working page into a 404.
+             */
+            if ($this->db instanceof \mysqli) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_redirects.php';
+                if (songRedirectClaimsId($this->db, $id)) {
+                    return null;
+                }
+                /* #1694 — a SOFT-DELETED id suppresses the guess too, for the
+                 * same #1689 reason: the filtered exact read above just MISSED
+                 * a row that still EXISTS, and falling through would serve
+                 * whatever now holds that number — 200 OK, wrong song, no
+                 * error anywhere.
+                 *
+                 * ELI5: if this exact song is merely hidden, say "nothing
+                 * here" instead of guessing a lookalike.
+                 *
+                 * A SEPARATE `if`, deliberately NOT a `||` widening of the
+                 * redirect-claim condition above: test-song-redirect-claim.php
+                 * asserts that `return null` is gated on songRedirectClaimsId()
+                 * ALONE (an added conjunct can only narrow when the
+                 * suppression fires, so the guard rejects any widening). The
+                 * probe fails OPEN — un-migrated installs and transient
+                 * failures degrade to today's fallback, never to a 404. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+                if (songSoftDeletedHolds($this->db, $id)) {
+                    return null;
+                }
+            }
+
             return $this->getSongByNumber($prefix, $number);
         }
 
@@ -2129,7 +2530,8 @@ class SongData
         }
 
         $stmt = $this->db->prepare(
-            "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1"
+            /* #1694 — the number heuristic must never pick a hidden song. */
+            "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? AND " . $this->_visible('') . " LIMIT 1"
         );
         $stmt->bind_param('si', $songbook, $number);
         $stmt->execute();
@@ -2155,6 +2557,7 @@ class SongData
         return [
             'tune', 'media', 'arrangements', 'royaltyIds', 'scriptureRefs',
             'vocalParts', 'translations', 'annotations',
+            'externalIds',   /* #1750 / #1741 D5 — recording/release external-ID store, opt-in */
         ];
     }
 
@@ -2193,7 +2596,8 @@ class SongData
                         $row = $this->_extrasRow(
                             'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug, t.MeterCode AS meter, '
                           . 't.MusicBrainzWorkMBID AS musicBrainzWorkMbid '
-                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? LIMIT 1',
+                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? '
+                          . 'AND ' . $this->_visible() . ' LIMIT 1',   /* #1694 — belt-and-braces; callers already resolved a visible song */
                             's', [$songId]
                         );
                         if ($row !== null) { $out['tune'] = $row; }
@@ -2247,7 +2651,7 @@ class SongData
                         if ($lyricsId > 0) {
                             $rows = $this->_extrasRows(
                                 'SELECT Id AS id, PartKind AS partKind, Label AS label, '
-                              . 'SingerName AS singerName, Gender AS gender, CreditPersonId AS creditPersonId '
+                              . 'SingerName AS singerName, Gender AS gender, MusicianId AS musicianId '
                               . 'FROM tblVocalParts WHERE LyricsId = ? ORDER BY SortOrder, Id',
                                 'i', [$lyricsId]
                             );
@@ -2283,6 +2687,25 @@ class SongData
                             unset($r);
                             if ($rows) { $out['annotations'] = $rows; }
                         }
+                        break;
+
+                    case 'externalIds':   /* #1750 / #1741 D5 — recording/release external-ID store, opt-in */
+                        /* ELI5: extra "this song is also known as ISRC/Spotify-ID/
+                           MusicBrainz-ID X" rows, only sent when a client explicitly
+                           asks for them.
+                           DETAILED: SourceRef is deliberately NOT selected — it is
+                           an internal idempotency/ownership reference (see
+                           includes/song_external_ids.php's ownership model), never
+                           meant to reach the wire. Same try/catch-per-block +
+                           omit-when-empty pattern as every sibling case above, so an
+                           un-migrated install (tblSongExternalIds absent) degrades to
+                           a clean omission rather than a 500. */
+                        $rows = $this->_extrasRows(
+                            'SELECT IdScope AS idScope, IdType AS idType, IdValue AS idValue, Source AS source '
+                          . 'FROM tblSongExternalIds WHERE SongId = ? ORDER BY IdScope, IdType, IdValue',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['externalIds'] = $rows; }
                         break;
                 }
             } catch (\Throwable $e) {
@@ -2539,6 +2962,8 @@ class SongData
         $params = [$ftQuery];
         $types  = 's';
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[]  = 's.SongbookAbbr = ?';
             $params[] = $songbookId;
@@ -2605,6 +3030,8 @@ class SongData
             $types  = 's';
         }
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[]  = 's.SongbookAbbr = ?';
             $params[] = $songbookId;
@@ -2658,6 +3085,8 @@ class SongData
             $where  = ['SOUNDEX(s.Title) = SOUNDEX(?)'];
             $params = [$query];
             $types  = 's';
+
+            $where[] = $this->_visible();   /* #1694 — hidden songs never match */
 
             if ($songbookId !== null) {
                 $where[]  = 's.SongbookAbbr = ?';
@@ -2865,8 +3294,9 @@ class SongData
                             MATCH(s.Title) AGAINST(? IN BOOLEAN MODE) AS relevance
                      FROM tblSongs s
                      WHERE MATCH(s.Title) AGAINST(? IN BOOLEAN MODE)
+                       AND " . $this->_visible() . "
                      ORDER BY relevance DESC, s.SongbookAbbr, s.Number
-                     LIMIT ?";
+                     LIMIT ?";   /* #1694 — autocomplete must not offer hidden songs */
             $stmt = $this->db->prepare($sql);
             $stmt->bind_param('ssi', $expr, $expr, $limit);
             $stmt->execute();
@@ -2882,8 +3312,9 @@ class SongData
                             s.Language AS language
                      FROM tblSongs s
                      WHERE s.Title LIKE ?
+                       AND " . $this->_visible() . "
                      ORDER BY s.SongbookAbbr, s.Number
-                     LIMIT ?";
+                     LIMIT ?";   /* #1694 — same for the LIKE fallback */
             $stmt = $this->db->prepare($sql);
             $stmt->bind_param('si', $like, $limit);
             $stmt->execute();
@@ -2893,15 +3324,6 @@ class SongData
 
         return $rows;
     }
-
-    /**
-     * Find songs tagged with the given scripture reference (#397).
-     *
-     * Matches `Name = <reference>` (e.g. "Psalm 23"), `Name = <book>`
-     * (e.g. "Psalm"), or the kebab-case slug form. Curators tag songs
-     * via /manage/editor/ (tags UI) and the hit merges into search
-     * results for scripture-style queries.
-     */
 
     /**
      * Search songs by alternative title (#832). Returns the same row
@@ -2946,7 +3368,8 @@ class SongData
                        FROM tblSongAlternativeTitles a
                        JOIN tblSongs s ON s.SongId = a.SongId
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                      WHERE a.Title LIKE ?';
+                      WHERE a.Title LIKE ?
+                        AND ' . $this->_visible();   /* #1694 — hidden songs never match */
             $params = [$like];
             $types  = 's';
             if ($songbookId !== null) {
@@ -2994,6 +3417,32 @@ class SongData
         }
     }
 
+    /**
+     * Find songs tagged with the given scripture reference (#397).
+     *
+     * Matches `Name = <reference>` (e.g. "Psalm 23"), `Name = <book>`
+     * (e.g. "Psalm"), or the kebab-case slug form. Curators tag songs
+     * via /manage/editor/ (tags UI) and the hit merges into search
+     * results for scripture-style queries.
+     *
+     * (This doc-block was stranded ONE function above its own definition for
+     * some time — it now sits where it belongs. Worth a glance whenever a
+     * doc-block here seems to describe the wrong thing. The irony of this
+     * sentence originally saying "two" is not lost on anyone.)
+     *
+     * ELI5: someone searched "Ps 23"; find the songs a curator has explicitly
+     * tagged with that passage, so a deliberate tag beats a fuzzy text match.
+     *
+     * FOUR CANDIDATES, ONE `IN` PAIR: the caller passes the already-expanded
+     * canonical reference ("Psalm 23"), from which the base book ("Psalm") is
+     * derived by stripping a trailing chapter/verse; each is matched against
+     * both `t.Name` and its slug form. That is why the bound list is four
+     * values for two columns.
+     *
+     * NOT paginated and NOT language-filtered — it is a page-1-only curated
+     * merge (see `_mergeCuratedHits()`), which is why the #1639 language
+     * filter that the two paginated passes carry is absent here by design.
+     */
     private function _searchByScriptureTag(string $scriptureRef, ?string $songbookId): array
     {
         if ($this->jsonMode || !$this->db) return [];
@@ -3014,7 +3463,13 @@ class SongData
                   JOIN tblSongTagMap m ON m.SongId = s.SongId
                   JOIN tblSongTags   t ON t.Id = m.TagId
                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                 WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
+                 WHERE (t.Name IN (?, ?) OR t.Slug IN (?, ?))
+                   AND " . $this->_visible();
+        /* #1694 — hidden songs never match. The Name/Slug OR pair is now
+           PARENTHESISED: appended AND clauses used to bind only to the Slug
+           branch (AND binds tighter than OR), which also means the pre-existing
+           `AND s.SongbookAbbr = ?` scope below never applied to Name matches —
+           a latent precedence bug this parenthesisation fixes as a side effect. */
         $types  = 'ssss';
         $params = [$scriptureRef, $book, $slugRef, $slugBook];
 
@@ -3033,6 +3488,12 @@ class SongData
             $result = $stmt->get_result();
             $out = [];
             while ($row = $result->fetch_assoc()) {
+                /* The only SONG-ROW hydrator in this file that open-codes the number
+                   cast instead of calling normaliseSongNumber(). It agrees on
+                   NULL but not on a stored 0 or '' — those reach the client as
+                   0 here and as null everywhere else (#797). Harmless in
+                   practice because 0 is not a legal hymn number, but if you are
+                   touching this line, prefer the shared helper. */
                 $row['number']             = $row['number'] !== null ? (int)$row['number'] : null;
                 $row['verified']           = (bool)$row['verified'];
                 $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
@@ -3091,8 +3552,9 @@ class SongData
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
              WHERE s.SongbookAbbr = ? AND CAST(s.Number AS CHAR) LIKE ?
+               AND " . $this->_visible() . "
              ORDER BY s.Number"
-        );
+        );   /* #1694 — number search must not surface hidden songs */
         $stmt->bind_param('ss', $songbookId, $likeNumber);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -3130,15 +3592,17 @@ class SongData
             $songs = $this->getSongs($songbookId);
             return empty($songs) ? null : $songs[random_int(0, count($songs) - 1)];
         }
+        /* #1694 — the shuffle pool excludes hidden songs (a random pick that
+           lands on one would 404 downstream when _fetchSongRow filters it). */
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
             );
             $stmt->bind_param('s', $songbookId);
         } else {
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
             );
         }
 
@@ -3182,8 +3646,13 @@ class SongData
         /* #963 — only count songbooks that have at least one song.
            Mirrors getMeta()'s SQL-side filter so every surface reads
            the same number whether it comes from the live DB
-           (this method) or the precomputed static cache (getMeta()
-           feeds exportAsJson()). */
+           (this method) or getMeta()'s own live COUNT(*).
+
+           ⚠️ This comment used to end "(getMeta() feeds exportAsJson())".
+           `exportAsJson()` was DELETED in WS-J #1020 — there is no static
+           cache and no whole-corpus materialiser any more (CLAUDE.md rule
+           #17). The sentence survived the deletion and described machinery
+           that no longer exists. */
         $populatedSongbooks = 0;
         foreach ($songbooks as $book) {
             if ((int)($book['songCount'] ?? 0) > 0) {
@@ -3209,6 +3678,17 @@ class SongData
      * existing songs to identify gaps. Useful for editors to spot
      * songs that haven't been added yet.
      *
+     * ELI5: "this hymnal goes up to 800 — which numbers haven't been typed in
+     * yet?" Powers `/manage/missing-numbers` and the `missing_numbers` API.
+     *
+     * THE RANGE IS DERIVED, NOT DECLARED. There is no "this book has 800
+     * hymns" field anywhere, so `maxNumber` is simply the highest number
+     * PRESENT. Consequence worth knowing before trusting the output: gaps at
+     * the END are invisible. A book whose last twenty hymns are all missing
+     * reports no gap at all, and adding hymn 800 to a book that stops at 500
+     * instantly "creates" 299 missing numbers. It is a completeness hint for a
+     * curator, not an authoritative to-do list.
+     *
      * @param string $songbookId Songbook abbreviation (e.g., 'CP')
      * @return array{missing: int[], maxNumber: int, totalExisting: int, songbook: string}
      */
@@ -3216,7 +3696,14 @@ class SongData
     {
         $songbookId = strtoupper(trim($songbookId));
 
-        /* Get all existing song numbers for this songbook */
+        /* Get all existing song numbers for this songbook.
+
+           @deleted-visible: a soft-deleted song's number slot is still
+           OCCUPIED (#1694). The (SongbookAbbr, Number) index is NON-unique, so
+           if this read filtered, a hidden song's number would be listed as
+           "missing", a curator would fill the gap, and restoring the original
+           would produce a duplicate number with nothing to stop it. Physical
+           occupancy is the correct answer here. */
         $stmt = $this->db->prepare(
             "SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
         );
@@ -3226,6 +3713,21 @@ class SongData
 
         $existing = [];
         while ($row = $result->fetch_assoc()) {
+            /* Raw `(int)` here, NOT normaliseSongNumber() — the one place in
+               this file that is right to differ.
+
+               ELI5: we only care which numbered slots are taken, so a song
+               with no number just becomes a harmless 0.
+
+               `Number` is nullable and NULL casts to 0, which the gap scan
+               below ignores because it starts at 1. Using the null-preserving
+               helper would mean handling null inside max()/array_flip() for no
+               gain. The visible side effect: `totalExisting` counts ROWS, so a
+               book with unnumbered entries reports more "present" than it has
+               occupied slots — and, because this query is deliberately
+               unfiltered, soft-deleted songs count too. Both are consistent
+               with what this method measures (physical occupancy), but neither
+               is what "present" sounds like on the admin page. */
             $existing[] = (int)$row['Number'];
         }
         $stmt->close();
@@ -3274,6 +3776,24 @@ class SongData
     /**
      * Fetch a single song row with all related data by song_id.
      *
+     * ELI5: the one place a single complete song is built. Everything that
+     * hands you "a song" — the public page, the API, print, random, the
+     * counterpart panel — ends up here.
+     *
+     * BEING THE FUNNEL IS THE POINT. `getSongById()`, `getSongByNumber()` and
+     * `getRandomSong()` all delegate here, so the `_visible()` predicate on the
+     * SELECT below is a SINGLE per-record visibility gate (#1694) rather than
+     * three that can drift apart. Add a new single-song entry point and it
+     * should call this, not re-issue its own SELECT.
+     *
+     * SHAPE CONTRACT: the returned array must match what `getSongs()` produces
+     * per row, because clients (the editor, the exporters, `pages/song.php`)
+     * consume both interchangeably. The two therefore attach the same keys by
+     * different means — this one via the per-song helpers (one round-trip each
+     * is cheaper than building placeholder lists for a single id), `getSongs()`
+     * via the `*Map()` bulk loaders. Adding a key to either without the other
+     * is the classic way this file drifts.
+     *
      * @param string $songId The canonical song ID (e.g., 'CP-0001')
      * @return array|null Complete song object or null
      */
@@ -3288,6 +3808,7 @@ class SongData
             ? ', OriginCity AS originCity, OriginCityId AS originCityId'
             : '';
         $pubSelect    = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';   /* #1343-B (gated) */
+        $idSelect     = $this->_songIdentitySelect();   /* #1750 — gated, may be '' pre-migration */
         $stmt = $this->db->prepare(
             "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                     sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
@@ -3298,11 +3819,12 @@ class SongData
                     {$arrSelect}
                     {$placeSelect}
                     {$pubSelect}
+                    {$idSelect}
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-             WHERE s.SongId = ?
+             WHERE s.SongId = ? AND " . $this->_visible() . "
              LIMIT 1"
-        );
+        );   /* #1694 — THE per-record gate: every single-song read funnels here */
         $stmt->bind_param('s', $songId);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -3321,6 +3843,18 @@ class SongData
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
         $row['tuneName'] = $row['tuneName'] ?? '';
         $row['iswc']     = $row['iswc']     ?? '';
+        /* #1750 — always-present, shape-blind defaults for the five #1741 P1
+           identity columns (mirrors getWork()'s absent-column defaults,
+           SongData.php ~5040-5052): keys exist on the returned array
+           whether or not the backing column exists on this install yet, so
+           #1752's strict native decoders get a stable contract on every
+           install. */
+        $row['subtitle']           = (string)($row['subtitle'] ?? '');
+        $row['disambiguation']     = (string)($row['disambiguation'] ?? '');
+        $row['firstPublishedYear'] = isset($row['firstPublishedYear']) && $row['firstPublishedYear'] !== null
+            ? (int)$row['firstPublishedYear'] : null;
+        $row['copyrightYears']     = (string)($row['copyrightYears'] ?? '');
+        $row['copyrightHolder']    = (string)($row['copyrightHolder'] ?? '');
         /* Places adoption — pass-through the FK Id (or null) to the
            editor so the place-search module can populate its hidden
            sidecar input. The display string lives in originCity. */
@@ -3597,6 +4131,10 @@ class SongData
      *  caller has already gated on _hasPublicIdColumn(). */
     private function _songIdForPublicId(string $publicId): ?string
     {
+        /* @deleted-visible: pure id RESOLVER (#1694) — the follow-up
+           _fetchSongRow() applies the visibility filter, and a deleted song's
+           PublicId must still resolve here or songSoftDeletedHolds() could
+           never recognise it (and the 410 answer would decay to a 404). */
         $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
         $stmt->bind_param('s', $publicId);
         $stmt->execute();
@@ -4155,6 +4693,8 @@ class SongData
         $params = [$likeQuery, $likeQuery];
         $types = 'ss';
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[] = "s.SongbookAbbr = ?";
             $params[] = $songbookId;
@@ -4240,6 +4780,184 @@ class SongData
     private ?bool $_hasWorksSchemaCache = null;
 
     /**
+     * Cached per-column presence probe over the 9 #1741 P1/D5 tblWorks
+     * "extra" columns (Ccli/Bowi/Subtitle/Disambiguation/TuneName/TuneId/
+     * FirstPublishedYear/CopyrightYears/CopyrightHolder) — §0.3.2's cached
+     * per-column idiom, generalised from `_hasWorksSchema()` above (which
+     * only ever asked a table-level yes/no question).
+     *
+     * ELI5: "of these nine optional columns, which ones actually exist on
+     * THIS database right now?" — asked once per request (migrations are
+     * web-run, not guaranteed applied — a fresh `tblWorks` from #840 may
+     * predate the #1741 P1/D5 batches that added these), remembered for
+     * every subsequent `getWork()` call in the same request.
+     *
+     * DETAILED / WHY PER-COLUMN, NOT ALL-OR-NOTHING: `Bowi` shipped in a
+     * DIFFERENT migration (`migrate-work-bowi.php`, #1741 D5) than the
+     * other eight (`migrate-works-identity.php`, #1741 P1) — an install
+     * that has applied one card but not the other is a real, supported
+     * state, not a corrupt one. A single boolean "has the P1 batch landed?"
+     * would either wrongly hide Bowi on a P1-only install or wrongly try to
+     * SELECT a column that isn't there yet and throw. One
+     * INFORMATION_SCHEMA.COLUMNS query naming all nine returns exactly the
+     * present subset, so the caller (`getWork()`) can build its SELECT
+     * fragment from whichever subset actually exists — mirrors the cached-
+     * table-probe idiom immediately above, one level more granular.
+     *
+     * @return array<string,true> present column names as keys (a set, not
+     *                             a list — `isset($cols['Ccli'])` reads
+     *                             cleanly at every call site).
+     * @link .claude/catalogue-1741-P4-plan.md §2.2 item 1
+     * @link appWeb/.sql/migrate-works-identity.php  the P1 batch (8 of the 9 columns)
+     * @link appWeb/.sql/migrate-work-bowi.php       the D5 batch (Bowi, gated independently)
+     */
+    private function _worksExtraCols(): array
+    {
+        if ($this->_worksExtraColsCache !== null) {
+            return $this->_worksExtraColsCache;
+        }
+        /* Hardcoded constant column names (rule #5's carve-out) — never
+           built from request input. */
+        $cols = [
+            'Ccli', 'Bowi', 'Subtitle', 'Disambiguation', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder',
+        ];
+        $present = [];
+        try {
+            $ph = implode(',', array_fill(0, count($cols), '?'));
+            $stmt = $this->db->prepare(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks'
+                    AND COLUMN_NAME IN ($ph)"
+            );
+            $types = str_repeat('s', count($cols));
+            $stmt->bind_param($types, ...$cols);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $present[(string)$row['COLUMN_NAME']] = true;
+            }
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $present = [];
+        }
+        return $this->_worksExtraColsCache = $present;
+    }
+    /** @var array<string,true>|null cached probe result */
+    private ?array $_worksExtraColsCache = null;
+
+    /**
+     * #1750 — instance-cached existence probe for the five #1741 P1 "song
+     * identity" columns on `tblSongs` (Subtitle, Disambiguation,
+     * FirstPublishedYear, CopyrightYears, CopyrightHolder).
+     *
+     * ELI5: "of these five optional columns, which ones actually exist on
+     * THIS database right now?" — asked once per request (migrations are
+     * web-run, not guaranteed applied — see
+     * `appWeb/.sql/migrate-song-identity-fields.php`), remembered for every
+     * subsequent `_songIdentitySelect()` call in the same request.
+     *
+     * DETAILED / WHY A SEPARATE PROBE FROM `_worksExtraCols()`, NOT A SHARED
+     * ONE: same clone-the-shape idea as that method (byte-for-byte pattern:
+     * hardcoded IN-list, one INFORMATION_SCHEMA.COLUMNS query, try/catch →
+     * []), but a DIFFERENT table (`tblSongs`, not `tblWorks`) and a
+     * DIFFERENT column set (five, not nine) — so it is its own method, not a
+     * parameterised reuse of `_worksExtraCols()`. Also deliberately NOT
+     * shared with the editor's own probe, `ed2_songIdentityColsPresent()`
+     * (`manage/editor/api2.php`) — that one runs in the `manage/editor`
+     * runtime context (a free function, not a SongData method) and this one
+     * runs in the public `includes/` context; unifying them into a
+     * cross-context `require` would couple two independently-deployable
+     * surfaces for no benefit (mirrors the existing `_worksExtraCols()`-vs-
+     * editor-probe split — the same reasoning applies here, do not
+     * "unify" the two).
+     *
+     * @return array<string,true> present column names as keys (a set, not a
+     *                             list — `isset($cols['Subtitle'])` reads
+     *                             cleanly at every call site).
+     * @see #1750
+     * @link appWeb/.sql/migrate-song-identity-fields.php the migration that adds these columns
+     * @link SongData::_worksExtraCols() the pattern this clones
+     */
+    private function _songIdentityCols(): array
+    {
+        if ($this->_songIdentityColsCache !== null) {
+            return $this->_songIdentityColsCache;
+        }
+        /* Hardcoded constant column names (rule #5's carve-out) — never
+           built from request input. */
+        $cols = ['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder'];
+        $present = [];
+        try {
+            $ph = implode(',', array_fill(0, count($cols), '?'));
+            $stmt = $this->db->prepare(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs'
+                    AND COLUMN_NAME IN ($ph)"
+            );
+            $types = str_repeat('s', count($cols));
+            $stmt->bind_param($types, ...$cols);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $present[(string)$row['COLUMN_NAME']] = true;
+            }
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            /* mysqli STRICT throws on a query naming a nonexistent
+               column/table; migrations are web-run so an un-migrated
+               install must degrade to "none present", never white-screen. */
+            $present = [];
+        }
+        return $this->_songIdentityColsCache = $present;
+    }
+    /** @var array<string,true>|null cached probe result (#1750) */
+    private ?array $_songIdentityColsCache = null;
+
+    /**
+     * #1750 — the SELECT-fragment half of the `_songIdentityCols()` probe:
+     * folds "which of the five columns exist" into a ready-to-interpolate
+     * `, s.Col AS camelAlias` string, so `_fetchSongRow()` and `getSongs()`
+     * (the two SELECTs that must both carry these columns — rule #22, ONE
+     * fold, two call sites) never duplicate the alias-mapping logic.
+     *
+     * ELI5: builds the extra bit of the SQL SELECT line for whichever of
+     * the five identity columns this database actually has, already
+     * aliased to the camelCase wire names the editor and public API agree
+     * on.
+     *
+     * DETAILED: alias mapping is fixed and matches the editor's
+     * `ED2_META_FIELDS` keys exactly (`manage/editor/api2.php`) — one
+     * vocabulary across editor, public web, and native (rule #35: keeping
+     * two files' key spellings in lockstep needs a mechanism, and here that
+     * mechanism is "there is only one place the mapping is written").
+     * Column names come from `_songIdentityCols()`'s own hardcoded probe
+     * set only — never from caller input (rule #5's carve-out).
+     *
+     * @return string e.g. ', s.Subtitle AS subtitle, s.FirstPublishedYear AS firstPublishedYear'
+     *                for whichever P1 columns exist; '' when none do.
+     * @see #1750
+     */
+    private function _songIdentitySelect(): string
+    {
+        $present = $this->_songIdentityCols();
+        $aliasMap = [
+            'Subtitle'           => 'subtitle',
+            'Disambiguation'     => 'disambiguation',
+            'FirstPublishedYear' => 'firstPublishedYear',
+            'CopyrightYears'     => 'copyrightYears',
+            'CopyrightHolder'    => 'copyrightHolder',
+        ];
+        $parts = [];
+        foreach ($aliasMap as $col => $alias) {
+            if (isset($present[$col])) {
+                $parts[] = "s.{$col} AS {$alias}";
+            }
+        }
+        return $parts ? (', ' . implode(', ', $parts)) : '';
+    }
+
+    /**
      * For each songId in $songIds, return a list of Works the song is
      * a member of. Empty array on a pre-migration deployment.
      *
@@ -4320,7 +5038,10 @@ class SongData
                           JOIN tblSongs s ON s.SongId = ws.SongId
                           LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                          WHERE ws.WorkId IN ($ph2)
+                           AND " . $this->_visible() . "
                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
+                         /* #1694 — membership rows survive a soft delete
+                            (CASCADE-safe); the PANEL just hides them */
             $stmt2 = $this->db->prepare($sql2);
             $types2 = str_repeat('i', count($widList));
             $stmt2->bind_param($types2, ...$widList);
@@ -4418,18 +5139,51 @@ class SongData
     {
         if (!$this->_hasWorksSchema()) return null;
 
+        /* One parameter, two lookup columns — an all-digit string is treated as
+           an Id, not a Slug.
+
+           ELI5: "/work/12" means work number 12, not a work whose name is "12".
+           A work slug made only of digits is therefore unreachable by slug.
+
+           ⚠️ Nothing PREVENTS one. This comment previously claimed "the slug
+           generator has never produced one", which is not a property anything
+           enforces: `manage/works.php` takes a curator-supplied slug verbatim
+           (`$slug = $slugIn !== '' ? $slugIn : $slugFor($title);`) and nothing
+           downstream rejects an all-digit value — so a work titled "1812", or
+           a hand-typed slug "23", is reachable today and would be permanently
+           unreachable by slug. That is a missing mechanism (rule #35), not a
+           guarantee, and stating it as a guarantee is how it stays missing. */
         $isInt = is_int($slugOrId) || ctype_digit((string)$slugOrId);
+
+        /* #1741 P4b — append whichever of the 9 "extra" columns actually
+           exist on this install to the main SELECT. Hardcoded constant
+           column names interpolated (rule #5's carve-out — never built
+           from request input); the present-set itself comes from the
+           cached INFORMATION_SCHEMA probe above, never from $slugOrId. */
+        $extraColNames = [
+            'Ccli', 'Bowi', 'Subtitle', 'Disambiguation', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder',
+        ];
+        $extraPresent  = $this->_worksExtraCols();
+        $extraSelected = array_values(array_filter(
+            $extraColNames,
+            static fn(string $c): bool => isset($extraPresent[$c])
+        ));
+        $extraSelect = $extraSelected ? (', ' . implode(', ', $extraSelected)) : '';
+
         try {
             if ($isInt) {
                 $stmt = $this->db->prepare(
-                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
+                    . $extraSelect . '
                        FROM tblWorks WHERE Id = ? LIMIT 1'
                 );
                 $id = (int)$slugOrId;
                 $stmt->bind_param('i', $id);
             } else {
                 $stmt = $this->db->prepare(
-                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
+                    . $extraSelect . '
                        FROM tblWorks WHERE Slug = ? LIMIT 1'
                 );
                 $slug = (string)$slugOrId;
@@ -4453,6 +5207,21 @@ class SongData
                 'children'  => [],
                 'members'   => [],
                 'links'     => [],
+                /* #1741 P4b (§2.2.2) — absent-column defaults so work.php
+                   can render shape-blind: every key below is always
+                   present in the returned array, whether or not the
+                   backing column exists on this install yet. */
+                'ccli'               => isset($extraPresent['Ccli'])               ? (string)($row['Ccli'] ?? '')               : '',
+                'bowi'               => isset($extraPresent['Bowi'])               ? (string)($row['Bowi'] ?? '')               : '',
+                'subtitle'           => isset($extraPresent['Subtitle'])           ? (string)($row['Subtitle'] ?? '')           : '',
+                'disambiguation'     => isset($extraPresent['Disambiguation'])     ? (string)($row['Disambiguation'] ?? '')     : '',
+                'tuneName'           => isset($extraPresent['TuneName'])           ? (string)($row['TuneName'] ?? '')           : '',
+                'tuneId'             => (isset($extraPresent['TuneId']) && $row['TuneId'] !== null) ? (int)$row['TuneId'] : null,
+                'firstPublishedYear' => (isset($extraPresent['FirstPublishedYear']) && $row['FirstPublishedYear'] !== null) ? (int)$row['FirstPublishedYear'] : null,
+                'copyrightYears'     => isset($extraPresent['CopyrightYears'])     ? (string)($row['CopyrightYears'] ?? '')     : '',
+                'copyrightHolder'    => isset($extraPresent['CopyrightHolder'])    ? (string)($row['CopyrightHolder'] ?? '')    : '',
+                'tune'               => null,
+                'credits'            => ['writers' => [], 'composers' => [], 'arrangers' => []],
             ];
 
             /* Parent header (one row) */
@@ -4503,8 +5272,9 @@ class SongData
                    FROM tblWorkSongs ws
                    JOIN tblSongs s ON s.SongId = ws.SongId
                    LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                  WHERE ws.WorkId = ?
+                  WHERE ws.WorkId = ? AND ' . $this->_visible() . '
                   ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
+                  /* #1694 — the public Work page hides deleted members */
             );
             $stmt->bind_param('i', $wid);
             $stmt->execute();
@@ -4521,6 +5291,96 @@ class SongData
                 ];
             }
             $stmt->close();
+
+            /* #1741 P4b (§2.2.3) — Tune link resolution. Only attempted
+               when TuneId was actually resolved above (either the column
+               was absent, or it was present but NULL — both leave
+               $work['tuneId'] === null and this whole block is skipped).
+               Belt-and-braces try/catch: tblTunes is a SEPARATE table
+               (#1090) that can be absent even when tblWorks.TuneId exists
+               (migrate-works-identity.php explicitly tolerates running
+               before migrate-tunes-entity.php — see that script's
+               doc-block), so a raw SELECT here would throw under STRICT
+               mysqli on an install in that intermediate state. */
+            if ($work['tuneId'] !== null) {
+                try {
+                    $tprobe = $this->db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTunes' LIMIT 1"
+                    );
+                    $tprobe->execute();
+                    $hasTunes = $tprobe->get_result()->fetch_row() !== null;
+                    $tprobe->close();
+                    if ($hasTunes) {
+                        $tstmt = $this->db->prepare('SELECT Name, Slug FROM tblTunes WHERE Id = ? LIMIT 1');
+                        $tid = (int)$work['tuneId'];
+                        $tstmt->bind_param('i', $tid);
+                        $tstmt->execute();
+                        $trow = $tstmt->get_result()->fetch_assoc();
+                        $tstmt->close();
+                        if ($trow) {
+                            $work['tune'] = [
+                                'name' => (string)$trow['Name'],
+                                'slug' => (string)$trow['Slug'],
+                            ];
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    /* Tune lookup is a nice-to-have enrichment, not core
+                       Work data — degrade to no tune link rather than
+                       failing the whole page. */
+                }
+            }
+
+            /* #1741 P4b (§2.2.4) — Aggregated writer/composer/arranger
+               credits from member songs. There is NO tblWorkCredits table
+               (§2.7's accepted escape hatch: the curator-credit table was
+               scoped OUT of P4b) — credits are DERIVED by asking each of
+               the three existing per-role song-credit tables which names
+               appear across every member song's SongId. Skipped entirely
+               when the work has no members (nothing to aggregate). Each
+               table query gets its OWN try/catch — the three tables are
+               old and near-certain to exist, but STRICT-safe costs
+               nothing and one absent/renamed table shouldn't blank the
+               other two roles. */
+            if (!empty($work['members'])) {
+                $creditSongIds = array_values(array_unique(array_map(
+                    static fn(array $m): string => (string)$m['songId'],
+                    $work['members']
+                )));
+                if ($creditSongIds) {
+                    $creditPh    = implode(',', array_fill(0, count($creditSongIds), '?'));
+                    $creditTypes = str_repeat('s', count($creditSongIds));
+                    /* Hardcoded constant table names (rule #5's carve-out)
+                       — never built from request input. */
+                    $creditTables = [
+                        'writers'   => 'tblSongWriters',
+                        'composers' => 'tblSongComposers',
+                        'arrangers' => 'tblSongArrangers',
+                    ];
+                    foreach ($creditTables as $creditKey => $creditTable) {
+                        try {
+                            $cstmt = $this->db->prepare(
+                                "SELECT DISTINCT Name FROM {$creditTable} WHERE SongId IN ($creditPh)"
+                            );
+                            $cstmt->bind_param($creditTypes, ...$creditSongIds);
+                            $cstmt->execute();
+                            $cres  = $cstmt->get_result();
+                            $names = [];
+                            while ($crow = $cres->fetch_assoc()) {
+                                $names[] = (string)$crow['Name'];
+                            }
+                            $cstmt->close();
+                            sort($names, SORT_STRING | SORT_FLAG_CASE);
+                            $work['credits'][$creditKey] = array_slice($names, 0, 50);
+                        } catch (\Throwable $_e) {
+                            /* Credit table absent/renamed — that role's
+                               list simply stays empty (already defaulted
+                               to [] in $work['credits'] above). */
+                        }
+                    }
+                }
+            }
 
             /* External links — probe-gated on the work-links table */
             try {
@@ -4572,35 +5432,36 @@ class SongData
     }
 
     /* =====================================================================
-     * CREDIT PEOPLE — writer/composer/etc. bio + discography (#1443/#1444)
+     * MUSICIANS — writer/composer/etc. bio + discography (#1443/#1444,
+     * renamed from "Credit People" by #1741 P2-B)
      *
-     * JSON twin of includes/pages/person.php's own query logic (the public
-     * /people/<slug> HTML page — see that file's header). Deliberately NOT
-     * a copy-paste fork: both this method and person.php independently
-     * query tblCreditPeople + the six per-role credit tables because
-     * tblCreditPeople has no direct FK from tblSongWriters/tblSongComposers/
-     * etc. today (a name-string match, same as person.php) — a future
+     * JSON twin of includes/pages/musician.php's own query logic (the public
+     * /musician/<slug> HTML page — see that file's header). Deliberately NOT
+     * a copy-paste fork: both this method and musician.php independently
+     * query tblMusicians + the six per-role credit tables because
+     * tblMusicians has no direct FK from tblSongWriters/tblSongComposers/
+     * etc. today (a name-string match, same as musician.php) — a future
      * schema change adding that FK should update BOTH read paths together.
      * ===================================================================== */
 
     /**
      * One credit person's registry row (bio/lifespan/links, when a
-     * tblCreditPeople row exists) plus every song they are credited on,
+     * tblMusicians row exists) plus every song they are credited on,
      * grouped by role. Exactly ONE of $id/$slug/$name should be given by
-     * the caller (api.php's `credit_person` action resolves which); when
+     * the caller (api.php's `musician` action resolves which); when
      * none of the id/slug lookups finds a registry row, $name (or the
      * row's own Name once found) still drives the discography query — a
-     * writer/composer with no curated tblCreditPeople row yet still has a
-     * usable "songs by this name" result, mirroring person.php's own
+     * writer/composer with no curated tblMusicians row yet still has a
+     * usable "songs by this name" result, mirroring musician.php's own
      * slug-has-no-row fallback.
      *
      * Returns null only when NEITHER a registry row NOR any credited song
      * could be found — nothing to show at all (same 404 condition
-     * person.php uses).
+     * musician.php uses).
      *
      * @return array<string,mixed>|null
      */
-    public function getCreditPerson(?int $id = null, ?string $slug = null, ?string $name = null): ?array
+    public function getMusician(?int $id = null, ?string $slug = null, ?string $name = null): ?array
     {
         $row = null;
         try {
@@ -4609,7 +5470,7 @@ class SongData
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Id = ? LIMIT 1'
+                       FROM tblMusicians WHERE Id = ? LIMIT 1'
                 );
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -4620,7 +5481,7 @@ class SongData
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+                       FROM tblMusicians WHERE Slug = ? LIMIT 1'
                 );
                 $stmt->bind_param('s', $slug);
                 $stmt->execute();
@@ -4628,14 +5489,14 @@ class SongData
                 $stmt->close();
             }
             /* Slug/id lookup found nothing (or wasn't attempted) — try an
-               exact Name match (tblCreditPeople.Name is UNIQUE). Mirrors
-               person.php's own "no registry row, fall back to a name" path. */
+               exact Name match (tblMusicians.Name is UNIQUE). Mirrors
+               musician.php's own "no registry row, fall back to a name" path. */
             if ($row === null && $name !== null && $name !== '') {
                 $stmt = $this->db->prepare(
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Name = ? LIMIT 1'
+                       FROM tblMusicians WHERE Name = ? LIMIT 1'
                 );
                 $stmt->bind_param('s', $name);
                 $stmt->execute();
@@ -4643,7 +5504,7 @@ class SongData
                 $stmt->close();
             }
         } catch (\Throwable $e) {
-            error_log('[SongData::getCreditPerson] registry lookup failed: ' . $e->getMessage());
+            error_log('[SongData::getMusician] registry lookup failed: ' . $e->getMessage());
             $row = null;
         }
 
@@ -4670,11 +5531,21 @@ class SongData
             'discography'   => [],
             'links'         => [],
             'totalSongs'    => 0,
+            /* #1752 Slice D — always-present default so the native Apple
+               client (and any other consumer) can decode this key
+               unconditionally, matching the P4b `getWork()` "shape-blind"
+               convention (rule #9): an un-migrated docroot, a lookup that
+               never resolved a registry row, or a query failure all leave
+               this as the empty array rather than omitting the key. See
+               `.claude/catalogue-1741-1750-plan.md` §4 for the frozen
+               contract this app-side change is scoped OUTSIDE of (this key
+               is new, #1741-adjacent but not part of that frozen five). */
+            'identifiers'   => [],
         ];
 
-        /* Discography by role — same six tables + labels person.php uses,
+        /* Discography by role — same six tables + labels musician.php uses,
            minus the #587 'artist' role when tblSongArtists hasn't been
-           migrated yet (probe, exactly like person.php's own guard). */
+           migrated yet (probe, exactly like musician.php's own guard). */
         $roleTables = [
             'writer'     => ['table' => 'tblSongWriters',     'label' => 'As Writer'],
             'composer'   => ['table' => 'tblSongComposers',   'label' => 'As Composer'],
@@ -4699,14 +5570,28 @@ class SongData
         $matchedSongIds = [];
         foreach ($roleTables as $roleKey => $cfg) {
             try {
+                /* `{$cfg['table']}` is interpolated into SQL, and that is
+                   legitimate here — but only because of where it comes from.
+
+                   ELI5: the table name is picked from a fixed list written
+                   just above; nothing a visitor types can reach it.
+
+                   CLAUDE.md rule #5 clause (a): a table/column name cannot be a
+                   bound parameter in MySQL, so the only safe source is a
+                   hardcoded PHP constant or an exact allow-list — `$roleTables`
+                   is that constant, and `$roleKey` never leaves it. The VALUE
+                   ($matchName) is bound, as it must be. If a role is ever made
+                   configurable, this becomes an injection site: keep the
+                   allow-list literal. */
                 $stmt = $this->db->prepare(
                     "SELECT s.SongId AS songId, s.Title AS title, s.Number AS number,
                             s.SongbookAbbr AS songbook, sb.Name AS songbookName
                        FROM {$cfg['table']} c
                        JOIN tblSongs s ON s.SongId = c.SongId
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                      WHERE c.Name = ?
+                      WHERE c.Name = ? AND " . $this->_visible() . "
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC"
+                      /* #1694 — a discography lists visible songs only */
                 );
                 $stmt->bind_param('s', $matchName);
                 $stmt->execute();
@@ -4732,7 +5617,7 @@ class SongData
                 }
             } catch (\Throwable $_e) {
                 /* Table missing / query failed — skip this role, matching
-                   person.php's own per-role try/catch. */
+                   musician.php's own per-role try/catch. */
             }
         }
         $person['totalSongs'] = count($matchedSongIds);
@@ -4742,14 +5627,14 @@ class SongData
         }
 
         /* External links — unified system only (#833). The legacy
-           tblCreditPersonLinks fallback person.php still renders is a
+           tblMusicianLinks fallback musician.php still renders is a
            display-only shim with no new rows since #833 shipped; not worth
            carrying into this newer JSON contract. */
         if ($row && (int)$row['Id'] > 0) {
             try {
                 $probe = $this->db->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianExternalLinks' LIMIT 1"
                 );
                 $hasLinks = $probe && $probe->fetch_row() !== null;
                 if ($probe) { $probe->close(); }
@@ -4761,9 +5646,9 @@ class SongData
                 $stmt = $this->db->prepare(
                     'SELECT t.Slug AS slug, t.Name AS name, t.Category AS category, t.IconClass AS iconClass,
                             el.Url AS url, el.Note AS note, el.Verified AS verified, el.SortOrder AS sortOrder
-                       FROM tblCreditPersonExternalLinks el
+                       FROM tblMusicianExternalLinks el
                        JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
-                      WHERE el.CreditPersonId = ?
+                      WHERE el.MusicianId = ?
                         AND COALESCE(t.IsActive, 1) = 1
                       ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC'
                 );
@@ -4783,6 +5668,58 @@ class SongData
                     ];
                 }
                 $stmt->close();
+            }
+        }
+
+        /* #1752 Slice D — musician identifiers (IPI/ISNI and similar,
+           `tblMusicianIdentifiers`, #1741 P2 rename target). `getMusician()`
+           previously emitted NO P4a musician-enrichment identifiers at all
+           (verified by reading this whole function — only id/slug/name/
+           notes/lifespan/isSpecialCase/isGroup/discography/links/
+           totalSongs) even though the web musician PAGE renders richer
+           data; this closes that native/JSON gap (`.claude/
+           catalogue-1741-1752-plan.md` §4.1). Byte-pattern of the
+           `tblMusicianExternalLinks` existence-probe directly above —
+           existence-gated (rule #9/#19: migrations are web-run, not
+           auto-applied, so an un-migrated docroot must degrade to the
+           already-set `'identifiers' => []` default, never throw) and
+           wrapped in try/catch (rule #9 STRICT-safety: mysqli throws under
+           MYSQLI_REPORT_STRICT, and a query failure here must not blank the
+           whole musician page/JSON response). */
+        if ($row && (int)$row['Id'] > 0) {
+            try {
+                $probe = $this->db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianIdentifiers' LIMIT 1"
+                );
+                $hasIdentifiers = $probe && $probe->fetch_row() !== null;
+                if ($probe) { $probe->close(); }
+            } catch (\Throwable $_e) {
+                $hasIdentifiers = false;
+            }
+            if ($hasIdentifiers) {
+                try {
+                    $pid = (int)$row['Id'];
+                    $stmt = $this->db->prepare(
+                        'SELECT IdentifierType AS type, IdentifierValue AS value
+                           FROM tblMusicianIdentifiers WHERE MusicianId = ? ORDER BY IdentifierType, IdentifierValue'
+                    );
+                    $stmt->bind_param('i', $pid);
+                    $stmt->execute();
+                    $ires = $stmt->get_result();
+                    while ($irow = $ires->fetch_assoc()) {
+                        $person['identifiers'][] = [
+                            'type'  => (string)$irow['type'],
+                            'value' => (string)$irow['value'],
+                        ];
+                    }
+                    $stmt->close();
+                } catch (\Throwable $_e) {
+                    /* Query failed after the probe passed (e.g. a mid-flight
+                       schema change) — degrade to the already-set empty
+                       default rather than throwing (rule #9). */
+                    $person['identifiers'] = [];
+                }
             }
         }
 

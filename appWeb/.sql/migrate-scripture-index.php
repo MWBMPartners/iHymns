@@ -17,6 +17,42 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT.
  *
+ * NOT DESTRUCTIVE. Two new tables plus a reference-data seed; nothing existing
+ * is altered or deleted. Both tables are dormant until the browse-by-passage /
+ * lectionary UI lands.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED — note the two halves work differently, and the
+ * difference is deliberate:
+ *   · The two CREATEs sit behind _migSR_tableExists() guards, so a re-run skips
+ *     them.
+ *   · The 66-book SEED does NOT sit behind a guard. It runs on EVERY execution
+ *     and relies on `INSERT IGNORE` + `UNIQUE KEY uq_Code` to discard books
+ *     already present, reporting only the count it actually added. That is on
+ *     purpose: it makes re-running the card the repair action for a
+ *     part-seeded table, and it is the only thing that seeds a FRESH install
+ *     (schema.sql creates tblBibleBooks but ships no rows).
+ *
+ * ⚠ CONSEQUENCE OF INSERT IGNORE: it only ever adds. An existing row's Name,
+ * Testament or CanonicalOrder is never corrected by a re-run. So amending the
+ * canon list below — e.g. adding the apocrypha that schema.sql's Testament
+ * COMMENT already anticipates — would give the NEW books correct ordinals while
+ * leaving every previously-seeded book on its old CanonicalOrder, silently
+ * corrupting canonical sort order on long-running installs while looking
+ * perfect on a fresh one. Any such change needs a deliberate re-order UPDATE,
+ * not just extra array entries.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "Scripture cross-reference index
+ * (#1112)" → button "Run Scripture Index Migration". A first run reports
+ * "Seeded 66 new Bible books (66 total)"; a repeat reports "Seeded 0".
+ *
+ * SCHEMA MIRROR: both CREATE TABLEs are mirrored in appWeb/.sql/schema.sql
+ * (what a FRESH install reads instead of running this) and must stay
+ * byte-identical, COMMENT text included — CLAUDE.md rule #19. schema.sql does
+ * NOT mirror the seed data, so a fresh install has the tables and an EMPTY
+ * tblBibleBooks until this card is run; the registry probe is table-existence
+ * only, so it will already read as applied. Run the card anyway on a fresh
+ * install.
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-scripture-index.php
  *   Web:  /manage/setup-database → "Scripture index" button
@@ -64,7 +100,26 @@ try {
         _migSR_output("  [OK] Created tblBibleBooks.");
     }
 
-    /* Seed the 66-book Protestant canon (OSIS codes), idempotent via INSERT IGNORE. */
+    /* Seed the 66-book Protestant canon (OSIS codes), idempotent via INSERT IGNORE.
+
+       ELI5: fill in the list of Bible books so a song can point at "Isa 53".
+
+       The keys are OSIS book codes (Gen, Ps, 1Cor, …) rather than a local
+       invention, so refs are interchangeable with every other hymnody/Bible
+       dataset that speaks OSIS — that interchangeability is the reason Book is
+       stored as the CODE and not as an FK to tblBibleBooks.Id.
+
+       CanonicalOrder is derived from POSITION IN THESE TWO ARRAYS, not from
+       anything intrinsic — which is why the arrays are in canonical order and
+       must stay that way. $order is a single counter across both testaments
+       (OT 1-39, NT 40-66), giving one whole-Bible sort key rather than two
+       restarting ones. It is recomputed from zero on every run, so the ordinals
+       are stable across runs — but see the INSERT IGNORE warning in the file
+       doc-block: existing rows are never re-numbered.
+
+       'old' / 'new' go into Testament, a VARCHAR whose schema.sql COMMENT
+       already reserves 'apocrypha' — VARCHAR not ENUM, so widening the canon is
+       a data change rather than an ALTER (CLAUDE.md rule #20). */
     $ot = ['Gen'=>'Genesis','Exod'=>'Exodus','Lev'=>'Leviticus','Num'=>'Numbers','Deut'=>'Deuteronomy',
         'Josh'=>'Joshua','Judg'=>'Judges','Ruth'=>'Ruth','1Sam'=>'1 Samuel','2Sam'=>'2 Samuel',
         '1Kgs'=>'1 Kings','2Kgs'=>'2 Kings','1Chr'=>'1 Chronicles','2Chr'=>'2 Chronicles','Ezra'=>'Ezra',
@@ -95,6 +150,25 @@ try {
     if (_migSR_tableExists($mysql, 'tblSongScriptureRefs')) {
         _migSR_output("  [SKIP] tblSongScriptureRefs already present.");
     } else {
+        /* Two shape decisions worth stating, since neither is visible in the DDL:
+
+           1. Book is a FK-BY-CODE, not a real foreign key to tblBibleBooks.Id.
+              Storing the OSIS code keeps the row self-describing and portable
+              (an export carries "Isa", not an integer that means nothing
+              elsewhere), and it lets a ref be recorded for a book outside the
+              seeded canon without first extending the reference table. The
+              price is that referential integrity here is the app's job, not
+              InnoDB's. idx_Book (Book, Chapter, VerseStart) is the
+              browse-by-passage access path, left-prefix usable for
+              book-only and book+chapter queries too.
+
+           2. StartLineId is OPTIONAL and SET NULL on delete: a ref may be about
+              the whole song (NULL) or anchored to the exact line that quotes the
+              passage. SET NULL rather than CASCADE because deleting a lyric line
+              must degrade the ref to a whole-song reference, not silently
+              destroy a curator's scripture attribution — contrast the
+              annotations table, where CASCADE is right because a gloss with no
+              line is meaningless. */
         $mysql->query(
             "CREATE TABLE tblSongScriptureRefs (
                 Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

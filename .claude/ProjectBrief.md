@@ -4,9 +4,175 @@
 
 ---
 
-## 📌 Continuation note — 2026-07-29
+## 📌 Continuation note — 2026-08-03 (supersedes the 07-31 note below)
+
+**Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)** (its
+`#1741` P-series status block is kept current commit-by-commit).
+
+**Epic #1741 (catalogue data-model expansion) is being built ON `claude/wave3-fixes` — NOT
+post-merge.** The 07-31 note below still calls #1741 "post-merge"; that is now stale. The branch is
+still the ONE pre-merge branch (no PR — the owner wants a single PR to `alpha`, on their word), and
+the branch/push warnings below (and `tools/githooks/pre-push`) still stand — install the hooks in
+every fresh container (`git config core.hooksPath tools/githooks`).
+
+**#1741 progress (all landed + independently verified on the branch):**
+- **P1** — additive, dormant schema batch (identity/disambiguation columns on `tblSongs`,
+  `tblMusicians`→`tblTunes`+satellites, `tblSongExternalIds` D5 key/value recording-ID store; all
+  `schema.sql`-mirrored, real migration probes).
+- **P3** — shared identifier normaliser + resolver (`includes/identifier_normalize.php` +
+  `identifier_resolve.php` + `includes/pages/identifier.php`) and alias routes `/isrc /iswc /ccli
+  /ipi /isni /bowi` (`dc9b5067`).
+- **P4** — per-entity pages: Work + Musician profile + Tune page keyed on the registry, shared
+  external-links panel + `tune_helpers.php` extraction (`cb612036`/`8af91f12`/`365b7f41`); P4a-3
+  (writer/person consolidation) **HELD on owner decision D4** — see the handoff.
+- **D5 backfill (#1747)** — idempotent mirror of `tblSongs.Isrc` + the 4 grandfathered
+  `tblSongIdentityMap` columns into `tblSongExternalIds`; added the `genius` recording-ID type
+  (`3ff77e02`, owner-confirmed A=C / B=yes / +genius / mirror-ISRC).
+- **P5 (COMPLETE)** — editor can enter every identity column (409-gated) + the #1749 ISRC dual-write
+  mirror (P5a+P5d `223a10b9`); recording-ID card-list on the Metadata tab (P5b `2349ae57`); tune
+  typeahead + the ONE `TuneName`↔`TuneId` write core `ed2_songTuneApply()` + `tune_search` +
+  `ihymns_meter_normalize()`, with the lockstep also wired into whole-song save, bulk import, AND
+  revision-restore (P5c `55bbac84`). `place-search.js` was **generalised, not forked**, to back the
+  tune control. Two new mutation-proven guards (`test-tune-lockstep.php`, `test-tune-typeahead-ui.js`).
+- **P6 (docs, this note)** — CHANGELOG + this brief + the handoff + DEV_NOTES ("reuse these shared
+  modules") + the in-repo **`wiki/`** (Architecture / Database-&-Migrations / API-Reference) all
+  updated; `api-docs.yaml` was already kept current through P2-B (person→musician deprecation is
+  documented); per-action api2 docs remain the **deferred #1201** breakout. (Note: the wiki is the
+  in-repo `wiki/` tree — 18 tracked pages — NOT the external `../iHymns.wiki/` the older CLAUDE.md
+  reference implies; it is editable + committed here directly.) Native surfacing filed as **#1752**.
+
+**Suites now: 100 PHP / 48 node** (re-derived this session; the 07-31 note's "80 / 45" predates the
+#1741 guards). Both runners glob their directories.
+
+**#1741 is DEV-COMPLETE** (2026-08-03). **P4a-3 landed** (`64dbb52e`, owner D4 = consolidate): the
+heuristic `writer.php` folded into the musician profile — `/writer/<slug>` real-301→`/musician/<slug>`
+(index.php), fragment serves the musician page, `router.js` `replaceState`-canonicalises, one shared
+fail-open `musicianResolveLegacySlugDb()` ladder (also fixes name-slug `/musician/` credit links),
+`writer.php` deleted, sitemap registry-driven, no-registry fallback widened (no silent 404). Also fixed
+**#1753** (stranded musician Edit button). Two mutation-proven guards; verified by me (101 PHP / 49
+node + my own 3 mutations + live probe). Epic follow-ups (non-blocking): #1748/#1749/#1750/#1751/#1752
++ #1754 (P4a-3 minor follow-ups).
+
+**Follow-up queue drain (owner 2026-08-03: "do the iHymns bits first… then Meedya"):**
+- **#1749 / #1751 / #1754 — DONE + CLOSED.** Phase-1 (`e65b92a4`) shipped the ISRC resolver union +
+  ingest mirror (`$source` param) + the P4a-3 JSON-LD/alias-rung/discography trio. **#1749 then
+  ESCALATED to full unification** (owner "do full unifications now also") — `8f2f3a4f`:
+  `tblSongExternalIds` is now the recording-ID **authority**, `tblSongs.Isrc` a synced denorm (one
+  projection builder + `songExternalIdSyncIsrcDenorm()` last-word; mirror re-projects on both paths;
+  panel/ingest/merge all sync; data-only `migrate-reconcile-isrc-denorm.php` + drift-probe card).
+  **#1755** (merge cascade-wiped store rows) fixed in the same commit. D-3 default: tblSongIdentityMap
+  columns frozen (flagged to owner, non-blocking). 103 PHP / 49 node green; every guard mutation-proven;
+  mirror/sync/promotion/merge-collapse/resolver-union-arm live-probed against dev DB (rolled back). The
+  three adversarial guard gaps (mirror assertion 8 per-return-path, assertion 9 per-statement window,
+  new behavioural reconcile test) were found by the verify lens and hardened this session.
+- **#1750 — DONE + CLOSED** (`56fdd51c`). Public song page + `song_detail`/`song_data`/`getSongs`
+  payload + JSON-LD now surface the five P1 identity fields (subtitle/disambiguation/first-published/
+  ©-split); one probe + one select-fold feed both read paths; opt-in `include=externalIds` (no
+  SourceRef); the five keys are the frozen **#1752 native contract** (noted on #1752). New guard
+  `test-song-identity-render.php` (schema-derived, comment-stripped, `tsirVariableUsageCount` catches
+  a deleted render). 104 PHP / 49 node green; live data-layer probe + own mutations verified.
+- **#1748 — DONE + CLOSED** (`761a5e63`). `/manage/tunes` CRUD + `manage_tunes` + `admin_tune_*` API +
+  shared `tune_admin.php` core + external-links tick UI. The adversarial verify caught **two real
+  STRICT-mode gating bugs** (Subtitle/Disambiguation are tune-enrichment-card columns; MusicianId is
+  post-musicians-rename) — fixed with a `tuneAdminColumnExists()` column probe and **proven live**
+  against a scratch pre-enrichment schema. Guard hardened (scans the shared core; PHP-only projection
+  kills a JS-comment decoy; both whitelists; gating locks) — all mutations red-then-green. 105 PHP / 49
+  node green. ⚠️ Process note: a backup-timing slip during mutation testing (backed up pre-fix, then
+  cp/`git checkout`-restored) transiently wiped the fixes; caught + fully recovered before commit — the
+  lesson (back up the FIXED state; never `git checkout` to restore uncommitted work) is reinforced.
+- **#1752 — DONE + CLOSED** (`a35ddcd0`). Apple decodes/renders the P1 song identity keys + externalIds
+  + Work P4b keys + musician IPI/ISNI (Optional/`decodeIfPresent`); one shared copyright fold; `/musician/`
+  deep link now resolves; the only web change (`getMusician()` identifiers, existence-gated) verified live.
+  Android forward-compat only (Phase-2 client = #1756). Guard `test-native-identity-contract.js` (node
+  49→50) — a rule-#34 gap (`WORK_KEYS === 9` → `>= 9`) caught by the adversarial pass + fixed +
+  mutation-proven. ⚠️ Swift/Android NOT compiled (no toolchain) — tracked pre-merge CI step. Deferred:
+  #1756/#1757/#1758/#1759.
+- **✅ iHYMNS FOLLOW-UP QUEUE FULLY DRAINED** (2026-08-03): #1749/#1751/#1754/#1755/#1750/#1748/#1752 all
+  closed on `claude/wave3-fixes`. Every one adversarially verified (workflow lenses) + independently
+  re-verified by me (suites + own mutations + live dev-DB probes). PR to `alpha` still HELD per owner.
+  **NEXT: the 3 Meedya repos** (task #72 — MeedyaSuite-core #65, MeedyaManager #196, MeedyaConverter #478;
+  issues already filed; implement per each repo's CLAUDE.md).
+
+**Remaining on the branch after the queue:** the owner's next major directive, the
+**3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation next, per repo,
+once each repo's CLAUDE.md loads (they're attached + cloned in `/workspace/`, roots registered). (MeedyaSuite-core / MeedyaManager / MeedyaConverter — file an issue in each + implement
+the shared media-ID + core-info model per `.claude/media-identifiers-spec.md` §5). Owner-only gate
+still open: **#1726** (IntAppsAPI gateway liveness + credentials).
+
+---
+
+## 📌 Continuation note — 2026-07-31 (superseded by the 08-03 note above)
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
+
+⚠️ **The 07-30 note below says "both `claude/*` branches are now deleted". That is STALE.** Active
+work lives on **`claude/wave3-fixes`**, **~226 commits ahead of `alpha`** (2026-08-02), all pushed.
+**No PR exists** — the owner wants ONE PR to `alpha`, created on their word.
+
+**State as of 2026-08-02 (pre-release pass, final dev items):** the pre-release sweeps + IntAppsAPI
+integration + wave-3/4 reopened-issue fixes are all landed. This session closed the last three
+pre-merge dev items: **#1740** (`processOpenSong` parses before connecting — `071983b6`), **#1742**
+(v2 `create_song` recomputes `tblSongbooks.SongCount` — shared-host prod bug — `ee326b31`) and the
+**#1158** pre-merge pass (convention decision + the `test-annotation-coverage.php` baseline guard
+`d01d0c5a`; the program stays open for the giant-file backfill, post-merge). 90 PHP + 45 node suites
+green. Remaining before the PR: this final documentation sweep. **Post-merge:** epic **#1741**
+(Musicians/Works/Tunes/Songs catalogue expansion) then the demoted comprehensive OpenAPI pass
+(#1201). Owner-only gate still open: **#1726** (IntAppsAPI gateway liveness + credentials).
+
+⚠️ **The branch named in the session prompt (`claude/apple-branches-cleanup-export-7mxhpo`) is a
+DIFFERENT, older, DELETED branch.** Pushing there re-creates it on the remote and strands work away
+from its history.
+
+**This warning did not work.** It was written after the first occurrence, sat here in plain sight,
+and the same mistake happened again on 2026-07-31 — the session read the "designated branch" line in
+its own prompt and ran `git push -u origin <that branch>` while checked out on `wave3-fixes`. A
+warning that is read *after* the mistake is a missing mechanism, not a missing note (rule #35).
+
+**The mechanism is now `tools/githooks/pre-push`.** Install it in every fresh container — it is not
+automatic, because `.git/hooks` is not tracked:
+
+```
+git config core.hooksPath tools/githooks
+```
+
+It refuses (a) any push to a known-dead branch, and (b) any push of a local branch that is not the
+one currently checked out — which is the exact shape of the bug, since `git push -u origin <other>`
+silently publishes that other branch's tip. Deletes are always allowed. Bypass, if genuinely
+intended, is `IHYMNS_ALLOW_ANY_PUSH=1` (deliberately not `--no-verify`, which CLAUDE.md forbids).
+
+**Suites: 80 PHP / 45 node** (re-derived 2026-08-01 — the previous "64 / 37" was stale; `ls tests/php/test-*.php | wc -l` and `ls tests/test-*.js | wc -l` are the source, never a remembered number). Both runners glob their directories, so a new suite cannot exist
+without running — except in the `php-compat` matrix, which still hand-lists and therefore runs the
+newest guards on one interpreter (#1682).
+
+### What this programme is
+
+The owner's instruction after reading the orphan audit: *"fix ALL of the issues it had identified …
+We dont want to be back here again later with more issues!"* Two durable documents drive it —
+`.claude/orphan-inventory-2026-07-30.md` (the mechanically-derived audit) and
+`.claude/remediation-plan-2026-07-30.md` (the batch plan). Both are **claims to check**, not truth:
+§4.6's table was wrong about `delete_songs`, and acting on it unverified would have stripped every
+curator's delete.
+
+Delivered so far: the permanent orphan CI guard; org CCLI licences (three disconnected stores);
+setlists (no cap, tombstones, optional expiry); the #1679 songbook-move re-key plus two rounds of
+hardening; seed-column-width guard; the entitlement truth-up — **all ten** decorative permissions now
+wired or deleted, the allowlist's `entitlements` bucket is empty; the namespaced preference store;
+and four of #1671's six features.
+
+### The two things a new session must not mis-read
+
+1. **NOTHING ON THIS BRANCH HAS BEEN RUN.** No MySQL, no browser. ~90 commits are reasoned correct
+   and observed correct nowhere. That is **P0** in `.claude/proposals-2026-07-31.md` and it outranks
+   every feature.
+2. **THE METHOD LESSON** (written up in the handoff, worth reading before writing any guard): four
+   consecutive rounds shipped a guard that was green while the thing it guarded was broken, because
+   **source inspection was used as primary evidence for properties that have a runtime handle**.
+   When a property lives in a pure function, TEST THE FUNCTION —
+   `tests/php/test-transaction-fatal.php` is the worked example.
+
+---
+
+## 📌 Continuation note — 2026-07-30 (superseded, kept for the consolidation record)
 (dated 07-28 but still being appended to as this branch's work continues; the 2026-07-26 handoff it
 supersedes is still the reference for the export root-cause chain).
 
@@ -27,17 +193,45 @@ fires **only on a push to `beta`**, so an `alpha` merge NEVER bumps — that is 
 under one version string and the bump had to be done by hand. Expect to repeat that after any large
 alpha batch. Any version number written into a doc rots; prefer pointing at the footer or that file.
 
-**Current WIP branch: `claude/sotd-language-filter-typeahead-a11y`** (off `bad5ca4f`) has grown well
-past its two founding bugs. Both landed early: **#1593** Song of the Day vanishing at 2+ languages
-(the fetch-patch read `input.url` on a `URL` object, got `undefined`, threw across ten unrelated
-call sites) and **#1594** the location typeahead being mouse-only (grew into consolidating all nine
-typeaheads onto one shared keyboard + ARIA combobox helper). Since then the branch has carried a long
-tail of further fixes — perf (#1598 `bulk_songs`, #1037 songbook slim-index listing), #1080 ChordPro
-inline `[chord]` markers, #1089/#1100 per-line translation toggle, #1339 Service Mode congregant join
-QR, #1572 CSP (extracted `request-a-song`'s inline module — the fragment allowlist is now **empty**),
-#1028/#1027/#1022 auth hardening, #1589 What's New fix, #1597 offline bulk-download self-destruct
-fix, and #1612/#1615/#1618 (corrected the lyrics-cutover verifier's gate count to **nine** gates —
-G1, G2, G3, G5, G6, G7, G8, G9, G10 — not ten or thirteen).
+**The `claude/sotd-language-filter-typeahead-a11y` branch has since MERGED** — squashed to `alpha` as
+**`bc0eb52e`** (PR #1651, "Security fixes, data-loss fixes, and the behaviour-audit programme", 56
+commits). It had grown well past its two founding bugs. Both landed early: **#1593** Song of the Day
+vanishing at 2+ languages (the fetch-patch read `input.url` on a `URL` object, got `undefined`, threw
+across ten unrelated call sites) and **#1594** the location typeahead being mouse-only (grew into
+consolidating all nine typeaheads onto one shared keyboard + ARIA combobox helper). It also carried a
+long tail of further fixes — perf (#1598 `bulk_songs`, #1037 songbook slim-index listing), #1080
+ChordPro inline `[chord]` markers, #1089/#1100 per-line translation toggle, #1339 Service Mode
+congregant join QR, #1572 CSP (extracted `request-a-song`'s inline module — the fragment allowlist is
+now **empty**), #1028/#1027/#1022 auth hardening, #1589 What's New fix, #1597 offline bulk-download
+self-destruct fix, and #1612/#1615/#1618 (corrected the lyrics-cutover verifier's gate count to
+**nine** gates — G1, G2, G3, G5, G6, G7, G8, G9, G10 — not ten or thirteen). CHANGELOG backfill for
+this wave's gaps landed in Wave 3 below (issue #1625).
+
+**Wave 3 (2026-07-29/30, branch `claude/wave3-fixes`, off `bc0eb52e`), 56 commits — headline:
+`/manage/editor/` now serves the v2 Song Editor.** Epic **#1601** scope item 2: `manage/editor/index.php`
+is now a 302 redirect to the v2 shell (forwarding the query string), closing every parity gap the
+#1601 audits had found — a chords box, an Arrangement (running-order) editor, and per-line
+translation/annotation panels (#1627); `?tab=`/`?songbook=`/`#number=`/`?open=` deep links, the
+sidebar songbook filter + sort, `bulk_tag_detach`, and the export lines-per-slide setting (#1628,
+#1680); four de-orphaned v1 `api.php` consumers ahead of retirement (#1629); and a **P0** fix (#1677)
+for a bug that had made every v2 write return 403 since the v2 shell first shipped — its own client
+never sent the `X-Requested-With` header api2.php requires on every POST. **v1 is deliberately NOT
+retired** (scope item 3) — nothing on this branch was runtime-verified (no MySQL, no browser exist in
+this build container) and retirement also needs cross-branch coordination (beta/main are a month
+behind on unrelated history, sharing the one MySQL instance). Two escape hatches: `?legacy=1`
+per-visit, `tblAppSettings.editor_v2_default='0'` fleet-wide (absent key means v2). Also in this wave:
+setlist collaboration finished end-to-end (notify + "Shared with me" list + enforced view/edit
+permission, #1638); cross-device sync data-loss fixes for capped set-list/favourite/custom-tag syncs
+(#1649); an accessibility + security sweep (#1643–#1648, #1665) covering high-contrast/CVD modes dead
+across all of `/manage`, a real focus-trapping Present-mode dialog, Service Mode announcements, the
+setlist Arrangement editor's keyboard/touch support, SRI + vendored fallbacks for SortableJS and the
+Bootstrap CDN loads, and eight admin pages whose gates didn't match their nav entitlement; an iHymns
+interchange JSON importer (#1633); and a `build:proto` tool repair (#1634). Suites: 54 PHP / 34 node.
+Full detail: `.claude/sessions/2026-07-28-HANDOFF.md` (still the live resume point) and
+`git log origin/alpha..HEAD` on this branch for every commit body. **Now underway:** the documentation
+sweep (CHANGELOG backfill for #1625, `api-docs.yaml`, in-app help, README/DEV_NOTES/PROJECT_STATUS,
+this file, `MEMORY.md`) for this wave — the Wiki (`iHymns.wiki/`) is **not present in this container**
+and could not be updated; that remains a tracked gap.
 
 **Wave 2 (2026-07-29, this session):** **#1388** closed eight pre-gating leaks ahead of ever flipping
 `content_gating_enabled` — the load-bearing one is the **payload-vs-asset gating** distinction:
@@ -57,8 +251,8 @@ carrying its own song order. **#1623** fixed Revisions Audit's "Open in editor" 
 **#1619/#1620** followed up: deleted the now-dead `_executeInlineScripts()` router shim (nothing left
 to execute) and renamed `js/modules/request.js`'s exported `Request` class to `SongRequest` so it
 stops shadowing the Fetch API's global `Request` (the file itself keeps its name — it's in the
-service-worker precache list). **Now underway:** the documentation sweep (in-app help, Wiki,
-`.claude/` context docs) for this wave.
+service-worker precache list). This wave's own documentation sweep landed, then Wave 3 (above)
+continued on a new branch.
 
 The 2026-07-26 caveat is **discharged**: the merged Swift compiled green on CI (`apple.yml` `build`,
 run 30365569513) before #1585 merged. The **draft-PR-until-green** procedure is still the standing
@@ -95,7 +289,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
   refresh, the bulk-import UX batch) has moved to the historical log at the foot of this file. The
   release line on `main` sits at 0.25.2; `main` was promoted from `beta` on 2026-05-07 (PR #896).
 - **Database**: MySQL 5.7+ (**142 tables**, tblCamelCase naming — counted from `appWeb/.sql/schema.sql`). All three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to a **single shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns` — confirmed via `/manage/setup-database` connection banner across all three. 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`), per-component language override (#858 — `tblSongComponents.Language`), song media uploads (#853 — `tblSongMedia`), arrangement persistence (#892 — `tblSongs.ArrangementJson`), and bulk-import diagnostics (#906 + #907 — `tblBulkImportJobs.PerSongbookJson` + `PhaseLabel`).
-- **API**: **≈195 JSON actions** via `api.php`, of which 189+ are documented in the OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` — browsable with Try-it-out at `/manage/api-docs` (Swagger UI, `view_api_docs` entitlement, hardened in #1587). Notable families: the public `action=scripts` + `action=regions` listings for native clients (#682); `?page=work&slug=…` for the Works public page (#840); the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail` (#1010/#1020); the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave` (#1323/#1335); and the telemetry endpoint `action=client_error_report` (#1582). The editor has its own separate `/manage/editor/api.php` + `api2.php` (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads) — the whole-song save now lives in the shared `save_song_core.php` served by both.
+- **API**: **≈195 JSON actions** via `api.php`, of which 189+ are documented in the OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` — browsable with Try-it-out at `/manage/api-docs` (Swagger UI, `view_api_docs` entitlement, hardened in #1587). Notable families: the public `action=scripts` + `action=regions` listings for native clients (#682); `?page=work&slug=…` for the Works public page (#840); the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail` (#1010/#1020); the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave` (#1323/#1335); and the telemetry endpoint `action=client_error_report` (#1582). The editor has its own separate `/manage/editor/api.php` (legacy v1) + `api2.php` (granular v2, now the DEFAULT editor backend as of #1601 — see the Wave 3 note above) (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads / arrangement_update / bulk_tag_detach / easyworship_export) — the whole-song save lives in the shared `save_song_core.php` served by both.
 - **★ Latest (2026-06-25) — branch `feat/api-native-gating`, ~25 commits, PR in flight (this session):** the **API-native-gating + content-gating program**. **(1) Extensible gating registry** (#1352, CLAUDE.md **rule #28**) — `TIER_CAPS` in `includes/access_tier_validation.php` is the single registry; a new gateable cap is **ONE line + its migration card**, stored in the additive **`tblAccessTiers.Capabilities` JSON column** (the 7 original caps keep their `TINYINT` columns; all per-tier values live in MySQL, edited at `/manage/tiers`). **(2) Server-side content-gating enforcement** (#1353) — `includes/content_gating.php::contentGatingApply()` strips gated fields (lyric body, media) from `song_detail`/`song_data`/`random`; `checkTierAccess()` is registry-driven; **ENTIRELY DORMANT + a verified no-op unless `content_gating_enabled='1'`**, fail-open + STRICT-safe. **(3) Tier-aware web/offline gating** (#1357) — `song.php` (+ the `bulk_songs` offline bundle) composes the tier axis with the entity model; presence unlock overrides tier. **(4) Read rate-limiting** (#1354) — `includes/read_rate_limit.php` + `tblReadRateLimit` on the heavy public reads (per token/IP, 429, fail-open). **(5) Robust same-origin CSRF** (CLAUDE.md **rule #29**) — `validateCsrfRequest()` in `manage/includes/auth.php`; fixes the sporadic stale-token errors; swept across ALL manage AJAX-write pages (duplicate-songs, places-api, editor, api-keys, tags, languages, activity-log, songbooks). **(6) Editor save→v2** — `manage/editor/save_song_core.php` served by both editor APIs; editor POSTs save to api2 under its CSRF gate. **(7) The full API platform** — `/manage/api-keys` usage+limits dashboard, `catalogue:read` keyed reads (`enforceReadRateLimitKeyed`), the **dormant `content:gated`** scope (per-partner licensing grant), and **self-serve key requests** (`tblApiKeyRequests` + `request_api_keys` entitlement). Plus: the `?action=songs` whole-corpus **OOM fix** (rule #17), XSS `JSON_HEX_*` hardening, **OpenAPI refreshed to 0.1250.0**, a comprehensive docs pass (fixed stale Wiki/help.php/.md + a new Wiki `Service-Mode.md`), and the version bump to **0.1250.0**. **OPERATOR — run these `/manage/setup-database` cards** (not auto-applied): **JSON-backed tier capabilities** (#1352), **Public-read rate-limit** (#1354), **Self-serve API-key requests** (Phase D), and the **#1066 API-key usage** card. **content_gating_enabled stays `'0'`** until you decide #1357 follow-ons. **STILL TODO (own efforts):** Phase-D **webhooks**; **#1358** static `/data/audio` gating (a STAGED VERIFIED rollout — `.htaccess` deny changes live playback, can't test locally). Full detail: `.claude/sessions/2026-06-25-HANDOFF.md` (+ Continuation block) + the auto-memory resume + CLAUDE.md rules #28/#29 + `.claude/api-platform-strategy.md`. *(Prior 2026-06-21 Service Mode landing recorded in `.claude/sessions/2026-06-21-HANDOFF.md`.)*
 
 ---
@@ -510,3 +704,16 @@ Last updated: 2026-06-14 (session 4) — **Lyrics-normalisation #1235: P3 SHIPPE
 ---
 
 Last updated: 2026-06-21 — **fact-refresh pass against codebase reality (no new features).** Corrected three stale facts in the header block: the DB table count (`schema.sql` now has **~131** `CREATE TABLE` statements, not ~50); the API endpoint count (**70+**, now including the scoped DB-direct read endpoints `songs_index`/`song_detail` and the eight Service Mode endpoints `service_session_start`/`service_code_rotate`/`service_code_current`/`service_session_end`/`service_broadcast`/`service_join`/`service_poll`/`service_leave`); and the Apple/Android platform status (**Scaffold / in-progress** — ~14 Swift + ~12 Kotlin files — not "Code complete"). Re-affirmed the standing reality the rest of this brief already encodes: version `0.990.0` (`infoAppVer.php`); **DB-direct reads** (epic #1010 / WS-J #1020) — live MySQL, NO `songs.json` corpus cache or `songs_json` endpoint, a DB outage returns a themed **503** (WS-K #1021) not a JSON fallback, and `songs.json` is a migration **input** only; **`tblLyricLines` is the source of truth** for lyric lines (#1235), the `tblSongComponents` `LinesJson`/`ChordsJson`/`NotesJson` columns being a gated shadow under retirement; operator is **web-only** (no CLI/SSH) and migrations are **not auto-applied** (run via `/manage/setup-database`, registry-driven "Apply all pending"). Shipped feature families already covered above and reconfirmed live: Service Mode / congregation Live-Follow (#1323/#1335 — org venues+schedules, rotating-code join, presence, the two broadcaster UIs `/manage/service-projection` + `/manage/service-lead`, dormant CCLI gate), Duplicate & Counterpart detection (#1215/#1216, `/manage/duplicate-songs`, shared `includes/song_similarity.php`; old `/manage/song-link-suggestions` = 302 redirect), standard CCLI/OpenLyrics theme vocabulary (#1152/#1222, `/manage/tags`), Works (#840, `/manage/works`, `/work/<slug>`), the external-links registry (#833/#845, `/manage/external-link-types`), songbook `DisplayAbbr` display-label (#1332), Catalogues user-labelled "Collections" (#1223, internal name stays `catalogue`), and unofficial-songbook badging (#1223).
+
+---
+
+Last updated: 2026-08-01 — **MWBM-IntAppsAPI gateway integration (Epic #1725), Block D, lands on `claude/wave3-fixes` — six commits, entirely dormant.** This entry covers only Block D; the intervening ~6 weeks of unrelated work on this branch (#960 credit-registry regression, #882 OpenSong import, #1608 v2 counterpart surface) is not summarised here — see the branch's own commit history and `.claude/wave4-prelaunch-plan.md`.
+
+- **What shipped:** `appWeb/.sql/migrate-add-intapps-sync.php` (one dormant table, `tblIntAppsSync`, UNIQUE `(Scope, Channel, AppSlug)` — all three reserved-multiplicity per rule #20); `includes/intapps_client.php` (the whole client: HMAC signer, single-flight cold-cache populate, exponential backoff, fail-open transport, SSRF-hardened URL resolution); `api.php`'s `app_status` case wired to emit `remoteFeatures` (native-client-facing) and piggyback the post-response refresh; `/manage/configuration`'s new IntAppsAPI card + `/manage/intapps-status` (both `manage_configuration`-gated); `includes/pages/home.php`'s Song-of-the-Day card wrapped in the first real `intappsFlag()` consumer; `tests/php/fixtures/intapps-stub-gateway.php` (a checked-in, line-for-line port of the gateway's own `AuthMiddleware`/`HmacValidator`, pinned commit `6816ed8`, structurally unable to deploy) + its e2e suite + a boundary guard banning gateway identifiers from every content-gating file.
+- **Dormant by construction, proven not assumed:** `tblAppSettings.intappsapi_enabled_channels` ships with no row. Byte-identical no-op proved against the real local instance at branch tip vs the tip immediately before Block D (`d9807776`): six endpoints (`app_status`, `songs_index`, `song_detail`, `page=home`, `page=song`, `access_tiers`) diffed empty; zero `tblIntAppsSync` references across those requests in MySQL's own general query log (2115 real log lines captured, 0 matches); three mutations (force `remoteFeatures` to always emit, drop the enablement guard on the cache read, point a capture at extensionless `/api`) each independently proven to turn the relevant check red, then reverted.
+- **D1, the pre-launch stress-test BLOCKER, fixed and reproduced on demand:** an enabled-but-un-migrated docroot hitting `tblIntAppsSync` directly would throw `mysqli_sql_exception` under STRICT reporting straight through the public home page. Every table access now sits behind an INFORMATION_SCHEMA existence probe AND a try/catch. Reproduced literally: removed the guard, hit `app_status` with the module enabled and the table renamed away, got a real HTTP 500 with the exact exception in the server log; restored the guard, same request returned 200 with a graceful degrade.
+- **The signer is verified against a REAL local HTTP round trip, not just unit-tested:** the gateway's own five bundled examples sign `METHOD|PATH|TIMESTAMP|BODY` — all wrong (MWBM-intAppsAPI#120). `intappsSign()` implements the gateway's actual verification source (`rawBody . '.' . timestamp`) instead, and the e2e suite proves the real client's signature is ACCEPTED by a verifier ported line-for-line from that same source, while the vendor's own wrong scheme is REJECTED.
+- **Two real bugs found and fixed while building the e2e proof** (not from static reasoning): (1) the single-flight lock was held for its full 10s window regardless of actual fetch duration, making back-to-back "Refresh now" clicks report a false busy signal — fixed by releasing the lock on commit, success or failure; (2) `CURLOPT_MAXFILESIZE` fires via its own error path (`CURLE_FILESIZE_EXCEEDED`) before the manual write-callback's oversized flag is ever consulted, so an oversized response was silently reclassified as generic `unreachable` with no error code — fixed by treating both triggers as the same `OVERSIZED` outcome.
+- **What is explicitly NOT proven here:** signature acceptance by the REAL gateway (`api.mwbmpartners.ltd` is unreachable from this container — proxy policy, not evidence of downtime); the enablement flip on any real environment; native-app consumption. Issue A / **#1726 is owner-only, gates ENABLEMENT only** (not landing), and must never appear in a `Closes` line — confirmed absent from every commit in this batch.
+- **Baseline:** 84 → 88 PHP suites, 45 node suites, eslint clean, throughout. DB hygiene (`songs=7 books=2 people=3 sugg=0 links=0 orphanlines=0 lyriclines=15`) reconfirmed unchanged after every commit's behavioural verification.
+- **Not done in this pass (flagged, not silently skipped):** the `iHymns.wiki` pages are not updated — the wiki is a separate git repository this session did not have cloned/attached, so no push was attempted; a future session with wiki access should add an IntAppsAPI page under Architecture/API per the standing-tasks checklist. `.claude/ProjectBrief.md`'s header block (table/endpoint counts, platform status) was not re-verified in this pass — only this dated entry was appended.

@@ -49,6 +49,11 @@ $_adminLinks = [
        (edit_songs) for Link/Dismiss; the destructive Merge is gated per-action
        in-page (manage_duplicate_songs). */
     ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicates & Links',    'edit_songs',                  'Songs'      ],
+    /* Deleted songs (#1694) — the soft-delete queue: restore or (admin-only,
+       per-action purge_songs gate in-page) permanently purge. Nav entitlement
+       matches the page's own gate — test-admin-gate-parity.php derives this
+       pairing and fails the build if they drift (#1587 class). */
+    ['deleted-songs',        '/manage/deleted-songs',          'bi-trash3',          'Deleted Songs',         'delete_songs',                'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
@@ -57,12 +62,15 @@ $_adminLinks = [
        stay 'catalogue(s)' internally (owner decision — keep tblCatalogues). */
     ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Collections',           'manage_songbooks',            'Catalogue'  ],
     ['works',                '/manage/works',                  'bi-diagram-3',       'Works',                 'manage_works',                'Catalogue'  ],
+    /* Tunes (#1748) — tblTunes registry CRUD; directly under Works, the
+       page it shares the tuneFindOrCreateByName() funnel with. */
+    ['tunes',                '/manage/tunes',                  'bi-music-note-beamed', 'Tunes',               'manage_tunes',                'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
     /* Print templates (#1350 Phase 2) — curator-authored block-based song-print
        layouts (tblPrintTemplates). Curator-level, same entitlement as the other
        Catalogue metadata surfaces. */
     ['print-templates',      '/manage/print-templates',        'bi-printer',         'Print templates',       'manage_songbooks',            'Catalogue'  ],
-    ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],
+    ['musicians',        '/manage/musicians',          'bi-person-badge',    'Musicians',             'manage_musicians',        'Catalogue'  ],
     ['languages',            '/manage/languages',              'bi-translate',       'Languages',             'manage_languages',            'Catalogue'  ],
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
 
@@ -106,6 +114,11 @@ $_adminLinks = [
     ['diagnostics',          '/manage/diagnostics',            'bi-terminal',        'SQL Diagnostics',       'view_diagnostics',            'Operations' ],
     ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
     ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
+    /* #1725/#1732 — status/snapshot viewer for the (dormant-by-default)
+       IntAppsAPI gateway integration. Gated on the SAME entitlement as
+       the credentials card above (manage_configuration) — rule: a page's
+       own gate and its nav entry must agree (#1587). */
+    ['intapps-status',       '/manage/intapps-status',          'bi-broadcast-pin',   'IntApps Gateway',       'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
     ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 

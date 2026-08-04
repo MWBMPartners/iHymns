@@ -524,7 +524,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
             <div class="input-group mb-2">
               <input type="text" class="form-control font-monospace" id="keyResultValue" readonly>
-              <button type="button" class="btn btn-outline-secondary" id="keyResultCopy"><i class="bi bi-clipboard"></i></button>
+              <button type="button" class="btn btn-outline-secondary" id="keyResultCopy" aria-label="Copy API key to clipboard"><i class="bi bi-clipboard" aria-hidden="true"></i></button>
             </div>
             <p class="small text-secondary">Send it as <code>Authorization: Bearer &lt;key&gt;</code> (or <code>X-API-Key: &lt;key&gt;</code>) to <code>/api?action=lyrics_ingest</code>.</p>
           </div>

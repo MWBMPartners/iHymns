@@ -103,6 +103,8 @@ set_exception_handler(function (\Throwable $e): void {
 });
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+/* #1676 — ihymns_bootstrap_icons_css_link(), the shared emitter for the bi-* font. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
@@ -397,6 +399,41 @@ try {
                     'name'  => $ogSong['songbookName'],
                 ];
             }
+            /* #1750 — the five #1741 P1 song-identity fields, each gated on
+               non-empty. ELI5: teaches search engines the subtitle,
+               disambiguation, first-published year and copyright holder of
+               a hymn, the same way the header/footer now show them to a
+               human reader. DETAILED: $ogSong comes straight from
+               getSongById() (SongData::_fetchSongRow()), so §1's
+               always-present shape-blind keys land here automatically —
+               no separate query needed. This array is emitted later by the
+               shell's existing nonce'd <script type="application/ld+json">
+               loop (no new <script>, no CSP concern — rule #30 n/a, this
+               is the shell, not a shared-cache fragment). */
+            if (!empty($ogSong['subtitle'])) {
+                $musicComposition['alternativeHeadline'] = (string)$ogSong['subtitle'];
+            }
+            if (!empty($ogSong['disambiguation'])) {
+                $musicComposition['disambiguatingDescription'] = (string)$ogSong['disambiguation'];
+            }
+            if (!empty($ogSong['firstPublishedYear'])) {
+                /* Year-precision ISO-8601 is valid schema.org Date. */
+                $musicComposition['datePublished'] = (string)(int)$ogSong['firstPublishedYear'];
+            }
+            if (!empty($ogSong['copyrightHolder'])) {
+                $musicComposition['copyrightHolder'] = ['@type' => 'Organization', 'name' => (string)$ogSong['copyrightHolder']];
+            }
+            if (!empty($ogSong['copyrightYears']) && preg_match('/^\d{4}$/', trim((string)$ogSong['copyrightYears']))) {
+                /* schema.org copyrightYear is a Number — emit ONLY when the
+                   free-text field is a single plain year; multi-year strings
+                   ("1978, 1987") fold into copyrightNotice below instead. */
+                $musicComposition['copyrightYear'] = (int)trim((string)$ogSong['copyrightYears']);
+            }
+            $ldCopyright = trim(trim((string)($ogSong['copyrightYears'] ?? '')) . ' ' . trim((string)($ogSong['copyrightHolder'] ?? '')));
+            if ($ldCopyright === '') { $ldCopyright = trim((string)($ogSong['copyright'] ?? '')); }
+            if ($ldCopyright !== '') {
+                $musicComposition['copyrightNotice'] = '© ' . $ldCopyright;
+            }
             $jsonLdScripts[] = $musicComposition;
 
             /* Breadcrumb: Home > Songbooks > Songbook Name > #N */
@@ -470,39 +507,87 @@ try {
             $jsonLdScripts[] = $musicAlbum;
         }
     }
-    /* Person page: /people/<slug> (#833 — sameAs JSON-LD)
-       ELI5: this also answers to the singular spelling /person/<slug>,
-       same as the "people"/"person" pages on Wikipedia work either way.
-       DETAILED (#1453): the Apple app's AASA + Universal Links claim the
-       SINGULAR `/person/*` component (`.well-known/apple-app-site-
-       association.php`), and the client-side SPA router already treats
-       `/people/<slug>` and `/person/<slug>` as equivalent forgiving
-       aliases (`js/modules/router.js`, #588 — same convention as
-       `/work` vs `/works`, #840). This server-side OG/JSON-LD detection
-       block only matched the plural form, so a social-media crawler or
-       search engine fetching the singular `/person/<slug>` (e.g. a link
-       shared FROM the native app, whose CanonicalURL.person(slug:)
-       emits the singular form to match AASA) got the generic homepage
-       preview instead of the person's actual name — not a literal HTTP
-       404 (the SPA shell always renders 200 and the client router still
-       resolves it), but a broken social-preview / SEO signal for any
-       non-JS fetch of that URL. Widened to match both spellings so both
-       resolve identically; the canonical URL is then force-normalized
-       below to the plural form (mirroring the song route's PublicId
-       normalization, #1343-B) so search engines consolidate signal onto
-       ONE indexed URL regardless of which spelling was requested. */
+    /* #1741 P4a-3 (owner decision D4) — /writer/<name-slug> is retired in favour
+       of /musician/<registry-slug>. A resolvable slug gets a REAL 301 (mirrors
+       the /people|/person 301 below) so crawlers + old external links converge
+       on one canonical URL. An unresolvable slug falls through to the SPA shell
+       — the fragment renders the name-based fallback, so no /writer/ URL that
+       used to answer ever dies (rule #33). NOTE the pattern: ([^/]+) +
+       rawurldecode, NOT the person branch's [a-z0-9\-]+ — historic writer slugs
+       carry dots and percent-encoded bytes (sitemap fold, pre-D4).
+       @link .claude/catalogue-1741-P4a3-plan.md §1.1 leg A / §2 A1-A2/A11-A12 */
+    elseif (preg_match('#^/writer/([^/]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+            $writerResolved = musicianResolveLegacySlugDb(getDbMysqli(), rawurldecode($matches[1]));
+        } catch (\Throwable $_e) {
+            $writerResolved = null;   /* fail-open: serve the shell, never a 500 */
+        }
+        if ($writerResolved !== null) {
+            header('Location: ' . getCanonicalUrl('/musician/' . rawurlencode($writerResolved)), true, 301);
+            exit;
+        }
+    }
+    /* #1741 P2-B — /people/<slug> and /person/<slug> are LEGACY path
+       prefixes; the canonical route is now /musician/<slug>. Issue a real
+       301 for any non-fragment (i.e. a genuine top-level HTTP request —
+       this file is never reached by the SPA's internal `/api?page=...`
+       fragment fetches, only by a fresh navigation / crawler / shared
+       link) load of either old prefix, so search engines converge on ONE
+       indexed URL and a stale bookmark/shared-link still lands on real
+       content. This upgrades the #1453 soft "advertise one spelling via
+       <link rel=canonical>" approach (which served both spellings 200
+       with the plural form merely PREFERRED) to an actual redirect — the
+       client-side SPA router (`js/modules/router.js`) still accepts all
+       three prefixes for same-document navigation, which never re-hits
+       this file. Kept as its own preg_match (not folded into the
+       /musician/ match below) so the redirect is unconditional and
+       doesn't need a DB round-trip just to bounce the request onward. */
     elseif (preg_match('#^/(?:people|person)/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        header('Location: ' . getCanonicalUrl('/musician/' . rawurlencode($matches[1])), true, 301);
+        exit;
+    }
+    /* Musician page: /musician/<slug> (#833 — sameAs JSON-LD; renamed
+       from the Credit-Person "Person page" by #1741 P2-B). The Apple
+       app's AASA + Universal Links claim BOTH the legacy `/person/*`
+       component (kept indefinitely — shipped client contract,
+       `.well-known/apple-app-site-association.php`) and the new
+       canonical `/musician/*`. */
+    elseif (preg_match('#^/musician/([a-z0-9\-]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $personSlug = $matches[1];
-        /* #1453 — always advertise the plural form as canonical, even
-           when this request came in via the singular AASA-matching
-           spelling. Both spellings render identically; this just picks
-           ONE URL for search engines / social crawlers to converge on. */
-        $canonicalUrl = getCanonicalUrl('/people/' . rawurlencode($personSlug));
+        /* #1754 — ELI5: before we look this slug up, first ask "is there a
+           MORE canonical spelling of this slug?" — so a crawler hitting a
+           name-slug or alias URL (e.g. /musician/fanny-crosby when the
+           registry slug is frances-jane-van-alstyne, or any song.php-emitted
+           credit-name slug) still gets real JSON-LD instead of none.
+           DETAILED / WHY: resolve name-slug / legacy-slug input through the
+           ONE ladder (rule #22) BEFORE the exact lookup below. Fail-open: a
+           null answer leaves the slug as arrived and the branch behaves
+           exactly as pre-#1754. No rawurldecode needed — this route's
+           charset is [a-z0-9-] (unlike /writer/'s, :484). NOTE $canonicalUrl
+           is recomputed AFTER resolution so <link rel=canonical> / og:url
+           agree with the fragment's data-musician-canonical marker — both
+           now derive from the same resolver (rule #35). No 301 here
+           (deliberate — leg C of the P4a-3 design: /musician/ soft-
+           canonicalises via the fragment's data-musician-canonical +
+           history.replaceState; only /writer/ hard-301s, :484). The
+           driver itself never throws (musician_helpers.php:1103-1105); the
+           try/catch below guards getDbMysqli() only.
+           @see #1754 */
+        try {
+            if (!function_exists('musicianResolveLegacySlugDb')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+            }
+            $musicianResolved = musicianResolveLegacySlugDb(getDbMysqli(), $personSlug);
+            if ($musicianResolved !== null) { $personSlug = $musicianResolved; }
+        } catch (\Throwable $_e) { /* getDbMysqli() outage — serve the shell, never a 500 */ }
+        $canonicalUrl = getCanonicalUrl('/musician/' . rawurlencode($personSlug));
         try {
             $personDb = getDbMysqli();
             $stmt = $personDb->prepare(
-                'SELECT Id, Name, Slug FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+                'SELECT Id, Name, Slug FROM tblMusicians WHERE Slug = ? LIMIT 1'
             );
             $stmt->bind_param('s', $personSlug);
             $stmt->execute();
@@ -519,13 +604,13 @@ try {
                 $personLinks = [];
                 $r = $personDb->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianExternalLinks' LIMIT 1"
                 );
                 $hasNewPersonLinks = $r && $r->fetch_row() !== null;
                 if ($r) $r->close();
                 if ($hasNewPersonLinks) {
                     $stmt = $personDb->prepare(
-                        'SELECT Url FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?'
+                        'SELECT Url FROM tblMusicianExternalLinks WHERE MusicianId = ?'
                     );
                     $pid = (int)$personRow['Id'];
                     $stmt->bind_param('i', $pid);
@@ -536,7 +621,7 @@ try {
                 if (empty($personLinks)) {
                     try {
                         $stmt = $personDb->prepare(
-                            'SELECT Url FROM tblCreditPersonLinks WHERE CreditPersonId = ?'
+                            'SELECT Url FROM tblMusicianLinks WHERE MusicianId = ?'
                         );
                         $pid = (int)$personRow['Id'];
                         $stmt->bind_param('i', $pid);
@@ -820,11 +905,13 @@ if (!empty($breadcrumbItems)) {
          seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
          otherwise only loads Font Awesome, so those provider icons rendered blank on the
          song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
-         + font-src); decorative, so it degrades to text-only labels if the CDN is offline. -->
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          crossorigin="anonymous"
-          id="bootstrap-icons-css">
+         + font-src); decorative, so it degrades to text-only labels if the CDN is offline.
+         #1676 — was the ONE external load in this shell not sourced from APP_CONFIG,
+         and the only one with no `integrity`. Its neighbours (Font Awesome above,
+         Animate.css below) were already pinned + hashed + fallback-backed, which is
+         exactly why nobody spotted this line: it sits in a block that looks handled.
+         Now emitted by the shared helper, same registry, same onerror fallback. -->
+    <?= ihymns_bootstrap_icons_css_link() ?>
 
     <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
@@ -1293,11 +1380,27 @@ if (!empty($breadcrumbItems)) {
          MAIN CONTENT AREA — Dynamic content loaded via AJAX.
          Padding accounts for fixed header and footer.
          ================================================================ -->
+    <!-- ⚠️ DO NOT re-add aria-live / aria-atomic here (#1645).
+         It looks like an accessibility feature and is the opposite of one.
+
+         Every page fragment is injected INSIDE this element, so marking it a
+         live region queued the entire new page — breadcrumb, toolbar and every
+         lyric line — for announcement on every navigation. aria-live is for
+         status messages: short, specific, "your changes were saved". Announcing
+         a whole page announces nothing useful, loudly.
+
+         It also collided with the focus move router.js performs onto this same
+         element, giving screen-reader users two competing streams of speech to
+         silence on every single navigation.
+
+         The replacement is js/utils/announce.js — one small dedicated region
+         that says WHAT CHANGED ("Amazing Grace") in one line. router.js calls
+         it after the focus move. tabindex="-1" stays: it is what makes that
+         focus move possible, and it is the correct SPA route-change mechanism.
+         Guarded by tests/test-live-region.js. -->
     <main id="main-content"
           class="main-content flex-grow-1"
           role="main"
-          aria-live="polite"
-          aria-atomic="false"
           tabindex="-1">
 
         <!-- Loading spinner — shown during initial load and transitions -->

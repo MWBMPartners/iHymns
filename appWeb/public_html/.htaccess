@@ -326,13 +326,49 @@ RewriteRule ^ index.php [QSA,L]
 # ==========================================================================
 # ERROR HANDLING
 #   404 → the SPA shell (the JS router renders the themed "page not found").
-#   403 / 500 / 503 → the standalone themed error page (error.php), which
-#   matches the user's light / dark / high-contrast theme. App-generated 503s
-#   (maintenance, DB-down) already send their own themed body, so this only
-#   fires for body-less server-level errors.
+#   403 / 405 / 500 / 503 → the standalone themed error page (error.php),
+#   which matches the user's light / dark / high-contrast theme.
+#   App-generated 403/500/503 bodies (maintenance, DB-down, channel gate)
+#   already send their own themed body, so ErrorDocument only fires for
+#   body-less SERVER-LEVEL errors — i.e. ones Apache itself raises before PHP
+#   gets a say.
+#
+#   405 is the one addition here (#1704): unlike 413/416/410, Apache CAN
+#   raise a 405 itself — a POST/PUT to a real static file passes the
+#   STATIC ASSET PASSTHROUGH `-f` check below and the core handler then
+#   refuses the non-GET method before any script runs. Bots and mis-wired
+#   forms produce this in the wild; without this line they'd see the stock
+#   Apache 405 page instead of a themed one.
+#
+#   The other emitted-but-unrouted statuses were considered and rejected:
+#     - 413 — no LimitRequestBody is configured, and per Apache's own docs
+#       the client's connection is often closed mid-upload before it ever
+#       reads an ErrorDocument body. Wiring one here would be silent noise.
+#     - 416 — only raised for static Range requests; the receiver in that
+#       case is always a media element (<audio>/<video>), which never
+#       renders a response body regardless of what's served.
+#     - 410 — Apache never raises this here (no `Redirect gone` / `[G]`
+#       rule exists in this file); every 410 is PHP-emitted with its own
+#       themed body already (includes/pages/song.php), which pre-empts
+#       ErrorDocument entirely.
+#
+#   ⚠️ Never point an ErrorDocument at /index.php for anything but 404. That
+#   would render the SPA shell's 200-semantics HTML over a non-200 status —
+#   the exact "200 + shell answers everything" trap this file elsewhere
+#   works to avoid. error.php re-asserts the real status from
+#   REDIRECT_STATUS instead (see error.php's own doc-block).
+#
+#   Note: ErrorDocument directives here are DOCROOT-wide and therefore also
+#   apply under /manage/ (the ADMIN AREA PASSTHROUGH above only affects the
+#   .php-blocking and SPA-catch-all rules, not ErrorDocument). An admin URL
+#   that trips a server-level 403/405/500/503 will render this same public
+#   error page rather than an admin-themed one — that's fine (error.php is
+#   fully self-contained) but is worth knowing so it doesn't look like a
+#   routing bug.
 # ==========================================================================
 
 ErrorDocument 404 /index.php
 ErrorDocument 403 /error.php
+ErrorDocument 405 /error.php
 ErrorDocument 500 /error.php
 ErrorDocument 503 /error.php

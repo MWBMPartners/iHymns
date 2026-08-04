@@ -27,6 +27,9 @@
  * `dataset.wired` guard is per-DOM-node, not a global "only once ever" flag
  * (same pattern as export-ui.js's `menu.dataset.wired`).
  */
+
+import { announce } from '../utils/announce.js';
+
 export function initPresentMode() {
     const btnPresent = document.getElementById('btn-present');
     if (!btnPresent || btnPresent.dataset.wired === '1') return;
@@ -46,9 +49,41 @@ export function initPresentMode() {
 
         let current = 0;
 
-        /* Create overlay */
+        /* The dialog's accessible name. Read from the page heading — the same
+           source router.js uses for its route announcement — so a screen reader
+           says "Presenting Amazing Grace" rather than an anonymous "dialog". */
+        const songTitle = (document.querySelector('#page-content h1')?.textContent || '').trim();
+
+        /* Remember what to give focus back to on close. Restoring focus is not
+           optional politeness: without it, closing the overlay drops focus to
+           <body> and the user's next Tab starts from the top of the document,
+           losing their place entirely (WCAG 2.4.3). */
+        const previouslyFocused = document.activeElement;
+
+        /* Create overlay.
+         *
+         * ELI5: tell the browser this is a proper pop-up window that covers the
+         * page, not just a big coloured box drawn on top of it.
+         *
+         * Detail (#1646 item 1, WCAG 4.1.2 + 2.4.3): this was a plain <div>.
+         * Visually it covered everything; to assistive tech and to the Tab key
+         * it was simply more page content. A keyboard user opening Present and
+         * pressing Tab landed on the toolbar and footer links BEHIND the
+         * overlay — controls they could not see, while the audience saw only
+         * lyrics. A screen-reader user got no signal that anything had opened.
+         *
+         * role="dialog" + aria-modal="true" declares it. tabindex="-1" makes it
+         * programmatically focusable so focus can be moved INTO it on open (a
+         * modal that never receives focus is still one Tab away from the page
+         * behind it). The name comes from the song, so the announcement is
+         * "Presenting Amazing Grace" rather than an anonymous "dialog".
+         * https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/ */
         const overlay = document.createElement('div');
         overlay.className = 'presentation-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', `Presenting ${songTitle || 'song'}`);
+        overlay.tabIndex = -1;
         overlay.innerHTML = `
             <button class="present-close" aria-label="Close presentation">&times;</button>
             <div class="present-label"></div>
@@ -66,13 +101,27 @@ export function initPresentMode() {
         const prevBtn = overlay.querySelector('.present-prev');
         const nextBtn = overlay.querySelector('.present-next');
 
-        function render() {
+        function render(announceSlide = false) {
             const slide = slides[current];
             labelEl.textContent = slide.label;
             lyricsEl.textContent = slide.text;
             counterEl.textContent = (current + 1) + ' / ' + slides.length;
             prevBtn.disabled = current === 0;
             nextBtn.disabled = current === slides.length - 1;
+
+            /* Announce slide changes (#1646 item 1, WCAG 4.1.3).
+               ELI5: say which verse we just moved to, because the screen
+               doesn't say it out loud by itself.
+               Detail: this swaps textContent on plain elements, which is
+               invisible to assistive tech — a screen-reader user pressing
+               Next got total silence and no way to know whether anything had
+               happened. Announced only on CHANGES, not on the first render:
+               the dialog's own accessible name already covers opening, and
+               announcing both would say the song twice. The label is included
+               because "2 of 7" alone is not orientation. */
+            if (announceSlide) {
+                announce(`${slide.label || 'Slide'}, ${current + 1} of ${slides.length}`);
+            }
         }
 
         function close() {
@@ -91,11 +140,45 @@ export function initPresentMode() {
                close path, is the fix.
                https://developer.mozilla.org/docs/Web/API/Element#events */
             document.removeEventListener('keydown', onKey);
+            /* Un-hide the page before removing the overlay, so the document is
+               never left in a state where everything is inert. */
+            setBackgroundInert(false);
             overlay.remove();
+            /* Give focus back to whatever opened this (#1646 item 1, WCAG
+               2.4.3). Without it focus falls to <body> and the user's next Tab
+               restarts from the top of the document, losing their place. */
+            if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+                previouslyFocused.focus({ preventScroll: true });
+            }
         }
 
-        function next() { if (current < slides.length - 1) { current++; render(); } }
-        function prev() { if (current > 0) { current--; render(); } }
+        /**
+         * Hide (or restore) everything behind the overlay from assistive tech
+         * and from the Tab order.
+         *
+         * ELI5: while the pop-up is open, everything underneath it is switched
+         * off so you cannot accidentally tab into it.
+         *
+         * Detail: `aria-modal="true"` tells a screen reader to confine itself
+         * to the dialog, but it does NOT affect the Tab order — a keyboard user
+         * would still tab straight out into the page behind. `inert` is the
+         * attribute that does both: it removes the subtree from the tab order
+         * AND from the accessibility tree. Applied to the overlay's SIBLINGS
+         * rather than to <body>, because inerting an ancestor of the overlay
+         * would disable the overlay too.
+         * https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/inert
+         *
+         * @param {boolean} on
+         */
+        function setBackgroundInert(on) {
+            Array.from(document.body.children).forEach(el => {
+                if (el === overlay) return;
+                if (on) { el.inert = true; } else { el.inert = false; }
+            });
+        }
+
+        function next() { if (current < slides.length - 1) { current++; render(true); } }
+        function prev() { if (current > 0) { current--; render(true); } }
 
         /* Navigation events */
         overlay.querySelector('.present-close').addEventListener('click', close);
@@ -113,6 +196,46 @@ export function initPresentMode() {
             if (e.key === 'Escape') { close(); }
             else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
             else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+            else if (e.key === 'Tab') { trapTab(e); }
+        }
+
+        /**
+         * Keep Tab inside the dialog (#1646 item 1, WCAG 2.4.3 / 2.1.2).
+         *
+         * ELI5: pressing Tab at the last button jumps back to the first, so you
+         * can never tab your way out of the pop-up by accident.
+         *
+         * Detail: `inert` on the siblings already removes the page behind from
+         * the tab order, so this is the second layer — it handles the wrap at
+         * each end, which inert alone does not do (without it, Tab past the
+         * last control moves focus to the browser chrome and the user has to
+         * find their way back in). Belt and braces is right here: `inert` is
+         * the newer of the two mechanisms, and losing focus out of a fullscreen
+         * presentation mid-service is not a graceful degradation.
+         *
+         * @param {KeyboardEvent} e
+         */
+        function trapTab(e) {
+            const focusables = Array.from(
+                overlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+            ).filter(el => !el.disabled && el.offsetParent !== null);
+
+            /* Every control can legitimately be disabled at once — first slide
+               of a one-slide song disables both Prev and Next. Keep focus on
+               the dialog itself rather than letting Tab escape. */
+            if (focusables.length === 0) { e.preventDefault(); overlay.focus(); return; }
+
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+
+            if (e.shiftKey && (active === first || active === overlay)) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && active === last) {
+                e.preventDefault();
+                first.focus();
+            }
         }
         document.addEventListener('keydown', onKey);
 
@@ -135,6 +258,15 @@ export function initPresentMode() {
 
         render();
         document.body.appendChild(overlay);
+
+        /* Order matters: append, THEN inert the siblings (the overlay must
+           already be a child so it can be excluded), THEN move focus in.
+           Focusing before inerting would move focus into an element that is
+           about to have its siblings disabled — harmless, but the reverse
+           order (inert first) can blur the active element and leave focus on
+           <body>, which is the state this is trying to avoid. */
+        setBackgroundInert(true);
+        overlay.focus({ preventScroll: true });
 
         /* Enter fullscreen if available.
            ELI5: ask the browser to hide everything else (address bar, tabs)

@@ -297,6 +297,166 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         SIGNED-IN DEVICES (#1409 server / #1671 F1 UI)
+
+         ELI5: the list of phones, tablets and computers currently signed
+         in to this account, with a button to sign any one of them out.
+
+         Detail: `?action=devices_list` and `?action=device_signout` have
+         been complete and hardened server-side since #1409/#1511 — CSRF
+         gate, per-USER (not per-IP) rate limit, own-tokens-only DELETE —
+         and had ZERO callers on web, Apple and Android alike. This card
+         is the first one they have ever had.
+
+         Everything below is EMPTY MARKUP on purpose. There is no inline
+         <script> here and there can never be one: the document sends an
+         enforcing nonce CSP (#117), this fragment is a separate HTTP
+         response that never sees the per-request nonce, and the browser
+         refuses a nonce-less inline script SILENTLY — the feature looks
+         alive and dies on click (#1565, rule #30). Behaviour is wired by
+         js/modules/devices.js, imported from router.js's afterPageLoad().
+         CI guard: tests/php/test-fragment-inline-scripts.php.
+
+         `data-devices-card` is the module's DOM-first hook — the module
+         reads the card out of the DOM rather than being told an id, the
+         same contract .page-song[data-song-id] gives export-ui.js.
+
+         Hidden by default (`d-none`) because the whole card is
+         meaningless to a signed-out visitor; devices.js reveals it on
+         EVT_AUTH_CHANGED and hides it again on sign-out.
+         ============================================================ -->
+    <div class="card card-settings mb-3 d-none" id="settings-devices-card" data-devices-card>
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-mobile-screen-button me-2" aria-hidden="true"></i>
+                Signed-in devices
+            </h2>
+            <p class="text-muted small">
+                Devices currently signed in to your account. Signing one out
+                immediately ends its session — it will need to sign in again.
+            </p>
+            <!-- role="alert" so a failure is ANNOUNCED, not merely displayed
+                 (WCAG 4.1.3 Status Messages). Successes are announced through
+                 the shared announcer in js/utils/announce.js instead, so a
+                 destructive action confirms itself audibly. -->
+            <div id="devices-msg" class="alert d-none py-2 small" role="alert"></div>
+            <div id="devices-list" class="mb-2">
+                <p class="text-muted small mb-0">Loading your devices…</p>
+            </div>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="devices-refresh-btn">
+                <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         PUSH NOTIFICATIONS (#311 server / #1671 F6 UI)
+
+         ELI5: turn on notifications for this device, and choose which
+         kinds of message you want.
+
+         Detail: tblPushSubscriptions, `?action=push_subscribe` and
+         `?action=push_unsubscribe` have existed since #311 and NOTHING
+         HAS EVER SENT A PUSH — there was no VAPID keypair, no RFC 8291
+         payload encryption, and no service-worker `push` handler. This
+         card is the first caller those endpoints have ever had.
+
+         THE TWO data-* ATTRIBUTES ARE THE WHOLE SERVER CONTRACT, and
+         both are here rather than behind an API action on purpose:
+
+           - data-vapid-key is the application-server PUBLIC key. It is
+             designed to be handed to every browser (it is exactly what
+             `PushManager.subscribe({applicationServerKey})` takes), so
+             it is not a secret and needs no endpoint of its own. Its
+             private half lives in tblAppSettings, encrypted at rest via
+             secretSettingKeys() (#1466), and never leaves the server.
+           - data-push-kinds is webPushKinds() rendered as JSON. The
+             client builds ONE checkbox per entry from it, which is what
+             makes "adding a kind is one line in the PHP registry"
+             literally true rather than aspirational (rule #35 — a
+             mechanism, not a comment).
+
+         An EMPTY data-vapid-key means no operator has generated a
+         keypair yet; the module then explains that rather than offering
+         a button that cannot work.
+
+         This fragment is NOT in api.php's $_cacheablePages (settings is
+         user-specific), so emitting per-request server state here is
+         legitimate — unlike home/song/songbook, where rule #6 forbids it.
+
+         There is no inline <script> here and there can never be one: the
+         document sends an enforcing nonce CSP (#117), this fragment is a
+         separate HTTP response that never sees the per-request nonce, and
+         the browser refuses a nonce-less inline script SILENTLY (#1565,
+         rule #30). Behaviour is wired by js/modules/push-notifications.js,
+         imported from router.js's afterPageLoad().
+         ============================================================ -->
+    <?php
+        /* Loaded here rather than at the top of the file so a fragment that is
+           never rendered for a signed-out visitor still costs nothing. Both
+           reads are plain settings lookups; getAppSetting() returns its default
+           on ANY database error, so a wobble renders the card as "not
+           configured" instead of throwing inside a fragment. */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'web_push.php';
+        $pushVapidPublic = (string)(getAppSetting('webpush_vapid_public', '') ?? '');
+        /* #1695 — a kind may name an entitlement its recipients must hold
+           (`song_deleted` needs `purge_songs`), because offering a regular user
+           a switch for a notification they can never receive is a promise the
+           app cannot keep.
+
+           ⚠️ THE FILTER IS APPLIED CLIENT-SIDE, DELIBERATELY. This fragment
+           CANNOT resolve the viewer: `api.php` never sets `$currentUser`, so
+           every `$currentUser` reference in this file is undefined — which is
+           also why the language-sync paragraph below still says "Sign in to
+           sync" to users who are already signed in (a pre-existing bug, tracked
+           separately; not fixed here because it is unrelated and this is not
+           the commit to change auth plumbing in).
+           Filtering here on a variable that is always null would have hidden
+           the switch from EVERYONE, admins included — shipping a control nobody
+           can ever see, which is the silent-no-op class rule #30 exists about.
+           So the server states the REQUIREMENT and the client, which does know
+           the auth state, applies it (push-notifications.js). */
+        $pushKindsJson   = (string)json_encode(
+            array_map(
+                static fn(array $k): array => [
+                    'label'       => $k[0],
+                    'description' => $k[1],
+                    'default'     => (bool)$k[2],
+                    /* null = everyone; a string = the entitlement required. */
+                    'requires'    => $k[3] ?? null,
+                ],
+                webPushKinds()
+            ),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        );
+    ?>
+    <div class="card card-settings mb-3 d-none" id="settings-push-card" data-push-card
+         data-vapid-key="<?= htmlspecialchars($pushVapidPublic, ENT_QUOTES, 'UTF-8') ?>"
+         data-push-kinds="<?= htmlspecialchars($pushKindsJson, ENT_QUOTES, 'UTF-8') ?>">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-bell me-2" aria-hidden="true"></i>
+                Notifications
+            </h2>
+            <p class="text-muted small">
+                Get a notification on this device when something you care about
+                happens. You can turn this off at any time, here or in your
+                browser's site settings.
+            </p>
+            <!-- role="alert" so a failure is ANNOUNCED, not merely displayed
+                 (WCAG 4.1.3 Status Messages). Successes go through the shared
+                 announcer in js/utils/announce.js. -->
+            <div id="push-msg" class="alert d-none py-2 small" role="alert"></div>
+            <div id="push-status" class="mb-2">
+                <p class="text-muted small mb-0">Checking notification support…</p>
+            </div>
+            <div id="push-kinds" class="mb-2"></div>
+            <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="push-toggle-btn"></button>
+        </div>
+    </div>
+
+    <!-- ============================================================
          SYNC SECTION — Cross-device sync preferences (#284)
          ============================================================ -->
     <div class="card card-settings mb-3" id="settings-sync-card">

@@ -7,8 +7,10 @@ declare(strict_types=1);
  *
  * PURPOSE:
  * Generates a standards-compliant XML sitemap for search engine crawlers.
- * Dynamically includes all songbooks, songs, writers, and static pages
- * from the song database so new content is automatically indexed.
+ * Dynamically includes all songbooks, songs, musicians (#1741 P4a-3 —
+ * registry-driven, replacing the old per-credited-name legacy writer-page
+ * heuristic), and static pages from the song database so new content is
+ * automatically indexed.
  *
  * ACCESSED VIA:
  *   /sitemap.xml → sitemap.xml.php (rewritten by .htaccess)
@@ -117,7 +119,6 @@ foreach ($songbooks as $book) {
 }
 
 /* --- Individual song pages --- */
-$allWriters = [];
 foreach ($songbooks as $book) {
     $bookId = $book['id'] ?? '';
     if ($bookId === '') {
@@ -137,27 +138,43 @@ foreach ($songbooks as $book) {
             'changefreq' => 'monthly',
             'priority'   => '0.6',
         ];
-
-        /* Collect unique writers/composers for writer pages */
-        foreach (($song['writers'] ?? []) as $w) {
-            $allWriters[$w] = true;
-        }
-        foreach (($song['composers'] ?? []) as $c) {
-            $allWriters[$c] = true;
-        }
     }
 }
 
-/* --- Writer pages --- */
-foreach (array_keys($allWriters) as $writer) {
-    $slug = rawurlencode(strtolower(str_replace(' ', '-', $writer)));
-    $urls[] = [
-        'loc'        => $baseUrl . '/writer/' . $slug,
-        'lastmod'    => $today,
-        'changefreq' => 'monthly',
-        'priority'   => '0.5',
-    ];
-}
+/* --- Musician pages (#1741 P4a-3, owner decision D4) ---
+   ELI5: instead of guessing a URL for every credited writer/composer
+   name (which produced thin duplicate-content pages for anyone without
+   a real profile), we now list exactly the people who HAVE a profile.
+
+   DETAILED / WHY: registry-driven — one <loc> per tblMusicians row with
+   a slug — REPLACES the old heuristic per-credited-name legacy
+   writer-page emission above. The retired writer-page URL shape now
+   301s to its /musician/<slug> equivalent (index.php's new legacy-slug
+   redirect branch), and any already-indexed legacy writer URL converges
+   on the canonical /musician/ form through that redirect the next time
+   it's crawled (D-3 in the build spec: the curation path to being
+   ADVERTISED here, for a non-registry name, is promoting it into the
+   registry via /manage/musicians-bulk-promote — the URL stays
+   resolvable either way, rule #33, just not promoted).
+   Schema-tolerant: a pre-Slug-migration install (or the DB-outage
+   static-only path above, where $songbooks is already []) simply emits
+   no musician URLs rather than fataling — matches this file's own
+   $songData-outage contract at the top of the file.
+   @link .claude/catalogue-1741-P4a3-plan.md §1.4 */
+try {
+    $mus = getDbMysqli()->query(
+        "SELECT Slug FROM tblMusicians WHERE Slug IS NOT NULL AND Slug <> '' ORDER BY Slug"
+    );
+    while ($row = $mus->fetch_assoc()) {
+        $urls[] = [
+            'loc'        => $baseUrl . '/musician/' . rawurlencode((string)$row['Slug']),
+            'lastmod'    => $today,
+            'changefreq' => 'monthly',
+            'priority'   => '0.5',
+        ];
+    }
+    $mus->close();
+} catch (\Throwable $_e) { /* pre-migration / outage — omit musician URLs */ }
 
 /* =========================================================================
  * OUTPUT XML SITEMAP

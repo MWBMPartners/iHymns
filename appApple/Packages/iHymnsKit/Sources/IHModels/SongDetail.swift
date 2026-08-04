@@ -179,6 +179,76 @@ public struct SongDetail: Sendable, Hashable, Codable, Identifiable {
     /// song can be registered with several societies at once.
     public let royaltyIds: [SongRoyaltyId]?
 
+    // #1752 Slice A — the five #1741 P1 song-identity keys + the opt-in
+    // `include=externalIds` block. See `#1750 §4` (`.claude/
+    // catalogue-1741-1750-plan.md`) for the frozen wire contract these
+    // mirror: five always-present camelCase keys server-side, plus the
+    // opt-in block.
+    //
+    // ELI5: a subtitle, a "(which one?)" note, when it was first published,
+    // and a modern split copyright (years + holder) instead of one free-text
+    // blob — plus, if we asked for it, a list of recording ids like ISRCs.
+    //
+    // DETAILED: ALL SIX are `Optional` here even though the server always
+    // sends the five identity keys (rule #9/#28's "additive, tolerant
+    // client" posture) — this is a DECISION, not an oversight (see #1750 §4
+    // build spec §1.1): the synthesized `Decodable` conformance this struct
+    // relies on (no hand-written `init(from:)`, see the file header above)
+    // uses `decodeIfPresent` for every `Optional` property, so an absent key
+    // decodes to `nil` rather than throwing. Two real decoders will see
+    // these keys ABSENT even after this ships: (a) any of the three docroots
+    // that hasn't deployed #1750 yet (staggered rollout, one shared MySQL),
+    // and (b) every already-persisted offline copy —
+    // `IHPersistence/CachedSongDetail.swift` re-decodes stored `detailData`
+    // blobs with `try? JSONDecoder().decode(SongDetail.self, ...)` on every
+    // app launch. A required (non-Optional) key here would make THAT decode
+    // throw and `try?` would silently discard it — nuking every user's
+    // saved-for-offline library on first launch after this update, with no
+    // error anywhere. Never "improve" these to non-optional just because the
+    // server contract promises always-present.
+    /// Optional song subtitle (#1741 P1) — empty/absent when unset.
+    public let subtitle: String?
+
+    /// Short parenthetical distinguishing same-named songs, e.g.
+    /// "(Christmas version)" (#1741 P1) — empty/absent when unset.
+    public let disambiguation: String?
+
+    /// Year of first publication (#1741 P1) — `nil` when unknown; hymns can
+    /// predate 1901, which is why this is a plain `Int?`, not a parsed
+    /// `Date`/MySQL `YEAR` (same reasoning as the server-side column, see
+    /// `schema.sql`'s `tblSongs.FirstPublishedYear` COMMENT).
+    public let firstPublishedYear: Int?
+
+    /// As-printed copyright year(s), free text e.g. `"1978, 1987, 2011"`
+    /// (#1741 P1) — the split-fields half of `copyrightDisplay`'s
+    /// precedence fold below.
+    public let copyrightYears: String?
+
+    /// Copyright holder name (#1741 P1) — the other split-fields half.
+    public let copyrightHolder: String?
+
+    /// Recording/release external ids (ISRC and similar) — opt-in via
+    /// `include=externalIds` (#1750 §4.3); `nil` when not requested or the
+    /// song has none. See `SongExternalId` below.
+    public let externalIds: [SongExternalId]?
+
+    /// The copyright line to actually display: the #1741 split (years +
+    /// holder) when either half is present, else the legacy free-text
+    /// `copyright`. NEVER both — this is the ONE display-precedence fold
+    /// (rule #22), matching `includes/pages/song.php`'s `$copyrightDisplay`
+    /// byte-for-byte (`.claude/catalogue-1741-1750-plan.md` §4.1) so web and
+    /// native always agree. Delegates to the shared `ihCopyrightDisplay`
+    /// free function (`CopyrightDisplay.swift`) — `Work.copyrightDisplay`
+    /// (`Work.swift`) calls the SAME function so the fold exists exactly
+    /// once across both types (#1752 Slice C).
+    ///
+    /// ELI5: "What copyright line should I actually print?" — prefers the
+    /// new split years+holder fields when a curator has filled them in,
+    /// otherwise falls back to the old one-line copyright text.
+    public var copyrightDisplay: String {
+        ihCopyrightDisplay(years: copyrightYears, holder: copyrightHolder, legacy: copyright)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case songId = "id"
         case number
@@ -214,6 +284,14 @@ public struct SongDetail: Sendable, Hashable, Codable, Identifiable {
         case translations
         case annotations
         case royaltyIds
+        // #1752 Slice A — wire keys are identical to the property names
+        // (no renaming needed), matching #1750 §4's frozen camelCase spelling.
+        case subtitle
+        case disambiguation
+        case firstPublishedYear
+        case copyrightYears
+        case copyrightHolder
+        case externalIds
     }
 }
 
@@ -261,4 +339,21 @@ public struct SongMediaAsset: Sendable, Hashable, Codable, Identifiable {
 public struct SongTranslationRef: Sendable, Hashable, Codable {
     public let songId: String
     public let language: String
+}
+
+/// One recording/release external id (#1741 D5, `tblSongExternalIds`) —
+/// opt-in via `include=externalIds` (#1750 §4.3, `SongDetail.externalIds`).
+/// `idScope`/`idType` are open vocabularies, same non-`enum` reasoning as
+/// `SongMediaAsset.kind`/`ExternalLink.category` (a new scope/type added
+/// server-side must still decode and render under its own label, never
+/// throw). `SourceRef` is deliberately never on the wire (#1750 §4.3) — an
+/// internal ingest-provenance detail, not a display value.
+///
+/// ELI5: "This song's Spotify/Apple Music recording is ISRC
+/// US-ABC-12-34567" — one row per outside-world id a specific recording has.
+public struct SongExternalId: Sendable, Hashable, Codable {
+    public let idScope: String
+    public let idType: String
+    public let idValue: String
+    public let source: String
 }

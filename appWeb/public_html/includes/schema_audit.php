@@ -87,33 +87,45 @@ function schemaAuditParseSchema(string $schemaSql): array
            declarations. (#722) */
         $body = preg_replace('/\/\*.*?\*\//s', '', $body);
 
-        /* Strip `--` line comments from the body BEFORE splitting at
-           commas. SQL `--` comments often contain prose with commas
-           ("VARCHAR(48), which silently truncated", "the defence is
-           single-use, all enforced by …"). Without this strip, the
-           comma inside the comment splits the segment, and whatever
-           word follows the comma in the comment becomes a phantom
-           column name (the column-extraction regex matches `^[A-Za-z_]
-           [A-Za-z0-9_]*\s+`). Pre-stripping `--` to end-of-line means
-           every comma in a comment vanishes alongside the comment. */
-        $body = preg_replace('/--[^\n]*/', '', $body);
+        /* ORDER IS LOAD-BEARING: COMMENT '…' clauses come out FIRST, then
+           `--` line comments. These two strips used to run the other way
+           round, and that silently ate real columns (#722).
 
-        /* Strip COMMENT '…' clauses BEFORE the comma-split. SQL column
-           comments routinely contain commas, apostrophes, parentheses,
-           and the occasional `\'`-style backslash-escape that MySQL
-           accepts but the per-char string-state tracker below doesn't
-           recognise. Pre-stripping the whole `COMMENT '…'` segment
-           sidesteps every one of those edge cases — comments don't
-           carry column-identity information so dropping them entirely
-           is safe. The regex matches non-greedy up to the next `'`
-           that's NOT preceded by `\` or doubled — handles both
-           `'foo''s bar'` (SQL-standard `''` escape) and `'foo\'s bar'`
-           (MySQL backslash extension). */
+           Why: a DDL COMMENT is a quoted string, and 18 of them in
+           schema.sql contain a literal `--` as prose, e.g.
+
+               EventName VARCHAR(64) NOT NULL COMMENT 'app-level allow-listed
+                 event name, e.g. song_opened -- VARCHAR not ENUM per rule #20',
+
+           Strip `--`-to-end-of-line first and that comment loses its CLOSING
+           QUOTE. The COMMENT regex below then runs from the surviving opening
+           quote to the next quote FURTHER DOWN THE TABLE BODY, deleting every
+           column declaration in between.
+
+           The damage was quiet and precisely proportional: the Schema Audit
+           page reported those swallowed columns as "Orphan in DB" — present in
+           MySQL, absent from schema.sql — when schema.sql declared them
+           perfectly well. 21 columns across 3 of 136 tables, which is exactly
+           the orphan count the page showed. #722's acceptance was "zero
+           non-OK rows", so the tracker recorded a schema problem that did not
+           exist while the actual defect was in the auditor.
+
+           Doing COMMENT first is correct in both directions: a `--` inside a
+           quoted comment leaves with the whole clause, and a genuine `--` line
+           comment is untouched by the COMMENT regex (no `COMMENT '` prefix) and
+           is removed by the pass below. */
         $body = preg_replace(
             "/\\bCOMMENT\\s+'(?:[^'\\\\]|\\\\.|'')*'/i",
             '',
             $body
         ) ?? $body;
+
+        /* NOW the `--` line comments, with every quoted string already gone.
+           Still needed before the comma-split: `--` prose routinely contains
+           commas ("VARCHAR(48), which silently truncated"), and the comma would
+           split the segment so the next word became a phantom column name (the
+           extraction regex matches `^[A-Za-z_][A-Za-z0-9_]*\s+`). */
+        $body = preg_replace('/--[^\n]*/', '', $body);
 
         /* Split into top-level segments at commas, ignoring commas
            inside parentheses (so ENUM('success','failure','error')
@@ -231,37 +243,84 @@ function schemaAuditScanMigrations(string $sqlDir): array
         }
     }
 
-    /* Signal 4 — RENAME TABLE old TO new. Second pass over all files so
-       coverage attributed to the old name (via CREATE TABLE in an
-       earlier migration) gets re-attributed to the new name. Without
-       this, the IETF migration's `CREATE TABLE tblScripts` shows up in
-       the dictionary under the old name even though every other place
-       in the codebase references `tblLanguageScripts`. (Multi-step
-       renames within a single migration chain are handled by iterating
-       to a fixed point — small file count, cheap.) */
-    $renames = [];
+    /* Signal 4 — RENAME TABLE old TO new, and RENAME COLUMN old TO new
+       (#1741 P2). Second pass over all files so coverage attributed to an
+       old table/column name (via CREATE TABLE / ADD COLUMN / @migration-adds
+       in an earlier migration) gets re-attributed to the new name. Without
+       this, the IETF migration's `CREATE TABLE tblScripts` shows up in the
+       dictionary under the old name even though every other place in the
+       codebase references `tblLanguageScripts` — and, the #1741 P2 case this
+       block was extended for, `migrate-musician-profile.php`'s
+       `@migration-adds tblCreditPeople.Type` would show up under a table
+       name that `migrate-musicians-rename.php` later renames to
+       `tblMusicians`, and `migrate-credit-person-identifiers.php`'s
+       `CreditPersonId` column would show up under a column name that same
+       migration later renames to `MusicianId` — schema.sql (rightly) only
+       declares the FINAL post-rename shape, so without this remap the test
+       would report both as "missing" even though the coverage is real, just
+       filed under a name nothing outside this file still uses.
+       (Multi-step rename chains are handled by iterating BOTH maps to a
+       fixed point together — small file count, cheap — so it doesn't matter
+       whether a table rename or a column rename "happened first" in the
+       migration history; either order converges to the same final key.)
+
+       RENAME TABLE syntax supports multiple comma-separated pairs in ONE
+       atomic statement (`RENAME TABLE a TO b, c TO d, …`, as
+       migrate-musicians-rename.php's 7-table rename uses) — the inner
+       regex captures every "tblX TO tblY" pair inside the RENAME TABLE
+       clause, not just the first, so a multi-pair statement is fully
+       covered, not just its first pair.
+
+       RENAME COLUMN is captured per-statement (`ALTER TABLE tbl RENAME
+       COLUMN old TO new`, the one spelling this codebase's migrations
+       actually emit — CHANGE-COLUMN's differing five-way syntax isn't
+       emitted anywhere and isn't parsed here). A RENAME COLUMN statement
+       always names the table under whatever name it holds AT THAT POINT in
+       the script — normally the NEW name, because a table rename (if any)
+       runs before its columns are renamed — so no separate "which table
+       name does this apply to" resolution is needed: the captured table
+       name is used as-is as one half of both the lookup key and the map
+       key. */
+    $tableRenames  = [];   // old table name  => new table name
+    $columnRenames = [];   // "table.oldCol"  => new column name
     foreach ($files as $file) {
         $contents = @file_get_contents($file);
         if ($contents === false) continue;
-        /* Strip PHP block comments so a docblock's "RENAME TABLE" prose
-           example doesn't get picked up as a real rename. */
+        /* Strip PHP block comments so a docblock's "RENAME TABLE" /
+           "RENAME COLUMN" prose example doesn't get picked up as real. */
         $stripped = preg_replace('/\/\*.*?\*\//s', '', $contents) ?? $contents;
+
         if (preg_match_all(
-            '/RENAME\s+TABLE\s+(tbl\w+)\s+TO\s+(tbl\w+)/is',
+            '/RENAME\s+TABLE\s+((?:tbl\w+\s+TO\s+tbl\w+\s*,?\s*)+)/is',
             $stripped,
-            $matches,
+            $blocks,
             PREG_SET_ORDER
         )) {
-            foreach ($matches as $m) {
-                $renames[$m[1]] = $m[2];
+            foreach ($blocks as $block) {
+                if (preg_match_all('/(tbl\w+)\s+TO\s+(tbl\w+)/i', $block[1], $pairs, PREG_SET_ORDER)) {
+                    foreach ($pairs as $p) {
+                        $tableRenames[$p[1]] = $p[2];
+                    }
+                }
+            }
+        }
+
+        if (preg_match_all(
+            '/ALTER\s+TABLE\s+(tbl\w+)\s+RENAME\s+COLUMN\s+([A-Za-z_]\w*)\s+TO\s+([A-Za-z_]\w*)/is',
+            $stripped,
+            $colMatches,
+            PREG_SET_ORDER
+        )) {
+            foreach ($colMatches as $m) {
+                $columnRenames[$m[1] . '.' . $m[2]] = $m[3];
             }
         }
     }
-    if ($renames) {
+    if ($tableRenames || $columnRenames) {
         $changed = true;
         while ($changed) {
             $changed = false;
-            foreach ($renames as $old => $new) {
+            foreach ($tableRenames as $old => $new) {
                 foreach (array_keys($coverage) as $key) {
                     if (strpos($key, $old . '.') !== 0) continue;
                     $col    = substr($key, strlen($old) + 1);
@@ -273,6 +332,17 @@ function schemaAuditScanMigrations(string $sqlDir): array
                     unset($coverage[$key]);
                     $changed = true;
                 }
+            }
+            foreach ($columnRenames as $oldKey => $newCol) {
+                if (!isset($coverage[$oldKey])) continue;
+                $tbl    = substr($oldKey, 0, strpos($oldKey, '.'));
+                $newKey = $tbl . '.' . $newCol;
+                $coverage[$newKey] = array_merge(
+                    $coverage[$newKey] ?? [],
+                    $coverage[$oldKey]
+                );
+                unset($coverage[$oldKey]);
+                $changed = true;
             }
         }
     }

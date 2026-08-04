@@ -35,27 +35,29 @@ struct WorkAndCreditPersonEndpointTests {
         #expect(endpoint.queryItems.contains { $0.name == "slug" && $0.value == "amazing-grace" })
     }
 
-    // MARK: - Credit person (#1443, #1444)
+    // MARK: - Credit person / musician (#1443, #1444, #1752 Slice D)
 
-    @Test("Endpoint.creditPerson(.slug) sends a slug query item")
+    @Test("Endpoint.creditPerson(.slug) sends a slug query item, action=musician (the #1741 P2-B canonical action, #1752 Slice D)")
     func buildsCreditPersonSlugEndpoint() {
         let endpoint = Endpoint.creditPerson(.slug("fanny-crosby"))
-        #expect(endpoint.action == "credit_person")
+        #expect(endpoint.action == "musician")
         #expect(endpoint.requiresAuth == false)
         #expect(endpoint.queryItems.count == 1)
         #expect(endpoint.queryItems[0] == (name: "slug", value: "fanny-crosby"))
     }
 
-    @Test("Endpoint.creditPerson(.id) sends an id query item")
+    @Test("Endpoint.creditPerson(.id) sends an id query item, action=musician")
     func buildsCreditPersonIdEndpoint() {
         let endpoint = Endpoint.creditPerson(.id(42))
+        #expect(endpoint.action == "musician")
         #expect(endpoint.queryItems.count == 1)
         #expect(endpoint.queryItems[0] == (name: "id", value: "42"))
     }
 
-    @Test("Endpoint.creditPerson(.name) sends a name query item — the ONLY lookup a tapped credit string can use")
+    @Test("Endpoint.creditPerson(.name) sends a name query item, action=musician — the ONLY lookup a tapped credit string can use")
     func buildsCreditPersonNameEndpoint() {
         let endpoint = Endpoint.creditPerson(.name("John Newton"))
+        #expect(endpoint.action == "musician")
         #expect(endpoint.queryItems.count == 1)
         #expect(endpoint.queryItems[0] == (name: "name", value: "John Newton"))
     }
@@ -90,7 +92,16 @@ struct WorkAndCreditPersonDecodingTests {
                 "links": [
                     { "slug": "wikipedia", "name": "Wikipedia", "category": "information", "iconClass": "bi-wikipedia",
                       "url": "https://en.wikipedia.org/wiki/Amazing_Grace", "note": null, "verified": true, "sortOrder": 0 }
-                ]
+                ],
+                "ccli": "1234567",
+                "bowi": "BW-0001",
+                "subtitle": "A Hymn Tune",
+                "disambiguation": "(traditional)",
+                "tuneName": "NEW BRITAIN",
+                "tuneId": 42,
+                "firstPublishedYear": 1779,
+                "copyrightYears": "",
+                "copyrightHolder": ""
             }
         }
         """.utf8)
@@ -102,6 +113,17 @@ struct WorkAndCreditPersonDecodingTests {
         #expect(work.members.count == 1)
         #expect(work.members[0].songbookAbbreviation == "MP")
         #expect(work.links.count == 1)
+        // #1752 Slice C — the nine #1741 P4b identity keys, present (the
+        // standalone `getWork()` shape).
+        #expect(work.ccli == "1234567")
+        #expect(work.bowi == "BW-0001")
+        #expect(work.subtitle == "A Hymn Tune")
+        #expect(work.disambiguation == "(traditional)")
+        #expect(work.tuneName == "NEW BRITAIN")
+        #expect(work.tuneId == 42)
+        #expect(work.firstPublishedYear == 1779)
+        #expect(work.copyrightYears == "")
+        #expect(work.copyrightHolder == "")
     }
 
     @Test("Decodes a work envelope whose 'children' key is entirely absent — the #1443 embedded-shape fix")
@@ -125,13 +147,47 @@ struct WorkAndCreditPersonDecodingTests {
         #expect(work.children.isEmpty)
     }
 
-    // MARK: - Credit person — modelled from `SongData::getCreditPerson()`'s own array literal
+    @Test("Decodes a work envelope whose nine #1741 P4b keys are entirely absent — the SAME embedded-shape tolerance, in BOTH directions (#1752 Slice C)")
+    func decodesWorkMissingP4bKeys() throws {
+        // The embedded `song_detail.works[]` shape omits `children` (proven
+        // above) AND all nine P4b keys — `_worksMap()` never sets any of
+        // them. This is the other absent-tolerance direction the build spec
+        // asks for: proving decode succeeds with the keys missing, not just
+        // that specific values decode correctly when present.
+        let json = Data("""
+        {
+            "work": {
+                "id": 7, "parentId": null, "title": "Amazing Grace", "slug": "amazing-grace", "iswc": null,
+                "members": [], "links": []
+            }
+        }
+        """.utf8)
 
-    @Test("Decodes a full credit-person envelope with discography and links")
+        let work = try APIClient.decodeWork(from: json)
+        #expect(work.ccli == nil)
+        #expect(work.bowi == nil)
+        #expect(work.subtitle == nil)
+        #expect(work.disambiguation == nil)
+        #expect(work.tuneName == nil)
+        #expect(work.tuneId == nil)
+        #expect(work.firstPublishedYear == nil)
+        #expect(work.copyrightYears == nil)
+        #expect(work.copyrightHolder == nil)
+        #expect(work.copyrightDisplay == "")
+    }
+
+    // MARK: - Musician / credit person — modelled from `SongData::getMusician()`'s own array literal
+    //
+    // #1752 Slice D UPDATE — the envelope key is now `musician` (was
+    // `person`), matching `decodeCreditPerson(from:)`'s switch
+    // (`WorkAndCreditPersonDecoding.swift`) to the canonical `?action=musician`
+    // action `Endpoint.creditPerson(_:)` now builds.
+
+    @Test("Decodes a full musician envelope with discography, links, and identifiers")
     func decodesCreditPersonWithFullShape() throws {
         let json = Data("""
         {
-            "person": {
+            "musician": {
                 "id": 3,
                 "slug": "fanny-crosby",
                 "name": "Fanny Crosby",
@@ -155,7 +211,10 @@ struct WorkAndCreditPersonDecodingTests {
                     { "slug": "wikipedia", "name": "Wikipedia", "category": "information", "iconClass": "bi-wikipedia",
                       "url": "https://en.wikipedia.org/wiki/Fanny_Crosby", "note": null, "verified": true, "sortOrder": 0 }
                 ],
-                "totalSongs": 1
+                "totalSongs": 1,
+                "identifiers": [
+                    { "type": "ipi", "value": "00123456789" }
+                ]
             }
         }
         """.utf8)
@@ -170,16 +229,20 @@ struct WorkAndCreditPersonDecodingTests {
         #expect(person.discography[0].songs[0].songId.rawValue == "MP-1008")
         #expect(person.links.count == 1)
         #expect(person.totalSongs == 1)
+        // #1752 Slice D
+        #expect(person.identifiers?.count == 1)
+        #expect(person.identifiers?.first?.type == "ipi")
+        #expect(person.identifiers?.first?.value == "00123456789")
     }
 
-    @Test("Decodes a name-only credit-person envelope — no registry row, id/slug are null (#1444)")
+    @Test("Decodes a name-only musician envelope — no registry row, id/slug are null (#1444)")
     func decodesCreditPersonWithNoRegistryRow() throws {
-        // `SongData::getCreditPerson()`'s own "no row, but has credited
-        // songs" fallback — the ONLY case reachable when a native client
-        // taps a plain credit-name string with no `tblCreditPeople` row yet.
+        // `SongData::getMusician()`'s own "no row, but has credited songs"
+        // fallback — the ONLY case reachable when a native client taps a
+        // plain credit-name string with no `tblMusicians` row yet.
         let json = Data("""
         {
-            "person": {
+            "musician": {
                 "id": null, "slug": null, "name": "John Newton",
                 "notes": null, "birthPlace": null, "birthDate": null, "deathPlace": null, "deathDate": null,
                 "isSpecialCase": false, "isGroup": false,
@@ -198,5 +261,27 @@ struct WorkAndCreditPersonDecodingTests {
         #expect(person.slug == nil)
         #expect(person.name == "John Newton")
         #expect(person.totalSongs == 1)
+    }
+
+    @Test("Decodes a musician envelope whose 'identifiers' key is entirely absent — pre-#1752 server tolerance")
+    func decodesCreditPersonMissingIdentifiersKey() throws {
+        // The server-side default is always-present `'identifiers' => []`
+        // (`SongData::getMusician()`, #1752 §4.1) — but an already-cached
+        // native payload fetched before that change shipped, or a
+        // pre-#1752 docroot in a staggered rollout, sends no `identifiers`
+        // key at all. Must decode to `nil`, never throw.
+        let json = Data("""
+        {
+            "musician": {
+                "id": 3, "slug": "fanny-crosby", "name": "Fanny Crosby",
+                "notes": null, "birthPlace": null, "birthDate": null, "deathPlace": null, "deathDate": null,
+                "isSpecialCase": false, "isGroup": false,
+                "discography": [], "links": [], "totalSongs": 0
+            }
+        }
+        """.utf8)
+
+        let person = try APIClient.decodeCreditPerson(from: json)
+        #expect(person.identifiers == nil)
     }
 }

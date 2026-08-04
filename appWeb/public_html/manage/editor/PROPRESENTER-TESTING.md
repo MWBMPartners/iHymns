@@ -50,17 +50,13 @@ regenerate it from the vendored `.proto` files at any time.
 npm run build:proto
 ```
 
-> ⚠️ **Known-broken as of this rewrite (found while fixing #1632, not
-> yet its own tracked fix):** `tools/build-proto-bundle.js`'s
-> `PROTO_DIR`/`OUTPUT_PATH` still point at
-> `appWeb/private_html/editor/protos/…`, which no longer exists — the
-> real vendored `.proto` set and the committed `proto-bundle.json` both
-> live under `appWeb/public_html/manage/editor/protos/` now. Running
-> the command above currently fails with `Proto directory not found`
-> rather than producing the output below. Don't spend time debugging a
-> "broken" schema change against this step until that path is fixed.
+> The stale-path breakage noted here through the #1632 rewrite (`tools/
+> build-proto-bundle.js` pointing at the retired `appWeb/private_html/
+> editor/protos/…`) was fixed in #1634 — `PROTO_DIR`/`OUTPUT_PATH` now
+> point at `appWeb/public_html/manage/editor/protos/`, matching
+> `tools/export-pro-sample.js`. `npm run build:proto` runs cleanly again.
 
-**Expected (once the path above is fixed):**
+**Expected:**
 
 ```
 Wrote appWeb/public_html/manage/editor/protos/proto-bundle.json (≈220 KB)

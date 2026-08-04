@@ -1,0 +1,26 @@
+{
+  "meta": {"generatedAt": "2026-01-01T00:00:00.000Z", "generatorVersion": "1.0.0", "totalSongs": 1, "totalSongbooks": 1},
+  "songbooks": [{"id": "TF", "name": "Testing Fixture Hymnal", "songCount": 1}],
+  "songs": [
+    {
+      "id": "TF-0001",
+      "number": 1,
+      "title": "Probe iHymns Interchange Song",
+      "songbook": "TF",
+      "songbookName": "Testing Fixture Hymnal",
+      "language": "en",
+      "writers": ["A. Fictional Author"],
+      "composers": ["A. Fictional Composer"],
+      "copyright": "",
+      "ccli": "",
+      "verified": true,
+      "lyricsPublicDomain": true,
+      "musicPublicDomain": true,
+      "hasAudio": false,
+      "hasSheetMusic": false,
+      "components": [
+        {"type": "verse", "number": 1, "lines": ["Probe interchange line one", "Probe interchange line two"]}
+      ]
+    }
+  ]
+}

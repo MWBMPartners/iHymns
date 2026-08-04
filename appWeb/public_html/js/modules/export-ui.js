@@ -12,8 +12,9 @@
  *  songbooks from ?action=songbook_export (both DB-direct, rule #17).
  *
  *  Wiring is ROUTER-driven (#1565), NOT fragment-inline. `initSongExport()` /
- *  `initSongbookExport()` used to be called from a `<script>` embedded in the
- *  song.php / songbook.php AJAX fragments themselves. Two things broke that:
+ *  `initSongbookExport()` / `initSongbookListExport()` (#1607) used to be
+ *  called from a `<script>` embedded in the song.php / songbook.php AJAX
+ *  fragments themselves. Two things broke that:
  *   1. The document sends an enforcing nonce CSP (`script-src 'self'
  *      'nonce-…'`, no `unsafe-inline` — #117), which refuses any inline
  *      <script> that doesn't carry that exact per-request nonce.
@@ -25,9 +26,20 @@
  *  So the inline scripts silently no-oped for every visitor from the day the
  *  CSP shipped — clicking Export did nothing. The fix mirrors home-page.js:
  *  the SPA router (`router.js` `afterPageLoad()`) imports this module as a
- *  real ES module (allowed under `script-src 'self'`) and calls these two
+ *  real ES module (allowed under `script-src 'self'`) and calls these
  *  functions itself once the fragment is in the DOM, so no inline script is
  *  ever required.
+ *
+ *  #1607 — whole-songbook export additionally lives on the /songbooks LIST
+ *  (one control per tile), per the owner's decision that the editor and the
+ *  single-song view stay export-free/uncluttered and whole-book export is a
+ *  /songbook and /songbooks affordance only. `initSongbookListExport()`
+ *  wires N per-tile menus; it is NOT a second copy of the export logic —
+ *  both it and `initSongbookExport()` (the existing single-menu /songbook/
+ *  wiring) call the same `exportSongbookAs()` core below. Only the MENU
+ *  DISCOVERY differs: one `.songbook-export-menu` closed over one `abbr`
+ *  vs. N `.songbook-list-export-menu` elements, each resolving its own
+ *  `abbr` from its tile's `data-songbook-id` (see includes/pages/songbooks.php).
  * ========================================================================== */
 
 import { apiFetch } from '../utils/api-client.js';
@@ -127,11 +139,52 @@ export function initSongExport(songId) {
 }
 
 /**
- * Wire a songbook-view "Export songbook ▾" dropdown.
- * @param {string} abbr  Songbook abbreviation (e.g. 'MP')
+ * CORE: export songbook `abbr` as format `fmtKey`. This is the ONE place
+ * that knows the `songbook_export` fetch, the songbook meta shape, and the
+ * ProPresenter-7 `.probundle` special case (#887) — every caller (the
+ * single-menu /songbook/ wiring below and the per-tile /songbooks list
+ * wiring) goes through this, per the modularity rule (.claude/CLAUDE.md) —
+ * a second copy of this logic is exactly the drift #1570 already had to
+ * clean up once (the songbook menu missing ChordPro).
+ * @param {string} abbr    Songbook abbreviation (e.g. 'MP')
+ * @param {string} fmtKey  One of the `data-export-format` keys in export-menu.php
+ * @returns {Promise<void>} Resolves once the download has been triggered;
+ *   rejects with an Error whose message is fit to show the user.
  */
-export function initSongbookExport(abbr) {
-    const menu = document.querySelector('.songbook-export-menu');
+async function exportSongbookAs(abbr, fmtKey) {
+    const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
+    const songs = data && data.songs;
+    if (!Array.isArray(songs) || !songs.length) { throw new Error('no songs to export'); }
+    const meta = {
+        name:         (data.songbook && (data.songbook.name || data.songbook.id)) || abbr,
+        abbreviation: (data.songbook && (data.songbook.id || data.songbook.abbreviation)) || abbr,
+    };
+    if (fmtKey === 'proPresenter7') {
+        /* PP7 exports a whole songbook as a .probundle (#887). */
+        await loadPP7();
+        await window.iHymnsProPresenter.exportAllAsBundle(songs, {
+            songbookAbbrev: meta.abbreviation,
+            songbookName:   meta.name,
+        });
+        return;
+    }
+    await loadExportLibs();
+    const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
+    if (!fmt || typeof fmt.exportSongbook !== 'function') { throw new Error('format unavailable'); }
+    fmt.exportSongbook(songs, meta);
+}
+
+/**
+ * Bind click handlers on one songbook export `<ul>` (its `[data-export-format]`
+ * items) to `exportSongbookAs(abbr, …)`. Shared by both the single-menu
+ * /songbook/ wiring (`initSongbookExport`) and the per-tile /songbooks list
+ * wiring (`initSongbookListExport`) below — the wiring boilerplate (toast,
+ * idempotency guard, error handling) is identical either way; only WHICH
+ * menu and WHICH abbr differ per caller.
+ * @param {Element|null} menu
+ * @param {string} abbr
+ */
+function wireSongbookExportMenu(menu, abbr) {
     if (!menu || menu.dataset.wired === '1' || !abbr) { return; }
     menu.dataset.wired = '1';
 
@@ -140,29 +193,38 @@ export function initSongbookExport(abbr) {
             const fmtKey = item.dataset.exportFormat;
             try {
                 toast('Preparing songbook export…', 'info');
-                const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
-                const songs = data && data.songs;
-                if (!Array.isArray(songs) || !songs.length) { throw new Error('no songs to export'); }
-                const meta = {
-                    name:         (data.songbook && (data.songbook.name || data.songbook.id)) || abbr,
-                    abbreviation: (data.songbook && (data.songbook.id || data.songbook.abbreviation)) || abbr,
-                };
-                if (fmtKey === 'proPresenter7') {
-                    /* PP7 exports a whole songbook as a .probundle (#887). */
-                    await loadPP7();
-                    await window.iHymnsProPresenter.exportAllAsBundle(songs, {
-                        songbookAbbrev: meta.abbreviation,
-                        songbookName:   meta.name,
-                    });
-                    return;
-                }
-                await loadExportLibs();
-                const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
-                if (!fmt || typeof fmt.exportSongbook !== 'function') { throw new Error('format unavailable'); }
-                fmt.exportSongbook(songs, meta);
+                await exportSongbookAs(abbr, fmtKey);
             } catch (err) {
                 toast('Songbook export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
             }
         });
+    });
+}
+
+/**
+ * Wire a songbook-view "Export songbook ▾" dropdown — /songbook/<abbr>,
+ * ONE menu on the page. Signature unchanged (#1607): router.js still calls
+ * `initSongbookExport(abbr)` with the single abbreviation read from
+ * `.page-songbook`'s `data-songbook-abbr`.
+ * @param {string} abbr  Songbook abbreviation (e.g. 'MP')
+ */
+export function initSongbookExport(abbr) {
+    wireSongbookExportMenu(document.querySelector('.songbook-export-menu'), abbr);
+}
+
+/**
+ * Wire EVERY per-tile "Export songbook ▾" dropdown on the /songbooks LIST
+ * page (#1607). Unlike `initSongbookExport()` above (one menu, one abbr
+ * closed over by the caller), this page renders N tiles — so each menu's
+ * abbreviation is read from its OWN tile's `data-songbook-id`
+ * (includes/pages/songbooks.php), not passed in. `wireSongbookExportMenu()`'s
+ * per-menu `dataset.wired` guard makes this idempotent across repeated
+ * /songbooks navigations, same as the single-menu case.
+ */
+export function initSongbookListExport() {
+    document.querySelectorAll('.songbook-list-export-menu').forEach((menu) => {
+        const tile = menu.closest('[data-songbook-id]');
+        const abbr = tile ? tile.dataset.songbookId : '';
+        wireSongbookExportMenu(menu, abbr);
     });
 }

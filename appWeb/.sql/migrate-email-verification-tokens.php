@@ -13,7 +13,39 @@ declare(strict_types=1);
  * SHA-256 hash of the raw token (raw token only ever lives in the
  * outbound email body); 24-hour expiry; single-use.
  *
- * Idempotent — re-running is a no-op when the table already exists.
+ * NOT DESTRUCTIVE. One CREATE TABLE, guarded, and nothing else — no
+ * ALTER, no DELETE, no touch on tblUsers. The rollback is DROP TABLE,
+ * whose only cost is that verification links already emailed out stop
+ * resolving; affected users request a fresh one.
+ *
+ * IDEMPOTENT — the INFORMATION_SCHEMA.TABLES probe below returns early
+ * with a [skip] line when the table is present, so a second run issues
+ * no SQL at all. (Deliberately a probe rather than CREATE TABLE IF NOT
+ * EXISTS, so the operator sees "already exists" rather than a silent
+ * success that could equally mean "created just now".)
+ *
+ * OPERATOR VIEW. Card "Email Verification Tokens (#898)" on
+ * /manage/setup-database; the registry probe is
+ * !tableExists('tblEmailVerificationTokens') — a single-object migration,
+ * so the probe and the migration agree exactly.
+ *
+ * SCHEMA MIRROR. Mirrored in appWeb/.sql/schema.sql under
+ * "tblEmailVerificationTokens (#898)", which is what a FRESH install
+ * reads. Rule #19 requires the two to stay byte-identical (COMMENT text
+ * included) so migrated and fresh installs are the same shape; CI checks
+ * only that the columns exist in both, so wording drift is caught later
+ * by /manage/schema-audit (#518) rather than at build time.
+ *
+ * Note on the doctag: the schema-coverage scanner
+ * (includes/schema_audit.php) recognises only the "adds" and "drops"
+ * doctags, and each must name a table AND a column (see rule #19);
+ * "creates" is not a form it looks for, so the line below is inert
+ * documentation. Coverage for this table comes from the scanner's
+ * "Signal 2" instead, which parses the literal CREATE TABLE block
+ * further down. Do not write a specimen doctag in prose anywhere in an
+ * appWeb/.sql/migrate-*.php file — the scanner reads the whole file as
+ * text and cannot tell an example from a declaration, so the example
+ * registers as a real column and fails test-schema-coverage.php.
  *
  * @migration-creates tblEmailVerificationTokens
  *
@@ -83,6 +115,37 @@ if (_migEmailVerify_tableExists($mysqli, 'tblEmailVerificationTokens')) {
     return;
 }
 
+/* The shape below encodes the security model, which is worth spelling out
+   because the table looks unremarkable:
+
+   - TokenHash IS the primary key. The raw token exists only in the
+     outbound email; what is stored is its SHA-256, and verification
+     hashes the incoming token and looks THAT up. So a dump of this table
+     yields nothing an attacker can put in a URL. CHAR(64) is exactly the
+     64 hex characters of a SHA-256 digest — fixed width, so CHAR rather
+     than VARCHAR. Making the hash the PK rather than adding a surrogate
+     Id also means there is no second index to keep in step, and a
+     (vanishingly unlikely) collision is a key violation rather than a
+     silent overwrite of somebody else's pending verification.
+
+   - Email is a SNAPSHOT of the address at the moment the token was
+     issued, not a pointer to the live tblUsers.Email. If the user
+     changes their address after requesting verification, the old link
+     must not confirm the new address — comparing against this frozen
+     copy is what makes that check possible.
+
+   - ExpiresAt has NO default. The app always supplies it (issue time +
+     24h), and under MySQL strict mode an INSERT that omits a NOT NULL
+     column with no default is rejected — so a caller that forgets the
+     expiry fails loudly instead of minting a token that never ages out.
+     idx_Expires exists for the sweeper that deletes lapsed rows.
+
+   - Used is the single-use flag: consumption flips tblUsers.EmailVerified
+     0 -> 1 and sets this to 1, so replaying a captured link is inert
+     even inside the 24-hour window.
+
+   - The FK cascades on delete, so removing a user reaps their pending
+     tokens rather than leaving rows pointing at a vanished Id. */
 $sql = <<<'SQL'
 CREATE TABLE tblEmailVerificationTokens (
     TokenHash       CHAR(64)        NOT NULL PRIMARY KEY COMMENT 'sha256 of raw token',

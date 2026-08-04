@@ -19,8 +19,40 @@ declare(strict_types=1);
  * Both arrays use the shape:
  *     ['code' => 'Latn', 'name' => 'Latin', 'native' => '']
  * (`native` is optional and omitted for region rows.)
+ *
+ * NOT A MIGRATION. This file has no runner, no registry entry and no
+ * setup-database card — it is `require`d by migrate-ietf-bcp47-language.php
+ * immediately before its Step 7 / Step 8 seeds. Nothing here touches the
+ * database; nothing here is destructive.
+ *
+ * ELI5 — how re-running stays safe: the consumer seeds with
+ * `INSERT IGNORE INTO tblScripts/tblRegions (Code, …)`. `Code` is the unique
+ * key, so a row that already exists is silently skipped rather than
+ * overwritten. That is what makes the whole migration a no-op on a second
+ * run, and it is why an admin who flipped a row to `IsActive = 0` keeps that
+ * choice for ever.
+ *
+ * DETAIL — the flip side, and the thing that surprises people: because it is
+ * INSERT **IGNORE**, this file is APPEND-ONLY in practice. Appending a new
+ * entry and re-running picks it up; CORRECTING the `name` of an entry that
+ * has already been seeded does NOT — the existing row wins and the edit here
+ * never reaches the database. Fixing a seeded typo needs a hand-written
+ * UPDATE (or a new migration), not a re-run of this one.
+ * https://dev.mysql.com/doc/refman/8.0/en/insert.html
+ *
+ * DETAIL — include discipline: the consumer uses plain `require`, and both
+ * arrays below are top-level `const`s. PHP does not allow a constant to be
+ * defined twice, so a second include inside the SAME request emits
+ * "Warning: Constant SCRIPTS already defined" and keeps the first value.
+ * Harmless today (setup-database `require`s each migration once per request),
+ * but it is why this file must stay free of side effects beyond the two
+ * declarations. https://www.php.net/manual/en/language.constants.syntax.php
  */
 
+/* `native` is present only where a self-name is genuinely useful in the
+   picker (CJK); the consumer coalesces the missing key with `?? ''` because
+   tblScripts.NativeName is NOT NULL DEFAULT ''. Omitting it is therefore a
+   deliberate "no self-name" and not an oversight. */
 const SCRIPTS = [
     ['code' => 'Latn', 'name' => 'Latin'],
     ['code' => 'Cyrl', 'name' => 'Cyrillic'],
@@ -54,7 +86,14 @@ const SCRIPTS = [
 
 const REGIONS = [
     /* ISO 3166-1 alpha-2 (#681). Sorted by code. Extend at any time
-       and re-run the migration; INSERT IGNORE only adds new rows. */
+       and re-run the migration; INSERT IGNORE only adds new rows.
+
+       Names are deliberately ASCII-FOLDED — "Aland Islands", "Curacao",
+       "Cote d'Ivoire", "Reunion", "Sao Tome and Principe", "Turkiye" — rather
+       than carrying their diacritics. The picker's typeahead matches on this
+       column, and a curator typing "Curacao" on a plain keyboard must still
+       find Curaçao. Keep new entries folded the same way; the display layer,
+       not this table, is where a prettier label would belong. */
 
     /* A */
     ['code' => 'AD', 'name' => 'Andorra'],
@@ -359,7 +398,14 @@ const REGIONS = [
        These are economic / geographic groupings, useful when a
        songbook serves a region rather than a country (e.g.
        "Latin America" for a Spanish-language collection). Only
-       the most-used groupings — extend if curators need more. */
+       the most-used groupings — extend if curators need more.
+
+       The codes are QUOTED STRINGS, and must stay that way. BCP 47 §2.2.4
+       defines the M.49 region subtag as exactly three DIGITS, so the leading
+       zeros in '002' / '009' / '019' are part of the identifier — writing
+       them as PHP ints would silently yield 2 / 9 / 19 and produce tags like
+       `es-2` that no BCP 47 parser accepts.
+       https://www.rfc-editor.org/rfc/rfc5646#section-2.2.4 */
     ['code' => '419', 'name' => 'Latin America and the Caribbean'],
     ['code' => '150', 'name' => 'Europe'],
     ['code' => '002', 'name' => 'Africa'],

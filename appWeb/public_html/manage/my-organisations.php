@@ -489,8 +489,9 @@ $csrf = csrfToken();
                                                     <option value="<?= $mr ?>" <?= $m['OrgRole'] === $mr ? 'selected' : '' ?>><?= $mr ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Change role">
-                                                <i class="bi bi-check2"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Change role"
+                                                    aria-label="Save role change for <?= htmlspecialchars($m['Username'], ENT_QUOTES) ?>">
+                                                <i class="bi bi-check2" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     </td>
@@ -501,8 +502,9 @@ $csrf = csrfToken();
                                             <input type="hidden" name="action" value="member_remove">
                                             <input type="hidden" name="org_id"  value="<?= $orgId ?>">
                                             <input type="hidden" name="user_id" value="<?= (int)($m['UserId'] ?? 0) ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove from organisation">
-                                                <i class="bi bi-x"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove from organisation"
+                                                    aria-label="Remove <?= htmlspecialchars($m['Username'], ENT_QUOTES) ?> from this organisation">
+                                                <i class="bi bi-x" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     </td>
@@ -590,8 +592,9 @@ $csrf = csrfToken();
                                                    title="Notes"
                                                    aria-label="Licence notes"
                                                    placeholder="Notes" style="width: 11rem;">
-                                            <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Save">
-                                                <i class="bi bi-check2"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Save"
+                                                    aria-label="Save <?= htmlspecialchars($l['LicenceType'], ENT_QUOTES) ?> licence changes">
+                                                <i class="bi bi-check2" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     </td>
@@ -603,8 +606,9 @@ $csrf = csrfToken();
                                             <input type="hidden" name="action" value="licence_remove">
                                             <input type="hidden" name="org_id"     value="<?= $orgId ?>">
                                             <input type="hidden" name="licence_id" value="<?= (int)($l['Id'] ?? 0) ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove licence">
-                                                <i class="bi bi-x"></i>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove licence"
+                                                    aria-label="Remove the <?= htmlspecialchars($l['LicenceType'], ENT_QUOTES) ?> licence">
+                                                <i class="bi bi-x" aria-hidden="true"></i>
                                             </button>
                                         </form>
                                     </td>

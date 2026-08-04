@@ -19,9 +19,38 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/components.js';
+import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+import { announce } from '../utils/announce.js';
+
+/**
+ * May the viewer WRITE to this shared set list? (#1638 / #1698)
+ *
+ * ELI5: ask the server's answer, and only work it out ourselves if the server
+ * is an older one that did not send one.
+ *
+ * The server states `canWrite` explicitly because the decision now has TWO
+ * inputs — the collaborator's own permission AND the owner's account state —
+ * and a client that re-derived it from `permission` alone would draw edit
+ * buttons for a list `setlist_collab_update` will refuse with a 403. That is
+ * rule #35's failure shape: two places computing one policy with nothing making
+ * them agree, and the copy that draws the buttons being the wrong one.
+ *
+ * The `permission` fallback is not a second opinion — it is what to do when the
+ * server did not express one at all. A response cached by the service worker
+ * before this shipped has no `canWrite` key, and treating a missing key as
+ * `false` would silently strip edit access from every collaborator until the
+ * cache turned over.
+ *
+ * @param {{permission?:string, canWrite?:boolean}} shared One `shared` entry.
+ * @returns {boolean}
+ */
+function sharedCanWrite(shared) {
+    if (!shared) return false;
+    if (typeof shared.canWrite === 'boolean') return shared.canWrite;
+    return shared.permission === 'edit';
+}
 
 export class SetList {
     /**
@@ -123,10 +152,17 @@ export class SetList {
            any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(() => {
+        this._syncTimer = setTimeout(async () => {
             const all = this.getAll();
             if (this._loadError) return; /* corrupt cache — never replace (review #2) */
-            this.app.userAuth.syncSetlists(all, 'replace');
+            /* #1649 — absorb the response instead of discarding it. The server
+               may have kept rows this push didn't mention (another device's
+               newer additions, or the whole tail if we exceeded the cap), and
+               the absorb helper both merges them back in and advances the sync
+               watermark. Dropping the result on the floor left the local cache
+               permanently behind the server. */
+            const res = await this.app.userAuth.syncSetlists(all, 'replace');
+            this.app.userAuth._absorbSetlistSync(res);
         }, 1500);
     }
 
@@ -173,14 +209,144 @@ export class SetList {
 
     /**
      * Delete a set list.
+     *
+     * #1661 — the deletion is QUEUED for the server as an explicit
+     * instruction before the local removal, not merely implied by the set
+     * list vanishing from the next payload. Under sync protocol 2 the server
+     * no longer reads absence as deletion at all, so without this queue entry
+     * the delete would never propagate and the next reconcile would hand the
+     * set list straight back.
+     *
+     * Queue first, remove second: saveAll() schedules the sync, so a queue
+     * write after it could lose a race with the debounce timer on a slow
+     * device and publish a payload that deletes nothing.
+     *
      * @param {string} listId
      */
     delete(listId) {
+        this._queuePendingDelete(listId);
         const lists = this.getAll().filter(l => l.id !== listId);
         this.saveAll(lists);
         if (this.activeSetListId === listId) {
             this.activeSetListId = null;
         }
+    }
+
+    /**
+     * Set (or clear) a set list's optional expiry (#1661).
+     *
+     * ELI5: give a set list a use-by date, or take one away.
+     *
+     * `null` means "never expires" — the owner's stated default, and what
+     * every set list has unless someone deliberately dates it. The value is
+     * an absolute instant in UTC, because the server compares it against its
+     * own UTC clock; sending a local wall-clock time would fire the expiry
+     * early or late by the device's offset.
+     *
+     * The server is the sole authority on the actual conversion — this only
+     * records the intent, and the set list keeps working normally until a
+     * sync observes that the moment has passed.
+     *
+     * @param {string} listId
+     * @param {?string} expiresAt 'YYYY-MM-DD HH:MM:SS' UTC, or null to clear.
+     * @returns {boolean} True if a matching set list was updated.
+     */
+    setExpiry(listId, expiresAt) {
+        const lists = this.getAll();
+        const list = lists.find(l => l.id === listId);
+        if (!list) return false;
+        list.expiresAt = expiresAt || null;
+        this.saveAll(lists);
+        return true;
+    }
+
+    /* =====================================================================
+     * EXPLICIT-DELETE QUEUE (#1661)
+     *
+     * The client half of sync protocol 2. The server distinguishes a
+     * protocol-2 client by the mere PRESENCE of a `deleted` key, so
+     * getPendingDeletes() is called on EVERY sync and its empty array is
+     * just as meaningful as a populated one — see UserAuth.syncSetlists.
+     * ===================================================================== */
+
+    /**
+     * The ids deleted on this device that the server has not yet acknowledged.
+     * @returns {string[]}
+     */
+    getPendingDeletes() {
+        try {
+            const v = JSON.parse(localStorage.getItem(STORAGE_SETLISTS_DELETED)) || [];
+            return Array.isArray(v) ? v.filter(id => typeof id === 'string' && id) : [];
+        } catch {
+            /* A corrupt queue must not wedge every future sync, and unlike the
+               setlists cache there is nothing here to salvage — the worst case
+               is one un-propagated deletion the user can repeat. */
+            return [];
+        }
+    }
+
+    /**
+     * Add an id to the pending-delete queue (idempotent).
+     * @param {string} listId
+     */
+    _queuePendingDelete(listId) {
+        if (!listId) return;
+        const pending = this.getPendingDeletes();
+        if (pending.includes(listId)) return;
+        pending.push(listId);
+        try { localStorage.setItem(STORAGE_SETLISTS_DELETED, JSON.stringify(pending)); } catch { /* quota — the delete still applied locally */ }
+    }
+
+    /**
+     * Drop the ids a sync has just had accepted.
+     *
+     * Removes ONLY the ids that were actually sent, never the whole queue:
+     * a deletion made while the request was in flight is still pending and
+     * must survive to be announced on the next sync.
+     *
+     * @param {string[]} acknowledged Ids included in the successful request.
+     */
+    clearPendingDeletes(acknowledged) {
+        if (!Array.isArray(acknowledged) || acknowledged.length === 0) return;
+        const done = new Set(acknowledged);
+        const remaining = this.getPendingDeletes().filter(id => !done.has(id));
+        try { localStorage.setItem(STORAGE_SETLISTS_DELETED, JSON.stringify(remaining)); } catch { /* quota */ }
+    }
+
+    /**
+     * Remove local copies of set lists the server reports as tombstoned.
+     *
+     * ELI5: another device deleted these (or they expired) — take them off
+     * this device too.
+     *
+     * Returns the pruned array instead of writing it, so the caller can fold
+     * this into the single saveAll() the absorb path already performs — two
+     * writes would render the overview twice and could interleave with an
+     * in-flight edit.
+     *
+     * @param {Array}  lists      The local set lists.
+     * @param {Array}  tombstones Server tombstones ([{id, deletedAt, reason}]).
+     * @returns {Array} The lists with tombstoned ids removed.
+     */
+    applyTombstones(lists, tombstones) {
+        if (!Array.isArray(tombstones) || tombstones.length === 0) return lists;
+        const dead = new Set(
+            tombstones.map(t => (t && typeof t.id === 'string') ? t.id : null).filter(Boolean)
+        );
+        if (dead.size === 0) return lists;
+        /* Disarm the getAll()-backed navigation fallback, which would
+           otherwise call getById() on a set list that is about to vanish.
+           The sessionStorage PLAYLIST CONTEXT is deliberately left alone: it
+           is a self-contained snapshot of song ids (which is why it can drive
+           a SHARED set list that was never in getAll() at all), and yanking a
+           leader out of mid-service navigation because a co-leader deleted
+           the list on their phone would be worse than letting this tab's
+           session finish. It is session-scoped, so it does not outlive the
+           tab. */
+        if (this.activeSetListId && dead.has(this.activeSetListId)) {
+            this.activeSetListId = null;
+        }
+        return (lists || []).filter(l => l && !dead.has(l.id));
     }
 
     /**
@@ -254,6 +420,20 @@ export class SetList {
     initSetListPage() {
         this.renderSyncBar();
         this.renderSetListOverview();
+
+        /* #1638 — honour a `?shared=<ownerId>:<setlistId>` deep link, which is
+           the ActionUrl the collaboration-invite notification carries. Reading
+           it from window.location.search mirrors the /link route's handling of
+           ?user_code= in router.js: parseRoute() only ever looks at path
+           SEGMENTS, so a query string has to be read here.
+
+           Deliberately best-effort — if the id no longer resolves (invite
+           revoked, setlist deleted) the user simply lands on the normal
+           overview rather than seeing an error about a link they did not type. */
+        try {
+            const target = new URLSearchParams(window.location.search || '').get('shared');
+            if (target) this._openSharedByKey(target);
+        } catch { /* malformed query string — the overview is a fine landing place */ }
     }
 
     /**
@@ -338,7 +518,7 @@ export class SetList {
                         <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 setlist-item"
                              data-setlist-id="${escapeHtml(list.id)}" role="button" tabindex="0">
                             <div class="flex-grow-1">
-                                <strong>${escapeHtml(list.name)}</strong>
+                                <strong>${escapeHtml(list.name)}</strong>${this.expiryBadge(list)}
                                 <small class="text-muted d-block">
                                     ${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}
                                     &middot; Created ${this.formatDate(list.createdAt)}
@@ -394,6 +574,421 @@ export class SetList {
             createBtn.replaceWith(freshBtn);
             freshBtn.addEventListener('click', () => this.showCreateDialog());
         }
+
+        /* #1638 — "Shared with me". Appended AFTER the own-lists markup above,
+           because that markup is written with container.innerHTML and would
+           blow away anything already inside. Async and non-blocking: the
+           user's own lists render from localStorage instantly and the shared
+           section fills in when the network answers. */
+        this._renderSharedWithMe(container);
+    }
+
+    /* =====================================================================
+     * COLLABORATION — SETLISTS SHARED WITH ME (#1638)
+     *
+     * ELI5: the lists other people have let you see or help edit.
+     *
+     * THE BUG THIS CLOSES. Collaboration shipped write-only: an owner could
+     * invite you and pick "view" or "edit", and you would never find out. The
+     * `setlist_collab_shared_with_me` endpoint existed and worked, and had
+     * ZERO callers on web, Apple and Android alike. This section is the first
+     * caller it has ever had.
+     *
+     * THE SYNC BOUNDARY — the most important thing in this block.
+     *
+     * Shared setlists are held in memory ONLY (`this._sharedLists`). They are
+     * never written to localStorage['ihymns_setlists'], because that array is
+     * what `_scheduleSync()` posts to `user_setlists_sync` in 'replace' mode.
+     * A shared list that leaked into it would be pushed back as if this user
+     * owned it, forking a second `tblUserSetlists` row under a different
+     * UserId — and that fork would then pass the owner-check in
+     * `setlist_collab_invite`, letting a collaborator re-share a list that is
+     * not theirs. Keeping them out of the store makes that impossible by
+     * construction rather than by remembering to filter.
+     *
+     * Consequence, accepted deliberately: shared setlists do not appear
+     * offline. Your own lists do (localStorage); somebody else's need the
+     * network. That is the correct trade — the alternative caches other
+     * people's data in the exact array that gets synced back as your own.
+     * ===================================================================== */
+
+    /**
+     * Fetch and render the "Shared with me" section.
+     *
+     * @param {HTMLElement} container The #setlist-container element.
+     * @private
+     */
+    _renderSharedWithMe(container) {
+        if (!container) return;
+
+        /* Anonymous users have nothing shared with them and the endpoint would
+           just 401 — skip the request entirely rather than firing one that is
+           guaranteed to fail. */
+        const auth = this.app.userAuth;
+        const loggedIn = auth ? auth.isLoggedIn() : !!localStorage.getItem(STORAGE_AUTH_TOKEN);
+        if (!loggedIn) return;
+
+        apiFetch('/api?action=setlist_collab_shared_with_me', { credentials: 'same-origin' })
+            .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+            .then(data => {
+                const shared = Array.isArray(data.shared) ? data.shared : [];
+                this._sharedLists = shared;   // in-memory only — see the note above
+                if (shared.length === 0) return;
+
+                /* Guard against a double-render: renderSetListOverview() can be
+                   called again (Sync Now, auth change) while this request is in
+                   flight, and two sections would otherwise stack up. */
+                document.getElementById('setlist-shared-with-me')?.remove();
+
+                const section = document.createElement('div');
+                section.id = 'setlist-shared-with-me';
+                section.className = 'mt-4';
+                section.innerHTML = `
+                    <h2 class="h6 text-muted mb-2">
+                        <i class="fa-solid fa-users me-2" aria-hidden="true"></i>Shared with me
+                    </h2>
+                    <div class="list-group">
+                        ${shared.map(s => this._sharedRowHtml(s)).join('')}
+                    </div>`;
+                container.appendChild(section);
+
+                section.querySelectorAll('.shared-setlist-item').forEach(item => {
+                    const open = () => {
+                        const entry = this._findShared(item.dataset.ownerId, item.dataset.setlistId);
+                        if (entry) this.renderSharedSetListDetail(entry);
+                    };
+                    item.addEventListener('click', open);
+                    item.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+                });
+            })
+            .catch(() => {
+                /* 401 / offline / feature unavailable — render nothing. An
+                   empty section is the honest outcome; an error box about
+                   somebody else's setlists would be noise on a page whose main
+                   content loaded fine. */
+            });
+    }
+
+    /**
+     * One row of the "Shared with me" list.
+     *
+     * The owner's name and the permission are both in the row's ACCESSIBLE
+     * NAME, not just in visual badges — a screen-reader user needs to know
+     * whose list this is and whether they can change it before they open it.
+     * Same pattern as the language / unofficial-songbook badges elsewhere.
+     *
+     * @param {{ownerId:number, ownerName:string, setlistId:string, permission:string, name:string, songs:Array, canWrite?:boolean, locked?:boolean}} s
+     * @returns {string} HTML
+     * @private
+     */
+    _sharedRowHtml(s) {
+        const count = Array.isArray(s.songs) ? s.songs.length : 0;
+        const canEdit = sharedCanWrite(s);
+        const locked = s.locked === true;
+        /* Three states now, not two (#1698): a locked owner's list is neither
+           "can edit" nor plain "view only" — the difference matters, because a
+           collaborator WAS granted edit and would otherwise assume the button
+           had simply moved. */
+        const permLabel = locked ? 'Read-only' : (canEdit ? 'Can edit' : 'View only');
+        const badgeCls = locked ? 'text-bg-warning' : (canEdit ? 'text-bg-success' : 'text-bg-secondary');
+        return `
+            <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 shared-setlist-item"
+                 data-owner-id="${escapeHtml(String(s.ownerId))}"
+                 data-setlist-id="${escapeHtml(s.setlistId)}"
+                 role="button" tabindex="0"
+                 aria-label="${escapeHtml(s.name)}, shared by ${escapeHtml(s.ownerName)}, ${permLabel}">
+                <div class="flex-grow-1">
+                    <strong>${escapeHtml(s.name)}</strong>
+                    <span class="badge ${badgeCls} ms-2"
+                          style="font-size:0.65rem">${permLabel}</span>
+                    <small class="text-muted d-block">
+                        ${count} song${count !== 1 ? 's' : ''}
+                        &middot; Shared by ${escapeHtml(s.ownerName)}
+                    </small>
+                </div>
+                <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+            </div>`;
+    }
+
+    /**
+     * Look up a shared entry from the in-memory list.
+     *
+     * Keyed on BOTH ids: `setlistId` is client-generated and unique only per
+     * user, so two different owners can legitimately share lists with the same
+     * id string. Matching on the setlist id alone would open the wrong one.
+     *
+     * @param {string|number} ownerId
+     * @param {string} setlistId
+     * @returns {object|null}
+     * @private
+     */
+    _findShared(ownerId, setlistId) {
+        const list = Array.isArray(this._sharedLists) ? this._sharedLists : [];
+        return list.find(s => String(s.ownerId) === String(ownerId)
+            && String(s.setlistId) === String(setlistId)) || null;
+    }
+
+    /**
+     * Open a shared setlist from an `ownerId:setlistId` key.
+     *
+     * Used by the notification deep link. Fetches the shared list if the page
+     * has not already loaded it, so the link works on a cold page load.
+     *
+     * @param {string} key `<ownerId>:<setlistId>`
+     * @private
+     */
+    _openSharedByKey(key) {
+        const sep = key.indexOf(':');
+        if (sep <= 0) return;
+        const ownerId   = key.slice(0, sep);
+        /* The server rawurlencode()s the setlist id into the link, so decode
+           it back before comparing. decodeURIComponent throws on a malformed
+           %-sequence, hence the try. */
+        let setlistId = key.slice(sep + 1);
+        try { setlistId = decodeURIComponent(setlistId); } catch { /* use as-is */ }
+
+        const open = () => {
+            const entry = this._findShared(ownerId, setlistId);
+            if (entry) this.renderSharedSetListDetail(entry);
+        };
+
+        if (Array.isArray(this._sharedLists)) { open(); return; }
+        apiFetch('/api?action=setlist_collab_shared_with_me', { credentials: 'same-origin' })
+            .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+            .then(data => {
+                this._sharedLists = Array.isArray(data.shared) ? data.shared : [];
+                open();
+            })
+            .catch(() => { /* link no longer resolves — stay on the overview */ });
+    }
+
+    /**
+     * Render the detail view of a setlist somebody else shared.
+     *
+     * Deliberately a SEPARATE method from renderSetListDetail() rather than a
+     * mode flag on it. That method's every control writes straight to
+     * localStorage via moveSong/removeSong/rename — the exact store that must
+     * never hold shared data. Threading a "don't persist" flag through all of
+     * them is the kind of change where one missed branch silently reintroduces
+     * the sync hazard; a separate renderer cannot make that mistake.
+     *
+     * PERMISSION IS ENFORCED SERVER-SIDE. `setlist_collab_update` resolves the
+     * caller's level from the database on every write and refuses a 'view'
+     * collaborator with a 403. The read-only rendering below is an affordance,
+     * not a security control — hiding a button is not a permission.
+     *
+     * @param {object} shared Entry from setlist_collab_shared_with_me.
+     */
+    renderSharedSetListDetail(shared) {
+        const container = document.getElementById('setlist-container');
+        if (!container || !shared) return;
+
+        /* Work on a COPY. Edits are staged locally and pushed explicitly, so
+           an abandoned reorder never half-writes to the owner's list. */
+        const songs = Array.isArray(shared.songs) ? shared.songs.map(s => ({ ...s })) : [];
+        const canEdit = sharedCanWrite(shared);
+        const locked = shared.locked === true;
+
+        const rowsHtml = songs.length === 0
+            ? `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`
+            : `<div class="list-group" id="shared-setlist-songs">
+                ${songs.map((song, index) => `
+                    <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
+                         data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
+                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+                        <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
+                        <div class="flex-grow-1">
+                            <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
+                               class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
+                            <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
+                        </div>
+                        ${canEdit ? `
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
+                                data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
+                            <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
+                                data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
+                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
+                                data-index="${index}" aria-label="Remove from set list">
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                        </button>` : ''}
+                    </div>
+                `).join('')}
+               </div>`;
+
+        container.innerHTML = `
+            <div class="mb-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="shared-back-btn">
+                    <i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i> Back
+                </button>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <h2 class="h5 mb-0">${escapeHtml(shared.name)}</h2>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary" id="shared-copy-btn"
+                            aria-label="Copy set list to clipboard" title="Copy">
+                        <i class="fa-solid fa-copy" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="shared-print-btn"
+                            aria-label="Print set list" title="Print">
+                        <i class="fa-solid fa-print" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" id="shared-activate-btn"
+                            aria-label="Use this set list for navigation" title="Use this set list">
+                        <i class="fa-solid fa-play me-1" aria-hidden="true"></i> Use
+                    </button>
+                </div>
+            </div>
+            <p class="text-muted small mb-3">
+                Shared by <strong>${escapeHtml(shared.ownerName)}</strong>
+                &middot; <span class="badge ${locked ? 'text-bg-warning' : (canEdit ? 'text-bg-success' : 'text-bg-secondary')}"
+                               style="font-size:0.65rem">${locked ? 'Read-only' : (canEdit ? 'Can edit' : 'View only')}</span>
+                &middot; ${songs.length} song${songs.length !== 1 ? 's' : ''}
+            </p>
+            ${locked ? `
+            <div class="alert alert-warning py-2 px-3 small" role="note">
+                <i class="fa-solid fa-lock me-1" aria-hidden="true"></i>
+                ${escapeHtml(shared.lockReason || 'The owner’s account is unavailable. This is read-only.')}
+            </div>` : (!canEdit ? `
+            <div class="alert alert-secondary py-2 px-3 small" role="note">
+                <i class="fa-solid fa-eye me-1" aria-hidden="true"></i>
+                You have view-only access. Ask ${escapeHtml(shared.ownerName)} for edit access to make changes.
+            </div>` : '')}
+            ${rowsHtml}
+            <div id="shared-save-status" class="small mt-2" aria-live="polite"></div>`;
+
+        container.querySelector('#shared-back-btn')?.addEventListener('click', () => {
+            this.renderSetListOverview();
+        });
+
+        /* Read-only affordances work at BOTH permission levels — a view-only
+           collaborator can still print the running order and follow along. */
+        const asList = { id: shared.setlistId, name: shared.name, createdAt: '', songs };
+        container.querySelector('#shared-copy-btn')?.addEventListener('click', () => {
+            this.copyToClipboard(asList);
+        });
+        container.querySelector('#shared-print-btn')?.addEventListener('click', () => {
+            this.printSetList(asList);
+        });
+
+        /* Arm playback. Reuses the EXISTING `source: 'shared'` vocabulary from
+           #1533 rather than inventing a third notion of shared: that field's
+           only functional job is "this is not one of my local lists, so don't
+           try to apply a local custom arrangement", which is exactly true
+           here. `sourceId` is informational for a shared context — it is only
+           ever read back when source === 'own'. */
+        const armShared = () => {
+            if (songs.length === 0) return;
+            const titles = {};
+            for (const s of songs) { if (s && s.id) titles[s.id] = s.title || ''; }
+            this.setPlaylistContext({
+                songIds:  songs.map(s => s.id).filter(Boolean),
+                titles,
+                name:     shared.name,
+                source:   'shared',
+                sourceId: String(shared.setlistId || ''),
+            });
+        };
+        container.querySelector('#shared-activate-btn')?.addEventListener('click', () => {
+            armShared();
+            this.app.showToast(`Set list "${shared.name}" activated.`, 'success', 3000);
+        });
+        /* Arm on tap, matching the own-list behaviour from #1533.
+           Delegated onto the SONGS LIST rather than onto `container`: this
+           method re-renders itself after every edit, and `container` survives
+           that (only its innerHTML is replaced), so a listener bound there
+           would stack up one copy per edit. `#shared-setlist-songs` is
+           re-created each render, taking its listener with it. */
+        container.querySelector('#shared-setlist-songs')?.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('.shared-detail-song a[data-navigate="song"]')
+                : null;
+            if (link) armShared();
+        });
+
+        if (!canEdit) return;
+
+        /* ---- Edit controls. Every one of these ends in a server round-trip
+           through setlist_collab_update, which re-checks the permission. The
+           local `songs` array is only ever the OPTIMISTIC view. ---- */
+        const push = () => {
+            const status = document.getElementById('shared-save-status');
+            if (status) status.innerHTML = '<span class="text-muted">Saving…</span>';
+            return apiFetch('/api?action=setlist_collab_update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    ownerId:   shared.ownerId,
+                    setlistId: shared.setlistId,
+                    songs,
+                }),
+            })
+                .then(r => r.json().then(j => ({ ok: r.ok, data: j })))
+                .then(res => {
+                    if (!res.ok) {
+                        /* Re-render from the SERVER's copy so the UI never keeps
+                           showing a change the server refused (a view-only
+                           collaborator whose row was downgraded mid-session is
+                           the case that matters). */
+                        if (status) {
+                            status.innerHTML = `<span class="text-danger">${escapeHtml(res.data.error || 'Save failed.')}</span>`;
+                        }
+                        return false;
+                    }
+                    /* Keep the cached entry in step so Back → re-open shows the
+                       saved order without another fetch. Still memory-only. */
+                    shared.songs = Array.isArray(res.data.songs) ? res.data.songs : songs;
+                    if (status) status.innerHTML = '<span class="text-success">Saved.</span>';
+                    return true;
+                })
+                .catch(() => {
+                    if (status) status.innerHTML = '<span class="text-danger">Save failed — check your connection.</span>';
+                    return false;
+                });
+        };
+
+        const move = (from, to) => {
+            if (to < 0 || to >= songs.length) return;
+            const [moved] = songs.splice(from, 1);
+            songs.splice(to, 0, moved);
+            shared.songs = songs;
+            this.renderSharedSetListDetail(shared);
+            push();
+        };
+
+        container.querySelectorAll('.btn-shared-up').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                move(i, i - 1);
+            });
+        });
+        container.querySelectorAll('.btn-shared-down').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                move(i, i + 1);
+            });
+        });
+        container.querySelectorAll('.btn-shared-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                if (Number.isNaN(i)) return;
+                songs.splice(i, 1);
+                shared.songs = songs;
+                this.renderSharedSetListDetail(shared);
+                push();
+            });
+        });
     }
 
     /**
@@ -462,11 +1057,15 @@ export class SetList {
                 </button>
             </div>
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h2 class="h5 mb-0">${escapeHtml(list.name)}</h2>
+                <h2 class="h5 mb-0">${escapeHtml(list.name)}${this.expiryBadge(list)}</h2>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn btn-outline-secondary" id="setlist-rename-btn"
                             aria-label="Rename set list" title="Rename">
                         <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-expiry-btn"
+                            aria-label="Set or clear this set list's expiry date" title="Expiry">
+                        <i class="fa-solid fa-hourglass-half" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-share-btn"
                             aria-label="Share set list" title="Share">
@@ -484,6 +1083,10 @@ export class SetList {
                             aria-label="Print set list" title="Print">
                         <i class="fa-solid fa-print" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-template-btn"
+                            aria-label="Save this set list as a reusable template" title="Save as template">
+                        <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-primary" id="setlist-activate-btn"
                             aria-label="Activate set list for navigation" title="Use this set list">
                         <i class="fa-solid fa-play me-1" aria-hidden="true"></i> Use
@@ -498,6 +1101,20 @@ export class SetList {
            call also silently gates on authUser. */
         this._renderSetlistSchedule(listId);
         this._renderSetlistCollaborators(container, listId);
+
+        /* Service plan (#301 / #1671 F4). Dynamically imported rather than a
+           static import at the top of this file, for the same reason router.js
+           imports its page modules that way: this screen is one of many, and a
+           set list with no plan (the overwhelming majority) should not pay for
+           the module at all. */
+        this._renderServicePlan(container, listId);
+
+        /* Save as template (#301 / #1671 F4). */
+        container.querySelector('#setlist-template-btn')?.addEventListener('click', () => {
+            import('./setlist-templates.js')
+                .then(m => m.saveSetlistAsTemplate(this.getById(listId)))
+                .catch(err => console.error('[SetList] setlist-templates import failed:', err));
+        });
 
         /* Back button */
         container.querySelector('#setlist-back-btn')?.addEventListener('click', () => {
@@ -519,6 +1136,11 @@ export class SetList {
                 this.rename(listId, name.trim());
                 this.renderSetListDetail(listId);
             }
+        });
+
+        /* Optional expiry (#1661) */
+        container.querySelector('#setlist-expiry-btn')?.addEventListener('click', () => {
+            this.showExpiryDialog(listId);
         });
 
         /* Export as text */
@@ -596,6 +1218,82 @@ export class SetList {
 
         /* Drag-to-reorder */
         this.initDragReorder(listId);
+    }
+
+    /**
+     * Render + wire the service plan card for one set list (#301 / #1671 F4).
+     *
+     * ELI5: shows the running order this set list was built from, and lets you
+     * pick which of its songs goes in each labelled space.
+     *
+     * A no-op when the set list has no plan, which is every set list until the
+     * user applies a template — so this costs nothing on the common path.
+     *
+     * THE WRITE GOES THROUGH saveAll(), WHICH SYNCS. That is the whole point of
+     * the #1671 F4 server work: before `tblUserSetlists.SlotsJson` existed the
+     * plan would have been dropped on the next round trip, silently, for
+     * signed-in users only. Nothing here needs to know that — it just saves the
+     * set list — which is exactly why the fix belonged in the sync path rather
+     * than in a UI workaround.
+     *
+     * @param {Element} container
+     * @param {string}  listId
+     */
+    _renderServicePlan(container, listId) {
+        const list = this.getById(listId);
+        if (!list || !list.plan || !Array.isArray(list.plan.slots) || list.plan.slots.length === 0) {
+            return;
+        }
+        import('./setlist-templates.js').then((m) => {
+            /* The set list may have changed while the module loaded (a user can
+               delete it, or navigate away); re-read rather than closing over a
+               stale object. */
+            const current = this.getById(listId);
+            if (!current?.plan) { return; }
+
+            /* Slot-type labels come from the SERVER's registry so a picker is
+               never a hardcoded copy (rule #35). A failed load degrades to raw
+               type keys, which are still readable — never to a blank card. */
+            m.loadTemplateCatalogue().catch(() => ({ slotTypes: {} })).then((cat) => {
+                const host = document.createElement('div');
+                host.innerHTML = m.renderPlanHtml(current.plan, current.songs, cat?.slotTypes || {});
+                const card = host.firstElementChild;
+                if (!card) { return; }
+
+                /* Inserted after the header block rather than appended, so the
+                   plan reads above the song list it organises. */
+                const songs = container.querySelector('#setlist-songs') || container.lastElementChild;
+                songs?.parentNode?.insertBefore(card, songs);
+
+                card.addEventListener('change', (e) => {
+                    const sel = e.target instanceof HTMLSelectElement ? e.target : null;
+                    const slotId = sel?.getAttribute('data-plan-slot');
+                    if (!sel || !slotId) { return; }
+                    const lists = this.getAll();
+                    const target = lists.find(l => l.id === listId);
+                    if (!target) { return; }
+                    target.plan = m.assignSongToSlot(target.plan, slotId, sel.value);
+                    this.saveAll(lists);
+                    this.renderSetListDetail(listId);
+                });
+
+                card.querySelector('[data-plan-clear]')?.addEventListener('click', () => {
+                    if (!window.confirm('Remove the service plan from this set list? The songs stay.')) { return; }
+                    const lists = this.getAll();
+                    const target = lists.find(l => l.id === listId);
+                    if (!target) { return; }
+                    /* null, not delete: the sync path reads PRESENCE of the key
+                       as "here is the truth about plans", so an explicit null is
+                       what actually clears the stored plan. Deleting the key
+                       would mean "I know nothing about plans" and the server
+                       would keep the old one — the isset() clear-semantics trap,
+                       from the client side. */
+                    target.plan = null;
+                    this.saveAll(lists);
+                    this.renderSetListDetail(listId);
+                });
+            });
+        }).catch(err => console.error('[SetList] service plan render failed:', err));
     }
 
     /**
@@ -712,18 +1410,37 @@ export class SetList {
         let workingArr = [...arrangement];
         const components = songData.components;
 
-        /* Build pool chips (one per unique component) */
+        /* Build pool chips (one per unique component).
+         *
+         * ELI5: each chip is a real <button> now, not a <span> pretending
+         * to be one — so tapping Enter or Space on it "just works" the
+         * same way clicking it does.
+         *
+         * WHY: a <span role="button" tabindex="0"> is focusable (tabindex)
+         * and LABELLED as a button (role) but a <span> has no native
+         * activation behaviour — the browser only synthesises a click
+         * from Enter/Space for genuinely interactive elements (<button>,
+         * <a href>, etc). The old markup made every chip focusable and
+         * announced as "button" by a screen reader, then did nothing
+         * when the user pressed the one key they'd expect to work —
+         * completely silent, no console error, indistinguishable from a
+         * frozen page (#1644). A real <button> gets Enter/Space "for
+         * free" from the browser and needs no role/tabindex — both are
+         * intrinsic to the element, so they're dropped here rather than
+         * kept redundantly.
+         * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button
+         * https://www.w3.org/WAI/ARIA/apg/patterns/button/ ("prefer a
+         * native <button> over role=button whenever possible") */
         const poolChipsHtml = components.map((comp, idx) => {
             const tag = shortTag(comp);
             const label = fullLabel(comp);
             const color = typeColor(comp.type);
             const textColor = typeTextColor(comp.type);
-            return `<span class="badge rounded-pill arrangement-pool-chip"
+            return `<button type="button" class="badge rounded-pill arrangement-pool-chip border-0"
                           data-comp-idx="${idx}"
                           title="${escapeHtml(label)} — click to add"
                           style="background-color:${color};color:${textColor};cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                          role="button" tabindex="0"
-                          aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</span>`;
+                          aria-label="Add ${escapeHtml(tag)}, ${escapeHtml(label)}, to arrangement">${escapeHtml(tag)}</button>`;
         }).join(' ');
 
         const modal = document.createElement('div');
@@ -753,18 +1470,20 @@ export class SetList {
                             <div class="d-flex flex-wrap gap-1" id="arr-pool">${poolChipsHtml}</div>
                         </div>
 
-                        <!-- Arrangement strip (draggable) -->
+                        <!-- Arrangement strip: move-left/move-right/remove buttons on every
+                             chip, drag-and-drop kept as a bonus for pointer input (#1644) -->
                         <div class="mb-2">
                             <label class="form-label fw-semibold small text-uppercase mb-1">
                                 <i class="fa-solid fa-arrows-left-right me-1" aria-hidden="true"></i>
-                                Arrangement — drag to reorder, click × to remove
+                                Arrangement
                             </label>
-                            <div class="d-flex flex-wrap gap-1 p-2 rounded border arrangement-strip"
+                            <div class="d-flex flex-wrap gap-2 p-2 rounded border arrangement-strip"
                                  id="arr-strip"
                                  style="min-height:40px;background:var(--bs-body-bg)"
-                                 aria-label="Current arrangement order">
+                                 aria-label="Current arrangement order. Use each item's move and remove buttons, arrow keys, or drag to reorder.">
                                 <!-- Populated by JS -->
                             </div>
+                            <small class="text-muted d-block mt-1">Use the ◀ ▶ buttons (or drag) to reorder; × removes a component.</small>
                         </div>
 
                         <!-- Quick actions -->
@@ -823,10 +1542,32 @@ export class SetList {
             if (!strip) return;
 
             if (workingArr.length === 0) {
-                strip.innerHTML = '<span class="text-muted small fst-italic">Drag components here or click from the pool above</span>';
+                strip.innerHTML = '<span class="text-muted small fst-italic">Add components from the pool above</span>';
                 return;
             }
 
+            /* Each arrangement entry renders as a wrapper holding FOUR
+             * sibling controls — the chip itself, move-left, move-right,
+             * remove — never one nested inside another.
+             *
+             * ELI5: picture each entry as a little row of four separate
+             * buttons glued together, not one big button hiding three
+             * smaller ones inside it.
+             *
+             * WHY siblings, not nesting: the previous markup put the "×"
+             * remove control INSIDE the chip's own <span role="button">,
+             * i.e. an interactive control nested inside another
+             * interactive control — banned by WCAG 4.1.2 (Name, Role,
+             * Value) because assistive tech has no reliable way to expose
+             * or activate the inner control independently of the outer
+             * one (#1644). Four flat siblings sidesteps that outright,
+             * and each one gets its own unambiguous accessible name.
+             * https://www.w3.org/WAI/WCAG21/Understanding/name-role-value.html
+             *
+             * Move-left/move-right are real <button>s (not drag) so
+             * touch users — who cannot fire HTML5 drag-and-drop from a
+             * touchscreen at all — can still reorder; drag stays wired
+             * below as a pointer-only bonus, never the only path. */
             strip.innerHTML = workingArr.map((idx, pos) => {
                 const comp = components[idx];
                 if (!comp) return '';
@@ -834,26 +1575,110 @@ export class SetList {
                 const label = fullLabel(comp);
                 const color = typeColor(comp.type);
                 const textColor = typeTextColor(comp.type);
-                return `<span class="badge rounded-pill arrangement-strip-chip d-inline-flex align-items-center gap-1"
-                              data-pos="${pos}" data-comp-idx="${idx}"
-                              draggable="true"
-                              title="${escapeHtml(label)} — position ${pos + 1}. Drag to reorder, click × to remove"
-                              style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                              role="button" tabindex="0"
-                              aria-label="${escapeHtml(label)}, position ${pos + 1}">${escapeHtml(tag)}<span class="arrangement-chip-remove" data-pos="${pos}" style="cursor:pointer;margin-left:2px;opacity:0.8" aria-label="Remove">×</span></span>`;
+                const isFirst = pos === 0;
+                const isLast = pos === workingArr.length - 1;
+                /* The accessible name LEADS with the visible tag ("V1"), then the
+                   spoken-out label ("Verse 1"), then the position.
+                   ELI5: what you see written on the chip has to be part of what a
+                   screen reader calls it, or someone who talks to their computer
+                   can't ask for it by name.
+                   Detail: WCAG 2.5.3 Label in Name (Level A) requires the
+                   accessible name to CONTAIN the visible text. shortTag() renders
+                   "V1" while fullLabel() renders "Verse 1", so an aria-label of
+                   "Verse 1, position 2 of 5" does not contain "V1" — a speech-input
+                   user saying "click V1" would match nothing. Leading with the tag
+                   satisfies 2.5.3 and still gives assistive tech the unabbreviated
+                   label. The icon-only move/remove buttons alongside have no visible
+                   text, so 2.5.3 does not apply to them.
+                   https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html */
+                return `<div class="d-inline-flex align-items-center gap-1 arrangement-strip-item" data-pos="${pos}">
+                            <button type="button" class="badge rounded-pill arrangement-strip-chip border-0"
+                                    data-pos="${pos}" data-comp-idx="${idx}"
+                                    draggable="true"
+                                    title="${escapeHtml(label)} — position ${pos + 1} of ${workingArr.length}"
+                                    style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                                    aria-label="${escapeHtml(tag)}, ${escapeHtml(label)}, position ${pos + 1} of ${workingArr.length}">${escapeHtml(tag)}</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 arrangement-chip-move-left"
+                                    data-pos="${pos}" ${isFirst ? 'disabled' : ''}
+                                    aria-label="Move ${escapeHtml(label)} earlier">
+                                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 arrangement-chip-move-right"
+                                    data-pos="${pos}" ${isLast ? 'disabled' : ''}
+                                    aria-label="Move ${escapeHtml(label)} later">
+                                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1 arrangement-chip-remove"
+                                    data-pos="${pos}"
+                                    aria-label="Remove ${escapeHtml(label)}">×</button>
+                        </div>`;
             }).join('');
 
-            /* Bind drag-and-drop on strip chips */
+            /* Drag-and-drop is re-bound on every render as a POINTER
+             * ENHANCEMENT ONLY — it never fires from touch input on
+             * mobile browsers (the other half of #1644), which is why
+             * the move buttons above exist and are wired independently
+             * of this. Never remove this call — see _initStripDragDrop(). */
             this._initStripDragDrop(strip, workingArr, components, renderStrip, renderPreview);
+
+            /* Move-left / move-right buttons. Bound fresh every render
+             * because renderStrip() just replaced every node above —
+             * exactly like the pre-existing remove-button binding below,
+             * which already had to do the same thing. */
+            strip.querySelectorAll('.arrangement-chip-move-left').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    moveStripEntry(parseInt(btn.dataset.pos, 10), -1);
+                });
+            });
+            strip.querySelectorAll('.arrangement-chip-move-right').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    moveStripEntry(parseInt(btn.dataset.pos, 10), 1);
+                });
+            });
+
+            /* ArrowLeft/ArrowRight on a focused chip is an ADDITIVE
+             * convenience for keyboard users — it does nothing for touch,
+             * which is why it is NOT what satisfies WCAG 2.5.7 (Dragging
+             * Movements); the move buttons above are the actual
+             * pointer-free path. preventDefault() stops the arrow key
+             * from also scrolling the modal body while the chip has
+             * focus.
+             * https://www.w3.org/WAI/WCAG21/Understanding/dragging-movements.html */
+            strip.querySelectorAll('.arrangement-strip-chip').forEach(chip => {
+                chip.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        e.preventDefault();
+                        moveStripEntry(parseInt(chip.dataset.pos, 10), -1);
+                    } else if (e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        moveStripEntry(parseInt(chip.dataset.pos, 10), 1);
+                    }
+                });
+            });
 
             /* Bind remove buttons */
             strip.querySelectorAll('.arrangement-chip-remove').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const pos = parseInt(btn.dataset.pos, 10);
+                    const comp = components[workingArr[pos]];
+                    const label = comp ? fullLabel(comp) : 'Component';
                     workingArr.splice(pos, 1);
                     renderStrip();
                     renderPreview();
+                    this._announce(`${label} removed`);
+                    /* Same focus-restore problem as moveStripEntry() below:
+                       renderStrip() just destroyed the button that was
+                       clicked/activated, so without this a keyboard user
+                       is dropped to document.body after every removal
+                       too (#1644). Land on whichever remove button now
+                       occupies the vacated slot, or the previous one. */
+                    const nextPos = Math.min(pos, workingArr.length - 1);
+                    if (nextPos >= 0) {
+                        modal.querySelector(`.arrangement-chip-remove[data-pos="${nextPos}"]`)?.focus();
+                    }
                 });
             });
         };
@@ -880,6 +1705,44 @@ export class SetList {
             }).join('');
         };
 
+        /**
+         * Swap a strip entry with its earlier/later neighbour, re-render,
+         * then put keyboard focus back on the SAME chip at its NEW
+         * position and tell screen-reader users what happened.
+         *
+         * ELI5: slides two puzzle pieces past each other, then makes sure
+         * your finger (focus) stays on the piece you were holding instead
+         * of jumping back to the start of the puzzle.
+         *
+         * WHY the re-focus matters (the single most important detail of
+         * #1644): renderStrip() rebuilds #arr-strip's entire innerHTML on
+         * every change — simplest way to keep the strip, the disabled
+         * state of each end button, and every position label in sync —
+         * but that DESTROYS every button node inside it, including
+         * whichever one currently has keyboard focus. Left alone, the
+         * browser drops focus to <body>, so the NEXT Tab/Enter from a
+         * keyboard-only user starts back at the top of the modal instead
+         * of continuing to reorder — silently reintroducing the exact
+         * "technically focusable, nothing usable" failure this issue was
+         * filed to fix, just one step later. Re-querying the chip at its
+         * NEW data-pos and calling .focus() on it is the fix.
+         * https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html
+         *
+         * @param {number} pos    Current position (0-based) of the chip to move
+         * @param {number} delta  -1 = earlier/left, +1 = later/right
+         */
+        const moveStripEntry = (pos, delta) => {
+            const newPos = pos + delta;
+            if (newPos < 0 || newPos >= workingArr.length) return;
+            const comp = components[workingArr[pos]];
+            const label = comp ? fullLabel(comp) : 'Component';
+            [workingArr[pos], workingArr[newPos]] = [workingArr[newPos], workingArr[pos]];
+            renderStrip();
+            renderPreview();
+            modal.querySelector(`.arrangement-strip-chip[data-pos="${newPos}"]`)?.focus();
+            this._announce(`${label} moved to position ${newPos + 1} of ${workingArr.length}`);
+        };
+
         /* Initial render */
         renderStrip();
         renderPreview();
@@ -891,6 +1754,8 @@ export class SetList {
                 workingArr.push(idx);
                 renderStrip();
                 renderPreview();
+                const comp = components[idx];
+                this._announce(`${comp ? fullLabel(comp) : 'Component'} added, position ${workingArr.length}`);
             });
         });
 
@@ -961,6 +1826,19 @@ export class SetList {
     /**
      * Initialise drag-and-drop reordering on arrangement strip chips.
      * Uses the HTML5 Drag and Drop API for natural drag behaviour.
+     *
+     * ELI5: lets a mouse user grab a chip and drop it somewhere else in
+     * the row — a nice-to-have shortcut, not the only way to reorder.
+     *
+     * WHY this is an ENHANCEMENT, never the only path (#1644): the HTML5
+     * Drag and Drop API this function uses is driven by mouse events
+     * under the hood and simply does not fire from touch input on mobile
+     * browsers — a worship leader arranging a song on their phone (the
+     * exact scenario this feature exists for) could not reorder anything
+     * through this code path alone. The move-left/move-right buttons
+     * wired in renderStrip() are what make reordering possible for touch
+     * AND keyboard users; this function stays as the bonus for a mouse.
+     * https://developer.mozilla.org/en-US/docs/Web/API/HTML_Drag_and_Drop_API#drag_and_drop_events
      *
      * @param {HTMLElement} strip       The strip container
      * @param {number[]}    workingArr  Mutable arrangement array
@@ -1414,17 +2292,12 @@ export class SetList {
      * @private
      */
     _announce(message) {
-        let region = document.getElementById('playlist-live-region');
-        if (!region) {
-            region = document.createElement('div');
-            region.id = 'playlist-live-region';
-            region.className = 'visually-hidden';
-            region.setAttribute('aria-live', 'polite');
-            region.setAttribute('aria-atomic', 'true');
-            document.body.appendChild(region);
-        }
-        region.textContent = '';
-        requestAnimationFrame(() => { region.textContent = message; });
+        /* Delegates to the shared announcer (#1645). This method WAS the
+           implementation — it was extracted to js/utils/announce.js once the
+           router needed the same thing, per the modularity rule. Kept as a
+           one-line delegate rather than rewriting ~15 call sites: a smaller
+           diff, and the private name still reads correctly at each of them. */
+        announce(message);
     }
 
     /**
@@ -1639,7 +2512,21 @@ export class SetList {
            freshly-created or freshly-edited setlist could otherwise be shared as a
            snapshot. Best-effort: a sync failure just falls back to snapshot-only. */
         if (this.app?.userAuth?.isLoggedIn?.()) {
-            try { await this.app.userAuth.syncSetlists(this.getAll(), 'replace'); } catch (_e) {}
+            /* #1649 — this path used to send a HARDCODED 'replace', bypassing
+               the _syncReady gate that every other caller respects. Sharing a
+               setlist before the first-login reconcile had hydrated the cache
+               therefore pushed a possibly-empty local list as authoritative
+               truth and wiped the account's server-side setlists. Gate it: only
+               claim authority once a reconcile has actually run; otherwise
+               MERGE, which still creates the row the share link needs but can
+               never delete anything. */
+            try {
+                const res = await this.app.userAuth.syncSetlists(
+                    this.getAll(),
+                    this._syncReady ? 'replace' : 'merge'
+                );
+                this.app.userAuth._absorbSetlistSync(res);
+            } catch (_e) {}
         }
 
         const shareUrl = await this.generateShareLink(listId);
@@ -2350,6 +3237,127 @@ export class SetList {
         } catch {
             return '';
         }
+    }
+
+    /* =====================================================================
+     * OPTIONAL EXPIRY (#1661)
+     *
+     * A set list normally lives until the user deletes it. An expiry is an
+     * OPT-IN convenience for the throwaway ones ("Christmas Eve 2026"), and
+     * the SERVER owns the actual conversion — everything here is display and
+     * intent-capture only. Two devices with different clocks must never
+     * disagree about whether a set list still exists mid-service, which is
+     * exactly what per-device expiry would produce.
+     * ===================================================================== */
+
+    /**
+     * Parse a stored expiry into a Date, or null.
+     *
+     * The stored form is the wire form, 'YYYY-MM-DD HH:MM:SS' in UTC. It is
+     * parsed by replacing the space with 'T' and appending 'Z' rather than
+     * handed to `new Date()` raw: the space-separated form is NOT part of the
+     * ECMAScript Date Time String Format, so browsers parse it by
+     * implementation-specific fallback — historically as LOCAL time in some
+     * and as invalid in others. Being explicit is the difference between an
+     * expiry that reads correctly everywhere and one that is silently off by
+     * the viewer's UTC offset.
+     *
+     * @param {?string} expiresAt
+     * @returns {?Date}
+     */
+    _parseExpiry(expiresAt) {
+        if (typeof expiresAt !== 'string' || !expiresAt) return null;
+        const d = new Date(expiresAt.replace(' ', 'T') + 'Z');
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    /**
+     * A small "Expires …" chip for a set list, or '' when it never expires.
+     *
+     * Returns MARKUP, so every value it interpolates is escaped — the date is
+     * machine-generated, but escaping unconditionally is cheaper than
+     * re-deriving that fact at each call site.
+     *
+     * @param {object} list
+     * @returns {string} HTML, or '' when there is no expiry.
+     */
+    expiryBadge(list) {
+        const when = this._parseExpiry(list?.expiresAt);
+        if (!when) return '';
+        const label = when.toLocaleString(undefined, {
+            day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+        /* Past-dated means the server simply has not been asked yet (expiry is
+           converted lazily, on the next sync) — say "Expired" rather than
+           pretending it is still scheduled. */
+        const past = when.getTime() <= Date.now();
+        return ` <span class="badge ${past ? 'bg-danger-subtle text-danger-emphasis' : 'bg-warning-subtle text-warning-emphasis'} ms-1"
+                       title="${escapeHtml(past ? 'Expired' : 'Expires')} ${escapeHtml(label)}">
+                    <i class="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>${escapeHtml(past ? 'Expired' : label)}
+                 </span>`;
+    }
+
+    /**
+     * Prompt for an expiry date and store it (or clear it).
+     *
+     * Uses a plain date prompt rather than a bespoke modal: expiry is a
+     * coarse, rarely-used convenience, and 'YYYY-MM-DD' is unambiguous. The
+     * time is pinned to the END of the chosen day in the user's own time zone
+     * — "expires on the 25th" plainly means "still works all of the 25th",
+     * and `Date.UTC` on a locally-constructed date would instead cut it short
+     * by the viewer's offset. The conversion to UTC happens here, once, so
+     * the wire value is always an absolute instant.
+     *
+     * @param {string} listId
+     */
+    async showExpiryDialog(listId) {
+        const list = this.getById(listId);
+        if (!list) return;
+
+        const current = this._parseExpiry(list.expiresAt);
+        /* Pre-fill with the local calendar date of any existing expiry. */
+        const prefill = current
+            ? `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`
+            : '';
+
+        const answer = await this.app.showPrompt(
+            'Expire this set list on (YYYY-MM-DD) — leave blank to never expire:',
+            prefill,
+            { title: 'Set List Expiry', okText: 'Save' }
+        );
+        /* A cancelled prompt returns null and must change nothing; an empty
+           STRING is a deliberate "clear the expiry" and must. */
+        if (answer === null || answer === undefined) return;
+
+        const trimmed = String(answer).trim();
+        if (trimmed === '') {
+            this.setExpiry(listId, null);
+            this.app.showToast('Expiry removed — this set list will not expire.', 'success', 3000);
+            this.renderSetListDetail(listId);
+            return;
+        }
+
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+        if (!m) {
+            this.app.showToast('Please use the format YYYY-MM-DD.', 'warning', 3000);
+            return;
+        }
+        /* End of that local day. Constructing with the numeric constructor
+           (not Date.parse of the string) is what keeps it local — the
+           'YYYY-MM-DD' string form is defined to parse as UTC. */
+        const localEnd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59);
+        if (Number.isNaN(localEnd.getTime())) {
+            this.app.showToast('That date is not valid.', 'warning', 3000);
+            return;
+        }
+        const utc = localEnd.toISOString().slice(0, 19).replace('T', ' ');
+        this.setExpiry(listId, utc);
+        this.app.showToast(
+            `This set list will expire after ${localEnd.toLocaleDateString()}.`,
+            'success',
+            3000
+        );
+        this.renderSetListDetail(listId);
     }
 
     /* =====================================================================

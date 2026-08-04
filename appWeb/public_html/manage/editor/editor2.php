@@ -32,12 +32,113 @@ if (!$u || !hasRole((string)($u['role'] ?? ''), 'editor')) {
 /* CSRF token api2.php validates (X-CSRF-Token header), emitted as a <meta> for
    the v2 api-client. */
 $csrf   = csrfToken();
-$songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));   // optional deep-link
+
+/* `?song=` — and `?open=` as an alias (#1680).
+   v1 keeps that alias deliberately (editor.js:6234): /manage/revisions linked
+   with `?open=` for its whole life while the editor read only `?song=`, so
+   "Open in editor" silently did nothing (#1623). The alias exists so a
+   bookmarked or pasted link from that era still works instead of failing the
+   same invisible way — which means v2 needs it too, or the flip re-breaks
+   exactly the links the alias was created to rescue. */
+$songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? $_GET['open'] ?? ''));
+
+/**
+ * Missing-Numbers prefill: `?songbook=<ABBR>` + `?number=N` or `#number=N` (#1680).
+ *
+ * ELI5: a link can say "start a new song, in this book, at this number".
+ *
+ * `manage/missing-numbers.php:236` emits exactly this shape, using the FRAGMENT
+ * form. v1 honours both forms (editor.js:6257-6262). Without it here, flipping
+ * `/manage/editor/` to v2 would make that page's "Open in editor" button load
+ * the editor and do nothing at all — no prefill, no draft, no error. That is
+ * #1623's failure re-created on a different button, which is precisely the
+ * class this cutover keeps producing.
+ *
+ * The fragment is NOT sent to the server by the browser, so the number can only
+ * be read client-side; the songbook is read here so an invalid one never
+ * reaches the JS. Abbreviation charset is the SongId-prefix charset (rule #27):
+ * alphanumeric, <= 10.
+ */
+$prefillBook = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['songbook'] ?? '')));
+if (strlen($prefillBook) > 10) { $prefillBook = ''; }
+$prefillNum  = (string)($_GET['number'] ?? '');
+$prefillNum  = ctype_digit($prefillNum) ? $prefillNum : '';
+
+/**
+ * `?tab=` deep-link (#1628 item 1).
+ *
+ * ELI5: a link can say which tab to open, not just which song.
+ *
+ * WHY THIS IS NOT OPTIONAL FOR THE #1601 FLIP
+ * -------------------------------------------
+ * `manage/revisions.php` links "Open in editor" as
+ * `/manage/editor/?song=<id>&tab=history`. v1 honours `tab` (editor.js:6250);
+ * this shell read only `song` and ignored `tab` entirely.
+ *
+ * That link was JUST fixed in #1623 — it previously said `?open=`, which the
+ * editor has no handler for, so it was silently ignored: the editor loaded fine
+ * and simply never selected anything. Flipping the default to v2 without `tab`
+ * support would reintroduce the identical failure, in the identical invisible
+ * way, on the identical button. Hence it ships with the parity work rather than
+ * as a follow-up.
+ *
+ * The map is an exact allow-list, not a sanitised passthrough: the value is
+ * interpolated into a CSS selector below, and an allow-list means the selector
+ * can only ever be one of eight literals this file wrote itself.
+ *
+ * `history` is v1's name for what v2 calls the Revisions tab — accepted as an
+ * alias so existing links keep working, alongside every real pane name so
+ * `?tab=metadata` and friends work too.
+ */
+$_ED2_TABS = [
+    'structure' => 'structure',
+    'metadata'  => 'metadata',
+    'credits'   => 'credits',
+    'links'     => 'links',
+    'tags'      => 'tags',
+    'media'     => 'media',
+    'preview'   => 'preview',
+    'revisions' => 'revisions',
+    'history'   => 'revisions',   // v1 alias — revisions.php + any bookmarked link
+];
+$tabParam   = strtolower(trim((string)($_GET['tab'] ?? '')));
+$initialTab = $_ED2_TABS[$tabParam] ?? '';
 
 /* External-link type registry for the Links tab, shipped via window._iHymnsLinkTypes. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
+
+/**
+ * #1741 P5b — the recording/release/product external-ID vocabulary for the
+ * Metadata tab's external-ids-panel.js, shipped the SAME way the Links tab's
+ * window._iHymnsLinkTypes is (rule #35's "server-derive the vocab, no second
+ * list" applied here): the panel builds its add-row dropdown from THIS
+ * object, never from a hand-typed provider list of its own.
+ *
+ * ELI5: this is the list of "Spotify / ISRC / MusicBrainz / …" choices the
+ * "Add external id" dropdown offers — generated from the SAME registry
+ * api2.php's song_external_id_add validates against, so the dropdown can
+ * never offer a provider the server would then 422 on.
+ *
+ * ONLY `label` + `scope` are shipped — deliberately NOT the PCRE `validate`
+ * patterns (media_identifiers.php's RECORDING_EXTERNAL_ID_TYPES also carries
+ * those). PHP's PCRE and JavaScript's RegExp use different delimiter/flag
+ * conventions; a half-translated pattern shipped to the client would be a
+ * SECOND, silently-divergent validator. The server's 422 on
+ * mediaIdentifierValidateValue() stays the ONE shape check — the client only
+ * needs to know WHAT to offer and WHAT to call it, never whether a value is
+ * valid before asking the server.
+ *
+ * @link .claude/catalogue-1741-P5-plan.md §2.3
+ * @link appWeb/public_html/includes/media_identifiers.php mediaIdentifierRecordingTypes() / RECORDING_EXTERNAL_ID_TYPES
+ * @link appWeb/public_html/manage/editor/v2/external-ids-panel.js the sole consumer
+ */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+$recordingIdTypesForJs = array_map(
+    static fn(array $t): array => ['label' => $t['label'], 'scope' => $t['scope']],
+    mediaIdentifierRecordingTypes()
+);
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -45,10 +146,27 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
     <title>Song Editor v2</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php
+    /* #1676 — Bootstrap CSS from the shared emitter, NOT hardcoded here.
+       ELI5: this page used to type the Bootstrap address itself, and had quietly
+       lost the "check this file hasn't been tampered with" attribute.
+       Detail: these two <link>s were pinned to 5.3.3 with NO `integrity`, while
+       APP_CONFIG says 5.3.6 and every page using head-libs.php loads that with
+       SRI. Third-party CSS inside an authenticated admin session with no
+       integrity check is the #1587 hazard — and #1601 promotes THIS page to the
+       default song editor, so it would have become the most-used admin page in
+       the app while being the least protected. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    $_pubRoot = dirname(__DIR__, 2);
+    ?>
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_pubRoot . '/css/app.css') ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_pubRoot . '/css/admin.css') ?>">
+    <!-- Accessibility modes (#1643). This shell includes admin-theme-init.php
+         below, so it DOES stamp data-ihymns-contrast / data-ihymns-cvd on <html>
+         — without this link it stamps an intent it then ships no CSS to honour.
+         Must stay after admin.css so the high-contrast !important rules win. -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_pubRoot . '/css/accessibility.css') ?>">
     <?php
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }
@@ -71,7 +189,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                         <ul class="dropdown-menu dropdown-menu-end" id="v2-export-menu"></ul>
                     </div>
                     <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
-                    <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary">Legacy</a>
+                    <?php /* #1601 — MUST carry ?legacy=1: /manage/editor/ now redirects
+                             here, so a bare link would bounce straight back and read as
+                             a broken button. */ ?>
+                    <a href="/manage/editor/?legacy=1" class="btn btn-sm btn-outline-secondary">Legacy</a>
                 </div>
             </div>
             <div id="v2-status" class="alert alert-secondary py-2 small" role="status">Loading…</div>
@@ -81,6 +202,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 <span id="v2-bulk-count" class="small fw-semibold"></span>
                 <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
                 <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
+                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag-fill me-1"></i>Remove tag…</button>
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
@@ -95,10 +217,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
             </ul>
             <div class="tab-content">
-                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div></div>
+                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-4"></div></div>
                 <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
                 <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
-                <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div></div>
+                <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div><div id="v2-counterparts" class="mt-4"></div></div>
                 <div class="tab-pane fade" id="pane-tags"><div id="v2-tags"></div></div>
                 <div class="tab-pane fade" id="pane-media"><div id="v2-media"></div></div>
                 <div class="tab-pane fade" id="pane-preview"><div id="v2-preview"></div></div>
@@ -135,16 +257,24 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <?php /* #1676 — Bootstrap JS from the shared emitter (pinned + SRI), was hardcoded 5.3.3 with no integrity. */ ?>
+    <?= ihymns_bootstrap_js_script() ?>
 
     <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses. -->
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
 
+    <!-- #1741 P5b — recording/release/product external-ID vocabulary (slug -> {label,scope}
+         only, no validate patterns — see the PHP-side doc-block above) for the Metadata
+         tab's external-ids-panel.js "Add external id" dropdown. Same emit shape + flags as
+         window._iHymnsLinkTypes just above, on purpose (one convention for "a registry map
+         shipped to a classic global"). -->
+    <script>window._iHymnsRecordingIdTypes = <?= json_encode($recordingIdTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
-         (editor/index.php, organisations.php, songbooks.php, credit-people.php, venues.php,
+         (editor/index.php, organisations.php, songbooks.php, musicians.php, venues.php,
          works.php all do). This one script tag was the odd one out with no `?v=` at all —
          a real staleness vector: an admin with this file already cached would silently keep
          running a stale place-search.js across deploys instead of picking up the fix. -->
@@ -174,9 +304,11 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { editorApi }         from './v2/api-client.js';
         import { mountSidebar }      from './v2/sidebar.js';
         import { mountStructureTab } from './v2/structure-tab.js';
+        import { mountArrangementEditor } from './v2/arrangement-editor.js';
         import { mountMetadataTab }  from './v2/metadata-tab.js';
         import { mountCreditsTab }   from './v2/credits-tab.js';
         import { mountLinksTab }     from './v2/links-tab.js';
+        import { mountCounterpartsPanel } from './v2/counterparts-panel.js';
         import { mountTagsTab }      from './v2/tags-tab.js';
         import { mountMediaTab }     from './v2/media-tab.js';
         import { mountPreviewTab }   from './v2/preview-tab.js';
@@ -187,6 +319,22 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         const byId = (id) => document.getElementById(id);
         const initialSongId = <?= json_encode($songId) ?>;
 
+        /* ?tab= deep-link (#1628 item 1). Consumed ONCE, after the first song
+           finishes loading — the tab panes exist from page load, but their
+           contents are mounted by mountTabs(), so activating earlier would show
+           an empty Revisions pane and look like the feature is broken. */
+        let pendingInitialTab = <?= json_encode($initialTab) ?>;
+        function consumeInitialTab() {
+            const want = pendingInitialTab;
+            pendingInitialTab = '';                       // once only — a later song switch must not re-jump
+            if (!want) { return; }
+            /* `want` is one of eight literals from the PHP allow-list above, so
+               this selector cannot be attacker-shaped. */
+            const btn = document.querySelector('[data-bs-target="#pane-' + want + '"]');
+            if (!btn || !window.bootstrap || !window.bootstrap.Tab) { return; }
+            window.bootstrap.Tab.getOrCreateInstance(btn).show();
+        }
+
         const statusEl = byId('v2-status');
         function status(msg, kind) {
             statusEl.textContent = msg;
@@ -195,8 +343,14 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         }
         const toast = (msg, type) => status(msg, type);
 
-        /* One store for the whole shell; slices are replaced on each song switch. */
-        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [] });
+        /* One store for the whole shell; slices are replaced on each song switch.
+           lineTranslations / lineAnnotations (#1627 item 3) hold api2.php
+           load_song's per-line enrichment rows (#1235 P3 / #1088) — a separate
+           concern from `components` (the lyric content itself), same as `media`
+           is separate from the song scalars. structure-tab.js's per-component
+           enrichment panel (enrichment-panel.js) reads + writes these two
+           slices directly. */
+        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [] });
         let teardowns = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
@@ -205,13 +359,62 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             teardowns.forEach((fn) => { try { if (typeof fn === 'function') { fn(); } } catch (_e) {} });
             teardowns = [];
         }
+        /* #1679 — a songbook change re-keys the SongId server-side, so the id the
+           tabs, the ?song= URL and the sidebar hold is dead the instant the move
+           lands. Re-open under the new id: sidebar.refresh() re-pulls the index so
+           the row shows the new id, loadSong() tears the tabs down, re-hydrates the
+           store and history-replaces the URL. Passed to every tab as a callback
+           (metadata-tab.js is the only caller today) rather than dispatched as a
+           DOM event — no event-name literal to keep in sync (rule #35 / #1581). */
+        function onSongIdChange(previousId, newId) {
+            if (!newId || newId === previousId) { return; }
+            status('Moved songbook — this song is now ' + newId + '.', 'success');
+            try { sidebar.refresh(); } catch (_e) {}
+            loadSong(newId);
+        }
+
         function mountTabs(songId) {
-            const ctx = { store, api: editorApi, songId, toast };
+            /* #1679 H1 — getSongbooks is the sidebar's songbook list (the one the
+               New-song modal already uses), handed to the metadata tab so its
+               songbook control is a closed <select> rather than a free-text box
+               whose every keystroke pause re-keyed the song. Since #1679 A2 that
+               list is the REAL catalogue from load_index, so a book with no songs
+               yet is still a legal move target.
+
+               whenSongbooksReady is the other half, and the arrow alone was NOT
+               it: an earlier comment here claimed the arrow made the list
+               "resolve at RENDER time", which is true and useless, because
+               render() only runs when the `song` store slice changes and there is
+               exactly ONE production `store.set('song', …)` — immediately before
+               mountTabs(). The sidebar fetches its index in parallel, so a deep
+               link (?song=…) reliably mounted the tabs first and the select froze
+               holding one option. sidebar.whenLoaded() resolves once the index has
+               landed OR failed, and the tab re-fills its options then. */
+            const ctx = {
+                store, api: editorApi, songId, toast, onSongIdChange,
+                getSongbooks: () => sidebar.getSongbooks(),
+                whenSongbooksReady: () => sidebar.whenLoaded(),
+                /* #1608 — the counterparts panel's add-by-SongId datalist reads
+                   the sidebar's already-loaded slim index rather than fetching
+                   its own copy (mirrors getSongbooks() above; sidebar.js's
+                   getAllSongs() is the read-only accessor). */
+                getSongs: () => sidebar.getAllSongs(),
+            };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
+                /* #1627 item 2 — below the section cards, mirroring v1's own
+                   placement (editor.js's arrangement editor sits under the
+                   component list in the same Structure pane). */
+                mountArrangementEditor(byId('v2-arrangement'), ctx),
                 mountMetadataTab(byId('v2-metadata'), ctx),
                 mountCreditsTab(byId('v2-credits'), ctx),
                 mountLinksTab(byId('v2-links'), ctx),
+                /* #1608 — counterparts (cross-book "same hymn" links + fuzzy
+                   suggestions) mounts INTO the same Links pane, below the
+                   external-links editor — one tab for "everything that
+                   connects this song to other things", per the plan; no new
+                   nav-tabs entry. */
+                mountCounterpartsPanel(byId('v2-counterparts'), ctx),
                 mountTagsTab(byId('v2-tags'), ctx),
                 mountMediaTab(byId('v2-media'), ctx),
                 mountPreviewTab(byId('v2-preview'), ctx),
@@ -237,11 +440,18 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 store.set('tags', data.tags || []);
                 store.set('links', data.links || []);
                 store.set('media', data.media || []);
+                /* #1627 item 3 — api2 load_song already returns these top-level
+                   (see api2.php's load_song case); this shell used to drop them
+                   on the floor, which is the ONE thing blocking the v2 Structure
+                   tab's per-line enrichment panel from having anything to show. */
+                store.set('lineTranslations', data.lineTranslations || []);
+                store.set('lineAnnotations', data.lineAnnotations || []);
                 currentSongId = id;
                 mountTabs(id);
                 try { history.replaceState(null, '', '?song=' + encodeURIComponent(id)); } catch (_e) {}
                 sidebar.setActive(id);
                 status('Editing "' + ((data.song && data.song.Title) || id) + '" — edits save instantly + atomically.', 'success');
+                consumeInitialTab();   /* #1628 — after mountTabs(), so the pane has content */
             } catch (e) {
                 if (seq !== loadSeq) { return; }   // don't surface a stale error after a newer switch
                 status('Load failed: ' + e.message, 'danger');
@@ -277,6 +487,32 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 toast('Tagged ' + (r.attached || 0) + ' of ' + ids.length + ' song(s) with "' + (r.tag ? r.tag.name : name.trim()) + '".', 'success');
                 sidebar.clearSelection();
             } catch (e) { status('Bulk tag failed: ' + e.message, 'danger'); }
+        });
+
+        /* Remove a tag from the selection — the other half of bulk tagging.
+           v1's single `bulk_tag` action took add[] AND remove[]; v2 shipped only
+           attach, so a curator who bulk-tagged 200 songs with the wrong tag had
+           no way back except one song at a time. The server side landed in
+           `33f583e1`; this button is what makes it reachable.
+
+           Detaching a tag nothing carries is a successful no-op server-side, so
+           `detached: 0` is reported as an outcome ("none of them had it"), not
+           an error — the curator's intent is satisfied either way. */
+        byId('v2-bulk-untag').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            const name = window.prompt('Tag to remove from ' + ids.length + ' selected song(s):', '');
+            if (name === null || name.trim() === '') { return; }
+            try {
+                const r = await editorApi.bulkTagDetach(ids, name.trim());
+                const n = r.detached || 0;
+                const label = (r.tag && r.tag.name) ? r.tag.name : name.trim();
+                toast(n === 0
+                    ? 'None of the ' + ids.length + ' selected song(s) had the tag "' + label + '".'
+                    : 'Removed "' + label + '" from ' + n + ' of ' + ids.length + ' song(s).',
+                    n === 0 ? 'info' : 'success');
+                sidebar.clearSelection();
+            } catch (e) { status('Bulk untag failed: ' + e.message, 'danger'); }
         });
 
         /* ---- resizable sidebar (#1193) — drag the grip; width persists ---- */
@@ -345,7 +581,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         byId('v2-delete-btn').addEventListener('click', async () => {
             if (!currentSongId) { status('No song open to delete.', 'danger'); return; }
             const name = (store.get('song') && store.get('song').Title) || currentSongId;
-            if (!window.confirm('Delete "' + name + '"?\n\nThis removes the song and ALL its data (sections, credits, tags, links, media, revisions). This cannot be undone.')) { return; }
+            /* SOFT delete since #1694 — honest copy: the song is hidden and
+               restorable; only the admin-only Purge on /manage/deleted-songs
+               is permanent. */
+            if (!window.confirm('Delete "' + name + '"?\n\nThis moves the song to Deleted songs: it disappears from the catalogue and every listing, but nothing is permanently removed. An admin can restore it — or permanently purge it — from /manage/deleted-songs.')) { return; }
             const gone = currentSongId;
             loadSeq++;   // invalidate any in-flight loadSong so it can't repaint the deleted song
             try {
@@ -354,15 +593,86 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 currentSongId = null;
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
-                else { teardownTabs(); status('Song deleted. Create a New song or pick one.', 'success'); }
+                else { teardownTabs(); status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success'); }
             } catch (e) {
                 status('Delete failed: ' + e.message, 'danger');
             }
         });
 
+        /**
+         * Missing-Numbers prefill (#1680) — ?songbook=<ABBR> + ?number=N | #number=N
+         *
+         * ELI5: land ready to type lyrics for song N of book XX, instead of an
+         * empty list and having to re-discover what to enter.
+         *
+         * The number may arrive as a query param OR as the FRAGMENT, because
+         * missing-numbers.php emits the fragment form and the browser never
+         * sends a fragment to the server — so PHP can pre-validate the songbook
+         * but only JS can see the number. v1 accepts both shapes; so does this.
+         *
+         * If that (songbook, number) ALREADY exists, open it rather than
+         * creating a duplicate. v1 checks this too, and it matters: Missing
+         * Numbers is a list of gaps, and a gap that was filled since the page
+         * was rendered would otherwise silently mint a second song on the same
+         * number.
+         *
+         * Sequenced rather than parameterised because v2's create_song mints
+         * its own canonical id and takes no number — Number is a separate
+         * metadata field. So: create -> set number -> load.
+         */
+        const prefillBook = <?= json_encode($prefillBook) ?>;
+        function prefillNumber() {
+            const qs = <?= json_encode($prefillNum) ?>;
+            if (qs) { return qs; }
+            const hash = String(window.location.hash || '').replace(/^#/, '');
+            const m = /^number=(\d+)$/.exec(hash);
+            return m ? m[1] : '';
+        }
+
+        async function runPrefill(book, numStr) {
+            const num = parseInt(numStr, 10);
+            status('Preparing ' + book + ' ' + num + '…');
+
+            /* Already exists? Open it — never mint a duplicate on the same number. */
+            const existing = sidebar.findByBookAndNumber(book, num);
+            if (existing) {
+                status('Song ' + num + ' already exists in ' + book + ' — opening it.', 'success');
+                loadSong(existing);
+                return;
+            }
+
+            try {
+                const res = await editorApi.createSong(book, 'New Song');
+                try {
+                    await editorApi.updateMetadata(res.songId, 'number', num);
+                } catch (e) {
+                    /* The song EXISTS at this point; only the number failed. Say so
+                       precisely — "create failed" would send the curator hunting for
+                       a song that is actually there, and they would create a second. */
+                    status('Created ' + res.songId + ' but could not set number ' + num
+                           + ': ' + e.message + ' — set it on the Metadata tab.', 'danger');
+                }
+                const book0 = sidebar.getSongbooks().find((b) => b.abbr === res.songbook);
+                sidebar.addSong({
+                    id: res.songId, number: num, title: res.title,
+                    songbook: res.songbook, songbookName: book0 ? book0.name : res.songbook,
+                });
+                loadSong(res.songId);
+            } catch (e) {
+                status('Could not start ' + book + ' ' + num + ': ' + e.message, 'danger');
+            }
+        }
+
         /* ---- initial ---- */
-        if (initialSongId) { loadSong(initialSongId); }
-        else { status('Pick a song from the list, or create a New one.'); }
+        if (initialSongId) {
+            loadSong(initialSongId);
+        } else if (prefillBook && prefillNumber()) {
+            /* Wait for the index: findByBookAndNumber and getSongbooks both need
+               it, and mountSidebar's load() is async. */
+            sidebar.whenLoaded().then(() => runPrefill(prefillBook, prefillNumber()));
+        } else {
+            status('Pick a song from the list, or create a New one.');
+        }
     </script>
 </body>
 </html>

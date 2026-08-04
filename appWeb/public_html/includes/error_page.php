@@ -32,6 +32,30 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
+ * The one copy of the status → copy map (#1704). Kept as its own function
+ * — rather than a local inline both errorPageContent() and
+ * errorPageStatuses() build separately — so the two can never drift: a
+ * status added here is simultaneously "has friendly copy" and "is in the
+ * whitelist", with nothing to keep in sync by hand (rule #35).
+ *
+ * @return array<int,array{emoji:string,fa:string,title:string,message:string}>
+ */
+function errorPageMap(): array
+{
+    return [
+        400 => ['emoji' => '&#9888;&#65039;', 'fa' => 'fa-circle-exclamation',  'title' => 'Bad request',           'message' => "We couldn't process that request."],
+        401 => ['emoji' => '&#128274;',        'fa' => 'fa-lock',                'title' => 'Sign in required',       'message' => 'You need to be signed in to view this.'],
+        403 => ['emoji' => '&#128683;',        'fa' => 'fa-ban',                 'title' => 'Access denied',          'message' => "You don't have permission to view this."],
+        404 => ['emoji' => '&#129517;',        'fa' => 'fa-map-signs',           'title' => 'Page not found',         'message' => "Sorry, the page you're looking for doesn't exist or has moved."],
+        405 => ['emoji' => '&#9995;',           'fa' => 'fa-hand',                'title' => 'Request not supported',  'message' => "That page can't be opened the way it was asked for. Opening it from the home page should put things right."],
+        410 => ['emoji' => '&#128230;',         'fa' => 'fa-box-archive',         'title' => 'No longer here',         'message' => "This page has been removed and isn't coming back. If you were looking for a song, searching for its title may find another copy."],
+        429 => ['emoji' => '&#9203;',          'fa' => 'fa-hourglass-half',      'title' => 'Too many requests',      'message' => "You've made a lot of requests in a short time. Please wait a moment and try again."],
+        500 => ['emoji' => '&#9888;&#65039;', 'fa' => 'fa-triangle-exclamation', 'title' => 'Something went wrong',   'message' => 'An unexpected error occurred on our end. Please try again in a moment.'],
+        503 => ['emoji' => '&#128295;',        'fa' => 'fa-screwdriver-wrench',  'title' => 'Temporarily unavailable', 'message' => 'The service is briefly unavailable. Please check back in a few minutes.'],
+    ];
+}
+
+/**
  * Default copy (emoji for the self-contained page, Font Awesome class for the
  * SPA fragment, title, message) per HTTP status.
  *
@@ -40,16 +64,26 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
  */
 function errorPageContent(int $status): array
 {
-    $map = [
-        400 => ['emoji' => '&#9888;&#65039;', 'fa' => 'fa-circle-exclamation',  'title' => 'Bad request',           'message' => "We couldn't process that request."],
-        401 => ['emoji' => '&#128274;',        'fa' => 'fa-lock',                'title' => 'Sign in required',       'message' => 'You need to be signed in to view this.'],
-        403 => ['emoji' => '&#128683;',        'fa' => 'fa-ban',                 'title' => 'Access denied',          'message' => "You don't have permission to view this."],
-        404 => ['emoji' => '&#129517;',        'fa' => 'fa-map-signs',           'title' => 'Page not found',         'message' => "Sorry, the page you're looking for doesn't exist or has moved."],
-        429 => ['emoji' => '&#9203;',          'fa' => 'fa-hourglass-half',      'title' => 'Too many requests',      'message' => "You've made a lot of requests in a short time. Please wait a moment and try again."],
-        500 => ['emoji' => '&#9888;&#65039;', 'fa' => 'fa-triangle-exclamation', 'title' => 'Something went wrong',   'message' => 'An unexpected error occurred on our end. Please try again in a moment.'],
-        503 => ['emoji' => '&#128295;',        'fa' => 'fa-screwdriver-wrench',  'title' => 'Temporarily unavailable', 'message' => 'The service is briefly unavailable. Please check back in a few minutes.'],
-    ];
+    $map = errorPageMap();
     return $map[$status] ?? ['emoji' => '&#9888;&#65039;', 'fa' => 'fa-triangle-exclamation', 'title' => 'Error', 'message' => 'Something went wrong.'];
+}
+
+/**
+ * Every status this file has dedicated copy for — i.e. the map's keys.
+ *
+ * ELI5: the list of error numbers we know how to explain nicely.
+ *
+ * Consumed by error.php so its render whitelist can never drift from this
+ * map (#1704, rule #35 — "cross-file agreement needs a mechanism, not a
+ * comment"). A hand-typed second list here would rot the moment a status is
+ * added to one file and not the other, which is exactly how 405 and 410
+ * went unmapped for as long as they did (#1704).
+ *
+ * @return list<int>
+ */
+function errorPageStatuses(): array
+{
+    return array_keys(errorPageMap());
 }
 
 /**

@@ -74,6 +74,9 @@ try {
     $countStmt->close();
 
     $stmt = $db->prepare(
+        /* @deleted-visible: AUDIT surface (#1694) — a soft-deleted song's
+           revision history must keep displaying its title; hiding it would
+           make the audit trail lie about what was edited. */
         'SELECT r.Id, r.SongId, r.Action, r.CreatedAt, r.UserId, u.Username,
                 s.Title AS SongTitle, s.SongbookAbbr, s.Number
            FROM tblSongRevisions r

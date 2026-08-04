@@ -3552,7 +3552,7 @@ function initSongLinksControls() {
 
 /* ------------------------------------------------------------------
  * #960 — Structured-name helpers (JS mirror of composePersonName /
- * decomposePersonName in includes/credit_people_helpers.php).
+ * decomposePersonName in includes/musician_helpers.php).
  *
  * The Credits-tab chip lists render three inputs per credit
  * (FirstNames / Surname / Suffix) but the on-disk wire format and
@@ -4245,7 +4245,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -4256,9 +4256,13 @@ function importJSON() {
             importBulkZip(file);
         } else if (lower.endsWith('.json')) {
             importJsonCorpus(file);
-        } else if (lower.endsWith('.xml')) {
-            /* OpenLyrics / OpenLP single-song export (#1052). A folder of
-               these exported as a .zip uses the ZIP path above instead. */
+        } else if (lower.endsWith('.xml') || lower.endsWith('.opensong')) {
+            /* OpenLyrics OR OpenSong single-song export (#1052, OpenSong
+               single-file routing added #882) — the server-side handler
+               auto-detects which dialect this is (_bulkImport_processXmlAuto()
+               in includes/song_importers.php), so both extensions share this
+               one client-side branch. A folder of either exported as a .zip
+               uses the ZIP path above instead. */
             importOpenLp(file);
         } else if (lower.endsWith('.pro6')) {
             /* ProPresenter 6 single-song export (#1057). A folder of .pro6
@@ -4296,8 +4300,8 @@ function importJSON() {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
-                'FreeShow / EasyWorship), an OpenLyrics .xml, a ProPresenter ' +
-                '.pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
+                'FreeShow / EasyWorship), an OpenLyrics or OpenSong .xml/.opensong, ' +
+                'a ProPresenter .pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
                 'Proclaim .txt/.rtf, or a ChordPro .cho/.pro/.chopro/.crd/.chord.',
                 'danger'
             );
@@ -4448,11 +4452,16 @@ function importPptx(file) {
 }
 
 /**
- * importOpenLp(file) — OpenLyrics / OpenLP single-song .xml import (#1052).
- * Each OpenLyrics file carries its own <songbook> metadata, so the server
- * derives the songbook from the file. A whole exported FOLDER of OpenLyrics
- * files goes through importBulkZip() instead (the ZIP path content-sniffs
- * .xml entries and routes OpenLyrics ones to the same parser).
+ * importOpenLp(file) — OpenLyrics/OpenLP OR OpenSong single-song .xml
+ * import (#1052; OpenSong single-file routing added #882). The action
+ * name and field name predate #882 and are KEPT (they're the same
+ * bulk_import_openlp/openlp contract manage/editor/api.php documents) even
+ * though the server now auto-detects EITHER XML dialect — an OpenLyrics
+ * file carries its own <songbook> metadata so the server derives the
+ * songbook from the file; an OpenSong file carries none, so it's filed
+ * under a fixed "OpenSong Import" songbook instead. A whole exported
+ * FOLDER of either dialect goes through importBulkZip() instead (the ZIP
+ * path content-sniffs .xml entries the same way).
  */
 function importOpenLp(file) {
     importSingleFileFormat(file, {
@@ -5023,7 +5032,7 @@ function scheduleAutoSave() {
    suffix}; the save_song endpoint accepts either a bare string
    (legacy) or {name, first, surname, suffix} (post-#960). We
    send the richer shape so the server can populate
-   tblCreditPeople.FirstNames/Surname/Suffix on auto-promote.
+   tblMusicians.FirstNames/Surname/Suffix on auto-promote.
    Non-credit fields pass through untouched. */
 function serialiseSongForSave(song) {
     var creditKeys = ['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'];
@@ -5167,6 +5176,33 @@ function autoSaveSongsPerSong(ids) {
                             if (_renderedSongId === data.previousId) {
                                 _renderedSongId = data.assignedId;
                             }
+                            /* #1679 F5 — (c) `number`. The two paths that rename a
+                               song also CHANGE its number: a songbook move clears
+                               it (the slot belongs to the book it left), and a
+                               #1380 draft promotion into an official book adopts
+                               the slot the mint chose. Neither was reflected here,
+                               so the in-memory song and the on-screen
+                               `#edit-number` both kept the pre-save value — and the
+                               NEXT save posted it straight back, silently undoing
+                               the clear and able to land on a number another song
+                               in the target book already holds (tblSongs indexes
+                               SongbookNumber but does not make it UNIQUE, so
+                               nothing would report the collision).
+                               The server sends the authoritative value alongside
+                               the rename rather than the client re-deriving which
+                               kind of rename it was — status/facts over inference
+                               (rule #35). `hasOwnProperty` because `null` IS the
+                               meaningful "cleared" answer and `data.number ||`
+                               would flatten it into "not sent". */
+                            if (Object.prototype.hasOwnProperty.call(data, 'number')) {
+                                if (renamed) { renamed.number = data.number; }
+                                /* Only repaint the field if the renamed song is the
+                                   one on screen — currentSongId was re-keyed above,
+                                   so compare against the NEW id. */
+                                if (currentSongId === data.assignedId) {
+                                    setVal('edit-number', data.number == null ? '' : String(data.number));
+                                }
+                            }
                             renderSongList();
                             saved.push(data.assignedId);
                         } else {
@@ -5185,6 +5221,18 @@ function autoSaveSongsPerSong(ids) {
                             if (data.mysqli_code) {
                                 msg += ' [mysqli ' + data.mysqli_code + ']';
                             }
+                        } else if (data.error_hint) {
+                            /* #1679 A8 — the ungated companion to error_detail:
+                               an environment fault whose message tells the user
+                               exactly what to run (today, the songbook move
+                               refusing on an install whose FK cascades were
+                               never migrated). error_detail is admin-only and
+                               this editor admits the `editor` role, so without
+                               this branch the one failure with a precise answer
+                               rendered as a bare "Failed to save song". Second
+                               in the chain, not first: when both are present the
+                               admin detail is the more diagnostic of the two. */
+                            msg += ' — ' + data.error_hint;
                         }
                         failed.push({ id: id, error: msg });
                     }
@@ -5620,35 +5668,33 @@ function deleteSong() {
     var song  = findSongById(currentSongId);
     var title = song ? song.title : currentSongId;
 
-    /* Ask for confirmation. */
-    if (!confirm('Delete "' + title + '"?\n\nThis permanently removes the song and ALL its data (components, lyric lines, credits, links, media) from the database. This cannot be undone.')) {
+    /* Ask for confirmation — SOFT delete since #1694: honest copy, no more
+       "permanent" (that word now belongs to the admin-only Purge on
+       /manage/deleted-songs). */
+    if (!confirm('Delete "' + title + '"?\n\nThis moves the song to Deleted songs: it disappears from the catalogue and every listing, but nothing is permanently removed. An admin can restore it — or permanently purge it — from /manage/deleted-songs.')) {
         return;
     }
 
     var idToDelete = currentSongId;
 
-    /* #1343 — keep the shared permalink alive. Offer to redirect the deleted
-       song's old link to another song; blank/Cancel leaves a friendly "removed"
-       page (the server validates the target and tombstones a blank/unknown id).
-       For a genuine duplicate, Merge on Duplicate & Counterpart Review is better —
-       it auto-redirects without this prompt. */
-    var redirectTo = (window.prompt(
-        'Optional: keep this song’s shared link working by redirecting it to another song.\n\n' +
-        'Enter the Song ID to redirect to (e.g. MP-0001), or leave blank for a “removed” page.',
-        ''
-    ) || '').trim();
+    /* The old redirect-target prompt is GONE (#1694): the server ignores
+       redirectTo on a soft delete (a redirect write cannot be un-written, so
+       restore would stop being a no-op — the #1679 stranded-chain class).
+       The relink choice is asked ONCE, where it takes effect: at purge time
+       on /manage/deleted-songs. Prompting here and discarding the answer
+       would be lying to the curator. */
 
     /* SERVER-BACKED delete (#1200 / #1290). The legacy implementation only
        filtered the in-memory songData.songs array and toasted "deleted" — the
        DB row was never touched, so the song reappeared on reload (and still
-       loaded in Song View). We now POST delete_song to the v2 API (cascade
-       delete + CSRF) and ONLY mutate local state + toast once the server
-       confirms. On failure nothing is removed locally and the error is shown,
-       so the toast can never lie again. */
+       loaded in Song View). We POST delete_song to the v2 API (soft delete +
+       CSRF) and ONLY mutate local state + toast once the server confirms. On
+       failure nothing is removed locally and the error is shown, so the toast
+       can never lie again. */
     var btn = document.getElementById('btn-delete-song');
     if (btn) { btn.disabled = true; }
 
-    ed2EnrichApi('delete_song', { songId: idToDelete, redirectTo: redirectTo })
+    ed2EnrichApi('delete_song', { songId: idToDelete })
         .then(function (res) {
             /* Server confirmed the cascade delete — sync local state now. */
             songData.songs = songData.songs.filter(function (s) { return s.id !== idToDelete; });
@@ -5660,10 +5706,11 @@ function deleteSong() {
             }
             renderSongList();
             updateStatusBar();
-            var n = (res && typeof res.deleted === 'number') ? res.deleted : null;
+            /* Soft delete (#1694): the row survives, hidden — say so, rather
+               than the old "(n rows removed)" which now under-describes what
+               happened AND over-describes its permanence. */
             showToast(
-                'Deleted "' + title + '" from the database'
-                    + (n !== null ? ' (' + n + ' row' + (n === 1 ? '' : 's') + ' removed).' : '.'),
+                'Moved "' + title + '" to Deleted songs — restorable by an admin at /manage/deleted-songs.',
                 'success'
             );
         })

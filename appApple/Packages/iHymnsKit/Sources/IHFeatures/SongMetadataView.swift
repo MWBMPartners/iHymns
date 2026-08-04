@@ -38,7 +38,41 @@ struct SongMetadataView: View {
         VStack(alignment: .leading, spacing: 12) {
             languageBadges
             creditsSection
+            rightsSection
             authorityIdsDisclosure
+        }
+    }
+
+    /// First-published year + copyright line (#1752 Slice A) — mirrors web
+    /// `song.php`'s footer credits block (`.claude/catalogue-1741-1750-plan.md`
+    /// §4.1): "First published <year>" when known, then either "Public
+    /// Domain" (when BOTH `lyricsPublicDomain` AND `musicPublicDomain` are
+    /// true — the PD-wins-over-© branch, matching `$fullyPublicDomain`) or
+    /// `"© \(copyrightDisplay)"` when there's a non-empty line to show. This
+    /// is also the FIRST time the native app shows a copyright line at all
+    /// (`SongDetailView`/`SongMetadataView` previously decoded `copyright`
+    /// but rendered it nowhere — see this task's #0.1 survey).
+    ///
+    /// ELI5: "Written in 1779. © John Newton" (or "Public Domain" if it's
+    /// free for anyone to use).
+    @ViewBuilder
+    private var rightsSection: some View {
+        let year = detail.firstPublishedYear
+        let fullyPublicDomain = detail.lyricsPublicDomain && detail.musicPublicDomain
+        let copyrightLine = detail.copyrightDisplay
+        if year != nil || fullyPublicDomain || !copyrightLine.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if let year {
+                    Text("First published \(String(year))")
+                }
+                if fullyPublicDomain {
+                    Text("Public Domain")
+                } else if !copyrightLine.isEmpty {
+                    Text("© \(copyrightLine)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -130,7 +164,12 @@ struct SongMetadataView: View {
     @ViewBuilder
     private var authorityIdsDisclosure: some View {
         let royaltyIds = detail.royaltyIds ?? []
-        if !detail.ccli.isEmpty || !detail.iswc.isEmpty || !royaltyIds.isEmpty {
+        // #1752 Slice A — `externalIds` (ISRC and similar recording ids,
+        // opt-in via `include=externalIds`) folds into the SAME "Song
+        // Identifiers" disclosure CCLI/ISWC/royaltyIds already get, rather
+        // than a second disclosure — one place a curious reader looks for
+        // every catalogue identifier this song carries.
+        if !detail.ccli.isEmpty || !detail.iswc.isEmpty || !royaltyIds.isEmpty || !(detail.externalIds ?? []).isEmpty {
             // `DisclosureGroup` is UNAVAILABLE on tvOS (D-1, #1504's
             // tvOS-build gate) — shown always-expanded there instead of
             // collapsible (a metadata footnote, not worth a bespoke
@@ -161,6 +200,11 @@ struct SongMetadataView: View {
             }
             ForEach(Array(royaltyIds.enumerated()), id: \.offset) { _, royaltyId in
                 Text("\(royaltyId.authority): \(royaltyId.authorityId)")
+            }
+            // #1752 Slice A — ISRC and similar recording ids, same
+            // behind-a-disclosure treatment as CCLI/ISWC/royaltyIds above.
+            ForEach(Array((detail.externalIds ?? []).enumerated()), id: \.offset) { _, externalId in
+                Text("\(externalId.idType.uppercased()): \(externalId.idValue)")
             }
         }
         .font(.caption)

@@ -28,12 +28,29 @@ declare(strict_types=1);
  * Source data: appWeb/.sql/data/cldr-native-names.json (~316 entries).
  * Rebuilt from CLDR by tools/fetch-cldr-native-names.sh.
  *
- * IDEMPOTENT:
- *   UPDATE … WHERE Code = ? AND NativeName <> ?
- * Already-set rows whose NativeName already matches the JSON skip;
- * a curator who manually corrected one row stays in place unless this
- * file changes too. Re-running on a fully-populated catalogue is a
- * no-op.
+ * NON-DESTRUCTIVE: no DDL at all. This migration only UPDATEs one column
+ * on existing rows; it creates nothing, drops nothing and inserts nothing,
+ * so there is no schema.sql mirror to keep in step (rule #19 applies to
+ * migrations that create tables/columns — this one does neither) and no
+ * recovery path to document. The column it writes is created by
+ * migrate-iana-language-subtag-registry.php (#738), which is why the
+ * pre-flight below refuses to run rather than adding the column itself.
+ *
+ * IDEMPOTENT — and this is the important bit, because a re-run is normal:
+ *   UPDATE tblLanguages SET NativeName = ? WHERE Code = ? AND NativeName <> ?
+ * ELI5: "only write the row if what's there isn't already what I'm about to
+ * write." A second run matches zero rows and reports 0 updated.
+ *
+ * DETAIL — the `NativeName <> ?` guard is what makes the run cheap AND what
+ * makes `affected_rows` a truthful counter: MySQL reports 0 affected rows for
+ * an UPDATE that sets a column to the value it already holds, so without the
+ * guard the "updated" tally would be honest but the row locks would not be.
+ * Note the corollary, which is NOT curator-friendly: the guard keys on
+ * "differs from the JSON", so a curator who hand-corrects one NativeName has
+ * that correction REVERTED the next time this migration runs. The JSON is the
+ * authority; a lasting correction belongs in
+ * appWeb/.sql/data/cldr-native-names.json (via tools/fetch-cldr-native-names.sh
+ * or by hand), not in the row.
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-cldr-native-names.php
@@ -107,6 +124,15 @@ function _migCldrNative_columnExists(mysqli $db, string $table, string $column):
 
 _migCldrNative_out('CLDR NativeName overlay starting…');
 
+/* ⚠️ Every failure path in this file bails with `exit(1)`, and that is NOT the
+   same as the `return;` its sibling migrations use. setup-database.php runs a
+   migration with `require $scriptPath;` inside the dashboard request, so a
+   `return` hands control back to the dashboard (which frames the captured
+   output with a STATUS line) whereas `exit` tears down the WHOLE request —
+   during "Apply all" that silently abandons every migration queued after this
+   one and leaves the AJAX runner with an unframed, truncated response.
+   Left as-is here deliberately: changing it is a behaviour change, not an
+   annotation. See the report accompanying the #1158 annotation pass. */
 $db = getDbMysqli();
 if (!$db) {
     _migCldrNative_out('ERROR: could not connect to database.');
@@ -115,7 +141,14 @@ if (!$db) {
 
 /* Pre-flight: tblLanguages.NativeName must exist. The IANA registry
    migration (#738) creates the column; if it's missing, the operator
-   needs to run that first rather than auto-chaining here. */
+   needs to run that first rather than auto-chaining here.
+
+   Why probe INFORMATION_SCHEMA instead of just trying the UPDATE: the DB
+   layer runs mysqli under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
+   (includes/db_mysql.php), so an UPDATE naming a column that doesn't exist
+   THROWS rather than returning false. The probe turns that white-screen into
+   the actionable sentence below. Migrations are not auto-applied on deploy,
+   so "it's in schema.sql" is never proof the column is on this server. */
 if (!_migCldrNative_tableExists($db, 'tblLanguages')) {
     _migCldrNative_out('ERROR: tblLanguages not found. Run install.php first.');
     exit(1);
@@ -163,7 +196,12 @@ _migCldrNative_out("Before: {$beforeFilled} of {$totalLangs} tblLanguages rows c
 
 /* Targeted UPDATE — only rows whose NativeName differs from the JSON
    value get touched. The Code = ? clause makes this a primary-key
-   (or unique-index) seek, so 316 prepared executes finish quickly. */
+   (or unique-index) seek, so 316 prepared executes finish quickly.
+
+   One prepared statement re-bound in a loop, rather than one giant CASE
+   expression or 316 separate prepares: the round-trips dominate either way at
+   this size, and the loop keeps the per-row affected_rows available for the
+   updated/skipped tally the operator reads on the card. */
 $stmt = $db->prepare(
     'UPDATE tblLanguages
         SET NativeName = ?
@@ -178,6 +216,11 @@ foreach ($natives as $code => $native) {
     if (!is_string($code) || !is_string($native) || $code === '' || $native === '') {
         continue;
     }
+    /* CLDR keys locales in its own casing ("de", "zh-Hant", occasionally an
+       upper-cased region); tblLanguages.Code is stored lower-case. Folding
+       here — rather than relying on the column's collation to compare
+       case-insensitively — keeps the match independent of whatever collation
+       the column happens to carry on a given install. */
     $codeLc = strtolower($code);
     $stmt->bind_param('sss', $native, $codeLc, $native);
     $stmt->execute();

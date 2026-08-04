@@ -48,13 +48,14 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 - **Favourites** — save songs with custom tags for quick access.
 - **Setlists** — create, arrange, and share worship setlists with custom component arrangements. **Playback mode** (#1533) — tap any song in an own or shared setlist to arm a floating prev/next nav bar with keyboard navigation, working identically for shared lists.
-- **Setlist scheduling & collaboration** — schedule setlists for a date / time with an "Up next" overview; invite collaborators with view / edit permissions (#398).
+- **Setlist scheduling & collaboration** — schedule setlists for a date / time with an "Up next" overview; invite collaborators by email with enforced view / edit permissions, who are notified and see the setlist under "Shared with me" (#398, #1638).
 - **Presentation mode** — fullscreen lyrics display with configurable auto-scroll.
 - **Practice / memorisation mode** — Full / Dimmed / Hidden cycle with tap-to-reveal (#402).
 - **Shuffle** — random song from any songbook; highlights your default.
 - **Translation linking** — songs linked to equivalent translations in other languages.
 - **Song media** (#853) — curators upload audio (MP3 / M4A / OGG / WAV / FLAC / ALAC), sheet music (PDF), MIDI, and MusicXML via the Song Editor; served behind a gated `/song-media/<id>` route with HTTP Range support for audio scrubbing.
-- **Transpose** — shift song key up / down (persisted per song).
+- **Transpose** — shift song key up / down (persisted per song); where a curator has recorded a song's original key, tempo and time signature (#298), the song page shows it and Transpose names the key you've transposed *into*.
+- **Setlist templates & service plans** (#301) — save a setlist's running order as a reusable template and apply it to start a new setlist with labelled rows (song and non-song) ready to fill in; templates are owner-editable only.
 - **Export & Present** (#1565–#1570) — the Export ▾ menu on every song and songbook page downloads the song in 8 worship-software formats (OpenSong, OpenLyrics / OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, ChordPro); Present opens a full-screen one-stanza view.
 - **Live Follow** (#1268) — any signed-in user taps **Go Live** on a song and shares a six-character code; others follow along on their own devices, no account needed. Distinct from Service Mode (below), which is venue / organisation-based.
 - **Service Mode — congregation Live-Follow** (#1323 / #1335) — congregants join a live service via a venue-displayed rotating code and follow songs in sync (org venues + recurring schedules, anonymous presence tokens, two broadcaster UIs at `/manage/service-projection` and `/manage/service-lead`). Ships dormant behind `content_gating_enabled` with a CCLI-licence content gate.
@@ -70,7 +71,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Official / unofficial songbooks + Collections** (#1223) — official and unofficial songbooks surface together as one "Songbooks" family (presentation only); unofficial books carry the shared "Unofficial" badge. Curated cross-songbook groupings are user-labelled **Collections** (internally `tblCatalogues`); managed at `/manage/catalogues`.
 - **Songbook display label** (#1332) — an optional free-text `DisplayAbbr` gives a richer user-facing abbreviation (e.g. "Psalty") while the real `Abbreviation` stays the SongId prefix.
 - **Standard theme vocabulary** (#1152 / #1222) — the CCLI / SongSelect OpenLyrics theme taxonomy is seeded as a 2-level hierarchy; curator tags are canonicalised into standard themes from `/manage/tags`.
-- **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
+- **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, unlinks, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
 
 ### Discovery
 
@@ -115,7 +116,8 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 - **Magic-link sign-in** — primary auth path (email + 6-digit code); password sign-in available as a fallback (#395).
 - **Cross-subdomain cookie** — `HttpOnly`, `SameSite=Lax`, `Secure` auth cookie on `.ihymns.app` with 30-day sliding expiry survives iOS ITP (#390).
-- **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin.
+- **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin. Song deletion (`delete_songs`, Editor+) is now a recoverable soft delete (#1694/#1695, epic #1692) — deleted songs are hidden from every read surface but listed with **Restore** at `/manage/deleted-songs`; the old cascade delete survives only as the separate, irreversible **Purge** action, gated by its own `purge_songs` entitlement and reachable only from the deleted state.
+- **Signed-in devices** (#1409 / #1511) — Settings → Account & Profile lists every device signed in to your account and lets you sign out any other one remotely.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
 - **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
@@ -123,12 +125,13 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ### Community
 
-- **Song request form** — public, rate-limited, honeypot-protected (#403); admin triage queue at `/manage/requests`.
+- **Song request form** — public, rate-limited, honeypot-protected (#403); admin triage queue at `/manage/requests`. Signed-in requesters can track their own submissions' status (Pending / Reviewed / Added / Declined) on the request page (#280).
+- **Web Push notifications** (#311) — per-device opt-in from Settings, one checkbox per notification kind (`webPushKinds()` registry). VAPID (RFC 8292) + payload encryption (RFC 8291/8188) are implemented and RFC-vector-verified; entirely dormant until a site operator generates a keypair, and no push has yet been delivered to a real device.
 
 ### Administration
 
-- **Song Editor** — per-song auto-save, multi-select bulk **delete / verify / tag / move / export** (#399). Five tabs: Metadata, Structure (with per-component language overrides #858), Credits, Tags, **Media** (#853), Preview.
-- **Revision history** — every save writes `tblSongRevisions`; editor History modal with JSON diff + per-revision Restore + global audit log at `/manage/revisions` (#400).
+- **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk **verify** and **tag** (add or remove); bulk delete, move and export remain in the legacy editor for now (#1628, #1679). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
+- **Revision history** — every save writes `tblSongRevisions`; a per-song Revisions tab (a History modal in the legacy editor) with per-revision Restore + global audit log at `/manage/revisions` (#400). The legacy editor's modal also shows a before/after JSON diff; the v2 tab does not yet (#1628). Restore semantics differ by editor version too: v2 restores the state a revision *left* the song in; the legacy editor restored the state *before* that edit.
 - **Database setup** — web-accessible installer with backup restore upload, **pre-flight summary**, pre-restore auto-snapshot, transactional data-load, and live migration cards that auto-hide when fully applied (#820, #824, #405).
 - **Activity logging** — audit trail for significant actions (logins, admin writes, backup restores, song-media uploads).
 - **Analytics** — GA4, Plausible, Clarity, Matomo, Fathom with GDPR consent; admin dashboard with top songs / books / queries + zero-result queries + CSV export (#404).
@@ -168,6 +171,7 @@ Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a r
 git clone https://github.com/MWBMPartners/iHymns.git
 cd iHymns
 npm install
+git config core.hooksPath tools/githooks
 ```
 
 ### 2. Generate song-import data

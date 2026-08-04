@@ -280,7 +280,9 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
     $status        = (string)($opts['status'] ?? 'pending_review');
     $submittedBy   = isset($opts['submittedBy']) ? (int)$opts['submittedBy'] : null;
 
-    /* Song must exist (FK would reject anyway, but a clear error is nicer). */
+    /* Song must exist (FK would reject anyway, but a clear error is nicer).
+       @deleted-visible: write-path FK pre-check (#1694) — ingesting lyrics
+       into a hidden row is harmless and restore-preserving. */
     $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $chk->bind_param('s', $songId);
     $chk->execute();
@@ -432,8 +434,20 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
 function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsText = ''): array
 {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+    /* #1749 full unification — hoisted above both this function's own use
+       (step 2 below, the store arm) and the two existing write-site
+       require_once calls further down in this file (lyricsIngest_createSong()
+       / lyricsIngest_storeExternalIds()), so a single require_once covers the
+       whole resolve+write funnel rather than three independently-typed ones. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 
-    /* 1. Explicit songId → verify it exists. */
+    /* 1. Explicit songId → verify it exists.
+
+       @deleted-visible: ingest identity RESOLVER (#1694, this and the ISRC /
+       title matches below) — matching the hidden row preserves single
+       identity: the ingest attaches to it and everything reconciles on
+       restore, instead of minting a duplicate that collides then. */
     $songId = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
     if ($songId !== '') {
         $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -447,11 +461,44 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
         return ['songId' => $songId, 'matched' => true, 'created' => false];
     }
 
-    /* 2. Match by ISRC (exact) — the strongest signal once songs carry one. */
-    $isrc = trim((string)($payload['isrc'] ?? ''));
+    /* 2. Match by ISRC (exact) — the strongest signal once songs carry one.
+     *
+     * #1749 full unification — THREE fixes to this step, all landing
+     * together (§5.5 of the build spec):
+     *   (a) CANONICALISE the payload value first, through the ONE fold
+     *       (ihymns_canonical_isrc(), rule #22 — the same one this file
+     *       already uses at its two write sites below) — a raw-bound compare
+     *       against the CANONICAL tblSongs.Isrc column could miss an
+     *       otherwise-identical value that merely differs in separator style
+     *       or case;
+     *   (b) the gated store arm (songExternalIdUnionArmSql('s.SongId'),
+     *       existence-probed via songExternalIdsTableExists()) — a store-only
+     *       second-recording ISRC now resolves here too, instead of silently
+     *       falling through to step 3's fuzzy TITLE match (a real
+     *       wrong-song-attach risk this closes: two differently-titled songs
+     *       sharing a first word could otherwise collide on the LIKE scan);
+     *   (c) a DETERMINISTIC `ORDER BY s.SongId ASC LIMIT 1` — the bare
+     *       `LIMIT 1` this replaces was storage-order roulette the moment two
+     *       songs legitimately share an ISRC (possible via a manual store
+     *       row), silently picking whichever the engine happened to return
+     *       first.
+     */
+    $isrc = ihymns_canonical_isrc((string)($payload['isrc'] ?? ''));
     if ($isrc !== '') {
-        $st = $db->prepare('SELECT SongId FROM tblSongs WHERE Isrc = ? LIMIT 1');
-        $st->bind_param('s', $isrc);
+        $useIsrcStore = songExternalIdsTableExists($db);
+        $isrcMatch = $useIsrcStore
+            ? '(Isrc = ? OR ' . songExternalIdUnionArmSql('SongId') . ')'
+            : 'Isrc = ?';
+        /* @deleted-visible: identity resolver — see the marker at step 1. */
+        $st = $db->prepare(
+            "SELECT SongId FROM tblSongs WHERE {$isrcMatch} ORDER BY SongId ASC LIMIT 1"
+        );
+        if ($useIsrcStore) {
+            $storeIdType = 'isrc';
+            $st->bind_param('sss', $isrc, $storeIdType, $isrc);
+        } else {
+            $st->bind_param('s', $isrc);
+        }
         $st->execute();
         $row = $st->get_result()->fetch_assoc();
         $st->close();
@@ -469,6 +516,7 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
     if ($norm !== '') {
         $candidates = [];
         /* Exact-title fast path. */
+        /* @deleted-visible: identity resolver — see the marker at step 1. */
         $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title = ? LIMIT 50');
         $st->bind_param('s', $title);
         $st->execute();
@@ -481,6 +529,7 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
             $firstWord = preg_split('/\s+/', $norm)[0] ?? '';
             if ($firstWord !== '' && mb_strlen($firstWord) >= 2) {
                 $like = '%' . $firstWord . '%';
+                /* @deleted-visible: identity resolver — see the marker at step 1. */
                 $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title LIKE ? LIMIT 300');
                 $st->bind_param('s', $like);
                 $st->execute();
@@ -548,16 +597,40 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
     }
     $abbr     = 'Misc';
     $language = trim((string)($payload['language'] ?? 'en')) ?: 'en';
-    $isrc     = trim((string)($payload['isrc'] ?? '')) ?: null;
+    /* #1751 — ELI5: clean up the ISRC the same way the editor already does,
+       so whatever we save here reads identically to a curator-typed one.
+       DETAILED / WHY: ONE fold (rule #22) — the same ihymns_canonical_isrc()
+       the editor funnel uses, so tblSongs.Isrc and the store's IdValue can
+       never diverge by formatting. ihymns_canonical_isrc() cleans, never
+       rejects (identifier_normalize.php:213-216), so no previously-accepted
+       payload starts failing; '' folds to null (nullable column, matches
+       prior shape). @see #1751 */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+    $isrc     = ihymns_canonical_isrc((string)($payload['isrc'] ?? '')) ?: null;
     $upc      = trim((string)($payload['upc'] ?? '')) ?: null;
 
     $db->begin_transaction();
     try {
         /* Generate a unique SongId of the form MISC-NNNN (Misc carries NULL
            Numbers, so derive the suffix from the max existing id). Retry on the
-           rare race. */
+           rare race.
+
+           #1679 A9 — "unique" means unclaimed by tblSongs OR by a live
+           tblSongRedirects row, which is what the shared songRelocateIdTaken()
+           answers. This loop used to ask tblSongs only. Since a songbook move
+           re-keys a song and leaves a permanent redirect behind, an id that no
+           song holds can still be one an old bookmark is being forwarded away
+           from — and getSongById() matches exactly before it consults the
+           redirect layer, so re-issuing it serves that bookmark a DIFFERENT
+           song with 200 OK. Misc is the very book a move is most likely to have
+           emptied a slot in. The seed / retry shape is untouched; only the
+           definition of "taken" is shared. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
         $songId = '';
         for ($try = 0; $try < 5; $try++) {
+            /* @deleted-visible: id MINT SEED (#1694) — a hidden song keeps
+               its id reserved; songRelocateIdTaken() below shares the same
+               contract. */
             $st = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId LIKE ? ORDER BY LENGTH(SongId) DESC, SongId DESC LIMIT 1");
             $like = $abbr . '-%';
             $st->bind_param('s', $like);
@@ -569,12 +642,7 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
                 $next = (int)$m[1] + 1 + $try;
             }
             $candidate = sprintf('%s-%04d', $abbr, $next);
-            $st = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-            $st->bind_param('s', $candidate);
-            $st->execute();
-            $taken = $st->get_result()->fetch_row() !== null;
-            $st->close();
-            if (!$taken) { $songId = $candidate; break; }
+            if (!songRelocateIdTaken($db, $candidate)) { $songId = $candidate; break; }
         }
         if ($songId === '') {
             throw new \RuntimeException('could not allocate a SongId');
@@ -602,6 +670,22 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         }
         $ins->execute();
         $ins->close();
+
+        /* #1751 — ELI5: tell the external-IDs store about the ISRC we just
+           saved, right after we save it, so the two never fall out of sync.
+           DETAILED / WHY: dual-write mirror, inside the SAME transaction as
+           the tblSongs INSERT above — a throw here propagates to the catch
+           below and rolls back the whole create (the mirror is deliberately
+           UNSWALLOWED — a half-mirrored pair is worse than the ingest
+           failing outright; see song_external_ids.php's own doc-block).
+           'ihymns-ingest' is provenance only; ownership stays
+           SourceRef='tblSongs.Isrc' (song_external_ids.php's ownership
+           model — Source and SourceRef are deliberately different axes).
+           @see #1751 */
+        if ($isrc !== null) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+            songExternalIdMirrorIsrc($db, $songId, $isrc, 'ihymns-ingest');
+        }
 
         /* One verse component from the TTML lines, so the provisional song
            renders + is editable in the curator UI. */
@@ -650,8 +734,22 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
 {
     $added = 0;
 
-    /* ISRC / UPC → fill blank columns only (don't clobber a curator's value). */
-    $isrc = trim((string)($payload['isrc'] ?? ''));
+    /* ISRC / UPC → fill blank columns only (don't clobber a curator's value).
+       #1751 — ELI5: no built-in "start a transaction" here, on purpose — this
+       function can be called after its caller has ALREADY committed, and
+       opening a new one here would silently swallow whatever transaction a
+       FUTURE caller has open around it.
+       DETAILED / WHY: api.php:1732 calls this function AFTER
+       lyricsIngest_writeToDb()'s own commit has already happened, so there
+       is no transaction open when we get here — and a begin_transaction()
+       inside a helper silently commits any future caller's outer
+       transaction (the implicit-commit class of bug), so we deliberately do
+       NOT introduce one. This function is documented add-if-absent
+       idempotent, and the re-runnable #1747 backfill card self-heals the
+       crash window between the UPDATE below and the mirror call that
+       follows it. @see #1751 */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+    $isrc = ihymns_canonical_isrc((string)($payload['isrc'] ?? ''));   /* #1751 — one fold (rule #22) */
     $upc  = trim((string)($payload['upc'] ?? ''));
     if ($isrc !== '' || $upc !== '') {
         $i = $isrc !== '' ? $isrc : null;
@@ -660,11 +758,54 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
         $st->bind_param('sss', $i, $u, $songId);
         $st->execute();
         $st->close();
+
+        /* #1751 — ELI5: after saving, go read back what the column ACTUALLY
+           holds now, and mirror THAT value — not the value we were handed.
+           DETAILED / WHY (load-bearing — do not "simplify" this away): the
+           UPDATE above is a COALESCE fill-if-blank. When the column already
+           held a curator's value, the payload value did NOT land — mirroring
+           the payload value would write a store row whose IdValue != the
+           tblSongs.Isrc column, breaking the mirror invariant (store row
+           SourceRef='tblSongs.Isrc' must equal the column byte-for-byte).
+           So: mirror the READ-BACK column value, whatever it now is. This
+           also self-heals a never-mirrored pre-existing column value, and
+           matches the backfill's copy-verbatim semantics for legacy raw
+           values. No transaction here by design — see this function's
+           opening comment / the re-runnable backfill card is the
+           crash-window catch-all. @see #1751 */
+        if ($isrc !== '') {
+            /* @deleted-visible: write-path state read (#1694) — the UPDATE
+               just above wrote into this exact $songId; reading its own
+               column back to learn what to mirror is harmless and
+               restore-preserving (mirrors save_song_core.php's identical
+               "read the row I just targeted" pattern), never a general
+               visibility-filtered listing. */
+            $rb = $db->prepare('SELECT Isrc FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $rb->bind_param('s', $songId);
+            $rb->execute();
+            $rbRow = $rb->get_result()->fetch_row();
+            $rb->close();
+            $storedIsrc = $rbRow !== null ? trim((string)($rbRow[0] ?? '')) : '';
+            if ($storedIsrc !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+                songExternalIdMirrorIsrc($db, $songId, $storedIsrc, 'ihymns-ingest');
+            }
+        }
     }
 
     /* Artists → tblSongArtists add-if-absent. */
     $artist = trim((string)($payload['artist'] ?? ''));
     if ($artist !== '') {
+        /* #960 — this ingest path wrote tblSongArtists directly and never
+           touched the tblMusicians registry, one of the two sibling gaps
+           found alongside the v2 editor regression (the other being v2's
+           credit_upsert, fixed in api2.php). Same fix here: promote every
+           artist name into the registry right after the role-table write.
+           No parts (the payload's `artist` field is a raw, possibly
+           multi-name string split on separators — not a structured
+           first/surname/suffix entry) so this is a Name-only registration/
+           backfill, same as registerMusicianByName($db, $name) alone. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'musician_helpers.php';
         foreach (preg_split('/\s*[\/&,;]\s*/u', $artist) as $a) {
             $a = trim((string)$a);
             if ($a === '') { continue; }
@@ -677,6 +818,7 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
             $st->execute();
             $added += $st->affected_rows;
             $st->close();
+            musicianPromote($db, $a, []);
         }
     }
 

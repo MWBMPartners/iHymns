@@ -182,7 +182,16 @@ final class SongOfTheDay
     {
         [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('Language', $langSubtags);
 
-        $where  = '1=1' . $extraWhere . $langWhere;
+        /* #1694 — the deterministic pool excludes soft-deleted songs. The
+           visibility predicate simply REPLACES the '1=1' seed this WHERE has
+           always composed onto: migrated it reads `IsDeleted = 0`, un-migrated
+           songVisibleSql() degrades to the literal '1=1' — byte-identical to
+           the pre-#1694 statement. (Pool membership shifts the seed→offset
+           mapping the day the migration lands, which is the design: the pick
+           must be deterministic over the VISIBLE pool, or a hidden song would
+           be picked and then 404 on hydrate.) */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $where  = songVisibleSql($this->db, '') . $extraWhere . $langWhere;
         $types  = $extraTypes . $langTypes;
         $params = array_merge($extraParams, $langParams);
 
@@ -239,12 +248,15 @@ final class SongOfTheDay
     {
         /* Exactly the fields the home card renders (verified drives the
            verified-badge); kept minimal per the lightweight-reads rule. */
+        /* #1694 — belt-and-braces: pickId() already excludes hidden songs, but
+           a stale cached id must not hydrate one either. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Verified AS verified
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                WHERE s.SongId = ?";
+                WHERE s.SongId = ? AND " . songVisibleSql($this->db, 's');
         $stmt = $this->db->prepare($sql);
         $stmt->bind_param('s', $songId);
         $stmt->execute();

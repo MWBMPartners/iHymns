@@ -22,6 +22,28 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
    abbreviation badge when it just repeats the title (e.g. "Psalty"/"Psalty"). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
+/* #1725/#1733 — the FIRST real intappsFlag() consumer, wiring the whole
+   IntAppsAPI feature-flag pipeline end to end (design §6.2b: "ship at
+   least one real web-side consumer in the launch PR so the pipeline is
+   exercised, not merely renderable"). Loading intapps_client.php has no
+   side effect (see its own docblock); intappsFlag() itself never throws
+   and never performs HTTP (cache-only), so this call is safe even while
+   the module is entirely dormant (the shipped default) — it returns the
+   compiled-in default `true` instantly, byte-identical to the card
+   simply always rendering, which is exactly today's behaviour.
+   IMPORTANT (rule #6 + rule #30): `/api?page=home` is a SHARED-CACHE
+   fragment. This flag is safe to bake into that cache because it is a
+   GLOBAL, admin/gateway-controlled cosmetic on/off (never per-user, never
+   an auth/content decision), so every viewer who receives this cached
+   fragment sees the identical, correct answer — unlike card-layout's
+   reorder/hide state (#448), which is deliberately kept OUT of the cached
+   markup and applied client-side per viewer instead. Never gate anything
+   per-user here; if a future flag needs per-viewer divergence, it belongs
+   in a client-side apply step (the card-layout.js pattern), not a raw
+   intappsFlag() call inside a cached fragment. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'intapps_client.php';
+$showSongOfTheDayCard = intappsFlag(getDbMysqli(), 'web.sotd_card', true);
+
 /* Load song data for statistics */
 $stats = $songData->getStats();
 $songbooks = $songData->getSongbooks();
@@ -36,9 +58,19 @@ $songbooks = $songData->getSongbooks();
    default order and personalisation happens client-side. */
 $homeCard = static function (string $cardId): string {
     $id = htmlspecialchars($cardId, ENT_QUOTES, 'UTF-8');
+    /* #1151 — the handle strip is NOT aria-hidden: card-layout.js injects
+       real, focusable "Move up" / "Move down" / "Hide this card" buttons
+       into it once edit mode is entered, and an aria-hidden ancestor
+       removes focusable descendants from the accessibility tree while
+       leaving them in the visual/keyboard tab order (WCAG 4.1.2 Name,
+       Role, Value) — a screen-reader user tabbing through could land on
+       a control with no announced name or role at all. Only the
+       decorative grip glyph is hidden from AT; the "Drag to reorder"
+       text stays available as a plain-text label for anyone who does
+       reach the (only-visible-in-edit-mode) strip. */
     return '<div class="card-layout-item" data-card-id="' . $id . '">'
-         . '<div class="card-layout-handle" aria-hidden="true">'
-         . '<i class="bi bi-grip-vertical"></i><span class="ms-1">Drag to reorder</span>'
+         . '<div class="card-layout-handle">'
+         . '<i class="bi bi-grip-vertical" aria-hidden="true"></i><span class="ms-1">Drag to reorder</span>'
          . '</div>';
 };
 $homeCardEnd = '</div>';
@@ -174,10 +206,20 @@ $homeCardEnd = '</div>';
     <div id="recent-songbooks" class="d-none mb-4"></div>
     <?= $homeCardEnd ?>
 
+<?php /* #1725/#1733 — card presence gated by the intappsFlag('web.sotd_card')
+         read above; omitted entirely, not just emptied, when the gateway
+         says it's off. Deliberately a PHP comment, not an HTML one, and the
+         `if`/`endif` tags sit at column 0 with no surrounding blank lines:
+         with the module dormant (the compiled default `true`) this whole
+         block's OUTPUT BYTES must be identical to before this flag existed
+         (the dormancy no-op proof diffs `page=home` byte-for-byte) — any
+         stray literal whitespace/comment text here would leak into the
+         cached fragment even while functionally inert. */ if ($showSongOfTheDayCard): ?>
     <?= $homeCard('song-of-the-day') ?>
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
     <?= $homeCardEnd ?>
+<?php endif; ?>
 
     <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility).
          Moved up from below "Browse by Theme" in #678 so a returning

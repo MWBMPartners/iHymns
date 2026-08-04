@@ -13,8 +13,6 @@
  *    menuEl : the <ul class="dropdown-menu"> to populate.
  * ========================================================================== */
 
-const EDITOR_API_URL = '/manage/editor/api.php';   // legacy GET endpoints (EasyWorship export, read-only)
-
 /* v2 store slices -> the flat song object the legacy serializers expect:
    {title, number, songbook, songbookName, language, copyright, ccli, tuneName,
     writers:[name], composers:[name], arrangers:[name], artists:[name],
@@ -80,9 +78,48 @@ export function mountExportMenu(menuEl, opts) {
         ['EasyWorship (beta)', () => exportEasyWorship()],
     ];
 
+    /**
+     * Max lyric lines per slide — the one per-format export option v1 exposed
+     * and v2 hardcoded to 0 (#1628 item 5, restoring #1065).
+     *
+     * ELI5: how many lines of lyrics go on one presentation slide. 0 means "keep
+     * each verse whole", which is the right answer until a verse is too long for
+     * the screen at the back of the hall.
+     *
+     * Detail: v2 passed a literal `0` to every serializer, so the setting simply
+     * did not exist — a curator preparing for a venue with a small screen had no
+     * way to split slides without leaving the editor. The value is read at CLICK
+     * time, not at mount, so changing the number and then picking a format works
+     * without any re-render or change plumbing.
+     *
+     * Shares v1's localStorage key deliberately: it is one operator preference
+     * about one projector, not a per-editor setting, so a curator who set it in
+     * v1 keeps it in v2 and vice-versa across the #1601 cutover.
+     */
+    const LINES_PER_SLIDE_KEY = 'ihymns_export_lines_per_slide';
+
+    function readStoredLinesPerSlide() {
+        try {
+            const stored = parseInt(window.localStorage.getItem(LINES_PER_SLIDE_KEY), 10);
+            return (!isNaN(stored) && stored > 0) ? Math.min(stored, 20) : 0;
+        } catch (_e) {
+            return 0;   // storage can throw in private mode / with cookies blocked
+        }
+    }
+
+    /* Clamped to the same 0-20 as v1's input. A serializer handed a negative or
+       absurd value produces a file nobody can use, and the failure shows up in
+       ProPresenter rather than here. */
+    function linesPerSlide() {
+        const el = document.getElementById('v2-export-lines-per-slide');
+        if (!el) { return readStoredLinesPerSlide(); }
+        const v = parseInt(el.value, 10);
+        return (!isNaN(v) && v > 0) ? Math.min(v, 20) : 0;
+    }
+
     function runFmt(key) {
         try {
-            const r = fmt[key].exportSong(buildExportSong(store), { maxLinesPerSlide: 0 });
+            const r = fmt[key].exportSong(buildExportSong(store), { maxLinesPerSlide: linesPerSlide() });
             toast('Exported ' + r.filename, 'success');
         } catch (e) {
             toast('Export failed: ' + e.message, 'danger');
@@ -100,10 +137,18 @@ export function mountExportMenu(menuEl, opts) {
     }
 
     /* EasyWorship is generated server-side (SQLite) — trigger a download of the
-       gated GET endpoint (same-origin cookie carries the editor session). */
+       gated GET endpoint (same-origin cookie carries the editor session). Points
+       at the v2 API (api2.php), not the legacy api.php: v1's `easyworship_export`
+       action was one of the endpoints epic #1601's retirement would have broken,
+       so #1678 gave api2.php its own case backed by the same shared helpers. */
     function exportEasyWorship() {
         if (!songId) { toast('Open a song first.', 'danger'); return; }
-        const url = EDITOR_API_URL + '?action=easyworship_export&id=' + encodeURIComponent(songId) + '&maxLinesPerSlide=0';
+        /* Same setting as the client-side formats (#1628 item 5) — EasyWorship is
+           generated server-side, so it travels as a query param instead of an
+           options object, but it must honour the same number or the one
+           server-rendered format would quietly ignore the operator's choice. */
+        const url = '/manage/editor/api2.php?action=easyworship_export&id=' + encodeURIComponent(songId)
+            + '&maxLinesPerSlide=' + encodeURIComponent(String(linesPerSlide()));
         const a = document.createElement('a');
         a.href = url;
         a.rel = 'noopener';
@@ -130,6 +175,60 @@ export function mountExportMenu(menuEl, opts) {
         li.appendChild(btn);
         menuEl.appendChild(li);
     });
+
+    /* ---- the lines-per-slide control, below a divider (v1's layout) ---- */
+    const sepLi = document.createElement('li');
+    const sep = document.createElement('hr');
+    sep.className = 'dropdown-divider';
+    sepLi.appendChild(sep);
+    menuEl.appendChild(sepLi);
+
+    const optLi = document.createElement('li');
+    const optWrap = document.createElement('div');
+    optWrap.className = 'px-3 py-1';
+    const optLabel = document.createElement('label');
+    optLabel.className = 'form-label small mb-1 d-block';
+    optLabel.setAttribute('for', 'v2-export-lines-per-slide');
+    optLabel.textContent = 'Max lines / slide';
+    const optHint = document.createElement('span');
+    optHint.className = 'text-muted';
+    optHint.textContent = ' · presentation formats';
+    optLabel.appendChild(optHint);
+    const optInput = document.createElement('input');
+    optInput.type = 'number';
+    optInput.className = 'form-control form-control-sm';
+    optInput.id = 'v2-export-lines-per-slide';
+    optInput.min = '0';
+    optInput.max = '20';
+    optInput.step = '1';
+    optInput.style.width = '5rem';
+    optInput.value = String(readStoredLinesPerSlide());
+    optInput.title = '0 = keep each verse on one slide. Remembered as your default.';
+    /* The visible label already names this control, so aria-label would only
+       ADD a second, competing accessible name (WCAG 2.5.3 Label in Name).
+       https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html */
+
+    /* Clicking inside the menu must not close it — Bootstrap's dropdown treats a
+       click anywhere in .dropdown-menu as a dismiss trigger, so without this the
+       menu shuts the instant the curator focuses the field and the setting is
+       unreachable. Same reason v1 wraps its control in a plain <li>. */
+    const stop = (e) => e.stopPropagation();
+    optWrap.addEventListener('click', stop);
+    cleanups.push(() => optWrap.removeEventListener('click', stop));
+
+    /* Persist on change so the number is a remembered default, not a per-session
+       one — a curator sets it once for their venue's screen. */
+    const persist = () => {
+        try {
+            window.localStorage.setItem(LINES_PER_SLIDE_KEY, String(linesPerSlide()));
+        } catch (_e) { /* private mode — the value still applies to this export */ }
+    };
+    optInput.addEventListener('change', persist);
+    cleanups.push(() => optInput.removeEventListener('change', persist));
+
+    optWrap.append(optLabel, optInput);
+    optLi.appendChild(optWrap);
+    menuEl.appendChild(optLi);
 
     return function teardown() {
         cleanups.forEach((fn) => fn());

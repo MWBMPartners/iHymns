@@ -104,7 +104,7 @@ function applySort(table, state) {
     if (!target) return;
 
     /* Sort visible rows only — so per-page filters that hide rows
-       (e.g. the search input on credit-people) don't shuffle hidden
+       (e.g. the search input on musicians) don't shuffle hidden
        rows around. The display-none rows stay in their current
        relative position; we only reorder the visible ones. */
     const allRows = Array.from(tbody.rows);
@@ -144,20 +144,62 @@ function bootTable(table) {
 
     const state = { column: null, direction: 'none' };
 
-    /* Decorate every sortable header. */
+    /* Decorate every sortable header.
+     *
+     * ELI5: the clickable part is a real button placed INSIDE the header cell,
+     * instead of turning the header cell itself into a button.
+     *
+     * Detail (#1646 item 2, WCAG 1.3.1 + 4.1.2): this used to do
+     * `th.setAttribute('role', 'button')`, which does not ADD a role — it
+     * REPLACES the element's implicit one. A `<th>` in a `<thead>` row is
+     * implicitly `columnheader`, and that role is what a screen reader uses to
+     * associate each data cell with the column it belongs to. Overwriting it
+     * broke that association across all thirteen opted-in admin lists (#842 /
+     * #844): navigating the body cells stopped reliably announcing which column
+     * you were in.
+     *
+     * It also quietly disabled the very feature it was decorating. `aria-sort`
+     * (set in applySort) is only DEFINED on `columnheader` / `rowheader`, so on
+     * an element re-roled to `button` it is not required to be announced at all
+     * — the sort state was being written to an attribute the role does not
+     * support.
+     *
+     * The ARIA APG pattern for a sortable table is a real <button> nested
+     * inside the <th>, leaving the header cell as the `columnheader` it already
+     * was, with `aria-sort` staying on the <th>. As a bonus the explicit
+     * keydown handler disappears: a real button synthesises click from Enter
+     * and Space natively, which is the same reason #1644 replaced its
+     * `role="button"` spans.
+     * https://www.w3.org/WAI/ARIA/apg/patterns/table/
+     */
     Array.from(table.tHead?.rows[0]?.cells ?? []).forEach(th => {
         if (!th.getAttribute('data-sort-key')) return;
-        th.setAttribute('role', 'button');
-        th.setAttribute('tabindex', '0');
-        th.style.cursor = 'pointer';
         th.classList.add('admin-sort-th');
-        if (!th.querySelector('.sort-arrow')) {
+
+        /* Idempotent: bootstrap can run twice on a re-rendered table, and
+           wrapping an already-wrapped header would nest buttons. */
+        let btn = th.querySelector('.admin-sort-btn');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'admin-sort-btn';
+            /* Move the header's existing content into the button rather than
+               reading textContent and re-writing it — a header may legitimately
+               contain markup (an icon, a <span>, an abbreviation) and
+               flattening it to a string would silently discard that. */
+            while (th.firstChild) { btn.appendChild(th.firstChild); }
+            th.appendChild(btn);
+        }
+
+        if (!btn.querySelector('.sort-arrow')) {
             const arrow = document.createElement('span');
             arrow.className = 'sort-arrow ms-1 small text-muted';
             arrow.style.minWidth = '0.6em';
             arrow.style.display = 'inline-block';
-            th.appendChild(arrow);
+            arrow.setAttribute('aria-hidden', 'true');   /* aria-sort on the <th> is the real signal */
+            btn.appendChild(arrow);
         }
+
         const cycle = () => {
             const key = th.getAttribute('data-sort-key');
             if (state.column !== key) {
@@ -169,13 +211,7 @@ function bootTable(table) {
             }
             applySort(table, state);
         };
-        th.addEventListener('click', cycle);
-        th.addEventListener('keydown', e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                cycle();
-            }
-        });
+        btn.addEventListener('click', cycle);
     });
 
     /* Apply the table's declared default sort, if any. */

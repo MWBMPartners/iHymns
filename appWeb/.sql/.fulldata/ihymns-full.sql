@@ -1378,18 +1378,13 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserPreferences (#310)
--- Server-side preference sync.
+-- tblUserPreferences (#310) — DROPPED (#1671 F5). Removed here as well as in schema.sql
+-- because this file is what a FULL import actually executes: leaving the CREATE here
+-- would resurrect the table on the next full import, exactly as the un-removed seed row
+-- would have resurrected `ccli_validation_enabled` in #1668. It carried no data rows.
+-- Preference sync lives solely on tblUsers.Settings — see appWeb/.sql/schema.sql and
+-- appWeb/public_html/includes/user_settings.php.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPreferences (
-    UserId          INT UNSIGNED    NOT NULL PRIMARY KEY,
-    PreferencesJson JSON            NOT NULL COMMENT 'Theme, font size, default songbook, etc.',
-    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_Prefs_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
@@ -1446,14 +1441,19 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'Bot protection: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
-    ('captcha_site_key', '', 'CAPTCHA provider public site key'),
-    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
-    ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
-    ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
-    ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
-    ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
-    ('ccli_validation_enabled', '0', 'Require valid CCLI licence for copyrighted songs (0=off, 1=on)');
+    -- (#1685) captcha_*/ads_* descriptions reworded to RESERVED — see the
+    -- matching note in schema.sql. Nothing in this codebase reads any of
+    -- these six keys.
+    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.'),
+    ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
+    ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
+    ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
+    ('ads_provider', 'none', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom'),
+    ('ads_publisher_id', '', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built'),
+    -- (#1668) `ccli_validation_enabled` removed: nothing ever read it, and its
+    -- description falsely presented it as the CCLI enforcement switch. See the
+    -- matching note in schema.sql. Do NOT re-add it.
+    ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)');
 
 
 -- Default access tiers (#346)

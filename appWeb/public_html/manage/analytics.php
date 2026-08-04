@@ -16,7 +16,21 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
-requireAdmin();
+requireAuth();
+$currentUser = getCurrentUser();
+/* Gate on the SAME entitlement the nav advertises (#1648 item 1).
+   ELI5: the menu says this page needs the "view_analytics" permission, so the page must
+   check that exact permission rather than a role that happens to match it today.
+   Detail: the gate here was role-based while admin-links.php advertises
+   `view_analytics`, which is admin-editable at runtime via /manage/entitlements. A
+   narrowed override hid the nav link while the page still admitted the old
+   role — the UI presented a revocation that never happened. The default map for
+   `view_analytics` is exactly the role set this replaced, so behaviour is unchanged
+   until someone overrides it. Rule #1587's red flag. */
+if (!$currentUser || !userHasEntitlement('view_analytics', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The view_analytics entitlement is required.');
+}
 
 $activePage  = 'analytics';
 $currentUser = getCurrentUser();
@@ -49,6 +63,9 @@ if ($exportPanel !== '') {
         switch ($exportPanel) {
             case 'top_songs':
                 ihymns_fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
+                /* @deleted-visible: historical analytics (#1694) — a view that
+                   happened, happened; the tblSongs join only labels/groups it.
+                   Hiding a soft-deleted song here would misstate real usage. */
                 $stmt = $db->prepare(
                     'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -65,6 +82,9 @@ if ($exportPanel !== '') {
                 break;
             case 'top_books':
                 ihymns_fputcsv($fp, ['SongbookAbbr', 'Views']);
+                /* @deleted-visible: historical analytics (#1694) — a view that
+                   happened, happened; the tblSongs join only labels/groups it.
+                   Hiding a soft-deleted song here would misstate real usage. */
                 $stmt = $db->prepare(
                     'SELECT s.SongbookAbbr, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -108,6 +128,8 @@ if ($exportPanel !== '') {
 /* --- Top songs last $range days --- */
 $topSongs = [];
 try {
+    /* @deleted-visible: historical analytics (#1694) — see the CSV export
+       marker above; same reasoning for the dashboard panels. */
     $stmt = $db->prepare(
         'SELECT h.SongId, COUNT(*) AS views, s.Title, s.SongbookAbbr, s.Number
            FROM tblSongHistory h
@@ -126,6 +148,8 @@ try {
 /* --- Top songbooks --- */
 $topBooks = [];
 try {
+    /* @deleted-visible: historical analytics (#1694) — see the CSV export
+       marker above; same reasoning for the dashboard panels. */
     $stmt = $db->prepare(
         'SELECT s.SongbookAbbr, COUNT(*) AS views
            FROM tblSongHistory h

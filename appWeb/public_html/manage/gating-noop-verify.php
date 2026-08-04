@@ -41,6 +41,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php'; // appCanonicalHost() for the same-origin probe (security audit)
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 
 requireGlobalAdmin();
 $currentUser = getCurrentUser();
@@ -73,7 +74,10 @@ function gatingNoop_sampleIds(\mysqli $db): array
     ];
     $per = (int)ceil(GATING_NOOP_SAMPLE / count($buckets));
     foreach ($buckets as $where) {
-        $sql = "SELECT SongId FROM tblSongs WHERE {$where} ORDER BY SongId ASC LIMIT {$per}";
+        /* #1694 — sample only VISIBLE songs: the harness fetches each sample
+           id via the public song_detail path, and a hidden pick would 410 and
+           read as a false gating diff. */
+        $sql = "SELECT SongId FROM tblSongs WHERE {$where} AND " . songVisibleSql($db, '') . " ORDER BY SongId ASC LIMIT {$per}";
         $res = $db->query($sql);
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_row()) {

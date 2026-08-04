@@ -175,7 +175,7 @@ extension APIClient {
             IHLog.api.debug(
                 "api.request ok action=\(endpoint.action, privacy: .public) ms=\(elapsedMs, privacy: .public)"
             )
-            return data
+            return Self.unwrapEnvelope(data)
         } catch let error as APIError {
             let elapsedMs = Self.milliseconds(from: start, to: clock.now)
             IHLog.api.error(
@@ -183,6 +183,41 @@ extension APIClient {
             )
             throw error
         }
+    }
+
+    /// #1201/#1761 — unwrap the v2 uniform response envelope.
+    ///
+    /// A v2 server (this client sends `X-API-Version: 2`) answers a 2xx with
+    /// `{ "ok": true, "data": <payload> }`. This returns the raw bytes of
+    /// `<payload>` so every existing `*Decoding.swift` decoder keeps decoding
+    /// its own type UNCHANGED from exactly the payload it always saw — the
+    /// envelope is invisible above this transport boundary.
+    ///
+    /// It is a TOLERANT pass-through, never a new failure point: a body that is
+    /// not a recognisable success envelope — a legacy/cached bare payload from
+    /// a service-worker or HTTP cache written before v2, a streaming/CSV
+    /// response, or anything unexpected — is returned VERBATIM. Errors are
+    /// already surfaced by the HTTP-status `classify()` above (before this
+    /// runs), so this only ever sees 2xx bodies; the `{ ok:false, error }`
+    /// error shape is handled there by status, not here.
+    ///
+    /// Uses `JSONSerialization` (not `Codable`) deliberately: it must inspect
+    /// an arbitrary payload of unknown shape and hand its bytes on untouched.
+    nonisolated private static func unwrapEnvelope(_ data: Data) -> Data {
+        guard
+            let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+            let dict = obj as? [String: Any],
+            dict["ok"] as? Bool == true,
+            dict.keys.contains("data"),
+            let payload = dict["data"],
+            let reserialised = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.fragmentsAllowed]
+            )
+        else {
+            return data
+        }
+        return reserialised
     }
 
     /// Converts a `ContinuousClock` interval into whole milliseconds, for

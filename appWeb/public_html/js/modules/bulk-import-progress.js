@@ -89,12 +89,34 @@ function clearActiveJob() {
  * DOM construction
  * ------------------------------------------------------------------ */
 
+/**
+ * Escape text for HTML. (security sweep)
+ *
+ * ELI5: turns characters that would be read as markup into ones that just
+ * show up as themselves.
+ *
+ * Detail: the `'` mapping was missing. Every one of this codebase's other nine
+ * escapers has it, including the canonical js/utils/html.js::escapeHtml. It was
+ * not exploitable here — all three call sites below emit into TEXT content,
+ * where a bare `'` is inert — but a shared helper that is only safe because of
+ * where it happens to be called today hands the gap to its next caller in
+ * silence. The character matters the moment an escaped value lands in a
+ * SINGLE-quoted attribute (`title='…'`), which nothing stops a later edit doing.
+ *
+ * Guarded by tests/test-html-escapers.js, which derives the helper list from the
+ * tree so a new copy is covered on the day it is written.
+ *
+ * @param {*} s Any value; null/undefined become ''.
+ * @returns {string} HTML-safe text.
+ * @see appWeb/public_html/js/utils/html.js  the canonical implementation
+ */
 function escapeHtml(s) {
     return String(s == null ? '' : s)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function ensureWidget() {
@@ -426,8 +448,30 @@ function renderUploadPhase() {
 function pollOnce() {
     if (!activeJob || isPollingNow) return;
     isPollingNow = true;
+    /* Fallback URL for a stale localStorage job that never carried its own
+       pollUrl (an old import started before pollUrl existed, or a job
+       object that lost it across a schema change). ELI5: if we don't
+       already know where to ask, ask the v2 editor API instead of the
+       retired v1 one.
+
+       WHY api2 / import_zip_status, NOT v1's bulk_import_status (#1629):
+       this module is loaded globally by every admin page
+       (manage-includes/admin-footer.php), so once v1's api.php is retired
+       (the v2 editor cutover, #1601) a stale job in ANY admin's
+       localStorage would poll a dead endpoint forever without this
+       repoint — silently, since the failure just falls into the
+       transient-error backoff branch below rather than surfacing an
+       error. Confirmed a pure URL swap, not a shape change: `out` below
+       is built as `{ ok: r.ok, data: <parsed body> }`, so `out.data.job`
+       already reads api2's top-level `job` either way, and api2's 404 +
+       migration_needed response lines up with the branch immediately
+       below that already handles it. Every field this module reads off
+       `out.data.job` (status/percent/phase_label/per_songbook/
+       skipped_csv_url/filename/errors/total_entries/processed_entries/
+       songs_created/songs_failed/songs_skipped_existing) exists in both
+       handlers' output. */
     const url = activeJob.pollUrl
-        || ('/manage/editor/api?action=bulk_import_status&job_id=' + activeJob.jobId);
+        || ('/manage/editor/api2.php?action=import_zip_status&job_id=' + activeJob.jobId);
     apiFetch(url, { credentials: 'same-origin' })
         .then(r => r.json().then(data => ({ ok: r.ok, data })))
         .then(out => {

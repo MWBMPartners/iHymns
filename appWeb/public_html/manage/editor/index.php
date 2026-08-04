@@ -23,6 +23,64 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 requireEditor();
 
+/* =========================================================================
+ * #1601 SCOPE ITEM 2 — /manage/editor/ NOW SERVES THE v2 EDITOR
+ * =========================================================================
+ *
+ * ELI5: this address used to open the old editor. It now forwards to the new
+ * one, keeping whatever the link asked for. `?legacy=1` still opens this one.
+ *
+ * WHY A REDIRECT AND NOT A NAV CHANGE
+ * -----------------------------------
+ * SIX places link into `/manage/editor/` with instructions in the URL:
+ * admin-links.php, manage/index.php's card, revisions.php (?song=&tab=history),
+ * missing-numbers.php (?songbook=#number=), duplicate-songs.php (?song=) and
+ * the public song page's Edit button (?song=). Changing only the nav href would
+ * leave the other five pointing at v1 — and after v1 is retired, at nothing.
+ * Redirecting the ROUTE fixes all six at once and touches none of them.
+ *
+ * The query string is forwarded verbatim; the browser carries the FRAGMENT
+ * (`#number=412`, which missing-numbers.php emits) across a 302 by itself,
+ * since a fragment is never sent to the server in the first place.
+ *
+ * WHY 302 AND NOT 301
+ * -------------------
+ * 301 is cached by the browser, sometimes indefinitely. If this cutover has to
+ * be reverted, every admin who visited once would keep being sent to v2 from
+ * their own cache, with no server-side way to stop it. 302 keeps the decision
+ * on the server where it can be changed.
+ *
+ * THE ESCAPE HATCHES, in order of how fast they act
+ * -------------------------------------------------
+ *   1. `?legacy=1` — per-visit, immediate, no state. Also what editor2.php's
+ *      "Legacy" button links to (it must NOT link to bare /manage/editor/, or
+ *      it would bounce straight back here — an infinite-feeling loop).
+ *   2. `tblAppSettings.editor_v2_default = '0'` — fleet-wide, no deploy. An
+ *      ABSENT key means v2, so no migration is required (rule #19 is about
+ *      schema; this is a key-value row). getAppSetting() returns its default on
+ *      ANY DB error, so a database wobble sends people to v2 rather than
+ *      throwing here.
+ *   3. Reverting this commit.
+ *
+ * WHAT THIS DOES NOT DO — deliberately
+ * ------------------------------------
+ * It does not DELETE v1 (#1601 scope item 3). Removing the fallback in the same
+ * change that makes v2 the default would leave no way back if something only
+ * shows up under real curator load — and this whole branch's verification is
+ * static: no MySQL, no browser, nobody has clicked any of it. #1601 also gates
+ * retirement on cross-branch state (beta and main are a month behind on
+ * unrelated histories, sharing ONE database) that cannot be checked from a
+ * build container. Retirement stays a separate, later change.
+ * ========================================================================= */
+if (($_GET['legacy'] ?? '') !== '1') {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+    if (getAppSetting('editor_v2_default', '1') !== '0') {
+        $_qs = $_SERVER['QUERY_STRING'] ?? '';
+        header('Location: /manage/editor/editor2.php' . ($_qs !== '' ? '?' . $_qs : ''), true, 302);
+        exit;
+    }
+}
+
 $currentUser = getCurrentUser();
 
 /* CSRF token mint — MUST run BEFORE any HTML output (mirrors editor2.php:34).
@@ -69,25 +127,25 @@ try {
          partial directly. -->
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php'; ?>
 
-    <!-- Bootstrap 5.3 CSS — loaded from CDN for convenience (no local dependency) -->
-    <link
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-        rel="stylesheet"
-        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-        crossorigin="anonymous"
-    >
-
-    <!-- Bootstrap Icons — icon font for UI controls (drag handles, buttons, etc.) -->
-    <link
-        rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-        integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-        crossorigin="anonymous"
-    >
+    <?php
+    /* #1676 — Bootstrap + Bootstrap-Icons CSS from the ONE shared emitter.
+       This page did carry `integrity` (unlike editor2.php / import2.php), but it
+       pinned 5.3.3 while APP_CONFIG says 5.3.6 — so the v1 and v2 editors were
+       running different Bootstrap builds, and neither matched the rest of admin.
+       Sourcing both from the registry is what makes a version bump a one-line
+       change instead of a four-file hunt. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    ?>
 
     <!-- Shared iHymns palette (public site) + admin/editor styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/admin.css') ?>">
+    <!-- Accessibility modes (#1643). The editor has a bespoke <head> rather than
+         including head-libs.php, so it needs this link of its own — that
+         divergence is exactly why it was missed the first time. Must stay AFTER
+         admin.css so the high-contrast !important rules win. -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/accessibility.css') ?>">
 
     <!-- =================================================================
          INLINE STYLES — reserved for genuinely editor-specific tweaks only.
@@ -1548,12 +1606,10 @@ try {
     <!-- Toast notification container — dynamically populated by editor.js -->
     <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
 
-    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other interactive components -->
-    <script
-        src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
-        crossorigin="anonymous"
-    ></script>
+    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other
+         interactive components. #1676: emitted by the shared helper so the version
+         tracks APP_CONFIG rather than a literal pinned here. -->
+    <?= ihymns_bootstrap_js_script() ?>
 
     <!-- Revision history modal (#400). Populated on demand when the
          History button is clicked; shows the timeline + side-by-side

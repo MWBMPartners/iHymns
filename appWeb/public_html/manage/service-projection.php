@@ -51,7 +51,17 @@ if (!isAuthenticated()) {
 $currentUser = getCurrentUser();
 $role   = (string)($currentUser['role'] ?? '');
 $userId = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
-$isSuper = ($role === 'global_admin' || $role === 'admin');
+/* Entitlement, not a hardcoded role list (#1648 item 1, rule #1587).
+   ELI5: check the permission the menu advertises, not two role names.
+   Detail: `manage_organisations` defaults to ['admin','global_admin'] — exactly
+   the list this replaces — so behaviour is unchanged until an admin overrides
+   it via /manage/entitlements, which is the point of having that UI.
+   NOTE the org-admin branch below is deliberately KEPT: someone who administers
+   an organisation but holds neither super role still needs this page, and the
+   entitlement alone cannot express that. Replacing the whole gate with the
+   entitlement would have locked those users out — a functional regression
+   dressed as a security fix. */
+$isSuper = userHasEntitlement('manage_organisations', $role);
 $adminOrgIds = $isSuper ? [] : userIsOrgAdminOf($userId);
 if (!$isSuper && empty($adminOrgIds)) {
     http_response_code(403);
@@ -251,7 +261,7 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
 
         /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing a
            script-closing sequence (or < > & ' ") can't break out of this inline
-           module — the established convention (tiers.php, credit-people.php).
+           module — the established convention (tiers.php, musicians.php).
            NOTE: this comment must not write that closing sequence literally
            either; the HTML parser terminates the <script> on the raw bytes
            regardless of JS comment syntax. */

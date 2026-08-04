@@ -19,12 +19,43 @@ declare(strict_types=1);
  *   - DurationMs  INT UNSIGNED    — wall-clock time of the logged op
  *   - idx_Result, idx_RequestId   — for the common debug queries
  *
- * Idempotent — re-running is safe. Columns / indexes that already
- * exist are skipped with a "skipped" note.
+ * NOT DESTRUCTIVE. Every statement is an ADD — no column is dropped,
+ * retyped or rewritten, and no existing row is touched. The four new
+ * NOT NULL columns all carry a DEFAULT so the implicit backfill MySQL
+ * performs on existing rows is a harmless empty string / 'success';
+ * DurationMs is NULLable because "we did not time this one" is a real
+ * and different answer from "it took 0 ms". Rolling back is five DROP
+ * COLUMNs, and the only loss is instrumentation history.
+ *
+ * IDEMPOTENT — re-running is safe. Each column is fronted by an
+ * INFORMATION_SCHEMA.COLUMNS probe and each index by an
+ * INFORMATION_SCHEMA.STATISTICS probe, so a second run prints seven
+ * "[skip]" lines and issues no DDL. The probes are per-object and
+ * independent, which is what lets a run that died half-way through
+ * resume cleanly rather than needing a manual repair.
+ *
+ * OPERATOR VIEW. Card "Activity Log Expansion (#535)" on
+ * /manage/setup-database; its registry probe keys on the presence of
+ * tblActivityLog.RequestId.
+ *
+ * SCHEMA MIRROR. All five columns and both indexes are declared on
+ * tblActivityLog in appWeb/.sql/schema.sql, which is what a FRESH
+ * install reads. Rule #19 of .claude/CLAUDE.md requires the two
+ * declarations to be byte-identical, COMMENT text included, so that an
+ * install built by migrations and one built from schema.sql are the
+ * same shape. CI only compares which columns EXIST, so wording drift
+ * here is invisible until /manage/schema-audit (#518) reports it.
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-activity-log-expand.php
  *   Web: /manage/setup-database → "Activity Log Expansion Migration"
+ *
+ * The five doctags below are how the schema-coverage scanner
+ * (includes/schema_audit.php, "Signal 3") learns what this file adds.
+ * They are belt-and-braces here — each column gets its own ALTER, so
+ * the literal-ALTER regex ("Signal 1") already sees all five — but
+ * rule #19 asks for one tag PER column because that regex only catches
+ * the first ADD COLUMN of a multi-column ALTER.
  *
  * @migration-adds tblActivityLog.Result
  * @migration-adds tblActivityLog.UserAgent
@@ -127,6 +158,12 @@ if (!_migActLog_tableExists($mysqli, 'tblActivityLog')) {
    column doesn't exist on this DB yet (e.g. the deployment is so old
    the IpAddress column still has a different neighbour) so the migration
    never fails on cosmetic positioning. */
+/* Note on Result: an ENUM here predates rule #20 (VARCHAR + an app-side
+   allow-list for any vocabulary that might grow) and is grandfathered.
+   The practical consequence is that a fourth outcome — 'partial', say —
+   would cost an ALTER TABLE on what is one of the largest tables in the
+   database, which is exactly the second migration rule #20 exists to
+   avoid. Do not copy this shape into a new table. */
 $steps = [
     ['col' => 'Result', 'sql' => "ALTER TABLE tblActivityLog
         ADD COLUMN Result ENUM('success','failure','error') NOT NULL DEFAULT 'success'
@@ -150,6 +187,32 @@ $steps = [
         AFTER Method"],
 ];
 
+/**
+ * Strip a trailing `AFTER <col>` clause when its anchor column is not on
+ * this database.
+ *
+ * ELI5: the ALTERs above ask MySQL to slot each new column next to a
+ * particular neighbour, purely so the table LOOKS like schema.sql. If
+ * that neighbour isn't there, we drop the request rather than let a
+ * cosmetic detail fail the whole migration.
+ *
+ * Detail: `AFTER x` is ordinal positioning only — it changes nothing a
+ * query can observe, because SQL addresses columns by name. But MySQL
+ * treats a missing anchor as a hard error (ER_BAD_FIELD_ERROR), so on a
+ * deployment old enough that IpAddress or EntityId is absent or renamed,
+ * every ALTER here would fail on positioning alone. Dropping the clause
+ * lands the column at the end of the table instead: a different ordinal
+ * position from a fresh install, and nothing else. Rule #19's
+ * byte-identity requirement is about the column DECLARATION, which is
+ * unaffected.
+ * https://dev.mysql.com/doc/refman/8.0/en/alter-table.html
+ *
+ * Fragility worth knowing about: the regex takes the FIRST `AFTER` token
+ * anywhere in the statement, and each statement carries a COMMENT string
+ * BEFORE its AFTER clause. None of the five comments currently contains
+ * the word, but one that did would be mistaken for the clause and the
+ * preg_replace would then corrupt the comment text.
+ */
 function _migActLog_resolveAfterClause(mysqli $db, string $tbl, string $sql): string
 {
     if (preg_match('/\sAFTER\s+([A-Za-z_][A-Za-z0-9_]*)\b/i', $sql, $m)) {
@@ -173,7 +236,15 @@ foreach ($steps as $s) {
     _migActLog_out("[add ] tblActivityLog.{$s['col']}.");
 }
 
-/* Indexes — narrow, one per common debug-query pattern. */
+/* Indexes — narrow, one per common debug-query pattern.
+
+   These are deliberately WARN-and-continue where the column steps above
+   are fatal: a missing column breaks the writer (the instrumentation
+   pass has nowhere to put its value), whereas a missing index only makes
+   two admin queries slower. On a large tblActivityLog an index build can
+   also exceed the request's time limit, and failing the whole card for
+   that would be the wrong trade — the columns are already in place and
+   the index can be added by hand later. */
 $indexSteps = [
     'idx_Result'    => 'CREATE INDEX idx_Result    ON tblActivityLog (Result)',
     'idx_RequestId' => 'CREATE INDEX idx_RequestId ON tblActivityLog (RequestId)',

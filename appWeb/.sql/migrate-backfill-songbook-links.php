@@ -15,14 +15,40 @@ declare(strict_types=1);
  *   tblSongbooks.InternetArchiveUrl → link type 'internet-archive'
  *   tblSongbooks.WikipediaUrl       → link type 'wikipedia'
  *
- * The legacy columns are NOT dropped — they stay as read-fallbacks for
- * one release cycle. A separate later migration retires them once the
- * public site has been on the new system long enough.
+ * NOT DESTRUCTIVE. This is a pure DATA migration — it creates no schema and
+ * deletes nothing. The legacy columns are NOT dropped: they stay as
+ * read-fallbacks for one release cycle. A separate later migration retires
+ * them once the public site has been on the new system long enough. The
+ * "undo", if ever needed, is to delete the copied rows from
+ * tblSongbookExternalLinks; the originals are still sitting in tblSongbooks.
  *
- * Idempotent — uses INSERT…ON DUPLICATE KEY UPDATE keyed on
- * (SongbookId, LinkTypeId, Url) so re-runs upsert without duplicating.
+ * HOW IDEMPOTENCY IS ACHIEVED — read this before changing the SQL.
+ * There is NO unique key on tblSongbookExternalLinks (check schema.sql: it has
+ * only idx_book / idx_type). So there is nothing for ON DUPLICATE KEY or
+ * INSERT IGNORE to fire on, and a naive re-run would duplicate every link.
+ * What actually makes a re-run a no-op is the correlated `NOT EXISTS` subquery
+ * in the INSERT…SELECT below, which suppresses any row whose exact
+ * (SongbookId, LinkTypeId, Url) triple is already present. The registry probe
+ * (migration-registry.php) is the mirror image of that same subquery, so the
+ * card flips to applied exactly when the INSERT would insert nothing.
+ *
+ * ⚠ The limit of that guarantee: idempotent means "running twice is the same
+ * as running once", NOT "running later is harmless". The guard keys on Url, so
+ * if a curator EDITS or DELETES a migrated link and the migration is then
+ * re-run, the legacy URL from tblSongbooks is inserted again — the curator's
+ * change looks undone. That is a consequence of keeping the legacy columns as
+ * fallbacks; it disappears when the retire-columns migration lands.
+ *
  * Skipped silently if the new tables aren't present yet (the schema
- * migration migrate-external-links.php has to land first).
+ * migration migrate-external-links.php has to land first) — a fresh install
+ * gets the tables from schema.sql, but on a long-running install migrations
+ * are applied by hand from the dashboard and may be applied out of order.
+ *
+ * OPERATOR VIEW: /manage/setup-database → "Backfill Songbook URL columns →
+ * External Links (#833)" → button "Run Songbook Links Backfill". Each mapping
+ * reports either "[seed] … backfilled N links" or "[skip] … already on the new
+ * system"; a fully-migrated install shows three [skip] lines and "Total
+ * inserted: 0".
  *
  * @migration-modifies tblSongbookExternalLinks
  */
@@ -99,9 +125,19 @@ if (!_migBfBookLinks_tableExists($mysqli, 'tblSongbookExternalLinks')
     return;
 }
 
-/* Resolve the three target link-type ids. Slugs are seeded by the
-   schema migration, so they should exist; fall through gracefully
-   if a curator deactivated one. */
+/* Resolve the three target link-type ids up front — one query for all three,
+   because the per-mapping loop below needs the Id, and tblSongbookExternalLinks
+   stores LinkTypeId, not the slug.
+
+   Slugs are seeded by migrate-external-links.php, so all three should be here.
+   A slug that is MISSING is handled gracefully: the loop below logs a [skip]
+   for that mapping and moves on, and the registry probe joins on the same
+   tblExternalLinkTypes row, so a missing type makes probe and migration agree
+   (nothing to do) rather than leaving the card stuck pending.
+
+   Note this deliberately does NOT filter on IsActive: a curator hiding a link
+   type from the pickers must not silently stop the historical URLs on that type
+   from being migrated across. Only actually DELETING the type row skips it. */
 $slugToId = [];
 $res = $mysqli->query("SELECT Id, Slug FROM tblExternalLinkTypes
                         WHERE Slug IN ('official-website', 'internet-archive', 'wikipedia')");
@@ -131,12 +167,25 @@ foreach ($mappings as $col => $slug) {
     }
     $linkTypeId = $slugToId[$slug];
 
-    /* SELECT the populated values, INSERT IGNORE into the new table.
-       UNIQUE constraint on the new table is by (SongbookId,
-       LinkTypeId, Url) — we don't have one, but INSERT IGNORE based
-       on the primary key is enough; combined with the WHERE-NOT-EXISTS
-       pattern below it's idempotent. Use plain INSERT…SELECT plus a
-       NOT EXISTS guard to skip rows that already match. */
+    /* ── The idempotency mechanism ──────────────────────────────────────────
+       ELI5: "copy every songbook's legacy URL into the links table, but skip
+       any I've already copied."
+
+       Detail: a set-based INSERT…SELECT (one round trip per mapping, not one
+       per songbook) whose correlated NOT EXISTS suppresses rows already
+       present with the same (SongbookId, LinkTypeId, Url). This subquery IS
+       the idempotency — the table carries no unique key, so INSERT IGNORE /
+       ON DUPLICATE KEY would have nothing to fire on and would happily
+       duplicate on every run.
+
+       The {$col} interpolation is safe under CLAUDE.md rule #5: $col is a KEY
+       of the hardcoded $mappings array above (a PHP literal), never request
+       data, and it has just been checked against INFORMATION_SCHEMA. The two
+       runtime VALUES are bound. Column identifiers cannot be bound as
+       parameters in any case (https://www.php.net/manual/en/mysqli-stmt.bind-param.php).
+
+       LENGTH(TRIM(...)) > 0 rather than <> '': a legacy column holding only
+       whitespace is a non-link and must not become a row in the new table. */
     $sql = "INSERT INTO tblSongbookExternalLinks
                 (SongbookId, LinkTypeId, Url)
             SELECT b.Id, ?, b.{$col}

@@ -74,6 +74,9 @@ function songPublicId_generate(int $len = SONG_PUBLIC_ID_LENGTH): string
  */
 function songPublicId_mintUnique(\mysqli $db, int $maxTries = 12): string
 {
+    /* @deleted-visible: uniqueness probe (#1694) — a soft-deleted song's
+       PublicId stays RESERVED (the row exists); filtering would let the mint
+       hand out a colliding permalink id. */
     $stmt = $db->prepare('SELECT 1 FROM tblSongs WHERE PublicId = ? LIMIT 1');
     for ($i = 0; $i < $maxTries; $i++) {
         $cand = songPublicId_generate();
@@ -105,6 +108,10 @@ function songPublicId_resolveToSongId(\mysqli $db, string $id): string
     if ($id === '' || !songPublicId_looksLikePublicId($id) || !songPublicId_columnReady($db)) {
         return $id;
     }
+    /* @deleted-visible: pure RESOLVER (#1694) — a deleted song's PublicId
+       must still resolve to its SongId, or songSoftDeletedHolds() could never
+       recognise a PublicId-shaped request and the 410 would decay to 404.
+       Visibility is applied by the FOLLOW-UP read, never the resolver. */
     $stmt = $db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
     $stmt->bind_param('s', $id);
     $stmt->execute();

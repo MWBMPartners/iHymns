@@ -38,20 +38,16 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    attributes set before computing layout. No FOUC. */
 require __DIR__ . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
 
-$_bs = APP_CONFIG['libraries']['bootstrap'] ?? null;
-if ($_bs && !empty($_bs['css_cdn'])):
-    ?>
-    <link rel="stylesheet"
-          href="<?= htmlspecialchars((string)$_bs['css_cdn'], ENT_QUOTES) ?>"
-          integrity="<?= htmlspecialchars((string)($_bs['css_sri'] ?? ''), ENT_QUOTES) ?>"
-          crossorigin="anonymous">
-    <?php
-endif;
+/* #1676 — Bootstrap + Bootstrap-Icons CSS come from the ONE shared emitter.
+   This partial used to inline both <link>s (the framework from APP_CONFIG, the
+   icon font hardcoded). That was fine for the pages that include this file, but
+   four pages with a bespoke <head> could not adopt it — see the doc-block in
+   bootstrap_assets.php for why they drifted to three different versions and
+   dropped SRI. The markup now lives in one function both they and this partial
+   call. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+echo ihymns_bootstrap_css_links();
 ?>
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-          crossorigin="anonymous">
 <?php
 /* Shared app + admin CSS — paths relative to public_html root.
    `dirname(__DIR__, 2)` from manage/includes/head-libs.php = public_html/. */
@@ -59,6 +55,21 @@ $_publicRoot = dirname(__DIR__, 2);
 ?>
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_publicRoot . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_publicRoot . '/css/admin.css') ?>">
+<?php
+/* Accessibility modes — MUST load on admin too (#1643).
+   ELI5: admin pages were telling the browser "this user wants high contrast"
+   and then never shipping the stylesheet that knows what high contrast means.
+   Detail: admin-theme-init.php stamps data-ihymns-contrast / data-ihymns-cvd on
+   <html> for admin pages exactly as the public site does, but accessibility.css
+   — the ONLY file with rules for those attributes — was linked solely from the
+   public shell (index.php). So the two accessibility-specific modes were dead
+   across all of /manage and the editor, silently: light/dark still worked,
+   because that is Bootstrap's own data-bs-theme handled by admin.css, which is
+   why nobody noticed. Same class as #955 — attribute plumbing landed, the
+   stylesheet did not follow. Loaded AFTER admin.css so its !important overrides
+   win over the admin palette. */
+?>
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_publicRoot . '/css/accessibility.css') ?>">
 <?php
 /* External-link provider auto-detect (#841) — single source of truth
    for URL → tblExternalLinkTypes.Slug mapping, exposed on

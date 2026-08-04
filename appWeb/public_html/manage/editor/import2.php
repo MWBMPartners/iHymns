@@ -35,11 +35,26 @@ $csrf = csrfToken();
 /* Single-file format key => friendly label. ZIP is handled separately (async). */
 $formats = [
     'auto'        => 'Auto-detect from file',
+    /* #1633 — .json is shared by two formats. Auto-detect content-sniffs them
+       apart (conservatively, favouring VideoPsalm), but both stay explicitly
+       pickable so an operator can override a sniff that guessed wrong. */
+    'ihymns'      => 'iHymns interchange (.json)',
     'videopsalm'  => 'VideoPsalm (.json)',
     'openlp'      => 'OpenLP / OpenLyrics (.xml)',
+    /* #882 — auto-detect on a .xml/.opensong upload already tries BOTH
+       OpenLyrics and OpenSong (_bulkImport_processXmlAuto()); this entry
+       lets an operator pick OpenSong explicitly when they know the format
+       and want to skip the sniff (or override a sniff that guessed wrong —
+       same #1633 precedent as the iHymns/VideoPsalm .json pair above). */
+    'opensong'    => 'OpenSong (.xml)',
     'pro6'        => 'ProPresenter 6 (.pro6)',
     'freeshow'    => 'FreeShow (.show)',
     'proclaim'    => 'Proclaim (.txt)',
+    /* #1264 — ChordPro was already accepted by api2.php's import_file
+       (auto-mapped from .cho/.chopro/.crd/.chord/.pro) but had no dropdown
+       entry and was excluded from the file picker's `accept` list, so an
+       operator could never actually reach it from this page. */
+    'chordpro'    => 'ChordPro (.cho, .chopro, .crd, .chord, .pro)',
     'pptx'        => 'PowerPoint (.pptx)',
     'easyworship' => 'EasyWorship (.db)',
 ];
@@ -50,10 +65,20 @@ $formats = [
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
     <title>Song Editor v2 — import</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php
+    /* #1676 — Bootstrap CSS from the shared emitter. Same story as editor2.php:
+       hardcoded 5.3.3 with no `integrity`, while the registry says 5.3.6. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    $_pubRoot = dirname(__DIR__, 2);
+    ?>
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_pubRoot . '/css/app.css') ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_pubRoot . '/css/admin.css') ?>">
+    <!-- Accessibility modes (#1643). This shell includes admin-theme-init.php
+         below, so it DOES stamp data-ihymns-contrast / data-ihymns-cvd on <html>
+         — without this link it stamps an intent it then ships no CSS to honour.
+         Must stay after admin.css so the high-contrast !important rules win. -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_pubRoot . '/css/accessibility.css') ?>">
     <?php
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }
@@ -76,7 +101,7 @@ $formats = [
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label small mb-1" for="imp-file">File</label>
-                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.pro6,.show,.txt,.pptx,.db,.zip">
+                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.pptx,.db,.zip">
                 </div>
                 <div class="row g-3">
                     <div class="col-12 col-sm-7">
@@ -172,6 +197,11 @@ $formats = [
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/manage/editor/api2.php?action=import_zip', true);
             xhr.withCredentials = true;
+            /* api2.php gates EVERY POST on this header and has no X-CSRF-Token
+               fallback (#1677), so without it the upload 403s before any import
+               logic runs. XMLHttpRequest does NOT add it by itself — that is
+               jQuery — so it must be set explicitly. */
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
             xhr.setRequestHeader('X-CSRF-Token', csrf());
             xhr.setRequestHeader('Accept', 'application/json');
             xhr.upload.onprogress = (e) => {
@@ -214,7 +244,13 @@ $formats = [
             fetch('/manage/editor/api2.php?action=import_file', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() },
+                /* X-Requested-With is what api2.php actually gates on (#1677);
+                   X-CSRF-Token alone is not accepted. See the XHR above. */
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-Token': csrf(),
+                },
                 body: fd,
             }).then((res) => res.json().catch(() => ({ ok: false, error: 'HTTP ' + res.status })))
               .then((data) => {

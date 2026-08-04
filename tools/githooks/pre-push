@@ -1,0 +1,94 @@
+#!/bin/sh
+#
+# iHymns — pre-push guard
+#
+# WHY THIS EXISTS
+# ---------------
+# On 2026-07-31 a session pushed to `claude/apple-branches-cleanup-export-7mxhpo`
+# — a dead branch the owner had already deleted from the remote — while the
+# actual work was on `claude/wave3-fixes`. It resurrected the branch on GitHub
+# and cost the owner a cleanup.
+#
+# A warning about exactly this was ALREADY written, in two places
+# (.claude/ProjectBrief.md and the handoff's 60-second resume). It was read
+# after the mistake, not before it. That is the definition of a missing
+# mechanism rather than a missing note — CLAUDE.md rule #35: "a comment saying
+# 'keep these in sync' is the failure, not the fix." So this is a hook, not a
+# third paragraph of prose.
+#
+# WHAT IT BLOCKS
+# --------------
+#  1. Any push to a branch on the DEAD list below. These are deliberately
+#     deleted; re-creating one is never intentional.
+#  2. Pushing a local branch that is NOT the one currently checked out. This is
+#     the actual shape of the bug: the session was ON wave3-fixes and ran
+#     `git push -u origin <other-branch>`, which pushes that OTHER local
+#     branch's tip, silently, with no indication you just published something
+#     you were not working on.
+#
+# Rule 2 is the general guard; rule 1 is belt-and-braces for known-dead names.
+#
+# INSTALL (not automatic — .git/hooks is not tracked by git):
+#     git config core.hooksPath tools/githooks
+# Verify with:  git config core.hooksPath
+#
+# BYPASS, if you genuinely mean it:
+#     IHYMNS_ALLOW_ANY_PUSH=1 git push origin <branch>
+# Deliberately an env var and not `--no-verify`, because CLAUDE.md forbids
+# `--no-verify` outright and this must not train anyone to reach for it.
+
+set -e
+
+# Branches that were deleted on purpose. Add to this list, never remove from it
+# without checking the branch is genuinely wanted back.
+DEAD_BRANCHES="claude/apple-branches-cleanup-export-7mxhpo"
+
+if [ "${IHYMNS_ALLOW_ANY_PUSH:-0}" = "1" ]; then
+    echo "pre-push: IHYMNS_ALLOW_ANY_PUSH=1 — guard bypassed deliberately." >&2
+    exit 0
+fi
+
+current_branch=$(git symbolic-ref --short -q HEAD || echo "")
+
+# stdin gives one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A delete has local sha of all zeroes; deletes are always allowed, since the
+# whole point of this guard is to keep dead branches dead.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_ref" ] && continue
+
+    case "$local_sha" in
+        *[!0]*) ;;            # has a non-zero char -> a real push
+        *) continue ;;        # all zeroes -> a delete, allow it
+    esac
+
+    remote_branch=${remote_ref#refs/heads/}
+    local_branch=${local_ref#refs/heads/}
+
+    for dead in $DEAD_BRANCHES; do
+        if [ "$remote_branch" = "$dead" ]; then
+            echo "" >&2
+            echo "pre-push: REFUSED — '$dead' is a deliberately deleted branch." >&2
+            echo "" >&2
+            echo "  Pushing it re-creates it on the remote. If you are following a" >&2
+            echo "  'designated branch' line in a session prompt or task config, that" >&2
+            echo "  line is STALE — check 'git branch -vv' for where work actually is." >&2
+            echo "" >&2
+            exit 1
+        fi
+    done
+
+    if [ -n "$current_branch" ] && [ "$local_branch" != "$current_branch" ]; then
+        echo "" >&2
+        echo "pre-push: REFUSED — pushing '$local_branch' while checked out on '$current_branch'." >&2
+        echo "" >&2
+        echo "  'git push -u origin $local_branch' pushes THAT branch's tip, not your" >&2
+        echo "  current work. Your commits are on '$current_branch'." >&2
+        echo "" >&2
+        echo "  Did you mean:  git push -u origin $current_branch" >&2
+        echo "" >&2
+        exit 1
+    fi
+done
+
+exit 0

@@ -404,6 +404,35 @@ Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migra
 - Clearer separation in the directory tree
 - Matches original repo convention
 
+### Catalogue expansion (#1741) — the shared modules you MUST reuse, not re-fork
+
+The MusicBrainz-shaped catalogue rework (Musicians / Works / Tunes / Songs — identifiers,
+disambiguation, profile pages, alias URLs; on `claude/wave3-fixes` pre-merge) is built on a small set
+of **single-home** modules. The epic's whole point is reuse-don't-duplicate (the modularity rule);
+before adding catalogue code, reach for these:
+
+- **Identifier normalise + resolve** — `includes/identifier_normalize.php` (`IHYMNS_ID_SCHEMES`
+  registry + `ihymns_canonical_iswc/_ccli/_bowi/_isrc/_isni/_ipi` + `ihymns_normalize_identifier`)
+  and `includes/identifier_resolve.php` (`ihymns_resolve_identifier`, table/column-gated, `bind_param`).
+  The alias routes `/isrc /iswc /ccli /ipi /isni /bowi` all resolve through these — ONE normaliser,
+  ONE resolver, never five near-copies (P3, `dc9b5067`).
+- **Recording-ID vocabulary** — `includes/media_identifiers.php` (`RECORDING_EXTERNAL_ID_TYPES` +
+  pure validators, no `\mysqli`). The `tblSongExternalIds` key/value store is the comprehensive home
+  for recording IDs (MBID / Spotify / Genius / ISRC). The `tblSongs.Isrc` → store **dual-write**
+  mirror is `includes/song_external_ids.php::songExternalIdMirrorIsrc()` (SourceRef-keyed ownership —
+  manual rows never touched; #1749).
+- **Tune find-or-create + metre** — `includes/tune_helpers.php`: `tuneFindOrCreateByName()` is the ONE
+  tune lookup funnel; `ihymns_meter_normalize()` folds metre spellings (CM / C.M. / 86.86 → `86.86`).
+  In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the ONE place `tblSongs.TuneName`
+  and `TuneId` are written — always together, so a tune edit can never strand the registry link.
+  Every `TuneName` write path (whole-song save, bulk import, revision-restore) funnels through it;
+  `tests/php/test-tune-lockstep.php` enforces that from the tree (P5c).
+- **Typeahead** — `js/modules/place-search.js` is GENERALISED (additive `searchUrl` / `parseResults`
+  / `pickMode` / `noun` options, byte-equivalent defaults), not forked, to back both the place pickers
+  and the editor tune typeahead. A new typeahead consumer passes options; it does not copy the module.
+- **Shared external-links panel** — `includes/partials/external-links-panel.php` for the Work / Tune /
+  Musician profile external-links editors (rule #12/#15).
+
 ---
 
 ## 🚀 Deployment Architecture
@@ -494,6 +523,10 @@ Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migra
 # Clone the repository
 git clone https://github.com/MWBMPartners/iHymns.git
 cd iHymns
+
+# Install the repo's git hooks (tools/githooks/pre-push guards against
+# resurrecting a deleted branch or pushing the wrong local branch)
+git config core.hooksPath tools/githooks
 
 # Parse song data (generates data/songs.json)
 npm run parse-songs
@@ -1170,9 +1203,17 @@ crucially — **never go stale**. State-changing AJAX endpoints call this instea
 - A **top-level POST gate on ALL legacy `/manage/editor/api.php` writes** — every
   state-changing POST must pass `validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)`
   or it 403s; GET reads are unaffected. The editor clients already send `X-Requested-With`.
-- The **v2 editor `api2.php`** uses the same same-origin signal directly
-  (`X-Requested-With: XMLHttpRequest` required on every POST) — which is why `save_song`
-  over there always worked, and the model #1289 ("Here to Stay" 403s) generalised.
+- The **v2 editor `api2.php`** requires this same same-origin signal directly
+  (`X-Requested-With: XMLHttpRequest` on every POST) — which is why `save_song` called
+  from the **legacy** editor's client (`editor.js`'s `ed2EnrichApi`, which already sent
+  it) always worked, and the model #1289 ("Here to Stay" 403s) generalised. **The v2
+  editor SHELL's own client did not send it** — until #1677 (P0, fixed 2026-07-30),
+  neither write helper in `manage/editor/v2/api-client.js` carried the header, so every
+  mutation from the v2 UI (save, create, delete, component writes, bulk actions,
+  revision restore, the enrichment endpoints) 403'd while reads (GETs) worked fine.
+  Fixed client-side, not by loosening the gate; `tests/php/test-editor-api2-contract.php`
+  now derives both the client's header usage and its action list from source so this
+  can't regress silently.
 
 ---
 
@@ -1208,7 +1249,7 @@ save.
 | Route | Purpose | Entitlement |
 | --- | --- | --- |
 | `/manage/` | Dashboard (library + activity stats) | `view_admin_dashboard` |
-| `/manage/editor/` | Song editor | `edit_songs` |
+| `/manage/editor/` | Song editor — 302-redirects to the v2 editor by default (#1601); `?legacy=1` per-visit or `tblAppSettings.editor_v2_default='0'` fleet-wide reverts to the legacy v1 editor, which is not retired | `edit_songs` |
 | `/manage/duplicate-songs` | Duplicate & counterpart detection / cross-book linking / merge (absorbed the old `/manage/song-link-suggestions`, now a 302) | `edit_songs` (Merge = `manage_duplicate_songs`) |
 | `/manage/works` | Works (composition grouping across songbooks) | `edit_songs` |
 | `/manage/external-link-types` | External-link provider registry + URL patterns | `manage_songbooks` |
@@ -1534,6 +1575,85 @@ forward.
 
 Pages currently opted in: Credit People, Songbooks, Songbook Series,
 Works.
+
+---
+
+## 🔌 MWBM-IntAppsAPI gateway integration (Epic #1725)
+
+Server-proxied, cache-first, fail-open client for the MWBM-IntAppsAPI
+gateway — an operational feature-flag kill switch, structurally
+separate from content gating (`TIER_CAPS`/`checkTierAccess()`/
+`contentGatingApply()`/`gatingRulesApply()`/`checkContentAccess()`
+never consult it, and vice versa). Shipped **entirely dormant**:
+`tblAppSettings.intappsapi_enabled_channels` ships with no row at all,
+and with it absent the whole integration is a byte-identical no-op —
+proved against the real local instance (merge-base vs branch tip,
+`/api.php?action=app_status` + five other endpoints, empty diff; zero
+`tblIntAppsSync` references in MySQL's general query log across the
+same requests; three mutations — forcing `remoteFeatures` to emit
+unconditionally, removing the `intappsEnabled()` guard on the cache
+read, and pointing a capture at extensionless `/api` — each proven to
+turn the relevant check red before being reverted).
+
+**Where things live:** `includes/intapps_client.php` (the whole
+client — signer, single-flight cache, fail-open transport),
+`tblIntAppsSync` (one dormant cache/bookkeeping table, migration
+`appWeb/.sql/migrate-add-intapps-sync.php`), the admin surfaces
+(`/manage/configuration`'s IntAppsAPI card + `/manage/intapps-status`),
+the one shipped consumer (`includes/pages/home.php`'s
+`intappsFlag($db, 'web.sotd_card', true)`), and the local stub gateway
+fixture + e2e suite (`tests/php/fixtures/intapps-stub-gateway.php` +
+`tests/php/test-intapps-stub-e2e.php`) — see that fixture's own
+docblock for why it can never accidentally deploy.
+
+**THE SIGNER.** Verified against the gateway's own source
+(`web/src/Helpers/HmacValidator.php`, `mwbm-intappsapi` repo, pinned
+commit `6816ed880c8b37b5814a6a5321c7992d0ee6c007`): the canonical
+string is `rawBody . '.' . unixTimestamp`, hex-HMAC-SHA256'd. The
+gateway's own five bundled client examples sign
+`METHOD|PATH|TIMESTAMP|BODY` instead — **all five are wrong** (filed
+upstream as MWBM-intAppsAPI#120). `intappsSign()` is implemented
+against the source, never the examples, and the stub-gateway e2e suite
+proves the examples' wrong string is rejected by a verifier ported
+line-for-line from the same source.
+
+**Enablement is a per-channel allow-list** (`intappsapi_enabled_channels`
+— comma-separated `alpha`/`beta`/`production`/`all`), the same
+mechanism `apple_web_login_enabled` already uses, so alpha can canary
+without touching production — all three docroots share ONE MySQL.
+
+**Accepted residuals (recorded here, not silently assumed away):**
+
+1. **Stub drift (N2).** The local stub gateway certifies the signer
+   against gateway commit `6816ed8` only. If the deployed gateway has
+   since diverged from that commit, the stub's green result says
+   nothing about the live server. No cross-repo CI can enforce this —
+   Issue A / #1726's acceptance criteria include recording the live
+   `GET /v1/status` version and confirming `HmacValidator.php` is
+   unchanged since that SHA before any real channel is enabled.
+2. **Per-SAPI winner-pays-3s fallback.** The single-flight refresh is
+   scheduled to run AFTER the response is already on the wire —
+   `fastcgi_finish_request()` on PHP-FPM, `ignore_user_abort(true)` +
+   `flush()` elsewhere. On a SAPI with neither (the built-in `php -S`
+   server used for local verification is one), the lock-winning
+   request pays its own ≤3s HTTP timeout before the process exits. This
+   is a documented, accepted worst case, not a bug — it affects at most
+   one request per 300s TTL window per channel.
+3. **Real gateway acceptance is unproven.** `api.mwbmpartners.ltd` is
+   unreachable from this development container (the proxy answers 403
+   to CONNECT for the whole domain — a network-policy fact, not
+   evidence about deployment status). The stub verifier and the
+   client's signer descend from the SAME source reading; a shared
+   misreading, a deployed server that has diverged from `6816ed8`, or
+   an env-overridden `HMAC_MAX_AGE_SECONDS` would all pass locally and
+   could still fail live. Phase 1 is GET-only so this does not block
+   enablement; no write-scoped consumer may trust the signer against
+   the real gateway until Issue A (#1726, owner-only) closes and one
+   live signed POST succeeds there.
+
+Full design: `.claude/intappsapi-integration-plan.md`. Pre-launch
+delta + stress test + commit-by-commit plan:
+`.claude/wave4-prelaunch-plan.md` §4–§6.
 
 ---
 

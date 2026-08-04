@@ -6,17 +6,37 @@
  * PURPOSE:
  * In-app help and user guide. Provides instructions for using the
  * application, including accounts &amp; signing in (email, password,
- * Sign in with Apple), searching, reading a song (transpose/chords,
- * sheet music, audio, compare versions, Presentation mode), sharing &amp;
- * exporting songs to projection software, favourites, setlists,
- * collections/series, Song of the Day, personal stats, themes,
- * PWA install, offline songs, following a live service (Service Mode,
- * for a congregant), Go Live (Live Follow — any signed-in user hosting
- * their own live session), keyboard shortcuts, and accessibility.
+ * Sign in with Apple, signed-in devices), searching, reading a song
+ * (musical key/tempo/time signature, transpose/chords, sheet music,
+ * audio, compare versions, Presentation mode), sharing &amp; exporting
+ * songs to projection software, favourites, setlists (incl. templates
+ * &amp; service plans), collections/series, Song of the Day, personal
+ * stats, themes, PWA install, offline songs, following a live service
+ * (Service Mode, for a congregant), Go Live (Live Follow — any
+ * signed-in user hosting their own live session), notifications
+ * (Web Push), requesting a song (incl. tracking your own requests),
+ * keyboard shortcuts, and accessibility.
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-29 (v0.4001.0) — added a "Playing through a
+ * Last updated: 2026-08-02 — added "Also appears in — the same hymn in
+ * other songbooks" under "Find a hymn elsewhere & Works", covering the
+ * public cross-book counterparts feature (#807, editor side #1608) and
+ * drawing the distinction from Works (same composition) and
+ * translations (same hymn, other language).
+ * Previous update 2026-07-31 — covered five features that shipped with
+ * server support but had no in-app help: musical key / tempo / time
+ * signature (#298, wired #1671 F3) added to Reading a Song; setlist
+ * templates & service plans (#301, wired #1671 F4) added under
+ * Setlists & Sharing; a new Notifications topic for Web Push (#311,
+ * wired #1671 F6) — written as instructions for once a site operator
+ * switches it on, since no push has yet been delivered to a real
+ * device; tracking your own song requests (#280, wired #1671 F2)
+ * added under Requesting a song; and Signed-in devices (#1409/#1511,
+ * wired #1671 F1) added under Account & Signing In. Also corrected the
+ * Admin Portal topic: song deletion is now Admin/Global Admin only
+ * (#1692 stage 1), not a Curator/Editor capability.
+ * Previous update 2026-07-29 (v0.4001.0) — added a "Playing through a
  * setlist" topic under Setlists & Sharing (#1533): tap any song in a
  * setlist, your own or a shared one, to start a bottom playback bar
  * with Prev/Next, position, next-song title, arrow-key navigation, and
@@ -117,13 +137,57 @@ declare(strict_types=1);
                         verified email address first if Apple is currently your sole sign-in method.
                     </p>
 
+                    <h3 class="h6 mt-3">Signed-in devices</h3>
+                    <p>
+                        Open <strong>Settings &rarr; Account &amp; Profile</strong> to see a
+                        <strong>Signed-in devices</strong> card listing every device currently
+                        signed in to your account — handy for spotting a borrowed laptop or a
+                        shared church computer you forgot to sign out of. Each row shows the
+                        device's name (or platform, if it never sent one) and roughly how long
+                        ago it was last used; the device you're reading this on carries a
+                        <strong>This device</strong> badge and has no button of its own.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Tap <strong>Sign out</strong> beside any other device to end its
+                        session immediately — it will need to sign in again next time. To end
+                        your <em>own</em> current session, use the ordinary Sign Out button
+                        above instead.
+                    </p>
+
+                    <h3 class="h6 mt-3">Switched off vs deleted</h3>
+                    <p>
+                        There are two different things that can happen to an account, and it is worth
+                        knowing which is which.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Disabled</strong> — an administrator has switched the account off.
+                            You can't sign in, and anything you own becomes read-only, but
+                            <em>nothing is lost</em>. Switching it back on restores everything
+                            immediately, including any set lists that hadn't already reached their own
+                            expiry date.
+                        </li>
+                        <li>
+                            <strong>Deleted</strong> — your personal details are erased and the account
+                            can't be switched back on. This is the one that can't be undone.
+                        </li>
+                    </ul>
+
                     <h3 class="h6 mt-3">Deleting your account</h3>
                     <p>
                         In the iHymns app for iPhone, iPad, or Apple TV, open <strong>Account &rarr; Danger
                         Zone &rarr; Delete Account</strong>. You'll be asked to confirm it's really you (your
                         password, or a one-time code emailed to you) before anything is removed. Deleting your
-                        account permanently removes your account, favourites, and set lists from our servers,
-                        revokes any linked Sign in with Apple grant, and cannot be undone.
+                        account erases your personal details, removes your favourites and your own set lists,
+                        signs out every device, revokes any linked Sign in with Apple grant, and cannot be
+                        undone.
+                    </p>
+                    <p>
+                        <strong>Things you shared with other people keep working for them.</strong> If you
+                        sent someone a set list link, or published a set-list template your church uses, it
+                        stays visible to them &mdash; it simply becomes read-only, and your name is no longer
+                        attached to it. That's deliberate: closing your account shouldn't take a service plan
+                        away from somebody else halfway through a Sunday morning.
                     </p>
                     <p class="small text-muted mb-0">
                         A self-service delete option in the web app is planned; until then, contact us via
@@ -185,7 +249,8 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>A song page gives you several ways to view and work with the music:</p>
                     <ul>
-                        <li><strong>Transpose &amp; chords:</strong> where chord data is available, raise or lower the key and the chords above the lyrics shift to match. Toggle chords on or off entirely.</li>
+                        <li><strong>Musical key, tempo &amp; time signature:</strong> where a curator has recorded it, a badge near the top of the page shows the song's key, tempo and time signature (e.g. &ldquo;Key: Bb &middot; 96 BPM &middot; 4/4&rdquo;). If nothing appears, nobody has recorded a key for that song yet.</li>
+                        <li><strong>Transpose &amp; chords:</strong> where chord data is available, raise or lower the key and the chords above the lyrics shift to match — the key badge names the key you've transposed <em>into</em>, not just an offset. Toggle chords on or off entirely.</li>
                         <li><strong>Sheet music:</strong> songs that have notation can switch to a <strong>sheet-music view</strong> to read the score.</li>
                         <li><strong>Audio playback:</strong> when a recording or tune is linked, play it back from the song page.</li>
                         <li><strong>Compare versions:</strong> when the same song appears in more than one songbook, open <strong>Compare versions</strong> to view the variants side by side.</li>
@@ -257,6 +322,16 @@ declare(strict_types=1);
                         <li>Works can be <strong>nested</strong> — an original Work can have child Works for derivative arrangements / translations / choral versions, with unlimited depth</li>
                         <li>The optional <strong>ISWC</strong> (International Standard Musical Work Code) cross-references the Work to external royalty / catalogue platforms</li>
                     </ul>
+
+                    <!-- Cross-book counterparts (#807 / #1608). Distinct from Works:
+                         a counterpart is the SAME hymn appearing in more than one
+                         songbook, not the "same composition" grouping a Work models. -->
+                    <h3 class="h6 mt-3">Also appears in — the same hymn in other songbooks</h3>
+                    <p>Many hymns appear in more than one songbook under their own number — <em>Amazing Grace</em> might be MP&#8209;031 in one book, SDAH&#8209;108 in another. When a curator has linked those entries as <strong>counterparts</strong>, a song page shows an <strong>“Also appears in”</strong> list so you can jump straight to the same hymn in whichever book you use.</p>
+                    <ul>
+                        <li>This is different from a <strong>Work</strong> (above): a Work groups <em>versions and arrangements</em> of a composition, while counterparts are the <em>same hymn</em> in different songbooks.</li>
+                        <li>It is also different from a <strong>translation</strong>, which is the same hymn in another language and stays a separate song entry.</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -314,6 +389,18 @@ declare(strict_types=1);
                         <li>Tap <strong>+</strong> on any song page to add it to your active setlist (or pick a specific one from the dropdown).</li>
                         <li>Drag the row handles to reorder. Long-press to remove a song.</li>
                     </ul>
+                    <h3 class="h6">Templates &amp; service plans</h3>
+                    <p>
+                        A service usually has a shape before it has songs — welcome, songs,
+                        a reading, the sermon, a closing. Save that shape as a
+                        <strong>template</strong> and reuse it every week.
+                    </p>
+                    <ul>
+                        <li>Tap <strong>From Template</strong> next to New Set List, then a template's name, to start a new setlist with those rows already labelled.</li>
+                        <li>Open the new setlist's <strong>Service plan</strong> card and use each row's dropdown to choose which of your songs fills it. Rows that aren't songs (a reading, a prayer, the sermon) show as a plain label with nothing to pick.</li>
+                        <li>To make your own: open a setlist you've built and tap the <i class="fa-solid fa-file-lines" aria-hidden="true"></i> &ldquo;Save as template&rdquo; icon. Each song becomes a labelled row — the row keeps the song's <em>title</em>, not the song itself, so applying the template again starts you with an empty slot rather than repeating the same song.</li>
+                        <li><strong>Manage templates&hellip;</strong> in the same dropdown lets you rename or delete templates you created. You can apply a template someone has shared with you, but only its creator can change or remove it.</li>
+                    </ul>
                     <h3 class="h6">Sharing</h3>
                     <p>
                         Tap the <i class="fa-solid fa-share-nodes" aria-hidden="true"></i> share icon on any of your setlists. iHymns generates
@@ -344,13 +431,54 @@ declare(strict_types=1);
                     <h3 class="h6">Collaborate on a setlist (signed-in users)</h3>
                     <p>
                         Sign in with an account, then on any setlist's detail page open the <strong>Collaborators</strong>
-                        panel. Add other signed-in users by username — each one can re-order, add, and remove
-                        songs alongside you. Removed collaborators see the setlist disappear from their
-                        Shared list on next open.
+                        panel. Invite another signed-in user by email and choose whether they can
+                        <strong>view</strong> the setlist or also <strong>edit</strong> it (re-order, add, and remove
+                        songs) — a view-only collaborator can follow along but can't change anything. They get a
+                        notification linking straight to it, and it also appears under <strong>Shared with me</strong>
+                        on your Setlist tab. Removed collaborators see the setlist disappear from their Shared list
+                        on next open.
                     </p>
                     <p class="small text-muted mb-0">
                         Setlists you create are saved to your account if you're signed in, or to your device
                         otherwise. Signing in later associates any device-only setlists with your account.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notifications (#311, wired #1671 F6). Dormant until an operator
+             generates a VAPID keypair on /manage/notifications — the card
+             itself explains that state, so this topic is written as
+             instructions for once it's switched on rather than a claim that
+             it works today. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-notifications"
+                        aria-expanded="false"
+                        aria-controls="help-notifications">
+                    <i class="fa-solid fa-bell me-2" aria-hidden="true"></i>
+                    Notifications
+                </button>
+            </h2>
+            <div id="help-notifications" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Sign in, then open <strong>Settings &rarr; Account &amp; Profile</strong>.
+                        If your site has notifications switched on, a <strong>Notifications</strong>
+                        card lets you turn them on for this device and choose which kinds you
+                        want — for example <em>Announcements</em> (news, new songbooks and service
+                        updates) or <em>Test notifications</em>. This is per device: turning it on
+                        here only affects the device you're using.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        This is a new feature. If the card says notifications aren't switched on
+                        for this site yet, your site's administrator hasn't finished setting it
+                        up — there's nothing to turn on until they have. If your browser has
+                        previously blocked notifications for this site, use the padlock or
+                        &ldquo;i&rdquo; icon in the address bar to allow them again.
                     </p>
                 </div>
             </div>
@@ -701,6 +829,16 @@ declare(strict_types=1);
                         You'll get a tracking number; our curators triage submissions in
                         their admin queue.
                     </p>
+                    <h3 class="h6">Tracking your requests</h3>
+                    <p class="mb-0">
+                        Signed in when you submit? A <strong>Your requests</strong> section
+                        appears below the form listing everything you've sent, each with a
+                        status (<em>Pending</em>, <em>Reviewed</em>, <em>Added</em>, or
+                        <em>Declined</em>) and, once a song has been added, a link straight
+                        to it. Signed out, you'll see a sign-in prompt there instead — a
+                        request sent while signed out can't be linked back to your account
+                        afterwards, even if you sign in later.
+                    </p>
                 </div>
             </div>
         </div>
@@ -816,7 +954,7 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>If you're a <em>Curator/Editor</em>, <em>Admin</em>, or <em>Global Admin</em>, you have access to the portal at <a href="/manage/">/manage/</a> (or the alias <a href="/admin/">/admin/</a>).</p>
                     <ul class="mb-2">
-                        <li><strong>Song Editor</strong> — edit lyrics, metadata, tags, arrangement; multi-select bulk delete; auto-saves per song.</li>
+                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk verify and tag; auto-saves as you go. Deleting a song is <strong>Admin</strong> / <strong>Global Admin</strong> only — it's permanent, so a Curator/Editor can't do it.</li>
                         <li><strong>User Management</strong> — create, edit roles, deactivate.</li>
                         <li><strong>Analytics</strong> — top songs / searches / logins over 7, 30, 90 days; CSV export.</li>
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>

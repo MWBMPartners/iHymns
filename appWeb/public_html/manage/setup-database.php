@@ -44,9 +44,19 @@ if (!$isInitialSetup) {
         exit;
     }
     $currentUser = getCurrentUser();
-    if (!$currentUser || $currentUser['role'] !== 'global_admin') {
+    /* Gate on the SAME entitlement the nav advertises (#1648 item 1).
+       ELI5: the menu says this page needs the "run_db_install" permission, so
+       the page must check that permission, not a hardcoded role.
+       Detail: this compared role !== 'global_admin' while admin-links.php:107
+       advertises `run_db_install`, which is admin-editable at runtime. The
+       default map for run_db_install is exactly ['global_admin'], so this is a
+       no-op today and only diverges once someone overrides it — which is the
+       whole point of having an override UI. Rule #1587's red flag.
+       Note the $isInitialSetup branch above deliberately bypasses this: on a
+       virgin install there is no user table to have a role in yet. */
+    if (!$currentUser || !userHasEntitlement('run_db_install', $currentUser['role'] ?? null)) {
         http_response_code(403);
-        echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
+        echo '<!DOCTYPE html><html><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
         exit;
     }
 }
@@ -896,6 +906,9 @@ function _migProbe_indexExists(\mysqli $db, string $table, string $index): bool
 function _migProbe_hasNullPublicId(\mysqli $db): bool
 {
     if (!_migProbe_columnExists($db, 'tblSongs', 'PublicId')) { return false; }
+    /* @deleted-visible: migration probe (#1694) — backfill completeness is a
+       PHYSICAL property; a hidden row with a NULL PublicId still needs the
+       backfill (its permalink must work on restore). */
     $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
     $has = $res && $res->fetch_row() !== null;
     if ($res) { $res->free(); }
@@ -914,6 +927,24 @@ function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column):
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     return $row && strtoupper((string)$row['IS_NULLABLE']) === 'YES';
+}
+
+/** Returns $table.$column's current INFORMATION_SCHEMA DATA_TYPE, lowercased
+ *  ('varchar', 'enum', 'set', …), or '' when the column doesn't exist. Used by
+ *  the #1741 P1 ENUM/SET->VARCHAR widening probes (musician-profile,
+ *  tune-enrichment) so a card only reports "applied" once the MODIFY has
+ *  actually landed, not merely because the column is present (#1741 P1). */
+function _migProbe_columnDataType(\mysqli $db, string $table, string $column): string
+{
+    $stmt = $db->prepare(
+        'SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ? strtolower((string)$row['DATA_TYPE']) : '';
 }
 
 /** Returns true when an INFORMATION_SCHEMA TRIGGERS row exists for $trigger. */
@@ -1080,6 +1111,80 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
     }
     echo "</body>\n</html>\n";
 });
+
+/* =========================================================================
+ * PER-ACTION ENTITLEMENTS (#1590, entitlement truth-up E1)
+ *
+ * ELI5: /manage/entitlements has three checkboxes — "Run database migrations",
+ * "Back up database" and "Restore database from backup". Until now nothing read
+ * any of them: reaching this page at all was the only check, so unticking one
+ * changed nothing and the operator was never told.
+ *
+ * WHAT THE PLAN GOT WRONG (verified against the source, not inherited): §4.6
+ * records the current gate as "setup-database.php raw `global_admin` (:191,
+ * :459)". Those two lines are the `secret_*` AJAX dispatcher and the
+ * delete-backup handler — separate defence-in-depth re-checks for two OTHER
+ * operations. Nothing whatsoever guards `?action=backup`, `?action=restore` or a
+ * migration slug beyond this file's top-of-page gate at :57, which requires the
+ * `run_db_install` entitlement (default: ['global_admin']).
+ *
+ * EQUIVALENCE — no live behaviour change. The effective gate today is
+ * `run_db_install` = global_admin. Adding an AND of `run_db_migrate` /
+ * `run_db_restore` (both default ['global_admin']) leaves that set untouched.
+ * `run_db_backup` defaulted to ['admin','global_admin'], which an admin could
+ * never actually use because the page gate rejected them one line earlier; it
+ * has been aligned to ['global_admin'] this pass so the map stops advertising a
+ * capability the page denies. Either way the observable set is unchanged.
+ *
+ * WHY ONE CHOKE POINT, NOT THREE: the action is dispatched from three places
+ * below — the `format=text` per-migration fast path, the bulk
+ * `apply-all-migrations` runner, and the HTML path. A gate repeated three times
+ * is three chances to miss one (CLAUDE.md rule #35: cross-file agreement needs a
+ * mechanism, not a comment). Checking once, before any of them can run, also
+ * cannot be bypassed by a fourth dispatcher added later.
+ *
+ * `$isInitialSetup` is exempt for the same reason the top-of-page gate is: on a
+ * virgin install there is no user table yet to hold a role, and the installer
+ * has to be able to run. Note this block sits AFTER the registry load, so
+ * $migrationProbes is populated and "is this action a migration?" is DERIVED
+ * from the registry rather than being a second hand-typed list that could fall
+ * behind it (rule #34).
+ *
+ * @see appWeb/public_html/includes/entitlements.php
+ * ========================================================================= */
+if ($action !== '' && !$isInitialSetup) {
+    $actionEntitlement = null;
+    if ($action === 'backup') {
+        $actionEntitlement = 'run_db_backup';
+    } elseif ($action === 'restore') {
+        $actionEntitlement = 'run_db_restore';
+    } elseif ($action === 'apply-all-migrations' || isset($migrationProbes[$action])) {
+        $actionEntitlement = 'run_db_migrate';
+    }
+
+    if ($actionEntitlement !== null
+        && !userHasEntitlement($actionEntitlement, $currentUser['role'] ?? null)) {
+        http_response_code(403);
+        /* Match the response shape the caller asked for: the per-migration AJAX
+           runner (js/modules/setup-bulk-runner.js) requests `format=text` and
+           parses a STATUS line, so an HTML 403 would surface to the operator as
+           an unexplained parse failure rather than "you cannot do this". */
+        if ((string)($_GET['format'] ?? '') === 'text') {
+            header('Content-Type: text/plain; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: The {$actionEntitlement} entitlement is required.\n";
+        } else {
+            header('Content-Type: text/html; charset=UTF-8');
+            echo '<!DOCTYPE html><html><body><h1>403 — the '
+               . htmlspecialchars($actionEntitlement, ENT_QUOTES, 'UTF-8')
+               . ' entitlement is required</h1></body></html>';
+        }
+        $pageRenderedCleanly = true;   /* suppress the shutdown chrome-closer */
+        exit;
+    }
+}
 
 if ($action !== '') {
     /* Signal to the included scripts that they're being run from the
@@ -3377,7 +3482,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             </div>
                             <div class="input-group input-group-sm">
                                 <input type="text" class="form-control font-monospace" id="secretGenValue" readonly aria-label="Generated master key">
-                                <button type="button" class="btn btn-outline-secondary" id="secretGenCopy" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button>
+                                <button type="button" class="btn btn-outline-secondary" id="secretGenCopy" title="Copy to clipboard" aria-label="Copy generated master key to clipboard"><i class="bi bi-clipboard" aria-hidden="true"></i></button>
                             </div>
                         </div>
                         <button type="button" class="btn btn-outline-primary btn-sm" id="secretGenBtn">

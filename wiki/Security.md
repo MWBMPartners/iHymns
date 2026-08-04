@@ -67,6 +67,7 @@ Uncaught browser errors surface one generic toast to the user and are beaconed �
 - Per-session CSRF token (64 hex chars via `random_bytes(32)`)
 - Validated with `hash_equals()` — timing-safe comparison
 - Required on all admin panel form submissions
+- State-changing AJAX (the editor save, duplicate-songs merge/delete, places-api, and every legacy editor POST) instead calls `validateCsrfRequest()`, which accepts EITHER a still-valid session token OR a genuine same-origin request: the `X-Requested-With` header (a browser cannot set it cross-origin without a CORS preflight this server never grants) plus any present `Origin`/`Referer` matching the request's own host **and port**. This exists because a baked per-session token goes stale on a long-lived page (rotates, GCs, or changes across tabs) and produces a sporadic "CSRF error" on save — the same-origin check never goes stale. The port comparison was itself a fix (#1709): `HTTP_HOST` keeps the port but a parsed `Origin`/`Referer` host does not, so the original naive string compare could never match a site on a non-default port, and separately never rejected a *different* port on the same host as if it were same-origin.
 
 ---
 

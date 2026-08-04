@@ -14,8 +14,31 @@
 export const ENTITLEMENTS = {
     /* Song data */
     edit_songs:           ['editor', 'admin', 'global_admin'],
-    delete_songs:         ['admin', 'global_admin'],
-    bulk_edit_songs:      ['admin', 'global_admin'],
+    /* editor+ since #1590 — see the long note beside the same two keys in
+       includes/entitlements.php. Short version: nothing checked either key, and
+       what really gated a delete / bulk edit was the editor APIs' editor-level
+       role gate. Wiring the checks with the old admin-only list would have
+       removed a capability curators use today, so the MAP moved to match the
+       code rather than the other way round. This file is a MIRROR — copy the
+       role list verbatim, never form a second opinion. */
+    /* Back at editor+ — #1692 stage 3 (#1695). The stage-1 comment here said
+       this was interim and would return to editor+ once stage 2 added soft
+       delete; stage 2 (#1694) landed, so it has. A delete is now RECOVERABLE:
+       the song is hidden but wholly intact, and Restore on
+       /manage/deleted-songs brings it back losslessly. The irreversible
+       cascade lives behind `purge_songs` below, which is precisely why this
+       widening cannot drag the permanent delete along with it.
+       Must stay identical to includes/entitlements.php;
+       test-entitlement-parity.php (both halves) enforces that. */
+    delete_songs:         ['editor', 'admin', 'global_admin'],
+    /* #1694 — the IRREVERSIBLE half of the two-step delete: `delete_songs` is
+       now the recoverable soft delete; this alone gates the destructive Purge
+       on /manage/deleted-songs. Separate key so #1695's re-widening of
+       delete_songs to editor+ cannot drag the permanent delete along with it.
+       Role list copied VERBATIM from includes/entitlements.php — this map is
+       a MIRROR, never a second opinion (test-entitlement-parity, both halves). */
+    purge_songs:          ['admin', 'global_admin'],
+    bulk_edit_songs:      ['editor', 'admin', 'global_admin'],
     verify_songs:         ['editor', 'admin', 'global_admin'],
 
     /* User management */
@@ -30,9 +53,22 @@ export const ENTITLEMENTS = {
     view_analytics:       ['admin', 'global_admin'],
     run_db_install:       ['global_admin'],
     run_db_migrate:       ['global_admin'],
-    run_db_backup:        ['admin', 'global_admin'],
+    /* global_admin only since #1590 — /manage/setup-database gates its whole
+       page load on run_db_install (global_admin), so an admin could never reach
+       the backup button regardless of what this said. Mirror of the PHP map. */
+    run_db_backup:        ['global_admin'],
     run_db_restore:       ['global_admin'],
     drop_legacy_tables:   ['global_admin'],
+
+    /* Set-list templates (#301 / #1698). `manage_setlist_templates` is the admin
+       override on the owner-only edit rule (a template whose author's account was
+       erased is otherwise editable by nobody); `publish_public_templates` gates
+       `is_public = 1`, which makes a template visible to every user of the app.
+       Role lists copied VERBATIM from includes/entitlements.php — this map is a
+       MIRROR, never a second opinion; test-entitlement-parity.php (both halves)
+       fails the build if they diverge in either direction. */
+    manage_setlist_templates: ['admin', 'global_admin'],
+    publish_public_templates: ['admin', 'global_admin'],
 
     /* Content moderation */
     review_song_requests: ['editor', 'admin', 'global_admin'],
@@ -41,7 +77,7 @@ export const ENTITLEMENTS = {
     manage_songbooks:     ['admin', 'global_admin'],
     manage_user_groups:   ['admin', 'global_admin'],
     manage_organisations: ['admin', 'global_admin'],
-    manage_credit_people: ['admin', 'global_admin'],
+    manage_musicians: ['admin', 'global_admin'],
 
     /* Content gating for regular users */
     manage_content_restrictions: ['admin', 'global_admin'],
@@ -70,6 +106,43 @@ export const ENTITLEMENTS = {
      * against tblSongs.Ccli, exportable as CSV for the annual CCLI
      * usage return. */
     view_ccli_report:     ['admin', 'global_admin'],
+
+    /* Catalogue + curation surfaces (#1641 item 3).
+     *
+     * These thirteen existed only in the PHP map. Nothing in JS asked for them
+     * yet, so the drift was LATENT — userHasEntitlement() returns false for an
+     * unknown key, so the first client-side affordance gated on one of them
+     * would simply never render, with no error and nothing in the console.
+     * Same silent-no-op class as #1581's event names: the code looks complete
+     * and the failure is an absence.
+     *
+     * Role lists copied verbatim from includes/entitlements.php — this map is a
+     * MIRROR, not a second opinion. tests/test-entitlement-parity.js now fails
+     * the build if the two diverge in either direction, so the mirror cannot
+     * silently rot again. */
+    manage_tags:                ['admin', 'global_admin'],
+    manage_works:               ['admin', 'global_admin'],
+    /* Tunes (#1748) — mirrors includes/entitlements.php's manage_tunes
+       line exactly; see that file's comment for the "why". */
+    manage_tunes:                ['admin', 'global_admin'],
+    manage_languages:           ['admin', 'global_admin'],
+    manage_external_link_types: ['admin', 'global_admin'],
+    manage_duplicate_songs:     ['admin', 'global_admin'],
+
+    /* Operations + diagnostics */
+    view_activity_log:          ['admin', 'global_admin'],
+    view_diagnostics:           ['global_admin'],
+    manage_configuration:       ['global_admin'],
+    manage_notifications:       ['global_admin'],
+
+    /* API access (#1590 Phase D — self-serve requests, global admins approve) */
+    view_api_docs:              ['editor', 'admin', 'global_admin'],
+    request_api_keys:           ['admin', 'global_admin'],
+    manage_api_keys:            ['global_admin'],
+
+    /* Org self-service — deliberately open to plain users: someone must be able
+       to administer their OWN organisation without holding a site-wide role. */
+    manage_own_organisation:    ['user', 'editor', 'admin', 'global_admin'],
 
     /* Meta */
     manage_entitlements:  ['global_admin'],

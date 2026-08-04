@@ -279,6 +279,26 @@ public struct SongDetailView: View {
             Text(detail.title)
                 .font(.largeTitle.bold())
 
+            // #1752 Slice A — disambiguation directly under the title (a
+            // short parenthetical distinguishing same-named songs, e.g.
+            // "(Christmas version)"), mirroring web `song.php` §2.2's
+            // small-text-after-the-<h1> treatment; SwiftUI has no
+            // `<small>`-inside-`<h1>` equivalent worth forcing, so this is
+            // its own `Text` line instead.
+            if let disambiguation = detail.disambiguation, !disambiguation.isEmpty {
+                Text("(\(disambiguation))")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Subtitle — above the existing number/songbook line, mirroring
+            // web `song.php` §2.3.
+            if let subtitle = detail.subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack(spacing: 8) {
                 if let number = detail.number {
                     Text(String(number))

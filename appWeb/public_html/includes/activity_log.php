@@ -75,6 +75,45 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 /** Cap on activity-log writes per HTTP request — guards against runaway loops. */
 const IHYMNS_LOG_PER_REQUEST_CAP = 200;
 
+/* =========================================================================
+ * ENTITY-TYPE OLD↔NEW ALIASES (#1741 P2-B — Musicians rename)
+ *
+ * ELI5: a logged row's EntityType is a permanent historical fact — a row
+ * written before the Musicians rename says 'credit_person' and is NEVER
+ * rewritten (rule: history is not rewritten). But a curator filtering
+ * /manage/activity-log for "everything about a musician" wants BOTH the
+ * old and new rows in one view. This is the ONE shared map that answers
+ * "what EntityType values count as this renamed entity" — never
+ * re-duplicate this list inline in a filter WHERE clause (rule #35 — a
+ * comment saying "keep these in sync" is the failure, not the fix).
+ *
+ * DETAILED: only 'musician' has a historical alias today (credit_person,
+ * from every logActivity()/logActivityError() call written before #1741
+ * P2-B landed); the map shape supports a future rename the same way
+ * without a new special case elsewhere. Every entity type NOT in this map
+ * has never been renamed, so activityLogEntityTypeVariants() returns it
+ * unchanged as a single-element list — an exact-match filter, same as
+ * before this map existed. Writers (logActivity() callers) always pass
+ * the CURRENT canonical key ('musician') — this map is READ-side only,
+ * consumed by the activity-log viewer's filter.
+ * ========================================================================= */
+const ACTIVITY_LOG_ENTITY_TYPE_ALIASES = [
+    'musician' => ['musician', 'credit_person'],
+];
+
+/**
+ * Expand a curator-supplied EntityType filter value into every EntityType
+ * string that should match, folding in historical aliases from
+ * ACTIVITY_LOG_ENTITY_TYPE_ALIASES. An entity type with no rename history
+ * passes through unchanged as a single-element list.
+ *
+ * @return list<string>
+ */
+function activityLogEntityTypeVariants(string $entityType): array
+{
+    return ACTIVITY_LOG_ENTITY_TYPE_ALIASES[$entityType] ?? [$entityType];
+}
+
 /**
  * Get (or lazily mint) the per-request correlation ID. Stable for
  * the lifetime of the PHP request; new on the next request.

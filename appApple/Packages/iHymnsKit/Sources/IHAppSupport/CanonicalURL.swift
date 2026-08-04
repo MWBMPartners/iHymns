@@ -90,18 +90,28 @@ public enum CanonicalURL {
         URL(string: "\(host)/work/\(slug)")
     }
 
-    /// `https://ihymns.app/person/<slug>` — `CreditPersonDetailView`'s
-    /// `ShareLink` (#1443/#1444). Deliberately `/person/`, singular,
-    /// matching the AASA `components` entry (and therefore what
-    /// `DeepLinkRouter` resolves) — NOT `index.php`'s own `/people/<slug>`
-    /// page route, which is a real, separate web-side mismatch this task's
-    /// backend survey found and filed as its own issue rather than papering
-    /// over here (see `DeepLink.swift`'s header for the full explanation).
-    /// A link built here that's opened WITHOUT the app installed currently
-    /// 404s on the web; the fix belongs in `index.php`'s route table, not in
-    /// this native URL builder.
+    /// `https://ihymns.app/musician/<slug>` — `CreditPersonDetailView`'s
+    /// `ShareLink` (#1443/#1444).
+    ///
+    /// #1752 Slice B UPDATE (2026-08, #1741 P2-B): now emits the CANONICAL
+    /// `/musician/` path rather than the legacy `/person/` this builder used
+    /// to emit — a DELIBERATE, trivially-reversible default (`.claude/
+    /// catalogue-1741-1752-plan.md` §2.2), taken because (a) the web itself
+    /// 301s `/person/<slug>` -> `/musician/<slug>` (`index.php:532-548`), so
+    /// a `/person/` share link just costs the recipient one extra redirect
+    /// hop; (b) the AASA claims BOTH paths, so `DeepLinkRouter.resolve(_:)`
+    /// (`DeepLink.swift`) handles either equally; and (c) a freshly-minted
+    /// share link should mint the CANONICAL form going forward, not the
+    /// alias — matching the "new links use the new name" convention #1741
+    /// P2-B established everywhere else (the web's own credits footer links
+    /// through `/musician/`, `includes/pages/song.php:1319`). This also
+    /// closes the OLD doc comment's own caveat: `/person/<slug>` used to
+    /// 404 on a browser-without-the-app open (`index.php`'s direct-load
+    /// route only ever matched PLURAL `/people/<slug>`) — `/musician/<slug>`
+    /// has a real, working web page (`index.php:557`), so a share link built
+    /// here now works identically whether or not the app is installed.
     public static func person(slug: String) -> URL? {
-        URL(string: "\(host)/person/\(slug)")
+        URL(string: "\(host)/musician/\(slug)")
     }
 
     /// `https://ihymns.app/compare/<primaryId>/<secondaryId>` (#1455).

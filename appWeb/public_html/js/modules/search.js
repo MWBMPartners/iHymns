@@ -66,86 +66,83 @@ export class Search {
     }
 
     /**
-     * Initialise the search module — bind header search events.
+     * Initialise the search module.
+     *
+     * ELI5: there is nothing to hook up when the app boots — the search box
+     * lives on the /search page, and that page wires itself up in
+     * `initSearchPage()` when the router lands on it.
+     *
+     * Detail: this used to bind a header search bar (toggle button, input,
+     * clear button, typeahead). #812 removed that bar from index.php — "the
+     * bottom footer-nav already exposes a Search entry that navigates to
+     * /search; one affordance is enough, and the saved real-estate matters
+     * most on mobile portrait" — and updated app.css to match, but not this
+     * module. The bindings survived as `getElementById` calls returning null
+     * behind `if (el)` guards: no error, no console warning, nothing to grep,
+     * and the two shortcuts that depended on them silently stopped working
+     * for as long as nobody pressed them. See `openSearch()` below and
+     * tests/test-dom-target-integrity.js, which now fails the build on any id
+     * the JS looks up that no markup emits.
      */
     init() {
-        /* Header search toggle button */
-        const toggle = document.getElementById('header-search-toggle');
-        if (toggle) {
-            toggle.addEventListener('click', () => {
-                const bar = document.getElementById('header-search-bar');
-                const isOpen = bar?.classList.contains('open');
-                this.toggleHeaderSearch(!isOpen);
-            });
-        }
-
-        /* Header search input — pressing Enter navigates to search page */
-        const searchInput = document.getElementById('search-input');
-        if (searchInput) {
-            searchInput.addEventListener('keydown', (e) => {
-                /* Let autocomplete handle arrow keys and Escape */
-                if (this._handleAutocompleteKeydown(e, searchInput)) return;
-
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    this._closeAutocomplete(searchInput);
-                    const q = searchInput.value.trim();
-                    this.toggleHeaderSearch(false);
-                    this.app.router.navigate('/search' + (q ? '?q=' + encodeURIComponent(q) : ''));
-                }
-            });
-
-            /* Autocomplete on input (#307) */
-            this._initAutocomplete(searchInput);
-        }
-
-        /* Clear button */
-        const clearBtn = document.getElementById('search-clear-btn');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', () => {
-                if (searchInput) {
-                    searchInput.value = '';
-                    clearBtn.classList.add('d-none');
-                    this._closeAutocomplete(searchInput);
-                    searchInput.focus();
-                }
-            });
-        }
-
-        /* Show/hide clear button based on input */
-        if (searchInput && clearBtn) {
-            searchInput.addEventListener('input', () => {
-                clearBtn.classList.toggle('d-none', !searchInput.value);
-            });
-        }
-
+        /* Intentionally empty — see the doc-comment above. Kept as a method
+           because app.js calls it during boot alongside every other module's
+           init(), and a module that opts out of that convention is the next
+           thing somebody "cleans up" without checking. */
     }
 
     /**
-     * Toggle the header search bar open/closed.
+     * Open search — the target of the `/` and Ctrl/Cmd+K shortcuts.
      *
-     * @param {boolean} open True to open, false to close
+     * ELI5: take the user to the search page and put the cursor in the box.
+     *
+     * Detail: replaces `toggleHeaderSearch(true)`, which opened the header
+     * search bar deleted in #812 and therefore did nothing at all — while the
+     * shortcuts overlay (js/modules/shortcuts.js) and the public help page
+     * (includes/pages/help.php) both continued to advertise `/` and
+     * `Ctrl`+`K` as "Open search". Because the callers call
+     * `e.preventDefault()` first, `/` did not even insert a slash: the
+     * keystroke was consumed and discarded.
+     *
+     * `/search` is the affordance #812 explicitly kept, so this routes there
+     * and focuses the page's own input rather than resurrecting the bar.
+     *
+     * Ordering matters: `router.navigate()` resolves only after the fragment
+     * has been injected and `afterPageLoad()` has run, so `#page-search-input`
+     * exists by the time we reach for it. When the user is ALREADY on
+     * /search, `navigate()` early-returns on the unchanged path, so we skip it
+     * and focus directly — otherwise the shortcut would be a no-op on the one
+     * page where it is most likely to be pressed a second time.
+     *
+     * @returns {Promise<void>}
      */
-    toggleHeaderSearch(open) {
-        const bar = document.getElementById('header-search-bar');
-        const toggle = document.getElementById('header-search-toggle');
-        const input = document.getElementById('search-input');
+    async openSearch() {
+        const SEARCH_PATH = '/search';
 
-        if (!bar) return;
-
-        if (open) {
-            bar.classList.add('open');
-            bar.setAttribute('aria-hidden', 'false');
-            document.body.classList.add('search-open');
-            toggle?.setAttribute('aria-expanded', 'true');
-            /* Focus the search input after animation */
-            setTimeout(() => input?.focus(), 300);
-        } else {
-            bar.classList.remove('open');
-            bar.setAttribute('aria-hidden', 'true');
-            document.body.classList.remove('search-open');
-            toggle?.setAttribute('aria-expanded', 'false');
+        if (window.location.pathname !== SEARCH_PATH) {
+            if (this.app.router) {
+                /* Never let a failed navigation swallow the shortcut silently —
+                   that is the exact class of bug this method exists to fix. */
+                try {
+                    await this.app.router.navigate(SEARCH_PATH);
+                } catch (err) {
+                    console.error('[Search] openSearch navigation failed:', err);
+                    return;
+                }
+            } else {
+                /* No router (very early boot / hard-failure) — a full page load
+                   still gets the user where they asked to go. */
+                window.location.href = SEARCH_PATH;
+                return;
+            }
         }
+
+        const input = document.getElementById('page-search-input');
+        if (!input) return;
+        input.focus();
+        /* Select any prefilled `?q=` text so a second press lets the user
+           retype immediately instead of appending to the old query. */
+        if (typeof input.select === 'function' && input.value) input.select();
     }
 
     /* =====================================================================
@@ -197,6 +194,41 @@ export class Search {
         if (initialQuery) {
             input.value = initialQuery;
             this.performSearch(initialQuery, filter?.value || '', results);
+        }
+
+        /* Enter must search HERE, not reload the app.
+         *
+         * ELI5: pressing Enter in a search box should search. It used to throw
+         * the page away instead.
+         *
+         * Detail: this form has one text-type field and no submit button, which
+         * is precisely the case where the HTML spec says Enter performs an
+         * implicit submission. Nothing bound a submit handler to it — search.js
+         * intercepted Enter only on the header search input deleted in #812 —
+         * so the browser navigated, the SPA hard-reloaded, and the typed query
+         * was discarded with no error anywhere. Silent, and on the one gesture
+         * every user makes.
+         *
+         * preventDefault() keeps us on the page; cancelling the pending
+         * debounce stops the timer firing a second, identical search a moment
+         * later. Queries shorter than the 2-character floor the debounce
+         * enforces are ignored here too, so Enter and typing agree.
+         * https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission
+         *
+         * The form keeps its `action="/search"` + `name="q"` as the no-JS
+         * fallback; see the note in includes/pages/search.php.
+         * Guard: tests/test-search-enter-submit.js
+         */
+        const form = document.getElementById('page-search-form');
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                clearTimeout(this.debounceTimer);
+                const q = input.value.trim();
+                if (q.length >= 2) {
+                    this.performSearch(q, filter?.value || '', results);
+                }
+            });
         }
 
         /* Debounced search on input */

@@ -17,6 +17,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1694 — soft-delete visibility predicate for the admin list's ActualSongCount. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-palette.php';
 /* Shared validators (#719 PR 2a) — same rules used by the admin_songbook_*
    API endpoints in /api.php. Single source of truth so a tweak to the
@@ -470,7 +472,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 
 /* ---- GET ?action=compiler_search&q=… (#831) ---------------------------
  * JSON typeahead for the edit-modal Compilers picker. Returns rows
- * from tblCreditPeople matching the query, preferring people who are
+ * from tblMusicians matching the query, preferring people who are
  * already cited in the catalogue (name appears in any of the song-
  * credit tables) — keeps real contributors above bare registry rows.
  *
@@ -479,8 +481,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
  * parent typeaheads.
  *
  * Pre-migration safe: no schema dependency on tblSongbookCompilers
- * itself (we're searching the existing tblCreditPeople), so the
- * endpoint works as soon as the credit-people registry has rows.
+ * itself (we're searching the existing tblMusicians), so the
+ * endpoint works as soon as the musicians registry has rows.
  * ----------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     && ($_GET['action'] ?? '') === 'compiler_search'
@@ -490,18 +492,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
 
-    /* tblCreditPeople is the registry; safe to assume it exists at
+    /* tblMusicians is the registry; safe to assume it exists at
        this point (it's part of the core schema since #545 / install).
        Defensive fallback — if it really isn't there, return empty. */
     try {
         $probe = $db->query(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPeople' LIMIT 1"
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians' LIMIT 1"
         );
         if (!$probe || $probe->fetch_row() === null) {
             echo json_encode([
                 'suggestions' => [],
-                'note'        => 'tblCreditPeople not yet created — run /manage/setup-database',
+                'note'        => 'tblMusicians not yet created — run /manage/setup-database',
             ]);
             exit;
         }
@@ -511,7 +513,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 
     try {
         if ($q === '') {
-            $sql = 'SELECT Id, Name, Slug FROM tblCreditPeople
+            $sql = 'SELECT Id, Name, Slug FROM tblMusicians
                      WHERE COALESCE(IsSpecialCase, 0) = 0
                      ORDER BY Name ASC
                      LIMIT ?';
@@ -519,7 +521,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
             $stmt->bind_param('i', $limit);
         } else {
             $like = '%' . $q . '%';
-            $sql  = 'SELECT Id, Name, Slug FROM tblCreditPeople
+            $sql  = 'SELECT Id, Name, Slug FROM tblMusicians
                       WHERE Name LIKE ?
                         AND COALESCE(IsSpecialCase, 0) = 0
                       ORDER BY Name ASC
@@ -591,6 +593,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
         }
         $abbr = (string)$row['Abbreviation'];
 
+        /* @deleted-visible: this preview must count the SAME rows the bulk
+           `UPDATE tblSongs SET Language …` below will touch — and that write
+           is deliberately unfiltered (#1694: writing a hidden row is harmless
+           and restore-preserving). A filtered preview would under-state what
+           the confirm dialog is confirming. */
         $stmt = $db->prepare(
             "SELECT
                 SUM(CASE WHEN Language IS NULL OR Language = '' THEN 1 ELSE 0 END) AS untagged,
@@ -606,6 +613,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
         /* Sample distinct existing tags for the confirm dialog —
            the curator wants to know what they're about to overwrite.
            Capped at 10 so the dialog stays readable. */
+        /* @deleted-visible: same reason as the counts above — the sample
+           shows what the unfiltered overwrite would replace. */
         $stmt = $db->prepare(
             "SELECT DISTINCT Language
                FROM tblSongs
@@ -1398,7 +1407,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     /* #831 — reconcile compiler credits for this songbook.
                        The edit modal posts three parallel arrays:
-                         compiler_person_ids[]   — credit-people FKs
+                         compiler_person_ids[]   — musicians FKs
                          compiler_notes[]        — optional per-row note
                        Position N in each array is the same compiler row;
                        array index also drives SortOrder so a curator's
@@ -1439,7 +1448,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($compilerRows) {
                             $stmt = $db->prepare(
                                 'INSERT INTO tblSongbookCompilers
-                                     (SongbookId, CreditPersonId, SortOrder, Note)
+                                     (SongbookId, MusicianId, SortOrder, Note)
                                   VALUES (?, ?, ?, ?)'
                             );
                             foreach ($compilerRows as $cr) {
@@ -1665,6 +1674,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $abbr = (string)($row[0] ?? '');
                 if ($abbr === '') { $error = 'Songbook not found.'; break; }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — the FK on
+                   SongbookAbbr is ON DELETE RESTRICT, so the refusal must
+                   count every row that would block the delete, hidden ones
+                   included. Mirrors api.php's admin_songbook_delete. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -1736,6 +1749,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 /* Count how many songs we're about to delete so we can
                    report it in the success banner + Activity Log. */
+                /* @deleted-visible: PHYSICAL row count (#1694) — reports how
+                   many rows the cascade DELETE below will destroy, hidden
+                   ones included. Mirrors api.php's _cascade handler. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -2180,7 +2196,7 @@ if ($hasSeriesSchema) {
 
 /* ----- Compiler-credits map for the edit modal (#831) -----------------
  *       SongbookId => [{personId, personName, sortOrder, note}, …]
- *       Joined to tblCreditPeople so the edit-modal payload can render
+ *       Joined to tblMusicians so the edit-modal payload can render
  *       chips with the person's display name without a second client
  *       round-trip. Schema-conditional via $hasCompilersSchema (probed
  *       earlier alongside $hasSeriesSchema) so a pre-migration
@@ -2190,10 +2206,10 @@ $sbCompilersMap = []; /* SongbookId => [{...}, ...] in SortOrder asc */
 if ($hasCompilersSchema) {
     try {
         $res = $db->query(
-            'SELECT c.SongbookId, c.CreditPersonId, c.SortOrder, c.Note,
+            'SELECT c.SongbookId, c.MusicianId, c.SortOrder, c.Note,
                     p.Name AS PersonName, p.Slug AS PersonSlug
                FROM tblSongbookCompilers c
-               JOIN tblCreditPeople     p ON p.Id = c.CreditPersonId
+               JOIN tblMusicians     p ON p.Id = c.MusicianId
               ORDER BY c.SongbookId ASC, c.SortOrder ASC, p.Name ASC'
         );
         if ($res) {
@@ -2201,7 +2217,7 @@ if ($hasCompilersSchema) {
                 $sb = (int)$crow['SongbookId'];
                 if (!isset($sbCompilersMap[$sb])) $sbCompilersMap[$sb] = [];
                 $sbCompilersMap[$sb][] = [
-                    'person_id'   => (int)$crow['CreditPersonId'],
+                    'person_id'   => (int)$crow['MusicianId'],
                     'person_name' => (string)$crow['PersonName'],
                     'person_slug' => (string)($crow['PersonSlug'] ?? ''),
                     'sort_order'  => (int)$crow['SortOrder'],
@@ -2412,10 +2428,13 @@ try {
                 b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
-           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
+           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
+                               AND ' . songVisibleSql($db, 's') . $parentJoin . '
           GROUP BY b.Id
           ORDER BY b.DisplayOrder ASC, b.Name ASC'
-    );
+    );   /* #1694 — ActualSongCount counts VISIBLE songs, matching the D1
+            definition the cached SongCount now carries (predicate lives in the
+            LEFT JOIN ON clause so bookless rows still list) */
     $stmt->execute();
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
@@ -2698,8 +2717,10 @@ $csrf = csrfToken();
                                        per the shared export-filename convention. The
                                        click handler is wired in inline JS at the bottom
                                        of this file; it calls the DB-direct
-                                       /manage/editor/api?action=songbook_export&abbr=…
-                                       endpoint (WS-J #1020), which returns only this
+                                       /api?action=songbook_export&abbr=… public endpoint
+                                       (WS-J #1020; repointed off the retiring editor
+                                       endpoint by #1629 — see that script block for the
+                                       content-gating caveat), which returns only this
                                        songbook's songs — no client-side corpus filter. */
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary songbook-export-btn"
@@ -3327,7 +3348,8 @@ $csrf = csrfToken();
                                     <button type="button"
                                             class="btn btn-outline-secondary"
                                             id="edit-parent-clear"
-                                            title="Clear parent">
+                                            title="Clear parent"
+                                            aria-label="Clear parent songbook">
                                         <i class="bi bi-x-lg" aria-hidden="true"></i>
                                     </button>
                                 </div>
@@ -3406,7 +3428,7 @@ $csrf = csrfToken();
 
                         <?php if ($hasCompilersSchema): ?>
                         <!-- #831 — Compiler / Editor credits. Multi-row picker
-                             where each row pairs a tblCreditPeople entry with
+                             where each row pairs a tblMusicians entry with
                              an optional note (edition / co-compiler context).
                              Drag-handle reorder persists via array-index ⇒
                              SortOrder on save. The hidden inputs are named
@@ -3415,7 +3437,7 @@ $csrf = csrfToken();
                         <div class="mb-3" id="edit-compilers-block">
                             <label class="form-label d-flex justify-content-between align-items-center">
                                 <span>Compilers / Editors</span>
-                                <a href="/manage/credit-people" class="small text-info"
+                                <a href="/manage/musicians" class="small text-info"
                                    title="Manage credit people — add a person, set bio, slug, …">
                                     <i class="bi bi-person-badge me-1" aria-hidden="true"></i>Manage people
                                 </a>
@@ -3455,7 +3477,7 @@ $csrf = csrfToken();
                             </div>
                             <div class="form-text small text-muted mt-1">
                                 Person must already exist in Credit People. Use
-                                <a href="/manage/credit-people">Manage people</a>
+                                <a href="/manage/musicians">Manage people</a>
                                 to register a new compiler before adding them here.
                             </div>
                         </div>
@@ -4539,7 +4561,7 @@ $csrf = csrfToken();
         /* Add button — commits the currently-typed name (must be an
            exact match against one of the fetched suggestions; we never
            save a free-text id-less compiler since the FK requires a
-           real tblCreditPeople row). */
+           real tblMusicians row). */
         const commitAdd = () => {
             const v = addInput.value.trim();
             if (v === '') return;
@@ -4552,7 +4574,7 @@ $csrf = csrfToken();
                 setTimeout(() => addInput.classList.remove('is-invalid'), 1500);
                 return;
             }
-            /* Skip if already added — UNIQUE (SongbookId, CreditPersonId)
+            /* Skip if already added — UNIQUE (SongbookId, MusicianId)
                on the table would catch it but we may as well be friendly. */
             const existing = rowsEl.querySelector('input[name="compiler_person_ids[]"][value="' + Number(hit.id) + '"]');
             if (existing) {
@@ -4590,7 +4612,7 @@ $csrf = csrfToken();
             const sl  = String(data.personSlug || '');
             const nt  = String(data.note || '');
             const personLink = sl
-                ? '<a href="/people/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
+                ? '<a href="/musician/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
                   + escapeHtml(nm) + ' <i class="bi bi-box-arrow-up-right small" aria-hidden="true"></i></a>'
                 : escapeHtml(nm);
             card.innerHTML =
@@ -4724,10 +4746,36 @@ $csrf = csrfToken();
 
     <!-- Songbook bundle-export wiring (#883 follow-up). Each
          .songbook-export-btn carries data-songbook-abbrev /
-         data-songbook-name; on click we fetch the editor's full
-         corpus, filter to the abbreviation, and trigger a download
-         using the shared filename helper so the convention stays
-         consistent with the editor's per-song / bulk-export flows. -->
+         data-songbook-name; on click we fetch the songbook's songs and
+         trigger a download using the shared filename helper so the
+         convention stays consistent with the editor's per-song /
+         bulk-export flows.
+
+         ELI5: clicking the button asks the server for every song in this
+         songbook and saves them as one JSON file.
+
+         WHY THE PUBLIC ENDPOINT, NOT THE EDITOR'S (#1629): this button
+         lives on the admin Songbooks page, not the editor, and the v1
+         editor api.php it used to call is being retired (the v2 editor
+         cutover, #1601). The public /api?action=songbook_export
+         (api.php:~1079) is DB-direct, scoped to one songbook (never the
+         whole corpus — CLAUDE.md #17) and returns the SAME { songs,
+         songbook } shape the editor's endpoint did, so this is a pure
+         repoint with no shape adaptation.
+
+         ⚠️ GATING CAVEAT (#1629) — record this, don't fix it here: the
+         public endpoint runs its export through contentGatingApply()
+         (#1388) when tblAppSettings.content_gating_enabled = '1'. That
+         flag is OFF by default today, so this repoint is byte-identical
+         behaviour. But the day gating goes live, THIS ADMIN BUTTON'S
+         OUTPUT BECOMES TIER-DEPENDENT ON THE CLICKING ADMIN'S OWN
+         ACCOUNT — an admin without an elevated tier could silently get a
+         bundle with lyrics/media stripped from some songs. Before gating
+         is switched on, either (a) make the admin export tier-exempt
+         (e.g. bypass contentGatingApply for an authenticated admin/
+         global_admin caller), or (b) give api2.php its own editor-gated
+         songbook_export that never runs the gate. Do NOT pre-build
+         either now — just don't lose this note when that day comes. -->
     <script type="module">
     import {
         songbookExportFilename,
@@ -4746,9 +4794,11 @@ $csrf = csrfToken();
             try {
                 /* DB-direct per-songbook export (WS-J #1020): the server
                    returns only this songbook's songs (+ its record), so we
-                   no longer download and filter the whole corpus. */
+                   no longer download and filter the whole corpus. Repointed
+                   from the retiring editor endpoint to the public one
+                   (#1629) — see the gating caveat in the comment above. */
                 const res = await fetch(
-                    '/manage/editor/api.php?action=songbook_export&abbr=' + encodeURIComponent(abbr),
+                    '/api?action=songbook_export&abbr=' + encodeURIComponent(abbr),
                     { credentials: 'same-origin' },
                 );
                 if (!res.ok) throw new Error('HTTP ' + res.status);

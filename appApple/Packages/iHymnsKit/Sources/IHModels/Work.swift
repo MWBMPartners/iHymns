@@ -138,8 +138,63 @@ public struct Work: Sendable, Hashable, Codable, Identifiable {
     public let createdAt: String?
     public let updatedAt: String?
 
+    // #1752 Slice C — the nine #1741 P4b Work-identity keys
+    // `SongData::getWork()` always emits (`SongData.php`'s `$extraColNames`
+    // literal), independent of #1750 (this contract shipped earlier,
+    // #1443). ALL Optional — same absent-tolerance reasoning as
+    // `SongDetail`'s #1752 Slice A additions: the EMBEDDED
+    // `song_detail.works[]` shape (`_worksMap()`) never emits ANY of these
+    // nine keys at all (only the STANDALONE `getWork()`/`?action=work`
+    // response does — this is the exact split this file's #1443 header
+    // already documents for `children`), so a required key here would
+    // throw decoding every song belonging to a Work. `tuneId`/
+    // `firstPublishedYear` are `Int?`; the rest are `String?`.
+    /// CCLI Work Number (#1741 P1) — `nil`/absent on the embedded shape or
+    /// a pre-#1741-P4b install.
+    public let ccli: String?
+
+    /// BOWI (a second work-registry identifier, #1741 P1).
+    public let bowi: String?
+
+    /// Optional work subtitle (#1741 P1).
+    public let subtitle: String?
+
+    /// Short parenthetical distinguishing same-named works (#1741 P1).
+    public let disambiguation: String?
+
+    /// Traditional tune name mirror (#1741 P1) — denorm display string; the
+    /// canonical entity is `tblTunes` via `tuneId`. Renders as plain text
+    /// here (NO native tune destination screen exists yet, #1752 §5.2).
+    public let tuneName: String?
+
+    /// FK to `tblTunes.Id` (#1741 P1) — carried for forward-compat even
+    /// though no native tune screen consumes it yet.
+    public let tuneId: Int?
+
+    /// Year of first publication (#1741 P1) — see `SongDetail.
+    /// firstPublishedYear`'s identical `SMALLINT`-not-`YEAR` rationale.
+    public let firstPublishedYear: Int?
+
+    /// As-printed copyright year(s) (#1741 P1) — the split-fields half of
+    /// `copyrightDisplay`'s precedence fold below.
+    public let copyrightYears: String?
+
+    /// Copyright holder name (#1741 P1) — the other split-fields half.
+    public let copyrightHolder: String?
+
+    /// The copyright line to actually display — delegates to the SAME
+    /// shared fold `SongDetail.copyrightDisplay` uses (rule #22, ONE
+    /// implementation): `Work` has no legacy free-text copyright field
+    /// (unlike `SongDetail.copyright`), so `legacy: ""` is passed —
+    /// `Work.notes` is a free-text description, NOT a legacy-copyright
+    /// source, and must never be substituted here.
+    public var copyrightDisplay: String {
+        ihCopyrightDisplay(years: copyrightYears, holder: copyrightHolder, legacy: "")
+    }
+
     private enum CodingKeys: String, CodingKey {
         case id, parentId, title, slug, iswc, notes, parent, children, members, links, createdAt, updatedAt
+        case ccli, bowi, subtitle, disambiguation, tuneName, tuneId, firstPublishedYear, copyrightYears, copyrightHolder
     }
 
     /// Hand-written (rather than compiler-synthesized) SOLELY so `children`
@@ -164,5 +219,22 @@ public struct Work: Sendable, Hashable, Codable, Identifiable {
         links = try container.decode([ExternalLink].self, forKey: .links)
         createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        // #1752 Slice C — the nine #1741 P4b keys, `decodeIfPresent` in
+        // BOTH directions this file already tolerates `children` in: absent
+        // entirely (the embedded `song_detail.works[]` shape) and present
+        // (the standalone `getWork()` shape, whether or not the owning
+        // install has run the #1741 P4b migration yet — `getWork()` itself
+        // always emits these nine keys with server-side string/null
+        // defaults, but a pre-#1750-era already-cached native payload could
+        // still lack them).
+        ccli = try container.decodeIfPresent(String.self, forKey: .ccli)
+        bowi = try container.decodeIfPresent(String.self, forKey: .bowi)
+        subtitle = try container.decodeIfPresent(String.self, forKey: .subtitle)
+        disambiguation = try container.decodeIfPresent(String.self, forKey: .disambiguation)
+        tuneName = try container.decodeIfPresent(String.self, forKey: .tuneName)
+        tuneId = try container.decodeIfPresent(Int.self, forKey: .tuneId)
+        firstPublishedYear = try container.decodeIfPresent(Int.self, forKey: .firstPublishedYear)
+        copyrightYears = try container.decodeIfPresent(String.self, forKey: .copyrightYears)
+        copyrightHolder = try container.decodeIfPresent(String.self, forKey: .copyrightHolder)
     }
 }

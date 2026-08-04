@@ -245,6 +245,8 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | MIDI audio playback | — | Tier 2+ | Tier 2+ | Tier 2+ | Yes |
 | PDF sheet music | — | Tier 3+ | Tier 3+ | Tier 3+ | Yes |
 | Song editor | — | — | Yes | Yes | Yes |
+| Delete songs (recoverable — see [[Database & Migrations]]) | — | — | Yes | Yes | Yes |
+| Purge songs (permanent, irreversible) | — | — | — | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
 | Activity log | — | — | — | Yes | Yes |
 | App settings | — | — | — | — | Yes |
@@ -252,11 +254,85 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 
 ---
 
+## Account Lifecycle — disabled vs deleted (#1698)
+
+An account is in exactly one of three states. The state is **derived at read time** from
+`tblUsers`; it is never stamped onto the rows a user owns.
+
+| State | `IsActive` | `Status` | Reversible? | Meaning |
+|---|---|---|---|---|
+| Active | `1` | `active` | — | Normal account |
+| Disabled | `0` | `disabled` | **Yes** | Switched off. Data intact; re-enabling restores everything on the next read |
+| Deleted | `0` | `deleted` | **No** | Anonymised tombstone — personal data erased, row retained so ownership links still resolve |
+
+The invariant `IsActive = (Status === 'active')` is enforced in the **one writer**,
+`setUserActive()` in `manage/includes/auth.php`. `setUserActive()` refuses to reactivate a tombstone.
+
+### Why there is no second gate
+
+`getAuthenticatedUser()` already filters `u.IsActive = 1` on every bearer request, and
+`manage/includes/auth.php` carries thirteen more `IsActive` enforcement points (token auth, session
+resolution, login, password reset, email login and verification resolvers). **Both** inactive states
+set `IsActive = 0`, so a disabled or deleted user is locked out of every owner-authenticated path
+with no new code. `Status` exists solely to *distinguish* the two — for the admin UI, the
+reactivation guard, and the lock label on shared surfaces.
+
+### Why derive rather than stamp
+
+The alternative — writing `IsLocked = 1` onto every row a disabled user owns, and an inverse pass on
+reactivation — has three failure modes the derived design does not:
+
+1. A partial pass leaves an account half-locked, and nothing distinguishes "not reached yet" from
+   "deliberately unlocked".
+2. Every new table that grows a user FK must remember to join the pass; forgetting is silent.
+3. Reactivation must be exactly the inverse of disablement, forever — including for rows created
+   *while* disabled.
+
+Deriving reads one owner-state row at the moment of decision. Reactivation is one `UPDATE`.
+
+### Visible but locked
+
+Content owned by a non-active account **stays visible and becomes read-only**. A collaborator on a
+disabled owner's set list keeps `canRead`, loses `canWrite`, and receives a `lockReason` sentence
+that deliberately names no username, email or admin action. A published set-list template survives
+its author; `manage_setlist_templates` (admin+) is the override that keeps such a template
+manageable. Third parties are not punished for somebody else's account closing.
+
+### Erasure
+
+`accountErase()` (`includes/account_lifecycle.php`) derives what to do with every referencing row
+from that foreign key's own `ON DELETE` rule rather than a hardcoded table list:
+
+| FK rule | Action |
+|---|---|
+| `CASCADE` | Delete the row (it is the user's own) |
+| `SET NULL` on a *behavioural* column (search queries, song history, usage telemetry) | NULL it |
+| `SET NULL` elsewhere | **Keep** — attribution resolves to the tombstone |
+| `RESTRICT` / `NO ACTION` / empty / unrecognised | **Refuse** — we have no policy, so we do not guess |
+
+Every bearer token and the stored Apple refresh token go with the account. Three funnels reach the
+same core: self-service `account_delete`, admin `admin_user_delete`, and `deleteUser()`.
+
+A refusal surfaces as **HTTP 503**, not 500 — the account is untouched and the condition is an
+operator action (an un-run migration, or schema drift). It never falls back to a hard row delete.
+
+### Key files
+
+| File | Role |
+|---|---|
+| `includes/user_status.php` | The three states, derived — all pure except one memoised lookup |
+| `includes/account_lifecycle.php` | The erasure core |
+| `manage/includes/auth.php` → `setUserActive()` | The ONE state writer |
+| `appWeb/.sql/migrate-user-account-status.php` | The ONE migration |
+| `tests/php/test-account-lifecycle.php` | 100 behavioural assertions |
+
+---
+
 ## Database Tables
 
 | Table | Purpose |
 |---|---|
-| `users` | Account records (username, email, password hash, role, group) |
+| `users` | Account records (username, email, password hash, role, group). `Status` + `StatusChangedAt` carry the lifecycle state above (#1698) |
 | `user_groups` | Group definitions with version access flags |
 | `user_group_members` | Many-to-many group membership |
 | `user_permissions` | Per-user permission overrides |

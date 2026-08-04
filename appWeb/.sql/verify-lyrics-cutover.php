@@ -150,8 +150,21 @@ foreach ([
 ] as $cand) {
     if ($cand !== null && is_file($cand)) { require_once $cand; break; }
 }
-if (!function_exists('lyricLinesAssembleComponents') || !function_exists('getDbMysqli')) {
-    lcv_err('could not load includes/db_mysql.php or includes/lyric_lines_read.php');
+/* #1627 — the shared ArrangementJson rule that gate G4 below now applies, so the
+   gate and the write side (includes/song_importers.php::_sanitiseArrangement)
+   cannot disagree about which ordinals are valid. Same DOCUMENT_ROOT-first
+   resolution as the assembler above, and REQUIRED rather than best-effort: G4
+   calls arrangementViolations() unconditionally, so a missing file would fatal
+   mid-run instead of failing the guard cleanly here. */
+foreach ([
+    ($docRoot !== '' ? $docRoot . '/includes/arrangement.php' : null),
+    dirname(__DIR__) . '/public_html/includes/arrangement.php',
+] as $cand) {
+    if ($cand !== null && is_file($cand)) { require_once $cand; break; }
+}
+if (!function_exists('lyricLinesAssembleComponents') || !function_exists('getDbMysqli')
+    || !function_exists('arrangementViolations')) {
+    lcv_err('could not load includes/db_mysql.php, includes/lyric_lines_read.php or includes/arrangement.php');
     if ($LCV_WEB) { return; }
     exit(2);
 }
@@ -463,15 +476,25 @@ foreach ($songIds as $songId) {
     if (isset($g4ArrangementsBySong[$songId])) {
         $g4N = count($assembled);
         foreach ($g4ArrangementsBySong[$songId] as $g4Arr) {
+            /* #1627 — the ordinal rule now comes from includes/arrangement.php,
+               the SAME function the write side uses (via _sanitiseArrangement).
+               ELI5: the gate and the editor now read from one rulebook.
+               Detail: this loop and _sanitiseArrangement() were independent
+               implementations of the same bounds. Had they drifted — the writer
+               looser than the gate — the editor would have manufactured its own
+               blocker: curators persisting arrangements this gate rejects, the
+               #1618 verification going red on real curator data, and the
+               destructive C6 drop that epic #1601 exists to unblock staying
+               blocked, months later, with nothing pointing back to the cause.
+               The per-ordinal gfail payloads below are UNCHANGED — that is why
+               the shared helper returns violations rather than a bool. */
             $g4Ords = json_decode((string)$g4Arr['raw'], true);
-            if (!is_array($g4Ords)) {
-                gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'reason' => 'malformed JSON (not an array)']);
-            } else {
-                foreach ($g4Ords as $g4Pos => $g4Val) {
-                    if (!is_int($g4Val) || $g4Val < 0 || $g4Val >= $g4N) {
-                        gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'position' => $g4Pos, 'value' => $g4Val, 'componentCount' => $g4N]);
-                    }
+            foreach (arrangementViolations($g4Ords, $g4N) as $g4V) {
+                if ($g4V['reason'] === 'malformed') {
+                    gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'reason' => 'malformed JSON (not an array)']);
+                    continue;
                 }
+                gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'position' => $g4V['position'], 'value' => $g4V['value'], 'componentCount' => $g4N]);
             }
         }
     }

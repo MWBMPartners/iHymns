@@ -58,6 +58,10 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+/* #1694 — song soft-delete predicate. Filtered sites below degrade to '1=1'
+   un-migrated; the delete/restore-adjacent reads stay deliberately unfiltered
+   (see their @deleted-visible markers). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 /* Places adoption helper — exposes placeColumnExists() so the
    save_song path persists OriginCityId alongside the legacy
    OriginCity display string only when the places-adoption
@@ -70,6 +74,9 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    `function_exists('logActivity')` is always true inside this
    endpoint and the helper is available unconditionally. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
+   file's hand-rolled INSERT INTO tblNotifications. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
 /* Mirror every uncaught \Throwable + PHP fatal in any editor-API
    case (save_song, bulk_import_*, typeaheads, load) into
    tblActivityLog. Per-case try/catches still write their own
@@ -96,6 +103,13 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
 require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+/* _ewExport_rtfEscape() / _ewExport_buildRtf() / _ewExport_writeDb() — the
+   EasyWorship Songs.db builder (#1059) the `easyworship_export` case below
+   calls. Moved to includes/easyworship_export.php (#1678) so api2.php reuses
+   the SAME implementation instead of forking it. Required ABOVE the switch,
+   same reasoning as song_importers.php just above: the functions must exist
+   before any handler runs, not merely before this file's own text position. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -352,125 +366,17 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * TRANSLATIONS — Manage song translation links (#352)
-     * ----------------------------------------------------------------- */
-
-    /* Get translations for a song */
-    case 'get_translations':
-        $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
-        if ($songId === '') {
-            http_response_code(400);
-            echo json_encode(['error' => 'Song ID is required.']);
-            break;
-        }
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT t.Id AS id, t.TranslatedSongId AS songId,
-                        t.TargetLanguage AS language, t.Translator AS translator,
-                        t.Verified AS verified, s.Title AS title, s.Number AS number
-                 FROM tblSongTranslations t
-                 JOIN tblSongs s ON s.SongId = t.TranslatedSongId
-                 WHERE t.SourceSongId = ?
-                 ORDER BY t.TargetLanguage ASC'
-            );
-            $stmt->bind_param('s', $songId);
-            $stmt->execute();
-            $translations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-            foreach ($translations as &$tr) {
-                $tr['id'] = (int)$tr['id'];
-                $tr['verified'] = (bool)$tr['verified'];
-                $tr['number'] = (int)$tr['number'];
-            }
-            unset($tr);
-            echo json_encode(['translations' => $translations]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to load translations.']);
-        }
-        break;
-
-    /* Add a translation link */
-    case 'add_translation':
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            echo json_encode(['error' => 'POST method required.']);
-            break;
-        }
-        $body = json_decode(file_get_contents('php://input'), true);
-        $srcId = trim($body['sourceSongId'] ?? '');
-        $tgtId = trim($body['translatedSongId'] ?? '');
-        $lang  = trim($body['language'] ?? '');
-        $translator = trim($body['translator'] ?? '');
-
-        if ($srcId === '' || $tgtId === '' || $lang === '') {
-            http_response_code(400);
-            echo json_encode(['error' => 'sourceSongId, translatedSongId, and language are required.']);
-            break;
-        }
-        if ($srcId === $tgtId) {
-            http_response_code(400);
-            echo json_encode(['error' => 'A song cannot be a translation of itself.']);
-            break;
-        }
-
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator)
-                 VALUES (?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(TranslatedSongId),
-                                         Translator = VALUES(Translator)'
-            );
-            $stmt->bind_param('ssss', $srcId, $tgtId, $lang, $translator);
-            $stmt->execute();
-            $stmt->close();
-            echo json_encode(['success' => true]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            error_log('[iHymns Editor] add_translation failed: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to add translation link.']);
-        }
-        break;
-
-    /* Remove a translation link */
-    case 'remove_translation':
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            echo json_encode(['error' => 'POST method required.']);
-            break;
-        }
-        $body = json_decode(file_get_contents('php://input'), true);
-        $removeId = (int)($body['id'] ?? 0);
-        if ($removeId <= 0) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Translation link ID is required.']);
-            break;
-        }
-
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
-            $stmt->bind_param('i', $removeId);
-            $stmt->execute();
-            $deleted = $stmt->affected_rows;
-            $stmt->close();
-            echo json_encode(['success' => true, 'deleted' => $deleted]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to remove translation link.']);
-        }
-        break;
-
-    /* -----------------------------------------------------------------
      * GET_SONG_LINKS — Cross-book counterparts for one song (#807)
      *
      * Returns every other tblSongs row that shares this song's
      * tblSongLinks.GroupId — i.e. every counterpart appearance of
-     * the same hymn in a different songbook. Distinct from
-     * get_translations (different-language same hymn) and from the
-     * songbook-level parent link (#782 phase D).
+     * the same hymn in a different songbook. The old get_translations/
+     * add_translation/remove_translation v1 trio (#352) was removed by
+     * remediation X1 (2026-07-30): the legacy editor's Translations panel
+     * never called them (#1626 — see test-song-translations-roundtrip.js),
+     * and per-song translation links are now the public `song_translations`
+     * action, which is live. Distinct from the songbook-level parent link
+     * (#782 phase D).
      * ----------------------------------------------------------------- */
     case 'get_song_links':
         $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
@@ -511,8 +417,9 @@ switch ($action) {
                        JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE l.GroupId = ?
                         AND l.SongId  <> ?
+                        AND ' . songVisibleSql($db, 's') . '
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-                );
+                );   /* #1694 — hidden counterparts stay off the editor panel */
                 $stmt->bind_param('is', $groupId, $songId);
                 $stmt->execute();
                 $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -577,7 +484,10 @@ switch ($action) {
                cheaper than catching an FK violation after a partial
                INSERT. */
             $probe = $db->prepare(
-                'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?)'
+                /* #1694 — filtered: a hidden song cannot be LINKED to (it is
+                   not offered anywhere, so a link request naming one is stale
+                   — refuse with the existing not-found answer; restore first). */
+                'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?) AND ' . songVisibleSql($db, '')
             );
             $probe->bind_param('ss', $srcId, $tgtId);
             $probe->execute();
@@ -803,8 +713,8 @@ switch ($action) {
                         b.Number    AS numberB,
                         b.SongbookAbbr AS songbookB
                    FROM tblSongLinkSuggestions s
-                   JOIN tblSongs a ON a.SongId = s.SongIdA
-                   JOIN tblSongs b ON b.SongId = s.SongIdB
+                   JOIN tblSongs a ON a.SongId = s.SongIdA AND ' . songVisibleSql($db, 'a') . '
+                   JOIN tblSongs b ON b.SongId = s.SongIdB AND ' . songVisibleSql($db, 'b') . '
                   WHERE (s.SongIdA = ? OR s.SongIdB = ?)
                     AND NOT EXISTS (
                         SELECT 1 FROM tblSongLinkSuggestionsDismissed d
@@ -1058,6 +968,27 @@ switch ($action) {
         $songIds = array_values(array_filter(array_map('strval', $payload['songIds']), function ($id) {
             return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $id);
         }));
+        /* `bulk_edit_songs` entitlement — but ONLY for a genuinely bulk call
+           (#1590, entitlement truth-up E1).
+           ELI5: tagging one song is not a bulk edit, so the "Bulk-edit songs"
+           permission should not decide whether you can do it.
+           Detail: this endpoint is shaped for many songs, but the legacy editor's
+           only two callers (editor.js addSongTag / removeSongTag) pass a SINGLE
+           id — it is how a curator adds one tag chip to the song in front of
+           them. Gating that on `bulk_edit_songs` would mean an operator revoking
+           bulk editing also silently broke single-song tagging, i.e. the
+           checkbox would not do what its label says. The >1 test keeps the gate
+           honest, and is a no-op for both shipped callers.
+           EQUIVALENCE: the file-level gate at :47 requires editor+, and the
+           default `bulk_edit_songs` map is now exactly {editor, admin,
+           global_admin} (aligned to reality — see includes/entitlements.php), so
+           no role loses access today. */
+        if (count($songIds) > 1
+            && !userHasEntitlement('bulk_edit_songs', $currentUser['role'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'The bulk_edit_songs entitlement is required to tag more than one song at a time.']);
+            break;
+        }
         $addTags = is_array($payload['add'] ?? null) ? $payload['add'] : [];
         $remTags = is_array($payload['remove'] ?? null) ? $payload['remove'] : [];
         /* Tag normalisation (#762):
@@ -1100,6 +1031,9 @@ switch ($action) {
                song WAS saved but its persisted SongId differs from
                the editor's local copy). #960-follow-up */
             if (!empty($songIds)) {
+                /* @deleted-visible: write-path FK pre-check (#1694) — tagging a
+                   hidden row is harmless and restore-preserving; filtering here
+                   would misreport a real row as "missing" mid-save. */
                 $place      = implode(',', array_fill(0, count($songIds), '?'));
                 $checkStmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($place)");
                 $checkStmt->bind_param(str_repeat('s', count($songIds)), ...$songIds);
@@ -1330,6 +1264,9 @@ switch ($action) {
             /* Capture the current state so the new revision row's
                PreviousData matches reality (not the stale PreviousData
                from the chosen row). */
+            /* @deleted-visible: revision-restore snapshot capture (#1694) —
+               repairing a hidden song's data must keep working; the editor's
+               LISTS go dark instead (restore-first workflow). */
             $cur = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
             $cur->bind_param('s', $songId);
             $cur->execute();
@@ -1362,18 +1299,31 @@ switch ($action) {
                 $lyrics   = (string)($restorePayload['LyricsText']      ?? '');
                 $copyr    = (string)($restorePayload['Copyright']       ?? '');
                 $ccli     = (string)($restorePayload['CCLI']            ?? '');
-                $sbAbbr   = (string)($restorePayload['SongbookAbbr']    ?? '');
+                /* #1679 — SongbookAbbr is NOT restored (the v2 restore path,
+                   ed2_applySongSnapshot(), makes the same exclusion for the same
+                   reason).
+
+                   ELI5: putting the old words back must not also pick the song up
+                   and drop it into a songbook it has since left.
+
+                   Detail: the abbreviation IS the SongId prefix (rule #27). This
+                   restore writes SCALARS only — it cannot re-key the id, cascade
+                   the ~25 FK children or write the permalink redirect — so
+                   restoring an old abbreviation would leave the id claiming one
+                   book and the column another: exactly the mismatch #1679 exists
+                   to remove, produced as a SIDE EFFECT of an action aimed at the
+                   lyrics. A restore keeps the song's current home; moving books is
+                   an explicit act that funnels through songRelocate(). */
                 $upd = $db->prepare(
                     'UPDATE tblSongs SET Title=?, Number=?, Verified=?,
                         LyricsPublicDomain=?, MusicPublicDomain=?, HasAudio=?,
-                        HasSheetMusic=?, LyricsText=?, Copyright=?, CCLI=?,
-                        SongbookAbbr=?
+                        HasSheetMusic=?, LyricsText=?, Copyright=?, CCLI=?
                      WHERE SongId=?'
                 );
                 $upd->bind_param(
-                    'siiiiiisssss',
+                    'siiiiiissss',
                     $title, $number, $verified, $lyricsPD, $musicPD, $hasAudio,
-                    $hasSheet, $lyrics, $copyr, $ccli, $sbAbbr, $songId
+                    $hasSheet, $lyrics, $copyr, $ccli, $songId
                 );
                 $upd->execute();
                 $upd->close();
@@ -1480,7 +1430,7 @@ switch ($action) {
             }
             /* When the caller searches "any" role (the default for the
                editor's chip autocomplete), also surface registry rows
-               from tblCreditPeople — pre-registered names that no song
+               from tblMusicians — pre-registered names that no song
                currently cites still need to be selectable. The
                synthesized 'registry' kindLabel collapses via the outer
                GROUP BY, so a registry-only name lands as a single
@@ -1491,7 +1441,7 @@ switch ($action) {
                exists in the catalogue. (#545) */
             if ($kind === 'any') {
                 $unionParts[] = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt
-                                 FROM tblCreditPeople
+                                 FROM tblMusicians
                                  WHERE Name LIKE ?";
                 $params[] = $like;
                 $types   .= 's';
@@ -1503,12 +1453,12 @@ switch ($action) {
                    that this row was matched via an alternative name —
                    the chip can render a small "via AKA: <alias>" hint
                    if it wants. Schema-tolerant: silently skipped on
-                   installs where tblCreditPersonAliases isn't present. */
-                require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-                if (creditPeopleAliasesTableExists($db)) {
+                   installs where tblMusicianAliases isn't present. */
+                require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
+                if (musicianAliasesTableExists($db)) {
                     $unionParts[] = "SELECT cp.Name, 'alias' AS kindLabel, 0 AS cnt
-                                     FROM tblCreditPersonAliases a
-                                     JOIN tblCreditPeople cp ON cp.Id = a.CreditPersonId
+                                     FROM tblMusicianAliases a
+                                     JOIN tblMusicians cp ON cp.Id = a.MusicianId
                                      WHERE a.Name LIKE ?";
                     $params[] = $like;
                     $types   .= 's';
@@ -1519,20 +1469,20 @@ switch ($action) {
                or strict-mode configurations. (#593)
 
                #960 — when the FirstNames/Surname/Suffix columns from
-               PR #935 exist, LEFT JOIN tblCreditPeople so a
+               PR #935 exist, LEFT JOIN tblMusicians so a
                registry-matched name surfaces its structured parts in
                the response. The chip-list editor uses these to
                populate all three inputs on suggestion click,
                preferring curated parts over a client-side decompose
                of the composed Name. Pre-migration installs return
                NULLs and the client falls back to decomposing. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-            $partsCols = creditPeopleNamePartsColumnsExist($db);
+            require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
+            $partsCols = musicianNamePartsColumnsExist($db);
             $partsSelect  = $partsCols
                 ? ', cp.FirstNames AS first_names, cp.Surname AS surname, cp.Suffix AS suffix'
                 : '';
             $partsJoin    = $partsCols
-                ? 'LEFT JOIN tblCreditPeople cp ON cp.Name = u.Name'
+                ? 'LEFT JOIN tblMusicians cp ON cp.Name = u.Name'
                 : '';
             /* ONLY_FULL_GROUP_BY requires every non-aggregated select
                column to appear in GROUP BY. Group on the raw column
@@ -1968,27 +1918,25 @@ switch ($action) {
             /* Notify the curator so they find the result on their
                next page-load even if they walked away. Best-effort —
                a tblNotifications failure must not poison the import
-               result. */
+               result.
+
+               #1638 — that best-effort contract is exactly the precedent the
+               shared includes/notifications.php helper was built on, so this
+               call site now delegates to it instead of carrying its own copy
+               of the INSERT + try/catch. */
             if ($userId !== null) {
-                try {
-                    $created  = (int)($summary['songs_created'] ?? 0);
-                    $skipped  = (int)($summary['songs_skipped_existing'] ?? 0);
-                    $failed   = (int)($summary['songs_failed'] ?? 0);
-                    $title    = "Import finished: {$created} new, {$skipped} skipped"
-                              . ($failed > 0 ? ", {$failed} failed" : '');
-                    $body     = "Bulk import of \"{$origName}\" completed.";
-                    $url      = '/manage/editor/';
-                    $type     = 'bulk_import_complete';
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
-                         VALUES (?, ?, ?, ?, ?)'
-                    );
-                    $stmt->bind_param('issss', $userId, $type, $title, $body, $url);
-                    $stmt->execute();
-                    $stmt->close();
-                } catch (\Throwable $_e) {
-                    error_log('[bulk_import_zip] notification insert skipped: ' . $_e->getMessage());
-                }
+                $created  = (int)($summary['songs_created'] ?? 0);
+                $skipped  = (int)($summary['songs_skipped_existing'] ?? 0);
+                $failed   = (int)($summary['songs_failed'] ?? 0);
+                notifyUser(
+                    $db,
+                    $userId,
+                    'bulk_import_complete',
+                    "Import finished: {$created} new, {$skipped} skipped"
+                        . ($failed > 0 ? ", {$failed} failed" : ''),
+                    "Bulk import of \"{$origName}\" completed.",
+                    '/manage/editor/'
+                );
             }
 
             /* #908 — top-level summary row in tblActivityLog so the
@@ -2181,17 +2129,41 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * BULK_IMPORT_OPENLP — single OpenLyrics (.xml) song import (#1052).
+     * BULK_IMPORT_OPENLP — single OpenLyrics OR OpenSong (.xml) song
+     * import (#1052, auto-routing added #882).
      *
      * POST /manage/editor/api?action=bulk_import_openlp
-     *   multipart field "openlp" = one OpenLyrics .xml document.
+     *   multipart field "openlp" = one OpenLyrics or OpenSong .xml
+     *   document. The action name and the "openlp" field name predate
+     *   #882 and are KEPT as-is — editor.js's .xml upload branch and any
+     *   other caller already point here (CLAUDE.md rule #33: a URL/field
+     *   name other code links to is a contract, not a naming mistake to
+     *   "fix" out from under them).
+     *
+     * #882 fix: this used to call _bulkImport_processOpenLp() directly,
+     * which only ever tries the OpenLyrics parser — so a real OpenSong
+     * file (no OpenLyrics <properties>/<songbooks> structure) always
+     * failed with OpenLyrics' own confusing "no <title> element" error.
+     * It now calls the shared _bulkImport_processXmlAuto() router
+     * (includes/song_importers.php), which content-sniffs the body via
+     * _bulkImport_looksLikeOpenLyrics() — the SAME discriminator the ZIP
+     * import loop already uses for its own .xml entries, so this
+     * single-file path and a ZIP entry can never disagree about the same
+     * file — and tries the other parser once if the sniffed-primary one
+     * fails to parse. The resolved format rides back in the summary's
+     * `parsed_by_format` key exactly as it did before.
      *
      * OpenLP "Export songs" writes one OpenLyrics .xml per song, each
-     * carrying its own <songbook name="…" entry="N"/> — so the songbook
-     * is derived from the file, not a folder convention. A whole FOLDER
-     * of OpenLyrics files exported as a .zip goes through the normal
-     * bulk_import_zip endpoint, which now content-sniffs .xml entries and
-     * routes OpenLyrics ones to the same parser (no folder convention).
+     * carrying its own <songbook name="…" entry="N"/> — so for OpenLyrics
+     * the songbook is derived from the file, not a folder convention.
+     * OpenSong XML carries no songbook metadata of its own, so a lone
+     * OpenSong file is filed under a fixed "OpenSong Import" (abbr "OS")
+     * songbook (see _bulkImport_processOpenSong()'s doc-block). A whole
+     * FOLDER of either dialect exported as a .zip goes through the
+     * normal bulk_import_zip endpoint, which already content-sniffs
+     * .xml entries via the same discriminator (no folder convention
+     * required for OpenLyrics; OpenSong ZIP entries still need the
+     * "<Title> [<ABBR>]/" folder convention for their songbook name).
      *
      * Insert-only — existing rows report as "skipped (existing)". Honours
      * the #1051 dedupeMode flag. Returns the same summary shape as
@@ -2217,12 +2189,12 @@ switch ($action) {
             break;
         }
 
-        /* A single OpenLyrics song is a few KiB; cap at the same 5 MiB
-           ceiling the other single-file path uses. */
+        /* A single OpenLyrics/OpenSong song is a few KiB; cap at the same
+           5 MiB ceiling the other single-file paths use. */
         $sizeBytes = (int)($_FILES['openlp']['size'] ?? 0);
         if ($sizeBytes > 5 * 1024 * 1024) {
             http_response_code(413);
-            echo json_encode(['error' => 'Uploaded OpenLyrics file exceeds the 5 MiB import limit.']);
+            echo json_encode(['error' => 'Uploaded file exceeds the 5 MiB import limit.']);
             break;
         }
 
@@ -2235,7 +2207,10 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processOpenLp($body, $origName);
+            /* #882 — routed through the shared auto-router so a real
+               OpenSong file no longer dies against the OpenLyrics-only
+               parser. See _bulkImport_processXmlAuto()'s doc-block. */
+            $summary = _bulkImport_processXmlAuto($body, $origName);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
@@ -2896,6 +2871,9 @@ switch ($action) {
                them. */
             $placeholders = implode(',', array_fill(0, count($skipped), '?'));
             $types        = str_repeat('s', count($skipped));
+            /* @deleted-visible: audit CSV (#1694) — a skip happened because
+               the row EXISTED at import time; resolving its title must not
+               depend on later visibility. */
             $look = $db->prepare(
                 "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
                    FROM tblSongs s
@@ -3075,7 +3053,9 @@ switch ($action) {
                 break;
             }
 
-            /* Song must exist — gives a clean 404 instead of an FK violation. */
+            /* Song must exist — gives a clean 404 instead of an FK violation.
+               @deleted-visible: write-path FK pre-check (#1694) — media attached
+               to a hidden row survives restore; the FK holds either way. */
             $stmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
             $stmt->bind_param('s', $songId);
             $stmt->execute();
@@ -3434,18 +3414,17 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * delete_song (#1200 Phase 0) — REMOVE a song + its ENTIRE dependent
-     * subtree. The first real server-side delete: the legacy editor's
-     * deleteSong() was CLIENT-ONLY (no endpoint existed), so its toast lied
-     * and the song came back on refresh (a #1010 regression). Every inbound FK
-     * to tblSongs(SongId) is ON DELETE CASCADE (37) or SET NULL (3) — VERIFIED
-     * against INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS — so ONE cascade
-     * DELETE atomically removes components → lyrics → words → syllables,
-     * credits, revisions, media, tags, links, presentation rows, etc. with no
-     * orphans and no RESTRICT failure (no hand-ordering, no FK-checks-off).
-     * Guarded by the #1200 CSRF gate (the editor API had none). Returns the
-     * TRUE affected_rows — never a false success. Dormant until the rewrite UI
-     * calls it (per-phase hard cutover).
+     * delete_song (#1200 Phase 0 → SOFT delete since #1694 commit 4).
+     * Originally the first real server-side delete (the legacy editor's
+     * deleteSong() was CLIENT-ONLY and its toast lied, #1010) — a single
+     * cascade DELETE. That destructive body now lives ONCE, in songPurge()
+     * (includes/song_soft_delete.php), admin-only and reachable only from the
+     * deleted state on /manage/deleted-songs; this endpoint hides the song
+     * instead (IsDeleted = 1 + who/when/why, restorable). It previously
+     * existed near-identically HERE and in api2.php — the modularity rule's
+     * worst case for an irreversible operation — so both now delegate to the
+     * ONE songSoftDelete() core. Still guarded by the #1200 CSRF gate + the
+     * delete_songs entitlement; still never a false success.
      * ----------------------------------------------------------------- */
     case 'delete_song':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -3453,18 +3432,77 @@ switch ($action) {
             echo json_encode(['ok' => false, 'error' => 'POST method required.']);
             break;
         }
-        /* CSRF — the editor posts JSON, so the token rides an explicit
-           X-CSRF-Token header (emitted as a <meta> by the rewrite editor head). */
-        if (!validateCsrf((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))) {
+        /* CSRF — via validateCsrfRequest(), the shared same-origin check
+           (rule #29). The editor posts JSON, so a token may ride an explicit
+           X-CSRF-Token header; the header route is accepted too.
+
+           WHY THIS CHANGED (#1695, 2026-07-31). It used to call
+           `validateCsrf()` ALONE, which the review red-flag list names
+           explicitly: a per-render baked `$_SESSION['csrf_token']` rotates,
+           gets GC'd and differs across tabs, so a legitimate delete from a
+           long-open editor tab is rejected with a bare "Invalid or missing
+           CSRF token" — the SPORADIC failure rule #29 exists to remove.
+
+           Two facts make the stricter check pointless rather than valuable:
+
+           1. IT ADDED NO SECURITY. The file-level gate at the top of this
+              file ALREADY requires validateCsrfRequest() for every POST, so
+              no request reaches here without passing it. The inner check
+              could only ever REJECT a request the outer one had accepted —
+              i.e. contribute failures, never protection.
+
+           2. THE ENDPOINT IS NO LONGER DESTRUCTIVE. This was defensible when
+              delete_song ran a cascade DELETE. Since #1694 it performs a SOFT
+              delete: the song is hidden and restorable in one click. The
+              irreversible operation is `songPurge()`, which lives behind its
+              own `purge_songs` entitlement and a server-enforced
+              type-to-confirm on /manage/deleted-songs.
+
+           The security sweep that found this deliberately did NOT change it,
+           on the reasoning that loosening a destructive endpoint mid-sweep
+           was not its call — correct at the time, and #1694/#1695 have since
+           removed the premise. #1695 also widened `delete_songs` to editor+,
+           so the stale-token failure now reaches many more people. */
+        if (!validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
             http_response_code(403);
             echo json_encode(['ok' => false, 'error' => 'Invalid or missing CSRF token.']);
             break;
         }
+        /* `delete_songs` entitlement (#1590, entitlement truth-up E1).
+           ELI5: /manage/entitlements has a "Delete songs" checkbox. Until now
+           nothing looked at it, so ticking or unticking it did nothing at all.
+           This is the line that makes it mean something.
+           Placed AFTER the CSRF check on purpose: request authenticity is
+           established first, so a request that fails both is told about the
+           forgery rather than about the permission map.
+           EQUIVALENCE (no live behaviour change): the file-level gate at :47
+           already requires `hasRole($role, 'editor')`, i.e. exactly
+           {editor, admin, global_admin}. The default map for `delete_songs` is
+           now the same three roles (it was admin+ only, which described the
+           REVIEW page's wish rather than this endpoint's behaviour — see the
+           note in includes/entitlements.php). So every role that reached this
+           line yesterday still reaches it today; the only new outcome is that an
+           operator who UNTICKS a role now gets what they asked for.
+           @see appWeb/public_html/includes/entitlements.php */
+        if (!userHasEntitlement('delete_songs', $currentUser['role'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'The delete_songs entitlement is required.']);
+            break;
+        }
         $delBody   = json_decode(file_get_contents('php://input') ?: '', true);
         $delSongId = trim((string)(is_array($delBody) ? ($delBody['songId'] ?? $delBody['id'] ?? '') : ($_GET['id'] ?? '')));
-        /* #1343 — optional relink target for the deleted song's permalink (blank =
-           "removed" tombstone). Either way the old /song/<id> resolves, not 404s. */
+        /* `redirectTo` is ACCEPTED AND IGNORED (#1694, deliberately — the
+           response says so rather than silently dropping it). A soft delete
+           writes NOTHING to tblSongRedirects: a songRedirectRepoint() cannot
+           be un-written, so restore must be a no-op on redirect state (the
+           #1679 stranded-chain class). The relink happens at PURGE
+           (/manage/deleted-songs), where the old redirect dance runs unchanged. */
         $delRedirectTo = trim((string)(is_array($delBody) ? ($delBody['redirectTo'] ?? '') : ''));
+        /* Optional vocabulary (#1694): a songDeleteReasons() key + free note.
+           An unknown reason refuses 422 (allow-list, rule #20; status is the
+           contract, rule #35). */
+        $delReason = trim((string)(is_array($delBody) ? ($delBody['reason'] ?? '') : ''));
+        $delNote   = trim((string)(is_array($delBody) ? ($delBody['note'] ?? '') : ''));
         if ($delSongId === '') {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'songId is required.']);
@@ -3472,62 +3510,33 @@ switch ($action) {
         }
         try {
             $db = getDbMysqli();
-            $db->begin_transaction();
-            /* Snapshot for the audit trail before the row vanishes. */
-            $delPrev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
-            $delPrev->bind_param('s', $delSongId);
-            $delPrev->execute();
-            $delPrevRow = $delPrev->get_result()->fetch_assoc();
-            $delPrev->close();
-            if ($delPrevRow === null) {
-                $db->rollback();
-                http_response_code(404);
-                echo json_encode(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0]);
+            /* song_soft_delete.php is a top-of-file require (:64) — the ONE
+               lifecycle core both editor APIs delegate to. */
+            $delBy   = (int)($currentUser['id'] ?? 0) ?: null;
+            $verdict = songSoftDelete($db, $delSongId, $delBy, $delReason === '' ? null : $delReason, $delNote);
+            if (!$verdict['ok']) {
+                /* 400 empty id / 404 absent / 409 un-migrated or already
+                   deleted / 422 unknown reason — relayed as-is. */
+                http_response_code($verdict['status']);
+                echo json_encode(['ok' => false, 'error' => $verdict['error'], 'deleted' => 0]);
                 break;
             }
-            /* Resolve the relink target (a different, existing song) else tombstone. */
-            $delTarget = null;
-            if ($delRedirectTo !== '' && $delRedirectTo !== $delSongId) {
-                $delChk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $delChk->bind_param('s', $delRedirectTo);
-                $delChk->execute();
-                if ($delChk->get_result()->fetch_row() !== null) { $delTarget = $delRedirectTo; }
-                $delChk->close();
-            }
-            /* Keep permalinks alive (#1343) — gated. When relinking, FORWARD any
-               redirects already pointing AT this song to the new target BEFORE the
-               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
-               (mirrors the merge path). Tombstone (null) lets inbound fall to "removed". */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
-            /* Capture PublicId before the delete so a shared /song/<PublicId> resolves too (#1343-B). */
-            $delPubId = '';
-            if (songPublicId_columnReady($db)) {
-                $dpp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $dpp->bind_param('s', $delSongId);
-                $dpp->execute();
-                $delPubId = (string)($dpp->get_result()->fetch_assoc()['PublicId'] ?? '');
-                $dpp->close();
-            }
-            if ($delTarget !== null) { songRedirectRepoint($db, $delSongId, $delTarget); }
-            /* Single cascade delete — see the block comment above. */
-            $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
-            $delStmt->bind_param('s', $delSongId);
-            $delStmt->execute();
-            $delCount = $delStmt->affected_rows;
-            $delStmt->close();
-            $delBy = (int)($currentUser['id'] ?? 0) ?: null;
-            songRedirectWrite($db, $delSongId, $delTarget, 'delete', $delBy);
-            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $delTarget, 'delete', $delBy); }
-            $db->commit();
-            logActivity('song.delete', 'song', $delSongId, [
-                'title'       => (string)($delPrevRow['Title'] ?? ''),
-                'songbook'    => (string)($delPrevRow['SongbookAbbr'] ?? ''),
-                'redirect_to' => $delTarget ?? '(tombstone)',
+            logActivity('song.soft_delete', 'song', $delSongId, [
+                'title'    => (string)($verdict['title'] ?? ''),
+                'songbook' => (string)($verdict['songbook'] ?? ''),
+                'reason'   => $delReason === '' ? null : $delReason,
+                'note'     => $delNote,
             ]);
-            echo json_encode(['ok' => true, 'deleted' => (int)$delCount, 'songId' => $delSongId, 'redirectTo' => $delTarget]);
+            echo json_encode([
+                'ok'          => true,
+                'deleted'     => 1,        /* back-compat: the one song left the catalogue */
+                'softDeleted' => true,     /* NEW — restorable from /manage/deleted-songs */
+                'songId'      => $delSongId,
+                'redirectTo'  => null,     /* no redirect is ever written at soft-delete time */
+            ] + ($delRedirectTo !== '' ? [
+                'notice' => 'redirectTo is ignored on a soft delete — choose the relink target when the song is purged from /manage/deleted-songs (#1694).',
+            ] : []));
         } catch (\Throwable $e) {
-            if (isset($db)) { try { $db->rollback(); } catch (\Throwable $_e) {} }
             error_log('[delete_song] ' . $e->getMessage());
             http_response_code(500);
             $delIsAdmin = isset($currentUser['role']) && hasRole($currentUser['role'], 'admin');
@@ -3544,7 +3553,7 @@ switch ($action) {
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder, delete_song']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder, delete_song']);
         break;
 }
 
@@ -3571,100 +3580,13 @@ switch ($action) {
  * two-table schema the iHymns EasyWorship importer (#1058) round-trips; real
  * EasyWorship may expect additional index/FTS tables, so "does EW itself read
  * it" should be confirmed against a live EasyWorship install.
+ *
+ * _ewExport_rtfEscape() / _ewExport_buildRtf() / _ewExport_writeDb() moved to
+ * includes/easyworship_export.php (#1678) so the v2 editor API
+ * (manage/editor/api2.php) can reuse the SAME implementation instead of
+ * forking it — epic #1601 is retiring this file, and the #1629 audit that
+ * inventoried v1-only endpoints still in use by v2 missed this one.
+ * `require_once`'d near the top of this file, ABOVE the switch (alongside
+ * song_importers.php), NOT here — a require placed after the switch would
+ * not have run yet when the `easyworship_export` case above executes.
  * =========================================================================== */
-
-/**
- * Escape one string for RTF: \ { } literals, non-ASCII → \uN (signed 16-bit,
- * with a '?' fallback char). Mirrors the JS exporter's rtfEscape.
- */
-function _ewExport_rtfEscape(string $text): string
-{
-    $out = '';
-    $len = mb_strlen($text, 'UTF-8');
-    for ($i = 0; $i < $len; $i++) {
-        $ch   = mb_substr($text, $i, 1, 'UTF-8');
-        $code = mb_ord($ch, 'UTF-8');
-        if ($ch === '\\')                  { $out .= '\\\\'; }
-        elseif ($ch === '{')               { $out .= '\\{'; }
-        elseif ($ch === '}')               { $out .= '\\}'; }
-        elseif ($code !== false && $code < 128) { $out .= $ch; }
-        else {
-            $rtfCode = ($code !== false && $code > 32767) ? $code - 65536 : (int)$code;
-            $out    .= '\\u' . $rtfCode . '?';
-        }
-    }
-    return $out;
-}
-
-/**
- * Build the EasyWorship `words` RTF for one song. Slides (chunks of <=
- * $maxLines lines, or whole components when $maxLines <= 0) are separated by
- * \par\par; lines within a slide by \par.
- */
-function _ewExport_buildRtf(array $components, int $maxLines): string
-{
-    $slides = [];
-    foreach ($components as $comp) {
-        $lines  = array_map('strval', (array)($comp['lines'] ?? []));
-        $chunks = ($maxLines > 0) ? array_chunk($lines, $maxLines) : [$lines];
-        foreach ($chunks as $chunk) {
-            $esc = array_map('_ewExport_rtfEscape', $chunk);
-            $slides[] = implode('\\par ', $esc);
-        }
-    }
-    if (empty($slides)) { $slides[] = ''; }
-    $body = implode('\\par\\par ', $slides);
-    return '{\\rtf1\\ansi\\ansicpg1252{\\fonttbl\\f0\\fswiss Arial;}\\pard\\f0\\fs40 ' . $body . '}';
-}
-
-/**
- * Write an EasyWorship Songs.db (song + word tables) at $path for the given
- * iHymns song records (the SongData::getSongs() shape). Returns the song
- * count written.
- */
-function _ewExport_writeDb(string $path, array $songs, int $maxLines): int
-{
-    if (!class_exists('SQLite3')) {
-        throw new \RuntimeException('the SQLite3 PHP extension is not available');
-    }
-    @unlink($path);
-    $db = new \SQLite3($path);
-    $db->exec('CREATE TABLE song (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
-            . 'title TEXT, author TEXT, copyright TEXT, reference_number TEXT)');
-    $db->exec('CREATE TABLE word (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
-            . 'song_id INTEGER, words TEXT)');
-
-    $songStmt = $db->prepare('INSERT INTO song (title, author, copyright, reference_number) VALUES (?,?,?,?)');
-    $wordStmt = $db->prepare('INSERT INTO word (song_id, words) VALUES (?,?)');
-
-    $count = 0;
-    $db->exec('BEGIN');
-    foreach ($songs as $song) {
-        $title = trim((string)($song['title'] ?? ''));
-        if ($title === '') { continue; }
-        $author = trim(implode(', ', array_filter(array_merge(
-            (array)($song['writers'] ?? []),
-            (array)($song['composers'] ?? [])
-        ))));
-        $copyright = (string)($song['copyright'] ?? '');
-        $refnum    = (string)($song['number'] ?? '');
-        $rtf       = _ewExport_buildRtf((array)($song['components'] ?? []), $maxLines);
-
-        $songStmt->bindValue(1, $title, SQLITE3_TEXT);
-        $songStmt->bindValue(2, $author, SQLITE3_TEXT);
-        $songStmt->bindValue(3, $copyright, SQLITE3_TEXT);
-        $songStmt->bindValue(4, $refnum, SQLITE3_TEXT);
-        $songStmt->execute();
-        $songStmt->reset();
-        $songId = $db->lastInsertRowID();
-
-        $wordStmt->bindValue(1, $songId, SQLITE3_INTEGER);
-        $wordStmt->bindValue(2, $rtf, SQLITE3_TEXT);
-        $wordStmt->execute();
-        $wordStmt->reset();
-        $count++;
-    }
-    $db->exec('COMMIT');
-    $db->close();
-    return $count;
-}

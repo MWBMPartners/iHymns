@@ -197,4 +197,50 @@ if ($_serverError !== '') {
         </div>
     </form>
 
+    <!-- ================================================================
+         YOUR REQUESTS (#1671 F2; server #280)
+
+         ELI5: after you send a request, this is where you find out what
+         happened to it.
+
+         Detail: `?action=my_song_requests` has existed and worked since
+         #280 and had ZERO callers anywhere — web, Apple or Android. So a
+         user could submit a request and never learn its outcome; the
+         status field (pending → reviewed → added/declined) and the
+         ResolvedSongId a curator fills in were written and never read.
+         This section is the first caller that endpoint has ever had.
+
+         WHY IT LIVES HERE rather than in Settings: this is the page the
+         user is already on when they think about a request, and the
+         status of a submission belongs beside the form that made it.
+
+         EMPTY MARKUP ON PURPOSE — no inline <script>, and there can never
+         be one. `request` is in api.php's $_cacheablePages, so the same
+         bytes are replayed to every visitor and this fragment can never
+         carry the document's per-request CSP nonce (#117 / rule #6 / rule
+         #30). That is exactly what silently killed this page's ORIGINAL
+         inline module until #1572. Behaviour comes from
+         js/modules/my-song-requests.js, imported by router.js's
+         afterPageLoad(). CI guard:
+         tests/php/test-fragment-inline-scripts.php.
+
+         `data-my-requests` is the module's DOM-first hook. Hidden by
+         default because the endpoint is authenticated: the module reveals
+         it (as either the list or a sign-in prompt) once it knows the
+         auth state.
+         ================================================================ -->
+    <section id="my-requests" class="mt-5 pt-4 border-top d-none" data-my-requests
+             aria-labelledby="my-requests-heading">
+        <h2 class="h5 mb-3" id="my-requests-heading">
+            <i class="fa-solid fa-clipboard-list me-2" aria-hidden="true"></i>
+            Your requests
+        </h2>
+        <div id="my-requests-msg" class="alert d-none py-2 small" role="alert"></div>
+        <!-- aria-live="polite" on the LIST only, never on a whole page region:
+             a live region is for status messages, not for re-reading a page
+             (see js/utils/announce.js's header for why the site-wide version
+             of this was removed). -->
+        <div id="my-requests-list" aria-live="polite"></div>
+    </section>
+
 </section>

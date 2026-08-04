@@ -208,6 +208,9 @@ $DIAGNOSTICS_PRESETS = [
         . "FROM INFORMATION_SCHEMA.TABLES\n"
         . "WHERE TABLE_SCHEMA = DATABASE()\n"
         . "ORDER BY DATA_LENGTH DESC;",
+    /* @deleted-visible: diagnostics console (#1694) — canned queries report
+       the PHYSICAL database (soft-deleted rows are still rows); admins reading
+       this page are debugging storage, not the catalogue. */
     'Song / songbook counts' =>
         "SELECT\n"
         . "  (SELECT COUNT(*) FROM tblSongs)     AS songs,\n"

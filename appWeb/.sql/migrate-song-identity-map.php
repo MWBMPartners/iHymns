@@ -25,8 +25,50 @@ declare(strict_types=1);
  * and are deliberately NOT created here (see the gated issue #1066).
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (column/table existence guarded; view via
- * CREATE OR REPLACE). The view references no migration-ordered column, so this
- * script is order-independent relative to the NormalizedTitle migration.
+ * CREATE OR REPLACE). The view deliberately does NOT select NormalizedTitle, so
+ * this script is order-independent relative to the NormalizedTitle migration.
+ *
+ * NOT DESTRUCTIVE, with one nuance. The column and the table are pure additions.
+ * The VIEW, however, is created with CREATE OR REPLACE and therefore OVERWRITES
+ * any existing v_ChristianSongs definition every single run — that is what makes
+ * the view step self-healing, but it also means a hand-edited view on a live
+ * install is silently reverted to the definition below. Nothing else here can
+ * lose data; the "undo" is DROP VIEW / DROP TABLE / DROP COLUMN.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED — three steps, three different mechanisms:
+ *   1. tblWorks.MusicBrainzWorkMBID + uq_mbwork — SHOW COLUMNS / SHOW INDEX
+ *      probes, skipped when present.
+ *   2. tblSongIdentityMap — table-existence probe.
+ *   3. v_ChristianSongs — no probe at all: CREATE OR REPLACE is inherently
+ *      idempotent AND is how a stale view definition gets corrected, so
+ *      guarding it would defeat the point.
+ * The registry probe is the full three-object AND form (table + column + a
+ * lookup in INFORMATION_SCHEMA.VIEWS), so a partial apply never shows green —
+ * this is the worked example CLAUDE.md rule #19 asks for.
+ *
+ * ORDERING DEPENDENCY (the view, not the tables): v_ChristianSongs selects
+ * s.OriginCityId (added by migrate-places-adoption.php) and sb.IsChristian
+ * (added by migrate-songbook-ischristian.php). Both sit EARLIER in the registry
+ * order, so "Apply all pending" is safe; running this script standalone on an
+ * install missing either column throws on the CREATE VIEW and the card stays
+ * pending. Adding a column to the SELECT below therefore adds a migration-order
+ * dependency — check where its migration sits before doing it.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "Cross-system identity map +
+ * Christian view (#1066)" → button "Run Identity Map Migration". Note the view
+ * line always reports "[OK] Created/replaced", even on a repeat run, because of
+ * the CREATE OR REPLACE above.
+ *
+ * SCHEMA MIRROR: the tblWorks column, tblSongIdentityMap and the view are all
+ * mirrored in appWeb/.sql/schema.sql (what a FRESH install reads). Table and
+ * column declarations must stay byte-identical, COMMENT text included
+ * (CLAUDE.md rule #19). ⚠ Two COMMENT strings have already drifted from their
+ * schema.sql mirrors (tblSongIdentityMap.SongId and .IsrcCode, plus
+ * tblWorks.MusicBrainzWorkMBID) — schema.sql carries the longer wording.
+ * test-schema-coverage.php compares column PRESENCE only, so CI cannot see
+ * this; reconciling it is a paired schema+migration edit. Note also that
+ * schema_audit.php does not parse VIEWS at all, so v_ChristianSongs is covered
+ * by NO automated check — the two definitions have to be kept in step by hand.
  *
  * @migration-adds tblWorks.MusicBrainzWorkMBID
  *
@@ -103,6 +145,31 @@ try {
     if (_migIdMap_tableExists($mysql, 'tblSongIdentityMap')) {
         _migIdMap_output("  [SKIP] tblSongIdentityMap already present.");
     } else {
+        /* The key design is inverted from what a reader usually expects:
+           SongId is a NON-unique INDEX while every external id carries its own
+           UNIQUE KEY. That is the correct direction for this domain — one iHymns
+           song legitimately maps to MANY recordings (explicit vs clean ISRC,
+           live vs studio Spotify track, a dozen cover recordings), but any given
+           MusicBrainz recording / Spotify track / Genius track / ISRC must
+           resolve to at most ONE song or the map is not a map. All four are
+           NULLable and MySQL treats NULLs in a unique index as distinct, so a
+           row that only knows an ISRC does not block another that only knows a
+           Spotify id.
+
+           Composition identity is deliberately NOT here: MusicBrainz *Work*
+           MBID lives on tblWorks (added above), so work-level dedup has exactly
+           one home. Mixing recording-level and work-level ids in one table is
+           the mistake this split exists to avoid.
+
+           ⚠ SourceOfTruth and MappingStatus are ENUMs, inside the very batch
+           (#1066) that codified "a growable vocabulary is VARCHAR, never ENUM"
+           — CLAUDE.md rule #20. SourceOfTruth in particular obviously grows:
+           the next external system (Apple Music, Hymnary, Discogs) needs an
+           ALTER, which is precisely the second migration that rule exists to
+           prevent. schema.sql carries the same note against its mirror of these
+           two columns. Treat this as a known inconsistency to converge, NOT as
+           precedent for a new table — and note that converging it is a paired
+           schema.sql + migration change, since the two must stay identical. */
         $mysql->query(
             "CREATE TABLE tblSongIdentityMap (
                 Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -139,6 +206,23 @@ try {
 
     _migIdMap_output("");
     _migIdMap_output("--- v_ChristianSongs (read fence) ---");
+    /* A FENCE, not a corpus materialiser. The column list is id / title /
+       songbook / flags ONLY — no LyricsText, no ArrangementJson — precisely so
+       that nothing can SELECT * this view and re-materialise the whole corpus
+       in PHP memory, the ~140 MB OOM class CLAUDE.md rule #17 bans. Keep new
+       columns to scalar metadata; the moment a body column appears here, this
+       stops being a fence.
+
+       SQL SECURITY INVOKER (not the MySQL default, DEFINER) so the view
+       executes with the privileges of whoever queries it — the low-privilege
+       app user — rather than those of the admin account that happened to run
+       this migration. A DEFINER view would quietly hand the app the migrator's
+       rights (https://dev.mysql.com/doc/refman/8.0/en/view-check-option.html,
+       and the "Stored Object Access Control" section of the manual).
+
+       NormalizedTitle is intentionally absent: including it would make this
+       CREATE VIEW fail on any install where migrate-song-normalized-title.php
+       had not yet run, coupling two otherwise independent migrations. */
     $mysql->query(
         "CREATE OR REPLACE
             SQL SECURITY INVOKER

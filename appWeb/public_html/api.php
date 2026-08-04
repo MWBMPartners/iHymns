@@ -57,6 +57,11 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+/* #1201/#1761 — public/PWA API response-envelope helpers (apiContractVersion /
+   apiEnvelopeWrap / apiEnvelopeError). Loaded early so sendJson() can wrap the
+   v2 envelope; extracted from this file so the contract is unit-testable
+   (tests/php/test-api-envelope.php) without running the dispatcher. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_envelope.php';
 
 /* =========================================================================
  * GLOBAL JSON ERROR HANDLER (#803)
@@ -199,6 +204,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    runs. Every read inside is gated on tblSongs.PublicId existing, so this is
    a no-op on an un-migrated install. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+/* #1694 — song soft-delete predicate (songVisibleSql()) + the deleted-probe
+   (songSoftDeletedHolds()). Loaded top-level (not per-case) because a dozen
+   read handlers below embed the visibility predicate into their hand-built
+   SQL; each embed degrades to '1=1' on an un-migrated install, so this is a
+   no-op until the migration card runs. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 /* #1409 — API token device-metadata helpers (apiTokensDeviceMetaColumnsExist()
    etc). Loaded top-level (not per-case) because slideAuthTokenExpiry() below
    — called on EVERY authenticated request via getAuthenticatedUser() — needs
@@ -206,6 +217,47 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    LastSeenAt bump onto its already-throttled UPDATE. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
+/* #1649 — shared merge/replace sync guards (userSyncCap / userSyncParseSince /
+   userSyncDeletableIds / userSyncNow). The three user-store sync handlers below
+   (user_setlists_sync, favorites_sync, custom_tags_sync) all capped the incoming
+   payload and then deleted every server row absent from the CAPPED list, so an
+   over-cap user silently lost the tail of their collection. One helper, three
+   call sites — never a per-handler copy of the decision. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
+/* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
+   be a whole-blob replace, which cannot survive a second product sharing this
+   database: whichever client saved last wiped the other's keys. The pure merge
+   helpers here let a caller name a namespace and replace only that subtree.
+   The duplicate `user_preferences` / `user_preferences_sync` pair on
+   tblUserPreferences was deleted in the same change — two stores for one
+   concept is a data-integrity trap, not a dormant feature. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_settings.php';
+/* Setlist collaboration access resolution (#1638). ONE implementation of
+   "may this viewer read / write somebody else's setlist?", asked by the
+   setlist_collab_* family — never re-decided inside a case body. Also hosts
+   setlistCollabSanitiseSongs(), shared with user_setlists_sync so the owner's
+   own push and a collaborator's edit cannot write different shapes into the
+   same tblUserSetlists.SongsJson column. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+/* Set-list service plans / template slots (#301, #1671 F4). ONE definition of
+   what a slot is, shared by the four setlist_template_* endpoints AND by
+   user_setlists_sync — so a plan written through a template and a plan written
+   through a sync cannot end up two different shapes in two columns. Also hosts
+   setlistSlotsColumnReady(), the schema gate that keeps an un-migrated install
+   from touching tblUserSetlists.SlotsJson at all. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_templates.php';
+/* Account lifecycle state (#1698) — the ONE answer to "is this owner active,
+   disabled, erased, or gone?", DERIVED at read time from the owner's single row
+   rather than stamped onto everything they own. Required EXPLICITLY rather than
+   leaning on setlist_collab.php having pulled it in: a transitive require is a
+   dependency nothing states and nothing enforces, and reordering the two lines
+   above would break these handlers with a fatal. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_status.php';
+/* The ONE in-app notification writer (#1638). Extracted because the raw
+   INSERT INTO tblNotifications had already been copy-pasted into three files
+   and the collaboration invite would have been the fourth. Best-effort by
+   contract: a notification failure never fails the action that triggered it. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so curators reading /manage/activity-log see every server-side
@@ -220,9 +272,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
    slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
-/* Shared credit-people helpers (#719 PR 2d). Link-type catalogue +
+/* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
+   call these SAME functions manage/tunes.php's POST handlers call — one
+   validation/persist/merge/delete core, two thin callers (rule #22/#35). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -359,6 +415,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* Determine request type: page (HTML) or action (JSON) */
 $page   = isset($_GET['page'])   ? trim($_GET['page'])   : null;
 $action = isset($_GET['action']) ? trim($_GET['action']) : null;
+
+/* #1741 P2-B — `page=musician` is canonical; `page=person`/`page=people`
+   are back-compat aliases (the shipped Apple client + years of external
+   links still emit the old spelling). Normalised HERE, before the
+   $_cacheablePages membership check and the ETag cache key below, so a
+   request for the old page value shares the SAME cached fragment as the
+   canonical one — two page values hashing to two different cache entries
+   for identical content would be a silent cache-fragmentation bug, not a
+   correctness bug (rule #6/#30 territory: the fragment is shared-cache,
+   so normalise before anything cache-key-shaped touches $page). */
+if ($page === 'person' || $page === 'people') {
+    $page = 'musician';
+}
 
 /* =========================================================================
  * LIVENESS PROBE — GET /api?action=health  (#1022)
@@ -523,7 +592,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
+        'writer', 'musician', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
         /* #1583 — a deploy-time CHANGELOG.md excerpt, identical for every
            visitor (no per-user data), so it's cacheable on the same terms
            as help/terms/privacy. */
@@ -607,28 +676,43 @@ if ($page !== null) {
             break;
 
         case 'writer':
-            /* Requires writer slug parameter */
+            /* #1741 P4a-3 (owner decision D4) — /writer/<name-slug> is consolidated
+               into the musician profile page. The route + its `id` param are a
+               shipped contract (years of sitemap emissions + external links — rule
+               #33), so the case stays forever; it now serves the musician fragment,
+               whose internal ladder (musician_helpers.php) maps the name-slug to a
+               registry row and whose data-musician-canonical marker lets router.js
+               canonicalise the address bar. Top-level HTTP hits get a real 301 in
+               index.php instead — this fragment path is only ever fetched by the SPA. */
             $writerId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($writerId === '') {
                 http_response_code(400);
                 echo '<div class="alert alert-warning" role="alert">Writer ID is required.</div>';
                 break;
             }
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'writer.php';
+            $personSlug = $writerId;   /* musician.php resolves via the shared ladder */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'musician.php';
             break;
 
-        case 'person':
-            /* Credit Person public page (#588). Slug column on
-               tblCreditPeople is the canonical lookup; the page
-               renderer falls back to a name-based search if the
-               migration hasn't been applied yet. */
+        case 'musician':
+            /* Musician public page (#588, renamed from Credit Person
+               #1741 P2-B). `page=person`/`page=people` are normalised to
+               `musician` right after $page is read (above, before the
+               cache-key logic) — years of external links + the shipped
+               Apple client's CanonicalURL.person(slug:) still emit the
+               old spellings (rule #33 — a URL another surface points at
+               is a contract), so this is the only case label that can
+               ever be reached for any of the three. Slug column on
+               tblMusicians is the canonical lookup; the page renderer
+               falls back to a name-based search if the migration hasn't
+               been applied yet. */
             $personSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             if ($personSlug === '') {
                 http_response_code(400);
-                echo '<div class="alert alert-warning" role="alert">Person slug is required.</div>';
+                echo '<div class="alert alert-warning" role="alert">Musician slug is required.</div>';
                 break;
             }
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'person.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'musician.php';
             break;
 
         case 'work':
@@ -667,12 +751,32 @@ if ($page !== null) {
             break;
 
         case 'iswc':
-            /* #940 — /iswc/<code> public page listing every song that
-               shares the ISWC code (T-NNN.NNN.NNN-N format). The page
-               normalises the code defensively (strips non-T/digit
-               characters, uppercases the leading T). */
-            $iswcCode = isset($_GET['code']) ? trim($_GET['code']) : '';
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'iswc.php';
+        case 'ipi':
+        case 'isni':
+        case 'ccli':
+        case 'bowi':
+        case 'isrc':
+            /* #1741 P3 — unified external-identifier public page. `iswc`
+               (#940, the original of the six) and its five siblings —
+               `ipi`/`isni` (musician identifiers), `ccli`/`bowi` (work
+               identifiers), `isrc` (recording identifier) — all resolve
+               through the SAME fragment now: includes/pages/identifier.php,
+               backed by the shared includes/identifier_resolve.php resolver
+               + includes/identifier_normalize.php canonicaliser (one fold
+               per scheme, one resolver, six routes — rule #22's "one fold,
+               not two" applied to identifier canonicalisation). $page IS the
+               scheme name (they're identical strings by construction — see
+               IHYMNS_ID_SCHEMES); the page template itself normalises the
+               code defensively per scheme and renders its own friendly
+               empty/not-found state, so an unknown/malformed code is never
+               a hard error here.
+               Deliberately NOT added to $_cacheablePages above — matches
+               the pre-existing iswc/tune precedent (a cheap, indexed,
+               anonymous read that doesn't need the caching optimisation to
+               ship; this is an explicit choice, not an oversight). */
+            $idScheme = $page;
+            $idCode   = isset($_GET['code']) ? trim((string)$_GET['code']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'identifier.php';
             break;
 
         case 'help':
@@ -962,6 +1066,64 @@ if ($action !== null) {
             }
 
             $song = $songData->getSongById($songId);
+
+            /* #1679 / #1343 — a JSON read follows the permalink redirect layer
+               before giving up, exactly as the HTML fragment already does
+               (includes/pages/song.php).
+
+               ELI5: if a song moved, an app asking for its old id gets the song
+               anyway, plus a note saying "this id changed".
+
+               Detail: this is the SAFETY NET for every SOFT reference the
+               `ON UPDATE CASCADE` fan-out cannot reach — the song-list blobs in
+               tblUserSetlists.SongsJson and tblSharedSetlists.Data, native-app
+               local caches, PWA offline stores, third-party bookmarks. (An
+               earlier revision named tblSetlistTemplates here; that table holds
+               SlotsJson — the {label, type} STRUCTURE of a service order — and
+               carries no song ids at all.) Without it a songbook move
+               (#1679) or a merge (#1343) turns every one of those into a silent
+               404 in a client that has no way to learn the new id. The response
+               carries `redirectedFrom` so a client can rewrite what it stored
+               rather than re-resolving forever; a tombstone (removed, no
+               replacement) answers 410 Gone, which is a DIFFERENT thing from 404
+               "we have never heard of this" and lets a client prune with
+               confidence (rule #35 — status is the contract, not the prose).
+               No cache concern: sendJson() sets no-cache and the ETag/304 path
+               above applies only to `page=` fragments, not to actions. */
+            $redirectedFrom = null;
+            if ($song === null) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+                $sdRd = songRedirectResolve(getDbMysqli(), $songId);
+                if ($sdRd['redirected'] && $sdRd['target'] !== null) {
+                    $sdTargetSong = $songData->getSongById((string)$sdRd['target']);
+                    if ($sdTargetSong !== null) {
+                        $redirectedFrom = $songId;
+                        $songId         = (string)$sdRd['target'];
+                        $song           = $sdTargetSong;
+                    }
+                }
+                if ($song === null && $sdRd['redirected']) {
+                    sendJson(['error' => 'Song removed.', 'gone' => true], 410);
+                    break;
+                }
+                /* #1694 D2 — a SOFT-DELETED song answers the same honest 410
+                   as a redirect tombstone, not a "never heard of it" 404.
+
+                   ELI5: "this song was removed" is a different answer from
+                   "this id means nothing", and clients prune on the former.
+
+                   Runs only on requests that already missed twice (filtered
+                   read + redirect resolve), so the hot path pays nothing. The
+                   probe fails OPEN: un-migrated installs and transient probe
+                   failures fall through to the 404 below — today's behaviour —
+                   never the other way round. Status is the contract (rule
+                   #35): clients branch on 410/`gone`, not the sentence. */
+                if ($song === null && songSoftDeletedHolds(getDbMysqli(), $songId)) {
+                    sendJson(['error' => 'Song removed.', 'gone' => true], 410);
+                    break;
+                }
+            }
+
             if ($song === null) {
                 sendJson(['error' => 'Song not found.'], 404);
             } else {
@@ -1000,7 +1162,13 @@ if ($action !== null) {
                     $sdPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
                 $song   = contentGatingApply($song, $sdUid, $sdPlat, $sdPresence);
-                sendJson(['song' => $song]);
+                /* #1679 — `redirectedFrom` is present ONLY when the requested id
+                   was a dead permalink we followed, so the wire shape stays
+                   byte-identical for every normal read (a strict native decoder
+                   sees no new key on the happy path). */
+                $sdPayload = ['song' => $song];
+                if ($redirectedFrom !== null) { $sdPayload['redirectedFrom'] = $redirectedFrom; }
+                sendJson($sdPayload);
             }
             break;
 
@@ -1127,6 +1295,18 @@ if ($action !== null) {
          * Params: type (iswc|isrc|upc|ccli) + value (required).
          * The type maps to a FIXED tblSongs column (allow-list — never user
          * input into the column position); the value is always bound.
+         *
+         * #1749 full unification — for type=isrc ONLY, the WHERE is widened
+         * with the shared songExternalIdUnionArmSql('s.SongId') store arm
+         * (existence-gated), so a song whose ONLY isrc is a
+         * tblSongExternalIds row (a store-only second recording — the store
+         * is now the recording-ID authority, §1.2 of the build spec) still
+         * resolves here, matching what /isrc/ and lyricsIngest_resolveSong()
+         * already do (§5.5/§5.6 — ONE predicate, three consumers, rule #22).
+         * iswc/upc/ccli are UNCHANGED — the store has no companion column for
+         * those schemes yet. Raw bind on BOTH arms (no canonicalisation) —
+         * parity with today's behaviour and with identifier_resolve.php's own
+         * documented accepted limitation.
          * ----------------------------------------------------------------- */
         case 'song_by_identifier':
             $idType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
@@ -1139,13 +1319,24 @@ if ($action !== null) {
             try {
                 $db  = getDbMysqli();
                 $col = $songIdCols[$idType];   // hardcoded constant from the map above
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+                $useIsrcStore = $idType === 'isrc' && songExternalIdsTableExists($db);
+                $whereMatch = $useIsrcStore
+                    ? "(s.`{$col}` = ? OR " . songExternalIdUnionArmSql('s.SongId') . ')'
+                    : "s.`{$col}` = ?";
                 $stmt = $db->prepare(
                     "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, "
                   . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
                   . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
-                  . "WHERE s.`{$col}` = ? ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
+                  . "WHERE {$whereMatch} AND " . songVisibleSql($db, 's')   /* #1694 — hidden songs don't resolve */
+                  . " ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
                 );
-                $stmt->bind_param('s', $idValue);
+                if ($useIsrcStore) {
+                    $storeIdType = 'isrc';
+                    $stmt->bind_param('sss', $idValue, $storeIdType, $idValue);
+                } else {
+                    $stmt->bind_param('s', $idValue);
+                }
                 $stmt->execute();
                 $res = $stmt->get_result();
                 $songs = [];
@@ -1162,10 +1353,18 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Resolve credit-people by an industry identifier (#1103).
+         * Resolve musicians by an industry identifier (#1103).
          * Params: type (ipi|isni|cae|…) + value (required). Both bound.
+         *
+         * #1741 P2-B back-compat alias — `person_by_identifier` is the
+         * shipped-contract OLD action name; `musician_by_identifier` is
+         * the new canonical one. Action-determines-shape (plan §3.A):
+         * ONE query, the envelope key is the only thing that differs —
+         * `people` (old, byte-identical forever) vs `musicians` (new).
          * ----------------------------------------------------------------- */
         case 'person_by_identifier':
+        case 'musician_by_identifier':
+            $_isLegacyIdAction = ($action === 'person_by_identifier');
             $pType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
             $pValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
             if ($pType === '' || $pValue === '' || strlen($pType) > 20) {
@@ -1176,17 +1375,24 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 $probe = $db->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() "
-                  . "AND TABLE_NAME = 'tblCreditPersonIdentifiers' LIMIT 1"
+                  . "AND TABLE_NAME = 'tblMusicianIdentifiers' LIMIT 1"
                 );
                 $hasTable = $probe && $probe->fetch_row() !== null;
                 if ($probe) { $probe->close(); }
-                if (!$hasTable) { sendJson(['type' => $pType, 'value' => $pValue, 'people' => []]); break; }
+                if (!$hasTable) {
+                    sendJson([
+                        'type'  => $pType,
+                        'value' => $pValue,
+                        ($_isLegacyIdAction ? 'people' : 'musicians') => [],
+                    ]);
+                    break;
+                }
 
                 $stmt = $db->prepare(
                     "SELECT cp.Id AS id, cp.Name AS name, cp.Slug AS slug, "
                   . "i.IdentifierType AS identifierType, i.IdentifierValue AS identifierValue "
-                  . "FROM tblCreditPersonIdentifiers i "
-                  . "JOIN tblCreditPeople cp ON cp.Id = i.CreditPersonId "
+                  . "FROM tblMusicianIdentifiers i "
+                  . "JOIN tblMusicians cp ON cp.Id = i.MusicianId "
                   . "WHERE i.IdentifierType = ? AND i.IdentifierValue = ? "
                   . "ORDER BY cp.Name LIMIT 50"
                 );
@@ -1199,7 +1405,11 @@ if ($action !== null) {
                     $people[] = $row;
                 }
                 $stmt->close();
-                sendJson(['type' => $pType, 'value' => $pValue, 'people' => $people]);
+                sendJson([
+                    'type'  => $pType,
+                    'value' => $pValue,
+                    ($_isLegacyIdAction ? 'people' : 'musicians') => $people,
+                ]);
             } catch (\Throwable $e) {
                 sendJson(['error' => 'Lookup failed.'], 500);
             }
@@ -1261,8 +1471,9 @@ if ($action !== null) {
                            JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                           WHERE l.GroupId = ?
                             AND l.SongId  <> ?
+                            AND ' . songVisibleSql($db, 's') . '
                           ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-                    );
+                    );   /* #1694 — hidden counterparts stay off the panel */
                     $stmt->bind_param('is', $groupId, $songId);
                     $stmt->execute();
                     $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -1307,37 +1518,49 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get one credit person (#1443/#1444) — a tblCreditPeople row's
+         * Get one musician (#1443/#1444) — a tblMusicians row's
          * bio/lifespan/external links plus every song they're credited on,
          * grouped by role (writer/composer/arranger/adaptor/translator/
-         * artist). Mirrors includes/pages/person.php's own query logic (a
-         * NAME match — tblCreditPeople has no direct FK from the per-role
+         * artist). Mirrors includes/pages/musician.php's own query logic (a
+         * NAME match — tblMusicians has no direct FK from the per-role
          * credit tables today, same as that page) as JSON for the native
-         * app's credit-person detail screen. `name` is accepted (in
+         * app's musician detail screen. `name` is accepted (in
          * addition to slug/id) because SongDetail's writers/composers/etc.
-         * are plain strings with no CreditPersonId of their own — the
+         * are plain strings with no MusicianId of their own — the
          * native "tap a composer name" flow has only the name to look up
          * with (#1444).
          * Parameters: slug, or id, or name — at least one required
+         *
+         * #1741 P2-B back-compat alias — `credit_person` is the shipped
+         * Apple-contract OLD action name (action=credit_person, envelope
+         * {"person":{…}}); `musician` is the new canonical one (envelope
+         * {"musician":{…}}). Action-determines-shape (plan §3.A): ONE
+         * call to SongData::getMusician(), the envelope key is the only
+         * thing that differs — the OLD shape stays byte-identical
+         * forever, the shipped Apple binaries never change.
          * ----------------------------------------------------------------- */
         case 'credit_person':
-            enforceReadRateLimitKeyed('credit_person', 120);
+        case 'musician':
+            $_isLegacyPersonAction = ($action === 'credit_person');
+            enforceReadRateLimitKeyed($_isLegacyPersonAction ? 'credit_person' : 'musician', 120);
             $personSlug     = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             $personIdRaw    = isset($_GET['id']) ? trim($_GET['id']) : '';
             $personNameRaw  = isset($_GET['name']) ? trim($_GET['name']) : '';
             if ($personSlug === '' && $personIdRaw === '' && $personNameRaw === '') {
-                sendJson(['error' => 'A credit-person slug, id, or name is required.'], 400);
+                sendJson(['error' => $_isLegacyPersonAction
+                    ? 'A credit-person slug, id, or name is required.'
+                    : 'A musician slug, id, or name is required.'], 400);
                 break;
             }
-            $person = $songData->getCreditPerson(
+            $person = $songData->getMusician(
                 $personIdRaw !== '' && ctype_digit($personIdRaw) ? (int)$personIdRaw : null,
                 $personSlug !== '' ? $personSlug : null,
                 $personNameRaw !== '' ? $personNameRaw : null
             );
             if ($person === null) {
-                sendJson(['error' => 'Credit person not found.'], 404);
+                sendJson(['error' => $_isLegacyPersonAction ? 'Credit person not found.' : 'Musician not found.'], 404);
             } else {
-                sendJson(['person' => $person]);
+                sendJson([($_isLegacyPersonAction ? 'person' : 'musician') => $person]);
             }
             break;
 
@@ -1619,6 +1842,24 @@ if ($action !== null) {
                a time, so this caps a scraper looping every songbook without
                ever blocking a normal offline sync. Fail-open. */
             enforceReadRateLimitKeyed('bulk', 60);
+            /* This handler calls contentGatingEnabled() when it sets
+               Cache-Control below, so the module that DEFINES it has to be
+               loaded here — unconditionally, at the top of the case.
+
+               It was not, and the consequence was total: every OTHER
+               require_once of content_gating.php in this file sits inside a
+               DIFFERENT case block (917 / 1094 / 1217) or physically below this
+               one (1893), and includes/pages/song.php loads it only inside
+               `if (content_gating_enabled === '1')`. So with gating OFF — the
+               DEFAULT, i.e. production — nothing had loaded the function by the
+               time line ~1817 called it, and the whole endpoint fatalled with
+               "Call to undefined function contentGatingEnabled()". The failure
+               was perfectly INVERTED from the comment beside that header, which
+               promises the header is a no-op while gating is off.
+
+               A dormant feature is supposed to make a caller do nothing. Here,
+               being dormant is what made the caller CRASH. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
                single songbook. The old unscoped fallback materialised AND
@@ -2082,6 +2323,31 @@ if ($action !== null) {
          * Parameters: id (required) — 8-character hex ID
          * ----------------------------------------------------------------- */
         case 'setlist_get':
+            /* Throttle blind share-id enumeration (#1648 item 3).
+             *
+             * ELI5: stop someone guessing share links by trying millions of
+             * random ones.
+             *
+             * Detail: share ids are bin2hex(random_bytes(4)) — 8 hex chars, so
+             * 32 bits. Against ~10,000 live shares a blind guess succeeds
+             * roughly every 430,000 attempts, which is entirely practical
+             * against an endpoint that is unauthenticated AND was covered by
+             * neither enforceReadRateLimitKeyed nor checkRateLimit. Throttling
+             * turns "practical" back into "not worth it".
+             *
+             * 120/min matches `search` — far above any human opening shared
+             * lists, or a congregation of devices each loading one, but a hard
+             * ceiling on enumeration. Fail-open and table-existence-gated like
+             * every other caller, so it is a clean no-op until the migration
+             * runs and can never lock a legitimate reader out.
+             *
+             * The disclosure this bounds is genuinely limited — share content
+             * is content designed to be shared by link, owner identifiers are
+             * never echoed, and the update path is IDOR-guarded (#1380). This
+             * is defence in depth on a low-severity finding, not a patch for a
+             * hole. Widening the id itself is the stronger fix but must not
+             * invalidate existing links, so it is tracked separately. */
+            enforceReadRateLimitKeyed('setlist_get', 120);
             $shareId = isset($_GET['id']) ? preg_replace('/[^a-f0-9]/', '', strtolower(trim($_GET['id']))) : '';
             if ($shareId === '' || strlen($shareId) > 16) {
                 sendJson(['error' => 'Invalid or missing set list ID.'], 400);
@@ -2383,7 +2649,7 @@ if ($action !== null) {
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -2691,7 +2957,7 @@ if ($action !== null) {
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userIdInt, $expiresAt);
@@ -2841,8 +3107,30 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
             $authUserId = (int)$authUser['Id'];
+
+            /* #1661 — LAZY EXPIRY. Converting here, before the read, is what
+               guarantees an expired set list is never SERVED, which is the
+               property that actually matters in the absence of a scheduler.
+               A no-op (and zero extra queries) on an un-migrated install, and
+               a no-op for the overwhelming majority of users, who have no
+               expiries set at all. See includes/user_sync.php. */
+            userSyncExpireSetlists($db, $authUserId);
+
+            /* The ExpiresAt column is optional until the #1661 card has been
+               run on this install, so the SELECT list is built from a
+               hardcoded constant chosen by a schema probe — never from
+               request data (CLAUDE.md rule #5). */
+            $expiresSelect = userSyncExpiryReady($db) ? ', ExpiresAt' : '';
+            /* #301/#1671 F4 — the service-plan column is equally optional until
+               the "Set-list service plans" card has been run here, and equally
+               assembled from a hardcoded constant chosen by a schema probe,
+               never from request data (CLAUDE.md rule #5). */
+            $slotsSelect = setlistSlotsColumnReady($db) ? ', SlotsJson' : '';
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
+                . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+            );
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();
             $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -2855,6 +3143,18 @@ if ($action !== null) {
                     'songs'     => json_decode($row['SongsJson'], true) ?: [],
                     'createdAt' => $row['CreatedAt'],
                     'updatedAt' => $row['UpdatedAt'],
+                    /* #1661 — always present in the response shape (null when
+                       unset or un-migrated) so a client can tell "no expiry"
+                       from "this server doesn't do expiries" only by whether
+                       it ever sees a non-null value, and never has to branch
+                       on a missing key. */
+                    'expiresAt' => $row['ExpiresAt'] ?? null,
+                    /* #301/#1671 F4 — same contract for the service plan: the
+                       key is ALWAYS present, null meaning "no plan" (or "this
+                       install has not run the card"). Decoded through the
+                       shared sanitiser so a malformed stored document can
+                       never reach a renderer. */
+                    'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
                 ];
             }, $rows);
 
@@ -2863,15 +3163,46 @@ if ($action !== null) {
 
         /* -----------------------------------------------------------------
          * Sync setlists: merge local setlists with server-side storage.
-         * Accepts the full array of local setlists and merges intelligently:
+         * Accepts the full array of local setlists and reconciles:
          *   - New setlists (by ID) are inserted
-         *   - Existing setlists are updated if local version is newer
-         *   - Server-only setlists are preserved and returned
+         *   - Existing setlists are OVERWRITTEN by the payload (the upsert's
+         *     ON DUPLICATE KEY UPDATE is unconditional — there is no
+         *     "local version is newer" comparison; the previous wording of
+         *     this comment claimed one and was simply false, #1649)
+         *   - Server-only setlists are preserved in 'merge' mode, and in
+         *     'replace' mode are deleted ONLY when userSyncDeletableIds()
+         *     says it is safe (see includes/user_sync.php)
+         *
+         * SYNC PROTOCOL 2 (#1661) — deletion is EXPLICIT, and there is no cap
+         * ------------------------------------------------------------------
+         * The owner's decision: no cap at all; a set list goes away only when
+         * the user deletes it, or when an optional expiry they set passes.
+         *
+         *   - `deleted: [id, …]` names deletions outright. The PRESENCE of the
+         *     key — even as `[]` — is what marks a protocol-2 client
+         *     (userSyncExplicitProtocol), and for such a client absence-based
+         *     deletion is RETIRED entirely: silence means nothing.
+         *   - Each deletion writes a permanent tombstone; a tombstoned id can
+         *     never be resurrected, so a stale device re-pushing it is a
+         *     no-op instead of an undelete.
+         *   - The 50-cap is GONE. An over-size body is REJECTED with 413 —
+         *     never silently clipped, which is the #1649 data-loss shape.
+         *     `cap` is still emitted (as null) because native decoders may
+         *     read the key.
+         *   - LEGACY CLIENTS ARE UNCHANGED. The native Apple/Android apps
+         *     never send `deleted`, so they keep today's #1649-guarded
+         *     absence-based behaviour exactly.
          *
          * POST body (JSON):
-         *   { "setlists": [{ id, name, createdAt, songs: [...] }, ...] }
+         *   { "setlists": [{ id, name, createdAt, expiresAt?, songs: [...] }, ...],
+         *     "mode": "merge"|"replace",
+         *     "since": "YYYY-MM-DD HH:MM:SS",  // optional watermark (#1649)
+         *     "deleted": ["id", …]             // optional; presence = protocol 2 (#1661)
+         *   }
          *
-         * Returns: { "setlists": [...merged result...] }
+         * Returns: { "setlists": [...], "syncedAt": "...",
+         *            "truncated": false, "cap": null,
+         *            "tombstones": [{ id, deletedAt, reason }, …] }
          * Requires: Authorization: Bearer <token>
          * ----------------------------------------------------------------- */
         case 'user_setlists_sync':
@@ -2887,6 +3218,22 @@ if ($action !== null) {
             }
 
             $rawBody = file_get_contents('php://input');
+
+            /* #1661 — the cap removal's abuse guard, and the ONLY limit left.
+               Checked on the RAW body before json_decode() so the work is
+               bounded before it is done, and answered with 413 rather than a
+               slice: a rejection is loud, retryable and visible to the user,
+               whereas the truncation it replaces was invisible and permanent.
+               4 MiB is tens of thousands of setlist entries — no real
+               collection reaches it. */
+            if (userSyncBodyExceeds((string)$rawBody)) {
+                sendJson([
+                    'error'    => 'Request too large. Your set lists were NOT changed.',
+                    'maxBytes' => userSyncMaxBodyBytes(),
+                ], 413);
+                break;
+            }
+
             $body = json_decode($rawBody, true);
 
             if (!is_array($body['setlists'] ?? null)) {
@@ -2894,8 +3241,35 @@ if ($action !== null) {
                 break;
             }
 
-            /* Cap at 50 setlists per user */
-            $localLists = array_slice($body['setlists'], 0, 50);
+            /* #1661 — NO CAP. The payload is taken whole; nothing is sliced,
+               so `truncated` is now structurally false rather than computed.
+               userSyncCap() survives for favorites_sync / custom_tags_sync,
+               which keep their (much larger, and non-destructive) caps. */
+            $localLists = $body['setlists'];
+            $truncated  = false;
+
+            /* #301/#1671 F4 — THE SLOT CAP IS A REJECTION, NEVER A TRUNCATION.
+               Checked here, BEFORE a single row is written, so an over-size
+               plan leaves every stored set list exactly as it was. The module
+               deliberately owns no array_slice(): silently storing a shortened
+               plan and then treating the shortened version as the truth is the
+               precise shape that ate users' set lists in #1649 and their 201st
+               song in #1662. 413 mirrors the whole-body ceiling above. */
+            foreach ($localLists as $planCheck) {
+                if (is_array($planCheck) && setlistTemplatePlanExceedsCap($planCheck['plan'] ?? null)) {
+                    sendJson([
+                        'error'    => 'A set list plan has too many slots. Nothing was changed.',
+                        'maxSlots' => setlistTemplateMaxSlots(),
+                    ], 413);
+                    break 2;
+                }
+            }
+
+            /* Presence of `deleted` — even `[]` — is the protocol marker. It
+               is qualified by the schema gate below: this is what the CLIENT
+               supports, not yet what this install can honour. */
+            $clientProtocol2 = userSyncExplicitProtocol($body);
+            $deletedIds      = userSyncSanitiseDeletedIds($body['deleted'] ?? null);
 
             /* Sync mode (WS-F #1018):
              *   'merge'   — union local + server, never delete (the safe
@@ -2908,21 +3282,94 @@ if ($action !== null) {
              *               device propagates to the others. */
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649): the DB clock reading this client was
+               handed by its last successful sync. Rows written after it are
+               another device's work the client has never seen, so a 'replace'
+               may not delete them. Absent / malformed → null → exactly the
+               legacy absence-only behaviour (which is what the native apps,
+               who never send this field, keep getting). */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* #1661 — PROTOCOL 2 REQUIRES SOMEWHERE TO RECORD A DELETION.
+               Migrations here are web-run, so between a deploy and someone
+               pressing the button on /manage/setup-database this install has
+               protocol-2 CLIENTS but no tombstone table. Honouring the
+               protocol in that window would be the worst of both worlds:
+               absence-based deletion retired, and the explicit deletes
+               unrecordable — so a user's delete would silently come back on
+               the next reconcile, which is a fresh instance of the very bug
+               this work exists to remove. Falling back to the legacy rule
+               instead means the un-migrated window behaves EXACTLY as today. */
+            $tombstonesReady  = userSyncTombstonesReady($db);
+            $explicitProtocol = $clientProtocol2 && $tombstonesReady;
+
+            /* #1661 — ORDER IS LOAD-BEARING from here to the upsert loop:
+                 1. expire   — so an expired setlist is tombstoned BEFORE the
+                               upsert loop could re-create it from a client
+                               that still holds a local copy;
+                 2. delete   — explicit deletions, tombstoned then removed;
+                 3. read     — the tombstone set and the server snapshot, both
+                               taken AFTER 1 and 2 so they already reflect them.
+               Doing (3) before (1) would let a just-expired setlist appear in
+               the snapshot and be resurrected; doing (2) after the upsert
+               would delete a setlist the same request had just written. */
+            $expiredIds = userSyncExpireSetlists($db, $userId);
+
+            /* Explicit deletes. The tombstone is written EVEN IF no row exists:
+               this delete may be racing another device's create of the same
+               id, and the tombstone is what makes the outcome deterministic
+               whichever request the database sees first. */
+            $tombstonedNow = 0;
+            if ($deletedIds !== [] && $tombstonesReady) {
+                userSyncTombstoneWrite($db, $userId, $deletedIds, userSyncNow($db), 'user');
+                $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletedIds as $delId) {
+                    $del->execute();
+                    $tombstonedNow += $del->affected_rows;
+                }
+                $del->close();
+            }
+
+            /* Anti-resurrection set. Read AFTER the two steps above so it
+               already contains anything they created. */
+            $tombstoned = userSyncTombstonedIds($db, $userId);
+
+            /* The optional expiry column only exists once the #1661 card has
+               been run here; the SELECT list is assembled from hardcoded
+               constants under a schema probe (CLAUDE.md rule #5). */
+            $expiryReady   = userSyncExpiryReady($db);
+            $expiresSelect = $expiryReady ? ', ExpiresAt' : '';
+            /* #301/#1671 F4 — the service-plan column, gated the same way and
+               for the same reason (web-run migrations, one shared MySQL,
+               MYSQLI_REPORT_STRICT). A separate probe from the expiry one
+               because they come from separate migrations and either may be
+               applied without the other. */
+            $slotsReady    = setlistSlotsColumnReady($db);
+            $slotsSelect   = $slotsReady ? ', SlotsJson' : '';
+
             /* Fetch all existing server-side setlists for this user */
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ?');
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
+                . ' FROM tblUserSetlists WHERE UserId = ?'
+            );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
-            $serverMap = [];
-            foreach ($serverRows as $row) {
-                $serverMap[$row['SetlistId']] = $row;
-            }
+            /* #1649 — ids the client actually sent, collected as we upsert.
+               The loop used to unset() each one out of a $serverMap and treat
+               the leftovers as deletions; that conflated "the client didn't
+               send it" with "the client deleted it", which is exactly the
+               distinction the truncation + watermark guards restore. The map
+               itself is gone — $serverRows is read directly below. */
+            $payloadIds = [];
 
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
 
             /* Upsert each local setlist. The (UserId, SetlistId) pair
                has a UNIQUE constraint on tblUserSetlists, so
@@ -2930,73 +3377,218 @@ if ($action !== null) {
                the user-editable columns. Fixes #568 — prior to this the
                SQL used PostgreSQL/SQLite ON CONFLICT syntax which MySQL
                doesn't recognise, silently breaking multi-device sync. */
-            $upsert = $db->prepare(
-                'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
-                 VALUES (?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    Name      = VALUES(Name),
-                    SongsJson = VALUES(SongsJson),
-                    UpdatedAt = VALUES(UpdatedAt)'
-            );
+            if ($expiryReady) {
+                /* #1661 — the expiry round-trips through the same upsert, so a
+                   client setting/clearing it needs no second endpoint.
+                   `ExpiresAt = VALUES(ExpiresAt)` means a client that sends
+                   null genuinely CLEARS the expiry — the same "the payload is
+                   the truth for this row" semantics Name and SongsJson already
+                   have on this statement. */
+                $upsert = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, ExpiresAt)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Name      = VALUES(Name),
+                        SongsJson = VALUES(SongsJson),
+                        UpdatedAt = VALUES(UpdatedAt),
+                        ExpiresAt = VALUES(ExpiresAt)'
+                );
+            } else {
+                $upsert = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Name      = VALUES(Name),
+                        SongsJson = VALUES(SongsJson),
+                        UpdatedAt = VALUES(UpdatedAt)'
+                );
+            }
+
+            /* #301/#1671 F4 — A SECOND STATEMENT, CHOSEN PER ROW BY WHETHER THE
+               CLIENT MENTIONED `plan` AT ALL.
+               ------------------------------------------------------------------
+               ELI5: if the app told us about the service plan we save what it
+               said, and if it never mentioned one we leave the saved plan alone.
+
+               The `$upsert` above is deliberately UNCHANGED and never names
+               SlotsJson, so on a duplicate key it PRESERVES whatever plan is
+               stored. That is what protects the shipped native apps: they will
+               never send `plan`, and if the single statement had carried
+               `SlotsJson = VALUES(SlotsJson)` then an iPhone sync would wipe a
+               plan the user had just built on the web — a fresh instance of the
+               cross-device silent data loss this whole programme exists to
+               remove.
+
+               The alternative, `COALESCE(VALUES(SlotsJson), SlotsJson)`, is the
+               plausible-looking wrong answer: it makes a plan impossible to
+               CLEAR, because "no plan" and "didn't mention plans" become the
+               same message. That is the isset() clear-semantics trap
+               (project-rules §20.5) — a value nothing can ever delete, with no
+               error to explain it.
+
+               So the distinction is PRESENCE OF THE KEY, exactly as
+               userSyncExplicitProtocol() reads `deleted`: present (even as
+               null) means "here is the truth", absent means "I know nothing
+               about plans". */
+            $upsertPlan = null;
+            if ($slotsReady) {
+                if ($expiryReady) {
+                    $upsertPlan = $db->prepare(
+                        'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, ExpiresAt, SlotsJson)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            Name      = VALUES(Name),
+                            SongsJson = VALUES(SongsJson),
+                            UpdatedAt = VALUES(UpdatedAt),
+                            ExpiresAt = VALUES(ExpiresAt),
+                            SlotsJson = VALUES(SlotsJson)'
+                    );
+                } else {
+                    $upsertPlan = $db->prepare(
+                        'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, SlotsJson)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            Name      = VALUES(Name),
+                            SongsJson = VALUES(SongsJson),
+                            UpdatedAt = VALUES(UpdatedAt),
+                            SlotsJson = VALUES(SlotsJson)'
+                    );
+                }
+            }
+
+            $resurrectionsRefused = 0;
 
             foreach ($localLists as $list) {
                 if (empty($list['id'])) continue;
 
-                $setlistId = preg_replace('/[^a-zA-Z0-9_\-]/', '', $list['id']);
+                /* One shared sanitiser with the tombstone writer (#1661) — if
+                   the two disagreed about what an id is, a delete would
+                   tombstone a name no row uses and appear to succeed. */
+                $setlistId = userSyncSanitiseId($list['id']);
                 if ($setlistId === '') continue;
 
-                $name = mb_substr(trim($list['name'] ?? 'Untitled'), 0, 200);
-                $songs = is_array($list['songs'] ?? null) ? $list['songs'] : [];
-
-                /* Sanitise each song entry */
-                $cleanSongs = [];
-                foreach (array_slice($songs, 0, 200) as $s) {
-                    if (!is_array($s) || empty($s['id'])) continue;
-                    $entry = [
-                        'id'       => (string)$s['id'],
-                        'title'    => mb_substr((string)($s['title'] ?? ''), 0, 300),
-                        'songbook' => mb_substr((string)($s['songbook'] ?? ''), 0, 20),
-                        'number'   => (int)($s['number'] ?? 0),
-                    ];
-                    /* Preserve custom arrangement if present */
-                    if (isset($s['arrangement']) && is_array($s['arrangement'])) {
-                        $entry['arrangement'] = array_values(array_filter(
-                            $s['arrangement'],
-                            fn($v) => is_int($v) && $v >= 0
-                        ));
-                    }
-                    $cleanSongs[] = $entry;
+                /* ANTI-RESURRECTION (#1661). A tombstoned id is dead forever;
+                   "re-create" mints a fresh client id. Deliberately NOT a
+                   timestamp comparison against the incoming updatedAt — that
+                   is a CLIENT clock, so a device running fast would resurrect
+                   everything it had ever deleted. A deterministic rule has no
+                   such failure mode. Skipped BEFORE $payloadIds so the row the
+                   client thinks it has is not counted as present. */
+                if (isset($tombstoned[$setlistId])) {
+                    $resurrectionsRefused++;
+                    continue;
                 }
+
+                $name = mb_substr(trim($list['name'] ?? 'Untitled'), 0, 200);
+
+                /* Sanitise each song entry. #1638 moved the (previously
+                   inline) logic into includes/setlist_collab.php so the
+                   collaborative write path writes the identical shape into the
+                   identical column — behaviour unchanged, one implementation
+                   instead of two that could drift. */
+                $cleanSongs = setlistCollabSanitiseSongs($list['songs'] ?? null);
 
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
 
-                $upsert->bind_param('isssss',
-                    $userId, $setlistId, $name, $songsJson, $createdAt, $now);
-                $upsert->execute();
+                /* Validated to the same 19-char shape as the `since`
+                   watermark; anything else (including an absent key)
+                   becomes null = "never expires". Failing that way round
+                   is deliberate — reading a malformed value as an expiry
+                   could delete a set list the user never dated. */
+                $expiresAt = $expiryReady ? userSyncParseTimestamp($list['expiresAt'] ?? null) : null;
 
-                /* Remove from server map so we know which are server-only */
-                unset($serverMap[$setlistId]);
+                /* #301/#1671 F4 — see the $upsertPlan doc-block above for why
+                   this is array_key_exists() and not isset(). `plan: null` is a
+                   deliberate instruction to CLEAR; an absent `plan` key is a
+                   client that knows nothing about plans and must not clear
+                   anything. */
+                $planStatement = ($upsertPlan !== null && array_key_exists('plan', $list));
+                if ($planStatement) {
+                    $planJson = setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']));
+                    /* Type strings counted against the value list, not eyeballed:
+                       8 values = 'i' + 7×'s'; 7 values = 'i' + 6×'s'. A
+                       mismatch here is an ArgumentCountError at runtime, which
+                       is why tests/php/test-setlist-templates.php asserts the
+                       lengths against the placeholder counts in these very
+                       statements rather than trusting the reading. */
+                    if ($expiryReady) {
+                        $upsertPlan->bind_param('isssssss',
+                            $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt, $planJson);
+                    } else {
+                        $upsertPlan->bind_param('issssss',
+                            $userId, $setlistId, $name, $songsJson, $createdAt, $now, $planJson);
+                    }
+                    $upsertPlan->execute();
+                } elseif ($expiryReady) {
+                    $upsert->bind_param('issssss',
+                        $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt);
+                    $upsert->execute();
+                } else {
+                    $upsert->bind_param('isssss',
+                        $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                    $upsert->execute();
+                }
+
+                /* Record what the client sent; the deletion decision is made
+                   once, after the loop, by the shared helper (#1649). */
+                $payloadIds[] = $setlistId;
             }
             $upsert->close();
+            /* #301/#1671 F4 — only prepared when the column exists, so the
+               null check is the schema gate showing through, not defensiveness. */
+            if ($upsertPlan !== null) { $upsertPlan->close(); }
 
-            /* Authoritative replace (WS-F #1018): anything still left in
-               $serverMap was on the server but NOT in the client's payload,
-               i.e. the user deleted it. Drop those rows so the deletion
-               propagates. In 'merge' mode they're preserved (server-only
-               wins), which is what the first-login backfill wants. */
-            if ($syncMode === 'replace' && count($serverMap) > 0) {
+            /* Authoritative replace (WS-F #1018, guarded #1649): server rows
+               absent from the payload MAY represent a user deletion — but only
+               if the payload was complete (not truncated by the cap) and the
+               row predates the client's `since` watermark. userSyncDeletableIds()
+               owns that decision for all three sync handlers; see
+               includes/user_sync.php for why each refusal exists. In 'merge'
+               mode it returns [] unconditionally (server-only wins), which is
+               what the first-login backfill wants. */
+            $deletableIds = userSyncDeletableIds(
+                array_map(
+                    static fn(array $r): array => ['id' => $r['SetlistId'], 'ts' => (string)$r['UpdatedAt']],
+                    $serverRows
+                ),
+                $payloadIds,
+                $syncMode,
+                $truncated,
+                $since,
+                /* #1661 — a protocol-2 client states its deletions, so
+                   inference from absence is retired entirely for it. Legacy
+                   clients (the native apps, which never send `deleted`) pass
+                   false here and keep today's behaviour untouched. */
+                $explicitProtocol
+            );
+            $deleted = 0;
+            if (count($deletableIds) > 0) {
                 $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
                 $delId = '';
                 $del->bind_param('is', $userId, $delId);
-                foreach (array_keys($serverMap) as $delId) {
+                foreach ($deletableIds as $delId) {
                     $del->execute();
+                    $deleted += $del->affected_rows;
                 }
                 $del->close();
             }
 
+            /* Mint the watermark IMMEDIATELY before the final re-read (#1649).
+               Taken from the DB's own clock (userSyncNow) so it shares a frame
+               of reference with the row timestamps it will later be compared
+               against. Minting it before the read — not after — means any row
+               written by another device between the two is NEWER than the
+               watermark, so the next 'replace' from this client keeps it
+               rather than deleting it. Erring toward keeping is the whole
+               point of the guard. */
+            $syncedAt = userSyncNow($db);
+
             /* Fetch the merged result (all setlists for this user) */
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
+                . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+            );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $mergedRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -3009,10 +3601,68 @@ if ($action !== null) {
                     'songs'     => json_decode($row['SongsJson'], true) ?: [],
                     'createdAt' => $row['CreatedAt'],
                     'updatedAt' => $row['UpdatedAt'],
+                    'expiresAt' => $row['ExpiresAt'] ?? null,   /* #1661 */
+                    /* #301/#1671 F4 — the plan comes back on the SAME response
+                       that accepted it. That round trip is the whole point:
+                       until this column existed, a client that sent slots got a
+                       response with no slots in it and no error, and the only
+                       symptom was a service order quietly emptying itself. */
+                    'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
                 ];
             }, $mergedRows);
 
-            sendJson(['setlists' => $mergedSetlists]);
+            /* #1661 — the deletions this client must apply locally. Filtered
+               to the client's watermark when it sent one; the full set
+               otherwise (a first sync, which needs to hear about everything).
+               See userSyncTombstoneList() for why the filter is `>=`. */
+            $tombstones = userSyncTombstoneList($db, $userId, $since);
+
+            /* Audit (#1649) — setlists had no sync log at all, unlike
+               favourites. A deleting sync is exactly the event a curator needs
+               to see when a user reports "my set lists vanished", so mirror
+               what favorites.sync already records. Only logged when something
+               actually happened, to keep routine no-op reconciles out of the
+               table. #1661 adds the three new outcomes: an explicit delete, a
+               lazily-converted expiry, and a refused resurrection — the last
+               of which is otherwise completely invisible and is the first
+               thing to look at if a user says "it keeps coming back" (or, more
+               likely, "it won't come back"). */
+            if ($deleted > 0 || $truncated || $tombstonedNow > 0
+                || $expiredIds !== [] || $resurrectionsRefused > 0) {
+                logActivity('setlists.sync', 'user', (string)$userId, [
+                    'mode'                 => $syncMode,
+                    /* Logged as the EFFECTIVE protocol, not the client's
+                       claim — an un-migrated install running protocol 1 for a
+                       protocol-2 client is exactly what someone reading this
+                       log after a deploy needs to see. */
+                    'protocol'             => $explicitProtocol ? 2 : 1,
+                    'truncated'            => $truncated,
+                    'deleted'              => $deleted,
+                    'explicitDeleted'      => $tombstonedNow,
+                    'expired'              => count($expiredIds),
+                    'resurrectionsRefused' => $resurrectionsRefused,
+                    'total'                => count($mergedSetlists),
+                ]);
+            }
+
+            sendJson([
+                'setlists'  => $mergedSetlists,
+                /* #1649 — the client stores this and sends it back as `since`
+                   on its next sync. Clients that ignore it keep the legacy
+                   absence-only behaviour. */
+                'syncedAt'  => $syncedAt,
+                /* #1661 — structurally false now that nothing is ever sliced.
+                   Kept in the response because clients (including the native
+                   apps) already read it; an over-size body is a 413 instead. */
+                'truncated' => $truncated,
+                /* #1661 — no cap. The key is retained and emitted as null
+                   because a native decoder may read it; removing a field from
+                   a shipped response shape is a contract change, and "there is
+                   no limit" is exactly what null says. */
+                'cap'       => null,
+                /* #1661 — ids this client must drop from its local cache. */
+                'tombstones' => $tombstones,
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -3020,14 +3670,33 @@ if ($action !== null) {
          *
          * GET   /api?action=user_settings
          *   → { ok: true, settings: { … }, updated_at: '…' }
+         * GET   /api?action=user_settings&namespace=ilyricsdb
+         *   → { ok: true, namespace: 'ilyricsdb', settings: { … }, updated_at }
          * POST  /api?action=user_settings
          *   body: { settings: { theme: 'dark', fontSize: 18, … } }
-         *   → { ok: true }
+         *   → { ok: true }                       (whole-blob replace — legacy)
+         * POST  /api?action=user_settings
+         *   body: { namespace: 'ilyricsdb', settings: { … } }
+         *   → { ok: true, namespace: 'ilyricsdb' }   (that subtree only)
          *
          * Stored as a JSON blob in tblUsers.Settings; the client decides
          * which keys are syncable (a strict whitelist in settings.js) so
          * we never mirror device-local prefs (analytics consent, install
          * banner state, etc.) onto the server.
+         *
+         * #1671 F5 — THE NAMESPACE. This is the ONE user-preference store now:
+         * the parallel `user_preferences` / `user_preferences_sync` pair on
+         * tblUserPreferences was an un-namespaced duplicate with no caller
+         * anywhere in the tree, and was deleted (its table drops via the
+         * manual, confirm-gated `drop-user-preferences` card). What survives
+         * is this endpoint plus a write contract that a SECOND product can
+         * share: name a namespace and only that subtree is replaced, so
+         * iLyricsDB's clients write their own keys with zero coordination
+         * against iHymns'.
+         *
+         * Every decision below lives in pure functions in
+         * includes/user_settings.php so a test can CALL them rather than
+         * pattern-match this file. Nothing here re-implements a rule.
          * ----------------------------------------------------------------- */
         case 'user_settings':
             $authUser = getAuthenticatedUser();
@@ -3045,12 +3714,47 @@ if ($action !== null) {
                 $row = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
                 $settingsRaw = $row['Settings'] ?? null;
-                $settings = is_string($settingsRaw) && $settingsRaw !== ''
-                    ? (json_decode($settingsRaw, true) ?: new \stdClass())
-                    : new \stdClass();
+                /* Work in ARRAY form internally (that is what the pure helpers
+                   take), and convert an empty result to `{}` only at the point
+                   of emit — json_decode(…, true) yields `[]` for `{}`, which
+                   would otherwise go out as a JSON array. Long-standing wire
+                   behaviour, preserved. */
+                $settingsArr = is_string($settingsRaw) && $settingsRaw !== ''
+                    ? json_decode($settingsRaw, true)
+                    : null;
+                if (!is_array($settingsArr)) { $settingsArr = []; }
+
+                /* Optional subtree read. An unknown namespace is `{}`, not a
+                   404 — a client asking for its own settings before it has ever
+                   written any is the normal first-run case. A non-string value
+                   (`?namespace[]=x`) is a 400, never a silent whole-blob read:
+                   answering a different question than the one asked is the
+                   silent-no-op class this codebase keeps paying for. */
+                $nsGet = '';
+                if (isset($_GET['namespace'])) {
+                    if (!is_string($_GET['namespace'])) {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    $nsGet = $_GET['namespace'];
+                }
+                if ($nsGet !== '') {
+                    if (!userSettingsNamespaceValid($nsGet)) {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    sendJson([
+                        'ok'         => true,
+                        'namespace'  => $nsGet,
+                        'settings'   => userSettingsSubtree($settingsArr, $nsGet),
+                        'updated_at' => $row['UpdatedAt'] ?? null,
+                    ]);
+                    break;
+                }
+
                 sendJson([
                     'ok'         => true,
-                    'settings'   => $settings,
+                    'settings'   => $settingsArr === [] ? new \stdClass() : $settingsArr,
                     'updated_at' => $row['UpdatedAt'] ?? null,
                 ]);
                 break;
@@ -3059,19 +3763,94 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $rawBody = file_get_contents('php://input');
                 $body = json_decode($rawBody, true);
-                $settings = $body['settings'] ?? null;
+                $settings = is_array($body) ? ($body['settings'] ?? null) : null;
                 if (!is_array($settings)) {
                     sendJson(['error' => 'Settings object required.'], 400);
                     break;
                 }
-                /* Cap payload size — prefs are small; this guards against abuse. */
+
+                /* The namespace may arrive in the body (the natural place for a
+                   JSON POST) or on the query string (convenient for a curl /
+                   Swagger try-it-out call); body wins. Absent, JSON `null`, or
+                   the empty string = the legacy whole-blob path below.
+                   A namespace that is PRESENT but not a string is a 400 — it
+                   must never fall through to the whole-blob replace, because
+                   that would silently do something far more destructive than
+                   what the caller asked for. */
+                $nsRaw = null;
+                if (is_array($body) && array_key_exists('namespace', $body)) {
+                    $nsRaw = $body['namespace'];
+                } elseif (isset($_GET['namespace'])) {
+                    $nsRaw = $_GET['namespace'];
+                }
+                if ($nsRaw !== null && !is_string($nsRaw)) {
+                    sendJson(['error' => 'Invalid namespace.'], 400);
+                    break;
+                }
+                $nsPost = (string)($nsRaw ?? '');
+
+                $authUserId = (int)$authUser['Id'];
+
+                if ($nsPost !== '') {
+                    /* Read-modify-write of ONE subtree. Not a transaction: the
+                       blob is per-user and a user's own devices racing each
+                       other is last-write-wins by design (identical to the
+                       legacy path). What the namespace buys is that a race
+                       between two PRODUCTS is no longer possible at all,
+                       because they never touch the same subtree. */
+                    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+                    $sel->bind_param('i', $authUserId);
+                    $sel->execute();
+                    $curRow = $sel->get_result()->fetch_row();
+                    $sel->close();
+                    $curRaw = (string)($curRow[0] ?? '');
+                    $current = $curRaw !== '' ? json_decode($curRaw, true) : [];
+                    if (!is_array($current)) { $current = []; }
+
+                    /* ONE decision function. The reason code — never the
+                       sentence — chooses the status, so a client branches on
+                       the HTTP status and never on our prose (rule #35). */
+                    $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                    if ($reason === 'invalid_namespace') {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    if ($reason === 'namespace_too_large') {
+                        sendJson(['error' => 'Settings payload too large.'], 413);
+                        break;
+                    }
+                    if ($reason === 'total_too_large') {
+                        sendJson(['error' => 'Stored settings would exceed the per-account limit.'], 413);
+                        break;
+                    }
+
+                    /* REJECTED, never truncated — a silently amputated payload
+                       is how #1649 / #1662 destroyed users' set lists. */
+                    $json = userSettingsEncode(
+                        userSettingsMergeNamespace($current, $nsPost, $settings)
+                    );
+                    $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+                    $stmt->bind_param('si', $json, $authUserId);
+                    $stmt->execute();
+                    $stmt->close();
+                    sendJson(['ok' => true, 'namespace' => $nsPost]);
+                    break;
+                }
+
+                /* ---- Legacy whole-blob replace — byte-for-byte unchanged ----
+                   settings.js and the shipped native apps send no namespace and
+                   must keep working exactly as before, so this branch keeps the
+                   same 16 KB cap, the same status and the same error text.
+                   ⚠ It also still REPLACES the whole blob, i.e. it destroys any
+                   sibling namespace. The isolation property only holds once
+                   every writer is namespaced; migrating settings.js to
+                   `namespace: 'ihymns.web'` is the remaining step. */
                 $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 if (strlen($json) > 16384) {
                     sendJson(['error' => 'Settings payload too large.'], 413);
                     break;
                 }
                 $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('si', $json, $authUserId);
                 $stmt->execute();
                 $stmt->close();
@@ -3882,7 +4661,7 @@ if ($action !== null) {
                auth_login (api.php ~2151). */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash   = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -4203,7 +4982,7 @@ if ($action !== null) {
             $currentToken = getAuthBearerToken();
             $currentHash  = $currentToken !== null ? hash('sha256', $currentToken) : '';
 
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
             $stmt = $db->prepare(
                 'SELECT Token, DeviceName, Platform, AppVersion, LastSeenAt, CreatedAt, ExpiresAt
                    FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?
@@ -4590,8 +5369,19 @@ if ($action !== null) {
                back-compat with any client that omits the field. */
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649) — see includes/user_sync.php. Absent /
+               malformed → null → legacy absence-only deletion. */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* Cap at 500 favourites, recording whether the cap BIT (#1649).
+               Computed from the pre-slice count, because a truncated payload is
+               not an authoritative statement of what the user still has — the
+               delete pass below must refuse to act on it. */
+            $capped    = userSyncCap($body['favorites'], 500);
+            $truncated = $capped['truncated'];
 
             /* Accept BOTH payload shapes (WS-G #1019):
                  - legacy : ["CP-0001", "MP-0042", ...]
@@ -4601,7 +5391,7 @@ if ($action !== null) {
                server tags untouched); an object with a tags array sets them
                (including [] to clear). Last write per id wins. */
             $localFavs = [];
-            foreach (array_slice($body['favorites'], 0, 500) as $entry) {
+            foreach ($capped['items'] as $entry) {
                 if (is_string($entry)) {
                     $sid  = trim($entry);
                     $tags = null;
@@ -4627,34 +5417,50 @@ if ($action !== null) {
             }
 
             /* Existing server favourites — id + tags (for the replace diff and
-               the MERGE-mode tag union below). */
-            $stmt = $db->prepare('SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ?');
+               the MERGE-mode tag union below). CreatedAt joins the SELECT for
+               #1649's watermark guard: tblUserFavorites has no UpdatedAt, so
+               CreatedAt is the only age signal this table carries, and it is
+               written by the DB itself (DEFAULT CURRENT_TIMESTAMP) so it shares
+               userSyncNow()'s clock exactly. */
+            $stmt = $db->prepare('SELECT SongId, Tags, CreatedAt FROM tblUserFavorites WHERE UserId = ?');
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
-            $serverFavs = array_column($serverRows, 'SongId');
+            /* ($serverFavs — the flat SongId list — is gone: its only consumer
+               was the old array_diff() delete pass, now userSyncDeletableIds().) */
             $serverTagMap = [];
             foreach ($serverRows as $r) {
                 $decoded = $r['Tags'] !== null ? json_decode($r['Tags'], true) : [];
                 $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
             }
 
-            /* Authoritative replace: delete server favourites the client no
-               longer has. In merge mode nothing is deleted. */
+            /* Authoritative replace, guarded (#1649): delete server favourites
+               the client no longer has — but ONLY when the payload was complete
+               (not clipped by the 500 cap) and the row predates the client's
+               `since` watermark. The shared helper owns that decision for all
+               three sync handlers; in merge mode it returns [] and nothing is
+               deleted. */
+            $deletableIds = userSyncDeletableIds(
+                array_map(
+                    static fn(array $r): array => ['id' => $r['SongId'], 'ts' => (string)$r['CreatedAt']],
+                    $serverRows
+                ),
+                array_keys($localFavs),
+                $syncMode,
+                $truncated,
+                $since
+            );
             $deleted = 0;
-            if ($syncMode === 'replace') {
-                $toDelete = array_diff($serverFavs, array_keys($localFavs));
-                if (count($toDelete) > 0) {
-                    $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
-                    $delId = '';
-                    $del->bind_param('is', $userId, $delId);
-                    foreach ($toDelete as $delId) {
-                        $del->execute();
-                        $deleted += $del->affected_rows;
-                    }
-                    $del->close();
+            if (count($deletableIds) > 0) {
+                $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletableIds as $delId) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
                 }
+                $del->close();
             }
 
             /* Upsert each payload favourite. Tags are only overwritten when
@@ -4704,6 +5510,12 @@ if ($action !== null) {
             }
             $upsert->close();
 
+            /* Mint the watermark immediately before the final re-read (#1649)
+               so anything another device writes during the gap reads as NEWER
+               than it, and this client's next 'replace' keeps rather than
+               deletes it. */
+            $syncedAt = userSyncNow($db);
+
             /* Return the stored list as {id, tags} objects. */
             $stmt = $db->prepare(
                 'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
@@ -4718,17 +5530,26 @@ if ($action !== null) {
             }, $finalRows);
 
             /* Audit (#535) — one row per sync, since the sync is the
-               meaningful user action. */
-            if ($newlyAdded > 0 || $deleted > 0) {
+               meaningful user action. `truncated` added by #1649: an over-cap
+               sync is the single most useful thing to see in the log when a
+               user reports missing favourites. */
+            if ($newlyAdded > 0 || $deleted > 0 || $truncated) {
                 logActivity('favorites.sync', 'user', (string)$userId, [
                     'mode'        => $syncMode,
                     'newly_added' => $newlyAdded,
                     'deleted'     => $deleted,
+                    'truncated'   => $truncated,
                     'total'       => count($finalFavs),
                 ]);
             }
 
-            sendJson(['favorites' => $finalFavs]);
+            sendJson([
+                'favorites' => $finalFavs,
+                /* #1649 — client stores this and returns it as `since`. */
+                'syncedAt'  => $syncedAt,
+                'truncated' => $truncated,
+                'cap'       => 500,
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -4813,9 +5634,16 @@ if ($action !== null) {
         /* -----------------------------------------------------------------
          * Sync custom tags. Same merge/replace contract as favorites_sync.
          *
-         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace" }
-         * Returns: { "tags": [...stored...] }
+         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace",
+         *                     "since": "YYYY-MM-DD HH:MM:SS" }
+         * Returns: { "tags": [...stored...], "syncedAt": "...",
+         *            "truncated": bool, "cap": 200 }
          * Requires: Authorization: Bearer <token>
+         *
+         * The web client only ever sends 'merge' here today (custom tags are
+         * add-only — there is no removal UI), but 'replace' is part of the
+         * published API contract and any client may send it, so it carries the
+         * same #1649 truncation + watermark guards as the other two handlers.
          * ----------------------------------------------------------------- */
         case 'custom_tags_sync':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -4839,11 +5667,17 @@ if ($action !== null) {
 
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649) — see includes/user_sync.php. */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
             /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
-               cap the pool at 200 tags. */
+               cap the pool at 200 tags. The 200-cap is applied to the DEDUPED
+               list, so `truncated` correctly reports whether the user really
+               owns more than 200 DISTINCT tags rather than counting duplicate
+               spellings against them (#1649). */
             $localTags = [];
             foreach ($body['tags'] as $t) {
                 if (!is_string($t)) continue;
@@ -4851,23 +5685,42 @@ if ($action !== null) {
                 if ($t === '') continue;
                 $localTags[$t] = true;
             }
-            $localTags = array_slice(array_keys($localTags), 0, 200);
+            $capped    = userSyncCap(array_keys($localTags), 200);
+            $localTags = $capped['items'];
+            $truncated = $capped['truncated'];
 
-            /* Replace: delete tags the client no longer has. */
+            /* Replace: delete tags the client no longer has — subject to the
+               shared #1649 guards (a truncated payload deletes nothing; a tag
+               created after the client's `since` watermark is another device's
+               and is kept). The SELECT stays inside the replace branch so merge
+               mode still costs no extra query. */
             $deleted = 0;
             if ($syncMode === 'replace') {
-                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ?');
+                /* CreatedAt joins the SELECT for the watermark guard — it is
+                   the only age signal tblUserCustomTags carries, and the DB
+                   writes it (DEFAULT CURRENT_TIMESTAMP) so it shares
+                   userSyncNow()'s clock exactly. */
+                $stmt = $db->prepare('SELECT Tag, CreatedAt FROM tblUserCustomTags WHERE UserId = ?');
                 $stmt->bind_param('i', $userId);
                 $stmt->execute();
-                $serverTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $serverTagRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
 
-                $toDelete = array_diff($serverTags, $localTags);
-                if (count($toDelete) > 0) {
+                $deletableTags = userSyncDeletableIds(
+                    array_map(
+                        static fn(array $r): array => ['id' => $r['Tag'], 'ts' => (string)$r['CreatedAt']],
+                        $serverTagRows
+                    ),
+                    $localTags,
+                    $syncMode,
+                    $truncated,
+                    $since
+                );
+                if (count($deletableTags) > 0) {
                     $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
                     $delTag = '';
                     $del->bind_param('is', $userId, $delTag);
-                    foreach ($toDelete as $delTag) {
+                    foreach ($deletableTags as $delTag) {
                         $del->execute();
                         $deleted += $del->affected_rows;
                     }
@@ -4885,6 +5738,9 @@ if ($action !== null) {
             }
             $insert->close();
 
+            /* Mint the watermark immediately before the final re-read (#1649). */
+            $syncedAt = userSyncNow($db);
+
             /* Return the stored list. */
             $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
             $stmt->bind_param('i', $userId);
@@ -4892,7 +5748,25 @@ if ($action !== null) {
             $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
             $stmt->close();
 
-            sendJson(['tags' => $finalTags]);
+            /* Audit (#1649) — this handler had no logging at all, unlike
+               favorites.sync. A deleting or truncated tag sync is precisely
+               what a curator needs to see when a user reports lost tags. */
+            if ($deleted > 0 || $truncated) {
+                logActivity('custom_tags.sync', 'user', (string)$userId, [
+                    'mode'      => $syncMode,
+                    'truncated' => $truncated,
+                    'deleted'   => $deleted,
+                    'total'     => count($finalTags),
+                ]);
+            }
+
+            sendJson([
+                'tags'      => $finalTags,
+                /* #1649 — client stores this and returns it as `since`. */
+                'syncedAt'  => $syncedAt,
+                'truncated' => $truncated,
+                'cap'       => 200,
+            ]);
             break;
 
         /* =================================================================
@@ -5254,9 +6128,11 @@ if ($action !== null) {
                  FROM tblSongTranslations t
                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  JOIN tblSongs s ON s.SongId = t.TranslatedSongId
-                 WHERE t.SourceSongId = ?
+                 WHERE t.SourceSongId = ? AND ' . songVisibleSql($db, 's') . '
                  ORDER BY l.Name ASC'
-            );
+            );   /* #1694 — a hidden translation target is not offered (the
+                    sibling pass below re-executes THIS statement, so it is
+                    filtered by the same predicate) */
             $forwardId = $translationSongId;
             $stmt->bind_param('s', $forwardId);
             $stmt->execute();
@@ -5287,8 +6163,8 @@ if ($action !== null) {
                                 l.Name AS languageName, l.NativeName AS languageNativeName
                          FROM tblSongs s
                          LEFT JOIN tblLanguages l ON l.Code = s.Language
-                         WHERE s.SongId = ?'
-                    );
+                         WHERE s.SongId = ? AND ' . songVisibleSql($db, 's')
+                    );   /* #1694 — a hidden source song is not offered */
                     $stmtSrc->bind_param('s', $sourceId);
                     $stmtSrc->execute();
                     $src = $stmtSrc->get_result()->fetch_assoc();
@@ -5414,8 +6290,9 @@ if ($action !== null) {
                            FROM tblWorkSongs ws
                            JOIN tblSongs s ON s.SongId = ws.SongId
                            LEFT JOIN tblLanguages l ON l.Code = s.Language
-                          WHERE ws.WorkId IN ($placeholders)"
-                    );
+                          WHERE ws.WorkId IN ($placeholders)
+                            AND " . songVisibleSql($db, 's')
+                    );   /* #1694 — hidden Works members are not offered as translations */
                     $stmt->bind_param($types, ...$allWorkIds);
                     $stmt->execute();
                     $currentLang = '';
@@ -5468,24 +6345,25 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Get all groups the user belongs to (primary + additional).
-               $authUserId bound twice — once per `?` position. */
+            /* Get the group the user belongs to. Was a UNION with a second
+               arm reading tblUserGroupMembers (a many-to-many membership
+               table nothing ever wrote) — removed by remediation X5
+               (2026-07-30, orphan inventory §2.2/§3.2, #1670). Group
+               membership actually lives on tblUsers.GroupId, a single FK;
+               that UNION arm threw under STRICT mysqli on any migrated
+               install (the table was schema.sql-only) and this endpoint
+               500'd every time. This action stays dormant-by-design (content-
+               gating family, rule #28) — fixing the 500 does not give it a
+               caller; see tests/php/fixtures/orphan-allowlist.php. */
             $stmt = $db->prepare(
                 'SELECT g.Id AS id, g.Name AS name,
                         g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
                         g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
                  FROM tblUserGroups g
-                 WHERE g.Id = (SELECT GroupId FROM tblUsers WHERE Id = ?)
-                 UNION
-                 SELECT g.Id AS id, g.Name AS name,
-                        g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
-                        g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
-                 FROM tblUserGroups g
-                 JOIN tblUserGroupMembers m ON m.GroupId = g.Id
-                 WHERE m.UserId = ?'
+                 WHERE g.Id = (SELECT GroupId FROM tblUsers WHERE Id = ?)'
             );
             $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('ii', $authUserId, $authUserId);
+            $stmt->bind_param('i', $authUserId);
             $stmt->execute();
             $groups = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
@@ -5526,6 +6404,12 @@ if ($action !== null) {
                sign-in button can gate on ONE flag instead of re-deriving
                the services-id + channel-allow-list logic client-side. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+            /* #1725/#1730 — MWBM-IntAppsAPI gateway client. Loading this file
+               has NO side effect (no DB, no HTTP — see its own docblock), so
+               requiring it unconditionally here is safe even while the whole
+               module is dormant (the default, shipped state: no channel is
+               listed in intappsapi_enabled_channels). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'intapps_client.php';
 
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
@@ -5560,6 +6444,32 @@ if ($action !== null) {
                a concern getAppSetting()'s per-request memoization already
                closes off, but computing it twice would be needless work). */
             $appleWebEnabledForStatus = appleWebLoginEnabledForChannel();
+
+            /* #1725/#1730 — IntAppsAPI gateway feature flags. `remoteFeatures`
+               is emitted ONLY when intappsEnabled() — the shipped default has
+               no channel in the allow-list, so this whole block is a no-op
+               and the key is ABSENT, not empty (rule #28's dormancy bar:
+               byte-identical to a build with no gateway integration at all).
+               Cache-only read (intappsCachedScope() never performs HTTP), so
+               this can never delay the response. Native clients (design §9)
+               are the primary consumer; a native-app kill switch is read
+               here rather than compiled into a store binary. */
+            $intAppsStatusPayload = [];
+            if (intappsEnabled()) {
+                $intAppsFeatures = [];
+                $intAppsCached = intappsCachedScope($db, 'features');
+                foreach (($intAppsCached['payload']['features'] ?? []) as $f) {
+                    if (!is_array($f) || !isset($f['feature_key'])) {
+                        continue;
+                    }
+                    $intAppsFeatures[(string)$f['feature_key']] = [
+                        'enabled'  => (bool)($f['enabled'] ?? false),
+                        'metadata' => is_array($f['metadata'] ?? null) ? $f['metadata'] : null,
+                    ];
+                }
+                $intAppsStatusPayload['remoteFeatures'] = $intAppsFeatures;
+            }
+
             sendJson([
                 'maintenance'         => $inMaintenance,
                 'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
@@ -5591,7 +6501,32 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
-            ]);
+            ] + $intAppsStatusPayload);
+
+            /* #1725/#1730 — the gateway refresh happens AFTER the response is
+               already on the wire, never on this endpoint's critical path.
+               app_status is a background poll every client makes at startup
+               (and is user-awaited when the sign-in modal opens — stress-test
+               remedy 6), so a slow-or-dead gateway must not add latency here.
+               fastcgi_finish_request() (PHP-FPM) lets the script keep running
+               after the client has the bytes; ignore_user_abort() + explicit
+               flush() is the best-effort fallback on SAPIs without it (e.g.
+               the built-in `php -S` server used for local verification) — on
+               those, the single-flight lock winner pays its ≤3s HTTP timeout
+               before the process exits, an accepted residual documented in
+               DEV_NOTES.md. intappsRefreshIfDue() itself never throws and is
+               a true no-op when the module is dormant. */
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                ignore_user_abort(true);
+                if (function_exists('flush')) {
+                    flush();
+                }
+            }
+            if (intappsEnabled()) {
+                intappsRefreshIfDue($db, 'features');
+            }
             break;
 
         /* -----------------------------------------------------------------
@@ -5650,7 +6585,8 @@ if ($action !== null) {
                     $res = $db->query(
                         "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                            FROM tblSongs
-                          WHERE Language IS NOT NULL AND Language <> ''"
+                          WHERE Language IS NOT NULL AND Language <> ''
+                            AND " . songVisibleSql($db, '')   /* #1694 — a hidden song's language mints no chip */
                     );
                     if ($res) {
                         while ($r = $res->fetch_row()) {
@@ -6124,59 +7060,78 @@ if ($action !== null) {
             }
 
             /* B. The destructive transaction (§3.3): T1 FOR UPDATE lock +
-               idempotency check, T2 explicit token revoke, T3 the two PII
-               scrubs (§3.2) that the FK graph does NOT clean, T4 the user
-               delete itself (the whole cascade/anonymise graph fires
-               atomically as part of this ONE transaction — a mid-cascade
-               failure rolls EVERYTHING back, leaving the account intact). */
+               idempotency check, T2 the erasure itself. The whole graph fires
+               atomically as part of this ONE transaction — a mid-erasure
+               failure rolls EVERYTHING back, leaving the account intact.
+
+               #1698 — T2/T3/T4 used to be spelled out here: an explicit token
+               delete, the two PII scrubs, then `DELETE FROM tblUsers`. All three
+               now live in `accountErase()` (includes/account_lifecycle.php),
+               which this handler calls INSIDE its own transaction. Three reasons
+               the move is the right shape:
+                 - the same work is needed by `deleteUser()` (the admin funnel)
+                   and by `admin_user_delete` through it, and three copies of an
+                   irreversible operation is precisely the modularity rule's
+                   worst case;
+                 - the erasure is now DERIVED from the live FK graph rather than
+                   typed out, so a future table with a user FK is covered by its
+                   own declared ON DELETE rule instead of by somebody remembering
+                   to extend this case body;
+                 - a hard `DELETE FROM tblUsers` is replaced by an anonymised
+                   TOMBSTONE, so a set list this user had shared with somebody
+                   else keeps working for that person (visible, locked) instead
+                   of silently degrading to a months-old snapshot.
+
+               Everything AROUND it is deliberately untouched: the re-auth rungs,
+               the rate limit, the last-global-admin guard, the pre-transaction
+               Apple revoke, this FOR UPDATE lock and the idempotent-200 race
+               path all behave exactly as they did. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_lifecycle.php';
+
             $tokensRevoked = 0;
             $db->begin_transaction();
             try {
-                $lockStmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ? FOR UPDATE');
+                /* The lock now selects Status as well as Id, because "already
+                   erased" is no longer "the row is gone" — the tombstone stays.
+                   Column-gated: on an un-migrated install accountErase() below
+                   REFUSES anyway (it never falls back to a hard delete), so the
+                   NULL here simply means "cannot already be erased", which is
+                   true. */
+                $lockSql = userStatusColumnReady($db)
+                    ? 'SELECT Status FROM tblUsers WHERE Id = ? FOR UPDATE'
+                    : 'SELECT NULL AS Status FROM tblUsers WHERE Id = ? FOR UPDATE';
+                $lockStmt = $db->prepare($lockSql);
                 $lockStmt->bind_param('i', $authUserId);
                 $lockStmt->execute();
-                $stillExists = $lockStmt->get_result()->fetch_row() !== null;
+                $lockRow = $lockStmt->get_result()->fetch_assoc();
                 $lockStmt->close();
 
-                if ($stillExists) {
-                    $countStmt = $db->prepare('SELECT COUNT(*) FROM tblApiTokens WHERE UserId = ?');
-                    $countStmt->bind_param('i', $authUserId);
-                    $countStmt->execute();
-                    $tokensRevoked = (int)($countStmt->get_result()->fetch_row()[0] ?? 0);
-                    $countStmt->close();
+                $alreadyErased = $lockRow !== null
+                    && $lockRow['Status'] !== null
+                    && userStateFromRow(null, (string)$lockRow['Status']) === 'deleted';
 
-                    /* Explicit even though tblApiTokens.UserId FK cascades —
-                       token revocation is a STATED security requirement, not
-                       merely an FK side effect, and the affected count feeds
-                       the audit row. */
-                    $delTok = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-                    $delTok->bind_param('i', $authUserId);
-                    $delTok->execute();
-                    $delTok->close();
-
-                    /* §3.2 PII stragglers the FK graph does NOT clean. */
-                    $blank = '';
-                    $scrubRequests = $db->prepare('UPDATE tblSongRequests SET ContactEmail = ?, IpAddress = ? WHERE UserId = ?');
-                    $scrubRequests->bind_param('ssi', $blank, $blank, $authUserId);
-                    $scrubRequests->execute();
-                    $scrubRequests->close();
-
-                    $usernameForScrub = (string)$authUser['Username'];
-                    $scrubAttempts = $db->prepare('DELETE FROM tblLoginAttempts WHERE Username = ?');
-                    $scrubAttempts->bind_param('s', $usernameForScrub);
-                    $scrubAttempts->execute();
-                    $scrubAttempts->close();
-
-                    $delUser = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
-                    $delUser->bind_param('i', $authUserId);
-                    $delUser->execute();
-                    $delUser->close();
+                if ($lockRow !== null && !$alreadyErased) {
+                    $eraseResult   = accountErase($db, $authUserId);
+                    $tokensRevoked = $eraseResult['tokensRevoked'];
                 }
-                /* else: the T1 no-row race — a concurrent request already
-                   deleted this account between our getAuthenticatedUser()
-                   and this lock. Commit this empty transaction and fall
-                   through to the SAME idempotent 200 the winner returned. */
+                /* else: the T1 race — a concurrent request already erased this
+                   account between our getAuthenticatedUser() and this lock (or,
+                   on a pre-#1698 install, hard-deleted the row). Commit this
+                   empty transaction and fall through to the SAME idempotent 200
+                   the winner returned. */
                 $db->commit();
+            } catch (AccountEraseException $e) {
+                try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+                /* NOT a 500: this is "this deployment cannot do that yet / its
+                   schema has drifted", which is an operator action, and the
+                   account is completely untouched. 503 says "try again later"
+                   truthfully; the message names what to run. Logged as a
+                   failure so the owner sees a systematic problem rather than a
+                   user quietly unable to close their account. */
+                error_log('[api/account_delete erase refused] ' . $e->getMessage());
+                logActivity('account.delete', 'user', (string)$authUserId, ['reason' => 'erase_unavailable'], 'failure');
+                sendJson(['error' => 'Account deletion is temporarily unavailable. Please contact support.'], 503);
+                break;
             } catch (\Throwable $e) {
                 try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
                 throw $e; /* → api.php's global exception handler (~line 81): clean 500, account left fully intact. */
@@ -6386,7 +7341,7 @@ if ($action !== null) {
                auth_login (api.php ~2216) / auth_apple (api.php ~3286). */
             $token       = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash   = hash('sha256', $token);
             $tstmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $tstmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -7269,6 +8224,35 @@ if ($action !== null) {
          * POST body (JSON):
          *   { "song_id": "CP-0001", "original_key": "G",
          *     "tempo": 120, "time_signature": "4/4" }
+         *
+         * #1671 F3 — this endpoint was dispatched from #298 onward with NO
+         * caller anywhere, so nothing ever ran it. Building its UI found three
+         * guaranteed 500s and one missing distinction:
+         *
+         *   (a) it bound NULL into `TimeSignature`, which is NOT NULL — so
+         *       saving a key without a time signature always threw (mysqli
+         *       under MYSQLI_REPORT_STRICT raises, it does not return false);
+         *   (b) it capped `original_key` at 10 chars for a VARCHAR(5) column;
+         *   (c) it `(int)`-cast `tempo` into an INT UNSIGNED column, so a
+         *       negative number was an out-of-range throw rather than a 400;
+         *   (d) an unknown song_id hit `fk_SongKeys_Song` and threw 1452 —
+         *       a 500 where a 404 belongs.
+         *
+         * (a)-(c) are now decided by the pure `songKeyValidate()` in
+         * includes/song_key.php, which `tests/php/test-song-key.php` CALLS
+         * (never greps). (d) is the existence probe below.
+         *
+         * The gate also changed from a hardcoded `['editor','admin',
+         * 'global_admin']` role list to `userHasEntitlement('edit_songs', …)`.
+         * That list was byte-identical to `edit_songs` in
+         * includes/entitlements.php, so the set of roles allowed is unchanged
+         * today — but a hardcoded copy of a central map is a CLAUDE.md red
+         * flag, and since #1590 an operator can retune `edit_songs` on
+         * /manage/entitlements. With the copy in place, that control silently
+         * did nothing here. Splitting 401 from 403 matters too: the editor UI
+         * needs to tell "your admin session is not linked to the app API,
+         * sign in again" apart from "your role cannot edit songs", and a
+         * single 403 for both made that impossible (rule #35).
          * ----------------------------------------------------------------- */
         case 'song_key_save':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -7277,29 +8261,48 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            if (!userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Editor access required.'], 403);
                 break;
             }
 
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_key.php';
 
-            $keySongId      = trim($body['song_id'] ?? '');
-            $originalKey    = mb_substr(trim($body['original_key'] ?? ''), 0, 10);
-            $tempo          = isset($body['tempo']) ? (int)$body['tempo'] : null;
-            $timeSignature  = mb_substr(trim($body['time_signature'] ?? ''), 0, 10);
-
-            if ($keySongId === '') {
-                sendJson(['error' => 'song_id is required.'], 400);
+            $keyResult = songKeyValidate(json_decode((string)file_get_contents('php://input'), true));
+            if ($keyResult['ok'] !== true) {
+                sendJson(['error' => $keyResult['error'], 'reason' => $keyResult['reason']], 400);
                 break;
             }
-            if ($originalKey === '') {
-                sendJson(['error' => 'original_key is required.'], 400);
-                break;
-            }
+
+            $keySongId     = $keyResult['songId'];
+            $originalKey   = $keyResult['originalKey'];
+            $tempo         = $keyResult['tempo'];          /* int|null — column is NULL-able */
+            $timeSignature = $keyResult['timeSignature'];  /* ALWAYS a string — column is NOT NULL */
 
             $db = getDbMysqli();
+
+            /* The song must exist, or the FK throws 1452 and the caller gets a
+               500 that explains nothing. Checked BEFORE the write so the
+               refusal costs one indexed lookup and changes nothing.
+
+               @deleted-visible: FK pre-check (#1694) — the question here is
+               "will the INSERT's FK hold?", and a soft-deleted row DOES hold
+               it. Filtering would turn a harmless, restore-preserving write
+               into a bogus 404. */
+            $keyExists = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $keyExists->bind_param('s', $keySongId);
+            $keyExists->execute();
+            $keySongFound = $keyExists->get_result()->fetch_row() !== null;
+            $keyExists->close();
+            if (!$keySongFound) {
+                sendJson(['error' => 'Unknown song.', 'reason' => 'song_not_found'], 404);
+                break;
+            }
+
             $stmt = $db->prepare(
                 'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature)
                  VALUES (?, ?, ?, ?)
@@ -7308,161 +8311,50 @@ if ($action !== null) {
                     Tempo = VALUES(Tempo),
                     TimeSignature = VALUES(TimeSignature)'
             );
-            $tsOrNull = $timeSignature !== '' ? $timeSignature : null;
-            $stmt->bind_param('ssis', $keySongId, $originalKey, $tempo, $tsOrNull);
+            $stmt->bind_param('ssis', $keySongId, $originalKey, $tempo, $timeSignature);
             $stmt->execute();
             $stmt->close();
 
-            sendJson(['ok' => true]);
-            break;
+            /* Audit (#535 convention) — this is a curator write to song data and
+               had no logging at all, unlike every neighbouring song mutation. */
+            logActivity('song.key_save', 'song', $keySongId, [
+                'key'            => $originalKey,
+                'tempo'          => $tempo,
+                'time_signature' => $timeSignature,
+            ], 'success', (int)$authUser['Id']);
 
-        /* =================================================================
-         * SETLIST SCHEDULING (#300)
-         * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get scheduled setlists within a date range
-         * Parameters: from (date), to (date)
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'setlist_schedule':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $schedFrom = trim($_GET['from'] ?? '');
-            $schedTo   = trim($_GET['to'] ?? '');
-
-            if ($schedFrom === '' || $schedTo === '') {
-                sendJson(['error' => 'Both from and to date parameters are required.'], 400);
-                break;
-            }
-
-            /* Validate date format (YYYY-MM-DD) */
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedFrom) ||
-                !preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedTo)) {
-                sendJson(['error' => 'Dates must be in YYYY-MM-DD format.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT s.Id AS id, s.SetlistId AS setlistId,
-                        s.ScheduledDate AS scheduledDate, s.Notes AS notes,
-                        s.OrgId AS orgId, s.CreatedBy AS createdBy,
-                        s.CreatedAt AS createdAt
-                 FROM tblSetlistSchedule s
-                 LEFT JOIN tblOrganisationMembers m ON m.OrgId = s.OrgId AND m.UserId = ?
-                 WHERE s.ScheduledDate BETWEEN ? AND ?
-                   AND (s.CreatedBy = ? OR m.UserId IS NOT NULL)
-                 ORDER BY s.ScheduledDate ASC'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('issi', $authUserId, $schedFrom, $schedTo, $authUserId);
-            $stmt->execute();
-            $schedules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            foreach ($schedules as &$sched) {
-                $sched['id'] = (int)$sched['id'];
-                $sched['orgId'] = $sched['orgId'] ? (int)$sched['orgId'] : null;
-                $sched['createdBy'] = (int)$sched['createdBy'];
-            }
-            unset($sched);
-
-            sendJson(['schedules' => $schedules]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Schedule a setlist for a specific date
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "scheduled_date": "2026-04-20",
-         *     "notes": "Sunday morning", "org_id": 1 }
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'setlist_schedule_save':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $schedSetlistId = trim($body['setlist_id'] ?? '');
-            $schedDate      = trim($body['scheduled_date'] ?? '');
-            $schedNotes     = mb_substr(trim($body['notes'] ?? ''), 0, 1000);
-            $schedOrgId     = !empty($body['org_id']) ? (int)$body['org_id'] : null;
-
-            if ($schedSetlistId === '') {
-                sendJson(['error' => 'setlist_id is required.'], 400);
-                break;
-            }
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedDate)) {
-                sendJson(['error' => 'scheduled_date must be in YYYY-MM-DD format.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* SECURITY (IDOR — security audit): verify the caller OWNS this setlist
-               before scheduling it (mirrors the sibling setlist_schedule_set).
-               Without this, any authenticated bearer token could schedule a setlist
-               it does not own. */
-            $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
-            $own->bind_param('is', $authUserId, $schedSetlistId);
-            $own->execute();
-            $ownsSetlist = (bool)$own->get_result()->fetch_row();
-            $own->close();
-            if (!$ownsSetlist) {
-                sendJson(['error' => 'Setlist not found or not owned by you.'], 403);
-                break;
-            }
-
-            /* SECURITY (IDOR): an org_id may only be attached if the caller is a
-               member of that org — otherwise a user could tag a schedule onto an
-               arbitrary organisation and have it surface in that org's schedule. */
-            if ($schedOrgId !== null) {
-                $mem = $db->prepare('SELECT 1 FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ? LIMIT 1');
-                $mem->bind_param('ii', $schedOrgId, $authUserId);
-                $mem->execute();
-                $isMember = (bool)$mem->get_result()->fetch_row();
-                $mem->close();
-                if (!$isMember) {
-                    sendJson(['error' => 'You are not a member of that organisation.'], 403);
-                    break;
-                }
-            }
-
-            /* The column is UserId (the old code named a phantom CreatedBy column
-               that does not exist on tblSetlistSchedule — it threw under STRICT
-               mysqli before this fix). OrgId is nullable. */
-            $stmt = $db->prepare(
-                'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, UserId)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $stmt->bind_param('sssii',
-                $schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUserId);
-            $stmt->execute();
-            $newId = (int)$db->insert_id;
-            $stmt->close();
-
-            sendJson(['ok' => true, 'id' => $newId], 201);
+            /* Echo the STORED values back, not the request. The normaliser
+               rewrites what it was given — `g` becomes `G`, `CM` becomes `Cm`,
+               an omitted time signature becomes `''` — so a client that trusted
+               its own copy would display something the database does not hold.
+               The v2 editor panel writes this response into its fields for
+               exactly that reason. */
+            sendJson([
+                'ok'  => true,
+                'key' => [
+                    'originalKey'   => $originalKey,
+                    'tempo'         => $tempo,
+                    'timeSignature' => $timeSignature,
+                ],
+            ]);
             break;
 
         /* =================================================================
          * SETLIST TEMPLATES (#301)
-         * ================================================================= */
+         * =================================================================
+         * The old SETLIST SCHEDULING (#300) `setlist_schedule` (date-range
+         * GET) / `setlist_schedule_save` (POST) pair that used to live here
+         * was retired by remediation F8 (2026-07-30, orphan inventory
+         * §2.3): superseded by the live `setlist_schedule_set` /
+         * `_clear` / `_current` / `_upcoming` family below (same
+         * `tblSetlistSchedule` table), and neither had a first-party
+         * caller. NOTE for a future reader: the retired GET's date-range
+         * query also surfaced schedules from every org the caller belongs
+         * to (`LEFT JOIN tblOrganisationMembers`); the live family is
+         * strictly `UserId`-scoped and does not replicate that org-wide
+         * visibility — tracked as #1686. Nothing calls either pair today so
+         * no live behaviour regresses, but an org-scoped schedule view
+         * would need to be rebuilt, not resurrected, if ever wanted. */
 
         /* -----------------------------------------------------------------
          * Get available setlist templates
@@ -7472,14 +8364,27 @@ if ($action !== null) {
             $db = getDbMysqli();
             $authUser = getAuthenticatedUser();
 
+            /* #1698 — the author's ACCOUNT STATE rides along on the query that
+               was already running. `tblUsers` is LEFT-joined (never INNER): a
+               template whose `CreatedBy` went NULL under `fk_Template_User`'s
+               ON DELETE SET NULL must still be LISTED — it is the #1698 orphan,
+               and hiding it would swap "nobody can edit this public template"
+               for "nobody can even see it exists". The `Status` column is
+               SELECT-gated because migrations here are web-run and three
+               docroots share one MySQL; on an un-migrated install the NULL falls
+               back to IsActive inside userStateFromRow(). */
+            $tplStatusCol = userStatusColumnReady($db) ? 'u.Status' : 'NULL';
+
             if ($authUser) {
                 $stmt = $db->prepare(
                     'SELECT t.Id AS id, t.Name AS name, t.Description AS description,
                             t.SlotsJson AS slotsJson, t.IsPublic AS isPublic,
                             t.OrgId AS orgId, t.CreatedBy AS createdBy,
-                            t.CreatedAt AS createdAt
+                            t.CreatedAt AS createdAt,
+                            u.IsActive AS ownerIsActive, ' . $tplStatusCol . ' AS ownerStatus
                      FROM tblSetlistTemplates t
                      LEFT JOIN tblOrganisationMembers m ON m.OrgId = t.OrgId AND m.UserId = ?
+                     LEFT JOIN tblUsers u ON u.Id = t.CreatedBy
                      WHERE t.IsPublic = 1
                         OR t.CreatedBy = ?
                         OR m.UserId IS NOT NULL
@@ -7490,13 +8395,15 @@ if ($action !== null) {
                 $stmt->execute();
             } else {
                 $stmt = $db->prepare(
-                    'SELECT Id AS id, Name AS name, Description AS description,
-                            SlotsJson AS slotsJson, IsPublic AS isPublic,
-                            OrgId AS orgId, CreatedBy AS createdBy,
-                            CreatedAt AS createdAt
-                     FROM tblSetlistTemplates
-                     WHERE IsPublic = 1
-                     ORDER BY Name ASC'
+                    'SELECT t.Id AS id, t.Name AS name, t.Description AS description,
+                            t.SlotsJson AS slotsJson, t.IsPublic AS isPublic,
+                            t.OrgId AS orgId, t.CreatedBy AS createdBy,
+                            t.CreatedAt AS createdAt,
+                            u.IsActive AS ownerIsActive, ' . $tplStatusCol . ' AS ownerStatus
+                     FROM tblSetlistTemplates t
+                     LEFT JOIN tblUsers u ON u.Id = t.CreatedBy
+                     WHERE t.IsPublic = 1
+                     ORDER BY t.Name ASC'
                 );
                 $stmt->execute();
             }
@@ -7504,16 +8411,63 @@ if ($action !== null) {
             $templates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
+            $viewerId = $authUser ? (int)$authUser['Id'] : 0;
+            /* The admin override (#1698). Resolved ONCE, outside the loop —
+               it depends on the caller's role, not on the row. */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
             foreach ($templates as &$tpl) {
                 $tpl['id'] = (int)$tpl['id'];
                 $tpl['isPublic'] = (bool)$tpl['isPublic'];
                 $tpl['orgId'] = $tpl['orgId'] ? (int)$tpl['orgId'] : null;
                 $tpl['createdBy'] = $tpl['createdBy'] ? (int)$tpl['createdBy'] : null;
-                $tpl['slotsJson'] = json_decode($tpl['slotsJson'], true) ?: [];
+
+                /* Derive the author's state from the columns just fetched —
+                   NEVER a second query per row (that would be an N+1 on a list
+                   endpoint). A NULL CreatedBy is 'absent', which
+                   userContentLocked() treats as locked, so the orphan case needs
+                   no branch of its own. */
+                $tpl['ownerState'] = $tpl['createdBy'] === null
+                    ? userStateAbsent()
+                    : userStateFromRow(
+                        $tpl['ownerIsActive'] !== null ? (int)$tpl['ownerIsActive'] : null,
+                        $tpl['ownerStatus']   !== null ? (string)$tpl['ownerStatus'] : null
+                      );
+                $tpl['ownerLocked'] = userContentLocked($tpl['ownerState']);
+                /* Internal join columns are not part of the wire shape. */
+                unset($tpl['ownerIsActive'], $tpl['ownerStatus']);
+                /* #1671 F4 — decoded through the SHARED sanitiser rather than a
+                   bare json_decode, so a row written before this change (by the
+                   old handler, which stored slots with no `id` and could slice
+                   them) still comes out in the one canonical shape every reader
+                   expects. The key keeps its shipped `slotsJson` name — renaming
+                   a field in a published response is a contract change. */
+                $tpl['slotsJson'] = setlistTemplateSanitiseSlots(
+                    json_decode((string)$tpl['slotsJson'], true)
+                );
+                /* Whether THIS caller may edit or delete THIS template is the
+                   server's decision, so the server states it. A client that
+                   re-derived the rule from createdBy would be a second copy of
+                   an authorisation policy with nothing keeping the two in step
+                   (rule #35) — and the copy would be the one drawing the
+                   buttons.
+
+                   The `|| $tplCanManageAny` half is the #1698 admin override,
+                   and it is stated HERE as well as enforced in the two write
+                   endpoints for exactly that reason: if the list said `false`
+                   while `setlist_template_update` said yes, an admin would have
+                   the power and no button to use it with. */
+                $tpl['canEdit'] = setlistTemplateCanEdit($tpl['createdBy'], $viewerId) || $tplCanManageAny;
             }
             unset($tpl);
 
-            sendJson(['templates' => $templates]);
+            sendJson([
+                'templates' => $templates,
+                /* The ONE slot-type registry, emitted so a picker is built from
+                   the server's list instead of a hardcoded copy in JS. Adding a
+                   type stays ONE line in setlistTemplateSlotTypes(). */
+                'slotTypes' => setlistTemplateSlotTypes(),
+                'maxSlots'  => setlistTemplateMaxSlots(),
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -7551,15 +8505,48 @@ if ($action !== null) {
                 break;
             }
 
-            /* Sanitise slots */
-            $cleanSlots = [];
-            foreach (array_slice($tplSlots, 0, 50) as $slot) {
-                if (!is_array($slot) || empty($slot['label'])) continue;
-                $cleanSlots[] = [
-                    'label' => mb_substr(trim($slot['label']), 0, 100),
-                    'type'  => mb_substr(trim($slot['type'] ?? 'song'), 0, 50),
-                ];
+            /* PUBLISHING IS A BROADCAST, NOT A SAVE (#1698). `IsPublic = 1`
+               makes this template visible to EVERY user of the app, signed in or
+               not — the `setlist_templates` list returns public rows to
+               anonymous callers. Until now any authenticated user could do that,
+               which is the same "anyone could publish" that produced the
+               unowned-public-content problem this issue is about.
+
+               REJECTED, NEVER SILENTLY DEMOTED TO PRIVATE. A demotion would save
+               successfully, report success, and quietly not do the thing the
+               user asked for — the silent-no-op class (rule #30) that cost this
+               codebase seven weeks of a dead Export button. 403 says what
+               happened and what to do about it. */
+            if ($tplIsPublic === 1
+                && !userHasEntitlement('publish_public_templates', $authUser['Role'] ?? null)) {
+                sendJson([
+                    'error' => 'You do not have permission to publish a public template. '
+                             . 'Save it as private, or ask an administrator.',
+                ], 403);
+                break;
             }
+
+            /* #301/#1671 F4 — THE CAP IS NOW A REJECTION, NOT A SLICE.
+               This handler used to do `array_slice($tplSlots, 0, 50)` and store
+               the result, i.e. quietly keep half a service order and report
+               success. That is byte-for-byte the shape that destroyed set lists
+               in #1649 and amputated them in #1662. A 413 leaves the caller
+               holding their own complete copy and able to retry. */
+            if (setlistTemplateSlotsExceedCap($tplSlots)) {
+                sendJson([
+                    'error'    => 'Too many slots. The template was NOT saved.',
+                    'maxSlots' => setlistTemplateMaxSlots(),
+                ], 413);
+                break;
+            }
+
+            /* ONE sanitiser, shared with user_setlists_sync (see
+               includes/setlist_templates.php). Two copies of "what is a slot"
+               would drift, and the drift would be invisible until a template
+               applied to a set list produced a plan the renderer could not
+               read — the same reasoning that moved setlistCollabSanitiseSongs()
+               out of this file in #1638. */
+            $cleanSlots = setlistTemplateSanitiseSlots($tplSlots);
 
             $slotsJson = json_encode($cleanSlots, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
@@ -7567,8 +8554,9 @@ if ($action !== null) {
             $authUserId = (int)$authUser['Id'];
 
             /* SECURITY (IDOR — #1386 audit): an org_id may only be attached if the
-               caller is a member of that org (mirrors the setlist_schedule_save
-               fix). Otherwise any authenticated user could inject a template into
+               caller is a member of that org (the same org-membership check the
+               retired setlist_schedule_save endpoint used to apply, F8/2026-07-30).
+               Otherwise any authenticated user could inject a template into
                an arbitrary org's list — the setlist_templates read returns
                templates by org membership, so it would surface to that org. */
             if ($tplOrgId !== null) {
@@ -7595,6 +8583,256 @@ if ($action !== null) {
             $stmt->close();
 
             sendJson(['ok' => true, 'id' => $newId], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Update a setlist template  (#301, added #1671 F4)
+         *
+         * POST body (JSON):
+         *   { "id": 7, "name": "…", "description": "…",
+         *     "slots": [{"label": "Opening", "type": "song"}, …],
+         *     "is_public": false }
+         * Requires: Bearer token, AND the caller must be the template's author.
+         *
+         * WHY THIS ENDPOINT HAD TO EXIST BEFORE ANY UI COULD.
+         * #301 shipped create + read and nothing else, so a template — including
+         * one created with `is_public: true` and therefore visible to every user
+         * of the app — was permanent and uneditable from the screen that made
+         * it. A typo in a public template was forever. That, plus the missing
+         * slot storage, is why #1671 Batch 8 refused to build the UI: neither
+         * gap was fixable in a UI batch.
+         *
+         * `org_id` is deliberately NOT re-assignable here. Moving a template
+         * between organisations changes WHO CAN SEE IT, which is an access
+         * decision wearing an edit form's clothing; the safe operation is to
+         * delete and re-create with the intended org, which re-runs the
+         * membership check on the way in.
+         * ----------------------------------------------------------------- */
+        case 'setlist_template_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true);
+            $tplId = (int)($body['id'] ?? 0);
+            if ($tplId <= 0) {
+                sendJson(['error' => 'Template id is required.'], 400);
+                break;
+            }
+
+            $tplName = mb_substr(trim($body['name'] ?? ''), 0, 200);
+            if ($tplName === '') {
+                sendJson(['error' => 'Template name is required.'], 400);
+                break;
+            }
+            $tplDesc     = mb_substr(trim($body['description'] ?? ''), 0, 2000);
+            $tplSlots    = $body['slots'] ?? null;
+            $tplIsPublic = !empty($body['is_public']) ? 1 : 0;
+
+            /* Same publish gate as the create path (#1698) — an UPDATE that sets
+               IsPublic = 1 publishes just as thoroughly as a create does, and a
+               gate on only one of the two is not a gate. Editing an ALREADY
+               public template while leaving it public is also a publish for this
+               purpose: the row stays visible to everybody, and its content is
+               what is changing. */
+            if ($tplIsPublic === 1
+                && !userHasEntitlement('publish_public_templates', $authUser['Role'] ?? null)) {
+                sendJson([
+                    'error' => 'You do not have permission to publish a public template. '
+                             . 'Save it as private, or ask an administrator.',
+                ], 403);
+                break;
+            }
+
+            /* Rejection, never a slice — same reasoning as the create path. */
+            if (setlistTemplateSlotsExceedCap($tplSlots)) {
+                sendJson([
+                    'error'    => 'Too many slots. The template was NOT changed.',
+                    'maxSlots' => setlistTemplateMaxSlots(),
+                ], 413);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            $stmt = $db->prepare('SELECT CreatedBy FROM tblSetlistTemplates WHERE Id = ? LIMIT 1');
+            $stmt->bind_param('i', $tplId);
+            $stmt->execute();
+            $tplRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$tplRow) {
+                sendJson(['error' => 'Template not found.'], 404);
+                break;
+            }
+            /* The authorisation decision lives in a PURE function so a test can
+               ASK it rather than grep this handler for the word "CreatedBy"
+               (the test-transaction-fatal.php lesson). Owner-only, deliberately
+               — org membership is a VISIBILITY grant in setlist_templates, and
+               silently reusing it as an EDIT grant would hand every member of a
+               church destructive power over a colleague's template. */
+            /* THE #1698 ADMIN OVERRIDE. `setlistTemplateCanEdit()` is
+               author-only and stays that way — org membership is a VISIBILITY
+               grant here, and quietly reusing it as an EDIT grant would hand
+               every member of a church destructive power over a colleague's
+               template. What it CANNOT resolve is a template with no living
+               author: `fk_Template_User` is ON DELETE SET NULL, so an
+               authorless template was editable by nobody and a PUBLIC one could
+               only be removed with direct database access. That gap is recorded
+               in setlistTemplateCanEdit()'s own doc-block as a known,
+               deliberately-unbuilt case; #1698 is the owner asking for it.
+
+               Note this is a SEPARATE entitlement, not `edit_songs` or an admin
+               ROLE check: an operator can hand it to a trusted curator at
+               /manage/entitlements without granting anything else, and a role
+               check would not be editable at all (rule #1587). */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
+            if (!$tplCanManageAny && !setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            )) {
+                sendJson(['error' => 'You can only edit templates you created.'], 403);
+                break;
+            }
+
+            $slotsJson = json_encode(
+                setlistTemplateSanitiseSlots($tplSlots),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+
+            if ($tplCanManageAny) {
+                /* The override path cannot narrow on CreatedBy — the whole point
+                   is that it may be NULL, or somebody else's. The Id is the
+                   primary key, so the statement is still exactly one row. */
+                $stmt = $db->prepare(
+                    'UPDATE tblSetlistTemplates
+                        SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sssii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId);
+            } else {
+                $stmt = $db->prepare(
+                    'UPDATE tblSetlistTemplates
+                        SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
+                      WHERE Id = ? AND CreatedBy = ?'
+                );
+                /* CreatedBy is repeated in the WHERE even though it was just
+                   checked: the check and the write are two statements, and a
+                   narrowed UPDATE is what makes the pair safe if anything ever
+                   slips between them. Costs nothing, removes a whole class. */
+                $stmt->bind_param('sssiii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId, $authUserId);
+            }
+            $stmt->execute();
+            $stmt->close();
+
+            /* Audit (#535/#1698) — an override edit is one person changing
+               somebody else's published content, which is exactly the thing an
+               owner may later want to ask "who did that?" about. The ordinary
+               author-edits-own-template path stays unlogged, as before. */
+            if ($tplCanManageAny && !setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            )) {
+                logActivity('setlist.template_admin_update', 'setlist_template', (string)$tplId, [
+                    'editor_id'  => $authUserId,
+                    'created_by' => $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                ]);
+            }
+
+            sendJson(['ok' => true, 'id' => $tplId]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Delete a setlist template  (#301, added #1671 F4)
+         *
+         * POST body (JSON): { "id": 7 }
+         * Requires: Bearer token, AND the caller must be the template's author.
+         *
+         * SET LISTS BUILT FROM THE TEMPLATE ARE UNAFFECTED, by design. A plan is
+         * COPIED into tblUserSetlists.SlotsJson when it is applied, and the
+         * envelope keeps a snapshot of the template's name — so deleting a
+         * template can never reach into somebody's Sunday service and empty it.
+         * That property is exactly why the plan column is an envelope rather
+         * than a foreign key (see includes/setlist_templates.php).
+         * ----------------------------------------------------------------- */
+        case 'setlist_template_delete':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true);
+            $tplId = (int)($body['id'] ?? 0);
+            if ($tplId <= 0) {
+                sendJson(['error' => 'Template id is required.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            $stmt = $db->prepare('SELECT CreatedBy FROM tblSetlistTemplates WHERE Id = ? LIMIT 1');
+            $stmt->bind_param('i', $tplId);
+            $stmt->execute();
+            $tplRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$tplRow) {
+                /* 404 rather than a silent ok: "delete something that is not
+                   there" reads as success to a client and hides a wrong id. */
+                sendJson(['error' => 'Template not found.'], 404);
+                break;
+            }
+            /* The #1698 admin override — see the long note on the same check in
+               setlist_template_update. The case it exists for is at its sharpest
+               here: a PUBLIC template whose author's account has been erased is
+               visible to every user of the app and, before this, removable by no
+               one short of a database console. */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
+            $tplIsOwnRow     = setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            );
+            if (!$tplCanManageAny && !$tplIsOwnRow) {
+                sendJson(['error' => 'You can only delete templates you created.'], 403);
+                break;
+            }
+
+            if ($tplCanManageAny && !$tplIsOwnRow) {
+                $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ?');
+                $stmt->bind_param('i', $tplId);
+            } else {
+                $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ? AND CreatedBy = ?');
+                $stmt->bind_param('ii', $tplId, $authUserId);
+            }
+            $stmt->execute();
+            $tplDeleted = $stmt->affected_rows;
+            $stmt->close();
+
+            /* Audit (#535/#1698) — deleting somebody else's published template
+               is irreversible and invisible to its author, so it is recorded. */
+            if ($tplCanManageAny && !$tplIsOwnRow) {
+                logActivity('setlist.template_admin_delete', 'setlist_template', (string)$tplId, [
+                    'editor_id'  => $authUserId,
+                    'created_by' => $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                ]);
+            }
+
+            sendJson(['ok' => true, 'deleted' => $tplDeleted]);
             break;
 
         /* =================================================================
@@ -7642,10 +8880,11 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                       AND ' . songVisibleSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
-                );
+                );   /* #1694 — a public recommendation list must not link a hidden song */
                 $stmt->bind_param('ii', $days, $popLimit);
                 $stmt->execute();
                 $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -7710,10 +8949,12 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.UserId = ?
+                       AND ' . songVisibleSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
-                );
+                );   /* #1694 — hidden songs drop off Recently Viewed (they would 410 on click);
+                        the history ROW survives, so a restore brings them back */
                 $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('i', $authUserId);
                 $stmt->execute();
@@ -7762,7 +9003,12 @@ if ($action !== null) {
                    the only legitimate interpolation into SQL); values bound. */
                 $ph    = implode(',', array_fill(0, count($existIds), '?'));
                 $types = str_repeat('s', count($existIds));
-                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                /* #1694 — filtered: pruning hidden songs is this endpoint's
+                   PURPOSE (#1329). Stated trade-off (plan §2): a device's
+                   localStorage Recently-Viewed entry for a deleted-then-
+                   restored song is silently pruned meanwhile — cosmetic;
+                   server-side favourites survive untouched. */
+                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph) AND " . songVisibleSql($db, ''));
                 $stmt->bind_param($types, ...$existIds);
                 $stmt->execute();
                 $res = $stmt->get_result();
@@ -8056,9 +9302,9 @@ if ($action !== null) {
                             s.SongbookAbbr AS songbook, s.Number AS number
                      FROM tblSongTagMap tm
                      JOIN tblSongs s ON s.SongId = tm.SongId
-                     WHERE tm.TagId = ?
+                     WHERE tm.TagId = ? AND ' . songVisibleSql($db, 's') . '
                      ORDER BY s.Title ASC'
-                );
+                );   /* #1694 — a theme page lists visible songs only */
                 $stmt->bind_param('i', $tagInfo['id']);
                 $stmt->execute();
                 $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -8118,86 +9364,30 @@ if ($action !== null) {
             break;
 
         /* =================================================================
-         * USER PREFERENCES (#310)
-         * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get user preferences
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'user_preferences':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT PreferencesJson FROM tblUserPreferences WHERE UserId = ?'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('i', $authUserId);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_row();
-            $stmt->close();
-            $prefsJson = (string)($row[0] ?? '');
-
-            $preferences = $prefsJson !== '' ? (json_decode($prefsJson, true) ?: []) : [];
-
-            sendJson(['preferences' => $preferences]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Save/sync user preferences
+         * USER PREFERENCES (#310) — REMOVED in #1671 F5
          *
-         * POST body (JSON):
-         *   { "preferences": { "theme": "dark", "fontSize": 16, ... } }
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'user_preferences_sync':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            if (!is_array($body['preferences'] ?? null)) {
-                sendJson(['error' => 'Invalid request. Required: preferences (object).'], 400);
-                break;
-            }
-
-            $prefsJson = json_encode($body['preferences'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-            /* Cap JSON size at 64 KB */
-            if (strlen($prefsJson) > 65536) {
-                sendJson(['error' => 'Preferences data too large (max 64 KB).'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblUserPreferences (UserId, PreferencesJson)
-                 VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    PreferencesJson = VALUES(PreferencesJson),
-                    UpdatedAt = NOW()'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('is', $authUserId, $prefsJson);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true]);
-            break;
+         * `user_preferences` (GET) and `user_preferences_sync` (POST) lived
+         * here and read/wrote `tblUserPreferences`. They were an un-namespaced
+         * duplicate of `user_settings` (case 'user_settings' above, on
+         * tblUsers.Settings) — same concept, same payload shape, a parallel
+         * table, and NO caller anywhere in the tree: verified by file-walk
+         * across appWeb + appApple + appAndroid, because `rg` cannot see
+         * `appWeb/.sql/` and under-reports this class of audit.
+         *
+         * Two stores for one concept is a data-integrity trap rather than a
+         * dormant feature: whichever a future client picked, the other would
+         * hold stale truth forever with nothing to say so. `user_settings`
+         * kept the concept and took the namespaced write contract that lets a
+         * second product (iLyricsDB) share the row; this pair was deleted and
+         * `tblUserPreferences` drops via the manual, confirm-gated
+         * `drop-user-preferences` card on /manage/setup-database.
+         *
+         * ⚠ An OUT-OF-REPO caller (an API-key partner, a curl script) would now
+         * get `400 Unknown action`. That is accepted and is exactly the stated
+         * blind spot of the orphan guard: it reports "no in-repo caller", never
+         * "unused". Both are marked superseded in api-docs.yaml rather than
+         * silently vanishing from the published spec.
+         * ================================================================= */
 
         /* =================================================================
          * USER PREFERRED LANGUAGES (#736)
@@ -8343,205 +9533,29 @@ if ($action !== null) {
 
         /* =================================================================
          * COLLABORATIVE SETLISTS (#312)
+         *
+         * The three ORIGINAL handlers that lived here — setlist_collaborators,
+         * setlist_collaborator_add and setlist_collaborator_remove — were
+         * DELETED in #1638. They were not deprecated-but-working; they were
+         * unfixably broken, and had been since the day they were written:
+         *
+         *   - they JOINed / ORDER BY-ed tblSetlistCollaborators.UserId and
+         *     .CreatedAt, and neither column has ever existed (the table has
+         *     CollaboratorId and InvitedAt);
+         *   - the INSERT omitted the NOT NULL SetlistOwnerId entirely.
+         *
+         * Under mysqli's MYSQLI_REPORT_STRICT (see includes/db_mysql.php) each
+         * of those statements THROWS, so every call was an unconditional 500.
+         * No migration ever created a `UserId` shape, so no client can ever
+         * have depended on them — and api-docs.yaml documented them with
+         * parameter names (setlistId / collaboratorEmail) that the handlers
+         * did not even read. The docs' claim that they were "kept for older
+         * Apple / Android builds" was false twice over; a grep across
+         * appApple/ and appAndroid/ finds zero callers.
+         *
+         * The live implementation is the setlist_collab_* family further down
+         * this file: invite / list / remove / shared_with_me / update.
          * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get collaborators for a setlist
-         * Parameters: setlist_id (required)
-         * Requires: Bearer token — only the setlist owner can view
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborators':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $collabSetlistId = trim($_GET['setlist_id'] ?? '');
-            if ($collabSetlistId === '') {
-                sendJson(['error' => 'setlist_id is required.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-
-            /* Verify the authenticated user owns this setlist */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('si', $collabSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            $stmt = $db->prepare(
-                'SELECT c.Id AS id, c.UserId AS userId,
-                        u.Username AS username, u.DisplayName AS displayName,
-                        c.Permission AS permission, c.CreatedAt AS createdAt
-                 FROM tblSetlistCollaborators c
-                 JOIN tblUsers u ON u.Id = c.UserId
-                 WHERE c.SetlistId = ?
-                 ORDER BY c.CreatedAt ASC'
-            );
-            $stmt->bind_param('s', $collabSetlistId);
-            $stmt->execute();
-            $collaborators = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            foreach ($collaborators as &$collab) {
-                $collab['id'] = (int)$collab['id'];
-                $collab['userId'] = (int)$collab['userId'];
-            }
-            unset($collab);
-
-            sendJson(['collaborators' => $collaborators]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Add a collaborator to a setlist
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "username": "...",
-         *     "permission": "edit"|"view" }
-         * Requires: Bearer token — owner only
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborator_add':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $addSetlistId  = trim($body['setlist_id'] ?? '');
-            $addUsername    = mb_strtolower(trim($body['username'] ?? ''));
-            $addPermission = trim($body['permission'] ?? 'view');
-
-            if ($addSetlistId === '' || $addUsername === '') {
-                sendJson(['error' => 'setlist_id and username are required.'], 400);
-                break;
-            }
-            if (!in_array($addPermission, ['edit', 'view'])) {
-                sendJson(['error' => 'Permission must be "edit" or "view".'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* Verify ownership */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $stmt->bind_param('si', $addSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            /* Find the user to add */
-            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND IsActive = 1');
-            $stmt->bind_param('s', $addUsername);
-            $stmt->execute();
-            $targetUser = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-
-            if (!$targetUser) {
-                sendJson(['error' => 'User not found.'], 404);
-                break;
-            }
-
-            $targetUserId = (int)$targetUser['Id'];
-
-            /* Cannot add yourself */
-            if ($targetUserId === $authUserId) {
-                sendJson(['error' => 'You cannot add yourself as a collaborator.'], 400);
-                break;
-            }
-
-            /* Upsert collaborator */
-            $stmt = $db->prepare(
-                'INSERT INTO tblSetlistCollaborators (SetlistId, UserId, Permission)
-                 VALUES (?, ?, ?)
-                 ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
-            );
-            $stmt->bind_param('sis', $addSetlistId, $targetUserId, $addPermission);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true], 201);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Remove a collaborator from a setlist
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "collaborator_id": 123 }
-         * Requires: Bearer token — owner only
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborator_remove':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $rmSetlistId    = trim($body['setlist_id'] ?? '');
-            $rmCollabId     = (int)($body['collaborator_id'] ?? 0);
-
-            if ($rmSetlistId === '' || $rmCollabId <= 0) {
-                sendJson(['error' => 'setlist_id and collaborator_id are required.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* Verify ownership */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $stmt->bind_param('si', $rmSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            $stmt = $db->prepare(
-                'DELETE FROM tblSetlistCollaborators WHERE Id = ? AND SetlistId = ?'
-            );
-            $stmt->bind_param('is', $rmCollabId, $rmSetlistId);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true]);
-            break;
 
         /* =================================================================
          * SONG REVISIONS (#313)
@@ -8662,8 +9676,10 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Verify the source song exists and get its songbook */
-            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ?');
+            /* Verify the source song exists and get its songbook.
+               #1694 — filtered: related-songs FOR a hidden song answers 404,
+               matching the song page itself. */
+            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, ''));
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             $sourceSong = $stmt->get_result()->fetch_assoc();
@@ -8683,9 +9699,9 @@ if ($action !== null) {
                  FROM tblSongWriters w1
                  JOIN tblSongWriters w2 ON w2.Name = w1.Name AND w2.SongId != w1.SongId
                  JOIN tblSongs s ON s.SongId = w2.SongId
-                 WHERE w1.SongId = ?
+                 WHERE w1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -8704,9 +9720,9 @@ if ($action !== null) {
                  FROM tblSongComposers c1
                  JOIN tblSongComposers c2 ON c2.Name = c1.Name AND c2.SongId != c1.SongId
                  JOIN tblSongs s ON s.SongId = c2.SongId
-                 WHERE c1.SongId = ?
+                 WHERE c1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -8726,9 +9742,9 @@ if ($action !== null) {
                  JOIN tblSongTagMap tm2 ON tm2.TagId = tm1.TagId AND tm2.SongId != tm1.SongId
                  JOIN tblSongs s ON s.SongId = tm2.SongId
                  JOIN tblSongTags t ON t.Id = tm1.TagId
-                 WHERE tm1.SongId = ?
+                 WHERE tm1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -8752,9 +9768,10 @@ if ($action !== null) {
                             s.Number AS number
                      FROM tblSongs s
                      WHERE s.SongbookAbbr = ? AND s.SongId NOT IN ($placeholders)
+                       AND " . songVisibleSql($db, 's') . "
                      ORDER BY RAND()
                      LIMIT " . (int)$remaining
-                );
+                );   /* #1694 — hidden songs are never recommended */
                 $params = array_merge([$sourceSong['SongbookAbbr']], $excludeIds);
                 $stmt->bind_param(str_repeat('s', count($params)), ...$params);
                 $stmt->execute();
@@ -8794,11 +9811,22 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Fetch all songs with writers and composers */
+            /* Fetch all songs with writers and composers.
+
+               @deleted-visible: admin_export deliberately includes soft-deleted
+               rows — owner decision D4 (#1694): a full data export is a backup/
+               audit artefact, and silently omitting hidden rows would make it
+               lie about the database. The `IsDeleted` output column marks them
+               (json/csv/xml only — OpenSong and VideoPsalm are FOREIGN format
+               contracts whose consumers would choke on an invented field).
+               Column-existence-gated (#1228): on an un-migrated install the
+               SELECT omits the column and the emitters omit the field, so the
+               export is byte-identical to before the migration existed. */
+            $exportHasDeleted = songSoftDeleteReady($db);
             $stmt = $db->prepare(
                 'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName,
                         s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
-                        s.LyricsText
+                        s.LyricsText' . ($exportHasDeleted ? ', s.IsDeleted' : '') . '
                  FROM tblSongs s
                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  ORDER BY s.SongbookAbbr, s.Number'
@@ -8841,7 +9869,11 @@ if ($action !== null) {
                             'verified'  => (bool)$s['Verified'],
                             'hasAudio'  => (bool)$s['HasAudio'],
                             'hasSheetMusic' => (bool)$s['HasSheetMusic'],
-                        ];
+                        ] + ($exportHasDeleted ? [
+                            /* D4 (#1694): mark, never omit, soft-deleted rows.
+                               Key absent entirely pre-migration (gate above). */
+                            'isDeleted' => (bool)$s['IsDeleted'],
+                        ] : []);
                     }
                     header('Content-Type: application/json; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.json"');
@@ -8852,9 +9884,15 @@ if ($action !== null) {
                     header('Content-Type: text/csv; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.csv"');
                     $out = fopen('php://output', 'w');
-                    fputcsv($out, ['id', 'number', 'title', 'songbook', 'writers', 'composers', 'copyright', 'language']);
+                    /* D4 (#1694): the is_deleted column exists only once the
+                       migration has run — header and rows stay in lockstep so
+                       an un-migrated export is byte-identical to before. */
+                    fputcsv($out, array_merge(
+                        ['id', 'number', 'title', 'songbook', 'writers', 'composers', 'copyright', 'language'],
+                        $exportHasDeleted ? ['is_deleted'] : []
+                    ));
                     foreach ($songs as $s) {
-                        fputcsv($out, [
+                        fputcsv($out, array_merge([
                             $s['SongId'],
                             $s['Number'],
                             $s['Title'],
@@ -8863,7 +9901,7 @@ if ($action !== null) {
                             implode('; ', $composerMap[$s['SongId']] ?? []),
                             $s['Copyright'],
                             $s['Language'],
-                        ]);
+                        ], $exportHasDeleted ? [(int)$s['IsDeleted']] : []));
                     }
                     fclose($out);
                     break;
@@ -8875,6 +9913,11 @@ if ($action !== null) {
                     foreach ($songs as $s) {
                         $node = $xml->addChild('song');
                         $node->addAttribute('id', $s['SongId']);
+                        /* D4 (#1694): attribute present only post-migration —
+                           an un-migrated export stays byte-identical. */
+                        if ($exportHasDeleted) {
+                            $node->addAttribute('isDeleted', (string)(int)$s['IsDeleted']);
+                        }
                         $node->addChild('number', (string)$s['Number']);
                         $node->addChild('title', htmlspecialchars($s['Title'], ENT_XML1));
                         $node->addChild('songbook', $s['SongbookAbbr']);
@@ -8984,8 +10027,10 @@ if ($action !== null) {
                         SUM(HasAudio = 1) AS withAudio,
                         SUM(HasSheetMusic = 1) AS withSheetMusic,
                         SUM(Copyright != \'\') AS withCopyright
-                     FROM tblSongs WHERE SongbookAbbr = ?'
-                );
+                     FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '')
+                );   /* #1694 — health counts describe the VISIBLE catalogue a
+                        curator can act on (missing-numbers below is the
+                        deliberate exception) */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $counts = $stmt->get_result()->fetch_assoc();
@@ -8998,8 +10043,8 @@ if ($action !== null) {
                     'SELECT COUNT(DISTINCT s.SongId)
                      FROM tblSongs s
                      JOIN tblSongWriters w ON w.SongId = s.SongId
-                     WHERE s.SongbookAbbr = ?'
-                );
+                     WHERE s.SongbookAbbr = ? AND ' . songVisibleSql($db, 's')
+                );   /* #1694 — visible songs only, matching totalSongs above */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -9011,15 +10056,22 @@ if ($action !== null) {
                     'SELECT COUNT(DISTINCT s.SongId)
                      FROM tblSongs s
                      JOIN tblSongComposers c ON c.SongId = s.SongId
-                     WHERE s.SongbookAbbr = ?'
-                );
+                     WHERE s.SongbookAbbr = ? AND ' . songVisibleSql($db, 's')
+                );   /* #1694 — visible songs only, matching totalSongs above */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
                 $withComposers = (int)($row[0] ?? 0);
 
-                /* Missing numbers: find gaps in the number sequence */
+                /* Missing numbers: find gaps in the number sequence.
+
+                   @deleted-visible: number-slot occupancy is PHYSICAL (#1694)
+                   — a soft-deleted song still holds its number, and listing it
+                   as "missing" would invite a curator to fill the slot and
+                   mint a duplicate number on restore (the index is non-unique;
+                   nothing would stop it). Same reason as
+                   SongData::getMissingSongNumbers(). */
                 $stmt = $db->prepare(
                     'SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number'
                 );
@@ -9242,7 +10294,7 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
 
             /* Expired API tokens */
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
@@ -9385,6 +10437,7 @@ if ($action !== null) {
             }
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli_validator.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licences.php';
 
             $authUser = getAuthenticatedUser();
             $userTier = 'public';
@@ -9393,14 +10446,19 @@ if ($action !== null) {
             if ($authUser) {
                 /* Resolve effective tier: highest of personal + org tiers */
                 $userTier = resolveEffectiveTier($authUser['Id']);
-                $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
-                $authUserId = (int)$authUser['Id'];
-                $stmt->bind_param('i', $authUserId);
-                $stmt->execute();
-                $userData = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                $hasCcli = !empty($userData['CcliNumber']) && $userData['CcliVerified'];
+                /* ELI5: ask the one place that knows whether this person has
+                   a real CCLI licence — personally, or through their church.
+                   WHY (#1668): this used to be a third private copy of
+                   `SELECT CcliNumber, CcliVerified FROM tblUsers`, so it
+                   answered "personal, verified only" while licences.php
+                   answered "personal, anything non-empty" and NEITHER read the
+                   org store the admin UI writes. One resolver, one answer.
+                   NOTE this is a deliberate LOOSENING: a user whose
+                   organisation holds a live `ccli` licence now gets the
+                   ccli-derived allowances in this endpoint's response (which
+                   the native apps can see), and a well-formed personal number
+                   no longer needs the unsettable CcliVerified flag. */
+                $hasCcli = userHasValidCcli((int)$authUser['Id']);
             }
 
             $result = checkTierAccess($userTier, $checkAction, $hasCcli);
@@ -9794,13 +10852,17 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
                 $authUserId = (int)$authUser['Id'];
-                /* Owner check */
-                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                /* Owner check. #1638 — now selects Name too, because the
+                   invitee's notification has to say WHICH setlist was shared;
+                   "Someone shared a setlist with you" is a notification nobody
+                   can act on. Same single round-trip, one extra column. */
+                $own = $db->prepare('SELECT Name FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
                 $own->bind_param('is', $authUserId, $setlistId);
                 $own->execute();
-                $owns = $own->get_result()->fetch_row() !== null;
+                $ownRow = $own->get_result()->fetch_assoc();
                 $own->close();
-                if (!$owns) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+                if (!$ownRow) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+                $setlistName = (string)($ownRow['Name'] ?? '');
 
                 /* Resolve collaborator by email.
                    #1635 (SECURITY) — was `WHERE Email = ? LIMIT 1` with no
@@ -9855,6 +10917,44 @@ if ($action !== null) {
                    shared rateLimitKey() rather than hand-written, so the
                    reader and the writer cannot drift apart (#1636). */
                 recordRateLimitHit('setlist_collab_invite', rateLimitKey($clientIp, (int)$authUser['Id']));
+
+                /* #1638 — TELL THE INVITEE. This is the half of collaboration
+                   that never existed: the owner got success feedback while the
+                   collaborator experienced nothing, ever. Without this the
+                   invite is invisible unless the collaborator happens to open
+                   the set-list page and notice a new entry.
+
+                   Best-effort by contract (see includes/notifications.php): the
+                   tblSetlistCollaborators row is ALREADY committed above, so a
+                   notification failure must not turn a successful invite into a
+                   500 — the precedent is manage/editor/api.php's "a
+                   tblNotifications failure must not poison the import".
+
+                   Environment is deliberately NULL (= all three docroots).
+                   tblUserSetlists has no channel column, so the shared setlist
+                   itself is visible on alpha, beta and production alike; a
+                   notification scoped to one of them would be a link the
+                   recipient sees only if they happen to be on the same site. */
+                $inviterName = (string)($authUser['DisplayName'] ?? '') !== ''
+                    ? (string)$authUser['DisplayName']
+                    : (string)($authUser['Username'] ?? 'Someone');
+                notifyUser(
+                    $db,
+                    (int)$collab['Id'],
+                    'setlist_collab_invite',
+                    $inviterName . ' shared a set list with you',
+                    $inviterName . ' gave you '
+                        . ($permission === 'edit' ? 'edit' : 'view-only')
+                        . ' access to the set list "'
+                        . ($setlistName !== '' ? $setlistName : 'Untitled')
+                        . '".',
+                    /* Deep link straight at the shared list. The setlist page
+                       reads ?shared=<ownerId>:<setlistId> and opens that entry,
+                       so the notification lands the recipient on the thing it
+                       is telling them about rather than on a page where they
+                       must go hunting. */
+                    '/setlist?shared=' . $authUserId . ':' . rawurlencode($setlistId)
+                );
 
                 /* Audit (#535) — collaborator id + permission lets
                    admins see who invited whom on what setlist. */
@@ -9944,31 +11044,249 @@ if ($action !== null) {
             }
             break;
 
+        /* -----------------------------------------------------------------
+         * The setlists somebody else has invited THIS user to (#398).
+         *
+         * This is the READ half of collaboration. Until #1638 it had ZERO
+         * callers on every platform — the endpoint existed, worked, and was
+         * never once asked, which is why an invited collaborator experienced
+         * nothing at all. It is now the sole source for the "Shared with me"
+         * section of the set-list page.
+         *
+         * It also now returns `songs` and `updatedAt`, so one round-trip is
+         * enough to RENDER a shared list. Previously it returned only the name
+         * and permission, and there was no second endpoint able to fetch a
+         * setlist the caller does not own — so even a client that had called
+         * this could not have shown the songs.
+         *
+         * Note the deliberate lack of a client cache: shared setlists are
+         * never persisted into the collaborator's own setlist store. See the
+         * SYNC BOUNDARY section of includes/setlist_collab.php — a shared list
+         * that reached localStorage['ihymns_setlists'] would be posted back by
+         * user_setlists_sync as if the collaborator owned it.
+         *
+         * Requires: Bearer token (or the same-origin ihymns_auth cookie).
+         * ----------------------------------------------------------------- */
         case 'setlist_collab_shared_with_me':
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
             try {
                 $db = getDbMysqli();
+                /* INNER JOIN on tblUserSetlists, not the previous LEFT JOIN:
+                   a collaborator row whose setlist has since been deleted has
+                   nothing to show, and used to surface as a ghost entry with a
+                   null name. The FK is on tblUsers, not on the setlist, so
+                   these orphans are a real state, not a theoretical one. */
+                /* #1698 — the owner's account state rides along on a JOIN that
+                   was already there, so this list costs ZERO extra round-trips.
+                   `Status` is SELECT-gated (web-run migrations, three docroots,
+                   one MySQL); on an un-migrated install the NULL falls back to
+                   `IsActive` inside userStateFromRow(). */
+                $sharedStatusCol = userStatusColumnReady($db) ? 'u.Status' : 'NULL';
                 $stmt = $db->prepare(
                     'SELECT c.SetlistOwnerId AS ownerId, u.Username AS ownerName,
+                            u.DisplayName AS ownerDisplayName,
+                            u.IsActive AS ownerIsActive, ' . $sharedStatusCol . ' AS ownerStatus,
                             c.SetlistId AS setlistId, c.Permission AS permission,
-                            l.Name AS name
+                            l.Name AS name, l.SongsJson AS songsJson,
+                            l.UpdatedAt AS updatedAt
                        FROM tblSetlistCollaborators c
                        JOIN tblUsers u ON u.Id = c.SetlistOwnerId
-                       LEFT JOIN tblUserSetlists l
+                       JOIN tblUserSetlists l
                               ON l.UserId = c.SetlistOwnerId AND l.SetlistId = c.SetlistId
                       WHERE c.CollaboratorId = ?
-                      ORDER BY c.InvitedAt DESC'
+                      ORDER BY c.InvitedAt DESC
+                      LIMIT 200'
                 );
                 $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('i', $authUserId);
                 $stmt->execute();
-                $shared = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
+
+                $shared = [];
+                foreach ($rows as $r) {
+                    /* Fail closed on an unrecognised Permission: the row is
+                       dropped from the response entirely rather than shown at
+                       some guessed level. setlistCollabResolveAccess() would
+                       refuse it on any subsequent write anyway, so listing it
+                       as editable would be a promise the server won't keep. */
+                    $perm = setlistCollabNormalisePermission($r['permission'] ?? null);
+                    if ($perm === null) { continue; }
+
+                    /* VISIBLE BUT LOCKED (#1698). The row still appears — the
+                       collaborator is an innocent third party and taking their
+                       access away would punish them for somebody else's account
+                       closing — but `locked` tells the client to render a badge
+                       and drop the edit affordances, matching what
+                       `setlist_collab_update` will now enforce anyway. The
+                       server states the policy; the client does not re-derive
+                       it from ownerState (rule #35). */
+                    $ownerState = userStateFromRow(
+                        $r['ownerIsActive'] !== null ? (int)$r['ownerIsActive'] : null,
+                        $r['ownerStatus']   !== null ? (string)$r['ownerStatus'] : null
+                    );
+                    $ownerLocked = userContentLocked($ownerState);
+
+                    $shared[] = [
+                        'ownerId'    => (int)$r['ownerId'],
+                        'ownerName'  => ((string)($r['ownerDisplayName'] ?? '') !== '')
+                            ? (string)$r['ownerDisplayName']
+                            : (string)$r['ownerName'],
+                        'setlistId'  => (string)$r['setlistId'],
+                        'permission' => $perm,
+                        'name'       => (string)($r['name'] ?? ''),
+                        'songs'      => json_decode((string)($r['songsJson'] ?? '[]'), true) ?: [],
+                        'updatedAt'  => (string)($r['updatedAt'] ?? ''),
+                        'ownerState' => $ownerState,
+                        'locked'     => $ownerLocked,
+                        /* `canWrite` is the SAME question setlist_collab_update
+                           answers, stated up front so the UI and the server
+                           cannot disagree about which rows are editable. */
+                        'canWrite'   => (!$ownerLocked && $perm === 'edit'),
+                        'lockReason' => $ownerLocked ? userStateLockReason($ownerState) : '',
+                    ];
+                }
                 sendJson(['shared' => $shared]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_shared_with_me] ' . $e->getMessage());
                 sendJson(['error' => 'Could not load shared setlists.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Collaborative WRITE to somebody else's setlist (#1638).
+         *
+         * ELI5: lets a person who was given "edit" actually change the list —
+         * and lets a person who was given "view" change nothing at all.
+         *
+         * This endpoint is what makes tblSetlistCollaborators.Permission mean
+         * something. Before #1638 the view/edit picker was decorative: the
+         * column was written on invite and never read for enforcement, so both
+         * levels granted exactly the same thing (nothing).
+         *
+         * WHY A DEDICATED ENDPOINT INSTEAD OF EXTENDING user_setlists_sync —
+         * this is the whole safety argument, so it is spelled out:
+         *
+         *   user_setlists_sync runs in 'replace' mode and DELETES server rows
+         *   absent from the payload. It is owner-scoped (`WHERE UserId = ?`)
+         *   and MUST STAY THAT WAY. Giving it a collaborator branch would mean
+         *   a collaborator's device — whose local collection legitimately does
+         *   not contain most of the owner's setlists — could delete the
+         *   owner's data. That turns a sharing feature into a data-loss
+         *   feature, so it is not done.
+         *
+         *   This endpoint instead does a single targeted UPDATE of one
+         *   already-existing (owner, setlistId) row. Structurally it cannot
+         *   DELETE anything and cannot INSERT a new row into the owner's
+         *   namespace: if the row is gone, affected_rows is 0 and the caller
+         *   is told, rather than a row being resurrected.
+         *
+         * POST body (JSON): { ownerId, setlistId, songs: [...], name? }
+         * Requires: Bearer token; caller must hold Permission = 'edit'.
+         * ----------------------------------------------------------------- */
+        case 'setlist_collab_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $ownerId   = (int)($body['ownerId'] ?? 0);
+            if ($setlistId === '' || $ownerId <= 0) {
+                sendJson(['error' => 'ownerId and setlistId required.'], 400);
+                break;
+            }
+            if (!is_array($body['songs'] ?? null)) {
+                sendJson(['error' => 'songs (array) required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $authUserId = (int)$authUser['Id'];
+
+                /* THE GATE. Resolved server-side from the live DB — the
+                   client's claimed permission is never consulted, and the
+                   shared helper is asked rather than a permission check being
+                   re-implemented inline (CLAUDE.md modularity rule). */
+                $access = setlistCollabResolveAccess($db, $authUserId, $setlistId, $ownerId);
+                if (!$access['canWrite']) {
+                    /* One message for both "not invited" and "view only", so
+                       the response can't be used to enumerate which of an
+                       owner's setlist ids exist. 403 either way. */
+                    sendJson(['error' => 'You do not have edit access to this set list.'], 403);
+                    break;
+                }
+                /* Trust the RESOLVED owner, not the claimed one, for the write
+                   itself — belt and braces if the resolver ever grows a path
+                   where the two could differ. */
+                $realOwnerId = (int)($access['ownerId'] ?? $ownerId);
+
+                /* Same sanitiser the owner's own sync uses, so a collaborator
+                   cannot store a shape the owner's client can't render. */
+                $cleanSongs = setlistCollabSanitiseSongs($body['songs']);
+                $songsJson  = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                /* json_encode returns FALSE on malformed UTF-8, and binding
+                   false writes an empty string — which would silently blank
+                   somebody else's setlist. Refuse instead: a rejected save the
+                   user can see beats a successful one that ate the list. */
+                if ($songsJson === false) {
+                    sendJson(['error' => 'Song list could not be encoded (invalid characters).'], 400);
+                    break;
+                }
+
+                /* Name is optional: omit it to leave the owner's title alone.
+                   A blank string is treated as "not supplied" rather than as a
+                   rename to empty. */
+                $newName = array_key_exists('name', $body)
+                    ? mb_substr(trim((string)$body['name']), 0, 200)
+                    : '';
+
+                if ($newName !== '') {
+                    $upd = $db->prepare(
+                        'UPDATE tblUserSetlists
+                            SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                          WHERE UserId = ? AND SetlistId = ?
+                          LIMIT 1'
+                    );
+                    $upd->bind_param('ssis', $newName, $songsJson, $realOwnerId, $setlistId);
+                } else {
+                    $upd = $db->prepare(
+                        'UPDATE tblUserSetlists
+                            SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                          WHERE UserId = ? AND SetlistId = ?
+                          LIMIT 1'
+                    );
+                    $upd->bind_param('sis', $songsJson, $realOwnerId, $setlistId);
+                }
+                $upd->execute();
+                /* affected_rows is 0 both when the row vanished AND when the
+                   payload was byte-identical to what is already stored, so it
+                   is NOT reported as a failure — only as information. */
+                $changed = $upd->affected_rows;
+                $upd->close();
+
+                /* Audit (#535). A write to somebody else's data is exactly the
+                   thing an owner may later want to ask "who did that?" about. */
+                logActivity('setlist.collab_update', 'setlist', $setlistId, [
+                    'owner_id'   => $realOwnerId,
+                    'editor_id'  => $authUserId,
+                    'song_count' => count($cleanSongs),
+                    'renamed'    => $newName !== '',
+                ]);
+
+                sendJson([
+                    'ok'      => true,
+                    'changed' => $changed,
+                    'songs'   => $cleanSongs,
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_update] ' . $e->getMessage());
+                logActivityError('setlist.collab_update', 'setlist', $setlistId, $e);
+                sendJson(['error' => 'Could not save the shared set list.'], 500);
             }
             break;
 
@@ -10018,8 +11336,10 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
-                /* The corrected song must exist; grab its Title + songbook. */
-                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* The corrected song must exist AND be visible (#1694 — a
+                   correction can only be filed against a song the public can
+                   see; the current-value read below runs only past this gate). */
+                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $stmt->bind_param('s', $cSongId);
                 $stmt->execute();
                 $songRow = $stmt->get_result()->fetch_assoc();
@@ -10147,7 +11467,42 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
-                /* Rate-limit: reject if this IP has ≥5 submissions in the last 24 h. */
+                /* Honour the documented kill-switch (#1641 item 2).
+                 *
+                 * ELI5: if an operator has turned song requests off, this is
+                 * where the web form has to stop accepting them.
+                 *
+                 * Detail: schema.sql seeds `song_requests_enabled` ("Allow users
+                 * to submit song requests") and `max_song_requests_per_day`, and
+                 * this handler — the ONLY path the web uses — read neither. Both
+                 * were honoured solely by the older `song_request` endpoint,
+                 * whose sole caller is the Apple app. So an operator who set
+                 * song_requests_enabled='0' stopped requests for iOS while
+                 * /request carried on accepting them. A documented control that
+                 * did not control, which is worse than no control: it invites a
+                 * false belief that submissions have stopped.
+                 *
+                 * Default '1' keeps today's behaviour on any install where the
+                 * row is absent — this must not become a way to accidentally
+                 * disable a working feature. */
+                if (getAppSetting('song_requests_enabled', '1') !== '1') {
+                    $respondErr('Song requests are currently closed. Please try again later.', 403);
+                    break;
+                }
+
+                /* Rate-limit: reject if this IP is at or over the configured
+                 * daily cap. The limit was hardcoded to 5 while
+                 * max_song_requests_per_day sat in tblAppSettings unread, so
+                 * raising or lowering it did nothing on the web.
+                 *
+                 * Clamped to a sane floor/ceiling: a malformed or hostile
+                 * setting ('0', '-1', 'abc', '999999') must not either lock
+                 * every user out or disable the limit entirely. max(1, …) keeps
+                 * the control meaningful; the ceiling bounds abuse. */
+                $dailyCap = (int) getAppSetting('max_song_requests_per_day', '5');
+                if ($dailyCap < 1)    { $dailyCap = 1; }
+                if ($dailyCap > 1000) { $dailyCap = 1000; }
+
                 $stmt = $db->prepare(
                     'SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)'
                 );
@@ -10155,7 +11510,7 @@ if ($action !== null) {
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
-                if ((int)($row[0] ?? 0) >= 5) {
+                if ((int)($row[0] ?? 0) >= $dailyCap) {
                     $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
                     break;
                 }
@@ -11058,6 +12413,9 @@ if ($action !== null) {
                     break;
                 }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — the FK on
+                   SongbookAbbr is ON DELETE RESTRICT, so the refusal must count
+                   every row that would block the delete, hidden ones included. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -11144,6 +12502,9 @@ if ($action !== null) {
                     break;
                 }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — this number
+                   reports how many rows the cascade DELETE below will destroy,
+                   hidden ones included (they are rows too). */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -11449,9 +12810,20 @@ if ($action !== null) {
             }
             /* Hierarchy gate (mirrors users.php). Only global_admin can
                assign global_admin; nobody can promote above their own
-               level. */
+               level.
+               #1590 E1: the "only global_admin can assign global_admin" half is
+               now the `assign_global_admin` entitlement rather than a rule
+               hardcoded here that no operator could see or change — the same
+               swap made in /manage/users.php's `create` and `change_role`
+               branches and in admin_user_role_change below.
+               EQUIVALENCE: the old test permitted exactly the `global_admin`
+               role; the default map is ['global_admin'] and
+               userHasEntitlement() matches exactly (in_array, not a role-level
+               comparison), so the admitted set is unchanged. The "cannot promote
+               above your own level" rule below is a HIERARCHY invariant, not a
+               capability, and deliberately stays a role comparison. */
             $actingRole = (string)$authUser['Role'];
-            if ($role === 'global_admin' && $actingRole !== 'global_admin') {
+            if ($role === 'global_admin' && !userHasEntitlement('assign_global_admin', $actingRole)) {
                 sendJson(['error' => 'Only Global Admin can assign the Global Admin role.'], 403);
                 break;
             }
@@ -11497,6 +12869,35 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, entitlement truth-up E1).
+             *
+             * ELI5: the manage page and this API do the same job, so revoking a
+             * permission has to stop BOTH. Gating only the page would leave the
+             * API as an open side door and make the operator's revocation look
+             * like it worked when it had not.
+             *
+             * WHY IT IS HERE AND NOT ONLY IN manage/users.php: §4.6 of the
+             * remediation plan named only the manage page, having recorded the
+             * enforcement point as "users.php gates the page on view_users".
+             * That is true and incomplete — these seven admin_user_* actions are
+             * a second, independently-gated write surface for the same six
+             * operations (#719's deliberate API-first family). A truth-up that
+             * covered one and not the other would be worse than none, because
+             * the entitlements page would then tell a half-truth.
+             *
+             * EQUIVALENCE — no live behaviour change. The raw gate immediately
+             * above admits exactly ['admin','global_admin']; the default map for
+             * `edit_users`, `change_user_roles` and `delete_users` is that same
+             * pair. The raw check is deliberately KEPT rather than replaced: it
+             * also establishes $authUser, and leaving it makes this an AND of
+             * two conditions that agree today.
+             *
+             * @see appWeb/public_html/includes/entitlements.php
+             */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -11556,6 +12957,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -11626,6 +13036,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('change_user_roles', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The change_user_roles entitlement is required.'], 403);
+                break;
+            }
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
                        . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
@@ -11636,6 +13055,21 @@ if ($action !== null) {
 
             if ($targetId <= 0 || $newRole === '') {
                 sendJson(['error' => 'user_id and new_role required.'], 400);
+                break;
+            }
+
+            /* Promoting TO Global Admin is its own entitlement (#1590, E1) — the
+               same gate /manage/users.php now applies to its `change_role` and
+               `create` branches. updateUserRole()'s own
+               `$actingUser['role'] !== 'global_admin'` test (manage/includes/
+               auth.php ~:893) stays as defence in depth; this makes the
+               /manage/entitlements checkbox the RULE rather than a decoration.
+               EQUIVALENCE: default map is ['global_admin'] and
+               userHasEntitlement() matches the role exactly (not by level), so
+               the admitted set is identical to the helper's test. */
+            if ($newRole === 'global_admin'
+                && !userHasEntitlement('assign_global_admin', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Only Global Admin can assign Global Admin role.'], 403);
                 break;
             }
 
@@ -11679,6 +13113,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -11740,6 +13183,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -11838,6 +13290,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('delete_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The delete_users entitlement is required.'], 403);
+                break;
+            }
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
                        . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
@@ -11869,6 +13330,16 @@ if ($action !== null) {
             try {
                 deleteUser($targetId);
                 sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (AccountEraseException $e) {
+                /* #1698 — "this deployment cannot erase yet / its schema has
+                   drifted", not "something broke". The account is untouched, and
+                   the message NAMES the migration card to run, so it is passed
+                   through verbatim: this caller is an authenticated admin, which
+                   is exactly who can act on it. A generic 500 here would send an
+                   operator hunting for a bug that is really an unrun migration. */
+                logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
+                error_log('[admin_user_delete] ' . $e->getMessage());
+                sendJson(['error' => $e->getMessage()], 503);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
                 error_log('[admin_user_delete] ' . $e->getMessage());
@@ -13447,25 +14918,31 @@ if ($action !== null) {
         }
 
         /* =================================================================
-         * CREDIT PEOPLE — admin CRUD parity (#719 PR 2d)
+         * MUSICIANS — admin CRUD parity (#719 PR 2d, renamed from
+         * "Credit People" by #1741 P2-B)
          *
-         * Mirrors /manage/credit-people.php POST handlers (#545). Every
+         * Mirrors /manage/musicians.php POST handlers (#545). Every
          * mutating endpoint runs inside $db->begin_transaction() so a
          * partial failure (e.g. a child-row INSERT failing after the
          * parent UPDATE landed) rolls back cleanly.
          *
-         * Activity-log verb prefix is `api.admin.credit_person.*` —
+         * Activity-log verb prefix is `api.admin.musician.*` —
          * distinguishes API-driven changes from web-UI changes (which
-         * write `credit_person.*`) so /manage/activity-log shows both
-         * sides clearly.
+         * write `admin.musicians.*`) so /manage/activity-log shows both
+         * sides clearly. Every `admin_credit_person_*` action name below
+         * is a #1741 P2-B back-compat ALIAS (shipped Apple contract) that
+         * falls through into the SAME `admin_musician_*` case body — the
+         * log keys/entity type are always the NEW canonical names
+         * regardless of which action name the caller used (an internal
+         * audit-log detail, not part of the wire contract).
          *
          * Validation rules (link-type allowlist, IPI shape) live in
-         * includes/credit_people_helpers.php — the same file
-         * /manage/credit-people uses.
+         * includes/musician_helpers.php — the same file
+         * /manage/musicians uses.
          * ================================================================= */
 
         /* -----------------------------------------------------------------
-         * Admin: add a new credit-person registry row
+         * Admin: add a new musician registry row
          * POST body: {
          *   name (required), notes?, birth_place?, birth_date?,
          *   death_place?, death_date?, is_special_case?, is_group?,
@@ -13473,7 +14950,8 @@ if ($action !== null) {
          * }
          * Birth/death dates must be YYYY-MM-DD if supplied.
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_add': {
+        case 'admin_credit_person_add':
+        case 'admin_musician_add': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -13491,9 +14969,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
-            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
-            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
-            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $ipi         = normaliseMusicianIpi($body['ipi']       ?? null);
+            $isni        = normaliseMusicianIsni($body['isni']      ?? null);
+            $aliases     = normaliseMusicianAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             /* Mutually exclusive in the UI; if both arrive we prefer
@@ -13502,7 +14980,7 @@ if ($action !== null) {
 
             /* Partial birth/death dates — accept the flexible curator form
                (YYYY / MM/YYYY / DD/MM/YYYY, plus ISO) via the shared
-               partial_date helper, same as /manage/credit-people. The
+               partial_date helper, same as /manage/musicians. The
                INSERT below writes the normalised DATE; the precision flag is
                persisted separately, gated on the column existing. */
             $pb = partialDateParse((string)($body['birth_date'] ?? ''));
@@ -13521,9 +14999,9 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 /* #833 — link normaliser resolves slug ↔ registry id via
                    tblExternalLinkTypes, so it needs the live mysqli. */
-                $links = normaliseCreditPersonLinks($db, $rawLinks);
+                $links = normaliseMusicianLinks($db, $rawLinks);
 
-                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ?');
                 $stmt->bind_param('s', $name);
                 $stmt->execute();
                 $exists = $stmt->get_result()->fetch_row() !== null;
@@ -13535,40 +15013,23 @@ if ($action !== null) {
 
                 $db->begin_transaction();
                 try {
-                    /* #630 — flag columns may not exist on a partly-
-                       migrated install. Skip them when absent. */
-                    $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
+                    /* #1741 P4a — IsSpecialCase/IsGroup are no longer
+                       written directly here — they're written ONLY by
+                       musicianTypeApply() below (the same funnel
+                       manage/musicians.php's add/update_person handlers
+                       use), which dropped the flags-columns-exist
+                       dimension this INSERT used to need. */
                     /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
-                       per migrate-credit-people-slug.php. Every INSERT
+                       per migrate-musicians-slug.php. Every INSERT
                        MUST carry a slug or it'll trip the orphan
                        empty-Slug collision. The helper returns '' when
                        the column doesn't exist yet so a pre-migration
                        install can still INSERT. */
-                    $slug       = generateUniqueCreditPersonSlug($db, $name);
+                    $slug       = generateUniqueMusicianSlug($db, $name);
                     $hasSlugCol = $slug !== '';
-                    if ($hasFlagsCols && $hasSlugCol) {
+                    if ($hasSlugCol) {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
-                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('sssssssii',
-                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
-                        );
-                    } elseif ($hasFlagsCols) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
-                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('ssssssii',
-                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
-                        );
-                    } elseif ($hasSlugCol) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
                              VALUES (?, ?, ?, ?, ?, ?, ?)'
                         );
@@ -13577,7 +15038,7 @@ if ($action !== null) {
                         );
                     } else {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
                              VALUES (?, ?, ?, ?, ?, ?)'
                         );
@@ -13589,15 +15050,24 @@ if ($action !== null) {
                     $newId = (int)$db->insert_id;
                     $stmt->close();
 
+                    /* #1741 P4a — THE ONE flags/Type write funnel (rule
+                       guard: tests/php/test-musician-profile-fields.php's
+                       flag-funnel-ban). The native-app API has no `type`
+                       field of its own (yet) — synthesise it from the
+                       posted is_special_case/is_group booleans, same as
+                       manage/musicians.php's checkbox-only fallback. */
+                    $apiMusicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                    musicianTypeApply($db, $newId, $apiMusicianType);
+
                     /* Date precision flags — separate, column-gated UPDATE
                        (no-op on an un-migrated install; the date itself
                        already landed in the INSERT above). */
-                    creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
+                    musicianSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
 
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonExternalLinks
-                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                            'INSERT INTO tblMusicianExternalLinks
+                                (MusicianId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
@@ -13609,8 +15079,8 @@ if ($action !== null) {
                     }
                     if ($ipi || $isni) {
                         $idStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIdentifiers
-                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                            'INSERT INTO tblMusicianIdentifiers
+                                (MusicianId, IdentifierType, IdentifierValue, NameUsed, Notes)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         $type = 'ipi';
@@ -13627,10 +15097,10 @@ if ($action !== null) {
                         }
                         $idStmt->close();
                     }
-                    /* AKA / alias names — schema-tolerant: replaceCreditPersonAliases
+                    /* AKA / alias names — schema-tolerant: replaceMusicianAliases
                        no-ops cleanly on installs where the aliases table isn't present. */
                     if ($aliases) {
-                        replaceCreditPersonAliases($db, $newId, $aliases);
+                        replaceMusicianAliases($db, $newId, $aliases);
                     }
                     $db->commit();
                 } catch (\Throwable $txErr) {
@@ -13638,7 +15108,7 @@ if ($action !== null) {
                     throw $txErr;
                 }
 
-                logActivity('api.admin.credit_person.add', 'credit_person', (string)$newId, [
+                logActivity('api.admin.musician.add', 'musician', (string)$newId, [
                     'name'        => $name,
                     'fields'      => array_filter([
                         'birth_place' => $birthPlace,
@@ -13659,24 +15129,25 @@ if ($action !== null) {
                     'name' => $name,
                 ], 201);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.add', 'credit_person', '', $e, ['name' => $name]);
-                error_log('[admin_credit_person_add] ' . $e->getMessage());
+                logActivityError('api.admin.musician.add', 'musician', '', $e, ['name' => $name]);
+                error_log('[admin_musician_add] ' . $e->getMessage());
                 sendJson(['error' => 'Could not add person.'], 500);
             }
             break;
         }
 
         /* -----------------------------------------------------------------
-         * Admin: update an existing credit-person registry row
+         * Admin: update an existing musician registry row
          * POST body: { id (required), name, notes?, biographical
          *              fields, is_special_case?, is_group?,
          *              links?, ipi? }
          * The Name column is NOT changed here — renames have their own
          * endpoint because their blast radius is cross-table. If the
          * body's name field differs from the stored name we reject
-         * with 400 and direct the caller to admin_credit_person_rename.
+         * with 400 and direct the caller to admin_musician_rename.
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_update': {
+        case 'admin_credit_person_update':
+        case 'admin_musician_update': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -13695,9 +15166,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
-            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
-            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
-            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $ipi         = normaliseMusicianIpi($body['ipi']       ?? null);
+            $isni        = normaliseMusicianIsni($body['isni']      ?? null);
+            $aliases     = normaliseMusicianAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
@@ -13720,10 +15191,10 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 /* #833 — link normaliser resolves slug ↔ registry id via
                    tblExternalLinkTypes, so it needs the live mysqli. */
-                $links = normaliseCreditPersonLinks($db, $rawLinks);
+                $links = normaliseMusicianLinks($db, $rawLinks);
                 $stmt = $db->prepare(
                     'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
-                       FROM tblCreditPeople WHERE Id = ?'
+                       FROM tblMusicians WHERE Id = ?'
                 );
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -13735,54 +15206,48 @@ if ($action !== null) {
                 }
                 if ((string)$beforeRow['Name'] !== $name) {
                     sendJson([
-                        'error' => 'Use admin_credit_person_rename to change a person\'s name — the change cascades to every song that cites them.',
+                        'error' => 'Use admin_musician_rename to change a person\'s name — the change cascades to every song that cites them.',
                     ], 400);
                     break;
                 }
 
                 $db->begin_transaction();
                 try {
-                    if (creditPeopleFlagsColumnsExist($db)) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblCreditPeople
-                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                    DeathPlace = ?, DeathDate = ?,
-                                    IsSpecialCase = ?, IsGroup = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssiii',
-                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup, $id);
-                    } else {
-                        $stmt = $db->prepare(
-                            'UPDATE tblCreditPeople
-                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                    DeathPlace = ?, DeathDate = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssi',
-                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
-                    }
+                    /* #1741 P4a — IsSpecialCase/IsGroup no longer in this
+                       SET clause; see the identically-commented block in
+                       admin_musician_add above. */
+                    $stmt = $db->prepare(
+                        'UPDATE tblMusicians
+                            SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                DeathPlace = ?, DeathDate = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssssi',
+                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
                     $stmt->execute();
                     $stmt->close();
+
+                    /* #1741 P4a — THE ONE flags/Type write funnel. */
+                    $apiMusicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                    musicianTypeApply($db, $id, $apiMusicianType);
 
                     /* Date precision flags — column-gated UPDATE, written
                        unconditionally so clearing a date also clears its
                        precision back to NULL. No-op on an un-migrated install. */
-                    creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
+                    musicianSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
                        (typically < 10 each). The child Ids change as a
                        side effect, but no other table references them. */
-                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblMusicianExternalLinks WHERE MusicianId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonExternalLinks
-                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                            'INSERT INTO tblMusicianExternalLinks
+                                (MusicianId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
@@ -13793,14 +15258,14 @@ if ($action !== null) {
                         $linkStmt->close();
                     }
 
-                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblMusicianIdentifiers WHERE MusicianId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($ipi || $isni) {
                         $idStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIdentifiers
-                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                            'INSERT INTO tblMusicianIdentifiers
+                                (MusicianId, IdentifierType, IdentifierValue, NameUsed, Notes)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         $type = 'ipi';
@@ -13821,7 +15286,7 @@ if ($action !== null) {
                        submitted list is the new truth, an empty list deletes
                        all aliases. Schema-tolerant on installs where the
                        table is absent (helper no-ops). */
-                    replaceCreditPersonAliases($db, $id, $aliases);
+                    replaceMusicianAliases($db, $id, $aliases);
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -13842,7 +15307,7 @@ if ($action !== null) {
                     }
                 }
 
-                logActivity('api.admin.credit_person.update', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.update', 'musician', (string)$id, [
                     'name'        => $name,
                     'fields'      => $changed,
                     'before'      => array_intersect_key($beforeRow, array_flip($changed)),
@@ -13860,21 +15325,22 @@ if ($action !== null) {
                     'fields_changed' => $changed,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.update', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_update] ' . $e->getMessage());
+                logActivityError('api.admin.musician.update', 'musician', (string)$id, $e);
+                error_log('[admin_musician_update] ' . $e->getMessage());
                 sendJson(['error' => 'Could not update person.'], 500);
             }
             break;
         }
 
         /* -----------------------------------------------------------------
-         * Admin: rename a credit-person — cascades across the five
+         * Admin: rename a musician — cascades across the five
          * song-credit tables AND the registry row inside one transaction.
          * POST body: { id, new_name }
          * Refuses with 409 if the new name already belongs to a different
-         * registry row (caller should use admin_credit_person_merge).
+         * registry row (caller should use admin_musician_merge).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_rename': {
+        case 'admin_credit_person_rename':
+        case 'admin_musician_rename': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -13895,7 +15361,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -13904,14 +15370,14 @@ if ($action !== null) {
                 if ($oldName === '')        { sendJson(['error' => 'Person not found.'], 404); break; }
                 if ($oldName === $newName)  { sendJson(['error' => 'new_name is the same as the current name.'], 400); break; }
 
-                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? AND Id <> ?');
+                $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ? AND Id <> ?');
                 $stmt->bind_param('si', $newName, $id);
                 $stmt->execute();
                 $clash = $stmt->get_result()->fetch_row() !== null;
                 $stmt->close();
                 if ($clash) {
                     sendJson([
-                        'error' => "Another registry row already uses '{$newName}'. Use admin_credit_person_merge to combine them.",
+                        'error' => "Another registry row already uses '{$newName}'. Use admin_musician_merge to combine them.",
                     ], 409);
                     break;
                 }
@@ -13931,7 +15397,7 @@ if ($action !== null) {
                         $affected[$tbl] = $stmt->affected_rows;
                         $stmt->close();
                     }
-                    $stmt = $db->prepare('UPDATE tblCreditPeople SET Name = ? WHERE Id = ?');
+                    $stmt = $db->prepare('UPDATE tblMusicians SET Name = ? WHERE Id = ?');
                     $stmt->bind_param('si', $newName, $id);
                     $stmt->execute();
                     $stmt->close();
@@ -13942,7 +15408,7 @@ if ($action !== null) {
                 }
 
                 $totalRenamed = array_sum($affected);
-                logActivity('api.admin.credit_person.rename', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.rename', 'musician', (string)$id, [
                     'before'   => ['name' => $oldName],
                     'after'    => ['name' => $newName],
                     'affected' => [
@@ -13962,8 +15428,8 @@ if ($action !== null) {
                     'song_credit_renames' => $totalRenamed,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.rename', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_rename] ' . $e->getMessage());
+                logActivityError('api.admin.musician.rename', 'musician', (string)$id, $e);
+                error_log('[admin_musician_rename] ' . $e->getMessage());
                 sendJson(['error' => 'Could not rename person.'], 500);
             }
             break;
@@ -13980,7 +15446,8 @@ if ($action !== null) {
          * deletes the source registry row (FK cascade drops any child
          * rows the caller chose not to migrate).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_merge': {
+        case 'admin_credit_person_merge':
+        case 'admin_musician_merge': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -14008,7 +15475,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id IN (?, ?)');
+                $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
                 $stmt->bind_param('ii', $sourceId, $targetId);
                 $stmt->execute();
                 $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -14045,13 +15512,13 @@ if ($action !== null) {
                        Anything not in keep_link_ids / keep_ipi_ids gets
                        dropped via the cascade when the source row is
                        deleted below. */
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
                     $stmt->close();
 
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -14061,7 +15528,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
                             );
                             foreach ($toMove as $lid) {
                                 $upd->bind_param('iii', $targetId, $lid, $sourceId);
@@ -14077,7 +15544,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
                             );
                             foreach ($toMove as $iid) {
                                 $upd->bind_param('iii', $targetId, $iid, $sourceId);
@@ -14091,7 +15558,7 @@ if ($action !== null) {
 
                     /* Drop the source registry row. Cascade removes
                        any child rows we chose not to migrate. */
-                    $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                    $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $stmt->close();
@@ -14103,7 +15570,7 @@ if ($action !== null) {
                 }
 
                 $totalRenamed = array_sum($affected);
-                logActivity('api.admin.credit_person.merge', 'credit_person', (string)$targetId, [
+                logActivity('api.admin.musician.merge', 'musician', (string)$targetId, [
                     'source'     => ['id' => $sourceId, 'name' => $sourceName],
                     'target'     => ['id' => $targetId, 'name' => $targetName],
                     'affected'   => [
@@ -14134,10 +15601,10 @@ if ($action !== null) {
                     'ipi_dropped'         => $ipiDropped,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.merge', 'credit_person', (string)$targetId, $e, [
+                logActivityError('api.admin.musician.merge', 'musician', (string)$targetId, $e, [
                     'source_id' => $sourceId,
                 ]);
-                error_log('[admin_credit_person_merge] ' . $e->getMessage());
+                error_log('[admin_musician_merge] ' . $e->getMessage());
                 sendJson(['error' => 'Could not merge people.'], 500);
             }
             break;
@@ -14151,7 +15618,8 @@ if ($action !== null) {
          * registry row is removed even if song credits still reference
          * the name (the credits stay — only the registry row goes).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_delete': {
+        case 'admin_credit_person_delete':
+        case 'admin_musician_delete': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -14172,7 +15640,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -14209,12 +15677,12 @@ if ($action !== null) {
                     break;
                 }
 
-                $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $stmt->close();
 
-                logActivity('api.admin.credit_person.delete', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.delete', 'musician', (string)$id, [
                     'name'        => $name,
                     'had_credits' => $usage > 0,
                     'force'       => $force,
@@ -14228,9 +15696,312 @@ if ($action !== null) {
                     'forced'       => $force,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.delete', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_delete] ' . $e->getMessage());
+                logActivityError('api.admin.musician.delete', 'musician', (string)$id, $e);
+                error_log('[admin_musician_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete person.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * TUNES — admin CRUD (#1748)
+         *
+         * Mirrors /manage/tunes.php's POST handlers. Every mutating
+         * endpoint calls the SAME shared cores in includes/tune_admin.php
+         * that page uses (rule #22/#35 — nothing to drift, unlike the
+         * musician family immediately above, which duplicates its logic
+         * between this file and manage/musicians.php — an acknowledged
+         * wart the build spec explicitly says not to copy).
+         *
+         * Gate: userHasEntitlement('manage_tunes') rather than the raw
+         * `in_array($Role, ['admin','global_admin'])` the musician family
+         * above uses — a DELIBERATE deviation (#1748 §4): the codebase is
+         * migrating role gates to userHasEntitlement() (api.php:8215's own
+         * migration note, every #1590-era action), which keeps this API
+         * gate identical to manage/tunes.php's page gate + admin-links.php's
+         * nav entry (#1587's spirit). manage_tunes defaults to exactly
+         * ['admin','global_admin'], so the admitted set is identical at
+         * ship time either way.
+         *
+         * Activity-log verb prefix is `api.admin.tune.*`. HTTP status IS
+         * the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness conflict, 200/201 ok.
+         *
+         * External-link editing is PAGE-ONLY for now (manage/tunes.php);
+         * these four actions cover scalar fields + aliases + credits +
+         * merge + delete, documented as such in api-docs.yaml.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new tune registry row
+         * POST body: { name (required), slug?, subtitle?, disambiguation?,
+         *   meter_code?, musicbrainz_work_mbid?, hymnary_tune_id?, notes?,
+         *   aliases?: [string], credits?: [{role,name,musician_id?}] }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = tuneAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $db = getDbMysqli();
+            $uniqError = tuneAdminCheckUniqueness($db, $fields, null);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $rawAliases = $body['aliases'] ?? [];
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : [];
+            $rawCredits = $body['credits'] ?? [];
+            $creditRows = is_array($rawCredits) ? $rawCredits : [];
+
+            try {
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    /* tuneAdminCreate() pairs THE ONE find-or-create funnel
+                       with the scalar-fields UPDATE — see manage/tunes.php's
+                       `create` action for the identical call, and
+                       tuneAdminCreate()'s own doc-block for why this keeps
+                       test-tune-lockstep.php's derived sweep green. */
+                    $newId = tuneAdminCreate($db, $fields);
+                    if ($gates['hasAliases'] && $aliasNames) {
+                        tuneAdminReplaceAliases($db, $newId, $aliasNames, $fields['name']);
+                    }
+                    if ($gates['hasCredits'] && $creditRows) {
+                        tuneAdminReplaceCredits($db, $newId, $creditRows, $gates);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.add', 'tune', (string)$newId, [
+                    'name'       => $fields['name'],
+                    'meterCode'  => $fields['meterCode'],
+                    'alias_count'  => count($aliasNames),
+                    'credit_count' => count($creditRows),
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.add', 'tune', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_tune_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add tune.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing tune registry row (scalar fields +
+         * replace aliases + replace credits). Renames cascade to
+         * tblSongs/tblWorks.TuneName automatically via the FK — no
+         * separate rename action needed (unlike admin_musician_rename).
+         * POST body: { id (required), name, slug?, subtitle?,
+         *   disambiguation?, meter_code?, musicbrainz_work_mbid?,
+         *   hymnary_tune_id?, notes?, aliases?: [string],
+         *   credits?: [{role,name,musician_id?}] }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tune id required.'], 400); break; }
+
+            [$fields, $fieldError] = tuneAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $db = getDbMysqli();
+            $uniqError = tuneAdminCheckUniqueness($db, $fields, $id);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $stmt = $db->prepare('SELECT Name FROM tblTunes WHERE Id = ?');
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $before = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$before) { sendJson(['error' => 'Tune not found.'], 404); break; }
+            $oldName = (string)$before['Name'];
+
+            $rawAliases = $body['aliases'] ?? null;
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : null;
+            $rawCredits = $body['credits'] ?? null;
+            $creditRows = is_array($rawCredits) ? $rawCredits : null;
+
+            try {
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    tuneAdminPersistFields($db, $id, $fields);
+                    tuneAdminRenameCascade($db, $id, $oldName, $fields['name'], $gates);
+                    /* Aliases/credits replace ONLY when the caller posted
+                       the key at all — null means "leave unchanged" (the
+                       API contract differs slightly from the page, which
+                       always posts the full current list; a native-app
+                       caller updating only scalar fields shouldn't have to
+                       resend every alias/credit row just to avoid wiping
+                       them). */
+                    if ($gates['hasAliases'] && $aliasNames !== null) {
+                        tuneAdminReplaceAliases($db, $id, $aliasNames, $fields['name']);
+                    }
+                    if ($gates['hasCredits'] && $creditRows !== null) {
+                        tuneAdminReplaceCredits($db, $id, $creditRows, $gates);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.update', 'tune', (string)$id, [
+                    'name'    => $fields['name'],
+                    'renamed' => $oldName !== $fields['name'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.update', 'tune', (string)$id, $e);
+                error_log('[admin_tune_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tune.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two tune registry rows (source -> target)
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different tunes.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblTunes WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $foundIds = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+                $stmt->close();
+                if (!in_array($sourceId, $foundIds, true)) { sendJson(['error' => 'Source tune not found.'], 404); break; }
+                if (!in_array($targetId, $foundIds, true)) { sendJson(['error' => 'Target tune not found.'], 404); break; }
+
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    $result = tuneAdminMerge($db, $sourceId, $targetId, $gates);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.merge', 'tune', (string)$targetId, [
+                    'source'          => $result['source'],
+                    'target'          => $result['target'],
+                    'songs_repointed' => $result['songsRepointed'],
+                    'works_repointed' => $result['worksRepointed'],
+                ]);
+
+                sendJson([
+                    'ok'              => true,
+                    'source_id'       => $sourceId,
+                    'target_id'       => $targetId,
+                    'songs_repointed' => $result['songsRepointed'],
+                    'works_repointed' => $result['worksRepointed'],
+                    'aliases_moved'   => $result['aliasesMoved'],
+                    'credits_moved'   => $result['creditsMoved'],
+                    'links_moved'     => $result['linksMoved'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.merge', 'tune', (string)$targetId, $e);
+                error_log('[admin_tune_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge tunes.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tune registry row. tblSongs/tblWorks.TuneId are
+         * ON DELETE SET NULL (schema.sql ~3730-3742) — songs/works keep
+         * their free-text TuneName and degrade to the un-curated heuristic
+         * state, which is why this needs no force-gate (unlike
+         * admin_musician_delete's usage-count block on the name-string
+         * credit tables).
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tune id required.'], 400); break; }
+
+            try {
+                $db    = getDbMysqli();
+                $gates = tuneAdminProbeGates($db);
+                $usage = tuneAdminUsageCounts($db, $id, $gates);
+                $name  = tuneAdminDelete($db, $id);
+                if ($name === null) { sendJson(['error' => 'Tune not found.'], 404); break; }
+
+                logActivity('api.admin.tune.delete', 'tune', (string)$id, [
+                    'name'  => $name,
+                    'usage' => $usage,
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'id'          => $id,
+                    'name'        => $name,
+                    'usage_count' => $usage['songCount'] + $usage['workCount'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.delete', 'tune', (string)$id, $e);
+                error_log('[admin_tune_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tune.'], 500);
             }
             break;
         }
@@ -14717,7 +16488,10 @@ if ($action !== null) {
             /* Reject an unknown songId up front — the CurrentSongId FK would
                otherwise throw 1452 under STRICT → an uncaught 500. */
             if ($songId !== null) {
-                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast
+                   (congregants would poll an id that 410s). An in-flight
+                   session's CurrentSongId is untouched. */
+                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $chkSong->bind_param('s', $songId);
                 $chkSong->execute();
                 $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -14823,8 +16597,9 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500. */
-            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500.
+               #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
+            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
             $chkSong->bind_param('s', $songId);
             $chkSong->execute();
             $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -15473,7 +17248,8 @@ if ($action !== null) {
             }
 
             if ($songId !== null) {
-                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $chk->bind_param('s', $songId);
                 $chk->execute();
                 $ok = $chk->get_result()->fetch_row() !== null;
@@ -15972,6 +17748,16 @@ sendJson(['error' => 'Missing required parameter: page or action'], 400);
 /**
  * Send a JSON response with appropriate headers.
  *
+ * For v2 clients (opt-in via `X-API-Version: 2`, see `apiContractVersion()` in
+ * `includes/api_envelope.php`) the payload is wrapped in the uniform envelope —
+ * success → `{ ok:true, data:$data }`, any `$statusCode` >= 400 → the
+ * `{ ok:false, error:{…} }` shape (#1201/#1761). v1 clients get the bare
+ * `$data` exactly as before. This ONE chokepoint carries the whole envelope
+ * for all ~971 call sites (rule #35); the handful of non-`sendJson` responses
+ * (streaming exports, CSV, the health probe) are legitimately outside the JSON
+ * envelope and documented as such. The wrap DECISION lives in the pure,
+ * unit-tested `apiEnvelopeWrap()` (`tests/php/test-api-envelope.php`).
+ *
  * @param array $data       Data to encode as JSON
  * @param int   $statusCode HTTP status code (default: 200)
  */
@@ -15981,7 +17767,19 @@ function sendJson(array $data, int $statusCode = 200): void
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    $version = apiContractVersion();
+    if ($version >= 2) {
+        // Echo the negotiated version + Vary so any intermediary keys a cache
+        // entry by it (sendJson is already no-cache, so this is belt-and-braces).
+        header('X-API-Version: 2');
+        header('Vary: X-API-Version', false);
+    }
+
+    echo json_encode(
+        apiEnvelopeWrap($data, $statusCode, $version),
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+    );
 }
 
 /**
@@ -17045,8 +18843,8 @@ function slideAuthTokenExpiry(string $rawToken): void
     try {
         $hashedToken  = hash('sha256', $rawToken);
         $newExpiresTs = time() + 30 * 86400;
-        $newExpiresAt = gmdate('c', $newExpiresTs);
-        $threshold    = gmdate('c', time() + 29 * 86400);
+        $newExpiresAt = gmdate('Y-m-d H:i:s', $newExpiresTs);
+        $threshold    = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
         $db = getDbMysqli();
         /* #1409 — LastSeenAt piggybacks on this SAME already-throttled
@@ -17099,7 +18897,7 @@ function getAuthenticatedUser(): ?array
 
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
 
     /* AvatarService (#616) is selected only when the column exists, so
        a partly-migrated install keeps working. The check is cached for

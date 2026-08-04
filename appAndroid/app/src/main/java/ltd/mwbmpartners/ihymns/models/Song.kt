@@ -141,6 +141,26 @@ data class Songbook(
  * @property hasAudio Whether an audio recording is available for this song.
  * @property hasSheetMusic Whether sheet music is available for this song.
  * @property components Ordered list of lyric sections (verses, choruses, etc.).
+ * @property subtitle Optional song subtitle (#1741 P1). Empty string when
+ *              unset — matches every OTHER string field on this class
+ *              (e.g. [ccli]), rather than a nullable `String?`, because
+ *              Kotlin defaults + `ignoreUnknownKeys` already make an ABSENT
+ *              wire key safe (see the #1752 Slice E file-header note below);
+ *              there is no separate "explicitly null" case to model here.
+ * @property disambiguation Short parenthetical distinguishing same-named
+ *              songs, e.g. "(Christmas version)" (#1741 P1). Empty when unset.
+ * @property firstPublishedYear Year of first publication (#1741 P1), or
+ *              `null` when unknown. `Int?` (not a bare `Int`) because a
+ *              genuinely missing year — the overwhelmingly common case for
+ *              this brand-new column — must be distinguishable from year
+ *              zero, matching `SongDetail.firstPublishedYear`'s (Apple) and
+ *              `_songIdentityCols()`'s (PHP) identical `NULL`-means-unknown
+ *              treatment (never a sentinel int).
+ * @property copyrightYears As-printed copyright year(s), free text e.g.
+ *              "1978, 1987, 2011" (#1741 P1) — the split-fields half of
+ *              [copyrightDisplay]'s precedence fold.
+ * @property copyrightHolder Copyright holder name (#1741 P1) — the other
+ *              split-fields half.
  */
 @Serializable
 data class Song(
@@ -155,7 +175,28 @@ data class Song(
     val ccli: String,
     val hasAudio: Boolean,
     val hasSheetMusic: Boolean,
-    val components: List<SongComponent>
+    val components: List<SongComponent>,
+    // #1752 Slice E — the five #1741 P1 song-identity fields, forward-compat
+    // only (see this file's header + `SongDetailScreen.kt`'s
+    // `copyrightDisplay()` for the FULL "why now, if nothing populates it
+    // yet" reasoning, per `.claude/catalogue-1741-1752-plan.md` §6's
+    // honesty clause). Plain Kotlin DEFAULTS (not nullable `?` types for the
+    // strings) are what make this safe against the bundled `songs.json`
+    // asset, which predates these keys entirely and will never carry them
+    // (the source `.SourceSongData/` text files this JSON is generated from
+    // never had this data — see the build spec §0.2's "dead end" finding):
+    // `kotlinx.serialization`'s `ignoreUnknownKeys = true`
+    // (`SongViewModel.kt`) already tolerates an unrecognised key in the
+    // JSON; a MISSING expected key on a `@Serializable` class with a
+    // default value degrades to that default rather than throwing, so a
+    // `Song` parsed from the current bundled asset decodes exactly as it
+    // did before this change — genuinely pixel-identical, not merely
+    // "shouldn't crash."
+    val subtitle: String = "",
+    val disambiguation: String = "",
+    val firstPublishedYear: Int? = null,
+    val copyrightYears: String = "",
+    val copyrightHolder: String = ""
 )
 
 // =============================================================================

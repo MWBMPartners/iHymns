@@ -41,6 +41,20 @@ declare(strict_types=1);
    api.php also loads this at module scope; loading it here makes the core
    self-sufficient when called from api2.php (which does NOT pull places.php). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* #1679 — songRelocate() + the two cross-cutting predicates this file needs
+   EVERYWHERE, not just in the move branch:
+     songRelocateIsTransactionFatal() — the ONE list of MySQL errors that have
+       already rolled the caller's transaction back. Every best-effort
+       `catch (\Throwable)` between begin_transaction() and commit() below opens
+       with it (A1), which is why it can no longer be a lazy require inside the
+       move branch;
+     SongRelocateEnvironmentException — recognised by TYPE in the failure handler
+       so an un-applied-migration refusal actually reaches the curator (A8).
+   require_once is idempotent; the move branch keeps its own local require as a
+   statement of intent. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -133,7 +147,16 @@ function editorSaveSongCore(): array
             return ['status' => 400, 'body' => ['error' => 'Missing required fields: id, title.']];
         }
 
-        $songId       = (string)$song['id'];
+        $songId = (string)$song['id'];
+        /* #1679 M2 — was the songbook ACTUALLY sent? Kept as its own flag,
+           read from the RAW payload, because $songbookAbbr below is defaulted a
+           line later and can never afterwards be distinguished from a real
+           value. The relocate branch keys off this, not off the defaulted
+           string: a partial save that simply omits the key must not be read as
+           "move this song to Misc" — which, since the move became a re-key, is
+           a NEW id, a cleared Number and a permanent redirect row. */
+        $songbookSent = array_key_exists('songbook', $song)
+                     && trim((string)($song['songbook'] ?? '')) !== '';
         $songbookAbbr = trim((string)($song['songbook'] ?? ''));
         /* Every song MUST belong to a songbook — tblSongs.SongbookAbbr is
            NOT NULL with an FK to tblSongbooks. When a save arrives with no
@@ -141,7 +164,29 @@ function editorSaveSongCore(): array
            rather than failing the INSERT on the constraint (or, on a
            pre-FK install, silently creating an orphan with a blank
            songbook). Misc is a seeded songbook whose Number is nullable,
-           so an unnumbered Misc song is valid. */
+           so an unnumbered Misc song is valid.
+
+           #1679 M2 — but "Misc" is the right default only for a song that does
+           not exist yet. For an EXISTING song the payload's silence means "I am
+           not saying anything about the songbook", and the UPSERT below writes
+           SongbookAbbr unconditionally: defaulting to Misc there would relabel
+           the column while the SongId kept the old book's prefix, i.e. recreate
+           by omission the exact id/column mismatch #1679 exists to remove.
+           So an existing song's own book is the default, and Misc is reached
+           only when there is genuinely no row to ask. Read here (before the
+           IsOfficial probe) so $isOfficialSongbook and $number are derived from
+           the same book the UPSERT will write. */
+        if ($songbookAbbr === '') {
+            /* @deleted-visible: write-path state read (#1694) — saving into a
+               hidden row is harmless and restore-preserving; its own book must
+               still be found or the save would silently relabel it Misc. */
+            $keep = getDbMysqli()->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $keep->bind_param('s', $songId);
+            $keep->execute();
+            $keepRow = $keep->get_result()->fetch_assoc();
+            $keep->close();
+            $songbookAbbr = trim((string)($keepRow['SongbookAbbr'] ?? ''));
+        }
         if ($songbookAbbr === '') {
             $songbookAbbr = 'Misc';
         }
@@ -312,33 +357,33 @@ function editorSaveSongCore(): array
         $previousId = $songId;                                   /* the id the client sent */
         $assignedId = null;                                      /* set only when we rename */
         $isDraftId  = (strncmp($songId, 'song-', 5) === 0);
+        /* #1380 FIX 3 flag — see $upsertDuplicateClause below. TRUE only for a
+           freshly-MINTED brand-new id (a draft promotion), which is the case that
+           must INSERT without ON DUPLICATE KEY UPDATE. Deliberately NOT the same
+           thing as `$assignedId !== null`: since #1679 a songbook MOVE also sets
+           $assignedId (the client relabel signal is shared) but the row it names
+           already EXISTS — a plain INSERT there would hit the PK and 500 a
+           legitimate save. */
+        $mintedNewId = false;
 
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
 
             if ($isDraftId) {
-                /* Reuse the bulk-import next-number helper so the editor and the
-                   importer agree on how a songbook's next slot is chosen. The
-                   collision-safe loop walks past any id already taken (the UNIQUE
-                   PK on tblSongs.SongId is the final backstop). $songbookAbbr is
-                   already coerced to 'Misc' when blank, so we always have a book. */
-                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
-                $n        = _bulkImport_nextSongNumberFor($db, $songbookAbbr);
-                $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $candidate  = sprintf('%s-%04d', $songbookAbbr, $n);
-                $existsStmt->bind_param('s', $candidate);
-                $existsStmt->execute();
-                while ($existsStmt->get_result()->fetch_row() !== null) {
-                    $n++;
-                    $candidate = sprintf('%s-%04d', $songbookAbbr, $n);
-                    $existsStmt->bind_param('s', $candidate);
-                    $existsStmt->execute();
-                }
-                $existsStmt->close();
+                /* Reuse the ONE canonical-id mint (includes/song_relocate.php) so the
+                   editor, the songbook-move re-key and the bulk importers all agree on
+                   how a songbook's next slot is chosen — the collision-safe loop and
+                   its _bulkImport_nextSongNumberFor() seed live in one place now
+                   (#1679; the loop itself is byte-for-byte the one that was inlined
+                   here). $songbookAbbr is already coerced to 'Misc' when blank, so we
+                   always have a book. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+                [$candidate, $n] = songRelocateMintId($db, $songbookAbbr);
 
-                $songId     = $candidate;        /* canonical id used by ALL inserts below */
-                $assignedId = $candidate;        /* signal the rename to the client */
+                $songId      = $candidate;       /* canonical id used by ALL inserts below */
+                $assignedId  = $candidate;       /* signal the rename to the client */
+                $mintedNewId = true;             /* brand-new row -> plain INSERT (FIX 3) */
 
                 /* An official songbook numbers its songs; if the curator hadn't set
                    a Number yet, adopt the slot we just chose so the number and the id
@@ -349,7 +394,9 @@ function editorSaveSongCore(): array
                 }
             }
 
-            /* Capture previous state for the revision row (#400) */
+            /* Capture previous state for the revision row (#400).
+               @deleted-visible: revision bookkeeping (#1694) — the snapshot
+               must capture the row's real prior state, visible or not. */
             $previousData = null;
             $prevStmt = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
             $prevStmt->bind_param('s', $songId);
@@ -360,6 +407,122 @@ function editorSaveSongCore(): array
                 $previousData = json_encode($prevRow, JSON_UNESCAPED_UNICODE);
             }
             $action = $prevRow === null ? 'create' : 'edit';
+
+            /* #1679 A13a — the LATER snapshot decides the songbook column, and
+             * everything derived from it is re-derived together.
+             *
+             * ELI5: when the save didn't mention a songbook we keep the song
+             * where it is. We read "where it is" twice — once before the
+             * transaction opened and once inside it — so trust the reading taken
+             * inside, and re-do the two things derived from the other one.
+             *
+             * Detail: the M2 fix reads the song's current book BEFORE
+             * begin_transaction() (it has to — $isOfficialSongbook and $number
+             * are computed from it, and the IsOfficial probe is read-only
+             * context). $prevRow is then re-read INSIDE the transaction and
+             * already carries SongbookAbbr. Two snapshots deciding one column is
+             * a race by construction: a concurrent move landing between them
+             * would make this save write the OLD book back over the new one, and
+             * the UPSERT writes SongbookAbbr unconditionally — so the column and
+             * the SongId prefix would disagree, which is #1679's exact defect
+             * arrived at by omission rather than by asking.
+             *
+             * WHAT THIS DOES **NOT** ACHIEVE (#1691 §1b — an earlier revision of
+             * this comment claimed "ONE snapshot decides", which overstated it).
+             * $prevRow is a PLAIN `SELECT … LIMIT 1`, not `SELECT … FOR UPDATE`,
+             * so under InnoDB REPEATABLE READ it is a consistent-snapshot read:
+             * a concurrent move that COMMITS after this transaction's first read
+             * is still invisible to it, and this save's unconditional UPSERT
+             * still last-writer-wins over that move. What the re-derivation
+             * actually buys is narrower and real: this save can no longer
+             * disagree with ITSELF — both derived values now come from the same
+             * single read, closing the window between the pre-transaction read
+             * and the transaction (previously open across the mint, the probes
+             * and everything above). Serialising against a genuinely concurrent
+             * move would need a locking read, which is a deliberate non-goal
+             * here: the residual window is commit-vs-commit on the same row,
+             * the loser is a curator racing another curator over the same song
+             * within milliseconds, and the failure is an overwrite both can see
+             * — not the silent self-inconsistency M2 removed.
+             * https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html
+             *
+             * Only for a save that did NOT send `songbook` (one that did is an
+             * explicit instruction and is the relocate branch's business).
+             * $prevRow is null for a create / a freshly-minted draft id, where
+             * the pre-transaction default (the song's book, else 'Misc') stands.
+             *
+             * $isOfficialSongbook / $number are re-derived TOGETHER with it —
+             * fixing the abbreviation alone would just move the inconsistency
+             * into the Number column (an official book numbers its songs, an
+             * unofficial one stores NULL). The re-probe only runs in the rare
+             * case where the two snapshots actually disagreed. */
+            if (!$songbookSent && $prevRow !== null) {
+                $txnBook = trim((string)($prevRow['SongbookAbbr'] ?? ''));
+                if ($txnBook !== '' && $txnBook !== $songbookAbbr) {
+                    $songbookAbbr = $txnBook;
+                    $reProbe = $db->prepare(
+                        'SELECT IsOfficial FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+                    );
+                    $reProbe->bind_param('s', $songbookAbbr);
+                    $reProbe->execute();
+                    $reRow = $reProbe->get_result()->fetch_assoc();
+                    $reProbe->close();
+                    $isOfficialSongbook = (bool)($reRow['IsOfficial'] ?? false);
+                    $number = (!$isOfficialSongbook || $rawNumber === null || $rawNumber === ''
+                               || (int)$rawNumber <= 0)
+                        ? null
+                        : (int)$rawNumber;
+                }
+            }
+
+            /* #1679 — SONGBOOK MOVE. `tblSongbooks.Abbreviation` IS the SongId
+               prefix (rule #27), so a save that changes an EXISTING song's book
+               must re-key the id too; leaving it alone is what produced songs whose
+               id claimed one book and whose column claimed another.
+               songRelocate() mints the new id, cascades every child row, rewrites
+               the two non-FK soft references (content restrictions + the
+               tblSongbookEntries home row), clears Number and writes the
+               tblSongRedirects row so old permalinks keep resolving.
+               It runs INSIDE this transaction, so a later failure rolls the move
+               back with the rest of the save.
+               After it, the normal UPSERT below proceeds under the NEW id and takes
+               the ON DUPLICATE KEY UPDATE path against the row we just renamed —
+               which is why $mintedNewId, not $assignedId, drives the FIX-3 clause.
+               $previousData / $prevRow deliberately keep the PRE-move snapshot: the
+               revision row is a historical record, and the SongCount refresh below
+               reads the OLD SongbookAbbr out of it (recomputing both books is
+               idempotent with songRelocate's own recompute).
+
+               #1679 M2 — gated on $songbookSent (the RAW payload actually carried
+               a non-empty `songbook` key), NOT on `$songbookAbbr !== ''`. That
+               older test could never be false: $songbookAbbr is defaulted several
+               hundred lines above, so a partial save which omitted the key
+               compared 'Misc' against the song's real book, found them different,
+               and performed a full destructive move — a new id, a cleared Number
+               and a permanent redirect — for a payload that never mentioned the
+               songbook at all. A move is now something a client has to ASK for. */
+            if ($prevRow !== null && $songbookSent
+                && (string)($prevRow['SongbookAbbr'] ?? '') !== $songbookAbbr) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+                $moveUserId = null;
+                if (function_exists('getCurrentUser')) {
+                    $moveUser   = getCurrentUser();
+                    $moveUserId = isset($moveUser['id']) ? (int)$moveUser['id'] : null;
+                }
+                $relocation = songRelocate($db, $songId, $songbookAbbr, $moveUserId);
+                if ($relocation['renamed']) {
+                    $previousId = $relocation['previousId'];
+                    $songId     = $relocation['songId'];
+                    /* Reuse the #1380 client-relabel contract verbatim — editor.js
+                       already re-keys its in-memory song, dirty set, rendered-song
+                       ref and sidebar on assignedId/previousId. */
+                    $assignedId = $relocation['songId'];
+                    /* Owner's stated default: a moved song's Number is CLEARED
+                       (v1 parity; also dodges a collision in the target book). The
+                       UPSERT below must not write the client's stale number back. */
+                    $number = null;
+                }
+            }
 
             /* #892 — schema-probe for the optional ArrangementJson column.
                Pre-migration deploys keep the legacy 16-column UPSERT; once
@@ -377,7 +540,21 @@ function editorSaveSongCore(): array
                 $arrProbe->execute();
                 $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
                 $arrProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                /* #1679 A1 — the FIRST statement of every best-effort catch between
+                   begin_transaction() and commit() in this function. Each of these blocks
+                   is correct about what it was written for (a probe / a follow-up must not
+                   cost the curator their edit) and none was written for "the transaction I
+                   am inside may already have been rolled back underneath me". Swallowing
+                   one of those makes commit() below succeed trivially and answers ok:true
+                   for work that no longer exists — and since #1679 that work includes a
+                   songbook MOVE whose songRelocate() carefully re-throws the very same
+                   codes a few frames up. The list lives in ONE predicate rather than being
+                   copied into nine catches (rule #35: cross-file agreement needs a
+                   mechanism, not a "keep these in sync" comment). */
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+                /* default false */
+            }
 
             /* #1380 FIX 3 — TOCTOU-safe write for a FRESHLY-MINTED canonical id.
                The mint loop above checks "is this id free?" then we INSERT — a
@@ -385,15 +562,18 @@ function editorSaveSongCore(): array
                BOTH pass the existence check before either writes, then both reach the
                shared UPSERT — and `ON DUPLICATE KEY UPDATE` would SILENTLY OVERWRITE
                the first song's row with the second's (data loss, no error). So when we
-               just minted a canonical id ($assignedId !== null — always a brand-new
-               CREATE, $prevRow is null), use a PLAIN INSERT with NO ON DUPLICATE KEY
+               just minted a canonical id ($mintedNewId — always a brand-new CREATE,
+               $prevRow is null), use a PLAIN INSERT with NO ON DUPLICATE KEY
                UPDATE clause: a colliding PK throws ER_DUP_ENTRY (1062), which the
                surrounding catch turns into a clean rollback → 500 the client retries
                (the editor's per-song save loop re-mints a fresh slot on retry).
                A GENUINE update (or a non-draft create) keeps the existing UPSERT — a
                re-save of an existing real SongId MUST update it, not error. The
-               ON DUPLICATE KEY UPDATE tail is therefore appended only when NOT minting. */
-            $upsertDuplicateClause = $assignedId !== null
+               ON DUPLICATE KEY UPDATE tail is therefore appended only when NOT minting.
+               #1679 — the test is $mintedNewId, NOT `$assignedId !== null`: a songbook
+               move ALSO sets $assignedId (it shares the client-relabel contract) but
+               its row already exists, so it needs the UPDATE tail, not a plain INSERT. */
+            $upsertDuplicateClause = $mintedNewId
                 ? ''
                 : ' ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
@@ -471,6 +651,45 @@ function editorSaveSongCore(): array
                 $placeStmt->close();
             }
 
+            /* #1741 P5c — TuneName<->TuneId lockstep, the song-side mirror of
+             * manage/works.php's :307-313 Work-side block. The UPSERT above
+             * wrote TuneName (via $tuneName, extracted at the top of this
+             * function); resolve + write the registry id HERE, in the SAME
+             * transaction, so a v1 whole-song save can never strand TuneId
+             * the way a bare "SET TuneName = ?" would — v2's granular
+             * `song_tune_set` / `metadata_field_update` already avoid that
+             * drift via the shared ed2_songTuneApply() core (api2.php); this
+             * is save_song_core's own write path (used by BOTH v1 api.php
+             * and api2's `save_song` action) closing the same gap.
+             *
+             * ELI5: whichever editor saved the whole song just wrote the
+             * tune's NAME onto it — this one extra step makes sure the
+             * tune's REGISTRY LINK gets written too, so /tune/<slug> keeps
+             * pointing at the right tune.
+             *
+             * placeColumnExists() is the generic column probe already
+             * loaded at the top of this file (:43) for the OriginCityId
+             * gate just above — reused here rather than api2.php's own
+             * self-contained ed2_tuneIdColumnExists() (that duplication
+             * exists ONLY because api2.php deliberately avoids pulling
+             * includes/places.php in at module scope for one column, see
+             * that probe's doc-block; this file already has places.php
+             * loaded, so reusing it here is the ONE-probe path, not a
+             * second fork). tuneFindOrCreateByName() (tune_helpers.php,
+             * P4b) already degrades to null when tblTunes itself is
+             * absent — this block runs unguarded inside the transaction (no
+             * try/catch of its own) so a genuine DB fault still rolls the
+             * whole save back honestly, matching the places-UPDATE posture
+             * immediately above. */
+            if (placeColumnExists($db, 'tblSongs', 'TuneId')) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+                $tuneIdVal = $tuneName === null ? null : tuneFindOrCreateByName($db, $tuneName);
+                $tuneStmt = $db->prepare('UPDATE tblSongs SET TuneId = ? WHERE SongId = ?');
+                $tuneStmt->bind_param('is', $tuneIdVal, $songId);
+                $tuneStmt->execute();
+                $tuneStmt->close();
+            }
+
             /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
                A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
                POSTs components WITHOUT `chords` / `languages`, so a naive recreate
@@ -532,7 +751,10 @@ function editorSaveSongCore(): array
                     $pf1Probe->execute();
                     $pf1HasChords = $pf1Probe->get_result()->fetch_row() !== null;
                     $pf1Probe->close();
-                } catch (\Throwable $_e) { /* default false */ }
+                } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                    /* default false */
+                }
                 $pf1HasLangs = lyricLinesComponentsLangReady($db);
                 if ($pf1HasChords || $pf1HasLangs) {
                     $snapCols = 'Type, Number, LinesJson';
@@ -607,32 +829,15 @@ function editorSaveSongCore(): array
                can populate FirstNames / Surname / Suffix on
                auto-promote (PR #935 columns). Normalise into a
                uniform array shape up front. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
+            require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
             $regParts = []; /* keyed by composed Name → ['first'=>…,'surname'=>…,'suffix'=>…] */
-            $normaliseCreditEntry = static function ($v) {
-                if (is_string($v)) {
-                    $name = trim($v);
-                    if ($name === '') return null;
-                    [$first, $surname, $suffix] = decomposePersonName($name);
-                    return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
-                }
-                if (!is_array($v)) return null;
-                $first   = trim((string)($v['first']   ?? ''));
-                $surname = trim((string)($v['surname'] ?? ''));
-                $suffix  = trim((string)($v['suffix']  ?? ''));
-                /* Prefer a client-composed `name` for byte-equal
-                   round-tripping; otherwise compose from parts. If
-                   parts are empty and the only thing the client
-                   sent is a `name` string, decompose it. */
-                $name = trim((string)($v['name'] ?? ''));
-                if ($name === '') {
-                    $name = composePersonName($first, $surname, $suffix);
-                } elseif ($first === '' && $surname === '' && $suffix === '') {
-                    [$first, $surname, $suffix] = decomposePersonName($name);
-                }
-                if ($name === '') return null;
-                return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
-            };
+            /* #960 — normalisation itself now lives in creditEntryNormalise()
+               (includes/musician_helpers.php) so the v2 editor's granular
+               credit_upsert endpoint shares the exact same decompose/compose
+               behaviour instead of re-forking it. This whole-song save keeps
+               only what's genuinely whole-save-specific: the richest-parts
+               accumulation loop below (a name typed differently across two
+               role lists picks the more complete entry for the registry). */
 
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);
@@ -641,7 +846,7 @@ function editorSaveSongCore(): array
                    credit list many times over. Case-insensitive, first wins. */
                 $seenCredit = [];
                 foreach ($song[$key] ?? [] as $raw) {
-                    $entry = $normaliseCreditEntry($raw);
+                    $entry = creditEntryNormalise($raw);
                     if ($entry === null) continue;
                     $dedupKey = function_exists('mb_strtolower') ? mb_strtolower($entry['name']) : strtolower($entry['name']);
                     if (isset($seenCredit[$dedupKey])) continue;
@@ -666,53 +871,22 @@ function editorSaveSongCore(): array
                 }
                 $stmt->close();
             }
-            /* Silently keep the credit-people registry in sync
+            /* Silently keep the musicians registry in sync
                (#545 / #960). When the FirstNames / Surname / Suffix
                columns exist (PR #935 migration applied), upsert the
                structured parts too — but only fill them in when the
                existing row's parts are NULL/empty, so a curated
-               edit on the /manage/credit-people page never gets
+               edit on the /manage/musicians page never gets
                overwritten by an auto-promote from the editor.
                Pre-migration installs fall back to the legacy
-               Name-only INSERT IGNORE path. */
-            if (!empty($regParts)) {
-                $partsCols = creditPeopleNamePartsColumnsExist($db);
-                /* Route every auto-promote through the shared registry
-                   helper. It computes a collision-safe Slug for the
-                   new row and idempotently no-ops when Name already
-                   exists — which means the orphan empty-Slug row
-                   that the IGNORE+UPDATE hotfix had to dodge can't
-                   block legit promotes anymore once
-                   migrate-credit-people-slug-rebackfill.php has run. */
-                foreach ($regParts as $regName => $p) {
-                    registerCreditPersonByName($db, $regName, $partsCols ? $p : null);
-                }
-
-                if ($partsCols) {
-                    /* Existing registry rows may already exist
-                       without FirstNames/Surname/Suffix populated;
-                       backfill those (only when currently empty)
-                       so a song-save also enriches pre-existing
-                       Name-only registry rows. The helper above
-                       only sets parts for BRAND NEW inserts; this
-                       handles the existing-row case. Never
-                       overwrites a curated value. */
-                    $stmtParts = $db->prepare(
-                        'UPDATE tblCreditPeople
-                            SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
-                                Surname    = COALESCE(NULLIF(Surname,    ""), ?),
-                                Suffix     = COALESCE(NULLIF(Suffix,     ""), ?)
-                          WHERE Name = ?'
-                    );
-                    foreach ($regParts as $regName => $p) {
-                        $first   = $p['first']   !== '' ? $p['first']   : null;
-                        $surname = $p['surname'] !== '' ? $p['surname'] : null;
-                        $suffix  = $p['suffix']  !== '' ? $p['suffix']  : null;
-                        $stmtParts->bind_param('ssss', $first, $surname, $suffix, $regName);
-                        $stmtParts->execute();
-                    }
-                    $stmtParts->close();
-                }
+               Name-only path. The promote-and-backfill pairing itself
+               now lives in musicianPromote() (musician_helpers.php)
+               so every credit write path — this whole-song save, v2's
+               credit_upsert/revision_restore, and lyrics_ingest.php's
+               artist insert — shares one implementation instead of
+               re-forking it (#960; project modularity rule). */
+            foreach ($regParts as $regName => $p) {
+                musicianPromote($db, $regName, $p);
             }
 
             if ($ll_syncReady) {
@@ -784,7 +958,10 @@ function editorSaveSongCore(): array
                 $colProbe->execute();
                 $hasComponentLanguage = $colProbe->get_result()->fetch_row() !== null;
                 $colProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* default false */
+            }
 
             /* #1094 — schema-probe for the optional ChordsJson column (#1066).
                When present, manual per-line chords are persisted via a guarded
@@ -801,7 +978,10 @@ function editorSaveSongCore(): array
                 $chProbe->execute();
                 $hasComponentChords = $chProbe->get_result()->fetch_row() !== null;
                 $chProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* default false */
+            }
             $updChords = $hasComponentChords
                 ? $db->prepare('UPDATE tblSongComponents SET ChordsJson = ? WHERE Id = ?')
                 : null;
@@ -945,7 +1125,10 @@ function editorSaveSongCore(): array
                 $rev->execute();
                 $revisionId = (int)$db->insert_id;
                 $rev->close();
-            } catch (\Throwable $_e) { /* revisions are best-effort */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* revisions are best-effort */
+            }
 
             /* Refresh tblSongbooks.SongCount for every songbook this
                save touched (#791). The home + /songbooks tiles gate
@@ -955,45 +1138,31 @@ function editorSaveSongCore(): array
                in tblSongs but the songbook tile never appears
                because the cache stays at 0.
 
-               Two paths recompute:
+               The recompute is the shared songbookRecomputeSongCount()
+               helper (#1742, includes/songbook_count.php) — it used to be
+               TWO inline UPDATEs typed out here (a modularity-rule
+               violation); now it is one call covering both books:
                  - The current row's SongbookAbbr (always).
                  - The PREVIOUS row's SongbookAbbr if it differs
                    (song moved between books — old book shrinks,
                    new book grows). previousData is the JSON dump
-                   of the row before this save.
+                   of the row before this save; the helper itself drops
+                   a blank/duplicate previous abbr, so passing '' when
+                   there is no previous book (a brand-new song) is safe.
 
                Wrapped in try/catch so a SongCount recompute failure
                (e.g. transient deadlock) doesn't roll back the song
                save itself — the cache will self-heal on the next
                recompute pass. */
             try {
-                $cnt = $db->prepare(
-                    'UPDATE tblSongbooks
-                        SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
-                      WHERE Abbreviation = ?'
-                );
-                $cnt->bind_param('ss', $songbookAbbr, $songbookAbbr);
-                $cnt->execute();
-                $cnt->close();
-
-                /* If the row moved songbooks, the OLD book also needs
-                   its count refreshed so its tile shrinks (or hides
-                   entirely if this was its last song). */
+                $prevAbbr = '';
                 if ($previousData !== null) {
                     $prev = json_decode($previousData, true);
                     $prevAbbr = is_array($prev) ? (string)($prev['SongbookAbbr'] ?? '') : '';
-                    if ($prevAbbr !== '' && $prevAbbr !== $songbookAbbr) {
-                        $cnt = $db->prepare(
-                            'UPDATE tblSongbooks
-                                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
-                              WHERE Abbreviation = ?'
-                        );
-                        $cnt->bind_param('ss', $prevAbbr, $prevAbbr);
-                        $cnt->execute();
-                        $cnt->close();
-                    }
                 }
+                songbookRecomputeSongCount($db, $songbookAbbr, $prevAbbr);
             } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                 error_log('[editor save_song] SongCount recompute failed: ' . $_e->getMessage());
             }
 
@@ -1047,6 +1216,7 @@ function editorSaveSongCore(): array
                         );
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Match the Works-auto-link pattern — link
                        reconciliation must not block the core save.
                        The user's metadata edit is already committed
@@ -1191,6 +1361,7 @@ function editorSaveSongCore(): array
                         }
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Best-effort — Works linkage must never block the
                        core song save. The user's edit is already
                        captured in tblSongs + tblSongRevisions. */
@@ -1309,6 +1480,10 @@ function editorSaveSongCore(): array
                             $lStm->close();
 
                             $idOk = [];
+                            /* @deleted-visible: write-path FK pre-check (#1694)
+                               — a translation link naming a hidden song must
+                               SURVIVE the save (dropping it would silently
+                               destroy data that comes back on restore). */
                             $ip   = implode(',', array_fill(0, count($wantIds), '?'));
                             $iStm = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ip)");
                             $iStm->bind_param(str_repeat('s', count($wantIds)), ...$wantIds);
@@ -1393,6 +1568,7 @@ function editorSaveSongCore(): array
                         }
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Best-effort, exactly like the Works auto-link above: a
                        translation-link problem must never cost the curator the
                        lyrics/credits edit they actually came here to make. The
@@ -1421,12 +1597,26 @@ function editorSaveSongCore(): array
                #1380 — when a draft id was promoted to a canonical id, also return
                assignedId (the new canonical id) + previousId (the draft id the
                client sent) so editor.js can relabel its in-memory song without a
-               reload. Both are OMITTED on a normal save (non-draft id), so the wire
-               shape is byte-identical to today for the common case. */
+               reload. #1679 reuses the SAME pair for a songbook MOVE (the id is
+               re-keyed to the new book's prefix), which is precisely why no client
+               change was needed for the v1 editor. Both are OMITTED on a normal
+               save, so the wire shape is byte-identical for the common case. */
             $respBody = ['ok' => true, 'songId' => $songId, 'action' => $action];
             if ($assignedId !== null) {
                 $respBody['assignedId'] = $assignedId;
                 $respBody['previousId'] = $previousId;
+                /* #1679 F5 — the AUTHORITATIVE Number that was just written, sent
+                   only alongside a rename. Both renaming paths change it and the
+                   client cannot infer which happened: a MOVE clears it to null,
+                   while a #1380 draft promotion into an official book ADOPTS the
+                   slot the mint chose. editor.js held the value the curator had
+                   typed, so its very next save posted the stale number straight
+                   back — silently undoing the clear, and able to collide in the
+                   target book (tblSongs has only INDEX idx_SongbookNumber, not a
+                   UNIQUE key, so nothing would even complain).
+                   Sent as a fact rather than left to be re-derived: two files
+                   agreeing by reasoning is the failure mode rule #35 names. */
+                $respBody['number'] = $number;
             }
             /* #1626 — only present when a staged translation link could NOT be
                persisted (unknown language tag, vanished target song, self-link).
@@ -1470,6 +1660,20 @@ function editorSaveSongCore(): array
                message — DB internals are not for general consumption.
                (#759) */
             $payload = ['error' => 'Failed to save song. Check server logs for details.'];
+            /* #1679 A8 — the one failure whose explanation belongs to EVERY role.
+               `error_detail` below is admin-only on purpose (raw mysqli text,
+               file paths, line numbers). The songbook-move refusal is different
+               in kind: an environment fault with no sensitive content, whose
+               entire value is the sentence naming the migration card to run.
+               Both editor funnels admit the `editor` role while that detail
+               channel is gated on `admin`, so without a separate ungated key the
+               person most likely to hit it saw "Failed to save song. Check server
+               logs" — no better than the raw ER_ROW_IS_REFERENCED_2 the refusal
+               replaced. Matched on the exception TYPE, never on its wording
+               (rule #35); the admin-only channel is deliberately NOT widened. */
+            if ($e instanceof SongRelocateEnvironmentException) {
+                $payload['error_hint'] = $e->getMessage();
+            }
             /* The original case body read the module-level $currentUser that
                api.php establishes at file scope. Inside this shared function
                that variable is out of scope, so re-resolve the SAME value via

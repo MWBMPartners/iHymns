@@ -23,6 +23,90 @@
 --
 -- ENGINE:  InnoDB (transactional, foreign key support)
 -- CHARSET: utf8mb4 (full Unicode — emoji, curly quotes, em dashes)
+--
+-- ----------------------------------------------------------------------------
+-- SECTION MAP — the `-- ====` banners below, in file order. 136 tables is too
+-- many to scroll blind; find your family here first.
+--
+--   SONG CATALOGUE CORE ............ places, songbooks, tblSongs, credit people
+--   LYRICS STORAGE ................. components + line/word/syllable model
+--   USER ACCOUNTS & AUTHENTICATION . users, groups, tokens, device codes
+--   ACCESS TIERS & PURCHASES ....... tblAccessTiers (the TIER_CAPS backing store)
+--   ORGANISATIONS & LICENSING ...... orgs, members, licences, restrictions
+--   USER DATA ...................... setlists, favourites, custom tags
+--   LANGUAGE & TRANSLATION SUPPORT . BCP 47 subtag registries + song translations
+--   SONG REQUESTS & COMMUNITY ...... tblSongRequests (missing-song + correction)
+--   AUDIT & ANALYTICS .............. activity log, IP reputation, app settings
+--   FEATURE TABLES ................. keys, scheduling, revisions, push
+--   DEFAULT DATA ................... the seed INSERTs a bare install needs
+--   ENGAGEMENT & ANALYTICS ......... history, tags, bulk import, notifications
+--   IN-PLACE MIGRATIONS ............ two idempotent ALTER/UPDATE statements
+--   SONG RELATIONSHIPS & DEDUP ..... links, redirects, similarity suggestions
+--   MIGRATION-ORIGIN FAMILIES ...... collections, external links, media, works…
+--   INTERCHANGE + INGEST + IDENTITY  the one-pass #1066 batch
+--   PER-LINE LYRIC ENRICHMENT ...... the one-pass #1088 batch
+--   ENHANCEMENT FOUNDATION ......... the one-pass #1090 batch
+--   SCHEMA-COMPLETENESS BATCH ...... vocal parts, part types, scripture, PROs
+--   PRESENTATION THEMES ............ projection/casting styling groundwork
+--   SERVICE MODE VENUES + EXTERNAL SYSTEMS
+--   PRINT TEMPLATES / RATE LIMIT / ANALYTICS INGEST
+--   AUTH PROVIDERS ................. Sign in with Apple
+--   ADMIN-CONFIGURABLE FEATURE GATING
+--   DEFERRED FOREIGN KEYS .......... the FKs that could not be declared inline
+--
+-- ----------------------------------------------------------------------------
+-- THREE RULES GOVERN EDITS TO THIS FILE. All three were learned the hard way.
+--
+-- 1. DECLARATION ORDER IS LOAD-BEARING. InnoDB resolves an inline FOREIGN KEY
+--    at CREATE time, so a table must appear BEFORE anything that inline-FKs
+--    into it. That is why tblPlaces sits at the very top, and why the handful
+--    of constraints that could not be re-ordered live in the DEFERRED FOREIGN
+--    KEYS block at the very bottom (#1708 — before that fix a fresh install
+--    died at errno 150 after creating 16 of 136 tables, and nobody noticed
+--    for a long time because long-running installs are built incrementally by
+--    migration cards and never execute this file end to end).
+--
+-- 2. DDL HERE MUST BE BYTE-IDENTICAL TO ITS MIGRATION MIRROR, COMMENT TEXT
+--    INCLUDED (CLAUDE.md rule #19). A fresh install reads THIS file; a
+--    long-running install is built by appWeb/.sql/migrate-*.php. If the two
+--    drift, the Schema Audit page (#518) reports divergence nobody introduced
+--    deliberately. Practical consequence when annotating:
+--        * `--` prose comments (like this block) are stripped by the parser,
+--          never reach the database, and may be edited freely.
+--        * a `COMMENT '...'` clause on a column / index / table is DDL. Editing
+--          one here alone de-syncs fresh installs from migrated ones — and
+--          tests/php/test-schema-coverage.php compares PRESENCE only (which
+--          tables and columns exist), never COMMENT text, so CI will not catch
+--          it. Changing a COMMENT means changing schema.sql AND its migration
+--          in the same commit.
+--
+-- 3. NEW GROWABLE VOCABULARY IS VARCHAR, NEVER ENUM (rule #20) — adding an
+--    ENUM value is an ALTER, i.e. the second migration the one-pass batches
+--    exist to avoid. The ENUMs still present in this file (tblLyrics.Status,
+--    tblActivityLog.Result, tblCatalogues.Visibility, …) predate the rule and
+--    are grandfathered. Do not read them as precedent. (tblExternalLinkTypes
+--    .Category and tblMusicianAliases.Type were both widened to VARCHAR by
+--    #1741 P1 — no longer examples of the exception.)
+-- ============================================================================
+
+
+-- ============================================================================
+-- SONG CATALOGUE CORE — places, songbooks, songs, and the credit registry
+--
+-- Everything from here down to the LYRICS STORAGE banner is the catalogue
+-- itself: the geographic registry other tables FK into, the songbooks, the
+-- central tblSongs, the SIX free-text credit-role tables (Writers, Composers,
+-- Arrangers, Adaptors, Translators, Artists — an earlier draft said five), and
+-- the tblMusicians registry (renamed from tblCreditPeople, #1741 P2 — see the
+-- back-compat VIEWs family below) that sits ALONGSIDE those six (not above
+-- them — the role tables still store free-text names; see tblMusicians).
+--
+-- tblSongs is the hub of the whole schema: 41 foreign keys across this file
+-- point at tblSongs.SongId — the human-readable string id, not the surrogate
+-- Id — and 37 of them ON DELETE CASCADE. That fan-out is why song deletion is
+-- a SOFT delete (#1694); see the note on tblSongs.IsDeleted. (Only four are
+-- SET NULL: the two on tblSongRequests, tblSongRedirects.NewSongId, and
+-- tblLiveFollowSessions.CurrentSongId.)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -74,6 +158,20 @@ CREATE TABLE IF NOT EXISTS tblPlaces (
 -- ----------------------------------------------------------------------------
 -- tblSongbooks
 -- Stores the songbook/collection definitions (CP, JP, MP, SDAH, CH, Misc).
+--
+-- `Abbreviation` is the load-bearing one and the reason this table is here so
+-- early: it is not a label, it is the PREFIX of every SongId in the book
+-- ("MP" in MP-1008), parsed as <letters>-<digits> by the PWA router, the
+-- OG-image generator and several API validators, and it is the FK target that
+-- tblSongs and tblSongbookEntries point at. Loosening its charset would re-key
+-- ~14k songs and break every existing URL, bookmark and shared image. When a
+-- richer user-facing label is wanted (punctuation, spaces), that is what the
+-- optional `DisplayAbbr` is for — display only, never in a URL or an id.
+--
+-- `IsOfficial` = 0 does NOT mean second-class: unofficial books are curated
+-- groupings that appear alongside published hymnals everywhere, just badged.
+-- Filtering them out of a listing is a bug (rule #24). It drives ranking,
+-- whether song numbers are shown, and the shared "Unofficial" badge.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbooks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -141,7 +239,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
 -- (no FK), but every non-empty value the songbook editor saves is also
 -- INSERT IGNOREd here so the typeahead can prevent duplicate-creation drift
 -- (e.g. "Seventh-day Adventist Church" vs "Seventh-Day Adventist Church"
--- vs "SDA Church"). Same shape as tblCreditPeople below.
+-- vs "SDA Church"). Same shape as tblMusicians below.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbookAffiliations (
     Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -166,9 +264,14 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
     NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title (iconv ASCII//TRANSLIT + mb_strtolower + unicode-property strip via ihymns_normalize_title()) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL 8 cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
+    Subtitle            VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Optional song subtitle (#1741 P1)',
+    Disambiguation      VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named songs (#1741 P1)',
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation; the songbook NAME is read live via JOIN to tblSongbooks.Name (de-normalised SongbookName dropped in WS-E #1013 ph2)',
     Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
+    CopyrightYears      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1); Copyright stays as the legacy as-printed denorm string and is NOT auto-parsed into this + CopyrightHolder',
+    CopyrightHolder     VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1); see CopyrightYears comment re: the legacy Copyright column',
+    FirstPublishedYear  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymns predate it. Same column added to tblWorks in the same P1 batch (Song AND Work editors both need it, rule #20)',
     /* Composition / first-performance origin (places sweep #2). The
        VARCHAR mirror keeps reads JOIN-free; the FK lets the future
        country/region report group across the catalogue. */
@@ -193,6 +296,18 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     ArrangementJson     JSON            NULL DEFAULT NULL COMMENT 'Optional int-array of indices into components[] that overrides the stored SortOrder (lets a refrain repeat between verses) (#892)',
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    /* Song soft delete (#1694, epic #1692). The row is retained and hidden —
+       38 of the 41 FKs referencing tblSongs(SongId) CASCADE, so a hard delete
+       destroys components, lyric lines, credits, media, tags and the entire
+       revision history irrecoverably; restore must be prevention, not repair.
+       Dormant until the read-path sweep + write cores consume them. The
+       fk_Songs_DeletedBy FK is added via trailing ALTER (tblUsers is defined
+       later in this file — same reason as fk_Songs_Tune). */
+    IsDeleted           TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Soft-delete flag (#1694): 1 = hidden from every filtered read, restorable via /manage/deleted-songs. The row is never hard-deleted on this path (38 of 41 inbound FKs CASCADE — restore must be prevention, not repair); purge is the separate, gated hard delete',
+    DeletedAt           DATETIME        NULL DEFAULT NULL COMMENT 'UTC instant of the soft delete (#1694); DATETIME not TIMESTAMP so it is never re-read against a session zone (rule #20). NULL while the song is live',
+    DeletedBy           INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers.Id — who soft-deleted it (#1694). ON DELETE SET NULL so attribution resolves to the account tombstone if the deleter is later erased (#1698)',
+    DeletedReason       VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Why it was deleted (#1694) — app-validated vocabulary from songDeleteReasons() in includes/song_soft_delete.php; VARCHAR not ENUM so the vocabulary grows without an ALTER (rule #20)',
+    DeleteNote          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Free-text curator note accompanying the delete (#1694). Empty string when none — NOT NULL so reads never juggle NULL vs empty',
 
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
@@ -202,12 +317,31 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
+    INDEX idx_Iswc              (Iswc),
+    INDEX idx_Ccli              (Ccli),
+    INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
     FULLTEXT ft_LyricsTextFolded (LyricsTextFolded),
 
+    /* Why the FK targets Abbreviation and not tblSongbooks.Id: SongbookAbbr IS
+       the SongId prefix ("MP" in MP-1008), so the natural key is what every
+       read path and URL already carries — a surrogate Id here would mean a
+       JOIN on every song read for no gain.
+
+       ON DELETE RESTRICT (not CASCADE) is deliberate and is the ONLY inbound
+       delete rule on a songbook that blocks: deleting a songbook that still
+       holds songs is refused outright rather than silently destroying its
+       whole hymnal. Empty the book first.
+
+       ON UPDATE CASCADE re-keys this column when an Abbreviation is renamed —
+       but note it does NOT rewrite the abbreviation embedded in
+       tblSongs.SongId, which is a plain string. A rename therefore leaves
+       MP-1008 sitting in a book now called something else; re-keying songs is
+       a deliberate application operation (includes/song_relocate.php, #1679),
+       not a side effect of this constraint. */
     CONSTRAINT fk_Songs_Songbook
         FOREIGN KEY (SongbookAbbr) REFERENCES tblSongbooks(Abbreviation)
         ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -233,6 +367,12 @@ CREATE TABLE IF NOT EXISTS tblSongbookEntries (
     IsHome        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = the song''s home/primary songbook (the one its SongId is prefixed from); kept in sync with tblSongs.SongbookAbbr',
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* uq_book_number enforces "one song per number per book" — but only for
+       numbered books. MySQL treats every NULL as distinct inside a UNIQUE key,
+       so the whole unnumbered Misc collection coexists here without collision.
+       That NULL-permits-duplicates behaviour is used deliberately in several
+       places in this file (uk_OsmRef on tblPlaces, the (Source, SourceRef)
+       idempotency keys); it is a feature, not an oversight. */
     UNIQUE KEY uq_book_song   (SongbookAbbr, SongId),
     UNIQUE KEY uq_book_number (SongbookAbbr, SongNumber),
     INDEX idx_SongId   (SongId),
@@ -366,7 +506,10 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPeople (#545)
+-- tblMusicians (#545; renamed from tblCreditPeople by #1741 P2 — see the
+-- back-compat VIEWs family after the tblMusicianRelations block below, which
+-- exposes this table's data under every pre-rename name/column for app code
+-- that hasn't migrated to the new names yet, #1741 P2-B).
 -- Registry of people credited on songs. Holds the canonical Name plus
 -- optional biographical metadata. The five song-credit tables above
 -- (tblSongWriters / tblSongComposers / tblSongArrangers / tblSongAdaptors
@@ -376,7 +519,7 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
 -- registry row) inside a single transaction, leaving the existing schema
 -- intact.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPeople (
+CREATE TABLE IF NOT EXISTS tblMusicians (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Name            VARCHAR(255)    NOT NULL,
     /* URL-safe slug (#588) — backfilled from Name with collision-safe
@@ -393,6 +536,13 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
        Founded/Disbanded when group). */
     IsSpecialCase   TINYINT(1)      NOT NULL DEFAULT 0,
     IsGroup         TINYINT(1)      NOT NULL DEFAULT 0,
+    /* Entity-type vocabulary (#1741 P1) — wider than the two flags above.
+       Authoritative once Phase 3 lands (creditPersonTypeApply() flips
+       IsGroup/IsSpecialCase to derived mirrors); until then the flags stay
+       the read/write source of truth and Type only carries the P1
+       backfill from their current values. */
+    Type            VARCHAR(20)     NOT NULL DEFAULT 'person' COMMENT 'person | group | character | orchestra | other (app-validated; VARCHAR not ENUM, rule #20). Authoritative once Phase 3 lands; IsGroup/IsSpecialCase stay the read/write source until then (#1741 P1)',
+    Disambiguation  VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named musicians, e.g. "(the elder)" (#1741 P1)',
     /* Structured-name parts (#934). Backfilled from Name on first run
        of migrate-credit-people-name-parts.php; new inserts populate
        these alongside the canonical Name string. Group / special-case
@@ -402,6 +552,7 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
     MaidenSurname   VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional birth surname, when different from the current Surname (#1501)',
     Suffix          VARCHAR(64)     NULL,
     Notes           TEXT            NULL,
+    Biography       MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'Musician biography (#1741 P1). Backfilled once from legacy Notes (copy, not move — Notes stays the live read path on person.php until Phase 4a switches over); new writes go here once that phase ships',
     BirthPlace      VARCHAR(255)    NULL,
     /* FK into tblPlaces; nullable for legacy / free-text rows where
        no canonical place was picked from the geocoder. BirthPlace
@@ -425,17 +576,17 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
     INDEX idx_BirthPlaceId (BirthPlaceId),
     INDEX idx_DeathPlaceId (DeathPlaceId),
 
-    CONSTRAINT fk_CreditPeople_BirthPlace
+    CONSTRAINT fk_Musicians_BirthPlace
         FOREIGN KEY (BirthPlaceId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_CreditPeople_DeathPlace
+    CONSTRAINT fk_Musicians_DeathPlace
         FOREIGN KEY (DeathPlaceId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonLinks (#545)
+-- tblMusicianLinks (#545; renamed from tblCreditPersonLinks by #1741 P2)
 -- Multiple external reference links per person (Wikipedia, official
 -- website, MusicBrainz, Discogs, IMSLP, Hymnary, other). LinkType is a
 -- short string key the UI maps to a friendly label and icon; storing as
@@ -443,9 +594,9 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
 -- preserves admin-controlled display order. ON DELETE CASCADE removes
 -- the links automatically when the parent registry row is deleted.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
+CREATE TABLE IF NOT EXISTS tblMusicianLinks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED    NOT NULL,
+    MusicianId      INT UNSIGNED    NOT NULL,
     LinkType        VARCHAR(64)     NOT NULL,
     Url             VARCHAR(2048)   NOT NULL,
     Label           VARCHAR(255)    NULL,
@@ -454,28 +605,28 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_CreditPersonId (CreditPersonId),
+    INDEX idx_MusicianId (MusicianId),
 
-    CONSTRAINT fk_CreditPersonLinks_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianLinks_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonIPI (#545)
+-- tblMusicianIPI (#545; renamed from tblCreditPersonIPI by #1741 P2)
 -- IPI (Interested Parties Information) Name Numbers per person. A single
 -- individual can be registered under more than one IPI Name Number when
 -- they use multiple performing names — hence one-to-many on the registry
--- row. UNIQUE on (CreditPersonId, IPINumber) prevents duplicate IPIs per
+-- row. UNIQUE on (MusicianId, IPINumber) prevents duplicate IPIs per
 -- person while still allowing the same number to legitimately attach to
 -- two different registry rows if the data demands it. NameUsed is the
 -- spelling that IPI is registered under (often differs from the canonical
 -- registry Name). ON DELETE CASCADE matches the links table.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
+CREATE TABLE IF NOT EXISTS tblMusicianIPI (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED    NOT NULL,
+    MusicianId      INT UNSIGNED    NOT NULL,
     IPINumber       VARCHAR(32)     NOT NULL,
     NameUsed        VARCHAR(255)    NULL,
     Notes           VARCHAR(255)    NULL,
@@ -483,26 +634,26 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_PersonIPI (CreditPersonId, IPINumber),
+    UNIQUE KEY uk_MusicianIPI (MusicianId, IPINumber),
     INDEX idx_IPINumber (IPINumber),
 
-    CONSTRAINT fk_CreditPersonIPI_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianIPI_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonIdentifiers
+-- tblMusicianIdentifiers (renamed from tblCreditPersonIdentifiers by #1741 P2)
 -- Unified MusicBrainz-style identifier table: holds IPI Name Numbers AND
 -- ISNI (International Standard Name Identifier) rows side by side, with
--- IdentifierType discriminating. Replaces the per-kind tblCreditPersonIPI
+-- IdentifierType discriminating. Replaces the per-kind tblMusicianIPI
 -- table going forward; the legacy table stays as a one-release rollback
 -- snapshot and is dropped in a follow-up migration.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
+CREATE TABLE IF NOT EXISTS tblMusicianIdentifiers (
     Id              INT UNSIGNED       AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED       NOT NULL,
+    MusicianId      INT UNSIGNED       NOT NULL,
     IdentifierType  VARCHAR(20)        NOT NULL COMMENT 'ipi | isni | cae | ipi-base | <pro-id> (app-validated; widened from ENUM #1090 P6 so new industry identifier types need no ALTER)',
     IdentifierValue VARCHAR(64)        NOT NULL,
     NameUsed        VARCHAR(255)       NULL,
@@ -511,14 +662,32 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
     UpdatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP
                                        ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_PersonIdValue (CreditPersonId, IdentifierType, IdentifierValue),
+    UNIQUE KEY uk_MusicianIdValue (MusicianId, IdentifierType, IdentifierValue),
     INDEX idx_TypeValue (IdentifierType, IdentifierValue),
 
-    CONSTRAINT fk_CreditPersonId_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianIdentifiers_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- ============================================================================
+-- LYRICS STORAGE — components + the normalised line / word / syllable model
+--
+-- Two layers that used to be one. tblSongComponents is now THIN metadata
+-- (which verse, what order, what language); the actual words live in
+--     tblLyrics -> tblLyricLines -> tblLyricWords -> tblLyricSyllables
+-- one level per timing granularity, so an untimed hymn stops at tblLyricLines
+-- and an Apple-Music TTML import fills all four.
+--
+-- WHY THIS MATTERS FOR EVERY LATER TABLE: tblLyricLines.Id (BIGINT) is the
+-- anchor that per-line enrichment hangs off throughout the rest of this file —
+-- tblLyricLineTranslations and tblLyricLineAnnotations (#1088), the vocal-part
+-- assignment tables (#1137), tblSongScriptureRefs (#1112) and the presentation
+-- slide overrides (#1168) all point here. Anchoring on an index into a JSON
+-- array instead is the regression rule #21 exists to prevent: array positions
+-- shift when a line is inserted, row ids do not.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblSongComponents (THIN metadata, #1235 P4/C6)
@@ -569,6 +738,10 @@ CREATE TABLE IF NOT EXISTS tblLyrics (
     HasTiming     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = line-level timing present',
     HasWordTiming TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = word-level timing present (TTML/LRC-A)',
     HasSyllableTiming TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1 = syllable-level timing present (TTML/karaoke) (#141)',
+    /* Grandfathered ENUM — predates rule #20 and is explicitly exempted by it.
+       Its later siblings tblLyricLineTranslations.Status and
+       tblLyricLineAnnotations.Status carry the SAME five values as an
+       app-validated VARCHAR; those are the shape to copy for anything new. */
     Status        ENUM('draft','pending_review','approved','rejected','archived') NOT NULL DEFAULT 'approved',
     SubmittedBy   INT UNSIGNED    NULL DEFAULT NULL,
     ApprovedBy    INT UNSIGNED    NULL DEFAULT NULL,
@@ -582,11 +755,7 @@ CREATE TABLE IF NOT EXISTS tblLyrics (
     INDEX idx_Status  (Status),
 
     CONSTRAINT fk_Lyrics_Song
-        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_Lyrics_SubmittedBy
-        FOREIGN KEY (SubmittedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL,
-    CONSTRAINT fk_Lyrics_ApprovedBy
-        FOREIGN KEY (ApprovedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tblLyricLines (
@@ -608,6 +777,18 @@ CREATE TABLE IF NOT EXISTS tblLyricLines (
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    /* idx_Lyrics is (LyricsId, SortOrder) in that order because every read is
+       "give me the lines of ONE lyrics version, in order" — the leading column
+       narrows to the version, the trailing one lets InnoDB return them already
+       sorted instead of filesorting a whole song's worth of rows.
+
+       ComponentId is INDEXED BUT NOT FOREIGN-KEYED, unlike the ComponentId on
+       the three presentation tables further down this file, which do CASCADE.
+       Its column COMMENT frames it as transitional traceability — but the
+       read path (includes/lyric_lines_read.php) now groups lines by it, so it
+       is load-bearing, and nothing at the database level stops a component
+       being deleted out from under the lines that name it. Reparenting and
+       cleanup are the writer's job (lyricLinesWriteComponents(), rule #25). */
     INDEX idx_Lyrics    (LyricsId, SortOrder),
     INDEX idx_Component (ComponentId),
 
@@ -655,6 +836,14 @@ CREATE TABLE IF NOT EXISTS tblLyricSyllables (
 -- (e.g. MeedyaDL #907 pushing TTML to the lyrics-ingest endpoint). The raw key
 -- is shown once at creation and never stored; only its SHA-256 hash lives here.
 -- Space-separated Scope authorises each endpoint (e.g. "lyrics:ingest").
+--
+-- Filed at the end of the catalogue section rather than under USER ACCOUNTS
+-- because this is a MACHINE identity, not a person's — it authenticates the
+-- ingest side of the lyrics pipeline above, and has no tblUsers row of its
+-- own (CreatedBy only records which admin minted it). Its three satellite
+-- tables — tblApiKeyUsage (rate-limit counters), tblApiKeyIdempotency (retry
+-- cache) and tblApiKeyRequests (self-serve requests) — ship with the #1066
+-- batch much further down, since they arrived later.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblApiKeys (
     Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -671,10 +860,8 @@ CREATE TABLE IF NOT EXISTS tblApiKeys (
     CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE KEY uq_KeyHash (KeyHash),
-    INDEX idx_Active (Active),
+    INDEX idx_Active (Active)
 
-    CONSTRAINT fk_ApiKeys_CreatedBy
-        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -722,6 +909,13 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     Role            VARCHAR(20)     NOT NULL DEFAULT 'user' COMMENT 'global_admin, admin, editor, user',
     GroupId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUserGroups for version access',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    -- Account lifecycle (#1698). IsActive stays THE lock (13+ enforcement points
+    -- in manage/includes/auth.php plus getAuthenticatedUser()); Status only says
+    -- WHICH kind of inactive, so disabled (reversible) and deleted (anonymised
+    -- tombstone) are distinguishable. Invariant IsActive = (Status = 'active'),
+    -- enforced in the ONE writer, setUserActive().
+    Status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active | disabled | deleted — app-validated vocabulary, VARCHAR not ENUM (rule #20). deleted = anonymised tombstone (#1698)',
+    StatusChangedAt DATETIME NULL DEFAULT NULL COMMENT 'UTC instant Status last changed; DATETIME not TIMESTAMP so it is not re-read against a session zone (#1698)',
     AccessTier      VARCHAR(20)     NOT NULL DEFAULT 'free' COMMENT 'public, free, ccli, premium, pro',
     CcliNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'CCLI licence number (6-7 digits)',
     CcliVerified    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = CCLI number validated',
@@ -733,9 +927,23 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    /* Three separate axes live on this row and are routinely confused:
+         Role ....... what you may DO in the admin panel (global_admin > admin
+                      > editor > user). A plain string with no lookup table —
+                      the ladder is a PHP constant, not data.
+         AccessTier . what CONTENT you may see. Echoes tblAccessTiers.Name but
+                      carries no foreign key, so a tier renamed there leaves
+                      users pointing at a name that no longer resolves; the
+                      resolver treats an unknown tier as the fallback matrix.
+         GroupId .... which RELEASE CHANNEL builds you can reach (alpha/beta/
+                      rc/rtw). The only one of the three that is a real FK, and
+                      it is SET NULL so deleting a group demotes members to the
+                      default rather than deleting the accounts.
+       Email is indexed but NOT unique — Username carries the uniqueness. */
     INDEX idx_Role      (Role),
     INDEX idx_Email     (Email),
     INDEX idx_Group     (GroupId),
+    INDEX idx_Status    (Status),
 
     CONSTRAINT fk_Users_Group
         FOREIGN KEY (GroupId) REFERENCES tblUserGroups(Id)
@@ -744,24 +952,24 @@ CREATE TABLE IF NOT EXISTS tblUsers (
 
 
 -- ----------------------------------------------------------------------------
--- tblSessions
--- Server-side session records for the admin panel (/manage/).
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1): tblSessions
+-- (admin-panel session records), tblUserPurchases (a guessed 2019-vintage
+-- purchases/monetisation shape), tblUserPermissions (per-user fine-grained
+-- flags), tblMigrations (schema migration tracking). All four were schema.sql-
+-- only — no migrate-*.php ever created them, no app code ever read or wrote
+-- them (`/manage/` sessions are cookie/token-based via tblApiTokens +
+-- PHP's own session store, not this table; migrations are tracked by
+-- migration-registry.php + tblAppSettings sentinel rows, not tblMigrations).
+-- A fresh install created four tables nothing has ever referenced. Owner
+-- decision D2 (remediation-plan-2026-07-30.md §6): default A, drop all four —
+-- a future purchases feature designs its own one-pass schema per rule #20
+-- rather than resurrecting this guessed placeholder. The DROP itself needs no
+-- new migration: the existing generic "Drop Legacy Tables" card
+-- (appWeb/.sql/drop-legacy-tables.php, manage/setup-database.php) diffs the
+-- live database against schema.sql at runtime and offers to drop anything no
+-- longer declared here — manual, type-to-confirm-gated, and deliberately left
+-- UN-RUN on production until the owner nods (D2's veto window).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblSessions (
-    Id              VARCHAR(128)    NOT NULL PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL,
-    IpAddress       VARCHAR(45)     NULL COMMENT 'IPv4 or IPv6',
-    UserAgent       TEXT            NULL,
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ExpiresAt       TIMESTAMP       NOT NULL,
-
-    INDEX idx_User      (UserId),
-    INDEX idx_Expires   (ExpiresAt),
-
-    CONSTRAINT fk_Sessions_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
@@ -910,13 +1118,36 @@ CREATE TABLE IF NOT EXISTS tblEmailVerificationTokens (
 
 
 -- ============================================================================
--- ACCESS TIERS & PURCHASES
+-- ACCESS TIERS
+-- (Historically "ACCESS TIERS & PURCHASES" — the purchases half was
+-- tblUserPurchases, a guessed 2019-vintage monetisation shape that no code
+-- ever touched, removed in the 2026-07-30 orphan remediation. See the note by
+-- tblUsers. A real purchases feature designs its own one-pass schema.)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblAccessTiers
 -- Defines available content access tiers. Each tier unlocks specific
 -- content types. Higher tiers include all lower tier access.
+--
+-- This is the storage behind the TIER_CAPS registry in
+-- includes/access_tier_validation.php, and the split between the columns
+-- below is the thing to understand (rule #28):
+--
+--   * The seven Can*/Requires* TINYINT columns are FROZEN. The camelCase keys
+--     they emit (canViewLyrics, canPlayAudio, …) are the published native-app
+--     API contract, so they keep dedicated columns and are never re-homed
+--     into JSON.
+--   * EVERY new capability goes inside the single `Capabilities` JSON column
+--     instead. Adding a gateable feature is ONE line in TIER_CAPS plus running
+--     its migration card — never a new column here, and never a hardcoded
+--     tier->capability matrix in PHP. A column per feature is precisely the
+--     ALTER-per-tweak pattern rule #20 forbids.
+--
+-- The rows are seeded further down (under DEFAULT DATA) and are editable at
+-- /manage/tiers, so the LIVE row is the source of truth at runtime — the
+-- matrix that still exists in checkTierAccess() survives only as the fallback
+-- for an un-migrated install or an unknown tier name.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblAccessTiers (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -933,34 +1164,6 @@ CREATE TABLE IF NOT EXISTS tblAccessTiers (
     RequiresCcli    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Requires valid CCLI licence',
     Capabilities    JSON            NULL COMMENT 'json-backed extensible tier caps (rule 20); future gated capabilities live here as named keys, no per-feature ALTER',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- ----------------------------------------------------------------------------
--- tblUserPurchases
--- Tracks one-off purchases or subscription activations per user.
--- Used for premium content unlocks and subscription management.
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPurchases (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL,
-    ProductType     VARCHAR(30)     NOT NULL COMMENT 'tier_upgrade, songbook_unlock, feature_unlock, subscription',
-    ProductId       VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'Specific product (e.g., songbook abbreviation)',
-    TierGranted     VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Access tier granted by this purchase',
-    TransactionId   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Payment processor transaction ID',
-    Amount          DECIMAL(10,2)   NULL COMMENT 'Payment amount',
-    Currency        VARCHAR(3)      NOT NULL DEFAULT 'GBP',
-    Status          VARCHAR(20)     NOT NULL DEFAULT 'active' COMMENT 'active, expired, refunded, cancelled',
-    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL COMMENT 'NULL = never expires (one-off purchase)',
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_User      (UserId),
-    INDEX idx_Status    (Status),
-    INDEX idx_Expires   (ExpiresAt),
-
-    CONSTRAINT fk_Purchases_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -1105,6 +1308,20 @@ CREATE TABLE IF NOT EXISTS tblContentRestrictions (
     Reason          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Human-readable reason for restriction',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* This table has NO foreign keys at all, which is unusual here and
+       intentional: both (EntityType, EntityId) and (TargetType, TargetId) are
+       POLYMORPHIC pairs. EntityId holds a SongId, a songbook abbreviation or
+       a bare feature name depending on EntityType, so there is no single
+       table to point at. The cost is that nothing cascades — a restriction
+       row survives the song or songbook it names, and evaluation has to
+       tolerate rows whose entity no longer exists.
+
+       The index pairs mirror the two ways the evaluator reads: "what applies
+       to THIS entity" and "what applies to THIS audience". Never query this
+       table directly from a page or endpoint — go through
+       includes/content_access.php::checkContentAccess() (rule #8), which also
+       applies the Priority / deny-beats-allow resolution the columns imply
+       but the schema cannot enforce. */
     INDEX idx_Entity    (EntityType, EntityId),
     INDEX idx_Target    (TargetType, TargetId),
     INDEX idx_Priority  (Priority)
@@ -1112,42 +1329,23 @@ CREATE TABLE IF NOT EXISTS tblContentRestrictions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserGroupMembers
--- Many-to-many user-to-group membership.
+-- REMOVED (remediation X5, 2026-07-30, orphan inventory §2.2/§3.2 #1670):
+-- tblUserGroupMembers. Group membership actually lives on tblUsers.GroupId
+-- (a single FK, not a many-to-many join) — `admin_group_member_add` UPDATEs
+-- that column directly. This table's only reader was the dormant `user_access`
+-- action's UNION arm (api.php), which the fix removed; the action itself
+-- STAYS (content-gating family, dormant by design per rule #28 — fixing its
+-- 500 is not the same as giving it a caller, and it keeps its orphan-guard
+-- allowlist entry).
+--
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1):
+-- tblUserPermissions — schema.sql-only, no migration, no app code ever read
+-- or wrote it (per-user overrides never shipped; role-based gating via
+-- tblUsers.Role + the entitlements system is the live mechanism). See the
+-- longer note by tblUsers above for the drop mechanism (existing generic
+-- "Drop Legacy Tables" card; manual, confirm-gated, left UN-RUN pending
+-- owner decision D2).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserGroupMembers (
-    UserId          INT UNSIGNED    NOT NULL,
-    GroupId         INT UNSIGNED    NOT NULL,
-    AssignedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (UserId, GroupId),
-
-    CONSTRAINT fk_Ugm_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_Ugm_Group
-        FOREIGN KEY (GroupId) REFERENCES tblUserGroups(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- ----------------------------------------------------------------------------
--- tblUserPermissions
--- Fine-grained permission flags per user. NULL = inherit from role.
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPermissions (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL UNIQUE,
-    CanEditSongs    TINYINT(1)      NULL DEFAULT NULL COMMENT 'NULL = inherit from role',
-    CanManageUsers  TINYINT(1)      NULL DEFAULT NULL,
-    CanViewAdmin    TINYINT(1)      NULL DEFAULT NULL,
-    CanShareSetlists TINYINT(1)     NULL DEFAULT NULL,
-    CanAccessApi    TINYINT(1)      NULL DEFAULT NULL,
-
-    CONSTRAINT fk_Perms_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================================
@@ -1166,6 +1364,13 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
     SongsJson       MEDIUMTEXT      NOT NULL DEFAULT ('[]') COMMENT 'JSON array of song objects',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    ExpiresAt DATETIME NULL DEFAULT NULL COMMENT 'Optional expiry (#1661), UTC; NULL = never expires. DATETIME not TIMESTAMP (rule #20 TTL convention)',
+    -- Mirror of appWeb/.sql/migrate-setlist-slots.php — keep byte-identical (rule #19).
+    -- ONE envelope column rather than SlotsJson + a TemplateId FK: templateName is a
+    -- SNAPSHOT so provenance survives the template being deleted or renamed, and the
+    -- sync loop needs no per-row existence check. Growth (durations, flags) goes
+    -- inside the JSON, never into a second ALTER (rule #20).
+    SlotsJson JSON NULL DEFAULT NULL COMMENT 'Optional service plan (#301/#1671 F4): {templateId, templateName, slots[]}. NULL = no plan',
 
     UNIQUE KEY uq_UserSetlist (UserId, SetlistId),
     INDEX idx_User (UserId),
@@ -1174,6 +1379,33 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblUserSetlistTombstones (#1661)
+-- An EXPLICIT, permanent record that a setlist was deleted, so the sync
+-- protocol never has to infer deletion from a setlist being absent from a
+-- payload — the inference that let a truncated payload read as "the user
+-- deleted the tail of their collection" (#1649). A tombstoned id is dead
+-- forever; re-creating mints a fresh client id. An expiry that passes is
+-- converted into a tombstone with Reason='expired', so expiry and deletion
+-- share ONE propagation mechanism.
+--
+-- Mirror of appWeb/.sql/migrate-setlist-tombstones.php — keep byte-identical.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserSetlistTombstones (
+    UserId     INT UNSIGNED  NOT NULL,
+    SetlistId  VARCHAR(100)  NOT NULL COMMENT 'The client-generated id of the deleted setlist',
+    DeletedAt  DATETIME      NOT NULL COMMENT 'DB clock (userSyncNow frame) at deletion',
+    Reason     VARCHAR(20)   NOT NULL DEFAULT 'user' COMMENT 'user | expired | admin — VARCHAR not ENUM (rule #20)',
+
+    PRIMARY KEY (UserId, SetlistId),
+
+    CONSTRAINT fk_SetlistTomb_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Explicitly deleted user setlists — anti-resurrection + cross-device prune (#1661).';
 
 
 -- ----------------------------------------------------------------------------
@@ -1193,6 +1425,14 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     ViewCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Incremented on retrieval for share-link analytics',
 
+    /* Both user FKs are ON DELETE SET NULL rather than CASCADE, and that is
+       the whole design: a share URL handed to a congregation must not 404
+       because the person who created it later deleted their account. Nulling
+       OwnerUserId degrades a LIVE share (which re-resolves the owner's
+       current setlist through idx_LiveSource) into the frozen `Data`
+       snapshot it already carries — the link keeps working, it just stops
+       tracking. SourceSetlistId is a client-generated string with no FK of
+       its own, so the pair is resolved by lookup, not by constraint. */
     INDEX idx_CreatedBy (CreatedBy),
     INDEX idx_CreatedAt (CreatedAt),
     KEY idx_LiveSource (OwnerUserId, SourceSetlistId),
@@ -1335,6 +1575,24 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
     CONSTRAINT fk_Trans_Target
         FOREIGN KEY (TranslatedSongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE,
+    /* uq_Translation is (SourceSongId, TargetLanguage): ONE translation per
+       language per source song. A second Spanish rendering of the same hymn
+       is not an additional row here — it is a separate tblSongs record, and
+       which one is "the" Spanish counterpart is a curatorial choice.
+
+       fk_Trans_Lang is the ONLY hard foreign key to tblLanguages in this
+       file, and it is the outlier: every other language column in the schema
+       (tblSongs.Language, tblLyricLines.LanguageCode, tblSongLanguages
+       .Language, the whole #1088 pair) is deliberately free-text with NO FK,
+       precisely so a BCP 47 tag carrying a script or region subtag can never
+       RESTRICT-fail an import (rule #21). tblLanguages is seeded from the
+       IANA registry's `Type: language` records only — bare primary subtags —
+       so a translation tagged zh-Hans or pt-BR cannot be recorded through
+       this constraint even though the column is VARCHAR(35) and shaped for
+       exactly those tags. Do not "fix" that by widening the seed — it would
+       turn tblLanguages from a subtag registry into a tag table. Dropping
+       this one constraint to match the rest of the schema is the change that
+       would need discussing. */
     CONSTRAINT fk_Trans_Lang
         FOREIGN KEY (TargetLanguage) REFERENCES tblLanguages(Code)
         ON DELETE RESTRICT ON UPDATE CASCADE
@@ -1433,6 +1691,24 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     Country         CHAR(2)         NULL DEFAULT NULL COMMENT 'ISO-3166-1 alpha-2 country resolved from IpAddress AT log time (snapshot; geo resolver #1208 populates it)',
     CreatedAt       TIMESTAMP(6)    NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT 'Microsecond precision (#1287) — logActivity writes NOW(6); the Id PK is the tiebreaker for same-instant rows (#1285)',
 
+    /* (EntityType, EntityId) is polymorphic and un-FK'd on purpose — and here
+       that is a FEATURE, not the compromise it is on tblContentRestrictions.
+       An audit trail that CASCADE-deleted with the thing it audits would
+       erase exactly the evidence you need after a deletion. Contrast
+       tblSongRevisions, which DOES cascade with its song: revisions are the
+       song's own history and go with it (part of why deleting a song had to
+       become soft, #1694), whereas this table is the record of who did it.
+       The only FK here is UserId, and it is SET NULL so an erased account
+       leaves the actions behind, unattributed.
+
+       RequestPath is indexed on a 191-character PREFIX (idx_RequestPath).
+       (An earlier draft said "RequestPath and Query" — tblActivityLog has NO
+       Query column; idx_Query(191) belongs to tblSearchQueries, ~700 lines
+       below. The reasoning that follows is right, the column list was not.)
+       191 is not a guess at a useful length: an InnoDB index column is capped at 3072
+       bytes and utf8mb4 costs up to 4 bytes per character, so 191*4 = 764
+       fits the old 767-byte limit that legacy row formats still impose.
+       Anything wider simply refuses to build on some installs. */
     INDEX idx_User              (UserId),
     INDEX idx_Action            (Action),
     INDEX idx_Entity            (EntityType, EntityId),
@@ -1494,18 +1770,28 @@ CREATE TABLE IF NOT EXISTS tblAppSettings (
 
 
 -- ----------------------------------------------------------------------------
--- tblMigrations
--- Schema migration tracking.
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1):
+-- tblMigrations. Schema.sql-only, no migrate-*.php ever created it, no app
+-- code ever read or wrote it — this codebase tracks applied migrations via
+-- manage/includes/migration-registry.php's derived probes (each checking the
+-- live schema/data directly) plus sentinel rows in tblAppSettings, not a
+-- migrations-applied ledger table. See the longer note by tblUsers above for
+-- the drop mechanism.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblMigrations (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    Name            VARCHAR(255)    NOT NULL UNIQUE,
-    AppliedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================================
--- FEATURE TABLES (Song Keys, Chords, Scheduling, Templates, Collaboration, etc.)
+-- FEATURE TABLES (#298–#313) — song keys, scheduling, templates,
+-- collaboration, revision history, push subscriptions.
+--
+-- A batch of small per-feature tables added together. Two of the original
+-- members are gone and their headstones are left in place below rather than
+-- deleted, because a reader who finds them referenced in an old commit,
+-- migration or issue needs to know where they went: tblSongChords (#299,
+-- dropped #1613 — chords are now per-line on tblLyricLines.ChordsJson) and
+-- tblUserPreferences (#310, dropped #1671 — it was an un-namespaced duplicate
+-- of tblUsers.Settings). Both drops are separate, self-guarded,
+-- confirm-gated migrations; neither runs automatically.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -1537,6 +1823,15 @@ CREATE TABLE IF NOT EXISTS tblSongKeys (
 -- ----------------------------------------------------------------------------
 -- tblSetlistSchedule (#300)
 -- Calendar scheduling for setlists.
+--
+-- NOTE ON `SetlistId` — here, on tblSetlistCollaborators, on tblSongUsageEvents
+-- and on tblLiveFollowSessions it is a VARCHAR(100) SOFT link with no foreign
+-- key, matching tblUserSetlists.SetlistId. That column is a CLIENT-generated
+-- id (the app mints setlists offline and syncs later), so it is unique only
+-- per user — (UserId, SetlistId) is the real key, which is why tblUserSetlists
+-- puts its UNIQUE there. A single-column FK could not express that, so nothing
+-- cascades: a deleted setlist leaves its schedule rows behind, and deletion is
+-- propagated explicitly through tblUserSetlistTombstones instead (#1661).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSetlistSchedule (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -1643,18 +1938,13 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserPreferences (#310)
--- Server-side preference sync.
+-- tblUserPreferences (#310) — DROPPED (#1671 F5). It was an un-namespaced duplicate of
+-- tblUsers.Settings: same concept, same payload shape, a parallel table, and no caller in
+-- the first-party tree. Server-side preference sync now lives ONLY on tblUsers.Settings
+-- (see the `Settings` column above and appWeb/public_html/includes/user_settings.php),
+-- whose write contract gained a namespace so a second product can share the row. The
+-- (self-guarded, confirm-gated) drop is appWeb/.sql/migrate-drop-user-preferences.php.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPreferences (
-    UserId          INT UNSIGNED    NOT NULL PRIMARY KEY,
-    PreferencesJson JSON            NOT NULL COMMENT 'Theme, font size, default songbook, etc.',
-    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_Prefs_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
@@ -1712,16 +2002,41 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'Bot protection: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
-    ('captcha_site_key', '', 'CAPTCHA provider public site key'),
-    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
-    ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
-    ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
-    ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
+    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.'),
+    ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
+    ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
+    ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
+    ('ads_provider', 'none', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom'),
+    ('ads_publisher_id', '', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built'),
     ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
-    ('ccli_validation_enabled', '0', 'Require valid CCLI licence for copyrighted songs (0=off, 1=on)'),
+    -- NOTE (#1668): `ccli_validation_enabled` used to be seeded here. It was NEVER
+    -- read by any code, yet its description called it the CCLI enforcement switch —
+    -- so an operator setting it to 1 would believe copyright enforcement was on when
+    -- nothing whatsoever had changed. A dead flag that lies about what it does is
+    -- worse than no flag. The real controls are `content_gating_enabled` = 1 PLUS
+    -- `require_licence:ccli` rows in tblContentRestrictions (rule #28), and the
+    -- licence itself is now resolved by userHasValidCcli() in includes/licences.php.
+    -- Existing installs have the row deleted by migrate-remove-ccli-validation-setting.php.
+    -- Do NOT re-add it.
     ('audio_signing_enabled', '0', 'Sign /audio MP3 URLs so gated audio streams via the gated route (#1358); 0=off (serve static /data/audio literal), 1=on (mint signed /audio URLs). Requires content_gating_enabled=1 AND the AUDIO_SIGNING_KEY constant.'),
-    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder "TEAMID" appID. Set via manage/configuration.php "Apple native app" card — never hard-code in source.');
+    -- NOTE: Description is VARCHAR(255) and MySQL runs STRICT, so an over-long
+    -- description here is not a truncation — it aborts the whole seed INSERT on
+    -- a fresh install. This row was 269 characters until #1685; the guard that
+    -- now measures it is tests/php/test-seed-column-widths.php.
+    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder TEAMID appID. Set on manage/configuration.php — never hard-code it in source.'),
+    -- Sentinel, not a setting: nothing reads this value. It exists so the
+    -- setup-database card for migrate-entitlement-truthup.php can tell whether
+    -- the one-off prune has run. Seeded here because a FRESH install has no
+    -- saved entitlement overrides to prune — the migration would be a no-op, so
+    -- the card should show applied from the start rather than sitting pending
+    -- forever on a database that was never affected.
+    ('entitlement_truthup_applied', '1', 'Sentinel (#1590): the entitlement truth-up cleared the stale saved overrides for delete_songs / bulk_edit_songs / run_db_backup. Nothing reads this value; it exists so the setup-database card can tell that the one-off prune has run.'),
+    -- Same reasoning as the row above: a FRESH install has never saved
+    -- /manage/entitlements, so there is no stored delete_songs override to
+    -- shadow the shipped editor+ default and nothing for the #1695 prune to do.
+    -- Seeding the sentinel means the card shows applied from the start instead
+    -- of sitting pending forever on a database that was never affected.
+    ('delete_songs_rewiden_applied', '1', 'Sentinel (#1695): the stage-3 re-widen considered the saved delete_songs override. Nothing reads this value; it exists so the setup-database card can tell the one-off prune has run.');
 
 
 -- Default access tiers (#346)
@@ -1773,9 +2088,25 @@ CREATE TABLE IF NOT EXISTS tblSongHistory (
 
 -- ----------------------------------------------------------------------------
 -- tblSongTags
--- User-defined tags/categories for songs (e.g., "Easter", "Communion",
--- "Wedding", "Funeral"). Tags are shared across all users. Songs can
--- have multiple tags, and tags can apply to multiple songs.
+-- Curator-managed tags/categories for songs (e.g., "Easter", "Communion",
+-- "Wedding", "Funeral"). Shared across all users — NOT the same thing as
+-- tblUserCustomTags, which is a private per-account pool. Songs can have
+-- multiple tags and tags can apply to multiple songs, via tblSongTagMap.
+--
+-- Since #1152 this table also holds the STANDARD theme vocabulary — the
+-- CCLI / SongSelect taxonomy shipped with OpenLyrics — seeded by
+-- migrate-seed-theme-vocabulary.php, which is what ParentId, CcliThemeId and
+-- Source are for. Two consequences worth knowing before writing to it:
+--
+--   * ParentId gives a TWO-LEVEL hierarchy, and `Name` holds the LEAF only.
+--     A theme filed as "Jesus Christ/Second Coming" is stored as the leaf
+--     "Second Coming" with ParentId pointing at "Jesus Christ" — never as the
+--     slash-joined path. Name is VARCHAR(50) and UNIQUE, so writing the path
+--     would both collide and truncate.
+--   * Source distinguishes 'curator' from 'ccli-openlyrics'. Curator variants
+--     are folded into a standard theme by the canonicalisation merge on
+--     /manage/tags, which is irreversible (the variant row is deleted). Grow
+--     the vocabulary through the migration's source data, never ad hoc.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongTags (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -1894,6 +2225,14 @@ CREATE TABLE IF NOT EXISTS tblNotifications (
 -- tblLoginAttempts
 -- Rate limiting for authentication attempts. Tracks failed logins per IP
 -- to prevent brute force attacks.
+--
+-- The name undersells it: this is the GENERIC rate-limit counter for the whole
+-- app (includes/rate_limit.php::checkRateLimit()), and callers that have
+-- nothing to do with logging in — the analytics ingest endpoint among them —
+-- reuse it by putting an ACTION NAME in the `Username` column. So a row here
+-- does not necessarily describe a login, and Username is a free string with no
+-- FK to tblUsers (account_lifecycle.php deletes by that string on erasure).
+-- Keep that in mind before reading COUNT(*) on this table as a login figure.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLoginAttempts (
     Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -1922,6 +2261,27 @@ ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
 -- Zero out any existing Misc song numbers (historic placeholders).
 UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;
 
+-- ============================================================================
+-- SONG RELATIONSHIPS, PERMALINK CONTINUITY & DUPLICATE DETECTION
+--
+-- Four different answers to "these two rows are about the same hymn", kept
+-- deliberately apart because they mean different things:
+--
+--   tblSongLinks ............ same hymn, DIFFERENT SONGBOOK (Amazing Grace as
+--                             MP-031 / CH-376 / SDAH-108). A curator assertion.
+--   tblSongTranslations ..... same hymn, DIFFERENT LANGUAGE (declared earlier,
+--                             under LANGUAGE & TRANSLATION SUPPORT).
+--   tblSongRedirects ........ a DEAD SongId whose shared permalink must still
+--                             resolve. Not a relationship — a tombstone.
+--   tblSongLinkSuggestions .. a MACHINE GUESS awaiting a curator's yes/no,
+--                             with tblSongLinkSuggestionsDismissed as the "no".
+--
+-- Only the first two assert anything about the catalogue. Promoting a
+-- suggestion writes a tblSongLinks row; it never edits the suggestion into
+-- truth. Scoring lives in includes/song_similarity.php — the ONE scorer
+-- (rule #22), never re-forked.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongLinks (#807) — cross-book counterparts.
 -- All rows sharing a GroupId represent the same hymn in different songbooks
@@ -1943,6 +2303,12 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
     CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
                  COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    /* uk_song makes SongId UNIQUE, so a song belongs to AT MOST ONE link
+       group. That is the load-bearing constraint of this table: groups are
+       equivalence classes, not tags, and merging two groups means re-stamping
+       GroupId on every member rather than adding a second row. GroupId itself
+       is a bare INT with no parent table — there is no tblSongLinkGroups; the
+       group exists only as the set of rows sharing the value. */
     UNIQUE KEY uk_song (SongId),
     KEY idx_GroupId (GroupId),
     CONSTRAINT fk_SongLinks_Song
@@ -1953,11 +2319,13 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
 
 -- ----------------------------------------------------------------------------
 -- tblSongRedirects (#1343) — keep a shared permalink (/song/<SongId>) alive
--- after a song is merged, deleted or renamed, instead of a dead 404 (the
--- "Here To Stay" problem). OldSongId is the dead id (PK, NOT an FK — the row is
--- gone); NewSongId is the 301 target (FK->tblSongs ON DELETE SET NULL) or NULL
--- for a tombstone ("removed"). Merge auto-writes duplicate->survivor; delete
--- offers relink-or-tombstone. Resolution is transitive + cycle-guarded.
+-- after a song is merged, deleted, renamed or MOVED to another songbook,
+-- instead of a dead 404 (the "Here To Stay" problem). OldSongId is the dead id
+-- (PK, NOT an FK — the row is gone); NewSongId is the 301 target
+-- (FK->tblSongs ON DELETE SET NULL) or NULL for a tombstone ("removed").
+-- Merge auto-writes duplicate->survivor; delete offers relink-or-tombstone; a
+-- songbook move (#1679, includes/song_relocate.php) writes Reason='move'.
+-- Resolution is transitive + cycle-guarded.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongRedirects (
     OldSongId  VARCHAR(20)  NOT NULL
@@ -1965,7 +2333,7 @@ CREATE TABLE IF NOT EXISTS tblSongRedirects (
     NewSongId  VARCHAR(20)  NULL DEFAULT NULL
                COMMENT 'Resolve target (FK->tblSongs); NULL = tombstone (removed, no replacement).',
     Reason     VARCHAR(20)  NOT NULL DEFAULT 'merge'
-               COMMENT 'merge | delete | rename — VARCHAR not ENUM (rule #20).',
+               COMMENT 'merge | delete | rename | move — VARCHAR not ENUM (rule #20); move = songbook re-key (#1679).',
     Note       VARCHAR(255) NOT NULL DEFAULT '',
     CreatedBy  INT UNSIGNED NULL DEFAULT NULL
                COMMENT 'tblUsers.Id of the curator who created the redirect, if signed in',
@@ -1980,15 +2348,31 @@ CREATE TABLE IF NOT EXISTS tblSongRedirects (
 
 -- ----------------------------------------------------------------------------
 -- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
--- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php; consumed by the
--- /manage/song-link-suggestions admin page. Pairs are stored canonically
--- with SongIdA < SongIdB so each unordered pair has at most one row.
+-- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php.
+-- Reviewed at /manage/duplicate-songs — the standalone /manage/song-link-
+-- suggestions page this comment used to name was ABSORBED into that unified
+-- review UI in #1215 and is now only a 302 redirect (rule #22).
+--
+-- Pairs are stored canonically with SongIdA < SongIdB so each unordered pair
+-- has at most one row: without that normalisation (A,B) and (B,A) would both
+-- insert past uk_pair and the same duplicate would be offered to the curator
+-- twice. The builder is responsible for the ordering — the database cannot
+-- express "sorted pair" as a constraint.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
     SongIdB         VARCHAR(20)  NOT NULL,
     Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
+    /* The next two columns look like they contradict each other — one ENUM,
+       one VARCHAR, both added by the same #1066 change, with the VARCHAR one
+       explaining itself as "not ENUM so a new value needs no ALTER". They do
+       not. Confidence is a CLOSED triage ladder: high / medium / low is the
+       whole idea, and a fourth rung would be a redesign, not an addition.
+       Signal names the DETECTION METHOD, and every new matching technique
+       adds one — which is precisely the growable case rule #20 is about.
+       Judge a vocabulary by whether it grows, not by how many values it has
+       today. */
     Confidence      ENUM('high','medium','low') NOT NULL DEFAULT 'low' COMMENT 'Triage tier so curators sort by confidence, not raw blend: strong-key match (ISRC/MBID) => high; fuzzy+author => medium; title-only => low (#1066 Theme D)',
     `Signal`        VARCHAR(50)  NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius. VARCHAR (not ENUM) so a new signal type needs no ALTER (#1066 Theme D). Backtick-quoted — SIGNAL is a reserved word in MySQL 8',
     TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
@@ -2050,12 +2434,31 @@ CREATE TABLE IF NOT EXISTS tblSearchQueries (
 
 
 -- ============================================================================
--- Tables added by migrations (sync target for the schema-audit page).
--- Each table below was originally introduced via an appWeb/.sql/migrate-*.php
--- script; the definitions are mirrored here so schema.sql remains the
--- canonical source of truth for what the live database is expected to hold.
--- Adding a new table that ships via a migration? Append the matching
--- CREATE TABLE block here so the schema-audit page (#518) stays clean.
+-- MIGRATION-ORIGIN FAMILIES (sync target for the schema-audit page)
+--
+-- This is a PROVENANCE boundary, not a subject boundary: everything from here
+-- to the #1066 banner was originally introduced by an appWeb/.sql/migrate-*.php
+-- script and mirrored back here so schema.sql stays the canonical description
+-- of what a live database should hold. Adding a new table that ships via a
+-- migration? Append its CREATE TABLE block here so the schema-audit page
+-- (#518) and tests/php/test-schema-coverage.php both stay clean.
+--
+-- Because the ordering is historical, unrelated subjects sit next to each
+-- other. The `-- ==== FAMILY:` banners below re-impose the subject grouping:
+--   FAMILY: COLLECTIONS · EXTERNAL LINKS · CREDIT-PEOPLE SATELLITES ·
+--   ALTERNATIVE TITLES & PER-ENTITY LANGUAGES · SONGBOOK SERIES & COMPILERS ·
+--   SONG MEDIA · WORKS
+-- ============================================================================
+
+
+-- ============================================================================
+-- FAMILY: COLLECTIONS (#941)
+-- Curatorial groupings ORTHOGONAL to the songbook hierarchy — a song lives in
+-- exactly one songbook but can appear in any number of collections. Note the
+-- vocabulary split (rule #24): these are called "Collections" in the UI and
+-- "Catalogues" everywhere internal — table names, the /manage/catalogues
+-- route, the admin.catalogues.* log keys and the 'catalogue' entity type all
+-- stay as they are. Renaming them is an explicitly rejected change.
 -- ============================================================================
 
 
@@ -2102,6 +2505,25 @@ CREATE TABLE IF NOT EXISTS tblCatalogueSongs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: EXTERNAL LINKS (#833 / #845)
+--
+-- One provider registry plus ONE LINK TABLE PER ENTITY —
+-- tblSong/tblSongbook/tblMusician/tblWork ExternalLinks — rather than a
+-- single polymorphic table with an EntityType column. That looks like
+-- duplication and is the deliberate choice (rule #15): each link table gets a
+-- REAL foreign key to its own parent, so links cascade away with the thing
+-- they describe. tblContentRestrictions above shows the alternative, where a
+-- polymorphic key means nothing can cascade at all.
+--
+-- The provider FK runs the other way: every link table declares its
+-- LinkTypeId ON DELETE RESTRICT, so a provider that is still in use cannot be
+-- deleted out from under the links pointing at it. Deactivate it (IsActive=0)
+-- instead. tblExternalLinkPatterns holds the URL -> provider match rules that
+-- js/modules/external-link-detect.js reads, which is why no provider list is
+-- ever hard-coded in PHP or JS (rule #11/#12).
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblExternalLinkTypes (#833) — controlled vocabulary of link providers
 -- (Hymnary, CCLI Songselect, IMSLP, YouTube, Spotify, Internet Archive,
@@ -2111,14 +2533,12 @@ CREATE TABLE IF NOT EXISTS tblExternalLinkTypes (
     Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Slug          VARCHAR(60)  NOT NULL,
     Name          VARCHAR(120) NOT NULL,
-    Category      ENUM(
-                      'information', 'listen', 'watch', 'read',
-                      'sheet-music', 'purchase', 'authority',
-                      'official', 'social', 'other'
-                  ) NOT NULL DEFAULT 'other',
+    Category      VARCHAR(20)  NOT NULL DEFAULT 'other'
+                  COMMENT 'information | listen | watch | read | sheet-music | purchase | authority | official | social | other (app-validated; widened from ENUM, rule #20, #1741 P1)',
     UrlPattern    VARCHAR(255) NULL,
     IconClass     VARCHAR(60)  NULL,
-    AppliesTo     SET('song','songbook','person','work') NOT NULL DEFAULT 'song,songbook,person',
+    AppliesTo     VARCHAR(255) NOT NULL DEFAULT 'song,songbook,person,musician'
+                  COMMENT 'CSV of applicable entity types: song | songbook | musician | work | tune (legacy alias "person" also recognised for pre-#1741-P2-B app-code back-compat — see migrate-musicians-rename.php; retired once the app-code rename lands) (app-validated via FIND_IN_SET; widened from SET so a new entity type never needs an ALTER, rule #20, #1741 P1/P2)',
     AllowMultiple TINYINT(1)   NOT NULL DEFAULT 1,
     IsActive      TINYINT(1)   NOT NULL DEFAULT 1,
     DisplayOrder  INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2204,12 +2624,13 @@ CREATE TABLE IF NOT EXISTS tblSongExternalLinks (
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonExternalLinks (#833) — per-credit-person external links.
--- Replaces the legacy free-text tblCreditPersonLinks (kept as read-fallback).
+-- tblMusicianExternalLinks (#833; renamed from tblCreditPersonExternalLinks
+-- by #1741 P2) — per-musician external links. Replaces the legacy free-text
+-- tblMusicianLinks (kept as read-fallback).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
+CREATE TABLE IF NOT EXISTS tblMusicianExternalLinks (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     LinkTypeId      INT UNSIGNED NOT NULL,
     Url             VARCHAR(2048) NOT NULL,
     Note            VARCHAR(255) NULL,
@@ -2218,33 +2639,41 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_person (CreditPersonId),
-    INDEX idx_type   (LinkTypeId),
+    INDEX idx_musician (MusicianId),
+    INDEX idx_type     (LinkTypeId),
 
-    CONSTRAINT fk_link_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)        ON DELETE CASCADE,
-    CONSTRAINT fk_link_type_person
+    CONSTRAINT fk_link_musician
+        FOREIGN KEY (MusicianId)     REFERENCES tblMusicians(Id)           ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_musician
         FOREIGN KEY (LinkTypeId)     REFERENCES tblExternalLinkTypes(Id)   ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: MUSICIAN SATELLITES (renamed from "CREDIT-PEOPLE SATELLITES" by
+-- #1741 P2)
+-- Everything that hangs off tblMusicians and arrived after it: alternative
+-- names, and group -> member composition. The identifier tables
+-- (tblMusicianIPI / tblMusicianIdentifiers) and the musician link
+-- tables live earlier in the file, with the registry itself.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
--- tblCreditPersonAliases — AKA / alternative names for searchability.
--- MusicBrainz-style alias model: one row per (person, name) with a Type
--- classification, optional Locale tag for transliterations, and an
--- IsPrimary flag for the preferred display form within a locale.
--- Searched alongside Name in site search + admin filter + editor
--- typeahead. /people/<slug> renders aliases under the bio header and
--- emits JSON-LD alternateName.
+-- tblMusicianAliases (renamed from tblCreditPersonAliases by #1741 P2) — AKA /
+-- alternative names for searchability. MusicBrainz-style alias model: one
+-- row per (musician, name) with a Type classification, optional Locale tag
+-- for transliterations, and an IsPrimary flag for the preferred display
+-- form within a locale. Searched alongside Name in site search + admin
+-- filter + editor typeahead. /people/<slug> renders aliases under the bio
+-- header and emits JSON-LD alternateName.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
+CREATE TABLE IF NOT EXISTS tblMusicianAliases (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     Name            VARCHAR(255) NOT NULL COMMENT 'Display form of the alias',
     SortName        VARCHAR(255) NULL COMMENT 'Surname-first sortable form; NULL = derive from Name',
-    Type            ENUM('legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other')
-                                 NOT NULL DEFAULT 'other'
-                                 COMMENT 'MusicBrainz-style alias classification',
+    Type            VARCHAR(20)  NOT NULL DEFAULT 'other'
+                                 COMMENT 'legal | artist | pseudonym | nickname | maiden | search-hint | misspelling | other (app-validated; widened from ENUM, rule #20, #1741 P1)',
     Locale          VARCHAR(35)  NULL COMMENT 'Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)',
     IsPrimary       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = preferred display form in this Locale',
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2252,45 +2681,137 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_person_name (CreditPersonId, Name),
-    INDEX idx_person (CreditPersonId),
-    INDEX idx_name   (Name),
-    INDEX idx_type   (Type),
+    UNIQUE KEY uq_musician_name (MusicianId, Name),
+    INDEX idx_musician (MusicianId),
+    INDEX idx_name     (Name),
+    INDEX idx_type     (Type),
 
-    CONSTRAINT fk_alias_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+    CONSTRAINT fk_alias_musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonMembers (#1502) — links individual MEMBER people to a
--- 'Group / band / collective' person (tblCreditPeople.IsGroup, #585).
--- Thin join table, one row per (GroupPersonId, MemberPersonId) pair —
--- both FKs point at tblCreditPeople(Id) ON DELETE CASCADE so deleting
--- either side cleans up the link automatically. UNIQUE guards duplicate
--- membership; "a group can't list itself as a member" is an application-
--- layer check (addCreditPersonGroupMember() in credit_people_helpers.php),
--- not a schema CHECK constraint. SortOrder is append-order only for v1
--- (no drag-reorder UI yet).
+-- tblMusicianRelations (#1502; renamed from tblCreditPersonMembers by
+-- #1741 P2 — the P1 M3 relation generalisation below made "Members" too
+-- narrow a name) — links a SUBJECT musician to an OBJECT musician via a
+-- typed, dated relation ('member' today, 'portrays' for a person credited
+-- as portraying a historical figure in a dramatisation). Originally a thin
+-- group/member join table; both FKs point at tblMusicians(Id) ON DELETE
+-- CASCADE so deleting either side cleans up the link automatically. UNIQUE
+-- guards duplicate membership; "a group can't list itself as a member" is
+-- an application-layer check (addCreditPersonGroupMember() in
+-- credit_people_helpers.php), not a schema CHECK constraint. SortOrder is
+-- append-order only for v1 (no drag-reorder UI yet).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
-    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    GroupPersonId  INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — the Group/band/collective person',
-    MemberPersonId INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — an individual member of the group',
+CREATE TABLE IF NOT EXISTS tblMusicianRelations (
+    Id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SubjectMusicianId INT UNSIGNED NOT NULL COMMENT 'FK to tblMusicians.Id — the Group/band/collective musician (subject side of the relation) (#1741 P2)',
+    ObjectMusicianId  INT UNSIGNED NOT NULL COMMENT 'FK to tblMusicians.Id — an individual member musician (object side of the relation) (#1741 P2)',
+    /* Relation generalisation (#1741 P1 M3) — 'member' today, 'portrays'
+       for a person credited as portraying a historical figure in a
+       dramatisation. Dated so the same pair can legitimately repeat under
+       a different relation or date range (e.g. left and later rejoined). */
+    RelationType   VARCHAR(30)  NOT NULL DEFAULT 'member' COMMENT 'member | portrays (app-validated; VARCHAR not ENUM, rule #20) — portrays models e.g. a person credited as portraying a historical figure in a dramatisation (#1741 P1)',
+    DateFrom            DATE         NULL DEFAULT NULL COMMENT 'Start of this relation (member-since / portrayed-from); partial-date precision in DateFromPrecision (#1741 P1)',
+    DateFromPrecision   VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of DateFrom is real: year | month | day (partial historical dates) (#1741 P1)',
+    DateTo              DATE         NULL DEFAULT NULL COMMENT 'End of this relation (member-until / portrayed-until); NULL = ongoing/current (#1741 P1)',
+    DateToPrecision     VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of DateTo is real: year | month | day (partial historical dates) (#1741 P1)',
+    Note                VARCHAR(255) NULL DEFAULT NULL COMMENT 'Free-text curator note about this relation (#1741 P1)',
     SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Admin-controlled display order within the group; append-order by default',
     CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_group_member (GroupPersonId, MemberPersonId),
-    INDEX      idx_group  (GroupPersonId),
-    INDEX      idx_member (MemberPersonId),
+    /* uq_subject_object_rel (renamed from uq_group_member_rel by #1741 P2,
+       which itself superseded the original uq_group_member in #1741 P1) —
+       DateFrom sits inside the key and is nullable; MySQL/MariaDB treat
+       every NULL as distinct inside a UNIQUE key (the same pattern as
+       tblSongbookEntries.uq_book_number), so undated relations still
+       collide on (Subject,Object,RelationType) alone while multiple DATED
+       relations for the same pair+type coexist. */
+    UNIQUE KEY uq_subject_object_rel (SubjectMusicianId, ObjectMusicianId, RelationType, DateFrom),
+    INDEX      idx_subject (SubjectMusicianId),
+    INDEX      idx_object  (ObjectMusicianId),
 
-    CONSTRAINT fk_creditpersonmembers_group
-        FOREIGN KEY (GroupPersonId)  REFERENCES tblCreditPeople(Id) ON DELETE CASCADE,
-    CONSTRAINT fk_creditpersonmembers_member
-        FOREIGN KEY (MemberPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+    CONSTRAINT fk_musicianrelations_subject
+        FOREIGN KEY (SubjectMusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_musicianrelations_object
+        FOREIGN KEY (ObjectMusicianId)  REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Group/band/collective -> individual member people (#1502).';
+  COMMENT='Group/band/collective -> individual member musicians (#1502).';
 
+
+-- ============================================================================
+-- FAMILY: MUSICIANS BACK-COMPAT VIEWS (#1741 P2)
+--
+-- One UPDATABLE view per pre-rename table name, over the tblMusician* tables
+-- above, with every renamed column aliased back to its pre-rename name via
+-- `NewCol AS OldCol`. This is the shield that lets every app-code call site
+-- that still says tblCreditPeople/tblCreditPerson* (the whole codebase except
+-- this file's migration counterpart and includes/schema_audit.php) keep
+-- reading AND WRITING through the old names unchanged — the app-code rename
+-- itself is #1741 P2-B, a deliberately separate, later step.
+--
+-- Every column list below is explicit (never `SELECT *`) and every column is
+-- a direct, unmodified reference to its underlying column (a straight column
+-- reference, optionally aliased) — no expression, aggregate, JOIN, DISTINCT
+-- or GROUP BY — so MySQL/MariaDB's view-updatability rules are satisfied by
+-- construction and INSERT/UPDATE/DELETE against any of these seven names
+-- keep working exactly as they did against the base table.
+--
+-- These views are PERMANENT until a dedicated drop card (P2b, tracked
+-- separately, gated 'manual'+confirm=1 like the #1235 LinesJson retirement)
+-- runs once every docroot is confirmed running P2-B's renamed code. Do not
+-- hand-drop them; do not reintroduce a real table under any of these seven
+-- names.
+-- ============================================================================
+
+CREATE OR REPLACE VIEW tblCreditPeople AS
+    SELECT Id, Name, Slug, MusicBrainzArtistMBID, IsSpecialCase, IsGroup, Type, Disambiguation,
+           FirstNames, Surname, MaidenSurname, Suffix, Notes, Biography, BirthPlace, BirthPlaceId,
+           BirthDate, BirthDatePrecision, DeathPlace, DeathPlaceId, DeathDate, DeathDatePrecision,
+           CreatedAt, UpdatedAt
+      FROM tblMusicians;
+
+CREATE OR REPLACE VIEW tblCreditPersonLinks AS
+    SELECT Id, MusicianId AS CreditPersonId, LinkType, Url, Label, SortOrder, CreatedAt, UpdatedAt
+      FROM tblMusicianLinks;
+
+CREATE OR REPLACE VIEW tblCreditPersonIPI AS
+    SELECT Id, MusicianId AS CreditPersonId, IPINumber, NameUsed, Notes, CreatedAt, UpdatedAt
+      FROM tblMusicianIPI;
+
+CREATE OR REPLACE VIEW tblCreditPersonIdentifiers AS
+    SELECT Id, MusicianId AS CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes,
+           CreatedAt, UpdatedAt
+      FROM tblMusicianIdentifiers;
+
+CREATE OR REPLACE VIEW tblCreditPersonExternalLinks AS
+    SELECT Id, MusicianId AS CreditPersonId, LinkTypeId, Url, Note, SortOrder, Verified,
+           CreatedAt, UpdatedAt
+      FROM tblMusicianExternalLinks;
+
+CREATE OR REPLACE VIEW tblCreditPersonAliases AS
+    SELECT Id, MusicianId AS CreditPersonId, Name, SortName, Type, Locale, IsPrimary, SortOrder,
+           Note, CreatedAt, UpdatedAt
+      FROM tblMusicianAliases;
+
+CREATE OR REPLACE VIEW tblCreditPersonMembers AS
+    SELECT Id, SubjectMusicianId AS GroupPersonId, ObjectMusicianId AS MemberPersonId, RelationType,
+           DateFrom, DateFromPrecision, DateTo, DateToPrecision, Note, SortOrder, CreatedAt, UpdatedAt
+      FROM tblMusicianRelations;
+
+
+-- ============================================================================
+-- FAMILY: ALTERNATIVE TITLES & PER-ENTITY LANGUAGES (#832 / #778)
+--
+-- Two pairs of parallel song/songbook tables. Both exist for the same reason:
+-- the singular column that came first (Title, Language) could hold exactly one
+-- value, and real hymnals need several — an "also known as" title per source,
+-- a language per section of a bilingual book. The singular columns are kept as
+-- the display default rather than dropped, with IsPrimary=1 in the chip-list
+-- mirroring them, so no read path had to change when these landed.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
@@ -2373,6 +2894,19 @@ CREATE TABLE IF NOT EXISTS tblSongLanguages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: SONGBOOK SERIES & COMPILERS (#782 / #831)
+--
+-- Two songbook-level relationships that are easy to confuse with each other
+-- and with tblSongbooks.ParentSongbookId declared at the top of this file:
+--   ParentSongbookId ..... VERTICAL. This book is a translation / edition /
+--                          abridgement OF that one. Self-FK, SET NULL.
+--   tblSongbookSeries .... HORIZONTAL. These books are peers in a set
+--                          (Songs of Fellowship 1, 2, 3). Many-to-many.
+--   tblSongbookCompilers . credits the PEOPLE who assembled a hymnal, as
+--                          opposed to the per-song credit tables.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongbookSeries (#782) — peer-to-peer songbook collections (Songs of
 -- Fellowship volumes, themed compilations).
@@ -2412,25 +2946,37 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeriesMembership (
 -- ----------------------------------------------------------------------------
 -- tblSongbookCompilers (#831) — many-to-many credit at the songbook level
 -- (compilers / editors of a hymnal, e.g. Mission Praise → Horrobin & Leavers).
+-- MusicianId (renamed from CreditPersonId by #1741 P2) FKs to tblMusicians.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     SongbookId      INT UNSIGNED NOT NULL,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
     Note            VARCHAR(255) NULL,
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_book_person (SongbookId, CreditPersonId),
-    INDEX idx_book   (SongbookId),
-    INDEX idx_person (CreditPersonId),
+    UNIQUE KEY uq_book_musician (SongbookId, MusicianId),
+    INDEX idx_book     (SongbookId),
+    INDEX idx_musician (MusicianId),
 
     CONSTRAINT fk_compiler_book
-        FOREIGN KEY (SongbookId)     REFERENCES tblSongbooks(Id)    ON DELETE CASCADE,
-    CONSTRAINT fk_compiler_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+        FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_compiler_musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- ============================================================================
+-- FAMILY: SONG MEDIA (#853)
+-- The one table in this schema that stores FILE BYTES. Note the hybrid split
+-- below and the reason for it: small, cacheable, rights-sensitive files (PDF,
+-- MIDI, MusicXML) go in the MEDIUMBLOB so they inherit the database's backup
+-- and transaction story, while audio — large, streamed, range-requested —
+-- stays on disk with only its path here. StorageBackend records which, and a
+-- row is meaningless without it. Sha256 is indexed so a re-upload of the same
+-- file is detectable rather than silently duplicated.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblSongMedia (#853) — per-song accompanying files (audio / sheet-music /
@@ -2463,6 +3009,21 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: WORKS (#840) — the composition above the songs
+--
+-- The third grouping axis, and the one people mix up with the other two.
+--   tblSongLinks .. "these ROWS are the same hymn in different books" — flat,
+--                   curator-asserted, one group per song.
+--   tblWorks ...... "these songs are renderings of one COMPOSITION" — a real
+--                   entity with its own identity (ISWC, MusicBrainz Work MBID),
+--                   its own page at /work/<slug>, and self-nesting via
+--                   ParentWorkId for suites and movements.
+--   tblTunes ...... (further down, #1090) the MELODY, which is a different
+--                   composition again — one tune carries many texts.
+-- A song can sit in all three at once and that is not a contradiction.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblWorks (#840) — composition grouping. Mirrors MusicBrainz Work ↔
 -- Recording: one Work can span multiple tblSongs (different songbooks /
@@ -2475,6 +3036,19 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     MusicBrainzWorkMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID (composition identity). Lives on the work, NOT the recording-level identity map, so work-dedup has one home (#1066 Theme D / stress-C2)',
     Title         VARCHAR(255) NOT NULL,
     Slug          VARCHAR(80)  NOT NULL,
+    /* Identity + descriptive fields (#1741 P1 §2.2). Ccli is NULL (not '')
+       so absent values coexist under uq_ccli — every NULL is distinct.
+       TuneName/TuneId mirror the tblSongs pair; fk_Works_Tune is a
+       trailing ALTER below (tblTunes is declared later in this file). */
+    Ccli          VARCHAR(50)  NULL DEFAULT NULL COMMENT 'CCLI Work Number (#1741 P1) — the future /ccli/ resolver''s Work-first lookup key. NULL rather than empty string so absent values coexist under uq_ccli (every NULL is distinct)',
+    Bowi          VARCHAR(30)  NULL DEFAULT NULL COMMENT 'Best Open Work Identifier — Luminate Data''s open ISWC alternative (media-identifiers-spec.md §4b/§4c, #1741 D5); the future /bowi/ resolver''s lookup key. NULL rather than empty string so absent values coexist under uq_bowi (every NULL is distinct), mirrors uq_iswc/uq_ccli.',
+    Subtitle      VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional work subtitle (#1741 P1)',
+    Disambiguation VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named works (#1741 P1)',
+    TuneName      VARCHAR(120) NULL DEFAULT NULL COMMENT 'Traditional tune name mirror (#1741 P1); denorm display string, same pattern as tblSongs.TuneName. Canonical entity is tblTunes via TuneId',
+    TuneId        INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblTunes.Id (#1741 P1); mirrors tblSongs.TuneId. FK added via trailing ALTER — tblTunes is defined later in this file (same reason as fk_Songs_Tune)',
+    FirstPublishedYear SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymn works predate it. Same column added to tblSongs in the same P1 batch (Song AND Work editors both need it, rule #20)',
+    CopyrightYears VARCHAR(100) NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1)',
+    CopyrightHolder VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1)',
     Notes         TEXT         NULL,
     /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
     OriginCity    VARCHAR(255) NULL,
@@ -2485,9 +3059,12 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_slug   (Slug),
     UNIQUE KEY uq_iswc   (Iswc),
     UNIQUE KEY uq_mbwork (MusicBrainzWorkMBID),
+    UNIQUE KEY uq_ccli   (Ccli),
+    UNIQUE KEY uq_bowi   (Bowi),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
+    INDEX      idx_TuneId (TuneId),
 
     CONSTRAINT fk_work_parent
         FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
@@ -2549,6 +3126,53 @@ CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
 -- timed-lyrics ingest pipeline, API-key hardening, and cross-system identity.
 -- Tables are additive + dormant until the consuming features land; shipping
 -- them together avoids a second migration round as those features are built.
+--
+-- ----------------------------------------------------------------------------
+-- READ THIS BEFORE DELETING ANYTHING IN THIS BATCH — or in the #1088, #1090,
+-- presentation-theme (#1168) or gating (#1481) batches that follow.
+--
+-- These tables were shipped AHEAD of the code that uses them. That is not
+-- rot; it is the design (CLAUDE.md rule #20).
+--
+-- ⚠️ READ THE NEXT SENTENCE BEFORE TRUSTING THIS BLOCK. An earlier draft said
+-- these batches have "no rows, no reader and no writer" FULL STOP, and that is
+-- FALSE for four of the five named above — #1088 has full CRUD in
+-- includes/line_enrichment.php plus a shipped editor panel, #1066's
+-- tblApiKeyUsage is read and written by includes/api_keys.php, #1090's
+-- tblTunes is JOINed in SongData.php, and #1481's tblGatingRules is read by
+-- includes/gating_rules.php behind /manage/feature-gating.
+--
+-- That wrong sentence was worse than no comment, because this block's whole
+-- argument is "grep for callers, find none, delete — that test misleads you
+-- here". A reader who greps WILL find callers, and a comment insisting they
+-- will not simply destroys its own credibility at the moment it matters.
+--
+-- The honest form: a batch is dormant UNTIL its consuming feature lands, and
+-- several of these have since landed. Check the specific table before
+-- concluding anything about it. When a feature FAMILY needs schema, the
+-- final shape is worked out up front, stress-tested against "what would force
+-- a second migration?", and shipped as ONE additive, idempotent, dormant
+-- batch — instead of dribbling out an ALTER every time the feature is tweaked.
+-- An empty table is the cheap half of that trade; the expensive half was
+-- already paid in design.
+--
+-- So the honest state of a table here is "waiting", not "abandoned", and the
+-- usual dead-code test — grep for callers, find none, delete — gives exactly
+-- the wrong answer. Each block below says which feature it is waiting for.
+-- If that feature is genuinely cancelled, removing the table is a decision
+-- with an issue attached, not a tidy-up.
+--
+-- The same reasoning explains the shapes you will see repeatedly:
+--   * every growable vocabulary is VARCHAR with an app-level allow-list, never
+--     ENUM, because adding an ENUM value IS the second migration;
+--   * a discriminator column sits inside a UNIQUE key before anything needs it
+--     (tblApiKeyUsage.Scope, tblGatingRules.Scope), so per-scope limits later
+--     cost nothing;
+--   * a (Source, SourceRef) UNIQUE makes external re-import idempotent, and
+--     because MySQL treats NULLs as distinct, manually-created rows coexist;
+--   * TTLs are DATETIME, never TIMESTAMP, so they are never reinterpreted
+--     against a session time zone.
+-- ----------------------------------------------------------------------------
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -2749,6 +3373,19 @@ CREATE TABLE IF NOT EXISTS tblApiKeyRequests (
 -- lives on tblWorks, not here (stress-C2). Change history goes to the existing
 -- tblActivityLog, not a dedicated table (stress-C1). The iLyricsDB link column
 -- + bridge views are GATED on the DB-merge decision (see issue #1066-gated).
+--
+-- #1749 FULL UNIFICATION (D-3, decided default, non-blocking) — this table's
+-- four provider columns are now FROZEN LEGACY, not actively synced denorms:
+-- the #1747 D5 backfill absorbed them one-way into tblSongExternalIds (the
+-- new recording-ID authority), nothing reads or writes these four columns
+-- live today (0.7 in the build spec — no SELECT/INSERT/UPDATE anywhere
+-- outside migrations/probes), and the table itself stays gated on the #1010
+-- iLyricsDB DB-merge decision above. Do NOT build a live store->identity-map
+-- sync — see .claude/catalogue-1741-1749-unification-plan.md §2.3 for the
+-- full reasoning (shape incompatibility: this table's provider columns carry
+-- a TABLE-WIDE UNIQUE key, the store's uq_Song_Type_Value is PER-SONG, so a
+-- faithful sync needs cross-song collision handling this table's dormancy
+-- doesn't justify building yet). Removal is gated on #1010, same as always.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
     Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -2757,6 +3394,16 @@ CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
     SpotifyTrackId           VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Spotify track id/URI',
     GeniusTrackId            VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Genius track id',
     IsrcCode                 VARCHAR(15)  NULL DEFAULT NULL COMMENT 'Denorm of tblSongs.Isrc for join-free lookups (app keeps both in sync)',
+    /* ⚠ These two are ENUMs inside the very batch that codified "growable
+       vocabulary is VARCHAR, never ENUM" — the exception is not explained
+       anywhere, and SourceOfTruth in particular clearly grows: adding the
+       next external system (Apple Music, Hymnary, Discogs) means an ALTER,
+       which is exactly the second migration rule #20 exists to avoid.
+       Compare tblSongLinkSuggestions.Signal a few hundred lines up, which
+       enumerates the SAME kind of thing as a VARCHAR and says why. Treat this
+       as a known inconsistency to converge, not as precedent — and note that
+       converging it is a paired schema.sql + migration change, since the
+       column definitions here must stay byte-identical to their mirror. */
     SourceOfTruth            ENUM('ihymns','ilyricsdb','musicbrainz','spotify','genius','manual') NOT NULL DEFAULT 'ihymns',
     MappingStatus            ENUM('pending','verified','conflict','deprecated') NOT NULL DEFAULT 'pending',
     VerifiedAt               DATETIME     NULL DEFAULT NULL,
@@ -2779,6 +3426,48 @@ CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
         FOREIGN KEY (VerifiedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Cross-system recording identity map (#1066 Theme D). iLyricsDB link column gated on the DB-merge decision.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongExternalIds (#1741 D5) — key/value recording/release/product ID
+-- store. Luminate's own dashboard models Song -> many Recordings -> many
+-- provider IDs (~13 DSP + ~10 database + legacy codes per
+-- .claude/media-identifiers-spec.md §4b) — a one-column-per-provider table
+-- (tblSongIdentityMap's shape, immediately above) cannot absorb that
+-- (rule #28); this key/value table can, at the cost of one additional row
+-- per identifier instead of an ALTER per provider. IdScope/IdType are
+-- VARCHAR + app-validated against includes/media_identifiers.php's central
+-- map (rule #20 — never ENUM). Decision A=c (media-identifiers-spec.md §4c):
+-- release/product IDs (ICPN/GRid/UPC/EAN/catalog-number/MC_RELEASE/
+-- MC_RELEASE_GROUP/MC_PRODUCT) are stored on THIS same recording-grain row as
+-- ingest provenance (IdScope='release'|'product'), not a separate tblReleases
+-- entity — iHymns is a hymn-lyrics catalogue, not a commercial release
+-- database (owner-accepted scoping, spec §4c). The 4 existing
+-- tblSongIdentityMap columns (MusicBrainzRecordingMBID/SpotifyTrackId/
+-- GeniusTrackId/IsrcCode) are GRANDFATHERED READS — untouched, not migrated
+-- here; a later backfill MAY populate this table from them (out of scope for
+-- this additive/dormant batch). Nothing reads or writes this table yet — the
+-- P3 alias-URL resolver is what starts consuming it (#1741 D5).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongExternalIds (
+    Id          INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)   NOT NULL COMMENT 'FK to tblSongs.SongId — the recording-grain row this identifier belongs to (or its release/product context under decision A=c, media-identifiers-spec.md §4c)',
+    IdScope     VARCHAR(20)   NOT NULL COMMENT 'recording | song | work | release | product | party (app-validated against includes/media_identifiers.php SONG_EXTERNAL_ID_SCOPES; VARCHAR not ENUM, rule #20). work/party are reserved — not populated by this phase',
+    IdType      VARCHAR(40)   NOT NULL COMMENT 'Provider/database/legacy identifier key, e.g. isrc | spotify | musicbrainz-recording | icpn | mc-release | … — app-validated against includes/media_identifiers.php RECORDING_EXTERNAL_ID_TYPES (VARCHAR not ENUM, rule #20; #1741 D5)',
+    IdValue     VARCHAR(191)  NOT NULL COMMENT 'The identifier value as issued by the provider/authority. VARCHAR(191) keeps a utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit',
+    Source      VARCHAR(40)   NULL DEFAULT NULL COMMENT 'Provenance system that supplied this row, e.g. ihymns | musicbrainz | luminate | manual (free text, mirrors tblLyrics.Source style)',
+    SourceRef   VARCHAR(191)  NULL DEFAULT NULL COMMENT 'External primary id from Source for idempotent re-import / dedup; NULL for manual entry',
+    CreatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Song_Type_Value (SongId, IdType, IdValue),
+    INDEX      idx_Type_Value     (IdType, IdValue),
+    INDEX      idx_SongId         (SongId),
+
+    CONSTRAINT fk_SongExternalIds_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Key/value recording/release/product external-ID store (#1741 D5) — the Q5 successor absorbing DSP/database/legacy IDs without a per-provider ALTER.';
 
 
 -- ----------------------------------------------------------------------------
@@ -2948,6 +3637,8 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     Id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Name                VARCHAR(120) NOT NULL COMMENT 'Canonical tune name, e.g. HYFRYDOL',
     Slug                VARCHAR(140) NOT NULL COMMENT 'URL-safe handle',
+    Subtitle            VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional tune subtitle (#1741 P1)',
+    Disambiguation      VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named tunes (#1741 P1)',
     MeterCode           VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Hymn metre, e.g. 87.87 D | CM | LM | 86.86 (VARCHAR not ENUM)',
     MusicBrainzWorkMBID VARCHAR(50)  NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID — a tune is a composition (mirrors tblWorks)',
     HymnaryTuneId       VARCHAR(64)  NULL DEFAULT NULL COMMENT 'Hymnary.org tune identifier for enrichment cross-link',
@@ -2964,7 +3655,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
 
 -- ----------------------------------------------------------------------------
 -- tblTuneAliases (#1090 P4) — alternate names a tune is known by (modelled on
--- tblCreditPersonAliases; indexed rows, not JSON).
+-- tblMusicianAliases; indexed rows, not JSON).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblTuneAliases (
     Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -2980,11 +3671,84 @@ CREATE TABLE IF NOT EXISTS tblTuneAliases (
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ----------------------------------------------------------------------------
+-- tblTuneCredits (#1741 P1) — composer/arranger/harmoniser/source credits.
+-- ONE Role-discriminated table, NOT six per-role clones like the legacy
+-- tblSongWriters/tblSongComposers/… family. Name is a plain name-string
+-- (matching every other credit table in this schema); MusicianId (renamed
+-- from CreditPersonId by #1741 P2) is a RESERVED, nullable, dormant FK to
+-- tblMusicians so the "credits: name-strings vs FK-ify" open question
+-- costs zero ALTER either way.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblTuneCredits (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    TuneId          INT UNSIGNED NOT NULL,
+    Role            VARCHAR(20)  NOT NULL COMMENT 'composer | arranger | harmoniser | source (app-validated; VARCHAR not ENUM, rule #20)',
+    Name            VARCHAR(255) NOT NULL COMMENT 'Credited name-string, matching the tblSong*/tblWork credit-table pattern (no FK to tblMusicians by default)',
+    MusicianId      INT UNSIGNED NULL DEFAULT NULL COMMENT 'Reserved FK to tblMusicians.Id (#1741 P1/P2) — nullable/dormant so the credits name-string-vs-FK decision costs zero ALTER either way; unused until that decision lands',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_tune         (TuneId),
+    INDEX idx_role         (Role),
+    INDEX idx_MusicianId   (MusicianId),
+
+    CONSTRAINT fk_TuneCredits_Tune
+        FOREIGN KEY (TuneId)     REFERENCES tblTunes(Id)     ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_TuneCredits_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Tune composer/arranger/harmoniser/source credits (#1741 P1), Role-discriminated per plan §2.3.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblTuneExternalLinks (#1741 P1) — per-tune external-link rows. Mirrors
+-- tblWorkExternalLinks exactly (rule #15: a new external-links entity gets
+-- its own tbl<Entity>ExternalLinks table, never a generic FK column).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblTuneExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    TuneId      INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_tune (TuneId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_tune
+        FOREIGN KEY (TuneId)     REFERENCES tblTunes(Id)             ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_tune
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Back-reference FK from tblSongs.TuneId -> tblTunes (added here, after tblTunes
 -- exists; the column + index are declared inline in the tblSongs block above).
 ALTER TABLE tblSongs
     ADD CONSTRAINT fk_Songs_Tune
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Back-reference FK from tblWorks.TuneId -> tblTunes (#1741 P1; added here for
+-- the same reason as fk_Songs_Tune immediately above: tblWorks is declared
+-- before tblTunes in this file, so the FK cannot be inline. The column +
+-- index are declared inline in the tblWorks block above).
+ALTER TABLE tblWorks
+    ADD CONSTRAINT fk_Works_Tune
+        FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Back-reference FK from tblSongs.DeletedBy -> tblUsers (added here rather than
+-- inline for the same reason as fk_Songs_Tune: tblSongs is created before
+-- tblUsers in this file; the columns + index are declared inline in the
+-- tblSongs block above). ON DELETE SET NULL so erasing the deleting curator's
+-- account (#1698) anonymises the attribution without touching the song. (#1694)
+ALTER TABLE tblSongs
+    ADD CONSTRAINT fk_Songs_DeletedBy
+        FOREIGN KEY (DeletedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on
@@ -3007,6 +3771,19 @@ CREATE TABLE IF NOT EXISTS tblSongUsageEvents (
     MetaJson     JSON         NULL DEFAULT NULL,
     CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* idx_OrgDate is (OrgId, UsedAt) in that order because the only query that
+       matters is "everything this ORG used between these two DATES" — org
+       first narrows to one tenant, the date range then scans a contiguous
+       slice of the index rather than filtering a whole-corpus date sweep.
+
+       Note the delete semantics carefully before this table goes live: the
+       song FK is ON DELETE CASCADE, so removing a song erases the record that
+       it was ever used — the substrate of a licence report. Every other FK
+       here (Org, User, Schedule, Licence) is SET NULL precisely so the EVENT
+       survives its context. Song deletion being soft (#1694) is what keeps
+       that from mattering in practice; a hard purge still takes the
+       reporting history with it, which is a property to weigh rather than
+       discover. */
     INDEX idx_Song     (SongId),
     INDEX idx_OrgDate  (OrgId, UsedAt),
     INDEX idx_Context  (UsageContext),
@@ -3121,6 +3898,23 @@ CREATE TABLE IF NOT EXISTS tblSongEmbeddings (
 -- tblLiveFollowSessions (#1090 P7) — ephemeral broadcast state for the native
 -- "Live Follow" feature: a leader's current song/slide that congregants mirror
 -- on their own devices (short-code join). A cleanup job prunes past ExpiresAt.
+--
+-- ⚠ ONE TABLE, TWO DIFFERENT FEATURES — confusing them is what once made Live
+-- Follow look permanently broken (rule #26). SessionKind is the discriminator:
+--   'host'    = Live Follow (#1268). Any authenticated user starts one. No
+--               venue, no schedule, no organisation — OrgId is left NULL.
+--   'service' = Service Mode (#1335). Requires a venue, an occurrence date and
+--               org-admin rights, and is joined through the rotating codes in
+--               tblLiveFollowJoinCodes rather than the SessionCode column.
+-- The nullable HostUserId / VenueId / ScheduleId / OccurrenceDate columns are
+-- not optional extras; they are how the two shapes coexist in one table.
+--
+-- ⚠ `Channel` is the 3-docroot environment discriminator, and it MUST appear
+-- in the WHERE clause of EVERY join / poll / broadcast / gate / prune query.
+-- An unfiltered query is a cross-environment leak. The visible consequence of
+-- it working correctly is that a session hosted on one docroot can never be
+-- joined from another — so the natural "desktop on dev, phone on www" test
+-- always fails with a generic wrong-code message and looks like a bug.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     Id                   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -3155,11 +3949,7 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     CONSTRAINT fk_LiveFollow_Org
         FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_LiveFollow_Song
-        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_LiveFollow_Venue
-        FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_LiveFollow_Schedule
-        FOREIGN KEY (ScheduleId) REFERENCES tblOrgServiceSchedules(Id) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Live-follow broadcast sessions for native present+follow (#1090 P7); extended for Service Mode org/venue/service sessions (#1335).';
 
@@ -3234,7 +4024,7 @@ CREATE TABLE IF NOT EXISTS tblServicePollCounters (
 CREATE TABLE IF NOT EXISTS tblSessionControlTokens (
     Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     TokenHash  CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the scoped control token (raw value never stored)',
-    SessionId  BIGINT UNSIGNED NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; the live/service session this token may control',
+    SessionId  INT UNSIGNED    NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly; a BIGINT here is errno 150 and the table cannot be created (#1708)',
     Channel    VARCHAR(16)     NULL DEFAULT NULL COMMENT '3-docroot env discriminator (rule #26) — filter in every issue/validate/revoke query',
     Scope      VARCHAR(40)      NOT NULL DEFAULT 'broadcast' COMMENT 'granted capability, e.g. broadcast | view — app-validated, VARCHAR not ENUM (rule #20)',
     IssuedAt   DATETIME     NOT NULL,
@@ -3263,7 +4053,7 @@ CREATE TABLE IF NOT EXISTS tblApnsTokens (
     Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Kind       VARCHAR(20)    NOT NULL DEFAULT 'device' COMMENT 'device | liveActivity — app-validated, VARCHAR not ENUM (rule #20); Live Activity tokens churn per-activity so Kind + nullable SessionId hedge without a 2nd migration',
     UserId     INT UNSIGNED   NULL DEFAULT NULL COMMENT 'FK tblUsers — owning user; NULL for an anonymous/presence-scoped token',
-    SessionId  BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; set only for Kind=liveActivity tokens tied to one live/service session',
+    SessionId  INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly (#1708); set only for Kind=liveActivity tokens tied to one live/service session',
     PushToken  VARBINARY(255) NOT NULL COMMENT 'Raw APNs device/activity push token bytes',
     ApnsEnv    VARCHAR(20)    NOT NULL DEFAULT 'production' COMMENT 'sandbox | production — which APNs gateway this token is valid against',
     ExpiresAt  DATETIME       NULL DEFAULT NULL COMMENT 'Optional TTL — NULL = no expiry (ordinary device tokens); Live Activity tokens set this to the activity end',
@@ -3292,7 +4082,7 @@ CREATE TABLE IF NOT EXISTS tblApnsTokens (
 -- VOCAL / SINGING PARTS (#1137) — first-class queryable projection of the
 -- lossless TTML ttm:agent/ttm:role/background-vocal signal trapped in
 -- tblLyricLines.MetaJson. Registry + MANY-to-MANY line/word assignment (true
--- duet/unison). Named singer reuses tblCreditPeople (no new tblArtists). Gender
+-- duet/unison). Named singer reuses tblMusicians (no new tblArtists). Gender
 -- is an orthogonal axis. Additive + dormant (MetaJson stays the source of truth).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblVocalParts (
@@ -3300,7 +4090,7 @@ CREATE TABLE IF NOT EXISTS tblVocalParts (
     LyricsId       INT UNSIGNED    NOT NULL COMMENT 'FK to tblLyrics.Id — parts are per lyrics version',
     PartKind       VARCHAR(30)     NOT NULL DEFAULT 'lead' COMMENT 'lead|main|backing|soloist|male|female|duet|group|unison|choir|congregation|cantor|descant|narrator|spoken|named-singer (app-validated vs a central map -> badge). VARCHAR not ENUM',
     Label          VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Editor display override (Soprano, Worship Leader, …)',
-    CreditPersonId INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblCreditPeople.Id — typed named-singer link (reuses the person registry, NOT a new tblArtists)',
+    MusicianId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblMusicians.Id — typed named-singer link (reuses the musician registry, NOT a new tblArtists)',
     SingerName     VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Free-text named singer when no registry row',
     Gender         VARCHAR(16)     NULL DEFAULT NULL COMMENT 'male|female|neutral — orthogonal axis (a named soloist may also be female)',
     TtmlAgentId    VARCHAR(64)     NULL DEFAULT NULL COMMENT 'Source <ttm:agent> handle (v1,v2) — loss-free re-export + idempotent back-fill key',
@@ -3311,14 +4101,14 @@ CREATE TABLE IF NOT EXISTS tblVocalParts (
     UpdatedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uq_Lyrics_Agent (LyricsId, TtmlAgentId),
-    INDEX idx_Lyrics (LyricsId),
-    INDEX idx_Kind   (PartKind),
-    INDEX idx_Person (CreditPersonId),
+    INDEX idx_Lyrics   (LyricsId),
+    INDEX idx_Kind     (PartKind),
+    INDEX idx_Musician (MusicianId),
 
     CONSTRAINT fk_VocalParts_Lyrics
-        FOREIGN KEY (LyricsId)       REFERENCES tblLyrics(Id)       ON DELETE CASCADE  ON UPDATE CASCADE,
-    CONSTRAINT fk_VocalParts_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (LyricsId)   REFERENCES tblLyrics(Id)     ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_VocalParts_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-version singing-part registry — first-class vocal parts (#1137).';
 
@@ -3659,6 +4449,29 @@ CREATE TABLE IF NOT EXISTS tblPresentationFormatFidelity (
     CONSTRAINT fk_PresFidelity_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Round-trip fidelity carrier for source styling with no first-class column; (Source,SourceRef) UNIQUE = idempotent re-import (rule #20) (#1168).';
+
+-- ============================================================================
+-- SERVICE MODE VENUES & SCHEDULES + EXTERNAL-SYSTEM INTEGRATION (#1325/#1327)
+--
+-- Service Mode's tables are spread across this file by arrival order, which
+-- makes the feature hard to see whole. The full set, in file order:
+--   tblLiveFollowSessions ..... the session spine (SessionKind='service')
+--   tblLiveFollowJoinCodes .... the rotating venue join codes
+--   tblServicePresence ........ anonymous congregant presence + gate token
+--   tblServicePollCounters .... per-session poll budget
+--   tblOrgVenues .............. (here) the physical places
+--   tblOrgServiceSchedules .... (here) the recurring service times
+--
+-- The two below are Phase 1: they describe WHERE and WHEN, and nothing else
+-- depends on them being populated. A service OCCURRENCE is not stored — it is
+-- computed at read time as (ScheduleId, date), which is why the sessions table
+-- carries those two columns rather than an occurrence FK.
+--
+-- Note what lat/lng/radius are NOT: they are a map pin and a convenience
+-- geofence, never the presence gate. Geolocation is spoofable; the proof that
+-- somebody is in the room is that they can read the rotating code off the
+-- screen in front of them.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblOrgVenues (#1325) — org physical venues for "Service Mode" (#1323). lat/lng
@@ -4016,11 +4829,16 @@ CREATE TABLE IF NOT EXISTS tblGatingCapabilities (
   COMMENT='Admin-defined gating capabilities (#1481 P1) -- unioned into TIER_CAPS by tierCapsEffective(); a code-key collision (case-insensitive, incl. camelCase) is ignored (code wins).';
 
 -- ----------------------------------------------------------------------------
--- tblGatingRules (#1481 P2 schema — created now per rule #20; the enforcement
--- loop that reads this table is a SEPARATE, not-yet-built change). Maps a
--- DB-defined capability to a behaviour-kind + kind-specific JSON params. Rows
--- are born Enabled=0; entirely DORMANT until P2 ships AND both
--- content_gating_enabled + feature_gating_rules_enabled are '1'.
+-- tblGatingRules (#1481 P2). Maps a DB-defined capability to a behaviour-kind
+-- + kind-specific JSON params. Rows are born Enabled=0; entirely DORMANT until
+-- BOTH content_gating_enabled and feature_gating_rules_enabled are '1'.
+--
+-- (This header used to end "the enforcement loop that reads this table is a
+-- SEPARATE, not-yet-built change". P2 HAS since shipped: the loop is
+-- gatingRulesApply() in includes/gating_rules.php, invoked from
+-- contentGatingApply() in includes/content_gating.php, with the rules CRUD UI
+-- at /manage/feature-gating. Dormant-by-flag and not-yet-written are very
+-- different states and this comment was asserting the wrong one.)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblGatingRules (
     Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -4044,3 +4862,57 @@ CREATE TABLE IF NOT EXISTS tblGatingRules (
     CONSTRAINT fk_GatingRule_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id)              ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Admin-defined enforcement rules (#1481 P2, schema created in P1 one-pass per rule #20) -- cap-to-behaviour-kind mapping; DORMANT until P2 ships the enforcement loop and both feature flags are on.';
+
+-- ----------------------------------------------------------------------------
+-- tblIntAppsSync (#1725/#1727). MWBM-IntAppsAPI gateway local snapshot +
+-- refresh bookkeeping. Dormant until tblAppSettings.intappsapi_enabled_channels
+-- names the current channel AND includes/intapps_client.php is live; fail-open
+-- contract (a failed/malformed fetch never overwrites PayloadJson/FetchedAt)
+-- lives entirely in that module, not here. One-pass DDL (rule #20): the UNIQUE
+-- key (Scope, Channel, AppSlug) reserves multiplicity for future scopes
+-- ('updates'/'notifications'/'status'), per-docroot channels, and a second
+-- registered gateway app/slug, so none of those become a second migration.
+-- DDL is byte-identical to appWeb/.sql/migrate-add-intapps-sync.php (rule #19).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIntAppsSync (
+    Id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT 'Surrogate PK',
+    Scope               VARCHAR(30)  NOT NULL COMMENT 'Gateway data family this row caches: features|updates|notifications|status. App-validated vocabulary (rule #20: VARCHAR, never ENUM); only "features" is read today',
+    Channel             VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'Docroot discriminator (serviceMode_channel/ihymns_environment value); empty string = shared across all three docroots. Reserved multiplicity per rule #20/#26; default operation uses only the empty-string row',
+    AppSlug             VARCHAR(50)  NOT NULL DEFAULT '' COMMENT 'Gateway app slug this row caches; empty string = the primary ihymns app. Reserved multiplicity for a second registered gateway app, per-platform or per-env (rule #20); default operation uses only the empty-string value',
+    PayloadJson         JSON         NULL COMMENT 'Last-known-GOOD decoded gateway envelope data. Never overwritten by a failed or malformed fetch',
+    FetchedAt           DATETIME     NULL COMMENT 'UTC time of last SUCCESSFUL fetch. NULL = cold. DATETIME not TIMESTAMP (house rule, #1066)',
+    AttemptedAt         DATETIME     NULL COMMENT 'UTC time of last attempt, success or failure -- drives exponential backoff',
+    RefreshLockedUntil  DATETIME     NULL COMMENT 'Single-flight lock: a request that wins the conditional UPDATE owns the refresh until this UTC time; stale locks self-expire',
+    LastHttpStatus      SMALLINT UNSIGNED NULL COMMENT 'HTTP status of the last attempt; NULL = transport-level failure (no answer at all)',
+    LastErrorCode       VARCHAR(50)  NULL COMMENT 'Gateway envelope error.code of the last failure (ACCESS_DENIED, RATE_LIMITED, BAD_SHAPE, ...) for the admin status card; never the message prose',
+    ConsecutiveFailures INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Failure streak since the last success; backoff = LEAST(300*2^n, 3600) seconds',
+
+    PRIMARY KEY (Id),
+    UNIQUE KEY uq_IntAppsSync_ScopeChannelApp (Scope, Channel, AppSlug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='IntAppsAPI gateway local snapshot + refresh bookkeeping (#1725/#1727). Dormant until tblAppSettings.intappsapi_enabled_channels names the current channel; fail-open contract lives in includes/intapps_client.php.';
+
+-- =====================================================================
+-- DEFERRED FOREIGN KEYS (#1708)
+--
+-- ELI5: these links point at tables that are created further down this
+-- file, so they have to wait until everything exists.
+--
+-- InnoDB requires the referenced table to EXIST when an inline FOREIGN KEY
+-- is declared. Declared inline, each of these referenced a table defined
+-- LATER in this file, so a fresh install died with
+--   ERROR 1005 (errno: 150 "Foreign key constraint is incorrectly formed")
+-- and produced 16 of 136 tables. Nobody noticed because long-running
+-- installs are built incrementally by migration cards and never execute
+-- this file end to end.
+--
+-- Moving them here is the idiom this file already uses for the same reason
+-- (see fk_Songs_Tune and fk_Songs_DeletedBy above). tests/php/
+-- test-schema-installs.php now proves the whole file builds.
+-- =====================================================================
+ALTER TABLE tblLyrics ADD CONSTRAINT fk_Lyrics_SubmittedBy FOREIGN KEY (SubmittedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblLyrics ADD CONSTRAINT fk_Lyrics_ApprovedBy FOREIGN KEY (ApprovedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblApiKeys ADD CONSTRAINT fk_ApiKeys_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblLiveFollowSessions ADD CONSTRAINT fk_LiveFollow_Venue FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE tblLiveFollowSessions ADD CONSTRAINT fk_LiveFollow_Schedule FOREIGN KEY (ScheduleId) REFERENCES tblOrgServiceSchedules(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+

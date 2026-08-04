@@ -77,9 +77,14 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * ========================================================================= */
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
-/* Auto-bumped by the version-bump GitHub Action on push to beta */
+/* Auto-bumped by the version-bump GitHub Action on push to alpha/beta.
+   Manually jumped 0.4001.0 -> 0.4100.0 for the wave3-fixes batch (the #1741
+   catalogue-expansion epic follow-ups + the #1201/#1761 API-envelope +
+   OpenAPI redesign) — a deliberately significant minor bump reflecting the
+   scope of the batch, rather than the +1 the auto-bumper applies per merge.
+   The alpha auto-bumper will still apply its standard +1 minor on merge. */
 /* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
-$app["Application"]["Version"]["Number"] = "0.4001.0";
+$app["Application"]["Version"]["Number"] = "0.4100.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

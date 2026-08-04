@@ -60,6 +60,27 @@ export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
 export const STORAGE_AUTH_TOKEN         = 'ihymns_auth_token';
 export const STORAGE_AUTH_USER          = 'ihymns_auth_user';
 
+/* Sync watermarks (#1649) — the DB-clock reading returned by the last
+   SUCCESSFULLY-ABSORBED sync response, echoed back to the server as `since`
+   on the next sync. The server refuses to delete rows written after it, which
+   is what stops a stale device wiping another device's newer additions.
+   Written ONLY by _absorbSetlistSync() / _absorbFavoritesSync() in
+   user-auth.js — advancing one of these without also absorbing the returned
+   list would mark unseen rows as "seen" and delete them a cycle later. */
+export const STORAGE_SETLISTS_SYNCED_AT  = 'ihymns_setlists_synced_at';
+export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
+
+/* Pending explicit set-list deletions (#1661) — the ids this device has
+   deleted but not yet had acknowledged by a successful sync.
+   PERSISTED, not in-memory, and that is the whole point: a deletion made
+   offline, or one made a millisecond before the tab is closed, must still be
+   announced. Under sync protocol 2 the server no longer infers deletion from
+   a set list being absent from the payload, so if this queue were lost the
+   deletion would simply never reach the server — and the next reconcile would
+   hand the set list straight back. Cleared only by the ids the server has
+   actually accepted (see UserAuth.syncSetlists). */
+export const STORAGE_SETLISTS_DELETED    = 'ihymns_setlists_deleted';
+
 /* Accessibility — Colour Vision Deficiency mode (#319) */
 export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
 
@@ -169,7 +190,7 @@ export function songbookLabel(abbr, fullName) {
 }
 
 /* ── #1531 — Client songbook registry ──────────────────────────────────────
-   The ONE abbr → { name, isOfficial } source so every list view shows the full
+   The ONE abbr → { name } source so every list view shows the full
    Songbook NAME (not the abbreviation) for ALL songbooks — not just the six in
    SONGBOOK_NAMES above. Populated once from /api?action=songbooks at app init
    (App.init() calls loadSongbookRegistry); songbookLabel()/songbookFullName()
@@ -182,6 +203,24 @@ const _SONGBOOK_REGISTRY = new Map();
 export async function loadSongbookRegistry(apiUrl) {
     if (!apiUrl) return;
     try {
+        /* DELIBERATELY a bare fetch(), NOT apiFetch() — one of the few in the
+           codebase (rule #31), and the reason is not obvious from here.
+
+           ELI5: this list is how we look up a songbook's NAME, so we need all of
+           them — not just the ones in the languages you've picked.
+
+           `/api?action=songbooks` LANGUAGE-FILTERS its response
+           (`makeLanguageFilterPredicate(resolvePreferredLanguagesForRequest(…))`,
+           api.php). `apiFetch()` attaches `X-Preferred-Languages`, so routing
+           this through it would hand back a registry filtered to the user's
+           chosen languages — and this registry is a NAME LOOKUP, not a browsable
+           list. Any songbook outside the filter would then resolve to null in
+           songbookFullName(), and every list view mentioning it would quietly
+           fall back to the bare abbreviation: cosmetic, gradual, attributable to
+           nothing. The enforcing mechanism is the count-exact allowlist entry in
+           tests/test-api-client-usage.js (#1700); this comment is for whoever
+           reads the call. Prefer an unfiltered endpoint when the songbooks
+           action is next touched — then this can become an ordinary apiFetch. */
         const res = await fetch(`${apiUrl}?action=songbooks`, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
         });
@@ -189,13 +228,15 @@ export async function loadSongbookRegistry(apiUrl) {
         const data = await res.json();
         for (const book of (data.songbooks || [])) {
             if (book && book.id) {
-                _SONGBOOK_REGISTRY.set(book.id, {
-                    name: book.name || '',
-                    /* IsOfficial is a strict bool from the API (#502); default
-                       to true when a book is somehow absent so an unknown book
-                       is never mis-flagged as "unofficial". */
-                    isOfficial: book.isOfficial !== false,
-                });
+                /* Only the NAME is kept. An `isOfficial` flag was stored here
+                   too, read by exactly one exported helper that nothing ever
+                   called — both removed in #1696. When #1531 part 2 is actually
+                   built it should shape this against the requirements it has
+                   then; the API still sends `isOfficial`, so re-adding it is one
+                   line. (Rule #20's reasoning, applied to JS: a helper written
+                   against guessed requirements is the same mistake as a guessed
+                   schema.) */
+                _SONGBOOK_REGISTRY.set(book.id, { name: book.name || '' });
             }
         }
     } catch {
@@ -209,9 +250,16 @@ export function songbookFullName(abbr) {
     return (entry && entry.name) || null;
 }
 
-/** Whether a songbook is official (registry), defaulting to true if unknown.
-   Enables the "Unofficial → show writing team" treatment (#1531 part 2). */
-export function songbookIsOfficial(abbr) {
-    const entry = _SONGBOOK_REGISTRY.get(abbr);
-    return entry ? entry.isOfficial : true;
-}
+/* songbookIsOfficial() lived here until #1696. It was written as the enabling
+   helper for #1531 part 2 ("Unofficial → show writing team") and its own
+   definition was the ONLY match in the entire tree — no caller, on any surface.
+   That is precisely the shape the orphan programme exists to remove: a
+   shipped-looking capability that does nothing, which reads to the next person
+   as though part 2 were half-built.
+
+   Worth noting WHY it survived so long: tests/php/test-orphan-inventory.php
+   derives its corpus from dispatch surfaces, schema tables and entitlement
+   labels, and a plain exported JS helper is none of those — the guard is
+   structurally blind to this class and honestly says so in its header. Whether
+   it should grow an unimported-export check is on the record in #1696 and is
+   NOT settled by this deletion. */

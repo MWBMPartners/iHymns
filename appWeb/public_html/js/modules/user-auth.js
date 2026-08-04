@@ -13,10 +13,12 @@
  *   localStorage['ihymns_auth_user']   — Cached user info (JSON)
  */
 
-import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
-import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED } from '../constants.js';
+import {
+    STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED,
+    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
+} from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
 import { apiFetch } from '../utils/api-client.js';
 
@@ -160,8 +162,20 @@ export class UserAuth {
     _resetUserDataSyncState() {
         this._userDataSynced = false;
         this._userDataSyncing = false;
+        this._userDataSyncedAt = 0;
         if (this.app.setList) this.app.setList._syncReady = false;
         if (this.app.favorites) this.app.favorites._syncReady = false;
+        /* #1649 — drop both sync watermarks on ANY auth transition. A watermark
+           means "account X has seen everything up to time T"; carrying it into
+           a different account would tell the server that account Y's rows are
+           already-seen and therefore deletable, so signing in as someone else
+           on a shared device could delete THEIR data. Clearing is always safe:
+           an absent watermark just means the next sync omits `since` and gets
+           the conservative legacy path. */
+        try {
+            localStorage.removeItem(STORAGE_SETLISTS_SYNCED_AT);
+            localStorage.removeItem(STORAGE_FAVORITES_SYNCED_AT);
+        } catch (_e) {}
         /* Don't let a clear's one-cycle pull-suppression leak across an auth
            transition into a fresh login's legitimate cross-device pull. */
         if (this.app.history) this.app.history._clearedLocally = false;
@@ -494,6 +508,120 @@ export class UserAuth {
     }
 
     /* =====================================================================
+     * SYNC WATERMARKS + ABSORB HELPERS (#1649)
+     *
+     * Background: the server used to cap an incoming sync payload and then,
+     * in 'replace' mode, delete every row absent from the CAPPED list — so a
+     * user with more than 50 set lists silently lost the tail. The server-side
+     * fix refuses to delete on a truncated payload, and additionally refuses
+     * to delete rows written after a `since` watermark the client supplies.
+     * These helpers are the client half of that watermark.
+     * ===================================================================== */
+
+    /**
+     * Read a stored sync watermark, or null if we've never absorbed a sync.
+     * @param {string} key STORAGE_SETLISTS_SYNCED_AT | STORAGE_FAVORITES_SYNCED_AT
+     * @returns {string|null}
+     */
+    _syncedAt(key) {
+        try { return localStorage.getItem(key) || null; } catch (_e) { return null; }
+    }
+
+    /**
+     * Persist a sync watermark.
+     *
+     * ⚠️ LOAD-BEARING INVARIANT — call this ONLY from _absorbSetlistSync() /
+     * _absorbFavoritesSync(), immediately AFTER the returned list has been
+     * merged into local state, and nowhere else.
+     *
+     * ELI5: the watermark means "I have seen everything the server had up to
+     * this moment". If we advanced it without actually keeping the list the
+     * server sent, we would be lying — and the server takes the lie seriously:
+     * on the NEXT sync it would treat those unseen rows as old enough to be
+     * deletable, and our payload (which never absorbed them) would not mention
+     * them. They'd be deleted one cycle later, which is the exact data-loss
+     * class #1649 exists to close, just delayed by one round-trip.
+     *
+     * @param {string} key
+     * @param {?string} value Server-minted DB clock reading; ignored if falsy.
+     */
+    _setSyncedAt(key, value) {
+        if (!value) return;
+        try { localStorage.setItem(key, value); } catch (_e) {}
+    }
+
+    /**
+     * Tell the user once per session that their collection exceeds the server
+     * cap, so the overflow lives on this device only.
+     *
+     * Fired inside syncSetlists()/syncFavorites() rather than at each call
+     * site: there are four callers between them (reconcile, per-edit push,
+     * offline drain, share) and a warning wired into only some of them is a
+     * warning the user may never see. Throttled by an instance flag so a
+     * flurry of edits doesn't produce a flurry of toasts.
+     *
+     * @param {object} data      Decoded server response ({truncated, cap}).
+     * @param {string} flagName  Instance property used as the once-per-session latch.
+     * @param {string} noun      Plural user-facing noun for the copy.
+     */
+    _warnTruncated(data, flagName, noun) {
+        if (data?.truncated !== true || this[flagName]) return;
+        this[flagName] = true;
+        const cap = Number(data.cap) || 0;
+        this.app.showToast?.(
+            `You have more than ${cap} ${noun} — only ${cap} sync to your account; `
+            + `the rest stay on this device.`,
+            'warning',
+            6000
+        );
+    }
+
+    /**
+     * Absorb a syncSetlists() result: merge the server's list into local state,
+     * THEN advance the watermark. Order matters — see _setSyncedAt().
+     *
+     * The union puts the CURRENT local cache (re-read here, after the network
+     * round-trip) on top, so an edit made during the request window survives
+     * instead of being clobbered by the write-back.
+     *
+     * @param {?object} res Result from syncSetlists(), or null.
+     * @returns {boolean} true if a result was absorbed.
+     */
+    _absorbSetlistSync(res) {
+        if (!res || !Array.isArray(res.setlists) || !this.app.setList) return false;
+        /* #1661 — PRUNE BEFORE UNION, and the order is load-bearing. The union
+           lets the CURRENT local copy win for a shared id (it may carry an
+           in-flight edit), so a set list another device deleted would survive
+           its own tombstone if it were still in the local array at union time.
+           Pruning first removes it from BOTH sides of the merge. */
+        const pruned = this.app.setList.applyTombstones(
+            this.app.setList.getAll(),
+            res.tombstones
+        );
+        const final = this._unionSetlists(pruned, res.setlists);
+        this.app.setList.saveAll(final, { sync: false });
+        this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
+        return true;
+    }
+
+    /**
+     * Absorb a syncFavorites() result: merge into local state, THEN advance the
+     * watermark. Same ordering invariant as _absorbSetlistSync().
+     *
+     * @param {?object} res Result from syncFavorites(), or null.
+     * @returns {boolean} true if a result was absorbed.
+     */
+    _absorbFavoritesSync(res) {
+        if (!res || !Array.isArray(res.favorites) || !this.app.favorites) return false;
+        this.app.favorites.saveAll(
+            this._mergeFavorites(this.app.favorites.getAll(), res.favorites),
+            { sync: false }
+        );
+        this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
+        return true;
+    }
+
+    /* =====================================================================
      * SETLIST SYNC
      * ===================================================================== */
 
@@ -505,7 +633,11 @@ export class UserAuth {
      * @param {string} [mode='replace'] 'replace' (authoritative — per-edit
      *   auto-sync; deletions propagate) or 'merge' (union — first-login
      *   backfill; never deletes). See the server contract in api.php.
-     * @returns {Promise<Array|null>} Merged setlists from server, or null on failure
+     * @returns {Promise<{setlists: Array, syncedAt: ?string, truncated: boolean}|null>}
+     *   The server's merged result plus the #1649 sync metadata, or null on
+     *   failure/queued. NOTE: this used to resolve to a BARE ARRAY — callers
+     *   must now read `.setlists` and hand the whole object to
+     *   _absorbSetlistSync() so the watermark advances with the data.
      */
     async syncSetlists(localSetlists, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
@@ -518,6 +650,11 @@ export class UserAuth {
             return null;
         }
 
+        /* #1661 — the explicit deletions this device is announcing. Captured
+           BEFORE the request so the exact list can be cleared afterwards: a
+           deletion made while the request is in flight must stay queued. */
+        const deleted = this.app.setList?.getPendingDeletes?.() ?? [];
+
         try {
             const res = await apiFetch(`${this.app.config.apiUrl}?action=user_setlists_sync`, {
                 method: 'POST',
@@ -526,16 +663,70 @@ export class UserAuth {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
                 },
-                body: JSON.stringify({ setlists: localSetlists, mode }),
+                body: JSON.stringify({
+                    setlists: localSetlists,
+                    mode,
+                    /* #1649 — the watermark from our last ABSORBED sync. The
+                       server will not delete rows written after it, so a stale
+                       cache here can no longer wipe another device's additions.
+                       Omitted entirely when we've never synced, which the
+                       server reads as "legacy client, absence-only deletion". */
+                    ...(this._syncedAt(STORAGE_SETLISTS_SYNCED_AT)
+                        ? { since: this._syncedAt(STORAGE_SETLISTS_SYNCED_AT) }
+                        : {}),
+                    /* #1661 — sent UNCONDITIONALLY, empty array included. Its
+                       PRESENCE is what tells the server this client states its
+                       deletions explicitly, so absence-based deletion is
+                       retired for us. Sending it only when non-empty would
+                       silently flip us back to the legacy inference on every
+                       sync that happened not to delete anything — which is the
+                       bug, not a saving. */
+                    deleted,
+                }),
             });
 
             if (!res.ok) {
                 if (res.status === 401) this.clearCredentials();
+                /* #1661 — 413: the payload is too large to accept. Nothing on
+                   the server changed, so the local cache is intact and the
+                   user must be told, because unlike the truncation this
+                   replaced there is no partial success to mistake for one. */
+                if (res.status === 413 && !this._setlistTooLargeWarned) {
+                    this._setlistTooLargeWarned = true;
+                    this.app.showToast?.(
+                        'Your set lists are too large to sync in one request. Nothing was changed — '
+                        + 'try removing a very large set list.',
+                        'danger',
+                        8000
+                    );
+                }
                 return null;
             }
 
             const data = await res.json();
-            return data.setlists || null;
+            if (!Array.isArray(data.setlists)) return null;
+
+            /* #1661 — the server accepted these deletions (they are now
+               permanent tombstones), so stop announcing them. Only the ids
+               actually sent are cleared. */
+            if (deleted.length > 0) this.app.setList?.clearPendingDeletes?.(deleted);
+
+            /* Warn ONCE per session that the tail of the collection is
+               device-only. Fired here rather than at each call site so every
+               caller — reconcile, per-edit push, offline drain, share —
+               is covered by one piece of code (#1649). Retained although the
+               setlists cap is gone (#1661, `truncated` is now always false)
+               because favourites and custom tags still cap. */
+            this._warnTruncated(data, '_setlistCapWarned', 'set lists');
+
+            return {
+                setlists: data.setlists,
+                syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
+                truncated: data.truncated === true,
+                /* #1661 — deletions from other devices (and lazily-converted
+                   expiries) for _absorbSetlistSync() to prune locally. */
+                tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
+            };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs
                again once we're online. TypeError is the usual fetch
@@ -558,8 +749,11 @@ export class UserAuth {
      *   "CP-0001"-style ids — the server accepts both.
      * @param {string} [mode='replace'] 'replace' (authoritative — per-edit;
      *   removals + tag edits propagate) or 'merge' (first-login backfill).
-     * @returns {Promise<Array<{id:string,tags:string[]}>|null>} Merged list
-     *   of {id, tags} objects from the server, or null on failure/queued.
+     * @returns {Promise<{favorites: Array<{id:string,tags:string[]}>, syncedAt: ?string, truncated: boolean}|null>}
+     *   The server's merged list plus the #1649 sync metadata, or null on
+     *   failure/queued. NOTE: this used to resolve to a BARE ARRAY — callers
+     *   must now read `.favorites` and hand the whole object to
+     *   _absorbFavoritesSync() so the watermark advances with the data.
      */
     async syncFavorites(localFavorites, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
@@ -577,7 +771,14 @@ export class UserAuth {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
                 },
-                body: JSON.stringify({ favorites: localFavorites, mode }),
+                body: JSON.stringify({
+                    favorites: localFavorites,
+                    mode,
+                    /* #1649 — see syncSetlists() for why. */
+                    ...(this._syncedAt(STORAGE_FAVORITES_SYNCED_AT)
+                        ? { since: this._syncedAt(STORAGE_FAVORITES_SYNCED_AT) }
+                        : {}),
+                }),
             });
 
             if (!res.ok) {
@@ -586,7 +787,15 @@ export class UserAuth {
             }
 
             const data = await res.json();
-            return data.favorites || null;
+            if (!Array.isArray(data.favorites)) return null;
+
+            this._warnTruncated(data, '_favCapWarned', 'favourites');
+
+            return {
+                favorites: data.favorites,
+                syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
+                truncated: data.truncated === true,
+            };
         } catch (err) {
             if (err instanceof TypeError) {
                 try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
@@ -661,10 +870,16 @@ export class UserAuth {
                already pushes the latest state. */
             if (!this.app.setList._syncReady) return false;
             /* Replay offline edits authoritatively (deletions included). */
-            const merged = await this.syncSetlists(this.app.setList.getAll(), 'replace');
-            if (merged && Array.isArray(merged)) {
-                this.app.setList.saveAll(merged, { sync: false });
-                this.app.showToast?.(`Synced ${merged.length} setlist${merged.length === 1 ? '' : 's'}`, 'success', 2000);
+            const res = await this.syncSetlists(this.app.setList.getAll(), 'replace');
+            /* #1649 — was `saveAll(merged, {sync:false})`, which OVERWROTE the
+               local cache with the server's list. When the server had silently
+               truncated that list, the drain then destroyed the local copy too
+               and the loss became total. _absorbSetlistSync() unions instead,
+               so local-only entries survive, and it advances the watermark
+               only because it really did keep the data. */
+            if (this._absorbSetlistSync(res)) {
+                const n = this.app.setList.getAll().length;
+                this.app.showToast?.(`Synced ${n} setlist${n === 1 ? '' : 's'}`, 'success', 2000);
                 return true;
             }
             return false;
@@ -675,12 +890,10 @@ export class UserAuth {
             if (!this.app.favorites._syncReady) return false; /* see setlists drain (review #1) */
             const local = this.app.favorites.getAll() || [];
             const payload = local.map(f => ({ id: f.id, tags: f.tags || [] }));
-            const merged = await this.syncFavorites(payload, 'replace');
-            if (merged && Array.isArray(merged)) {
-                this.app.favorites.saveAll(this._mergeFavorites(local, merged), { sync: false });
-                return true;
-            }
-            return false;
+            const res = await this.syncFavorites(payload, 'replace');
+            /* #1649 — see the setlists drain above; the absorb helper merges
+               rather than overwrites and owns the watermark advance. */
+            return this._absorbFavoritesSync(res);
         });
 
         offlineQueue.bindAutoDrainLatest('custom-tags-sync', async () => {
@@ -713,6 +926,36 @@ export class UserAuth {
            + guarded by _userDataSynced/_userDataSyncing (review: offline
            first-login deferral). */
         window.addEventListener('online', () => this.triggerUserDataSync());
+
+        /* #1649 — re-reconcile after a long background sleep.
+         *
+         * ELI5: if the app has been sitting in a background tab for hours,
+         * what it thinks you own may be badly out of date — so when you come
+         * back, check with the server before pushing anything.
+         *
+         * The once-per-session latch (_userDataSynced) assumes a "session" is
+         * short. On a PWA it isn't: the tab is backgrounded, not closed, and
+         * can be resumed days later. Meanwhile the user may have added set
+         * lists on their phone. The stale tab's first edit fires an
+         * authoritative 'replace' built from a days-old cache — and while the
+         * server-side `since` watermark now stops that deleting the newer
+         * rows, the RIGHT behaviour is to pull them in rather than merely
+         * avoid destroying them.
+         *
+         * So: on becoming visible more than 30 minutes after the last
+         * successful reconcile, clear the latch and reconcile again (MERGE —
+         * additive, never deletes). _syncReady is deliberately NOT disarmed:
+         * that flag exists to block 'replace' until a reconcile has EVER run,
+         * and re-arming it here would silently drop a legitimate edit made in
+         * the window before the new reconcile lands. */
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState !== 'visible') return;
+            if (!this._userDataSynced) return;   /* not latched — nothing to refresh */
+            const RESYNC_AFTER_MS = 30 * 60 * 1000;
+            if (Date.now() - (this._userDataSyncedAt || 0) <= RESYNC_AFTER_MS) return;
+            this._userDataSynced = false;
+            this.triggerUserDataSync();
+        });
     }
 
     /**
@@ -1355,7 +1598,8 @@ export class UserAuth {
                             <div class="mb-3">
                                 <label for="auth-password" class="form-label">Password</label>
                                 <input type="password" class="form-control" id="auth-password"
-                                       placeholder="Password (min 8 characters)" autocomplete="current-password" required>
+                                       placeholder="Password (min 8 characters)"
+                                       autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" required>
                             </div>
                             <button type="submit" class="btn btn-primary w-100" id="auth-submit-btn">
                                 <span id="auth-submit-text">${mode === 'register' ? 'Create Account' : 'Sign In'}</span>
@@ -1447,7 +1691,7 @@ export class UserAuth {
                                 <div class="mb-2">
                                     <label for="auth-reset-password" class="form-label small">New Password</label>
                                     <input type="password" class="form-control form-control-sm" id="auth-reset-password"
-                                           placeholder="Min 8 characters" minlength="8" required>
+                                           placeholder="Min 8 characters" minlength="8" autocomplete="new-password" required>
                                 </div>
                                 <button type="submit" class="btn btn-sm btn-primary w-100">
                                     Reset Password
@@ -1565,6 +1809,13 @@ export class UserAuth {
             modal.querySelector('#auth-display-name-group').style.display = isReg ? '' : 'none';
             const emailGroup = modal.querySelector('#auth-email-group');
             if (emailGroup) emailGroup.style.display = isReg ? '' : 'none';
+            /* #1150/#1151 — keep the shared password field's autocomplete
+               purpose (WHATWG "new-password" vs "current-password") in
+               step with the mode it's actually being used for, so a
+               password manager offers to GENERATE a strong password when
+               creating an account instead of offering a saved login. */
+            const pwField = modal.querySelector('#auth-password');
+            if (pwField) pwField.setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
             modal.querySelector('#auth-forgot-link-wrapper').style.display = isReg ? 'none' : '';
             modal.querySelector('#auth-toggle').innerHTML = isReg
                 ? 'Already have an account? <strong>Sign in</strong>'
@@ -1886,16 +2137,18 @@ export class UserAuth {
         if (!this.app.setList) return false;
 
         const uid = this.getUser()?.id;
-        const merged = await this.syncSetlists(this.app.setList.getAll(), 'merge');
-        if (!merged || !Array.isArray(merged)) return false;
+        const res = await this.syncSetlists(this.app.setList.getAll(), 'merge');
+        if (!res) return false;
         if (!this.isLoggedIn() || this.getUser()?.id !== uid) return false;
 
         /* Union with the CURRENT cache (current local wins for shared ids —
            it carries any in-flight edit), then persist + arm replace. The
            post-reconcile flush pushes this union as an authoritative replace,
-           so the in-flight edit reaches the server too. */
-        const final = this._unionSetlists(this.app.setList.getAll(), merged);
-        this.app.setList.saveAll(final, { sync: false });
+           so the in-flight edit reaches the server too. The union + persist +
+           watermark advance now live together in _absorbSetlistSync() (#1649),
+           so no caller can advance the watermark without keeping the data. */
+        if (!this._absorbSetlistSync(res)) return false;
+        const final = this.app.setList.getAll();
         this.app.setList._syncReady = true;
         /* Only announce when the user did something deliberate (login, the
            "Sync Now" button, a settings action). The automatic per-boot
@@ -1932,11 +2185,12 @@ export class UserAuth {
 
         const uid = this.getUser()?.id;
         const payload = (this.app.favorites.getAll() || []).map(f => ({ id: f.id, tags: f.tags || [] }));
-        const merged = await this.syncFavorites(payload, 'merge');
-        if (!merged || !Array.isArray(merged)) return false;
+        const res = await this.syncFavorites(payload, 'merge');
+        if (!res) return false;
         if (!this.isLoggedIn() || this.getUser()?.id !== uid) return false;
 
-        this.app.favorites.saveAll(this._mergeFavorites(this.app.favorites.getAll(), merged), { sync: false });
+        /* Merge + watermark advance, in that order (#1649). */
+        if (!this._absorbFavoritesSync(res)) return false;
         this.app.favorites._syncReady = true;
         return true;
     }
@@ -2003,6 +2257,16 @@ export class UserAuth {
         this.app.favorites?._scheduleSync?.();
 
         /* Latch only on full success so failures retry next navigation. */
-        if (allOk) this._userDataSynced = true;
+        if (allOk) {
+            this._userDataSynced = true;
+            /* #1649 — stamp WHEN the latch was set. The latch is once-per-
+               session, but a PWA "session" can be days long (the tab is never
+               closed, it is just backgrounded), and the whole point of the
+               watermark is that a client with a stale cache must not push an
+               authoritative 'replace'. The visibilitychange handler in
+               bindOfflineDrains() uses this stamp to force a fresh reconcile
+               after a long sleep. */
+            this._userDataSyncedAt = Date.now();
+        }
     }
 }

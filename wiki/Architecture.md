@@ -57,6 +57,8 @@ This has one hard consequence: **a fragment can never carry an executable inline
 
 The correct pattern — used by `js/modules/home-page.js` — is a real ES module, imported by the router's `afterPageLoad(page, params)` hook once the fragment has landed in the DOM, with its inputs read `data-*`-attribute-first from the fragment markup (e.g. `.page-song[data-song-id]`) and the route parameter only as a fallback.
 
+When a fragment request itself errors, `router.js` now shows the server's own themed explanation instead of discarding it (#1705). Previously any non-OK response was thrown away unread, and every one of the six pages that answer a bad request with a proper error card (`song.php`'s 410/404, `songbook.php`, `person.php`, `work.php`, `tag.php`, and `maintenance.php`'s 503) was replaced client-side by a generic "Failed to load page. Please check your connection and try again." — telling a reader who followed a link to a merged song to check their WiFi. `js/utils/error-response.js`'s `shouldRenderErrorBody()` is a pure gate on status (400–599), a `text/html` content type, and a non-empty body — deliberately never on the body's *text* (rule #35), and deliberately refusing a JSON error body (which would otherwise dump `{"error":"..."}` onto the page). A genuine network failure still shows the generic message, correctly.
+
 ### JavaScript Module Architecture
 
 The app uses **ES modules** with a central `iHymnsApp` class that coordinates the feature modules, including:
@@ -144,6 +146,22 @@ MySQL `ihymns` database (single shared DB across all 3 docroots)
 
 Nothing loads the whole ~14,000-song catalogue into PHP memory at once — an earlier unscoped read caused an OOM (#929). If the database is unreachable, the app shows a themed 503 maintenance page; the **only** fallback is whatever a client previously downloaded into its own offline cache (browser Cache Storage for the PWA, GRDB for Apple) — there is no server-side JSON fallback mode.
 
+### Catalogue entities — single-home modules (#1741)
+
+The catalogue expansion (Musicians / Works / Tunes / Song identifiers) is built on a small set of shared, single-home modules — the modularity rule made concrete, so a new caller reuses rather than re-forks:
+
+```
+includes/identifier_normalize.php  — IHYMNS_ID_SCHEMES + one canonicaliser per scheme (iswc/ccli/bowi/isrc/isni/ipi)
+includes/identifier_resolve.php    — ihymns_resolve_identifier() — table/column-gated, bind_param
+includes/pages/identifier.php      — the ONE page the /iswc /ccli /ipi /isni /bowi /isrc alias routes render
+includes/media_identifiers.php     — RECORDING_EXTERNAL_ID_TYPES vocabulary + pure validators (no DB)
+includes/song_external_ids.php     — the tblSongs.Isrc -> tblSongExternalIds dual-write mirror (#1749)
+includes/tune_helpers.php          — tuneFindOrCreateByName() (the ONE tune lookup) + ihymns_meter_normalize()
+includes/partials/external-links-panel.php — shared Work/Tune/Musician external-links editor
+```
+
+In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the single place `tblSongs.TuneName`/`TuneId` are written — always together, so a tune edit (or a whole-song save, bulk import, or revision restore, all of which funnel through it) can never strand the registry link. See [[Database & Migrations]] for the entity tables and **DEV_NOTES.md → Architecture Decisions** for the reuse contract.
+
 ---
 
 ## Native App Architecture
@@ -181,11 +199,71 @@ See [[Database & Migrations]] for the full schema breakdown.
 
 ---
 
+## External integrations
+
+### MWBM-IntAppsAPI gateway (Epic #1725)
+
+A server-proxied, cache-first, fail-open client for MWBM's shared feature-flag
+gateway — an operational build-behaviour kill switch, structurally separate from
+content gating (it never feeds `TIER_CAPS`/`checkTierAccess()`/
+`contentGatingApply()`/`gatingRulesApply()`/`checkContentAccess()`, and a
+tree-derived, mutation-tested guard — `tests/php/test-intapps-guards.php` —
+enforces that separation on every commit).
+
+- **Client:** `includes/intapps_client.php`. Loading it has no side effect;
+  every function degrades to the caller's compiled-in default the instant the
+  module is disabled, the credential set is incomplete, the cache table is
+  absent, or the gateway is unreachable/slow/lying. Nothing in it ever throws
+  into a page render.
+- **Cache:** one table, `tblIntAppsSync`, keyed `(Scope, Channel, AppSlug)` —
+  `Scope` is `'features'` today with `'updates'`/`'notifications'`/`'status'`
+  reserved; `Channel` is the 3-docroot discriminator (default operation uses
+  only the shared `''` row); `AppSlug` reserves a second registered gateway
+  app. A failed or malformed fetch never overwrites the last-known-good
+  snapshot.
+- **Enablement:** a per-channel allow-list,
+  `tblAppSettings.intappsapi_enabled_channels` — the same mechanism
+  `apple_web_login_enabled` already uses — so alpha can canary the
+  integration without touching production on the shared database. **Ships
+  with no row at all**, which is a verified byte-identical no-op: zero HTTP,
+  zero `tblIntAppsSync` access, `app_status` output unchanged.
+- **The signer.** `hex(HMAC-SHA256(rawBody . '.' . unixTimestamp, secret))`,
+  implemented directly against the gateway's own `HmacValidator.php` source —
+  its five bundled client examples sign a DIFFERENT, wrong string
+  (`METHOD|PATH|TIMESTAMP|BODY`, filed upstream as MWBM-intAppsAPI#120) and
+  must never be copied.
+- **Refresh:** request-piggybacked off `api.php`'s `app_status` handler,
+  scheduled to run AFTER the response is already on the wire
+  (`fastcgi_finish_request()` where available), with an atomic
+  seed-INSERT-then-conditional-UPDATE single-flight lock so at most one
+  request per TTL window pays the cost of a live fetch.
+- **Consumption seams:** (a) `app_status.remoteFeatures` — a keyed object,
+  emitted only when enabled, the primary channel for native clients; (b)
+  server-side `intappsFlag($db, $key, $default)` calls in cosmetic,
+  non-gating code — the shipped example is the Song-of-the-Day card's
+  presence on the home page.
+- **Local stub gateway:** `tests/php/fixtures/intapps-stub-gateway.php` is a
+  line-for-line port of the gateway's own auth + HMAC verification (pinned
+  commit `6816ed8`), used by `tests/php/test-intapps-stub-e2e.php` to prove
+  the real signer over real loopback HTTP. It lives outside every directory
+  the deploy workflow mirrors and cannot accidentally ship.
+- **What is NOT proven by any of the above:** acceptance by the REAL
+  gateway (`api.mwbmpartners.ltd`), which needs the owner-only liveness +
+  app-registration prerequisite (Epic #1725's Issue A) before any channel is
+  enabled on a real environment.
+
+Admin surfaces: the credentials + enablement card on `/manage/configuration`,
+and the read-only snapshot/diagnostic viewer at `/manage/intapps-status`
+(both gated `manage_configuration`).
+
+---
+
 ## Security summary
 
 - Content Security Policy with per-request nonces; enforcing (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`) — see the SPA fragment constraint above.
-- `validateCsrfRequest()` — same-origin AJAX check (`X-Requested-With` + `Origin`/`Referer` host match) for state-changing endpoints, replacing the older baked-session-token-only check for long-lived admin pages.
+- `validateCsrfRequest()` — same-origin AJAX check (`X-Requested-With` + `Origin`/`Referer` host **and port** match) for state-changing endpoints, replacing the older baked-session-token-only check for long-lived admin pages. The port comparison was itself a fix (#1709): `HTTP_HOST` keeps the port (`example.com:8080`) but `parse_url($origin, PHP_URL_HOST)` never includes it, so a naive string compare could never match on a non-default port — and, in the opposite direction, silently accepted a different port on the same host as same-origin. Both sides now resolve to "explicit port, else the header's own scheme's default" before comparing.
 - Role + entitlement gates (`requireAdmin()`, `userHasEntitlement()`) on every admin surface.
 - A registry-driven content-access-tier / gating system (`TIER_CAPS` in `includes/access_tier_validation.php`) — entirely dormant unless explicitly enabled, and never a hardcoded per-tier matrix. Enforcement splits in two: `contentGatingApply()` (`includes/content_gating.php`) strips gated fields from JSON *payloads* (`song_detail`, `song_data`, `random`, `songbook_export`); its sibling `contentGatingMediaAllowed($kind, $userId, $presenceToken)` answers the same question for one media row and gates the *bytes* — `song-media.php` and the `bulk_audio` offline manifest. A payload gate alone hides the affordance but leaves a URL-addressable file bookmarkable, so every gated asset needs both checks resolving through the same registry.
+- Friendly, theme-aware error pages for every status the app actually emits — `errorPageMap()` / `errorPageStatuses()` in `includes/error_page.php` is the one status→copy registry (400/401/403/404/405/410/429/500/503), and `error.php` (the Apache `ErrorDocument` target for 403/405/500/503) derives its render whitelist from it rather than a second hand-typed list (#1704). 405 and 410 are recent additions — 410 is what a soft-deleted or merged-with-no-replacement song now returns instead of a generic 404.
 
 See [[Security]] for full details.

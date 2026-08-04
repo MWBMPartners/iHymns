@@ -12,6 +12,10 @@
 - **Cause:** The database is unreachable, or the site is in maintenance mode
 - **Fix:** Admins should check the maintenance toggle at `/manage/configuration` and confirm the DB credentials are correct. This is a themed 503, not a data problem — songs you've already downloaded for offline use remain readable
 
+#### A song/songbook link shows "Failed to load page. Please check your connection and try again."
+- **Cause:** This message is now reserved for a genuine network failure. A song, songbook, writer, person, work, or tag that's been removed, merged, or never existed shows its own specific explanation instead (e.g. "This song has been removed — it may have been a duplicate that was merged" with a 410 status) — the SPA used to discard that explanation and show this generic message for every server-side error, not just real connectivity problems (#1705)
+- **Fix:** If you see the generic message, it's worth a retry — the server likely never got the request. If you instead see a specific "not found" / "removed" card, that's the correct explanation, not an error to troubleshoot
+
 #### Search returns no results
 - **Cause:** Fuse.js's client-side search index may not have loaded
 - **Fix:** Clear browser cache and reload. Check the browser console for errors on the search request

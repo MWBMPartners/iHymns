@@ -27,9 +27,11 @@ extension APIClient {
         return try Self.decodeWork(from: data)
     }
 
-    /// `?action=credit_person` — one credit person's bio/lifespan/external
-    /// links plus every song they're credited on, grouped by role (#1443,
-    /// #1444).
+    /// `?action=musician` — one musician's bio/lifespan/external links plus
+    /// every song they're credited on, grouped by role (#1443, #1444).
+    /// #1752 Slice D UPDATE — was `?action=credit_person`; see
+    /// `Endpoint.creditPerson(_:)`'s doc comment (`WorkAndCreditPersonEndpoints
+    /// .swift`) for why the action switched.
     ///
     /// ELI5: "Give me everything about this one writer/composer."
     public func creditPerson(_ lookup: CreditPersonLookup) async throws -> CreditPerson {

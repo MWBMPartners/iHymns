@@ -49,10 +49,25 @@
     'use strict';
 
     /* Source name → endpoint URL. Keep this table in one place so new
-       pickers just add an entry. The "user" source goes through the
-       editor's admin-gated api.php because tblUsers isn't exposed on
-       the public api.php; "song" uses the public search endpoint
-       since songs aren't gated. */
+       pickers just add an entry. The "user"/"organisation" sources go
+       through the editor v2 admin-gated api2.php because tblUsers /
+       tblOrganisations aren't exposed on the public api.php; "song" uses
+       the public search endpoint since songs aren't gated.
+
+       ELI5: this is the address book — each picker "source" name maps to
+       the URL that answers it and how to read the reply.
+
+       WHY api2.php AND NOT api.php (#1629): user_search/org_search were
+       never editor features (zero call sites in editor.js/index.php/
+       editor2.php/v2/*) — their only consumer is this file, via
+       /manage/restrictions (#498) — but they still need an admin-gated,
+       tblUsers/tblOrganisations-reading backend, and v1's api.php was the
+       nearest one available at the time. v1 is being retired (the v2
+       editor cutover, #1601), so both handlers were ported verbatim into
+       api2.php ahead of that (same query, same bind_param, same
+       hasRole(..., 'editor') gate) and this table repointed here — moving
+       the file, not the feature. See api2.php's own doc-comment on those
+       two cases for the full story, including why #1609 had this wrong. */
     var PICKER_SOURCES = {
         song: {
             url: function (q) { return '/api?action=search&q=' + encodeURIComponent(q) + '&limit=15'; },
@@ -67,11 +82,11 @@
             },
         },
         user: {
-            url: function (q) { return '/manage/editor/api?action=user_search&q=' + encodeURIComponent(q); },
+            url: function (q) { return '/manage/editor/api2.php?action=user_search&q=' + encodeURIComponent(q); },
             extract: function (data) { return data.suggestions || []; },
         },
         organisation: {
-            url: function (q) { return '/manage/editor/api?action=org_search&q=' + encodeURIComponent(q); },
+            url: function (q) { return '/manage/editor/api2.php?action=org_search&q=' + encodeURIComponent(q); },
             extract: function (data) { return data.suggestions || []; },
         },
     };

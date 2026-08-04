@@ -81,6 +81,14 @@ $verifiedMap = [];
 $writersMap  = [];
 if (!empty($songs)) {
     $creditsDb = getDbMysqli();
+    /* @deleted-visible: pure DECORATION of the filtered slim index (#1694) —
+       these rows are keyed by SongId and only ever READ for ids in $songs,
+       which getSongsSlimIndex() has already filtered; a hidden song's row is
+       fetched and never consumed, so no leak is possible. Kept predicate-free
+       deliberately: test-songbook-render-parity.php renders this REAL template
+       against a stub getDbMysqli(), and loading the predicate helper here
+       would drag the real db_mysql.php into that stubbed world (redeclare
+       fatal) for zero behavioural gain. */
     $creditsStmt = $creditsDb->prepare(
         'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
            FROM tblSongs s
@@ -149,7 +157,7 @@ if (!empty($songs)) {
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
             <?php
                 /* #831 — "Compiled by …" line. Each compiler links to
-                   their /people/<slug> page when one exists; falls back
+                   their /musician/<slug> page when one exists; falls back
                    to a plain name span otherwise. Multiple compilers
                    joined with " · " for visual lightness. Hidden when
                    the songbook has no compilers attached (or on
@@ -164,8 +172,8 @@ if (!empty($songs)) {
                     <?php foreach ($compilers as $i => $c): ?>
                         <?php if ($i > 0): ?> &middot; <?php endif; ?>
                         <?php if (!empty($c['slug'])): ?>
-                            <a href="/people/<?= rawurlencode($c['slug']) ?>"
-                               data-navigate="person"
+                            <a href="/musician/<?= rawurlencode($c['slug']) ?>"
+                               data-navigate="musician"
                                class="text-reset text-decoration-underline"><?= htmlspecialchars($c['name']) ?></a>
                         <?php else: ?>
                             <span><?= htmlspecialchars($c['name']) ?></span>

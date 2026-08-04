@@ -72,6 +72,17 @@ $sections = [
         'title' => 'Revisions Audit',
         'group' => 'Content',
     ],
+    /* #1694 — the soft-delete queue. Sits directly after Revisions Audit
+       because the two are the recovery pair a curator reaches for in the same
+       breath: Revisions restores a bad EDIT, Deleted Songs restores a bad
+       DELETE. Icon + group mirror the admin-links.php nav entry so the help
+       TOC and the sidebar read the same. */
+    [
+        'id'    => 'deleted-songs',
+        'icon'  => 'bi-trash3',
+        'title' => 'Deleted Songs',
+        'group' => 'Content',
+    ],
     [
         'id'    => 'missing-numbers',
         'icon'  => 'bi-binoculars',
@@ -97,9 +108,9 @@ $sections = [
         'group' => 'Content',
     ],
     [
-        'id'    => 'credit-people',
+        'id'    => 'musicians',
         'icon'  => 'bi-person-vcard',
-        'title' => 'Credit People',
+        'title' => 'Musicians',
         'group' => 'Content',
     ],
     [
@@ -459,7 +470,7 @@ foreach ($sections as $s) {
                         <dd>
                             Can add and edit songs in the Song Editor, see the
                             Dashboard, see &amp; act on Song Requests, run the
-                            Missing Numbers report, and manage the Credit People
+                            Missing Numbers report, and manage the Musicians
                             registry. Cannot see Users, Organisations, or Operations
                             pages.
                         </dd>
@@ -555,6 +566,18 @@ foreach ($sections as $s) {
                         nothing materialises the entire corpus in your browser. Edit one
                         song or many at once and save straight back to MySQL.
                     </p>
+                    <div class="alert alert-info small mb-3">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>This is the redesigned Song Editor</strong> &mdash; it's
+                        now what opens by default. Every save applies the moment you make
+                        it, rather than waiting for one big "Save" at the end, and this
+                        page describes it throughout, including the Chords box and the
+                        Arrangement editor covered below. If you ever need the previous
+                        editor &mdash; for example to compare behaviour while you get used
+                        to the new one &mdash; add <code>?legacy=1</code> to the Song
+                        Editor's web address. It isn't going away yet, but it's no longer
+                        the one you land on by default.
+                    </div>
                     <h3 class="h6">Working with the catalogue</h3>
                     <ul>
                         <li><strong>Filter</strong> by songbook, search by title, or
@@ -564,12 +587,24 @@ foreach ($sections as $s) {
                             right (Metadata, Structure, Credits, Links, Tags, Media,
                             Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
-                            (verify, tag, move to another songbook, export, delete).</li>
+                            (verify, tag, move to another songbook, export, delete).
+                            <br><strong>Deleting is now recoverable</strong> (#1694). A deleted song
+                            disappears from the app, from search and from this sidebar, but it is not
+                            destroyed &mdash; it moves to <a href="#deleted-songs">Deleted Songs</a>,
+                            keeping its lyrics, credits, media and full revision history, and one click
+                            puts it back. Permanent removal is a separate, deliberately harder step on
+                            that page. Deleting needs <code>delete_songs</code> &mdash; editors and
+                            above (#1695).</li>
                     </ul>
-                    <h3 class="h6">The seven tabs</h3>
+                    <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
-                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
+                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.
+                            <p class="mt-2 mb-0"><strong>Musical key</strong> (#298) — the original key,
+                            tempo in BPM and time signature. These show as a badge on the public song
+                            page and give Transpose its starting point, so a musician can see what a
+                            song is actually in before they play it. Tempo accepts 20–400 BPM; the key
+                            and time-signature lists are fixed, so a typo cannot be saved.</p></dd>
                         <dt>Structure</dt>
                         <dd>
                             The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
@@ -577,7 +612,13 @@ foreach ($sections as $s) {
                                 <strong>Paste &amp; Reflow</strong> (#1043) — the <em>Paste &amp; Reflow</em> button opens a modal where you paste a whole lyrics block; it auto-splits the text into classified sections (verse / chorus / bridge…) ProPresenter-style, and <strong>Apply</strong> turns them into components in one go — far quicker than adding each section by hand.
                             </p>
                             <p class="mb-2">
+                                <strong>Chords</strong> — each section has a collapsible Chords box (it opens automatically once a section already has chords). Enter one line of chord symbols per lyric line, in reading order (e.g. <code>G  Em  C  D</code>); leave a section's box empty if it has none. Chords carry through to chord-chart export formats like ChordPro.
+                            </p>
+                            <p class="mb-2">
                                 <strong>Per-line language, translations &amp; annotations</strong> (#1088 / #1235) — expand the per-line panel under the section to attach, line by line, a <em>translation</em> or <em>transliteration</em> (romanization) of a lyric line and Genius-style <em>annotations</em> (explanation / reference / scripture / history / trivia). These anchor to the individual lyric line, not the section's text blob, and are saved as you add them (save the song first so each line has an ID).
+                            </p>
+                            <p class="mb-2">
+                                <strong>Arrangement</strong> — below the section list, the Arrangement panel sets the song's actual running order for playback and export: which sections play, in what sequence, and how many times each repeats (e.g. Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus). Add sections from the pool and reorder them with the move-left/move-right buttons, or start from a quick-action preset ("Verses only", "Chorus after each verse", …) and adjust from there. Leaving it empty plays the sections in the order they're listed above.
                             </p>
                             <details class="mt-2">
                                 <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
@@ -592,7 +633,7 @@ foreach ($sections as $s) {
                             </details>
                         </dd>
                         <dt>Credits</dt>
-                        <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#credit-people">Credit People</a> registry so you don't get duplicate spellings.</dd>
+                        <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#musicians">Musicians</a> registry so you don't get duplicate spellings.</dd>
                         <dt>Links</dt>
                         <dd>External-website links for this song (Hymnary.org, Internet Archive scans, Wikipedia, YouTube performances, Spotify, etc.). Paste a URL and the provider auto-detects; see <a href="#external-links">External Links</a> for how the shared editor works (#833 / #841).</dd>
                         <dt>Tags</dt>
@@ -600,15 +641,19 @@ foreach ($sections as $s) {
                         <dt>Media</dt>
                         <dd>Accompanying files for the song (#853) — audio recordings, sheet-music PDFs, MIDI sequences and MusicXML notation. Files inherit the song's content-access rules, so a gated song gates its media automatically. Audio is stored on disk and served via the gated <code>/song-media/&lt;id&gt;</code> route; sheet music / MIDI / MusicXML live in the database.</dd>
                         <dt>Preview</dt>
-                        <dd>Read-only render of the finished song as users will see it. Always check this before saving.</dd>
+                        <dd>Read-only render of the finished song as users will see it.</dd>
+                        <dt>Revisions</dt>
+                        <dd>
+                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. There is no side-by-side comparison here yet, so if you are unsure which row you want, restore the most likely one and check the song: Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
+                        </dd>
                     </dl>
                     <h3 class="h6">Saving, importing, exporting</h3>
                     <ul>
-                        <li><strong>Save</strong> writes everything to the database. Auto-save runs in the background while you work, but always click Save before navigating away.</li>
+                        <li><strong>Save</strong> happens automatically as you go &mdash; each change saves itself the moment you make it (a few fields debounce briefly), so there's no single Save button and nothing to lose by navigating away.</li>
                         <li><strong>Validate</strong> runs every song past a quality check (missing required fields, invalid language tags, orphaned references) and lists any problems.</li>
                         <li><strong>Import</strong> from JSON or CSV — small, single-file. For mass onboarding (e.g. a complete new hymnal), see the <strong>Bulk Import ZIP</strong> section below.</li>
                         <li><strong>Export</strong> the current view as JSON or CSV.</li>
-                        <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
+                        <li><strong>Revisions</strong> is now its own tab (see above) rather than a separate history button.</li>
                     </ul>
                     <h3 class="h6">Bulk Import ZIP (#664 / #676 / #882)</h3>
                     <p>
@@ -715,10 +760,68 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the History modal already open, showing the diff and a Restore button.</li>
+                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, listing every previous edit with a Restore button on each.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
+                    </div>
+                </section>
+
+                <section id="deleted-songs" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-trash3 me-2"></i>Deleted Songs</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Deleting a song no longer destroys it. Since <a href="https://github.com/MWBMPartners/iHymns/issues/1694">#1694</a> a delete is
+                        <strong>recoverable</strong>: the song is hidden from every public and editorial
+                        surface &mdash; the app, search, songbook lists, the editor sidebar, exports &mdash;
+                        but the record itself is untouched. Its components, credits, media links, tags and
+                        complete revision history are all still there. This page is where those songs wait.
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Restore</dt>
+                        <dd>
+                            Puts the song straight back exactly as it was. Because deleting writes nothing
+                            else anywhere &mdash; no redirects, no cascades &mdash; there is nothing to
+                            repair on the way back: favourites, set lists, Work membership and revision
+                            history were never touched.
+                        </dd>
+                        <dt>Purge</dt>
+                        <dd>
+                            The old permanent delete, and the <em>only</em> way to reach it. A live song can
+                            no longer be destroyed in one step by anybody &mdash; it has to be deleted
+                            first, then purged from this page. Purge takes the revision history with it and
+                            cannot be undone, so it asks you to type the song's ID to confirm. You can
+                            optionally point the purged ID at a surviving song, so anyone following an old
+                            link or bookmark lands somewhere sensible instead of a dead end.
+                        </dd>
+                    </dl>
+                    <h3 class="h6">Who can do what</h3>
+                    <ul>
+                        <li>Seeing this page and using <strong>Restore</strong> needs
+                            <code>delete_songs</code> &mdash; the same privilege as deleting in the first
+                            place, which since <a href="https://github.com/MWBMPartners/iHymns/issues/1695">#1695</a>
+                            is <strong>editors and above</strong>. Deletion was briefly restricted to
+                            admins only while it was still permanent; now that it is recoverable, that
+                            restriction has been lifted.</li>
+                        <li><strong>Purge</strong> needs its own separate privilege,
+                            <code>purge_songs</code>, which stays with admins and global admins. This is
+                            exactly why the two were split: recoverable deletion could widen to editors
+                            without the irreversible one coming along for the ride.</li>
+                        <li>Every deletion and restore <strong>notifies everyone who can purge</strong>,
+                            so nothing sits in here unnoticed. You are not notified about your own
+                            actions.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A deleted song still holds its number.
+                        <a href="#missing-numbers">Missing Numbers</a> deliberately counts hidden songs as
+                        present, so it will not offer you the slot &mdash; if it did, you could fill the gap
+                        and then find you had two songs on one number the moment somebody hit Restore.
+                        Restore or purge the song to genuinely free its number.
                     </div>
                 </section>
 
@@ -832,8 +935,8 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
-                <section id="credit-people" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-person-vcard me-2"></i>Credit People</h2>
+                <section id="musicians" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-person-vcard me-2"></i>Musicians</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">global_admin</span>
@@ -855,7 +958,7 @@ foreach ($sections as $s) {
                     </div>
                     <h3 class="h6 mt-3">Bulk promote (#846)</h3>
                     <p>
-                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Credit People page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
+                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Musicians page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
                     </p>
                 </section>
 
@@ -927,7 +1030,7 @@ foreach ($sections as $s) {
                     </p>
                     <h3 class="h6">Canonicalisation (#1222)</h3>
                     <p>
-                        Curator-typed variants (e.g. <em>Xmas</em> vs <em>Christmas</em>) are folded into the standard themes by the <strong>canonicalisation suggestions</strong> on this page, which reuse the shared <code>includes/song_similarity.php</code> scorer. Picking a suggestion runs the same irreversible <strong>Merge</strong> as Credit People &mdash; the variant becomes the source and is deleted, the standard theme is the survivor and every song re-points to it.
+                        Curator-typed variants (e.g. <em>Xmas</em> vs <em>Christmas</em>) are folded into the standard themes by the <strong>canonicalisation suggestions</strong> on this page, which reuse the shared <code>includes/song_similarity.php</code> scorer. Picking a suggestion runs the same irreversible <strong>Merge</strong> as Musicians &mdash; the variant becomes the source and is deleted, the standard theme is the survivor and every song re-points to it.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Merge is atomic and irreversible. Confirm the survivor is the canonical theme before you click through.
@@ -978,14 +1081,14 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        Songs, Songbooks, Credit People and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
+                        Songs, Songbooks, Musicians and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
                     </p>
                     <h3 class="h6">URL auto-detect (#841)</h3>
                     <p>
                         Paste a URL into the URL field of any external-link row and the provider dropdown auto-selects the matching registry entry &mdash; Wikipedia detects Wikipedia, YouTube detects YouTube, Spotify detects Spotify, etc. The detector respects manual choices: if you pick a provider before pasting, your choice wins.
                     </p>
                     <p>
-                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Musicians editor as it's added) inherits automatically.
                     </p>
                     <h3 class="h6 mt-3">URL patterns (#845)</h3>
                     <p>
@@ -1001,7 +1104,7 @@ foreach ($sections as $s) {
                         Admin list pages opt into a column-priority responsive convention (#842). Tag the table <code>.admin-table-responsive</code>, then mark each <code>&lt;th&gt;</code> + <code>&lt;td&gt;</code> with <code>data-col-priority="primary"</code>, <code>"secondary"</code>, or <code>"tertiary"</code>. Below 992px tertiary columns hide; below 768px secondary columns hide too. Primary columns are always visible.
                     </p>
                     <p>
-                        Pages currently opted in include Credit People, Songbooks, Songbook Series, Works and several other admin lists. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
+                        Pages currently opted in include Musicians, Songbooks, Songbook Series, Works and several other admin lists. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
                     </p>
                 </section>
 
@@ -1420,7 +1523,7 @@ foreach ($sections as $s) {
                         <li><strong>Credentials</strong> &mdash; fill in host, port, database name, username, password, table prefix. Click <strong>Test connection</strong>; only save once it goes green.</li>
                         <li><strong>Install schema</strong> &mdash; creates every table from <code>schema.sql</code>. Idempotent &mdash; re-running is safe.</li>
                         <li><strong>Migrate users / setlists</strong> &mdash; one-time import from the legacy SQLite + JSON setlist share dir.</li>
-                        <li>Run remaining migrations (Account Sync, Songbook Metadata, Credit Fields, Credit People, User Features Catch-up, Activity Log Expand) <em>in the order they appear on the dashboard</em>. Each is idempotent.</li>
+                        <li>Run remaining migrations (Account Sync, Songbook Metadata, Credit Fields, Credit People, User Features Catch-up, Activity Log Expand) <em>in the order they appear on the dashboard</em> — the migration dashboard card titles keep their original historical names even after the #1741 P2-B app-code rename. Each is idempotent.</li>
                     </ol>
                     <h3 class="h6">Setup workflow on an existing install</h3>
                     <p>
@@ -1523,9 +1626,9 @@ foreach ($sections as $s) {
                         <li><strong>Songbooks</strong> — create / update / delete / cascade-delete / reorder / auto-colour fill / auto-colour reassign (PR 2a).</li>
                         <li><strong>Users + Groups + Tiers</strong> — full CRUD plus role / activate / password-reset / member-add-remove (PR 2b).</li>
                         <li><strong>Organisations + My Organisations</strong> — system-admin updates plus the six org-admin verbs from this surface (PR 2c).</li>
-                        <li><strong>Credit People</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
+                        <li><strong>Musicians</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
                         <li><strong>Analytics + Diagnostics</strong> — top searches, data health snapshot, schema-audit report, per-migration applied/partial/pending status (PR 2d).</li>
-                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / get_translations / add_translation / remove_translation / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs).</li>
+                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs). (The v1 <code>get_translations</code> / <code>add_translation</code> / <code>remove_translation</code> trio was dead code — no caller ever existed — and was removed 2026-07-30; translation links are now the public, live <code>song_translations</code> action.)</li>
                     </ul>
                     <h3 class="h6">OpenAPI spec</h3>
                     <p>
@@ -1643,7 +1746,10 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;I deleted a song by mistake.&rdquo;</h3>
                     <p class="small">
-                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>Revisions &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
+                        Open <a href="#deleted-songs">Deleted Songs</a> and click <strong>Restore</strong>. The song comes back exactly as it was, with its lyrics, credits, media, tags and revision history intact &mdash; deleting hid it, it never destroyed anything (#1694).
+                    </p>
+                    <p class="small">
+                        This page previously told you to recover a deleted song through <a href="#revisions">Revisions Audit &rarr; Restore</a>. <strong>That advice did not work</strong>, and had not for as long as it was written: the old delete removed the song's revision rows along with the song, so by the time you went looking for them there was nothing left to restore from. Revisions Audit is for undoing a bad <em>edit</em>; Deleted Songs is for undoing a bad <em>delete</em>.
                     </p>
 
                     <h3 class="h6">&ldquo;The dashboard / a /manage page is blank.&rdquo;</h3>
@@ -1663,7 +1769,7 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;Two songs / two people / two anything look like duplicates.&rdquo;</h3>
                     <p class="small">
-                        For people, use <a href="#credit-people">Credit People &rarr; Merge</a>. For songs, use <a href="#duplicate-songs">Duplicate &amp; Counterpart Songs</a> &mdash; that page is the dedicated song-merge surface: it scores likely duplicates for you and lets you <strong>Link</strong> (keep both, cross-reference), <strong>Dismiss</strong> (not a duplicate), or <strong>Merge</strong> (collapse into one). For themes/tags, use <a href="#tags">Tags &amp; Themes &rarr; Merge</a>.
+                        For people, use <a href="#musicians">Musicians &rarr; Merge</a>. For songs, use <a href="#duplicate-songs">Duplicate &amp; Counterpart Songs</a> &mdash; that page is the dedicated song-merge surface: it scores likely duplicates for you and lets you <strong>Link</strong> (keep both, cross-reference), <strong>Dismiss</strong> (not a duplicate), or <strong>Merge</strong> (collapse into one). For themes/tags, use <a href="#tags">Tags &amp; Themes &rarr; Merge</a>.
                     </p>
 
                     <h3 class="h6">&ldquo;Activity Log shows an action I don't recognise. What is it?&rdquo;</h3>

@@ -23,9 +23,24 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 
 requireAuth();
 $currentUser = getCurrentUser();
-if (!$currentUser || !in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+/* Gate on the SAME entitlement the nav advertises (#1648 item 1).
+   ELI5: the menu says this page needs "view activity log" permission, so the
+   page itself has to check that exact permission — not a role that happens to
+   match it today.
+   Detail: this used to hardcode the roles admin|global_admin while
+   admin-links.php:104 advertised `view_activity_log`, which is admin-editable
+   at runtime via /manage/entitlements. Widening the entitlement showed a nav
+   link that then 403'd (confusing but harmless); NARROWING it was the real
+   problem — revoking `admin` from view_activity_log, which exposes usernames,
+   emails and IPs, hid the link while the page still admitted every admin-role
+   user. The override UI presented a revocation that did not happen.
+   The default map (`['admin','global_admin']`) is identical to the old
+   hardcoded list, so this changes nothing until someone actually overrides it —
+   which is the entire point. Rule #1587's red flag: "an admin page whose own
+   gate differs from the entitlement its nav entry advertises". */
+if (!$currentUser || !userHasEntitlement('view_activity_log', $currentUser['role'] ?? null)) {
     http_response_code(403);
-    exit('Access denied. Admin role required.');
+    exit('Access denied. The view_activity_log entitlement is required.');
 }
 
 $activePage = 'activity-log';
@@ -178,9 +193,19 @@ if (in_array($filterResult, ['success', 'failure', 'error'], true)) {
     $types   .= 's';
 }
 if ($filterEntityType !== '') {
-    $where[]  = 'a.EntityType = ?';
-    $params[] = $filterEntityType;
-    $types   .= 's';
+    /* #1741 P2-B — a renamed entity type (today: only 'musician') must
+       also surface its pre-rename historical rows ('credit_person'),
+       which are never rewritten. activityLogEntityTypeVariants() is the
+       ONE shared old↔new map (includes/activity_log.php, rule #35) — an
+       entity type with no rename history returns as a single-element
+       list, so this degrades to the old exact-match behaviour for
+       everything else. */
+    $entityTypeVariants = activityLogEntityTypeVariants($filterEntityType);
+    $where[]  = 'a.EntityType IN (' . implode(',', array_fill(0, count($entityTypeVariants), '?')) . ')';
+    foreach ($entityTypeVariants as $entityTypeVariant) {
+        $params[] = $entityTypeVariant;
+        $types   .= 's';
+    }
 }
 if ($filterEntityId !== '') {
     $where[]  = 'a.EntityId = ?';

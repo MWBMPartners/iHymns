@@ -83,7 +83,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    /manage/* admin surface into tblActivityLog. Every admin page
    requires this auth bootstrap first, so installing the global
    handler here covers all of them — schema-audit, organisations,
-   credit-people, songbooks, setup-database, etc. — without each
+   musicians, songbooks, setup-database, etc. — without each
    page having to remember to register its own. */
 installGlobalActivityLogHandlers('manage');
 
@@ -127,7 +127,20 @@ function initSession(): void
         session_set_cookie_params([
             'lifetime' => SESSION_LIFETIME,
             'path'     => '/manage/',
-            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+            /* Honour X-Forwarded-Proto as well as HTTPS (#1648 item 2).
+               ELI5: if something in front of us handled the encryption, we
+               still need to mark this cookie as HTTPS-only.
+               Detail: behind a TLS-terminating proxy (a CDN, a load balancer)
+               $_SERVER['HTTPS'] is unset on the origin even though the browser
+               is on https — so this minted the /manage SESSION cookie WITHOUT
+               `secure`, leaving it eligible to be sent over a plaintext
+               request. includes/auth_cookie.php:61-63 already checks both for
+               exactly this reason; the two cookie helpers in one codebase
+               disagreeing was the actual defect. Latent on DreamHost today,
+               which sets HTTPS directly — it becomes real the moment anything
+               sits in front. */
+            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                          || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
             'httponly'  => true,
             'samesite'  => 'Strict',
         ]);
@@ -184,7 +197,7 @@ function adoptApiTokenSession(): bool
     try {
         $db          = getDbMysqli();
         $hashedToken = hash('sha256', $token);
-        $now         = gmdate('c');
+        $now         = gmdate('Y-m-d H:i:s');
         $stmt        = $db->prepare(
             'SELECT u.Id        AS id,
                     u.Username  AS username,
@@ -231,7 +244,7 @@ function adoptApiTokenSession(): bool
                 $stmt = $db->prepare(
                     'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
                 );
-                $newCap = gmdate('c', $newCapTs);
+                $newCap = gmdate('Y-m-d H:i:s', $newCapTs);
                 $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
                 $stmt->execute();
                 $stmt->close();
@@ -635,7 +648,7 @@ function mintCrossSurfaceAuthToken(int $userId): void
         $rawToken    = bin2hex(random_bytes(32));
         $tokenHash   = hash('sha256', $rawToken);
         $expiresAtTs = time() + 30 * 86400;            /* 30 days — see docblock. */
-        $expiresAt   = gmdate('c', $expiresAtTs);
+        $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
 
         /* Bound INSERT — UserId is an int, Token/ExpiresAt are strings, mirroring
            the 'sis' bind api.php uses for the same statement. */
@@ -941,7 +954,7 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
 
     /* Generate a secure token (48 chars hex = 24 random bytes) */
     $token = bin2hex(random_bytes(24));
-    $expiresAt = gmdate('c', time() + 3600); /* 1 hour */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 3600); /* 1 hour */
 
     /* Invalidate any existing tokens for this user */
     $userIdInt = (int)$user['Id'];
@@ -975,7 +988,7 @@ function validatePasswordResetToken(string $token): ?array
 {
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
     $stmt = $db->prepare(
         'SELECT t.UserId, u.Username
          FROM tblPasswordResetTokens t
@@ -1077,6 +1090,77 @@ function validateCsrf(string $token): bool
 }
 
 /**
+ * Split a Host-header authority into [host, port] — PURE. (#1709)
+ *
+ * ELI5: turns `example.com:8080` into "example.com" plus the number 8080, and
+ * `example.com` into "example.com" plus "no port given".
+ *
+ * Detail: this is the counterpart of `parse_url(..., PHP_URL_HOST/PORT)` for a
+ * value that is an AUTHORITY rather than a URL — `$_SERVER['HTTP_HOST']` cannot
+ * be handed to parse_url() reliably (with no scheme, `example.com:8080` parses
+ * as scheme `example.com` with path `8080`). Extracted as its own function so
+ * `tests/php/test-csrf-same-origin.php` can drive it through the caller with no
+ * MySQL and no session.
+ *
+ * IPv6 literals are handled explicitly: a bracketed host may itself contain
+ * colons (`[::1]:8080`), so the port can only be the colon AFTER the closing
+ * bracket. Splitting on the last colon without this check would turn `[::1]`
+ * into host `[:` — a silent corruption that then fails every comparison.
+ * parse_url() keeps the brackets on the host component (verified), so this
+ * keeps them too and the two sides compare equal.
+ *
+ * The host is lower-cased; the port is an int, or NULL when none was stated.
+ * A non-numeric trailing `:segment` is treated as part of the host rather than
+ * as a port, so a malformed value fails the caller's comparison instead of
+ * being silently reinterpreted.
+ *
+ * @param  string $authority Raw Host-header value, e.g. `example.com:8080`.
+ * @return array{0:string,1:int|null} [lower-cased host, port or null]
+ * @link https://datatracker.ietf.org/doc/html/rfc3986#section-3.2
+ */
+function _csrfSplitAuthority(string $authority): array
+{
+    $authority = trim($authority);
+    if ($authority === '') {
+        return ['', null];
+    }
+
+    /* IPv6 literal — the host is everything up to and including `]`. */
+    if ($authority[0] === '[') {
+        $close = strpos($authority, ']');
+        if ($close === false) {
+            return ['', null];              // malformed; caller rejects
+        }
+        $hostPart = substr($authority, 0, $close + 1);
+        $rest     = substr($authority, $close + 1);
+        $port     = null;
+        if ($rest !== '' && $rest[0] === ':') {
+            $digits = substr($rest, 1);
+            if ($digits !== '' && ctype_digit($digits)) {
+                $port = (int)$digits;
+            } else {
+                return ['', null];          // garbage after the bracket
+            }
+        } elseif ($rest !== '') {
+            return ['', null];
+        }
+        return [strtolower($hostPart), $port];
+    }
+
+    $colon = strrpos($authority, ':');
+    if ($colon === false) {
+        return [strtolower($authority), null];
+    }
+    $digits = substr($authority, $colon + 1);
+    if ($digits !== '' && ctype_digit($digits)) {
+        return [strtolower(substr($authority, 0, $colon)), (int)$digits];
+    }
+    /* A colon that isn't a port (malformed) — keep it in the host so the
+       comparison fails rather than silently matching a truncated host. */
+    return [strtolower($authority), null];
+}
+
+/**
  * Robust CSRF check for same-origin AJAX writes — fixes the SPORADIC "CSRF error"
  * on long-lived editor pages (merge / delete / save).
  *
@@ -1117,17 +1201,85 @@ function validateCsrfRequest(?string $token = null): bool
         return false;
     }
 
-    /* If Origin / Referer is present it MUST match this host. */
+    /* If Origin / Referer is present it MUST match this host AND port (#1709).
+     *
+     * ELI5: the browser writes our address two different ways in two different
+     * headers — one keeps the port number, the other splits it off. Comparing
+     * them as plain text therefore never matched on any site not running on the
+     * standard port, and every save was refused.
+     *
+     * Detail: `$_SERVER['HTTP_HOST']` is the Host header VERBATIM, so it keeps
+     * the port (`example.com:8080`). `parse_url($origin, PHP_URL_HOST)` returns
+     * the host COMPONENT, which by definition excludes the port. The previous
+     * `strcasecmp($h, $host)` compared `example.com` against `example.com:8080`
+     * and could never be equal — so on a non-default port this whole
+     * same-origin route was dead and every rule-#29 caller (the editor save,
+     * duplicate-songs merge/delete, places-api, the legacy editor POST gate)
+     * fell back to needing the baked session token that route exists to stop
+     * depending on.
+     *
+     * It also silently dropped the port from the comparison ENTIRELY, so a
+     * genuinely different origin on the same host — `https://example.com:9090`
+     * against a site on 443 — was accepted. Port is part of an origin
+     * (RFC 6454 §4), so that was a real, if narrow, same-origin-policy hole.
+     * Both are fixed by comparing host AND port.
+     *
+     * The request's port is resolved against the SCHEME THE HEADER STATES, not
+     * against a scheme we infer for ourselves. That matters: behind a
+     * TLS-terminating proxy this process cannot reliably tell http from https
+     * (the very ambiguity `initSession()` above has to paper over with
+     * X-Forwarded-Proto), and guessing wrong here would reject every legitimate
+     * write. A browser builds Host and Origin from the SAME URL, so it omits
+     * the port from both or from neither — making "explicit port, else this
+     * scheme's default" an exact comparison on both sides rather than a guess.
+     *
+     * Consequence stated plainly: a cross-SCHEME origin (`http://example.com`
+     * against an https deployment) still matches, because both reduce to the
+     * same host and each side's own default port. That is deliberate — it is
+     * same-SITE, HSTS is sent site-wide, and rejecting it would mean inferring
+     * the request scheme, which is the proxy-fragile thing above. Pinned as
+     * case 17 of tests/php/test-csrf-same-origin.php so changing it is a
+     * conscious decision rather than a drift.
+     *
+     * https://datatracker.ietf.org/doc/html/rfc6454#section-4
+     * https://www.php.net/manual/en/function.parse-url.php
+     */
     $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
     $sawHost = false;
     foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
-        if (!empty($_SERVER[$hdr])) {
-            $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
-            if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
-                return false;
-            }
-            $sawHost = true;
+        if (empty($_SERVER[$hdr])) {
+            continue;
         }
+        $raw    = (string)$_SERVER[$hdr];
+        $h      = parse_url($raw, PHP_URL_HOST);
+        /* Unparseable / relative value → no positive same-origin evidence. */
+        if ($h === null || $h === false || $h === '') {
+            return false;
+        }
+        $scheme = parse_url($raw, PHP_URL_SCHEME);
+        $port   = parse_url($raw, PHP_URL_PORT);
+
+        /* Default port for the scheme the header itself declares. NULL for any
+           other scheme means "no default to fall back on", so an explicit port
+           is then required on both sides to agree. */
+        $defaultPort = match (strtolower((string)$scheme)) {
+            'https' => 443,
+            'http'  => 80,
+            default => null,
+        };
+
+        [$reqHost, $reqPort] = _csrfSplitAuthority($host);
+        if ($reqHost === '') {
+            return false;
+        }
+
+        $headerPort  = ($port !== null && $port !== false) ? (int)$port : $defaultPort;
+        $requestPort = $reqPort ?? $defaultPort;
+
+        if (strcasecmp((string)$h, $reqHost) !== 0 || $headerPort !== $requestPort) {
+            return false;
+        }
+        $sawHost = true;
     }
 
     /* (c) #1388 — BOTH absent is no longer enough on its own.
@@ -1327,18 +1479,87 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
 }
 
 /**
- * Activate or deactivate a user account.
+ * Activate or deactivate a user account — THE ONE ACCOUNT-STATE WRITER (#1698).
+ *
+ * ELI5: switches an account off (or back on), and while it is off, ends
+ * everything it was in the middle of.
+ *
+ * WHY THIS IS THE ONLY PLACE `IsActive` AND `Status` ARE WRITTEN TOGETHER.
+ * The two columns carry ONE fact between them, with an invariant:
+ *
+ *      IsActive = (Status === 'active')
+ *
+ * `IsActive` is what every authentication path filters on — `getAuthenticatedUser()`
+ * plus thirteen enforcement points in this file — and `Status` is what
+ * distinguishes a reversible DISABLE from an anonymised-tombstone ERASE. A
+ * second writer that set one without the other would produce an account that
+ * reads as active on one surface and closed on another, and nothing would go
+ * red. So both live here, and `accountErase()` is the only other writer (it sets
+ * `Status='deleted'` + `IsActive=0` in the same statement, for the same reason).
+ *
+ * The `Status` write is COLUMN-GATED: migrations are web-run from
+ * /manage/setup-database and three docroots share one MySQL, so an un-migrated
+ * install keeps the pre-#1698 behaviour exactly — `IsActive` alone, which is
+ * still the lock, and `userStateFromRow()` still classifies it correctly.
+ *
+ * REFUSES TO REACTIVATE A TOMBSTONE. An erased account's identity is gone —
+ * username replaced by a reserved placeholder, email and password hash blanked,
+ * private rows deleted. Flipping `IsActive` back to 1 would produce a signed-out
+ * husk that nothing can log into but that every "active users" count and
+ * last-global-admin guard would believe in. Enforced HERE rather than only in
+ * the admin UI, because a guard that lives in a form is a guard the API does not
+ * have.
  *
  * @param int  $userId   Target user ID
  * @param bool $isActive True to activate, false to deactivate
- * @return bool
+ * @return bool True on success; FALSE when refused (target is an erased tombstone).
  */
 function setUserActive(int $userId, bool $isActive): bool
 {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+        . DIRECTORY_SEPARATOR . 'user_status.php';
+
     $db = getDbMysqli();
+    $statusReady = userStatusColumnReady($db);
+
+    /* The tombstone guard. Only askable once the column exists — before that no
+       tombstone can exist, because nothing has ever written one. */
+    if ($isActive && $statusReady) {
+        $stmt = $db->prepare('SELECT Status FROM tblUsers WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        if ($row !== null && userStateFromRow(null, (string)$row[0]) === 'deleted') {
+            logActivity(
+                'user.activate',
+                'user',
+                (string)$userId,
+                ['reason' => 'refused_erased_account'],
+                'failure'
+            );
+            return false;
+        }
+    }
+
     $isActiveInt = $isActive ? 1 : 0;
-    $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->bind_param('ii', $isActiveInt, $userId);
+    if ($statusReady) {
+        /* ONE statement, so there is no window in which the two columns
+           disagree — the invariant is not "kept in sync", it is written
+           atomically. `StatusChangedAt` is UTC_TIMESTAMP() into a DATETIME
+           (rule #20): these rows outlive the session that wrote them. */
+        $newStatus = $isActive ? 'active' : 'disabled';
+        $stmt = $db->prepare(
+            'UPDATE tblUsers
+                SET IsActive = ?, Status = ?, StatusChangedAt = UTC_TIMESTAMP(),
+                    UpdatedAt = CURRENT_TIMESTAMP
+              WHERE Id = ?'
+        );
+        $stmt->bind_param('isi', $isActiveInt, $newStatus, $userId);
+    } else {
+        $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+        $stmt->bind_param('ii', $isActiveInt, $userId);
+    }
     $stmt->execute();
     $stmt->close();
 
@@ -1348,6 +1569,34 @@ function setUserActive(int $userId, bool $isActive): bool
         $stmt->bind_param('i', $userId);
         $stmt->execute();
         $stmt->close();
+
+        /* #1698 — end any Live Follow session this user is HOSTING. The auth
+           lock already stops them broadcasting further, but a session left
+           marked active keeps appearing to congregants as a live service that
+           will never advance again. Ending it eagerly is the same reasoning as
+           revoking the tokens above: the lock stops NEW actions, and anything
+           already in flight should be closed rather than left hanging.
+           Table-existence-gated — `tblLiveFollowSessions` arrives with a
+           migration, and mysqli under STRICT throws on a missing table. */
+        try {
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblLiveFollowSessions' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSessions = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            if ($hasSessions) {
+                $stmt = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $stmt->close();
+            }
+        } catch (\Throwable $_e) {
+            /* Best-effort courtesy, never a reason to leave the account
+               enabled: the deactivation itself has already committed. */
+            error_log('[setUserActive] could not end hosted sessions: ' . $_e->getMessage());
+        }
     }
 
     /* Audit (#535) — `user.activate` / `user.deactivate` so the action
@@ -1362,42 +1611,80 @@ function setUserActive(int $userId, bool $isActive): bool
 }
 
 /**
- * Delete a user account permanently.
- * Foreign key cascades will remove tokens, setlists, etc.
+ * ERASE a user account — anonymised tombstone, not a row removal (#1698).
+ *
+ * ELI5: empties the account and blanks the person behind it, while leaving
+ * anything they had already published working for everybody else.
+ *
+ * ⚠ THE NAME IS UNCHANGED ON PURPOSE, THE BEHAVIOUR IS NOT. This used to be
+ * `DELETE FROM tblUsers WHERE Id = ?`, relying on the FK graph's cascades to
+ * take the rest. Two call sites (`manage/users.php`, `admin_user_delete`) invoke
+ * it and neither needed to change, so it keeps its name — but what it now does
+ * is delegate to `accountErase()`, which:
+ *   - deletes every private row the FK graph declares `ON DELETE CASCADE`,
+ *     i.e. exactly what the old hard delete destroyed;
+ *   - NULLs the behavioural/analytics columns, i.e. exactly what the old hard
+ *     delete's `ON DELETE SET NULL` produced for those tables;
+ *   - re-freezes the user's live share links first, so a link somebody else
+ *     bookmarked keeps serving what it showed a moment ago instead of falling
+ *     back to a months-old snapshot;
+ *   - scrubs every PII column and leaves an inactive, anonymous tombstone row
+ *     so ownership/attribution FKs keep resolving and nothing is orphaned.
+ *
+ * The full reasoning, including why a genuine hard purge is deliberately NOT
+ * built, is in includes/account_lifecycle.php's header.
+ *
+ * TRANSACTION: this function owns one, because both its callers are plain page
+ * actions with no surrounding transaction of their own. The self-service
+ * `account_delete` endpoint deliberately does NOT come through here — it has its
+ * own FOR UPDATE lock, re-auth and idempotency to keep atomic, so it calls
+ * `accountErase()` inside its own transaction.
+ *
+ * AUDIT — the strict convention, deliberately changed. This used to log the
+ * erased user's username, display name, role and email into `tblActivityLog`,
+ * which partly defeats the scrub it now performs (the log outlives the account
+ * and is readable by every admin). `account_delete` has always refused to, and
+ * that is the convention adopted here: the numeric id ONLY. Reversing it is one
+ * line, if the owner would rather have the forensics.
  *
  * @param int $userId Target user ID
- * @return bool
+ * @return bool True when the account was erased; false when there was no such user.
+ * @throws AccountEraseException when the migration has not run, or the live FK
+ *         graph has drifted (see accountErase()). Callers surface the message —
+ *         never fall back to a hard delete.
  */
 function deleteUser(int $userId): bool
 {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+        . DIRECTORY_SEPARATOR . 'account_lifecycle.php';
+
     $db = getDbMysqli();
 
-    /* Capture username for the audit row before the row vanishes
-       — the FK from tblActivityLog.UserId to tblUsers is `ON DELETE
-       SET NULL`, so after the cascade the log loses any obvious
-       handle on who got deleted unless we record it here. (#535) */
-    $beforeStmt = $db->prepare('SELECT Username, DisplayName, Role, Email FROM tblUsers WHERE Id = ?');
-    $beforeStmt->bind_param('i', $userId);
-    $beforeStmt->execute();
-    $before = $beforeStmt->get_result()->fetch_assoc() ?: null;
-    $beforeStmt->close();
-
-    $stmt = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $deleted = $stmt->affected_rows > 0;
-    $stmt->close();
-
-    if ($deleted) {
-        logActivity(
-            'user.delete',
-            'user',
-            (string)$userId,
-            $before ? ['before' => $before] : []
-        );
+    $db->begin_transaction();
+    try {
+        $result = accountErase($db, $userId);
+        $db->commit();
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        throw $e;
     }
 
-    return $deleted;
+    /* Audit (#535/#1698) — numeric id only. No username, no email, no display
+       name, no role. Same shape as `account.delete`. */
+    logActivity(
+        'user.delete',
+        'user',
+        (string)$userId,
+        [
+            'mode'            => 'anonymised_tombstone',
+            'tokens_revoked'  => $result['tokensRevoked'],
+            'shares_refrozen' => $result['sharesRefrozen'],
+            'tables_cleared'  => count($result['deleted']),
+            'tables_nulled'   => count($result['nulled']),
+        ]
+    );
+
+    return true;
 }
 
 /**
@@ -1594,7 +1881,7 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $token = bin2hex(random_bytes(24));
     $tokenHash = hash('sha256', $token);
     $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-    $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 600); /* 10 minutes */
 
     /* Invalidate any previous unused tokens for this email */
     $stmt = $db->prepare(
@@ -1868,7 +2155,7 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
 
     /* Generate API bearer token (30-day expiry) */
     $token = bin2hex(random_bytes(32));
-    $expiresAt = gmdate('c', time() + 30 * 86400);
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 30 * 86400);
     $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
     $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -1924,7 +2211,7 @@ function generateEmailVerificationToken(int $userId): ?array
     /* 48-char hex (24 random bytes) raw token; SHA-256 hash on disk. */
     $token = bin2hex(random_bytes(24));
     $tokenHash = hash('sha256', $token);
-    $expiresAt = gmdate('c', time() + 86400); /* 24 hours */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 86400); /* 24 hours */
 
     /* Drop any prior outstanding tokens for this user. Single-token
        invariant matches the password-reset table's
@@ -1961,7 +2248,7 @@ function consumeEmailVerificationToken(string $token): ?array
 
     $db = getDbMysqli();
     $tokenHash = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
     $stmt = $db->prepare(
         'SELECT t.UserId, t.Email AS TokenEmail, u.Email AS CurrentEmail
            FROM tblEmailVerificationTokens t

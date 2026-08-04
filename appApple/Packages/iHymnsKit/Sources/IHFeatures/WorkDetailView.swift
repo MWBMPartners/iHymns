@@ -90,6 +90,7 @@ public struct WorkDetailView: View {
     private func loadedContent(_ work: Work) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             header(for: work)
+            identifiersDisclosure(for: work)
 
             if let parent = work.parent {
                 NavigationLink(destination: WorkDetailView(slug: parent.slug, rootViewModel: rootViewModel)) {
@@ -115,8 +116,50 @@ public struct WorkDetailView: View {
             Text(work.title)
                 .font(.largeTitle.bold())
 
+            // #1752 Slice C — disambiguation + subtitle, exactly the same
+            // pattern `SongDetailView.header(for:)` uses for the identical
+            // #1741 P1 fields on a song (#1752 §1.3).
+            if let disambiguation = work.disambiguation, !disambiguation.isEmpty {
+                Text("(\(disambiguation))")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
+            if let subtitle = work.subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
             if let iswc = work.iswc, !iswc.isEmpty {
                 Text("ISWC: \(iswc)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // #1752 Slice C — first-published + copyright, mirroring
+            // `SongMetadataView.rightsSection`'s gating (no PD flags exist
+            // on `Work`, so there's no "Public Domain" branch here — just
+            // the split-or-legacy `copyrightDisplay` fold, which for a
+            // `Work` is always the split half since `legacy` is passed `""`
+            // — see `Work.copyrightDisplay`'s doc comment).
+            if let year = work.firstPublishedYear {
+                Text("First published \(String(year))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !work.copyrightDisplay.isEmpty {
+                Text("© \(work.copyrightDisplay)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // #1752 Slice C — tuneName renders as plain, non-tappable
+            // caption text: NO native Tune destination screen exists yet
+            // (#1752 §5.2, blocked on a web `?action=tune` JSON action that
+            // doesn't exist today) — a dead `NavigationLink` would be worse
+            // than inert text.
+            if let tuneName = work.tuneName, !tuneName.isEmpty {
+                Text("Tune: \(tuneName)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -127,6 +170,44 @@ public struct WorkDetailView: View {
                     .padding(.top, 4)
             }
         }
+    }
+
+    /// CCLI/BOWI identifiers behind a disclosure (#1752 Slice C) — same
+    /// "Song Identifiers" treatment `SongMetadataView.authorityIdsDisclosure`
+    /// gives CCLI/ISWC/royaltyIds/externalIds on a song, including the SAME
+    /// tvOS/watchOS always-expanded fallback (`DisclosureGroup` is
+    /// UNAVAILABLE on both — D-1/#1504's tvOS-build gate, #1549 for
+    /// watchOS) — copied shape, not re-invented.
+    @ViewBuilder
+    private func identifiersDisclosure(for work: Work) -> some View {
+        let ccli = work.ccli ?? ""
+        let bowi = work.bowi ?? ""
+        if !ccli.isEmpty || !bowi.isEmpty {
+            #if os(tvOS) || os(watchOS)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Work Identifiers").font(.headline)
+                identifiersContent(ccli: ccli, bowi: bowi)
+            }
+            #else
+            DisclosureGroup("Work Identifiers") {
+                identifiersContent(ccli: ccli, bowi: bowi)
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private func identifiersContent(ccli: String, bowi: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !ccli.isEmpty {
+                Text("CCLI Work #: \(ccli)")
+            }
+            if !bowi.isEmpty {
+                Text("BOWI: \(bowi)")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 
     /// Direct child Works (one level — a deeper tree is walked by tapping

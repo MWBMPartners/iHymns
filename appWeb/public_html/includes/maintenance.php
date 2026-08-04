@@ -96,6 +96,59 @@ function getAppSetting(string $key, ?string $default = null): ?string
     return $cache[$key] = $raw;
 }
 
+/**
+ * Write ONE tblAppSettings row, encrypting it first when it is a secret.
+ *
+ * ELI5: save a setting — and if it is a password-like setting and encryption is
+ * switched on, save the locked version instead of the plain one.
+ *
+ * ⚠️ THIS IS THE WRITE HALF OF getAppSetting() ABOVE, and it exists because a
+ * SECOND page needed it (#1671 F6: /manage/notifications storing the Web Push
+ * VAPID private key). Until then the rule lived only inside
+ * `manage/configuration.php`'s `$saveSetting` closure, where a second caller
+ * could only copy it — and a second copy of "encrypt secrets at rest" is the
+ * kind of duplication whose divergence is invisible until a secret is sitting
+ * in the database in the clear. configuration.php now delegates here too, so
+ * there is ONE rule.
+ *
+ * The DECISION itself is the pure `appSettingValueForStorage()`
+ * (includes/secret_crypto.php) so it can be asserted by a test rather than
+ * pattern-matched in a page. It THROWS when a secret must be encrypted and the
+ * master key is unavailable on this docroot — fail closed, deliberately: a
+ * refused save is recoverable, a secret written in the clear is not.
+ *
+ * ⚠️ CALLERS MUST HAVE LOADED includes/secret_crypto.php. There is no
+ * function_exists() guard, and that absence is load-bearing: guarding would
+ * fail OPEN, silently storing plaintext on any page that had forgotten the
+ * require. A fatal is the correct outcome, and it happens on the developer's
+ * first run rather than on a user's secret.
+ *
+ * ⚠️ getAppSetting() memoises per request, so a value read BEFORE this call is
+ * not refreshed by it. Every current caller redirects (POST/Redirect/Get)
+ * immediately after writing, so the stale window never reaches a render.
+ *
+ * @param \mysqli $db
+ * @param string  $key
+ * @param string  $value Plaintext; '' means "unset".
+ * @throws \RuntimeException When a secret cannot be encrypted (see above).
+ */
+function setAppSetting(\mysqli $db, string $key, string $value): void
+{
+    $stored = appSettingValueForStorage(
+        $key,
+        $value,
+        getAppSetting('secret_encryption_active', '0') === '1'
+    );
+    $stmt = $db->prepare(
+        'INSERT INTO tblAppSettings (SettingKey, SettingValue)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
+    );
+    $stmt->bind_param('ss', $key, $stored);
+    $stmt->execute();
+    $stmt->close();
+}
+
 /** Is THIS environment in admin-triggered maintenance mode? (false on a DB error.) */
 function isMaintenanceMode(): bool
 {

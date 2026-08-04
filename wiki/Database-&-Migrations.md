@@ -66,17 +66,53 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | Table | Purpose |
 |---|---|
 | `tblSongbooks` | Songbook definitions (30+ songbooks, e.g. CP, JP, MP, SDAH, CH — see the live list at `/songbooks`) |
-| `tblSongs` | Core song metadata + `LyricsText` for full-text search |
+| `tblSongs` | Core song metadata + `LyricsText` for full-text search. Carries the soft-delete columns `IsDeleted` / `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` (#1694 — see below) |
 | `tblSongWriters` | Song lyricist credits (many-to-one) |
 | `tblSongComposers` | Song composer credits (many-to-one) |
 | `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
+
+### Song Deletion — Recoverable (#1694 / #1695, epic #1692)
+
+Deleting a song is a **soft delete**, not a row removal — deliberately, because 38 of the 41 foreign keys elsewhere in the schema that reference `tblSongs(SongId)` are `ON DELETE CASCADE`, so a hard delete used to take the song's components, credits, media links and its *entire revision history* with it, recoverable only from a database backup.
+
+`tblSongs.IsDeleted` hides the song from every filtered read; the row (and everything cascading from it) stays intact. `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` record when, who, and why — `DeletedReason` is `VARCHAR`, app-validated against `songDeleteReasons()` in `includes/song_soft_delete.php` rather than an `ENUM` (rule #20). `/manage/deleted-songs` lists deleted songs with **Restore** and **Purge** actions; visiting a soft-deleted song's URL now returns HTTP 410 Gone (not a generic 404) — see [[Architecture]].
+
+Two separate entitlements gate the two actions, so the recoverable delete can be handed to curators without also handing them the irreversible one:
+
+| Entitlement | Grants | Default roles |
+|---|---|---|
+| `delete_songs` | Soft-delete and restore | `editor`, `admin`, `global_admin` |
+| `purge_songs` | The irreversible purge — the cascade delete, reachable only from the deleted state | `admin`, `global_admin` |
+
+Every soft delete, restore, and purge notifies every `purge_songs` holder, fired from inside the write core so no future funnel can forget to. The one lifecycle module is `includes/song_soft_delete.php`. Because `saveEntitlementOverrides()` writes the whole entitlements map on every save, any install where `/manage/entitlements` has ever been saved keeps its own stored `delete_songs` value regardless of the code default — the data-only `migrate-delete-songs-rewiden.php` migration clears a stale admin-only override left over from before deletion was recoverable, without touching an operator's own deliberate choice.
+
+### Catalogue Entity Tables (epic #1741 — Musicians / Works / Tunes / Song identifiers)
+
+The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as first-class entities with industry identifiers, disambiguation and profile pages. Most of the schema pre-existed; #1741 P1 extended it in one additive, dormant pass (rule #20 — never a second migration to add a value; every growable vocabulary is `VARCHAR`, app-validated, not `ENUM`).
+
+> **Naming note (#1746 / #1741 P2):** the musician family was **renamed** from `tblCreditPeople*` to `tblMusician*`. The base tables are `tblMusician…`; the old `tblCreditPeople` / `tblCreditPerson*` names survive as **compat `VIEW`s** (`schema.sql` ~:2769-2799) so existing code/queries keep resolving. Always write the base-table name in new code.
+
+| Table | Purpose |
+|---|---|
+| `tblMusicians` | Musicians (person / group / character / orchestra / …). `Type` is `VARCHAR`, app-validated. Carries `Biography`, `Disambiguation`, `Slug`. Profile at `/musician/<slug>` (`/person/<slug>` kept as alias). Compat view: `tblCreditPeople`. |
+| `tblMusicianIdentifiers` | Musician industry IDs — IPI / ISNI / CAE / … (`IdentifierType` `VARCHAR`, new types need no `ALTER`; the 13-provider `CREDIT_IDENTIFIER_TYPES` registry). Compat view: `tblCreditPersonIdentifiers`. (Plus the dedicated `tblMusicianIPI`.) |
+| `tblMusicianExternalLinks` | Per-musician external links (shared chip-list editor). Compat views: `tblCreditPersonExternalLinks` / `tblCreditPersonLinks` (+ `tblMusicianLinks`). |
+| `tblMusicianRelations` | Musician↔musician relations (e.g. a character *Portrayed by* a person, with start/end dates) |
+| `tblMusicianAliases` | Musician name variants (compat view: `tblCreditPersonAliases`) |
+| `tblWorks` | Works (the original piece). `ParentWorkId` self-FK (nesting), `Iswc`, `MusicBrainzWorkMBID`, `Disambiguation`, `Subtitle`. Page `/work/<slug>`. |
+| `tblWorkSongs` / `tblWorkExternalLinks` | Work↔song membership (`IsCanonical`); per-work external links |
+| `tblTunes` | Tunes, first-class. `Name`, `Slug`, `MeterCode`, `Subtitle`, `Disambiguation`, `MusicBrainzWorkMBID`, `HymnaryTuneId`. Page `/tune/<slug>`. `tblSongs.TuneId` FK links a song to its tune (written in lockstep with `TuneName`). |
+| `tblTuneAliases` / `tblTuneCredits` / `tblTuneExternalLinks` | Tune spelling-variants (typeahead surfaces the canonical); per-tune composer/arranger/harmoniser/source credits; per-tune external links |
+| `tblSongExternalIds` | Comprehensive per-song recording-ID key/value store — `IdType` ∈ MBID / Spotify / Genius / ISRC / … (`VARCHAR`, app-validated), `IdScope` server-derived, `(SongId, IdType, IdValue)` unique. `Source` distinguishes `manual` (curator) / `ihymns-backfill` (#1747 one-time) / `ihymns-mirror` (live ISRC dual-write, #1749). |
+
+`tblSongs` also gained identity/publication columns in the same pass: `Isrc`, `Subtitle`, `Disambiguation`, `FirstPublishedYear`, `CopyrightYears`, `CopyrightHolder` (the last three split the single old `Copyright` field). Alias URLs `/isrc /iswc /ccli /ipi /isni /bowi` resolve an industry identifier to its entity via one shared normaliser + resolver (see [[Architecture]] and [[API Reference]]). All of the above is additive and byte-mirrored into `schema.sql`; each migration has a real completion probe.
 
 ### User & Access Control Tables
 
 | Table | Purpose |
 |---|---|
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
-| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified |
+| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified, and the `Status` / `StatusChangedAt` lifecycle pair (#1698 — `active` / `disabled` / `deleted`; see [[User Accounts & Roles]]) |
 | `tblSessions` | Server-side admin panel sessions |
 | `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
@@ -118,6 +154,7 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | `tblActivityLog` | Audit trail for admin actions (edits, logins, imports) |
 | `tblAppSettings` | Key-value runtime configuration store |
 | `tblMigrations` | Schema migration version tracking |
+| `tblIntAppsSync` | MWBM-IntAppsAPI gateway local snapshot + refresh bookkeeping (Epic #1725) — one dormant table, keyed `(Scope, Channel, AppSlug)`; empty/unread until an admin enables the integration on `/manage/configuration`. See [[Architecture]] § External integrations. |
 
 ---
 

@@ -540,9 +540,15 @@ class iHymnsApp {
                     this.shortcuts.toggle();
                     return;
                 case '/':
-                    /* Open search */
+                    /* Open search. Was `toggleHeaderSearch(true)`, which drove
+                       the header search bar deleted in #812 and so did nothing
+                       — while the shortcuts overlay and /help both kept
+                       advertising this key as "Open search". Worse, the
+                       preventDefault() above already consumed the keystroke, so
+                       the slash was not even typed. openSearch() routes to
+                       /search, the affordance #812 deliberately kept. */
                     e.preventDefault();
-                    this.search.toggleHeaderSearch(true);
+                    this.search.openSearch();
                     break;
                 case '#':
                     /* Open numpad modal */
@@ -550,11 +556,13 @@ class iHymnsApp {
                     this.numpad.openModal();
                     break;
                 case 'Escape':
-                    /* Close shortcuts overlay or search bar */
+                    /* Close the shortcuts overlay. The old `else` branch here
+                       closed the header search bar, which #812 removed — so it
+                       was a call into a method that returned immediately. There
+                       is nothing left to close on this path; the /search page's
+                       own input is closed by simply navigating away. */
                     if (this.shortcuts.visible) {
                         this.shortcuts.hide();
-                    } else {
-                        this.search.toggleHeaderSearch(false);
                     }
                     break;
                 case 'f':
@@ -613,11 +621,30 @@ class iHymnsApp {
             }
         });
 
-        /* Ctrl+K shortcut for search */
+        /* Ctrl/Cmd+K shortcut for search.
+         *
+         * This listener is separate from the plain-key switch above because it
+         * needs the modifier state, but it must apply the SAME two guards — and
+         * until now it applied neither. That was invisible while the handler was
+         * a no-op (it called toggleHeaderSearch(), driving the header bar #812
+         * deleted); now that it really navigates, both guards carry weight:
+         *
+         *  1. Honour the user's "Enable keyboard shortcuts" setting (#406), the
+         *     same as every other shortcut. Off means off.
+         *  2. Do nothing while the user is typing in a field. The platform norm
+         *     (VS Code, Slack) is for Cmd+K to work everywhere, but here the
+         *     handler NAVIGATES, so firing it inside the request-a-song form or
+         *     a set-list name box would discard whatever had been typed. Losing
+         *     a user's text is a worse outcome than making them click away
+         *     first, and it matches the `/` handler's existing behaviour.
+         */
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                const tag = (e.target.tagName || '').toLowerCase();
+                if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+                if (this.settings && this.settings.get('keyboardShortcuts') === false) return;
                 e.preventDefault();
-                this.search.toggleHeaderSearch(true);
+                this.search.openSearch();
             }
         });
 
@@ -774,19 +801,47 @@ class iHymnsApp {
     /**
      * Navigate to the previous or next song (if on song page).
      *
+     * ELI5: find the "previous song" or "next song" link on the page and follow it.
+     *
+     * Detail: this used to pick the link by POSITION —
+     * `.song-navigation a:first-child` / `a:last-child`. song.php renders the
+     * previous slot as an `<a>` or an empty `<span>` placeholder, but rendered
+     * the next slot as an `<a>` or NOTHING, so on the last song of a songbook
+     * the container held one child: the PREVIOUS link, which satisfies
+     * `:first-child` and `:last-child` alike. → therefore walked the reader
+     * BACKWARDS, with no error and nothing in the console; pressing → again
+     * went forwards, so they oscillated between the last two songs of a book.
+     * `:last-child` means "last child of its parent", not "last match".
+     * https://developer.mozilla.org/docs/Web/CSS/:last-child
+     *
+     * A positional selector is an unwritten agreement between two files: this
+     * one assumed a child count song.php was free to change (rule #35 — cross
+     * file agreement needs a mechanism, not an assumption). `data-song-nav`
+     * states the direction explicitly, so the count no longer matters.
+     *
+     * The positional selector stays as a FALLBACK, and only as a fallback: a
+     * service-worker-cached fragment served from before this change has no
+     * `data-song-nav` attributes, and arrow keys going nowhere at all would be
+     * a worse regression than the edge case being fixed.
+     *
+     * Guard: tests/test-song-nav-direction.js
+     *
      * @param {string} direction 'prev' or 'next'
      */
     navigateSongDirection(direction) {
         const songPage = document.querySelector('.page-song');
         if (!songPage) return;
 
-        const selector = direction === 'prev'
-            ? '.song-navigation a:first-child'
-            : '.song-navigation a:last-child';
-        const link = songPage.querySelector(selector);
-        if (link) {
+        const selectors = direction === 'prev'
+            ? ['[data-song-nav="prev"]', '.song-navigation a:first-child']
+            : ['[data-song-nav="next"]', '.song-navigation a:last-child'];
+
+        for (const selector of selectors) {
+            const link = songPage.querySelector(selector);
+            if (!link) continue;
             const href = link.getAttribute('href');
             if (href) this.router.navigate(href);
+            return;
         }
     }
 
