@@ -56,7 +56,7 @@ try {
                 SongId      VARCHAR(20)     NOT NULL COMMENT 'FK to tblSongs.SongId',
                 ModelKey    VARCHAR(80)     NOT NULL COMMENT 'Embedding model, e.g. openai-text-embedding-3-small | voyage-3 (multiple models coexist)',
                 Dims        SMALLINT UNSIGNED NOT NULL COMMENT 'Vector dimensionality',
-                Vector      MEDIUMBLOB      NOT NULL COMMENT 'Packed float32 vector',
+                `Vector`    MEDIUMBLOB      NOT NULL COMMENT 'Packed float32 vector',
                 ContentHash CHAR(64)        NOT NULL COMMENT 'sha256 of the embedded text — drives re-index-on-edit (re-embed only on mismatch)',
                 SourceField VARCHAR(20)     NOT NULL DEFAULT 'lyrics' COMMENT 'lyrics | title | combined',
                 GeneratedAt DATETIME        NOT NULL,

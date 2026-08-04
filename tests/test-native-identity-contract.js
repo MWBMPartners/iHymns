@@ -68,7 +68,7 @@
  * @see appAndroid/app/src/main/java/ltd/mwbmpartners/ihymns/models/Song.kt
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -444,7 +444,6 @@ for (const path of [SONG_DETAIL_SWIFT, WORK_SWIFT, SONG_METADATA_VIEW_SWIFT, SON
 const songDetailSwift = existsSync(SONG_DETAIL_SWIFT) ? stripSlashComments(readFileSync(SONG_DETAIL_SWIFT, 'utf8')) : '';
 const workSwift = existsSync(WORK_SWIFT) ? stripSlashComments(readFileSync(WORK_SWIFT, 'utf8')) : '';
 const songMetadataViewSwift = existsSync(SONG_METADATA_VIEW_SWIFT) ? stripSlashComments(readFileSync(SONG_METADATA_VIEW_SWIFT, 'utf8')) : '';
-const songDetailViewSwift = existsSync(SONG_DETAIL_VIEW_SWIFT) ? stripSlashComments(readFileSync(SONG_DETAIL_VIEW_SWIFT, 'utf8')) : '';
 const apiClientSwift = existsSync(API_CLIENT_SWIFT) ? stripSlashComments(readFileSync(API_CLIENT_SWIFT, 'utf8')) : '';
 
 for (const key of SONG_KEYS) {
@@ -454,17 +453,43 @@ for (const key of SONG_KEYS) {
         new RegExp(`case\\s+${key}\\b`).test(songDetailSwift));
 }
 
-console.log('\nAssertion 2 — every song key reaches a render site (SongMetadataView.swift OR SongDetailView.swift):\n');
+console.log('\nAssertion 2 — every song key reaches a render site (any IHFeatures view file):\n');
 
-// firstPublishedYear/subtitle/disambiguation are rendered directly by their
-// own literal key name; copyrightYears/copyrightHolder are reached ONLY via
-// the copyrightDisplay fold (never rendered verbatim) — asserted separately
-// below per the build spec's explicit "don't pretend every key renders
-// verbatim" instruction (rule #34's both-edges lesson).
+// The render-site set is TREE-DERIVED (rule #34): a key "reaches a render
+// site" if SOME IHFeatures view file accesses it off the loaded model as
+// `detail.<key>`, not a hardcoded two-file list. The codebase's own "every
+// section is its own file" convention (this module's SongDetailView header
+// documents it) means a section can be split into a fresh file at any time —
+// e.g. SongDetailHeaderView.swift, carved out of SongDetailView for the
+// LOC-budget tripwire, now owns the subtitle + disambiguation render. A
+// hardcoded {SongMetadataView, SongDetailView} list went spuriously RED the
+// moment that happened; scanning the directory keeps the guard honest across
+// extraction.
+//
+// We match the PROPERTY ACCESS `detail.<key>`, NOT the bare token `<key>`
+// (rule #34's "not too blunt" edge): `subtitle`/`disambiguation` are common
+// SwiftUI words (a `subtitle:` label, `.navigationSubtitle`, an unrelated
+// card's own `subtitle`) that appear across eight IHFeatures files, so a bare
+// substring check could NEVER fail — a guard that cannot fail reads as
+// coverage while verifying nothing. `detail.subtitle` is the actual render
+// signal and appears ONLY where the key is genuinely rendered; deleting that
+// render turns this RED (mutation-proven). Comments are stripped first.
+const renderSiteSwift = existsSync(IH_FEATURES)
+    ? readdirSync(IH_FEATURES)
+        .filter((f) => f.endsWith('.swift'))
+        .map((f) => stripSlashComments(readFileSync(join(IH_FEATURES, f), 'utf8')))
+        .join('\n')
+    : '';
+
+// firstPublishedYear/subtitle/disambiguation are rendered directly (accessed
+// as `detail.<key>`); copyrightYears/copyrightHolder are reached ONLY via the
+// copyrightDisplay fold (never rendered verbatim) — asserted separately below
+// per the build spec's explicit "don't pretend every key renders verbatim"
+// instruction (rule #34's both-edges lesson).
 const DIRECTLY_RENDERED_SONG_KEYS = SONG_KEYS.filter((k) => k !== 'copyrightYears' && k !== 'copyrightHolder');
 for (const key of DIRECTLY_RENDERED_SONG_KEYS) {
-    check(`'${key}' appears in a render site (SongMetadataView.swift or SongDetailView.swift)`,
-        songMetadataViewSwift.includes(key) || songDetailViewSwift.includes(key));
+    check(`'${key}' reaches a render site (some IHFeatures view accesses detail.${key})`,
+        renderSiteSwift.includes(`detail.${key}`));
 }
 
 check("the literal 'copyrightDisplay' appears in SongMetadataView.swift (the render site for the copyright line)",
