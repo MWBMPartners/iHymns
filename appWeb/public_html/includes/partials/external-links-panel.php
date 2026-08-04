@@ -70,8 +70,8 @@ declare(strict_types=1);
  *
  * Renders NOTHING (no wrapping markup at all) when `$panelLinks` is empty —
  * callers do not need to wrap the `require` in their own `!empty()` check,
- * matching the pre-extraction callers' `<?php if (!empty($workLinks)): ?>`
- * behaviour but moving the check inside the shared partial so a THIRD
+ * matching the pre-extraction callers' inline `if (!empty($workLinks))`
+ * guard but moving the check inside the shared partial so a THIRD
  * caller can't forget it.
  *
  * NO EXECUTABLE INLINE `<script>` (rule #30) — pure markup, safe inside a
