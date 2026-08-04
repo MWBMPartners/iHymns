@@ -220,26 +220,30 @@ $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
    cost (no tblContentRestrictions query) on the hot song-page path by default.
    When a restriction matches the viewer, the lyrics are replaced with the
    themed "Lyrics protected" card (renderContentGatedFragment).
-   NOTE: ?page= renders are currently anonymous (router.loadPage doesn't send
-   the bearer token), so a signed-in ENTITLED user is treated as anonymous
-   until (a) loadPage forwards auth and (b) the song page is excluded from the
-   shared ETag cache when gated — both small follow-ups for when gating is
-   actually switched on. */
+   AUTH (#1769 P3, corrected): a ?page= fragment IS viewer-aware — getAuthBearerToken()
+   falls back to the same-origin `ihymns_auth` cookie (#390), which apiFetch sends
+   on every router.loadPage() fetch, so getAuthenticatedUser() below resolves a
+   signed-in web user today (no Authorization header is forwarded, so only a
+   cookie-less token-holding session renders anonymously). CACHE: when this gate is
+   ON the fragment is viewer-dependent, so api.php excludes page=song from the shared
+   ETag/SW cache and sends Cache-Control: private, no-store (#1769 P3 Commit E) —
+   never personalise the shared cache (rule #6). Off, the whole block is skipped. */
 $lyricsGated = false;
 $gateReason  = '';
 $serviceCcliNumber = null;   /* #1335 — set when a present congregant rides the org's CCLI licence; drives the per-song CCL notice. */
 if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
     && function_exists('checkContentAccess')) {
     try {
-        /* #1769 P3 — the gating DECISION maths is extracted to the ONE shared seam
-           includes/song_page_gating.php (songPageGatingDecideLegacy), so the page
-           can't drift from the API and the decision is replayable DB-free against a
-           golden matrix. This file keeps only the I/O RESOLUTION (entity gate, tier,
-           ccli, presence) and hands the resolved scalars to the seam. Commit A is a
-           VERBATIM code-motion; Commit C rewrites both sides onto the #1769 viewer
-           struct. Still entirely dormant behind content_gating_enabled; fail-open via
-           the outer catch (a thrown lookup leaves the entity verdict untouched). */
+        /* #1769 P3 — ONE resolver + ONE decision. accessViewerContext() (the #1769
+           Model-2 viewer struct) resolves "who is asking?" (tier / per-action caps /
+           ccli / presence), and songPageGatingDecide() makes every gating decision
+           from it — the SAME struct the JSON API pipeline uses, so the page and the
+           API can't drift, and the decision is replayable DB-free against a golden
+           matrix. This file keeps only the entity gate + the copyrighted-only CCL
+           presence NUMBER (the viewer carries just the presence BOOL). Still entirely
+           dormant behind content_gating_enabled; fail-open via the outer catch. */
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'access_context.php';
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_page_gating.php';
 
         $gateViewer   = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
@@ -263,10 +267,10 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
         $entityAllowed = !empty($gateAccess['allowed']);
         $entityReason  = (string)($gateAccess['reason'] ?? '');
 
-        /* Service-Mode presence number resolved ONCE, PD-independent — the seam
-           derives BOTH the copyrighted-only CCL notice number AND the media-presence
-           flag from it (provably identical to the old two-step derivation). NOT
-           inner-caught: a throw hits the outer catch, exactly as before. */
+        /* Service-Mode presence NUMBER resolved once, PD-independent — needed for the
+           copyrighted-only CCL notice (the viewer carries only the presenceCcli bool).
+           $viewer['presenceCcli'] === ($presenceNumber !== null) by construction (same
+           serviceMode lookup). NOT inner-caught: a throw hits the outer catch. */
         $presenceNumber = null;
         if ($presenceTok !== '' && function_exists('serviceMode_presenceCcliNumber')) {
             $presenceNumber = serviceMode_presenceCcliNumber(
@@ -275,21 +279,17 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
             );
         }
 
-        /* Viewer PLAN axis (public/free/ccli/premium/pro) + verified-CCLI. Defaults:
-           anonymous → 'public'; a thrown lookup is swallowed by the outer catch. */
-        $viewerTier    = 'public';
-        $viewerHasCcli = false;
-        if (function_exists('resolveEffectiveTier')) {
-            $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
-            $viewerHasCcli = function_exists('contentGating_userHasCcli')
-                ? contentGating_userHasCcli($tierViewerId)
-                : false;
-        }
+        /* The ONE viewer struct. apiKeyScopes=[] is LOAD-BEARING: it skips the
+           content:gated bypass resolution (the page never had one) — passing null
+           would return the neutral all-false-caps bypass struct on a bypass-key
+           request and (since this page reads caps directly) GATE a render that fully
+           shows today. Tier resolution throwing propagates to the outer catch. */
+        $viewer = accessViewerContext($tierViewerId, 'PWA', $presenceTok !== '' ? $presenceTok : null, []);
 
-        /* ONE decision (extracted maths — entity + tier lyric gate + media affordances). */
-        $__gate = songPageGatingDecideLegacy(
-            $viewerTier, $viewerHasCcli, $presenceNumber,
-            $entityAllowed, $entityReason,
+        /* ONE decision (entity + tier lyric gate + media affordances), viewer-driven. */
+        $__gate = songPageGatingDecide(
+            $viewer,
+            $entityAllowed, $entityReason, $presenceNumber,
             $lyricsPublicDomain, $fullyPublicDomain,
             $hasAudio, $hasSheet,
             (!empty($song['media']) && is_array($song['media'])) ? $song['media'] : []

@@ -60,18 +60,19 @@ foreach (['LyricsRightsLicenceKey', 'MusicRightsLicenceKey',
         "(a) SongData.php does not reference '{$needle}' (rights fact stays dead on the public read path)");
 }
 
-/* ---- (b) viewer-struct mechanism: every $viewer['…'] literal the pipeline
- * reads is a real ACCESS_VIEWER_KEYS member. Derived from the tree. --------- */
-$viewerKeyFiles = [
-    '/includes/access_resolver.php',
-    '/includes/access_context.php',
-    '/includes/content_gating.php',
-];
+/* ---- (b) viewer-struct mechanism: every $viewer['…'] literal ANYWHERE under
+ * includes/ is a real ACCESS_VIEWER_KEYS member. TREE-DERIVED (rule #34) — scans
+ * every .php under includes/ recursively, so a new consumer (e.g. the P3
+ * song_page_gating.php) is covered automatically, not by a typed file list. --- */
 $badViewerKeys = [];
 $sawViewerKey  = false;
-foreach ($viewerKeyFiles as $rel) {
-    $src = (string)file_get_contents($root . $rel);
+$rii = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(
+    $root . '/includes', \FilesystemIterator::SKIP_DOTS));
+foreach ($rii as $f) {
+    if ($f->getExtension() !== 'php') { continue; }
+    $src = (string)file_get_contents($f->getPathname());
     if (preg_match_all('/\$viewer\[\'([a-zA-Z_]+)\'\]/', $src, $m)) {
+        $rel = str_replace($root, '', $f->getPathname());
         foreach ($m[1] as $k) {
             $sawViewerKey = true;
             if (!in_array($k, ACCESS_VIEWER_KEYS, true)) {
@@ -82,7 +83,7 @@ foreach ($viewerKeyFiles as $rel) {
 }
 _psAssert($sawViewerKey, '(b) the guard actually found $viewer[…] key literals to check');
 _psAssert($badViewerKeys === [],
-    '(b) every $viewer[…] key read by the pipeline is in ACCESS_VIEWER_KEYS'
+    '(b) every $viewer[…] key read anywhere under includes/ is in ACCESS_VIEWER_KEYS'
     . ($badViewerKeys ? ' — offenders: ' . implode(', ', $badViewerKeys) : ''));
 
 /* ---- (c) the pre-refactor legacy cores are gone from includes/. --------- */
@@ -118,6 +119,36 @@ _psAssert(strpos($mediaBody, 'accessViewerContext($userId, \'PWA\', $presenceTok
     '(d) the media delegate builds its viewer with apiKeyScopes=[] (no bypass on the byte gate)');
 _psAssert(strpos($mediaBody, 'accessMediaAllowed(') !== false,
     '(d) contentGatingMediaAllowed() delegates to accessMediaAllowed()');
+
+/* ---- (e) song.php fork collapse (#1769 P3): the page + its gating seam resolve
+ * nothing themselves — they route through the ONE viewer struct. ------------- */
+$songSrc = (string)file_get_contents($root . '/includes/pages/song.php');
+$spgSrc  = (string)file_get_contents($root . '/includes/song_page_gating.php');
+
+/* song.php no longer resolves the viewer inline (that moved into accessViewerContext). */
+_psAssert(strpos($songSrc, 'resolveEffectiveTier(') === false,
+    '(e) song.php no longer calls resolveEffectiveTier() directly (routes through accessViewerContext)');
+_psAssert(strpos($songSrc, 'checkTierAccess(') === false,
+    '(e) song.php no longer calls checkTierAccess() directly (reads caps off the viewer)');
+_psAssert(strpos($songSrc, 'contentGating_userHasCcli(') === false,
+    '(e) song.php no longer calls contentGating_userHasCcli() directly (viewer resolves ccli)');
+
+/* The seam reads caps off the viewer — it does NOT resolve tiers itself. */
+_psAssert(strpos($spgSrc, 'checkTierAccess(') === false && strpos($spgSrc, 'resolveEffectiveTier(') === false,
+    '(e) song_page_gating.php reads caps off the viewer, never resolves a tier itself');
+
+/* The nastiest trap: the page's viewer MUST be built with apiKeyScopes=[] (no
+   bypass on a caps-reading page — null would GATE a bypass-key render). */
+_psAssert(strpos($songSrc, "accessViewerContext(\$tierViewerId, 'PWA', \$presenceTok !== '' ? \$presenceTok : null, [])") !== false,
+    '(e) song.php builds its viewer with apiKeyScopes=[] (the bypass trap)');
+_psAssert(strpos($songSrc, 'songPageGatingDecide(') !== false,
+    '(e) song.php delegates its gating decision to songPageGatingDecide()');
+
+/* Presence is resolved ONCE on the page (the design collapsed the old double
+   lookup); the viewer resolves its own presenceCcli separately, so song.php
+   should carry exactly one serviceMode_presenceCcliNumber( call. */
+_psAssert(substr_count($songSrc, 'serviceMode_presenceCcliNumber(') === 1,
+    '(e) song.php resolves the presence number exactly once (the design de-duplicated it)');
 
 /* ----------------------------------------------------------------------- */
 echo "\ngating-pipeline-structure: {$passed} passed, {$failures} failed\n";
