@@ -1,5 +1,17 @@
 # #1769 P3 — emitter adoption + song.php fork collapse: implementation blueprint
 
+> **STATUS (2026-08-04): P3 COMPLETE (Commits A–E + G landed; F deferred). All dormant — no master-switch flip.**
+> - ✅ **A** `4a8b9639` — song.php seam extraction (songPageGatingDecideLegacy), diff-proven vs the old inline maths across 4608 cells.
+> - ✅ **B** `3ae559b0` — golden capture tool + `song-page-gating-goldens.json` (4608).
+> - ✅ **C** `c9650cd5` — the collapse: `songPageGatingDecide(array $viewer, …)`, legacy seam DELETED, `test-song-page-gating-equivalence.php` replays all 4608 byte-identically, `test-gating-pipeline-structure.php` §(e), mutation checklist M1–M7 break→red→restore.
+> - ✅ **D** `e5c764a2` — songbook_export builds the viewer once + maps accessApplySong; single-call sites annotated as staying-on-the-delegate.
+> - ✅ **E** `c6a2c86a` — api.php excludes the gated page=song fragment + `no-store`; SW `swResponseCacheable()` at the incidental puts; §(f) guard; auth needed no code (cookie already rode loadPage).
+> - ⛔ **F — DEFERRED to #1777** — the `checkBulkAccess` presence wiring is a state-(b) delta; not shipped in the dormant build (owner sign-off).
+> - ✅ **G** — docs (project-rules §18.7 P3 para, CHANGELOG, this banner, plan) + follow-up issues #1774 (presence-OR divergence), #1775 (audio-media.php tier gate), #1776 (SW cache-clear on login), #1777 (Commit F).
+> **PHP 114/114 + node 50/50 CI-parity throughout. NEXT: P4 (admin hub + Rights panel + DM-2) → P5 (DM-1) → P6 (first-enable + activity logging + the deferred decisions).**
+
+---
+
 > Durable blueprint for P3 (branch `claude/gating-model-review`, follows P2 = `.claude/gating-p2-design.md`).
 > Produced by a sequential Fable design pass (orchestrator-verified against source), 2026-08-04.
 > PRIME INVARIANT (same as P2): every commit is a **byte-identical no-op in BOTH states** — (a) `content_gating_enabled='0'`
