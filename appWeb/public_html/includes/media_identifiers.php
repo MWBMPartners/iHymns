@@ -438,3 +438,151 @@ function mediaIdentifierRoyaltyAuthorities(): array
     }
     return $out;
 }
+
+/* =========================================================================
+ * PUBLICATION_IDENTIFIER_TYPES — publication-entity (songbook / series /
+ * catalogue) identifier vocabulary (Songbook/Catalogue Enhancements epic,
+ * commit 1 of 7 — pure foundations, dormant until the migration in commit 2
+ * lands the columns this map describes).
+ *
+ * ELI5
+ * ----
+ * The WORK_IDENTIFIER_TYPES map above says "what identifiers can a work have,
+ * and where do they live?". This is the SAME question one level up, for the
+ * publication itself (the physical/curated hymnal, series, or collection) —
+ * ARK, OpenLibrary Work id, OpenLibrary Edition id, ISBN, ISSN.
+ *
+ * DETAILED / WHY "SAME ENTRY SHAPE AS WORK_IDENTIFIER_TYPES" BUT A SEPARATE
+ * CONST RATHER THAN MORE ENTRIES IN THAT ONE
+ * ----------------------------------------------------------------------------
+ * `WORK_IDENTIFIER_TYPES` and this map are keyed by DIFFERENT, non-
+ * overlapping vocabularies for DIFFERENT entities (a work's ISWC/BOWI/CCLI
+ * vs. a publication's ISBN/ISSN/ARK/OpenLibrary) — mixing them into one
+ * array would mean a lookup by slug could resolve against the wrong grain,
+ * exactly the mistake `mediaIdentifierWorkValidate()`'s own doc-block warns
+ * against for `RECORDING_EXTERNAL_ID_TYPES` vs `WORK_IDENTIFIER_TYPES`. This
+ * map reuses that SAME field shape (`label`/`storage`/`column`/
+ * `authorityCode`/`authority`/`validate`) — every entry here is
+ * `storage => 'column'` because, per the epic's Feature 3 decision, every
+ * publication identifier is a plain nullable `VARCHAR` column (the #672
+ * pattern `tblSongbooks.Isbn`/`ArkId` already established), never a
+ * generic key/value side-table — plus one addition this map's callers need
+ * that WORK_IDENTIFIER_TYPES's callers do not yet: a nullable `url`
+ * "%s"-templated printf lookup URL (mirrors `RECORDING_EXTERNAL_ID_TYPES`'s
+ * `url` field), for a future admin "view on OpenLibrary/ISSN portal" link —
+ * filled in only where the public lookup shape is genuinely well-known and
+ * stable (all five below are).
+ *
+ * `column` NAMES THE CONVENTIONAL COLUMN, NOT A SINGLE TABLE: unlike
+ * `WORK_IDENTIFIER_TYPES['iswc']['column']` (which names exactly one
+ * `tblWorks` column), a publication identifier's column of the SAME NAME may
+ * exist on ZERO, ONE, TWO or ALL THREE of `tblSongbooks` /
+ * `tblSongbookSeries` / `tblCatalogues` — the epic's migration deliberately
+ * does NOT give every entity every column (`tblSongbooks` has no `Issn`,
+ * `tblCatalogues` has no `Isbn`/`Issn` at all — see the plan's "Adversarial
+ * notes": "series 260$b / catalogue ISBN deliberately absent"). `column`
+ * here documents the NAME a caller should look for; it is each entity's own
+ * concern (and `includes/marcxml.php`'s `marcxmlFieldMap()`, its first
+ * consumer) to know which of the three entities actually carries it.
+ *
+ * NOT YET WIRED TO ANY LIVE WRITE PATH: `mediaIdentifierPublicationValidate()`
+ * is exactly the guard `includes/marcxml.php`'s importer will call once
+ * MARCXML handlers land (commit 6) — nothing calls it from this commit.
+ * The `ark` / `openlibrary-work` / `openlibrary-edition` slugs canonicalise
+ * via `identifier_normalize.php`'s folds FIRST (never re-derive their shape
+ * here — this map's `validate` regex for those three is for a caller that
+ * only wants a truth check, e.g. a future admin form's client-side hint,
+ * and is intentionally the SAME shape those folds enforce, matching the
+ * pre-existing `WORK_IDENTIFIER_TYPES['iswc']['validate']` /
+ * `ihymns_canonical_iswc()` precedent of two independently-declared but
+ * shape-identical checks for two different purposes).
+ *
+ * @link .claude/songbook-catalogue-enhancements-plan.md  the epic plan (Feature 3 + Feature 6 sections)
+ * @see appWeb/public_html/includes/identifier_normalize.php  ihymns_canonical_ark() / ihymns_canonical_openlibrary() — the authoritative folds for ark/openlibrary-*
+ * @see appWeb/public_html/includes/marcxml.php               the first consumer (marcxmlMapToEntity())
+ * @see tests/php/test-media-identifiers.php                  the vocabulary guard this map is checked against
+ * ========================================================================= */
+const PUBLICATION_IDENTIFIER_TYPES = [
+    'ark' => [
+        'label' => 'ARK', 'storage' => 'column', 'column' => 'ArkId', 'authorityCode' => null,
+        'authority' => 'ARK Alliance / California Digital Library',
+        'validate' => '#^ark:/\d{5,9}/[!-~]+$#',
+        'url' => 'https://n2t.net/%s',
+    ],
+    'openlibrary-work' => [
+        'label' => 'OpenLibrary Work', 'storage' => 'column', 'column' => 'OpenLibraryWorkId', 'authorityCode' => null,
+        'authority' => 'Internet Archive / Open Library',
+        'validate' => '/^OL\d+W$/',
+        'url' => 'https://openlibrary.org/works/%s',
+    ],
+    'openlibrary-edition' => [
+        'label' => 'OpenLibrary Edition', 'storage' => 'column', 'column' => 'OpenLibraryEditionId', 'authorityCode' => null,
+        'authority' => 'Internet Archive / Open Library',
+        'validate' => '/^OL\d+M$/',
+        'url' => 'https://openlibrary.org/books/%s',
+    ],
+    /* ISBN/ISSN validate against the CLEANED shape (digits + an optional
+       trailing check-"digit" X, hyphens already stripped) — this file ships
+       no ihymns_canonical_isbn()/_issn() fold (unlike ark/openlibrary-*, the
+       epic's Feature 6 scope does not call for one), so a caller with a
+       curator-typed value carrying hyphens/spaces must strip them itself
+       before calling mediaIdentifierPublicationValidate('isbn', …), the same
+       pre-cleaned-input expectation mediaIdentifierValidateValue() already
+       has for 'isrc'/'ccli'. includes/marcxml.php does this cleaning inline
+       for the one caller this commit ships. */
+    'isbn' => [
+        'label' => 'ISBN', 'storage' => 'column', 'column' => 'Isbn', 'authorityCode' => null,
+        'authority' => 'International ISBN Agency',
+        'validate' => '/^(?:\d{9}[\dX]|\d{13})$/',
+        'url' => null,
+    ],
+    'issn' => [
+        'label' => 'ISSN', 'storage' => 'column', 'column' => 'Issn', 'authorityCode' => null,
+        'authority' => 'ISSN International Centre',
+        'validate' => '/^\d{7}[\dX]$/',
+        'url' => 'https://portal.issn.org/resource/ISSN/%s',
+    ],
+];
+
+/**
+ * The whole publication-identifier registry.
+ *
+ * @return array<string,array{label:string,storage:string,column:?string,authorityCode:?string,authority:string,validate:?string,url:?string}>
+ */
+function mediaIdentifierPublicationTypes(): array
+{
+    return PUBLICATION_IDENTIFIER_TYPES;
+}
+
+/**
+ * True when $value passes $slug's documented shape — the
+ * PUBLICATION_IDENTIFIER_TYPES mirror of `mediaIdentifierWorkValidate()`.
+ *
+ * ELI5: "does this ARK / OpenLibrary id / ISBN / ISSN a curator typed (or
+ * MARCXML import extracted) actually look like a real one?"
+ *
+ * Mirrors `mediaIdentifierWorkValidate()`'s exact contract against the
+ * sibling map: unrecognised slug → false, empty value → false (trimmed),
+ * a recognised slug with `validate === null` → any non-empty value accepted
+ * (none of the five entries above currently has a null validate, but the
+ * contract is kept identical to its siblings for a future entry that might),
+ * else the PCRE match result.
+ *
+ * @param string $slug  A PUBLICATION_IDENTIFIER_TYPES key, e.g. 'ark', 'isbn'.
+ * @param string $value The value to check — for isbn/issn this must already
+ *                       be cleaned (digits + optional trailing X, no
+ *                       hyphens/spaces); for ark/openlibrary-* callers
+ *                       should prefer the canonicalising fold in
+ *                       identifier_normalize.php, which validates AND
+ *                       cleans in one step.
+ * @return bool
+ * @see appWeb/public_html/includes/marcxml.php  the first call site
+ */
+function mediaIdentifierPublicationValidate(string $slug, string $value): bool
+{
+    $reg = PUBLICATION_IDENTIFIER_TYPES[$slug] ?? null;
+    if ($reg === null) return false;
+    if (trim($value) === '') return false;
+    if ($reg['validate'] === null) return true;
+    return (bool)preg_match($reg['validate'], $value);
+}

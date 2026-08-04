@@ -101,6 +101,17 @@ const MI_EXPECTED_WORK_TYPES = [
     'ascap', 'bmi', 'sesac', 'prs', 'gema', 'socan', 'apra', 'hfa',
 ];
 
+/** PUBLICATION_IDENTIFIER_TYPES allow-list — Songbook/Catalogue Enhancements
+ *  epic, Feature 6 (`.claude/songbook-catalogue-enhancements-plan.md`):
+ *  ARK / OpenLibrary Work / OpenLibrary Edition / ISBN / ISSN, the five
+ *  identifiers a publication entity (songbook/series/catalogue) can carry.
+ *  Independently transcribed here (NOT read from media_identifiers.php),
+ *  same rationale as MI_EXPECTED_WORK_TYPES above — this list agreeing with
+ *  itself would prove nothing. */
+const MI_EXPECTED_PUBLICATION_TYPES = [
+    'ark', 'openlibrary-work', 'openlibrary-edition', 'isbn', 'issn',
+];
+
 /**
  * PURE core: diff an actual key list against an expected key list, returning
  * human-readable mismatch strings (empty = clean). Both mutation self-tests
@@ -141,18 +152,21 @@ $_SERVER['SCRIPT_FILENAME'] = 'test-runner';
 require_once $mediaIdFile;
 
 if (!function_exists('mediaIdentifierRecordingTypes') || !function_exists('mediaIdentifierScopes')
-    || !function_exists('mediaIdentifierWorkTypes')) {
+    || !function_exists('mediaIdentifierWorkTypes') || !function_exists('mediaIdentifierPublicationTypes')
+    || !function_exists('mediaIdentifierPublicationValidate')) {
     fwrite(STDERR, "FATAL: media_identifiers.php loaded but expected functions are missing\n");
     exit(1);
 }
 
-$actualRecordingTypes = array_keys(mediaIdentifierRecordingTypes());
-$actualScopes          = mediaIdentifierScopes();
-$actualWorkTypes        = array_keys(mediaIdentifierWorkTypes());
+$actualRecordingTypes   = array_keys(mediaIdentifierRecordingTypes());
+$actualScopes            = mediaIdentifierScopes();
+$actualWorkTypes         = array_keys(mediaIdentifierWorkTypes());
+$actualPublicationTypes  = array_keys(mediaIdentifierPublicationTypes());
 
 foreach (miDiffKeys('RECORDING_EXTERNAL_ID_TYPES', $actualRecordingTypes, MI_EXPECTED_RECORDING_TYPES) as $m) { $failures[] = $m; }
 foreach (miDiffKeys('SONG_EXTERNAL_ID_SCOPES',      $actualScopes,          MI_EXPECTED_SCOPES)          as $m) { $failures[] = $m; }
 foreach (miDiffKeys('WORK_IDENTIFIER_TYPES',        $actualWorkTypes,       MI_EXPECTED_WORK_TYPES)      as $m) { $failures[] = $m; }
+foreach (miDiffKeys('PUBLICATION_IDENTIFIER_TYPES', $actualPublicationTypes, MI_EXPECTED_PUBLICATION_TYPES) as $m) { $failures[] = $m; }
 
 /* ---------------------------------------------------------------------- *
  * CROSS-MAP referential checks — internal self-consistency, derived from
@@ -191,6 +205,32 @@ foreach (mediaIdentifierWorkTypes() as $slug => $def) {
     }
 }
 
+/* Every PUBLICATION_IDENTIFIER_TYPES entry declares storage='column' (the
+   ONLY zero-schema-cost home Feature 3 uses for a publication identifier —
+   unlike WORK_IDENTIFIER_TYPES there is no 'royalty' alternative here), a
+   non-empty string 'column' name, and — per the "same entry shape … plus a
+   url template" contract (media_identifiers.php's own doc-comment) — a
+   'url' that is either null or a string containing a '%s' placeholder for
+   the bare id. */
+foreach (mediaIdentifierPublicationTypes() as $slug => $def) {
+    if (($def['storage'] ?? null) !== 'column') {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}']['storage'] = "
+                    . var_export($def['storage'] ?? null, true) . " is not 'column'";
+    }
+    if (!is_string($def['column'] ?? null) || $def['column'] === '') {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}']['column'] is not a non-empty string";
+    }
+    if (!array_key_exists('url', $def)) {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}'] is missing the 'url' key entirely";
+        continue;
+    }
+    $url = $def['url'];
+    if ($url !== null && (!is_string($url) || !str_contains($url, '%s'))) {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}']['url'] must be null or a '%s'-templated string, got "
+                    . var_export($url, true);
+    }
+}
+
 /* Every declared `validate` regex (where present) must actually compile —
    a malformed PCRE would make mediaIdentifierValidateValue() throw/warn at
    the worst possible time (mid-import), not at CI time. */
@@ -212,6 +252,16 @@ foreach (mediaIdentifierWorkTypes() as $slug => $def) {
     set_error_handler($prev);
     if (!$ok) {
         $failures[] = "WORK_IDENTIFIER_TYPES['{$slug}']['validate'] is not a compilable PCRE: {$re}";
+    }
+}
+foreach (mediaIdentifierPublicationTypes() as $slug => $def) {
+    $re = $def['validate'] ?? null;
+    if ($re === null) { continue; }
+    $prev = set_error_handler(static function () { return true; });
+    $ok = @preg_match($re, 'probe') !== false;
+    set_error_handler($prev);
+    if (!$ok) {
+        $failures[] = "PUBLICATION_IDENTIFIER_TYPES['{$slug}']['validate'] is not a compilable PCRE: {$re}";
     }
 }
 
@@ -299,17 +349,83 @@ if ($idTypeIsVarchar !== true) {
 }
 
 /* =========================================================================
+ * VALIDATOR TRUTH TABLE — mediaIdentifierPublicationValidate() (Songbook/
+ * Catalogue Enhancements epic, Feature 6). Each row is [slug, value,
+ * expectedValid] — a value/expectation PAIR, not just "does it return
+ * bool", so a validator loosened to accept-everything or tightened to
+ * reject-everything is caught either way (rule #34's both-directions
+ * discipline).
+ * ========================================================================= */
+
+$publicationValidateCases = [
+    /* ARK — valid shape (matches ihymns_canonical_ark()'s own contract:
+       ark:/NAAN(5-9 digits)/name). mediaIdentifierPublicationValidate()
+       validates the CANONICAL form only (no URL/percent-decoding — that is
+       ihymns_canonical_ark()'s job, exercised in test-identifier-normalize.php). */
+    ['ark', 'ark:/13960/t8jf3w89z', true],
+    ['ark', 'ark:/1234/tooshortnaan', false],   // NAAN only 4 digits (needs 5-9)
+    ['ark', 'not-an-ark-at-all', false],
+    ['ark', '', false],
+
+    /* OpenLibrary Work vs Edition — CROSS-KIND must be invalid: an edition-
+       shaped id ('…M') is not a valid value for the 'openlibrary-work' slug,
+       and vice versa. This is the mediaIdentifierPublicationValidate() analogue
+       of ihymns_canonical_openlibrary()'s cross-kind null (same property,
+       checked at the OTHER layer — the plain truth-check registry, not the
+       canonicalising fold). */
+    ['openlibrary-work', 'OL102749W', true],
+    ['openlibrary-work', 'OL7353617M', false],  // an EDITION id, wrong slug
+    ['openlibrary-edition', 'OL7353617M', true],
+    ['openlibrary-edition', 'OL102749W', false], // a WORK id, wrong slug
+    ['openlibrary-work', 'not-an-ol-id', false],
+
+    /* ISBN — ISBN-10 with a trailing X check "digit" (the shape 020$a
+       genuinely produces for some pre-1970s/pre-ISBN-13 hymnals) and a
+       13-digit ISBN-13, both cleaned (no hyphens — the caller's job, see
+       marcxmlCleanIdentifierRaw() in includes/marcxml.php). */
+    ['isbn', '019852663X', true],
+    ['isbn', '9780199991234', true],
+    ['isbn', '978-0-19-999123-4', false],  // hyphens NOT stripped — caller must pre-clean
+    ['isbn', '12345', false],              // wrong length entirely
+
+    /* ISSN — 7 digits + a check character (digit or X), cleaned (no hyphen). */
+    ['issn', '0317847X', true],
+    ['issn', '03178471', true],
+    ['issn', '0317-8471', false],  // hyphen NOT stripped — caller must pre-clean
+    ['issn', '123', false],
+];
+foreach ($publicationValidateCases as [$slug, $value, $expectedValid]) {
+    $got = mediaIdentifierPublicationValidate($slug, $value);
+    if ($got !== $expectedValid) {
+        $failures[] = "mediaIdentifierPublicationValidate('{$slug}', " . var_export($value, true) . ') returned '
+                    . var_export($got, true) . ', expected ' . var_export($expectedValid, true);
+    }
+}
+/* Unknown slug and empty/blank value are always invalid, mirroring
+   mediaIdentifierWorkValidate()'s contract. */
+if (mediaIdentifierPublicationValidate('not-a-real-slug', 'anything') !== false) {
+    $failures[] = "mediaIdentifierPublicationValidate('not-a-real-slug', …) must be false for an unrecognised slug";
+}
+if (mediaIdentifierPublicationValidate('isbn', '') !== false) {
+    $failures[] = "mediaIdentifierPublicationValidate('isbn', '') must be false — empty value is never valid";
+}
+if (mediaIdentifierPublicationValidate('isbn', '   ') !== false) {
+    $failures[] = "mediaIdentifierPublicationValidate('isbn', '   ') must be false — whitespace-only is trimmed to empty";
+}
+
+/* =========================================================================
  * MUTATION SELF-TESTS (rule #34) — run on EVERY invocation, entirely in
  * memory. A guard that has never been proven able to fail is not trustworthy.
  * ========================================================================= */
 
 $mutationFailures = [];
 
-/* --- Vocabulary diff: FAILS-HIGH + FAILS-LOW, exercised on all three maps --- */
+/* --- Vocabulary diff: FAILS-HIGH + FAILS-LOW, exercised on all FOUR maps --- */
 $vocabCases = [
     'RECORDING_EXTERNAL_ID_TYPES' => [$actualRecordingTypes, MI_EXPECTED_RECORDING_TYPES],
     'SONG_EXTERNAL_ID_SCOPES'      => [$actualScopes,          MI_EXPECTED_SCOPES],
     'WORK_IDENTIFIER_TYPES'        => [$actualWorkTypes,       MI_EXPECTED_WORK_TYPES],
+    'PUBLICATION_IDENTIFIER_TYPES' => [$actualPublicationTypes, MI_EXPECTED_PUBLICATION_TYPES],
 ];
 foreach ($vocabCases as $label => [$actual, $expected]) {
     // FAILS-HIGH: inject a bogus key into a COPY of $actual.
@@ -375,8 +491,10 @@ if ($failures || $mutationFailures) {
 echo "PASS: Media identifier vocabulary guard — "
    . count($actualRecordingTypes) . ' recording IdType(s), '
    . count($actualScopes) . ' IdScope(s), '
-   . count($actualWorkTypes) . " work-identifier slug(s) all agree with this test's "
-   . "independently-transcribed spec list (bidirectional), schema.sql carries the "
+   . count($actualWorkTypes) . ' work-identifier slug(s), '
+   . count($actualPublicationTypes) . " publication-identifier slug(s) all agree with this test's "
+   . "independently-transcribed spec list (bidirectional), " . count($publicationValidateCases)
+   . " publication validator truth-table case(s) passed, schema.sql carries the "
    . "tblSongExternalIds + tblWorks.Bowi mirrors with IdScope/IdType declared VARCHAR "
    . "(never ENUM), and all mutation self-tests (" . (count($vocabCases) * 2 + 1) . " total) went red as expected.\n";
 exit(0);
