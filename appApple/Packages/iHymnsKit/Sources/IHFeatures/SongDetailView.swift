@@ -18,10 +18,12 @@
 // launches; chords-visibility is persisted the same way for the same
 // reason (a reader who turns chords on/off once almost certainly wants that
 // choice to stick, not reset every time they open a song). Every other new
-// section (`SongMetadataView`, `SongWorksSection`, the two
-// `RelatedSongsShelfView`s, `LyricLineEnrichmentSheet`) is its own file —
-// this file's job is purely composing them in order and owning the
-// handful of `@State`/`@AppStorage` values they share.
+// section (`SongDetailHeaderView`, `SongMetadataView`, `SongWorksSection`,
+// the two `RelatedSongsShelfView`s, `LyricLineEnrichmentSheet`) is its own
+// file — this file's job is purely composing them in order and owning the
+// handful of `@State`/`@AppStorage` values they share. (`SongDetailHeaderView`
+// was split out for the LOC-budget tripwire once #1752 grew the header — see
+// that file's header.)
 //
 // #181 UPDATE (setlists half) — owns `isPresentingAddToSetlist` (flipped by
 // `SongDetailToolbarContent`'s new "Add to Setlist" button) and presents
@@ -232,7 +234,7 @@ public struct SongDetailView: View {
             if viewModel.isServingCachedCopy {
                 offlineCopyBanner
             }
-            header(for: detail)
+            SongDetailHeaderView(detail: detail)
             SongMetadataView(detail: detail, rootViewModel: rootViewModel)
 
             if SongMediaSection.hasAnyMedia(detail) {
@@ -272,42 +274,6 @@ public struct SongDetailView: View {
             .padding(.vertical, 4)
             .padding(.horizontal, 10)
             .background(.thinMaterial, in: Capsule())
-    }
-
-    private func header(for detail: SongDetail) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(detail.title)
-                .font(.largeTitle.bold())
-
-            // #1752 Slice A — disambiguation directly under the title (a
-            // short parenthetical distinguishing same-named songs, e.g.
-            // "(Christmas version)"), mirroring web `song.php` §2.2's
-            // small-text-after-the-<h1> treatment; SwiftUI has no
-            // `<small>`-inside-`<h1>` equivalent worth forcing, so this is
-            // its own `Text` line instead.
-            if let disambiguation = detail.disambiguation, !disambiguation.isEmpty {
-                Text("(\(disambiguation))")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-
-            // Subtitle — above the existing number/songbook line, mirroring
-            // web `song.php` §2.3.
-            if let subtitle = detail.subtitle, !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                if let number = detail.number {
-                    Text(String(number))
-                }
-                Text(detail.songbookName.isEmpty ? detail.songbookAbbreviation : detail.songbookName)
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        }
     }
 
     /// "Also appears as" — this song's cross-book counterparts
