@@ -3629,4 +3629,103 @@ return [
                !_migProbe_columnExists($db, 'tblWorks', 'Bowi')
             || !_migProbe_indexExists($db, 'tblWorks', 'uq_bowi'),
     ],
+
+    /* Commit 2 of 7 in the Songbook/Catalogue Enhancements epic (#1765,
+     * .claude/songbook-catalogue-enhancements-plan.md). Dormant schema batch
+     * — every default keeps today's behaviour byte-identical until the
+     * commit 3 read-path sweep + commit 4 admin surfaces land. */
+    'publication-metadata' => [
+        'script' => 'migrate-publication-metadata.php',
+        'card' => [
+            'title'  => 'Publication Metadata + Google Books + Internet Archive multiplicity (#1765)',
+            'body'   => 'Adds 12 dormant columns across the three publication'
+                      . ' entities: <code>tblSongbooks.IsDisabled</code> /'
+                      . ' <code>IsPublicDomain</code> / <code>OpenLibraryWorkId</code> /'
+                      . ' <code>OpenLibraryEditionId</code>; <code>tblSongbookSeries.Isbn</code> /'
+                      . ' <code>Issn</code> / <code>ArkId</code> / <code>OpenLibraryWorkId</code> /'
+                      . ' <code>OpenLibraryEditionId</code>; <code>tblCatalogues.ArkId</code> /'
+                      . ' <code>OpenLibraryWorkId</code> / <code>OpenLibraryEditionId</code>.'
+                      . ' Also seeds a <code>google-books</code> row into'
+                      . ' <code>tblExternalLinkTypes</code> + its URL patterns into'
+                      . ' <code>tblExternalLinkPatterns</code> (upsert/guard, curator edits'
+                      . ' never stomped), and closes out Feature 7 (Internet Archive'
+                      . ' multiplicity): widens the existing <code>internet-archive</code>'
+                      . ' link type to also apply to songs, then backfills any non-empty'
+                      . ' <code>tblSongbooks.InternetArchiveUrl</code> into'
+                      . ' <code>tblSongbookExternalLinks</code> (the legacy column is kept,'
+                      . ' not dropped). Every new column defaults to 0/NULL and nothing'
+                      . ' reads them yet — applying this card changes zero observable'
+                      . ' behaviour on the running site. Idempotent — safe to re-run.',
+            'button' => 'Run Publication Metadata Migration',
+        ],
+        /* 14-clause OR-probe (rule #19): the 12 new columns, plus 2
+           table-conditioned seed clauses for the Google Books provider row
+           and its first URL pattern. Never `=> true`.
+           The two seed clauses are gated on their own table existing —
+           mirrors the posture every other seed-only card in this family
+           takes (e.g. 'external-links' probing !_migProbe_tableExists(...)
+           for its own prerequisite): if tblExternalLinkTypes /
+           tblExternalLinkPatterns are not yet on this install, the seed
+           step is not this card's business to force, and the 12 column
+           clauses alone still drive the card pending until the ALTERs
+           land. Once the prerequisite table DOES exist and the seed row is
+           genuinely missing, the corresponding clause fires and the card
+           goes pending again until the migration (re-)applies it — exactly
+           the same self-healing shape as 'backfill-songbook-links' above.
+           Feature 7's two data steps (6a AppliesTo widen, 6b
+           InternetArchiveUrl backfill) are deliberately NOT probed here:
+           both are additive/idempotent data operations with no "this
+           column is missing" signal of their own, and gating this card's
+           pending state on live per-songbook backfill status would leave
+           the card oscillating for as long as any curator's URL value sat
+           un-backfilled rather than reflecting schema completion, which is
+           what every other column-adding card in this registry measures. */
+        'probe' => static function (\mysqli $db): bool {
+            $columns = [
+                ['tblSongbooks', 'IsDisabled'],
+                ['tblSongbooks', 'IsPublicDomain'],
+                ['tblSongbooks', 'OpenLibraryWorkId'],
+                ['tblSongbooks', 'OpenLibraryEditionId'],
+                ['tblSongbookSeries', 'Isbn'],
+                ['tblSongbookSeries', 'Issn'],
+                ['tblSongbookSeries', 'ArkId'],
+                ['tblSongbookSeries', 'OpenLibraryWorkId'],
+                ['tblSongbookSeries', 'OpenLibraryEditionId'],
+                ['tblCatalogues', 'ArkId'],
+                ['tblCatalogues', 'OpenLibraryWorkId'],
+                ['tblCatalogues', 'OpenLibraryEditionId'],
+            ];
+            foreach ($columns as [$table, $col]) {
+                if (!_migProbe_columnExists($db, $table, $col)) { return true; }
+            }
+            try {
+                if (_migProbe_tableExists($db, 'tblExternalLinkTypes')) {
+                    $slug = 'google-books';
+                    $stmt = $db->prepare('SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1');
+                    $stmt->bind_param('s', $slug);
+                    $stmt->execute();
+                    $present = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if (!$present) { return true; }
+                }
+                if (_migProbe_tableExists($db, 'tblExternalLinkPatterns')
+                    && _migProbe_tableExists($db, 'tblExternalLinkTypes')) {
+                    $slug = 'google-books';
+                    $stmt = $db->prepare(
+                        'SELECT 1 FROM tblExternalLinkPatterns p
+                           JOIN tblExternalLinkTypes t ON t.Id = p.LinkTypeId
+                          WHERE t.Slug = ? LIMIT 1'
+                    );
+                    $stmt->bind_param('s', $slug);
+                    $stmt->execute();
+                    $present = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if (!$present) { return true; }
+                }
+            } catch (\Throwable $_e) {
+                return false;
+            }
+            return false;
+        },
+    ],
 ];

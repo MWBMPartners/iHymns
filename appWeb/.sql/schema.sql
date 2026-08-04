@@ -182,6 +182,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',
     Colour          VARCHAR(7)      NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)',
     IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
+    IsDisabled      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Disable-a-songbook flag (Feature 1, epic #1765): 1 = hidden from every public read, still visible and editable under /manage; reversible, nothing deleted. Read-path enforcement lands in commit 3 (songbookVisibleSql()); this column is dormant until then; DEFAULT 0 keeps every existing songbook visible',
+    IsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Public-domain flag for the songbook as a published work (Feature 2, epic #1765) - informational only, never a content gate; mirrors the tblSongs LyricsPublicDomain / MusicPublicDomain precedent. DEFAULT 0 so no existing songbook is retroactively marked PD',
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     /* Publication city — VARCHAR mirror for JOIN-free reads + FK
@@ -206,6 +208,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     LcpNumber           VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Library of Congress permalink / project number (#672)',
     Isbn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'ISBN-10 or ISBN-13 (dashes optional) (#672)',
     ArkId               VARCHAR(80)     NULL DEFAULT NULL COMMENT 'Archival Resource Key (e.g. ark:/13960/t8jf3w89z) (#672)',
+    OpenLibraryWorkId   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Open Library Work id, e.g. OL102749W (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=work',
+    OpenLibraryEditionId VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Open Library Edition id, e.g. OL7357422M (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=edition',
     IsniId              VARCHAR(25)     NULL DEFAULT NULL COMMENT 'International Standard Name Identifier (16 digits, optional spacing) (#672)',
     ViafId              VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Virtual International Authority File ID (#672)',
     Lccn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Library of Congress Control Number (#672)',
@@ -2478,6 +2482,9 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     UpdatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)        NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default) (#1181)',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the collection (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672). No Isbn/Issn on this table - a curated collection (rule #24: catalogue internally, Collection in UI) is not itself a catalogued serial publication, see the plan adversarial notes section',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the collection, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the collection, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     UNIQUE KEY uk_Slug (Slug),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
@@ -2919,6 +2926,11 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeries (
                  COMMENT 'URL-safe lowercase form for /series/<slug> public listing pages',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)    NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB inherited by all member songbooks; empty = theme default (#1181)',
+    Isbn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISBN for the series as a whole (Feature 3, epic #1765); mirrors tblSongbooks.Isbn (#672). Deliberately absent from tblCatalogues - see the plan adversarial notes section',
+    Issn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISSN for the series as a whole (Feature 3, epic #1765); a series is the one publication entity of the three that commonly carries a serial number. Deliberately absent from tblSongbooks and tblCatalogues',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the series (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672)',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the series, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the series, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     KEY idx_Name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
