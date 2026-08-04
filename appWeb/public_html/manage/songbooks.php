@@ -98,6 +98,51 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=marcxml_export&abbr=XX (#1765 Feature 5) ---------------
+ * Streams the songbook as a downloadable MARCXML (library-catalogue
+ * interchange) file via the shared helper. Admin-gated like the other GET
+ * endpoints; read-only; emitted BEFORE any page HTML. SELECT * so the two
+ * OpenLibrary columns are picked up only when the migration has landed
+ * (`?? ''` drops any absent column) — degrade-safe on an un-migrated
+ * install. @disabled-visible: admin surface (#1765) — a disabled songbook
+ * is still exportable by an admin. */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'marcxml_export'
+) {
+    if (!in_array(($currentUser['role'] ?? ''), ['admin', 'global_admin'], true)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Admin role required.';
+        exit;
+    }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+    $abbr = trim((string)($_GET['abbr'] ?? ''));
+    $stmt = $db->prepare('SELECT * FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+    $stmt->bind_param('s', $abbr);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Songbook not found.';
+        exit;
+    }
+    marcxmlAdmin_sendExport([
+        'Name'                 => $row['Name'] ?? '',
+        'Publisher'            => $row['Publisher'] ?? '',
+        'PublicationYear'      => $row['PublicationYear'] ?? '',
+        'Isbn'                 => $row['Isbn'] ?? '',
+        'Lccn'                 => $row['Lccn'] ?? '',
+        'OclcNumber'           => $row['OclcNumber'] ?? '',
+        'Language'             => $row['Language'] ?? '',
+        'ArkId'                => $row['ArkId'] ?? '',
+        'OpenLibraryWorkId'    => $row['OpenLibraryWorkId'] ?? '',
+        'OpenLibraryEditionId' => $row['OpenLibraryEditionId'] ?? '',
+        'WikipediaUrl'         => $row['WikipediaUrl'] ?? '',
+    ], [], [], 'songbook', (string)($row['Abbreviation'] ?? 'songbook'));
+}
+
 /* ---- GET ?action=script_search&q=… (#681 / renamed table in #738) ------
  * JSON typeahead for the IETF BCP 47 picker's Script field. Matches
  * substring (LIKE %q%) against tblLanguageScripts.Name OR
@@ -2987,6 +3032,13 @@ $csrf = csrfToken();
                                         title="Edit songbook">
                                     <i class="bi bi-pencil"></i>
                                 </button>
+                                <!-- #1765 Feature 5 — export this songbook as a MARCXML file. -->
+                                <a class="btn btn-sm btn-outline-secondary"
+                                   href="?action=marcxml_export&amp;abbr=<?= urlencode((string)$r['Abbreviation']) ?>"
+                                   title="Export this songbook as MARCXML" download>
+                                    <i class="bi bi-filetype-xml" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Export MARCXML</span>
+                                </a>
                                 <?php if ($hasDisableCol): ?>
                                 <!-- Feature 1 (#1765) — reversible per-row disable/enable.
                                      A plain POST form (matches the reorder/auto-colour

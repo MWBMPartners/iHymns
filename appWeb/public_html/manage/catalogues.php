@@ -131,6 +131,36 @@ if ($hasSchema
     exit;
 }
 
+/* ---- GET ?action=marcxml_export&id=N (#1765 Feature 5) ------------------
+ * Streams the Collection as a downloadable MARCXML file via the shared
+ * helper. Admin-gated (the manage_songbooks entitlement above); read-only;
+ * emitted before any HTML. Collections carry only ARK + OpenLibrary, and
+ * name their title column 'Title' (the marcxml 'catalogue' field map knows). */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'marcxml_export'
+) {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+    $id = (int)($_GET['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM tblCatalogues WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Collection not found.';
+        exit;
+    }
+    marcxmlAdmin_sendExport([
+        'Title'                => $row['Title'] ?? '',
+        'ArkId'                => $row['ArkId'] ?? '',
+        'OpenLibraryWorkId'    => $row['OpenLibraryWorkId'] ?? '',
+        'OpenLibraryEditionId' => $row['OpenLibraryEditionId'] ?? '',
+    ], [], [], 'catalogue', (string)($row['Slug'] ?? $row['Title'] ?? 'collection'));
+}
+
 /* ---- POST handlers ---- */
 if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
     /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With +
@@ -534,6 +564,13 @@ if ($hasSchema && !empty($catalogues)) {
                                             title="Edit">
                                         <i class="bi bi-pencil"></i>
                                     </button>
+                                    <!-- #1765 Feature 5 — export this Collection as a MARCXML file. -->
+                                    <a class="btn btn-sm btn-outline-secondary"
+                                       href="?action=marcxml_export&amp;id=<?= (int)$c['Id'] ?>"
+                                       title="Export this Collection as MARCXML" download>
+                                        <i class="bi bi-filetype-xml" aria-hidden="true"></i>
+                                        <span class="visually-hidden">Export MARCXML</span>
+                                    </a>
                                     <button type="button" class="btn btn-sm btn-outline-secondary"
                                             data-bs-toggle="collapse"
                                             data-bs-target="#cat-members-<?= (int)$c['Id'] ?>"

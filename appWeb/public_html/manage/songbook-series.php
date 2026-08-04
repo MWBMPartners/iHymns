@@ -165,6 +165,38 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=marcxml_export&id=N (#1765 Feature 5) ------------------
+ * Streams the series as a downloadable MARCXML file via the shared helper.
+ * Admin-gated (the manage_songbooks entitlement above); read-only; emitted
+ * before any HTML. SELECT * so the new identifier columns are picked up only
+ * when the migration has landed. */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'marcxml_export'
+) {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+    $id = (int)($_GET['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM tblSongbookSeries WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Series not found.';
+        exit;
+    }
+    marcxmlAdmin_sendExport([
+        'Name'                 => $row['Name'] ?? '',
+        'Isbn'                 => $row['Isbn'] ?? '',
+        'Issn'                 => $row['Issn'] ?? '',
+        'ArkId'                => $row['ArkId'] ?? '',
+        'OpenLibraryWorkId'    => $row['OpenLibraryWorkId'] ?? '',
+        'OpenLibraryEditionId' => $row['OpenLibraryEditionId'] ?? '',
+    ], [], [], 'series', (string)($row['Slug'] ?? $row['Name'] ?? 'series'));
+}
+
 /* ----- POST actions ----- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With
@@ -616,6 +648,13 @@ if ($hasSchema) {
                                         title="Edit series + members">
                                     <i class="bi bi-pencil"></i>
                                 </button>
+                                <!-- #1765 Feature 5 — export this series as a MARCXML file. -->
+                                <a class="btn btn-sm btn-outline-secondary"
+                                   href="?action=marcxml_export&amp;id=<?= (int)$r['Id'] ?>"
+                                   title="Export this series as MARCXML" download>
+                                    <i class="bi bi-filetype-xml" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Export MARCXML</span>
+                                </a>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openSeriesDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete series (memberships cascade)">
