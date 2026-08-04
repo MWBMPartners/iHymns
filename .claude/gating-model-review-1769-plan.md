@@ -31,6 +31,30 @@
 > - ⏳ **G** — docs/annotations (Wiki Architecture, project-rules §18 xref, CHANGELOG).
 > **RESUME AT COMMIT D.** Local `appWeb/.auth/db_credentials.php` (gitignored) → local `ihymns_live` (P1 migration applied); the golden-capture tool needs it moved aside (it refuses if a DB is reachable).
 >
+> **ACTIVITY LOGGING (owner-flagged 2026-08-04 — standing requirement for ALL gating work):** every
+> state-changing admin action in this program MUST call `logActivity(...)` — no silent mutations. Applies to:
+> the new admin hub + licence-type CRUD (P4: `admin.licence_types.create/update/delete/toggle`), the editor
+> Rights-panel writes (`admin.song.rights_set`), enabling/disabling the gate + each readiness step (P6:
+> `admin.gating.enable/disable`, `admin.gating.audit_run`), and every data migration run (DM-1/DM-2:
+> `admin.migration.<slug>` with a row-count summary). The existing tiers/restrictions/entitlements pages already
+> logActivity; the re-pointed pickers (P2 F) are read-side so add none. P2 A–E are read-path refactors with no
+> admin action to log. CI: extend the admin-action audit so a new `/manage` gating mutation without a
+> logActivity() call is flagged (mirror the existing `admin.*` logging convention).
+>
+> **DATA MIGRATIONS (owner-flagged 2026-08-04 — must be built, not just schema):** the function reworks are no-op
+> refactors, but the CONSOLIDATION needs existing data moved into the new model. Two first-class, additive,
+> idempotent, reversible, dormant data migrations (each its own `migrate-*.php` + registry card + real probe + guard):
+> - **DM-1 org-licence consolidation (P5):** for every org with a non-'none' legacy `tblOrganisations.LicenceType`,
+>   INSERT the matching `tblOrganisationLicences` row (Number/ExpiresAt carried) if absent; migrate any hand-written
+>   ghost `tblContentLicences` rows likewise (row-count probe first). ONLY THEN the gated-retire of the legacy
+>   columns + the ghost read. `resolveEffectiveTier` already unions both stores, so the backfill is a verified no-op
+>   for resolution; it just makes ONE store authoritative before retire.
+> - **DM-2 existing-gating → per-song facts (P4/P6):** derive `tblSongs.LyricsRightsLicenceKey`='ccli' (and
+>   ='mrl' where a `require_licence:mrl` row exists) from the current `tblContentRestrictions` `require_licence:*`
+>   rows, so the P4 Rights panel + the resolver's fact path reflect gating that already exists. Reversible
+>   (facts are NULL-able); restriction rows are KEPT (coexist — the Exceptions tab), so this is additive not a move.
+>   Runs before first-enable (P6) so the new model matches current behaviour on day one.
+>
 > **Local dev note:** `appWeb/.auth/db_credentials.php` (gitignored) now points at local `ihymns_live`, which
 > has the P1 migration APPLIED — so getDbMysqli()/the DB suites connect there without `IHYMNS_TEST_DSN`.
 >
