@@ -11,7 +11,21 @@
 > - restrictions-form honesty (hide Effect for `require_*`) + dead `songbook`/`feature` picker options → **P4** (the form is fully rewritten there; and `songbook`/`feature` scopes are reachable via the native `content_access` query endpoint, so not provably dead — needs the P4 usage decision).
 > - seed `feature_gating_rules_enabled='0'` → **P1** (pairs with the schema batch; the flag already reads '0' when absent, so nothing is broken meanwhile).
 > - `gating-noop-verify` into the admin nav → **P4** (it belongs beside the readiness checklist on the new hub).
-> **NEXT: P1 — the one-pass additive-dormant schema batch.**
+> **P1 (one-pass additive-dormant schema) COMPLETE — `70739838`.** Designed via a sequential Fable pass +
+> adversarial "what forces a second migration?" stress. `migrate-add-gating-facts-and-licence-types.php`
+> (byte-identical schema.sql mirror + registry OR-probe): `tblLicenceTypes` (#459, seeds ccli/mrl/
+> ihymns_basic/ihymns_pro/custom with CoversJson + ConfersTier) · `tblSongs.{Lyrics,Music}RightsLicenceKey`
+> (+idx) · `tblSongbooks.Default{Lyrics,Music}RightsLicenceKey` (editor-default only) · reserved dormant
+> `tblSongArrangements.{MusicRightsStatus,MusicRightsLicenceKey}` (#1768 Q2) · `tblGatingCapabilities.EnforceJson`
+> · `feature_gating_rules_enabled='0'` seed. Reserve-now (rule #20): CoversJson object-of-objects, Authority/
+> AuthorityRef, songbook editor-defaults. Verified: applied+idempotent on live DB, schema-coverage/registry/
+> installs green, 110/110 PHP + 50/50 node, no-op against the migrated DB.
+> **NEXT: P2 — registries + resolver + pipeline (licence_registry.php, TIER_CAPS 5th `enforce` element,
+> access_context.php + access_resolver.php, delegates from contentGatingApply/…MediaAllowed, re-point the 6
+> licence-vocab sites, extended no-op + parity guards). Still dormant.**
+>
+> **Local dev note:** `appWeb/.auth/db_credentials.php` (gitignored) now points at local `ihymns_live`, which
+> has the P1 migration APPLIED — so getDbMysqli()/the DB suites connect there without `IHYMNS_TEST_DSN`.
 >
 > ---
 > **(original analysis follows — still current)**
