@@ -1,0 +1,119 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * iHymns — song-page gating golden capture (#1769 P3 Commit B)
+ * ===========================================================
+ *
+ * Copyright (c) 2026 iHymns. All rights reserved.
+ *
+ * ELI5
+ * ----
+ * Before Commit C rewrites song.php's gating onto the #1769 viewer struct, this
+ * photographs EXACTLY what the extracted legacy seam (songPageGatingDecideLegacy,
+ * Commit A) decides for a big grid of inputs. tests/php/test-song-page-gating-
+ * equivalence.php then proves the new songPageGatingDecide() reproduces every
+ * photograph byte-for-byte.
+ *
+ * DB-FREE (same reasoning as tools/capture-gating-goldens.php): the seam resolves
+ * caps through checkTierAccess()'s hardcoded-matrix fallback when no DB is
+ * reachable, which is the condition CI runs in (no MySQL for getDbMysqli()). Run
+ * with NO appWeb/.auth/db_credentials.php and no IHYMNS_TEST_DSN so the goldens
+ * match CI's matrix path — this tool REFUSES if a DB is configured.
+ *
+ * Usage:  php tools/capture-song-page-gating-goldens.php   (CLI only)
+ * Exit:   0 = wrote the fixture; 1 = refused.
+ *
+ * @link appWeb/public_html/includes/song_page_gating.php  the legacy seam under photograph
+ * @see  tests/php/test-song-page-gating-equivalence.php   the replay/assert side (Commit C)
+ */
+
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "Refused: CLI-only.\n");
+    exit(1);
+}
+$repoRoot = dirname(__DIR__);
+if (is_readable($repoRoot . '/appWeb/.auth/db_credentials.php') || getenv('IHYMNS_TEST_DSN')) {
+    fwrite(STDERR, "Refused: a DB is configured (db_credentials.php or IHYMNS_TEST_DSN). Goldens must be\n");
+    fwrite(STDERR, "captured DB-free so they match CI's matrix path. Move the credentials aside and retry.\n");
+    exit(1);
+}
+
+$_SERVER['SCRIPT_FILENAME'] = 'cli-capture'; // dodge the seam's direct-access guard
+require_once $repoRoot . '/appWeb/public_html/includes/song_page_gating.php';
+if (!function_exists('songPageGatingDecideLegacy')) {
+    fwrite(STDERR, "FATAL: the Commit-A legacy seam is missing — capture cannot run.\n");
+    exit(1);
+}
+
+$SHA_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
+/* ---- The input grid (documented in test-song-page-gating-equivalence.php) ---- */
+$tiers        = ['public', 'free', 'ccli', 'premium', 'pro', 'made_up_tier'];
+$bools        = [false, true];
+$presences    = [null, '741100', ''];  /* no unlock / unlock+number / unlock+empty-number (the §643 render edge) */
+$mediaShapes  = [
+    /* 0 — full: every gateable kind + an unknown kind that must survive. */
+    [['kind' => 'audio', 'streamUrl' => '/song-media/1'], ['kind' => 'midi', 'streamUrl' => '/song-media/2'],
+     ['kind' => 'sheet-music', 'streamUrl' => '/song-media/3'], ['kind' => 'musicxml', 'streamUrl' => '/song-media/4'],
+     ['kind' => 'video-unknown', 'streamUrl' => '/song-media/5']],
+    /* 1 — empty. */
+    [],
+    /* 2 — a malformed (non-array) row mixed in. */
+    [['kind' => 'audio'], 'not-an-array', ['kind' => 'sheet-music']],
+    /* 3 — an unknown kind only (must survive untouched). */
+    [['kind' => 'lyrics-video']],
+];
+
+$goldens = [];
+foreach ($tiers as $tier) {
+    foreach ($bools as $hasCcli) {
+        foreach ($bools as $entityAllowed) {
+            foreach ($presences as $presenceNumber) {
+                foreach ($bools as $lyricsPD) {
+                    foreach ($bools as $musicPD) {
+                        foreach ($bools as $hasAudio) {
+                            foreach ($bools as $hasSheet) {
+                                foreach ($mediaShapes as $mi => $media) {
+                                    $fullyPD = $lyricsPD && $musicPD;
+                                    $out = songPageGatingDecideLegacy(
+                                        $tier, $hasCcli, $presenceNumber,
+                                        $entityAllowed, 'Blocked by rule',
+                                        $lyricsPD, $fullyPD, $hasAudio, $hasSheet, $media
+                                    );
+                                    $goldens[] = [
+                                        'tier' => $tier, 'hasCcli' => $hasCcli, 'entityAllowed' => $entityAllowed,
+                                        'presenceNumber' => $presenceNumber, 'lyricsPD' => $lyricsPD, 'musicPD' => $musicPD,
+                                        'hasAudio' => $hasAudio, 'hasSheet' => $hasSheet, 'mediaShapeIndex' => $mi,
+                                        'media' => $media, 'output' => $out,
+                                        'sha' => hash('sha256', (string)json_encode($out, $SHA_FLAGS)),
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+$matrixSha = hash('sha256', (string)json_encode(
+    ['tiers' => $tiers, 'bools' => $bools, 'presences' => $presences, 'mediaShapes' => $mediaShapes],
+    $SHA_FLAGS
+));
+
+$fixture = [
+    '_comment'  => 'GENERATED by tools/capture-song-page-gating-goldens.php (#1769 P3). Do not hand-edit; regenerate DB-free.',
+    'matrixSha' => $matrixSha,
+    'shaFlags'  => 'JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES',
+    'goldens'   => $goldens,
+];
+
+$outPath = $repoRoot . '/tests/php/fixtures/song-page-gating-goldens.json';
+@mkdir(dirname($outPath), 0775, true);
+file_put_contents($outPath, json_encode($fixture, JSON_PRETTY_PRINT | $SHA_FLAGS) . "\n");
+echo "Wrote " . count($goldens) . " song-page gating golden(s) to tests/php/fixtures/song-page-gating-goldens.json"
+   . " (matrixSha " . substr($matrixSha, 0, 12) . "…).\n";
+exit(0);
