@@ -95,6 +95,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $excl    = array_values(array_filter(array_map('intval', explode(',', $exclRaw))));
     $exclPh  = $excl ? implode(',', array_fill(0, count($excl), '?')) : '0';
     try {
+        /* @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision); a curator must
+           still be able to add a disabled book as a series member. */
         $like = '%' . $q . '%';
         if ($q === '') {
             $sql = "SELECT Id, Abbreviation, Name

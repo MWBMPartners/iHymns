@@ -687,6 +687,9 @@ function ed2_songExists(\mysqli $db, string $songId): bool {
     /* @deleted-visible: write-path existence check (#1694) — "does the row
        exist?" is an FK/identity question; a soft-deleted row exists, and a
        write into it is harmless and restore-preserving. */
+    /* @disabled-visible: same reasoning, one predicate over (#1765) — existence
+       is an identity question; a song in a publicly-disabled book still exists
+       and the admin editor still writes to it. */
     $s = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -740,6 +743,9 @@ function ed2_songExternalIdRowShape(array $r): array {
  * of truth is the live data (no counter table), locked FOR UPDATE.
  */
 function ed2_allocateSongId(\mysqli $db, string $abbr): string {
+    /* @disabled-visible: id-allocation (#1765) — the MAX(SongId) scan must span
+       every song in the book regardless of public disabled state so a newly
+       minted id never collides with an existing (possibly hidden) song. */
     $abbr = strtoupper(trim($abbr));
     /* Allow-list: abbreviation is [A-Z0-9]{1,10}; this validates the only value
        that ends up in the REGEXP fragment below. */
@@ -938,6 +944,9 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
        repairing or reviewing a hidden song's record must still be able to
        load it by direct id; discovery goes dark instead (the sidebar's
        getSongsSlimIndex() is filtered — restore-first workflow). */
+    /* @disabled-visible: same reasoning, one predicate over (#1765) — a curator
+       loads a song by direct id for repair regardless of its book's public
+       disabled state; discovery (the filtered sidebar index) goes dark. */
     $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -1357,6 +1366,9 @@ try {
 
     /* ---- create_song (POST) — server-owned canonical id ---- */
     case 'create_song': {
+        /* @disabled-visible: admin editor API (#1765) — the target-songbook
+           existence check must accept a publicly-disabled book (still a valid
+           admin create target). */
         $abbr  = strtoupper(trim((string)($body['songbook'] ?? '')));
         if ($abbr === '') { $abbr = 'MISC'; }
         $title = trim((string)($body['title'] ?? ''));
@@ -2491,6 +2503,8 @@ try {
            tblSongLinkSuggestions from the fuzzy-match batch (#1219), which an
            older-but-still-#1216-migrated install could plausibly lack. ---- */
     case 'song_links': {
+        /* @disabled-visible: admin editor API (#1765) — lists a song's links for
+           the editor regardless of any book's public disabled state. */
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
@@ -2551,6 +2565,8 @@ try {
                one side first (rule #35: this is a STATUS code, 409, not a
                string the client pattern-matches). ---- */
     case 'song_link_add': {
+        /* @disabled-visible: admin editor API (#1765) — cross-book link write;
+           either endpoint may live in a disabled book, still fully editable. */
         ed2_requireEntitlement('edit_songs');
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $srcId = trim((string)($body['sourceSongId'] ?? ''));
@@ -2770,6 +2786,8 @@ try {
            tableMissing:true rather than a mysqli-STRICT throw (matches v1
            exactly, api.php:686-700). ---- */
     case 'song_link_suggestions': {
+        /* @disabled-visible: admin editor API (#1765) — suggestion review spans all
+           songs regardless of any book's public disabled state. */
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
@@ -3832,6 +3850,8 @@ try {
     /* ---- import_zip_skipped_csv (GET) — CSV of the SongIds an async job skipped
            (already existed). Own jobs only. Streams CSV, not JSON. ---- */
     case 'import_zip_skipped_csv': {
+        /* @disabled-visible: admin editor API (#1765) — CSV of skipped-import rows
+           spans all songs/songbooks regardless of public disabled state. */
         $jobId = (int)($_GET['job_id'] ?? 0);
         if ($jobId <= 0) { ed2_respond(['ok' => false, 'error' => 'job_id required.'], 400); }
         if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Job tracking not enabled.', 'migration_needed' => true], 404); }
@@ -4172,7 +4192,9 @@ try {
            uses) — NEVER materialises the whole corpus (CLAUDE.md #17). ---- */
     case 'load_index': {
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
-        $songData = new SongData();
+        /* #1765 Feature 1 — admin surface: the v2 sidebar + songbook <select>
+           must keep listing songs/songbooks disabled from the public site. */
+        $songData = SongData::forAdmin();
         /* #1679 A2 — `songbooks` is the REAL catalogue, not the set of books that
            happen to appear in the song index.
            WHY: v2's songbook <select> derived its options from the loaded index
@@ -4224,7 +4246,9 @@ try {
         $oneId    = trim((string)($_GET['id'] ?? ''));
         $maxLines = max(0, (int)($_GET['maxLinesPerSlide'] ?? 0));
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: exporting must reach a
+               disabled songbook's songs. */
+            $songData = SongData::forAdmin();
             $songs    = [];
             $stem     = 'EasyWorship';
             if ($oneId !== '') {

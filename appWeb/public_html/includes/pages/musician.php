@@ -331,12 +331,14 @@ $totalSongs = 0;
 $matchedSongIds = [];
 foreach ($roleTables as $roleKey => $cfg) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
     $creditPh = implode(',', array_fill(0, count($creditNames), '?'));
     $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
               FROM {$cfg['table']} c
               JOIN tblSongs s ON s.SongId = c.SongId
              WHERE c.Name IN ($creditPh) AND " . songVisibleSql($db, 's') . "
-             ORDER BY s.SongbookAbbr, s.Number";   /* #1694 — visible songs only */
+               AND " . songServableSql($db, 's') . "
+             ORDER BY s.SongbookAbbr, s.Number";   /* #1694/#1765 — visible songs only, in a non-disabled songbook */
     try {
         $stmt = $db->prepare($sql);
         $stmt->bind_param(str_repeat('s', count($creditNames)), ...$creditNames);
@@ -370,14 +372,15 @@ if ($person && (int)$person['Id'] > 0) {
         $hasCompTable = $r && $r->fetch_row() !== null;
         if ($r) $r->close();
         if ($hasCompTable) {
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
             $stmt = $db->prepare(
                 'SELECT b.Abbreviation AS abbr, b.Name AS name, b.SongCount AS songCount,
                         c.Note         AS note,  c.SortOrder AS sortOrder
                    FROM tblSongbookCompilers c
                    JOIN tblSongbooks b ON b.Id = c.SongbookId
-                  WHERE c.MusicianId = ?
+                  WHERE c.MusicianId = ? AND ' . songbookVisibleSql($db) . '
                   ORDER BY b.Name ASC'
-            );
+            );   /* #1765 — a disabled songbook is not listed as compiled here */
             $pid = (int)$person['Id'];
             $stmt->bind_param('i', $pid);
             $stmt->execute();

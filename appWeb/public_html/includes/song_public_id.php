@@ -76,7 +76,10 @@ function songPublicId_mintUnique(\mysqli $db, int $maxTries = 12): string
 {
     /* @deleted-visible: uniqueness probe (#1694) — a soft-deleted song's
        PublicId stays RESERVED (the row exists); filtering would let the mint
-       hand out a colliding permalink id. */
+       hand out a colliding permalink id.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       PublicId stays reserved regardless of whether its songbook has been
+       disabled; UNIQUE-key occupancy, not visibility. */
     $stmt = $db->prepare('SELECT 1 FROM tblSongs WHERE PublicId = ? LIMIT 1');
     for ($i = 0; $i < $maxTries; $i++) {
         $cand = songPublicId_generate();
@@ -111,7 +114,11 @@ function songPublicId_resolveToSongId(\mysqli $db, string $id): string
     /* @deleted-visible: pure RESOLVER (#1694) — a deleted song's PublicId
        must still resolve to its SongId, or songSoftDeletedHolds() could never
        recognise a PublicId-shaped request and the 410 would decay to 404.
-       Visibility is applied by the FOLLOW-UP read, never the resolver. */
+       Visibility is applied by the FOLLOW-UP read, never the resolver.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       PublicId belonging to a song in a disabled songbook must still
+       resolve here; the follow-up read (SongData::_visible() /
+       songServableSql()) is what actually hides it. */
     $stmt = $db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
     $stmt->bind_param('s', $id);
     $stmt->execute();

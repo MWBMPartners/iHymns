@@ -433,6 +433,8 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         /* @deleted-visible: importer identity check (#1694) — "already
            imported" must MATCH a hidden row (skip, not re-mint), or a
            re-import would create a duplicate that collides on restore. */
+        /* @disabled-visible: importer / batch system path — operates over all
+           songbooks regardless of public disabled state */
         $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
         $existsStmt->bind_param('s', $songId);
         $existsStmt->execute();
@@ -669,6 +671,8 @@ function _bulkImport_findDuplicateCandidates(\mysqli $db, string $songbookAbbr, 
     /* @deleted-visible: importer identity resolver (#1694) — matching a
        hidden row preserves single identity (the import is flagged against it
        rather than minting a lookalike that conflicts on restore). */
+    /* @disabled-visible: importer / batch system path — operates over all
+       songbooks regardless of public disabled state */
     $stmt = $db->prepare(
         "SELECT SongId, Title, Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
     );
@@ -740,6 +744,8 @@ function _bulkImport_dedupeMode(?string $set = null): string
  */
 function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?string $language = null): string
 {
+    /* @disabled-visible: importer / batch system path — operates over all
+       songbooks regardless of public disabled state */
     $sel = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
     $sel->bind_param('s', $abbr);
     $sel->execute();
@@ -891,6 +897,9 @@ function _bulkImport_jobMark(\mysqli $db, ?int $jobId, string $status, array $ex
  */
 function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $jobId = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state (recomputes SongCount for
+       books it created; disabled≠deleted, an admin import must still work) */
     /* How often to flush the progress counters back to the job row.
        Every 50 entries is ~1% of a typical 5000-song bundle — small
        enough to feel live, large enough that the per-update cost
@@ -1816,6 +1825,9 @@ function _bulkImport_parseOpenSongLyrics(string $lyrics): array
  */
 function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
 {
+    /* @disabled-visible: importer number-allocation (#1765) — MAX(Number) must
+       span every song in the book regardless of public disabled state so a new
+       import number never collides with an existing (possibly hidden) song */
     try {
         $stmt = $db->prepare(
             /* @deleted-visible: number MINT SEED (#1694) — a hidden song
@@ -2071,6 +2083,8 @@ function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint =
  */
 function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$songbook, $parsedSongs, $err] = _bulkImport_parseVideoPsalmSongbook($body, $filenameHint);
     if ($songbook === null) {
         return [
@@ -2392,6 +2406,8 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
  */
 function _bulkImport_processChordPro(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     $fail = static function (string $msg): array {
         return [
             'ok' => false, 'error' => $msg,
@@ -2756,6 +2772,8 @@ function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookN
  */
 function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$parsed, $reason] = _bulkImport_parseOpenLyrics($body);
     if ($parsed === null) {
         return [
@@ -2871,6 +2889,8 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
  */
 function _bulkImport_processOpenSong(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     $abbr     = 'OS';
     $bookName = 'OpenSong Import';
 
@@ -3424,6 +3444,8 @@ function _bulkImport_parsePro6(string $body): array
  */
 function _bulkImport_processPro6(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$parsed, $reason] = _bulkImport_parsePro6($body);
     if ($parsed === null) {
         return [
@@ -3690,6 +3712,8 @@ function _bulkImport_easyWorshipReadDb(string $songsDbPath, ?string $songWordsDb
  */
 function _bulkImport_processEasyWorship(string $tmpPath, string $origName): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     $fail = function (string $msg): array {
         return [
             'ok'                     => false,
@@ -3877,6 +3901,8 @@ function _bulkImport_parseProclaimText(string $body, ?string $filenameHint = nul
  */
 function _bulkImport_processProclaim(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$parsed, $reason] = _bulkImport_parseProclaimText($body, $filenameHint);
     if ($parsed === null) {
         return [
@@ -4071,6 +4097,8 @@ function _bulkImport_parseFreeShow(string $body): array
  */
 function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$parsed, $reason] = _bulkImport_parseFreeShow($body);
     if ($parsed === null) {
         return [
@@ -4144,6 +4172,8 @@ function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null)
  * =========================================================================== */
 function _bulkImport_processPptx(string $path, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     require_once __DIR__ . '/PptxImporter.php';
 
     $empty = [
@@ -4218,6 +4248,8 @@ function _bulkImport_processPptx(string $path, ?string $filenameHint = null): ar
  */
 function _bulkImport_resolvePptxSongbook(\mysqli $db, string $name): array
 {
+    /* @disabled-visible: importer songbook-resolve (#1765) — resolves the target
+       book by name for an admin import; a disabled book is a valid import target */
     $name = trim($name);
     if ($name !== '') {
         $stmt = $db->prepare('SELECT Abbreviation, Name FROM tblSongbooks WHERE LOWER(Name) = LOWER(?) LIMIT 1');
@@ -4659,6 +4691,8 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
  */
 function _bulkImport_processIHymnsJson(string $body, ?string $filenameHint = null): array
 {
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
     [$songbooks, $parsedSongs, $err] = _bulkImport_parseIHymnsJson($body, $filenameHint);
     if ($songbooks === null) {
         return [

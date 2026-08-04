@@ -41,7 +41,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
  * Build the report — one row per songbook with its gap list
  * ======================================================================== */
 try {
-    $songData     = new SongData();
+    /* #1765 Feature 1 — admin surface: a disabled songbook's missing-number
+       gaps must stay visible/actionable in /manage/*, so this instance opts
+       out of the public visibility filter via SongData::forAdmin(). */
+    $songData     = SongData::forAdmin();
     $allSongbooks = $songData->getSongbooks();
     $reports      = [];
 

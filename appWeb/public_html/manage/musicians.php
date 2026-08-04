@@ -217,7 +217,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
         foreach ($tables as $role => $tbl) {
             /* #1694 — visible songs only, matching the public person page.
                (Person merges/renames rewrite tblSong* rows BY NAME, unfiltered,
-               so hidden rows are still correctly rewritten either way.) */
+               so hidden rows are still correctly rewritten either way.)
+               @disabled-visible: admin surface (#1765) — disabled songbooks
+               stay fully visible/editable in /manage (owner decision); a
+               song in a disabled book still needs to show here so a
+               merge/rename touches it. */
             $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
                       FROM {$tbl} c
                       JOIN tblSongs s ON s.SongId = c.SongId

@@ -210,6 +210,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    SQL; each embed degrades to '1=1' on an un-migrated install, so this is a
    no-op until the migration card runs. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+/* #1765 Feature 1 — disabled-songbook visibility predicates (songServableSql()
+   for tblSongs reads, songbookVisibleSql() for tblSongs reads that touch
+   tblSongbooks directly). Loaded top-level for the same reason as
+   song_soft_delete.php immediately above: a dozen more read handlers below
+   embed one of these beside their existing songVisibleSql() call, and each
+   degrades to '1=1' on an un-migrated install / before any book is disabled. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
 /* #1409 — API token device-metadata helpers (apiTokensDeviceMetaColumnsExist()
    etc). Loaded top-level (not per-case) because slideAuthTokenExpiry() below
    — called on EVERY authenticated request via getAuthenticatedUser() — needs
@@ -1329,6 +1336,7 @@ if ($action !== null) {
                   . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
                   . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
                   . "WHERE {$whereMatch} AND " . songVisibleSql($db, 's')   /* #1694 — hidden songs don't resolve */
+                  . " AND " . songServableSql($db, 's')   /* #1765 — nor songs in a disabled songbook */
                   . " ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
                 );
                 if ($useIsrcStore) {
@@ -1472,8 +1480,9 @@ if ($action !== null) {
                           WHERE l.GroupId = ?
                             AND l.SongId  <> ?
                             AND ' . songVisibleSql($db, 's') . '
+                            AND ' . songServableSql($db, 's') . '
                           ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-                    );   /* #1694 — hidden counterparts stay off the panel */
+                    );   /* #1694/#1765 — hidden counterparts, and counterparts in a disabled book, stay off the panel */
                     $stmt->bind_param('is', $groupId, $songId);
                     $stmt->execute();
                     $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -6129,10 +6138,12 @@ if ($action !== null) {
                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  JOIN tblSongs s ON s.SongId = t.TranslatedSongId
                  WHERE t.SourceSongId = ? AND ' . songVisibleSql($db, 's') . '
+                   AND ' . songServableSql($db, 's') . '
                  ORDER BY l.Name ASC'
-            );   /* #1694 — a hidden translation target is not offered (the
-                    sibling pass below re-executes THIS statement, so it is
-                    filtered by the same predicate) */
+            );   /* #1694/#1765 — a hidden translation target, or one in a
+                    disabled songbook, is not offered (the sibling pass below
+                    re-executes THIS statement, so it is filtered by the same
+                    predicates) */
             $forwardId = $translationSongId;
             $stmt->bind_param('s', $forwardId);
             $stmt->execute();
@@ -6163,8 +6174,10 @@ if ($action !== null) {
                                 l.Name AS languageName, l.NativeName AS languageNativeName
                          FROM tblSongs s
                          LEFT JOIN tblLanguages l ON l.Code = s.Language
-                         WHERE s.SongId = ? AND ' . songVisibleSql($db, 's')
-                    );   /* #1694 — a hidden source song is not offered */
+                         WHERE s.SongId = ? AND ' . songVisibleSql($db, 's') . '
+                           AND ' . songServableSql($db, 's')
+                    );   /* #1694/#1765 — a hidden source song, or one in a
+                            disabled songbook, is not offered */
                     $stmtSrc->bind_param('s', $sourceId);
                     $stmtSrc->execute();
                     $src = $stmtSrc->get_result()->fetch_assoc();
@@ -6291,8 +6304,10 @@ if ($action !== null) {
                            JOIN tblSongs s ON s.SongId = ws.SongId
                            LEFT JOIN tblLanguages l ON l.Code = s.Language
                           WHERE ws.WorkId IN ($placeholders)
-                            AND " . songVisibleSql($db, 's')
-                    );   /* #1694 — hidden Works members are not offered as translations */
+                            AND " . songVisibleSql($db, 's') . "
+                            AND " . songServableSql($db, 's')
+                    );   /* #1694/#1765 — hidden Works members, or ones in a
+                            disabled songbook, are not offered as translations */
                     $stmt->bind_param($types, ...$allWorkIds);
                     $stmt->execute();
                     $currentLang = '';
@@ -6551,12 +6566,16 @@ if ($action !== null) {
             $db = getDbMysqli();
             $subtags = [];
 
-            /* Source 1 — tblSongbooks.Language. Primary subtag only. */
+            /* Source 1 — tblSongbooks.Language. Primary subtag only.
+               #1765 — a disabled songbook's language must not mint a chip
+               either (songbook-grain read, songbookVisibleSql not
+               songServableSql). */
             try {
                 $res = $db->query(
                     "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                        FROM tblSongbooks
-                      WHERE Language IS NOT NULL AND Language <> ''"
+                      WHERE Language IS NOT NULL AND Language <> ''
+                        AND " . songbookVisibleSql($db, '')
                 );
                 if ($res) {
                     while ($r = $res->fetch_row()) {
@@ -6582,11 +6601,14 @@ if ($action !== null) {
                 $hasLangCol = $probe->get_result()->fetch_row() !== null;
                 $probe->close();
                 if ($hasLangCol) {
+                    /* #1694 — a hidden song's language mints no chip.
+                       #1765 — nor does a song in a disabled songbook. */
                     $res = $db->query(
                         "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                            FROM tblSongs
                           WHERE Language IS NOT NULL AND Language <> ''
-                            AND " . songVisibleSql($db, '')   /* #1694 — a hidden song's language mints no chip */
+                            AND " . songVisibleSql($db, '') . "
+                            AND " . songServableSql($db, '')
                     );
                     if ($res) {
                         while ($r = $res->fetch_row()) {
@@ -8292,7 +8314,10 @@ if ($action !== null) {
                @deleted-visible: FK pre-check (#1694) — the question here is
                "will the INSERT's FK hold?", and a soft-deleted row DOES hold
                it. Filtering would turn a harmless, restore-preserving write
-               into a bogus 404. */
+               into a bogus 404.
+               @disabled-visible: edit_songs-gated write path (#1765) — a
+               curator editing a song's key/tempo inside a disabled songbook
+               must not be blocked; writes are disable-invariant. */
             $keyExists = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
             $keyExists->bind_param('s', $keySongId);
             $keyExists->execute();
@@ -8881,10 +8906,12 @@ if ($action !== null) {
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
                        AND ' . songVisibleSql($db, 's') . '
+                       AND ' . songServableSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
-                );   /* #1694 — a public recommendation list must not link a hidden song */
+                );   /* #1694/#1765 — a public recommendation list must not
+                        link a hidden song, or one in a disabled songbook */
                 $stmt->bind_param('ii', $days, $popLimit);
                 $stmt->execute();
                 $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -8950,11 +8977,13 @@ if ($action !== null) {
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.UserId = ?
                        AND ' . songVisibleSql($db, 's') . '
+                       AND ' . songServableSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );   /* #1694 — hidden songs drop off Recently Viewed (they would 410 on click);
-                        the history ROW survives, so a restore brings them back */
+                        the history ROW survives, so a restore brings them back.
+                        #1765 — same for a song in a disabled songbook. */
                 $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('i', $authUserId);
                 $stmt->execute();
@@ -9007,7 +9036,16 @@ if ($action !== null) {
                    PURPOSE (#1329). Stated trade-off (plan §2): a device's
                    localStorage Recently-Viewed entry for a deleted-then-
                    restored song is silently pruned meanwhile — cosmetic;
-                   server-side favourites survive untouched. */
+                   server-side favourites survive untouched.
+                   @disabled-visible: prune-safety — disabled≠deleted; favourites
+                   must survive a reversible disable (#1765). This endpoint is a
+                   client-side PRUNE signal (js/utils/song-existence.js); a
+                   disabled song still EXISTS (hidden, not deleted), so adding
+                   songServableSql() here would wrongly wipe a user's saved
+                   favourites the moment a curator disables that song's book.
+                   songVisibleSql() (soft-DELETE) stays — that IS the endpoint's
+                   purpose (above) — only the #1765 disabled-book predicate is
+                   deliberately withheld. */
                 $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph) AND " . songVisibleSql($db, ''));
                 $stmt->bind_param($types, ...$existIds);
                 $stmt->execute();
@@ -9303,8 +9341,10 @@ if ($action !== null) {
                      FROM tblSongTagMap tm
                      JOIN tblSongs s ON s.SongId = tm.SongId
                      WHERE tm.TagId = ? AND ' . songVisibleSql($db, 's') . '
+                       AND ' . songServableSql($db, 's') . '
                      ORDER BY s.Title ASC'
-                );   /* #1694 — a theme page lists visible songs only */
+                );   /* #1694/#1765 — a theme page lists visible songs only,
+                        and only from songbooks that aren't disabled */
                 $stmt->bind_param('i', $tagInfo['id']);
                 $stmt->execute();
                 $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -9678,8 +9718,9 @@ if ($action !== null) {
 
             /* Verify the source song exists and get its songbook.
                #1694 — filtered: related-songs FOR a hidden song answers 404,
-               matching the song page itself. */
-            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, ''));
+               matching the song page itself. #1765 — same for a song in a
+               disabled songbook. */
+            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, ''));
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             $sourceSong = $stmt->get_result()->fetch_assoc();
@@ -9700,8 +9741,9 @@ if ($action !== null) {
                  JOIN tblSongWriters w2 ON w2.Name = w1.Name AND w2.SongId != w1.SongId
                  JOIN tblSongs s ON s.SongId = w2.SongId
                  WHERE w1.SongId = ? AND ' . songVisibleSql($db, 's') . '
+                   AND ' . songServableSql($db, 's') . '
                  LIMIT 20'
-            );   /* #1694 — hidden songs are never recommended */
+            );   /* #1694/#1765 — hidden songs, or ones in a disabled songbook, are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9721,8 +9763,9 @@ if ($action !== null) {
                  JOIN tblSongComposers c2 ON c2.Name = c1.Name AND c2.SongId != c1.SongId
                  JOIN tblSongs s ON s.SongId = c2.SongId
                  WHERE c1.SongId = ? AND ' . songVisibleSql($db, 's') . '
+                   AND ' . songServableSql($db, 's') . '
                  LIMIT 20'
-            );   /* #1694 — hidden songs are never recommended */
+            );   /* #1694/#1765 — hidden songs, or ones in a disabled songbook, are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9743,8 +9786,9 @@ if ($action !== null) {
                  JOIN tblSongs s ON s.SongId = tm2.SongId
                  JOIN tblSongTags t ON t.Id = tm1.TagId
                  WHERE tm1.SongId = ? AND ' . songVisibleSql($db, 's') . '
+                   AND ' . songServableSql($db, 's') . '
                  LIMIT 20'
-            );   /* #1694 — hidden songs are never recommended */
+            );   /* #1694/#1765 — hidden songs, or ones in a disabled songbook, are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9769,9 +9813,10 @@ if ($action !== null) {
                      FROM tblSongs s
                      WHERE s.SongbookAbbr = ? AND s.SongId NOT IN ($placeholders)
                        AND " . songVisibleSql($db, 's') . "
+                       AND " . songServableSql($db, 's') . "
                      ORDER BY RAND()
                      LIMIT " . (int)$remaining
-                );   /* #1694 — hidden songs are never recommended */
+                );   /* #1694/#1765 — hidden songs, or ones in a disabled songbook, are never recommended */
                 $params = array_merge([$sourceSong['SongbookAbbr']], $excludeIds);
                 $stmt->bind_param(str_repeat('s', count($params)), ...$params);
                 $stmt->execute();
@@ -9988,6 +10033,11 @@ if ($action !== null) {
          * Requires: editor+ role
          * ----------------------------------------------------------------- */
         case 'admin_songbook_health':
+            /* @disabled-visible: admin surface, disabled books stay fully
+               visible in /manage (#1765) — this is an editor+-gated report,
+               not a public read; a disabled songbook's health numbers must
+               keep showing so a curator can act on them (and re-enable the
+               book). */
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
                 sendJson(['error' => 'Editor access required.'], 403);
@@ -11338,8 +11388,10 @@ if ($action !== null) {
 
                 /* The corrected song must exist AND be visible (#1694 — a
                    correction can only be filed against a song the public can
-                   see; the current-value read below runs only past this gate). */
-                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
+                   see; the current-value read below runs only past this gate).
+                   #1765 — nor may a correction be filed against a song whose
+                   songbook has been disabled. */
+                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . ' LIMIT 1');
                 $stmt->bind_param('s', $cSongId);
                 $stmt->execute();
                 $songRow = $stmt->get_result()->fetch_assoc();
@@ -12061,6 +12113,11 @@ if ($action !== null) {
                     $colour = pickAutoSongbookColour($db, $abbr);
                 }
 
+                /* @disabled-visible: admin surface + UNIQUE-key pre-check
+                   (#1765) — a disabled book's Abbreviation is still taken;
+                   filtering here would let a curator mint a colliding
+                   abbreviation and 500 on the INSERT's real UNIQUE
+                   constraint instead of getting this clean 409. */
                 $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -12227,7 +12284,12 @@ if ($action !== null) {
 
                 /* Capture the full before-row for diff-aware audit logs (#535).
                    Match the web admin's SELECT shape exactly so the diff key set
-                   stays consistent across both surfaces. */
+                   stays consistent across both surfaces.
+                   @disabled-visible: admin surface (#1765) — admin/global_admin
+                   -gated editing must reach a DISABLED songbook (that is the
+                   whole point of the feature: /manage/* keeps full CRUD), and
+                   the duplicate-abbreviation check below must catch a
+                   disabled book's Abbreviation too (still a live UNIQUE key). */
                 $existing = $db->prepare(
                     'SELECT Abbreviation, Name, DisplayOrder, Colour, IsOfficial,
                             Publisher, PublicationYear, Copyright, Affiliation,
@@ -12402,6 +12464,9 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
+                /* @disabled-visible: admin surface (#1765) — admin/global_admin
+                   -gated deletion must reach a DISABLED songbook (it must be
+                   deletable, exactly like any other book). */
                 $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -12485,6 +12550,9 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
+                /* @disabled-visible: admin surface (#1765) — same reasoning
+                   as admin_songbook_delete above: a DISABLED book must
+                   still be cascade-deletable by an admin. */
                 $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -12636,6 +12704,9 @@ if ($action !== null) {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
                            . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
 
+                /* @disabled-visible: admin surface (#1765) — a disabled
+                   book's badge colour is still worth auto-filling; the
+                   admin colour tools operate over every songbook. */
                 $stmt = $db->prepare('SELECT Id, Abbreviation, Colour FROM tblSongbooks ORDER BY Id');
                 $stmt->execute();
                 $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -12705,6 +12776,9 @@ if ($action !== null) {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
                            . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
 
+                /* @disabled-visible: admin surface — a disabled songbook (and its
+                   songs) stays fully visible + editable in /manage so a curator can
+                   re-enable it (#1765 owner decision) */
                 $stmt = $db->prepare('SELECT Id, Abbreviation FROM tblSongbooks ORDER BY Id');
                 $stmt->execute();
                 $books = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -16490,8 +16564,9 @@ if ($action !== null) {
             if ($songId !== null) {
                 /* #1694 — filtered: a hidden song cannot be NEWLY broadcast
                    (congregants would poll an id that 410s). An in-flight
-                   session's CurrentSongId is untouched. */
-                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
+                   session's CurrentSongId is untouched. #1765 — same for a
+                   song whose songbook has been disabled. */
+                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . ' LIMIT 1');
                 $chkSong->bind_param('s', $songId);
                 $chkSong->execute();
                 $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -16598,8 +16673,9 @@ if ($action !== null) {
             $db = getDbMysqli();
 
             /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500.
-               #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
-            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
+               #1694 — filtered: a hidden song cannot be NEWLY broadcast.
+               #1765 — same for a song whose songbook has been disabled. */
+            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . ' LIMIT 1');
             $chkSong->bind_param('s', $songId);
             $chkSong->execute();
             $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -17248,8 +17324,9 @@ if ($action !== null) {
             }
 
             if ($songId !== null) {
-                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
-                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
+                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast.
+                   #1765 — same for a song whose songbook has been disabled. */
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . ' LIMIT 1');
                 $chk->bind_param('s', $songId);
                 $chk->execute();
                 $ok = $chk->get_result()->fetch_row() !== null;

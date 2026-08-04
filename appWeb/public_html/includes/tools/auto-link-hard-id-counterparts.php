@@ -223,7 +223,12 @@ function autoLinkHardIdCounterparts(\mysqli $db, ?int $createdBy): array
            placeholder) in one predicate. $col is a hardcoded constant (allow-list). */
         /* #1694 — both the outer scan AND the shared-keys subquery are
            filtered: a hidden song must neither be auto-linked nor keep a
-           group alive by contributing to the HAVING counts. */
+           group alive by contributing to the HAVING counts.
+           @disabled-visible: admin surface (#1765) — this batch tool is
+           reachable only from /manage/duplicate-songs; a song in a disabled
+           songbook is exactly the kind of row a curator still needs to see
+           auto-link suggestions for (disabled ≠ deleted, and the admin
+           surface always sees everything). */
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $sql =
             "SELECT LOWER(TRIM(s.`{$col}`)) AS HardKey, s.SongId,

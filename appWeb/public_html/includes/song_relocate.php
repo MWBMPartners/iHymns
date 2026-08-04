@@ -323,7 +323,11 @@ function songRelocateIdTaken(\mysqli $db, string $songId): bool
        "Helpfully" adding the visibility predicate here would make a mint
        believe the id free and then 500 on the duplicate key at INSERT time.
        test-song-soft-delete.php pins this with a recording double — the probe
-       must recognise a soft-deleted row as taken. */
+       must recognise a soft-deleted row as taken.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       song's id stays taken regardless of whether its songbook has been
+       disabled; this is a UNIQUE-key occupancy question, not a visibility
+       one. */
     $live = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $live->bind_param('s', $songId);
     $live->execute();
@@ -1276,7 +1280,11 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
 
        @deleted-visible: write-path state read (#1694) — relocating a hidden
        song (e.g. via a repair funnel) must keep working; visibility is not
-       this function's question. */
+       this function's question.
+       @disabled-visible: admin surface + write-path state read (#1765) —
+       relocating a song out of a DISABLED songbook (e.g. into a live one,
+       or vice versa) is exactly a curator operation this function must keep
+       supporting; it is called only from /manage/* admin funnels. */
     $cur = $db->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
     $cur->bind_param('s', $oldSongId);
     $cur->execute();

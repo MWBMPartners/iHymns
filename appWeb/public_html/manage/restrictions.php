@@ -242,6 +242,10 @@ try {
    stay AJAX-driven because their cardinalities are large. */
 $picker_songbooks = [];
 try {
+    /* @disabled-visible: admin surface (#1765) — disabled songbooks stay
+       fully visible/editable in /manage (owner decision); a curator must
+       still be able to pick a disabled book when setting up a content
+       restriction for it. */
     $stmt = $db->prepare(
         'SELECT Abbreviation, Name, SongCount FROM tblSongbooks ORDER BY Name ASC'
     );

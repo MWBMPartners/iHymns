@@ -909,6 +909,9 @@ function _migProbe_hasNullPublicId(\mysqli $db): bool
     /* @deleted-visible: migration probe (#1694) — backfill completeness is a
        PHYSICAL property; a hidden row with a NULL PublicId still needs the
        backfill (its permalink must work on restore). */
+    /* @disabled-visible: same reasoning, one predicate over (#1765) — a song in
+       a publicly-disabled book still needs its PublicId backfilled (the probe
+       measures physical completeness, not public visibility). */
     $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
     $has = $res && $res->fetch_row() !== null;
     if ($res) { $res->free(); }

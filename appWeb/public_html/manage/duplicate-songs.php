@@ -52,6 +52,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';   /* #1749 — merge must MOVE store rows, not let the FK cascade eat them (#1755) */
 
+/* @disabled-visible: admin surface (#1765) — this ENTIRE page (detection,
+   link/unlink, dismiss, rebuild, merge) is gated edit_songs / manage_duplicate_songs
+   and disabled songbooks stay fully visible/editable in /manage (owner
+   decision): a curator must be able to spot, link, or merge duplicates
+   inside a book that has been disabled from the public site just as freely
+   as any other book. Every raw tblSongs/tblSongbooks read in this file is
+   covered by this ONE marker (file-scope unit). */
 if (!isAuthenticated()) {
     header('Location: /manage/login');
     exit;

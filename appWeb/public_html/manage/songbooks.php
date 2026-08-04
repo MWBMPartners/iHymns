@@ -298,6 +298,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
        registry will be small (low hundreds at most). */
     try {
         $like = '%' . $q . '%';
+        /* @disabled-visible: admin surface (#1765) — affiliation typeahead on the
+           songbooks management page; the usage count spans all books regardless
+           of public disabled state (disabled books are still managed here). */
         $stmt = $db->prepare(
             'SELECT a.Name AS name,
                     (SELECT COUNT(*) FROM tblSongbooks b WHERE b.Affiliation = a.Name) AS songbookCount
@@ -769,6 +772,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
  * ----------------------------------------------------------------------- */
 function _wouldCreateParentCycle(mysqli $db, int $rowId, int $candidateParent): bool
 {
+    /* @disabled-visible: admin surface (#1765) — parent-cycle guard for the
+       songbook hierarchy editor; walks all books regardless of public disabled
+       state (a disabled book is still a valid parent/child in admin). */
     if ($candidateParent <= 0 || $rowId <= 0) return false;
     if ($candidateParent === $rowId)          return true;
     $current = $candidateParent;
@@ -881,6 +887,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
+                /* @disabled-visible: admin surface (#1765) — the songbooks
+                   management API; the abbreviation-uniqueness check spans all
+                   books regardless of public disabled state. */
                 $abbr    = trim((string)($_POST['abbreviation']    ?? ''));
                 $name    = trim((string)($_POST['name']            ?? ''));
                 $colour  = trim((string)($_POST['colour']          ?? ''));
@@ -1066,6 +1075,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             case 'update': {
+                /* @disabled-visible: admin surface (#1765) — the songbooks
+                   management API loads the current row (incl. a disabled book,
+                   which stays fully editable) before applying the edit. */
                 $id          = (int)($_POST['id'] ?? 0);
                 $name        = trim((string)($_POST['name']         ?? ''));
                 $colour      = trim((string)($_POST['colour']       ?? ''));
@@ -1664,6 +1676,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             case 'delete': {
+                /* @disabled-visible: admin surface (#1765) — resolves the target
+                   book by id regardless of public disabled state (a disabled
+                   book can still be deleted by an admin). */
                 $id = (int)($_POST['id'] ?? 0);
 
                 $stmt = $db->prepare('SELECT Abbreviation FROM tblSongbooks WHERE Id = ?');
@@ -1713,6 +1728,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             case 'delete_cascade': {
+                /* @disabled-visible: admin surface (#1765) — cascade delete
+                   resolves the target book regardless of public disabled state. */
                 /* Cascade delete: removes a songbook AND every song in
                    it AND every credit / chord / tag / translation / etc.
                    that referenced those songs. Admin / global_admin only.
@@ -1802,6 +1819,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             case 'auto_colour_fill':
             case 'auto_colour_reassign': {
+                /* @disabled-visible: admin surface (#1765) — bulk colour reassign
+                   spans every book regardless of public disabled state. */
                 /* Bulk auto-colour action (#716). Two modes:
                      fill      — only rows where Colour IS NULL or '' get a
                                  newly-picked palette colour. Existing values
@@ -1880,6 +1899,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             case 'family_manifest': {
+                /* @disabled-visible: admin surface (#1765) — family manifest spans
+                   the whole songbook hierarchy regardless of public disabled state. */
                 /* #782 phase E — apply / preview a family-manifest JSON
                    file (the one ChristInSong.app.py emits as
                    `_family-manifest.json` after a scrape). Two modes

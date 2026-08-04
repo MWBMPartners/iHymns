@@ -299,8 +299,15 @@ ok('_ihymns_resolve_songs() gates the 3-placeholder store bind on $useStore (if 
     'slice: ' . $resolveSongsSlice);
 
 $isrcCaseSlice = irusSliceCase($strippedSrc, 'isrc', 300);
+/* The 4th positional arg MUST be the store IdType 'isrc' (so the store-union
+   lookup arm activates for ISRC). A 5th positional arg is now permitted after
+   it — #1765 Feature 1 threaded a trailing `$publicOnly` bool through the
+   public resolver — so the terminator after 'isrc' is `[,)]` (comma = more
+   args, or the call closes) rather than a hardcoded `)`. Narrowing it back to
+   `\)` would fail on that correct code (rule #34); it still pins 'isrc' as the
+   4th arg, so a mutation that drops or reorders it goes red. */
 ok("the (comment-stripped) case 'isrc': region passes a 4th argument 'isrc' to _ihymns_resolve_songs(...)",
-    $isrcCaseSlice !== '' && preg_match('/_ihymns_resolve_songs\s*\(\s*\$db\s*,\s*\'Isrc\'\s*,\s*\$canonical\s*,\s*\'isrc\'\s*\)/', $isrcCaseSlice) === 1,
+    $isrcCaseSlice !== '' && preg_match('/_ihymns_resolve_songs\s*\(\s*\$db\s*,\s*\'Isrc\'\s*,\s*\$canonical\s*,\s*\'isrc\'\s*[,)]/', $isrcCaseSlice) === 1,
     'slice: ' . $isrcCaseSlice);
 
 /* --- Mutation self-test: a comment-only mention must NOT satisfy the scan

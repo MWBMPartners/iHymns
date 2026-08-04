@@ -219,6 +219,23 @@ class SongData
     private bool $_originPlaceColumn = false;
     private bool $_originPlaceColumnChecked = false;
 
+    /**
+     * #1765 Feature 1 — the audience-mode switch: true = PUBLIC (the site
+     * everyone sees), false = ADMIN (`/manage/*`, sees everything).
+     *
+     * ELI5: one flag that decides whether "a disabled songbook" means
+     * "gone" or "still fully there".
+     *
+     * DEFAULT TRUE IS THE FAIL-SAFE (rule for this whole feature): a caller
+     * who forgets to ask for the admin view gets the SAFE outcome — a
+     * disabled book's songs stay HIDDEN rather than LEAKING onto the public
+     * site. The only way to see everything is the explicit opt-in
+     * `SongData::forAdmin()` below; the plain constructor can never produce
+     * an admin-mode instance. Consulted by `_visible()` (song grain) and
+     * `_bookVisible()` (songbook grain) — nowhere else reads it directly.
+     */
+    private bool $publicVisibility = true;
+
     /** Check if running in JSON fallback mode (no MySQL) */
     public function isJsonFallback(): bool { return $this->jsonMode; }
 
@@ -295,11 +312,46 @@ class SongData
     }
 
     /**
-     * #1694 — the soft-delete visibility predicate, for every SELECT this
-     * class builds against tblSongs.
+     * The `/manage/*` instance — sees EVERY songbook and song, including
+     * ones disabled from the public site (#1765 Feature 1).
      *
-     * ELI5: the little "and it isn't deleted" clause each song query glues
-     * onto its WHERE — or a harmless "1=1" before the migration has run.
+     * ELI5: exactly the same SongData, but with the "hide disabled books"
+     * switch turned off, for admin pages that must keep editing (and
+     * re-enabling) a disabled book.
+     *
+     * DETAILED: constructs identically to `new SongData()` — same
+     * `getDbMysqli()` connection, same everything — then flips ONE flag.
+     * This is deliberately the ONLY way to obtain an admin-mode instance:
+     * the plain constructor always defaults to public/fail-safe (see
+     * `$publicVisibility`'s doc-block), so a page that reaches for
+     * `new SongData()` gets the SAFE outcome and must explicitly opt in to
+     * seeing disabled books via this factory.
+     *
+     * CALL SITES (the #1765 read-path census — keep this list and the code
+     * in lockstep, rule #35): `manage/missing-numbers.php`,
+     * `manage/editor/api.php` (5 sites), `manage/editor/api2.php` (2 sites).
+     * `manage/gating-noop-verify.php` deliberately stays `new SongData()` —
+     * it verifies the PUBLIC payload, so it must see exactly what the
+     * public sees, disabled books included in the exclusion.
+     *
+     * @return self An admin-mode instance.
+     */
+    public static function forAdmin(): self
+    {
+        $instance = new self();
+        $instance->publicVisibility = false;
+        return $instance;
+    }
+
+    /**
+     * #1694 — the soft-delete visibility predicate, for every SELECT this
+     * class builds against tblSongs. #1765 Feature 1 folds the
+     * disabled-songbook predicate in here too — see below.
+     *
+     * ELI5: the little "and it isn't deleted, and its songbook isn't
+     * disabled" clause each song query glues onto its WHERE — or a
+     * harmless "1=1" for either half before its migration has run, or
+     * (for the songbook half) on an admin-mode instance.
      *
      * ONE delegate to the ONE shared unit (songVisibleSql(), which gates on
      * songSoftDeleteReady() — the #1228 STRICT-mode lesson: an ungated
@@ -310,6 +362,16 @@ class SongData
      * per-site branching. Same require_once + $this->db delegate shape as
      * the songRedirectClaimsId() consult in getSongById().
      *
+     * THE #1765 ADD-ON is AND-composed in PUBLIC MODE ONLY: `songServableSql()`
+     * answers "does this song's songbook keep it servable?" at the SAME
+     * alias `_visible()` was already asked about, so ONE edit here covers
+     * every one of this class's ~30 `tblSongs` reads at once (the epic
+     * plan's "chokepoint" architecture) — none of those ~30 call sites
+     * needed to change. Admin mode (`SongData::forAdmin()`) skips this half
+     * entirely (stays plain `songVisibleSql()`) — `/manage/*` must keep
+     * seeing every song in a disabled book so it can still be edited or
+     * re-enabled; only the PUBLIC audience loses them.
+     *
      * @param string $alias Table alias to prefix ('' for un-aliased queries).
      * @return string SQL predicate fragment — a hardcoded constant from PHP
      *                source (rule #5 clause a), never runtime data.
@@ -317,7 +379,43 @@ class SongData
     private function _visible(string $alias = 's'): string
     {
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
-        return songVisibleSql($this->db, $alias);
+        $sql = songVisibleSql($this->db, $alias);
+        if ($this->publicVisibility) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
+            $sql .= ' AND ' . songServableSql($this->db, $alias);
+        }
+        return $sql;
+    }
+
+    /**
+     * #1765 Feature 1 — the songbook-grain sibling of `_visible()`: "is
+     * THIS songbook row itself visible?"
+     *
+     * ELI5: the little "and this songbook isn't disabled" clause for
+     * queries that read `tblSongbooks` directly (as opposed to `_visible()`,
+     * which is for queries reading `tblSongs`) — or a harmless "1=1" in
+     * admin mode, or before the migration has run.
+     *
+     * ONE delegate to `songbookVisibleSql()` (`songbook_visibility.php`),
+     * which itself gates on `songbookDisableReady()` — same #1228
+     * STRICT-mode lesson as `_visible()`. ADMIN MODE SKIPS THE PREDICATE
+     * ENTIRELY (returns `1=1` without even asking the DB whether the
+     * column exists) so `/manage/*` always sees every songbook, migrated or
+     * not — there is no admin-side reason to ever hide one.
+     *
+     * @param string $alias Table alias to prefix (default 'b' — the house
+     *                      convention for `tblSongbooks` in this codebase's
+     *                      joined queries).
+     * @return string SQL predicate fragment — a hardcoded constant from PHP
+     *                source (rule #5 clause a), never runtime data.
+     */
+    private function _bookVisible(string $alias = 'b'): string
+    {
+        if (!$this->publicVisibility) {
+            return '1=1';
+        }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
+        return songbookVisibleSql($this->db, $alias);
     }
 
     /* =====================================================================
@@ -357,11 +455,16 @@ class SongData
            Empty placeholder rows in tblSongbooks would otherwise
            inflate the home-page "N Songbooks" badge and the PWA
            cache's meta.totalSongbooks. #1694 — "at least one song" now
-           means at least one VISIBLE song, matching totalSongs above. */
+           means at least one VISIBLE song, matching totalSongs above.
+           #1765 Feature 1 — a disabled songbook itself must not be
+           counted either (its songs are already excluded by _visible()'s
+           songServableSql() half, but a disabled book with zero OTHER
+           reason to be excluded still needs the outer _bookVisible()). */
         $stmt = $this->db->prepare(
             "SELECT COUNT(*) AS total
                FROM tblSongbooks b
-              WHERE EXISTS (
+              WHERE " . $this->_bookVisible() . "
+                AND EXISTS (
                   SELECT 1 FROM tblSongs s
                    WHERE s.SongbookAbbr = b.Abbreviation
                      AND " . $this->_visible() . "
@@ -501,6 +604,7 @@ class SongData
         $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
+        $flagsSelect  = $this->_songbookFlagsSelect();
         $stmt = $this->db->prepare(
             "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
                     b.Colour AS colour,
@@ -513,7 +617,9 @@ class SongData
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}
+                    {$flagsSelect}
              FROM tblSongbooks b{$parentJoin}
+             WHERE " . $this->_bookVisible() . "
              ORDER BY b.Name ASC"
         );
         $stmt->execute();
@@ -522,8 +628,16 @@ class SongData
         while ($row = $result->fetch_assoc()) {
             $row['songCount']  = (int)$row['songCount'];
             /* Cast to a strict bool so JSON consumers don't have to
-               deal with 0/1 vs true/false ambiguity (#502). */
+               deal with 0/1 vs true/false ambiguity (#502). #1765 —
+               isDisabled/isPublicDomain follow the same rule, only present
+               when _songbookFlagsSelect() emitted them. */
             $row['isOfficial'] = (bool)$row['isOfficial'];
+            if (array_key_exists('isDisabled', $row)) {
+                $row['isDisabled'] = (bool)$row['isDisabled'];
+            }
+            if (array_key_exists('isPublicDomain', $row)) {
+                $row['isPublicDomain'] = (bool)$row['isPublicDomain'];
+            }
             $books[] = $this->_normaliseSongbookParent($row);
         }
         $stmt->close();
@@ -786,14 +900,77 @@ class SongData
     }
     private ?string $_parentSelectCache = null;
 
-    /** LEFT JOIN fragment paired with _songbookParentSelect(). Empty
-        when the schema isn't live so the FROM clause stays valid. */
+    /**
+     * LEFT JOIN fragment paired with _songbookParentSelect(). Empty when
+     * the schema isn't live so the FROM clause stays valid.
+     *
+     * #1765 Feature 1 — the join's ON clause also carries `_bookVisible('p')`
+     * so a DISABLED parent's `parentAbbreviation`/`parentName` come back
+     * NULL in public mode (the join simply finds no matching row), rather
+     * than exposing a disabled book's identity through a child's `parent`
+     * field. `b.ParentSongbookId` itself (the raw FK, selected from `b` not
+     * `p`) is untouched by this — only the JOINED columns collapse. Admin
+     * mode / un-migrated installs get `_bookVisible()`'s harmless `1=1`, so
+     * the join behaves exactly as before there.
+     */
     private function _songbookParentJoin(): string
     {
         return $this->_songbookParentSelect() === ''
             ? ''
-            : ' LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId';
+            : ' LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId AND ' . $this->_bookVisible('p');
     }
+
+    /**
+     * Same probe-once pattern as `_songbookBibSelect()` but for the two
+     * #1765 columns `IsDisabled` (Feature 1) / `IsPublicDomain` (Feature 2)
+     * — checked IN LOCKSTEP (`COUNT = 2`, the `songSoftDeleteReady()`
+     * shape) because the migration adds both in the same ALTER and a
+     * half-applied state (one column landed, the other didn't) must not
+     * emit a SELECT naming a column that isn't there.
+     *
+     * ELI5: the admin badge needs to know "is this book disabled?" and "is
+     * it public domain?" — this quietly adds both to the row, or neither
+     * on an un-migrated install.
+     *
+     * `isDisabled` IS a payload key on public reads too (deliberately not
+     * public-mode-gated the way `_bookVisible()` is) — harmless, because
+     * once `_bookVisible()` is embedded in the same query a disabled
+     * book's row is never SELECTed at all, so the key can never actually
+     * read `true` on the public site; it's `/manage/*` (via
+     * `SongData::forAdmin()`) that needs to see `true` there to badge a
+     * disabled row in the admin list. `isPublicDomain` is its Feature-2
+     * lockstep pair — informational only, never a gate (plan "Current-state
+     * facts": "ONE `IsPublicDomain` flag … never a gate").
+     *
+     * @return string '' or a leading-comma SELECT tail (rule #5a — a
+     *                hardcoded PHP constant, never runtime data).
+     */
+    private function _songbookFlagsSelect(): string
+    {
+        if (isset($this->_flagsSelectCache)) {
+            return $this->_flagsSelectCache;
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  IN ('IsDisabled', 'IsPublicDomain')"
+            );
+            $probe->execute();
+            $row = $probe->get_result()->fetch_row();
+            $probe->close();
+            $has = ($row !== null && (int)$row[0] === 2);
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        /* `b.`-qualified — same reason as _songbookBibSelect() above; the
+           parent-songbook self-join makes any unqualified column ambiguous. */
+        $this->_flagsSelectCache = $has
+            ? ', b.IsDisabled AS isDisabled, b.IsPublicDomain AS isPublicDomain'
+            : '';
+        return $this->_flagsSelectCache;
+    }
+    private ?string $_flagsSelectCache = null;
 
     /**
      * Pull `[abbr => [{id, name, slug}, ...]]` from the
@@ -810,6 +987,14 @@ class SongData
      */
     private function _songbookSeriesMap(?array $abbrs = null): array
     {
+        /* @disabled-visible: batch-attachment helper (#1765) — reads
+           tblSongbookSeries/Membership for ALL requested abbreviations
+           (including a disabled one, when $abbrs is null or names it) with
+           no predicate of its own. Safe by construction: the ONLY callers
+           (getSongbooks()/getSongbook()) already filtered `$books`/`$row`
+           through `_bookVisible()` BEFORE calling this, and only ever index
+           the returned map by an id that survived that filter — a disabled
+           book's entry is minted here but never read back out. */
         $hasSeriesSchema = false;
         try {
             $probe = $this->db->prepare(
@@ -972,6 +1157,11 @@ class SongData
      */
     private function _songbookCompilersMap(?array $abbrs = null): array
     {
+        /* @disabled-visible: batch-attachment helper (#1765) — same
+           safe-by-construction reasoning as _songbookSeriesMap() above: only
+           getSongbooks()/getSongbook() call this, always AFTER
+           _bookVisible() has already filtered which abbreviations they will
+           ever index back out of the returned map. */
         $hasCompilersSchema = false;
         try {
             $probe = $this->db->prepare(
@@ -1054,6 +1244,8 @@ class SongData
      */
     private function _songbookAltNamesMap(?array $abbrs = null): array
     {
+        /* @disabled-visible: batch-attachment helper (#1765) — same
+           safe-by-construction reasoning as _songbookSeriesMap() above. */
         $hasSchema = false;
         try {
             $probe = $this->db->prepare(
@@ -1457,6 +1649,7 @@ class SongData
         $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
+        $flagsSelect  = $this->_songbookFlagsSelect();
         $stmt = $this->db->prepare(
             "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
                     b.Colour AS colour,
@@ -1469,8 +1662,10 @@ class SongData
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}
+                    {$flagsSelect}
              FROM tblSongbooks b{$parentJoin}
-             WHERE b.Abbreviation = ?"
+             WHERE b.Abbreviation = ? AND " . $this->_bookVisible() . "
+            "
         );
         $stmt->bind_param('s', $id);
         $stmt->execute();
@@ -1478,11 +1673,21 @@ class SongData
         $row = $result->fetch_assoc();
         $stmt->close();
 
+        /* #1765 Feature 1 — a disabled book's row simply never matches the
+           WHERE above (public mode), so this null-return is the SAME path
+           an unknown abbreviation already takes: no distinguishing 404 vs
+           410 copy, matching the plan's "don't invite probing" note. */
         if ($row === null) {
             return null;
         }
         $row['songCount']  = (int)$row['songCount'];
         $row['isOfficial'] = (bool)$row['isOfficial'];
+        if (array_key_exists('isDisabled', $row)) {
+            $row['isDisabled'] = (bool)$row['isDisabled'];
+        }
+        if (array_key_exists('isPublicDomain', $row)) {
+            $row['isPublicDomain'] = (bool)$row['isPublicDomain'];
+        }
         $row = $this->_normaliseSongbookParent($row);
         /* #782 phase D — also attach series memberships. Single-songbook
            variant of the bulk fetch on getSongbooks(); pre-migration
@@ -1568,14 +1773,19 @@ class SongData
         if ($this->_songbookParentSelect() === '') return $empty;
 
         try {
-            /* 1) self + own parent (if any). */
+            /* 1) self + own parent (if any). #1765 Feature 1 — a disabled
+               SELF collapses this whole call to $empty (same "no
+               distinguishing 404 vs 410" posture as getSongbook()); a
+               disabled PARENT keeps self visible but its parentAbbr/
+               parentName come back NULL via the gated join, mirroring
+               _songbookParentJoin()'s reasoning above. */
             $stmt = $this->db->prepare(
                 'SELECT b.Id, b.Abbreviation, b.Name,
                         b.ParentSongbookId, b.ParentRelationship,
                         p.Abbreviation AS parentAbbr, p.Name AS parentName
                    FROM tblSongbooks b
-                   LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId
-                  WHERE b.Abbreviation = ?'
+                   LEFT JOIN tblSongbooks p ON p.Id = b.ParentSongbookId AND ' . $this->_bookVisible('p') . '
+                  WHERE b.Abbreviation = ? AND ' . $this->_bookVisible('b')
             );
             $stmt->bind_param('s', $abbr);
             $stmt->execute();
@@ -1604,7 +1814,9 @@ class SongData
 
             /* 2) Direct children (rows whose ParentSongbookId === selfId).
                   Pulled with the optional Language column so callers
-                  rendering a list can show "Spanish" / "Tswana" inline. */
+                  rendering a list can show "Spanish" / "Tswana" inline.
+                  #1765 Feature 1 — a disabled child must not appear in this
+                  list either; it's a songbook-grain read like any other. */
             $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
             $stmt = $this->db->prepare(
                 "SELECT b.Abbreviation AS id, b.Name AS name,
@@ -1612,6 +1824,7 @@ class SongData
                         {$langTail}
                    FROM tblSongbooks b
                   WHERE b.ParentSongbookId = ?
+                    AND " . $this->_bookVisible() . "
                   ORDER BY b.Name ASC"
             );
             $stmt->bind_param('i', $selfId);
@@ -1628,7 +1841,8 @@ class SongData
             $stmt->close();
 
             /* 3) Siblings (other children of the same parent, excluding
-                  self). Skipped when this row has no parent. */
+                  self). Skipped when this row has no parent. #1765
+                  Feature 1 — same songbook-grain filter as children. */
             if ($parentId > 0) {
                 $stmt = $this->db->prepare(
                     "SELECT b.Abbreviation AS id, b.Name AS name,
@@ -1637,6 +1851,7 @@ class SongData
                        FROM tblSongbooks b
                       WHERE b.ParentSongbookId = ?
                         AND b.Id <> ?
+                        AND " . $this->_bookVisible() . "
                       ORDER BY b.Name ASC"
                 );
                 $stmt->bind_param('ii', $parentId, $selfId);
@@ -1695,6 +1910,9 @@ class SongData
         }
 
         $langTail = $this->_songbookLanguageSelect() === '' ? '' : ', b.Language AS language';
+        /* #1765 Feature 1 — a disabled songbook must not appear in its
+           series listing either; songbook-grain like every other read here. */
+        $bookVisible = $this->_bookVisible();
         try {
             if (is_int($seriesIdOrSlug)) {
                 $sql = "SELECT b.Abbreviation AS id, b.Name AS name,
@@ -1703,7 +1921,7 @@ class SongData
                                {$langTail}
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbooks b ON b.Id = m.SongbookId
-                         WHERE m.SeriesId = ?
+                         WHERE m.SeriesId = ? AND {$bookVisible}
                          ORDER BY m.SortOrder ASC, b.Name ASC";
                 $stmt = $this->db->prepare($sql);
                 $sid  = (int)$seriesIdOrSlug;
@@ -1716,7 +1934,7 @@ class SongData
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbooks       b ON b.Id = m.SongbookId
                           JOIN tblSongbookSeries  s ON s.Id = m.SeriesId
-                         WHERE s.Slug = ?
+                         WHERE s.Slug = ? AND {$bookVisible}
                          ORDER BY m.SortOrder ASC, b.Name ASC";
                 $stmt = $this->db->prepare($sql);
                 $slug = (string)$seriesIdOrSlug;
@@ -3703,7 +3921,14 @@ class SongData
            if this read filtered, a hidden song's number would be listed as
            "missing", a curator would fill the gap, and restoring the original
            would produce a duplicate number with nothing to stop it. Physical
-           occupancy is the correct answer here. */
+           occupancy is the correct answer here.
+
+           @disabled-visible: admin surface (#1765) — this powers
+           `/manage/missing-numbers` (called via `SongData::forAdmin()`) and
+           the editor+-role-gated `missing_songs` API action; number-slot
+           occupancy is likewise PHYSICAL regardless of whether the book is
+           disabled — the same reasoning as the soft-delete marker
+           immediately above, one predicate over. */
         $stmt = $this->db->prepare(
             "SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
         );
@@ -4134,7 +4359,11 @@ class SongData
         /* @deleted-visible: pure id RESOLVER (#1694) — the follow-up
            _fetchSongRow() applies the visibility filter, and a deleted song's
            PublicId must still resolve here or songSoftDeletedHolds() could
-           never recognise it (and the 410 answer would decay to a 404). */
+           never recognise it (and the 410 answer would decay to a 404).
+           @disabled-visible: same reasoning, one predicate over (#1765) — a
+           PublicId belonging to a song in a disabled songbook must still
+           resolve to a SongId here; _fetchSongRow()'s `_visible()` call is
+           what actually hides it from the public response. */
         $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
         $stmt->bind_param('s', $publicId);
         $stmt->execute();

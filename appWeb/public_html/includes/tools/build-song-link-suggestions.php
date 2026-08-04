@@ -129,7 +129,11 @@ $res = $db->query(
        LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
       WHERE " . songVisibleSql($db, 's') . "
       GROUP BY s.SongId"
-);   /* #1694 — a hidden song must not be scored into new suggestions */
+);   /* #1694 — a hidden song must not be scored into new suggestions.
+       @disabled-visible: admin surface (#1765) — this builder is reachable
+       only via CLI or /manage/duplicate-songs?action=rebuild; a song in a
+       disabled songbook still deserves duplicate-suggestion scoring so a
+       curator reviewing that book sees the same suggestions as any other. */
 if (!$res) {
     _bsls_out('ERROR: failed to read tblSongs: ' . $db->error);
     exit(1);

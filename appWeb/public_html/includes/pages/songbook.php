@@ -88,7 +88,15 @@ if (!empty($songs)) {
        deliberately: test-songbook-render-parity.php renders this REAL template
        against a stub getDbMysqli(), and loading the predicate helper here
        would drag the real db_mysql.php into that stubbed world (redeclare
-       fatal) for zero behavioural gain. */
+       fatal) for zero behavioural gain.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       disabled book's songs are ALREADY absent from $songs (getSongsSlimIndex()
+       delegates to SongData::_visible(), which now composes songServableSql()
+       too), so this decoration query's own rows for that book are minted but
+       never consumed either. Moot in practice: $book itself would already be
+       null (404, above) for a disabled book's OWN page — this only matters
+       for the theoretical case of a song's SongbookAbbr disagreeing with the
+       page's $bookAbbr, which getSongsSlimIndex($bookAbbr) already scopes out. */
     $creditsStmt = $creditsDb->prepare(
         'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
            FROM tblSongs s

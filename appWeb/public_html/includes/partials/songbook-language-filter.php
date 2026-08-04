@@ -92,12 +92,16 @@ try {
     $probe->close();
     if ($hasSongLangCol) {
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
+        /* #1694 — a hidden song's language mints no filter chip.
+           #1765 — nor does a song in a disabled songbook. */
         $stmt = $db->prepare(
             "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                FROM tblSongs
               WHERE Language IS NOT NULL AND Language <> ''
-                AND " . songVisibleSql($db, '')
-        );   /* #1694 — a hidden song's language mints no filter chip */
+                AND " . songVisibleSql($db, '') . "
+                AND " . songServableSql($db, '')
+        );
         $stmt->execute();
         $res = $stmt->get_result();
         while ($row = $res->fetch_row()) {

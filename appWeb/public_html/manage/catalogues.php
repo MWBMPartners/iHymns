@@ -95,7 +95,11 @@ if ($hasSchema
                  WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
                    AND " . songVisibleSql($db, 's') . "
                  ORDER BY s.Title ASC
-                 LIMIT ?";   /* #1694 — hidden songs are not offered for membership */
+                 LIMIT ?";   /* #1694 — hidden songs are not offered for membership.
+                                @disabled-visible: admin surface (#1765) — disabled
+                                songbooks stay fully visible/editable in /manage
+                                (owner decision); a curator can still add a song from
+                                a disabled book into a Collection. */
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ssi', $like, $like, $limit);
         $stmt->execute();

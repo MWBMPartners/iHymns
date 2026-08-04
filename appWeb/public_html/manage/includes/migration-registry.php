@@ -316,7 +316,10 @@ return [
             try {
                 /* @deleted-visible: migration probe (#1694) — backfill
                    completeness is PHYSICAL; a hidden song's ISWC still needs
-                   its Work row so the link is intact on restore. */
+                   its Work row so the link is intact on restore.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — migration probes report PHYSICAL schema/data
+                   completeness regardless of a songbook's disabled state. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Iswc IS NOT NULL AND TRIM(s.Iswc) <> ''
@@ -447,6 +450,10 @@ return [
                 return false;
             }
             try {
+                /* @disabled-visible: migration probe (#1765) — reports
+                   PHYSICAL schema/data completeness regardless of a
+                   songbook's disabled state; a disabled CP/JP/MP/SDAH/CH
+                   still needs its Language backfilled. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongbooks
                       WHERE Abbreviation IN ('CP','JP','MP','SDAH','CH')
@@ -505,7 +512,9 @@ return [
                 /* Detect any single-language songbook with at least one
                    member whose primary language subtag differs. */
                 /* @deleted-visible: migration probe (#1694) — language
-                   backfill is PHYSICAL; a hidden row still needs the tag. */
+                   backfill is PHYSICAL; a hidden row still needs the tag.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a row in a disabled songbook still needs the tag. */
                 $res = $db->query(
                     "SELECT 1
                        FROM tblSongs s
@@ -574,7 +583,10 @@ return [
                    has run. */
                 /* @deleted-visible: migration probe (#1694) — prefix/abbr
                    agreement is PHYSICAL integrity; a hidden drifted row still
-                   needs the fixup. */
+                   needs the fixup.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a drifted row in a disabled songbook still needs
+                   the fixup. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongs
                       WHERE SongbookAbbr IS NOT NULL
@@ -893,6 +905,10 @@ return [
             foreach ($mappings as $col => $slug) {
                 if (!_migProbe_columnExists($db, 'tblSongbooks', $col)) continue;
                 try {
+                    /* @disabled-visible: migration probe (#1765) — reports
+                       PHYSICAL backfill completeness regardless of a
+                       songbook's disabled state; a disabled book's legacy
+                       URL column still needs its external-link row. */
                     $stmt = $db->prepare(
                         "SELECT 1
                            FROM tblSongbooks b
@@ -2812,7 +2828,10 @@ return [
         'probe' => static function (\mysqli $db): bool {
             try {
                 /* @deleted-visible: migration probe (#1694) — a hidden
-                   draft-id row still needs its canonical id minted. */
+                   draft-id row still needs its canonical id minted.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a draft-id row in a disabled songbook still
+                   needs its canonical id minted. */
                 $r = $db->query("SELECT 1 FROM tblSongs WHERE SongId LIKE 'song-%' LIMIT 1");
                 $pending = ($r && $r->fetch_row() !== null);
                 if ($r) { $r->close(); }
@@ -3510,6 +3529,10 @@ return [
                    still needs its tblSongExternalIds mirror row so the link
                    is intact if that song is ever restored. Deliberately not
                    scoped to visible-only rows. */
+                /* @disabled-visible: migration probe (#1765) — same physical
+                   posture: a song in a publicly-disabled book still needs its
+                   tblSongExternalIds mirror row, so the probe is not scoped to
+                   visible-only rows. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Isrc IS NOT NULL AND s.Isrc <> ''
@@ -3595,6 +3618,9 @@ return [
                    projected from the store correctly, so the value is right
                    the moment that song is ever restored. Deliberately not
                    scoped to visible-only rows. */
+                /* @disabled-visible: migration probe (#1765) — same physical
+                   posture: reconcile completeness spans songs in publicly-
+                   disabled books too, so the probe is not scoped visible-only. */
                 $r2 = $db->query(
                     'SELECT 1 FROM tblSongs s WHERE NOT (NULLIF(s.Isrc, \'\') <=> ('
                     . songExternalIdIsrcProjectionSql('s.SongId')

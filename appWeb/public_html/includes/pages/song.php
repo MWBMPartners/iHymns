@@ -421,6 +421,7 @@ try {
     if ($hasLinksTable) {
         $sid = (string)($song['id'] ?? '');
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
         $stmt = $translationsDb->prepare(
             'SELECT s.SongId       AS song_id,
                     s.Title        AS title,
@@ -435,8 +436,9 @@ try {
                JOIN tblSongbooks sb    ON sb.Abbreviation = s.SongbookAbbr
               WHERE self.SongId = ?
                 AND ' . songVisibleSql($translationsDb, 's') . '
+                AND ' . songServableSql($translationsDb, 's') . '
               ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-        );   /* #1694 — a hidden counterpart stays off the panel */
+        );   /* #1694/#1765 — a hidden counterpart, or one in a disabled songbook, stays off the panel */
         if ($stmt !== false) {
             $stmt->bind_param('s', $sid);
             $stmt->execute();
