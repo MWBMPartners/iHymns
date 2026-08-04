@@ -20,9 +20,16 @@
 > · `feature_gating_rules_enabled='0'` seed. Reserve-now (rule #20): CoversJson object-of-objects, Authority/
 > AuthorityRef, songbook editor-defaults. Verified: applied+idempotent on live DB, schema-coverage/registry/
 > installs green, 110/110 PHP + 50/50 node, no-op against the migrated DB.
-> **NEXT: P2 — registries + resolver + pipeline (licence_registry.php, TIER_CAPS 5th `enforce` element,
-> access_context.php + access_resolver.php, delegates from contentGatingApply/…MediaAllowed, re-point the 6
-> licence-vocab sites, extended no-op + parity guards). Still dormant.**
+> **P2 IN PROGRESS — design done (Fable, verified), full blueprint in `.claude/gating-p2-design.md`.**
+> Commit protocol A–G (all still DORMANT — no emitter adoption; that's P3):
+> - ✅ **A** `c86ec62f` — pure code-motion seam: `_contentGatingApplyLegacyCore` / `_contentGatingMediaAllowedLegacyCore` extracted (existing no-op tests prove pure motion).
+> - ✅ **B** `7e7b2a65` — golden capture: `tools/capture-gating-goldens.php` + `tests/php/fixtures/gating-goldens.json` (240 apply + 144 media, DB-free so it matches CI's matrix path; sanity-verified real enforcement).
+> - ✅ **C** `185ef7f4` — `includes/licence_registry.php` (the #459 reader + LICENCE_TYPES_FALLBACK + coverage vocab) + `test-licence-registry.php` (seed-parity + conferral-no-op + degrade-to-fallback, mutation-proven). Inert — nothing consumes it yet.
+> - ⏳ **D** — TIER_CAPS optional 5th `enforce` element + `tierCapEnforce()` + `EnforceJson` into the union (additive; frozen-7 get none) + extend `test-gating-registry.php`.
+> - ⏳ **E (the crux)** — `access_context.php` + `access_resolver.php`; rewrite the two CG delegates; DELETE the legacy cores; `test-gating-equivalence.php` (replay the 384 goldens byte-identically) + extend `test-gating-noop.php` + the structural/parity guards + RUN the mutation checklist (blueprint §8.6). This is the byte-identical-no-op proof — execute with full care.
+> - ⏳ **F** — re-point the 6 licence-vocab sites onto licence_registry (pickers gain mrl/custom; restrictions loses dead `none`; ccli_validator `$licenceToTier`→fallback under live ConfersTier — identity-proven; 3 schema COMMENTs). ⚠ mrl-confers-no-tier end-state (sub-Q5) is NOT flipped in P2 (would change live tiers even gating-off) — one-line P6 first-enable owner decision; file tracking issue.
+> - ⏳ **G** — docs/annotations (Wiki Architecture, project-rules §18 xref, CHANGELOG).
+> **RESUME AT COMMIT D.** Local `appWeb/.auth/db_credentials.php` (gitignored) → local `ihymns_live` (P1 migration applied); the golden-capture tool needs it moved aside (it refuses if a DB is reachable).
 >
 > **Local dev note:** `appWeb/.auth/db_credentials.php` (gitignored) now points at local `ihymns_live`, which
 > has the P1 migration APPLIED — so getDbMysqli()/the DB suites connect there without `IHYMNS_TEST_DSN`.
