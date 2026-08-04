@@ -246,6 +246,62 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'marcxml_import': {
+                /* #1765 Feature 5 — create a Collection from an uploaded
+                   MARCXML file. Imported hidden (Visibility=admin_only) so a
+                   curator reviews it before it goes public. A slightly-off
+                   identifier is skipped, not fatal; the slug auto-suffixes. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+                $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'catalogue');
+                if (!$parsed['ok']) { $error = $parsed['error']; break; }
+                $title = trim((string)($parsed['fields']['Title'] ?? ''));
+                if ($title === '') { $error = 'The MARCXML record has no title (245 $a) to create a Collection from.'; break; }
+                $title = mb_substr($title, 0, 255);
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'ArkId' => 'ark', 'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $idArk = $ids['ArkId']; $idOlW = $ids['OpenLibraryWorkId']; $idOlE = $ids['OpenLibraryEditionId'];
+
+                $base = $slugFor($title); if ($base === '') { $base = 'collection'; }
+                $base = mb_substr($base, 0, 250);
+                $slug = $base; $suffix = 1;
+                while (true) {
+                    $chk = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
+                    $chk->bind_param('s', $slug);
+                    $chk->execute();
+                    $taken = $chk->get_result()->fetch_row() !== null;
+                    $chk->close();
+                    if (!$taken) { break; }
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $desc = null; $sortOrder = 0; $visibility = 'admin_only'; $colour = '';
+                $ins = $db->prepare(
+                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility, Colour) VALUES (?, ?, ?, ?, ?, ?)'
+                );
+                $ins->bind_param('sssiss', $slug, $title, $desc, $sortOrder, $visibility, $colour);
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+
+                if ($hasPubIdCols) {
+                    $upd = $db->prepare('UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?');
+                    $upd->bind_param('sssi', $idArk, $idOlW, $idOlE, $newId);
+                    $upd->execute();
+                    $upd->close();
+                }
+
+                logActivity('admin.catalogues.marcxml_import', 'catalogue', (string)$newId, [
+                    'title' => $title, 'slug' => $slug,
+                ]);
+                $notes = [];
+                if ($skipped) { $notes[] = 'skipped invalid identifier(s): ' . implode(', ', $skipped); }
+                if (!empty($parsed['unmapped'])) { $notes[] = 'unmapped MARC tag(s): ' . implode(', ', array_slice($parsed['unmapped'], 0, 12)); }
+                $success = "Collection '{$title}' created from MARCXML (slug '{$slug}') — hidden until you set its visibility."
+                    . ($notes ? ' — ' . implode('; ', $notes) : '');
+                break;
+            }
+
             case 'update': {
                 $id          = (int)($_POST['id']          ?? 0);
                 $title       = trim((string)($_POST['title']       ?? ''));
@@ -528,6 +584,26 @@ if ($hasSchema && !empty($catalogues)) {
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
                         <i class="bi bi-plus me-1"></i>Create catalogue
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- #1765 Feature 5 — create a Collection from an uploaded MARCXML file. -->
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
+            <form method="POST" class="row g-2 align-items-end small" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                <input type="hidden" name="action" value="marcxml_import">
+                <div class="col-md-8">
+                    <label class="form-label small mb-0" for="collection-marcxml-file">MARCXML file</label>
+                    <input type="file" class="form-control form-control-sm" id="collection-marcxml-file"
+                           name="marcxml_file" accept=".xml,application/xml,application/marcxml+xml" required>
+                    <div class="form-text small">Reads the title (245 $a) + ARK / OpenLibrary identifiers; imported hidden for review.</div>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-sm btn-info w-100">
+                        <i class="bi bi-upload me-1" aria-hidden="true"></i>Import Collection
                     </button>
                 </div>
             </form>

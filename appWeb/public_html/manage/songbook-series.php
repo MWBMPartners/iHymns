@@ -295,6 +295,69 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 break;
             }
 
+            case 'marcxml_import': {
+                /* #1765 Feature 5 — create a series from an uploaded MARCXML
+                   file. Parse + validate via the shared helper (never touches
+                   the DB), then reuse this page's create shape. A slightly-off
+                   identifier is skipped (not fatal); the slug auto-suffixes if
+                   taken so a re-import never collides. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+                $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'series');
+                if (!$parsed['ok']) { $error = $parsed['error']; break; }
+                $name = trim((string)($parsed['fields']['Name'] ?? ''));
+                if ($name === '') { $error = 'The MARCXML record has no title (245 $a) to create a series from.'; break; }
+                $name = mb_substr($name, 0, 120);
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'Isbn' => 'isbn', 'Issn' => 'issn', 'ArkId' => 'ark',
+                    'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $idIsbn = $ids['Isbn']; $idIssn = $ids['Issn']; $idArk = $ids['ArkId'];
+                $idOlW  = $ids['OpenLibraryWorkId']; $idOlE = $ids['OpenLibraryEditionId'];
+
+                $base = $slugFor($name); if ($base === '') { $base = 'series'; }
+                $base = mb_substr($base, 0, 112);
+                $slug = $base; $suffix = 1;
+                while (true) {
+                    $chk = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
+                    $chk->bind_param('s', $slug);
+                    $chk->execute();
+                    $taken = $chk->get_result()->fetch_row() !== null;
+                    $chk->close();
+                    if (!$taken) { break; }
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $emptyDesc = ''; $emptyColour = '';
+                $ins = $db->prepare('INSERT INTO tblSongbookSeries (Name, Slug, Description, Colour) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $name, $slug, $emptyDesc, $emptyColour);
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+
+                if ($hasPubIdCols) {
+                    $upd = $db->prepare(
+                        'UPDATE tblSongbookSeries
+                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                          WHERE Id = ?'
+                    );
+                    $upd->bind_param('sssssi', $idIsbn, $idIssn, $idArk, $idOlW, $idOlE, $newId);
+                    $upd->execute();
+                    $upd->close();
+                }
+
+                if (function_exists('logActivity')) {
+                    logActivity('songbook_series.marcxml_import', 'songbook_series', (string)$newId, [
+                        'name' => $name, 'slug' => $slug,
+                    ]);
+                }
+                $notes = [];
+                if ($skipped) { $notes[] = 'skipped invalid identifier(s): ' . implode(', ', $skipped); }
+                if (!empty($parsed['unmapped'])) { $notes[] = 'unmapped MARC tag(s): ' . implode(', ', array_slice($parsed['unmapped'], 0, 12)); }
+                $success = "Series '{$name}' created from MARCXML (slug '{$slug}')."
+                    . ($notes ? ' — ' . implode('; ', $notes) : '');
+                break;
+            }
+
             case 'update': {
                 $id          = (int)($_POST['id']          ?? 0);
                 $name        = trim((string)($_POST['name']        ?? ''));
@@ -727,6 +790,29 @@ if ($hasSchema) {
             <button type="submit" class="btn btn-amber btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create series
             </button>
+        </form>
+
+        <!-- #1765 Feature 5 — create a series from an uploaded MARCXML file. -->
+        <form method="POST" class="card-admin p-3 mb-4" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+            <input type="hidden" name="action" value="marcxml_import">
+            <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
+            <p class="form-text small mt-0 mb-2">
+                Upload a MARCXML record to create a new series. The title (245 $a) and any
+                ISBN / ISSN / ARK / OpenLibrary identifiers are read; the slug is derived from the title.
+            </p>
+            <div class="row g-2 align-items-end">
+                <div class="col-sm-8">
+                    <label class="form-label small" for="series-marcxml-file">MARCXML file</label>
+                    <input type="file" class="form-control form-control-sm" id="series-marcxml-file"
+                           name="marcxml_file" accept=".xml,application/xml,application/marcxml+xml" required>
+                </div>
+                <div class="col-sm-4">
+                    <button type="submit" class="btn btn-amber btn-sm w-100">
+                        <i class="bi bi-upload me-1" aria-hidden="true"></i>Import series
+                    </button>
+                </div>
+            </div>
         </form>
 
         <!-- Edit Modal -->

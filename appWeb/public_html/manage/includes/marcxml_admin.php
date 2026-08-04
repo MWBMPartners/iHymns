@@ -123,3 +123,36 @@ function marcxmlAdmin_parseUpload(array $file, string $kind): array
         'recordCount' => count($records),
     ];
 }
+
+/**
+ * Run the identifier fields from a parsed MARCXML record through the ONE
+ * shared publication-identifier validator (mediaIdentifierPublicationClean),
+ * keeping the valid ones and reporting which were dropped. Used by the three
+ * admin pages' MARCXML IMPORT handlers so a single slightly-off identifier in
+ * an otherwise-good record does NOT block the whole import — the core record
+ * is created and the bad identifier is skipped with a note (rule #22: one
+ * validator, one place).
+ *
+ * @param array<string,mixed>  $fields   marcxmlMapToEntity()'s fields map
+ * @param array<string,string> $colToSlug  column name => PUBLICATION_IDENTIFIER_TYPES slug
+ *                              (e.g. ['Isbn'=>'isbn','ArkId'=>'ark', …])
+ * @return array{0:array<string,?string>,1:list<string>} [valid col=>value, list of "Col (value): why" skips]
+ */
+function marcxmlAdmin_cleanPublicationIdentifiers(array $fields, array $colToSlug): array
+{
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+    $valid   = [];
+    $skipped = [];
+    foreach ($colToSlug as $col => $slug) {
+        $raw = (string)($fields[$col] ?? '');
+        if (trim($raw) === '') { $valid[$col] = null; continue; }
+        $clean = mediaIdentifierPublicationClean($slug, $raw);
+        if ($clean['error'] !== null) {
+            $valid[$col] = null;
+            $skipped[]   = "{$col} (" . $raw . ')';
+        } else {
+            $valid[$col] = $clean['value'];
+        }
+    }
+    return [$valid, $skipped];
+}

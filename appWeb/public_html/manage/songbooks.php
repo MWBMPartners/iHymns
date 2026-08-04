@@ -1204,6 +1204,80 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'marcxml_import': {
+                /* #1765 Feature 5 — create a songbook from an uploaded MARCXML
+                   file. MARCXML carries no Abbreviation (the SongId prefix,
+                   rule #27), so the curator supplies it; the title (245 $a)
+                   and bibliographic fields/identifiers come from the file. A
+                   slightly-off identifier is skipped, not fatal. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+                $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'songbook');
+                if (!$parsed['ok']) { $error = $parsed['error']; break; }
+                $abbr = strtoupper(trim((string)($_POST['abbreviation'] ?? '')));
+                $name = mb_substr(trim((string)($parsed['fields']['Name'] ?? '')), 0, 255);
+                if ($name === '') { $error = 'The MARCXML record has no title (245 $a) to create a songbook from.'; break; }
+                if ($e = $validateAbbr($abbr)) { $error = $e; break; }
+
+                /* @disabled-visible: admin surface (#1765) — the abbreviation
+                   uniqueness pre-check spans ALL songbooks regardless of public
+                   disabled state (a disabled book's abbreviation is still taken),
+                   exactly like the create handler's own uniqueness check. */
+                $chk = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
+                $chk->bind_param('s', $abbr);
+                $chk->execute();
+                $dupe = $chk->get_result()->fetch_row() !== null;
+                $chk->close();
+                if ($dupe) { $error = "A songbook with abbreviation '{$abbr}' already exists."; break; }
+
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'Isbn' => 'isbn', 'ArkId' => 'ark',
+                    'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $imPublisher = mb_substr((string)($parsed['fields']['Publisher'] ?? ''), 0, 255) ?: null;
+                $imYear      = mb_substr((string)($parsed['fields']['PublicationYear'] ?? ''), 0, 50) ?: null;
+                $imLang      = mb_substr((string)($parsed['fields']['Language'] ?? ''), 0, 35) ?: null;
+                $imLccn      = mb_substr((string)($parsed['fields']['Lccn'] ?? ''), 0, 30) ?: null;
+                $imOclc      = mb_substr((string)($parsed['fields']['OclcNumber'] ?? ''), 0, 30) ?: null;
+                $imIsbn      = $ids['Isbn']; $imArk = $ids['ArkId'];
+
+                $colour = pickAutoSongbookColour($db, $abbr);
+                $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour) VALUES (?, ?, 0, ?)');
+                $ins->bind_param('sss', $abbr, $name, $colour);
+                $ins->execute();
+                $ins->close();
+
+                /* Bibliographic columns (all pre-#1765, present wherever the
+                   create form's own binds are — same assumption as 'create'). */
+                $upd = $db->prepare(
+                    'UPDATE tblSongbooks
+                        SET Publisher = ?, PublicationYear = ?, Language = ?, Isbn = ?, ArkId = ?, Lccn = ?, OclcNumber = ?
+                      WHERE Abbreviation = ?'
+                );
+                $upd->bind_param('ssssssss', $imPublisher, $imYear, $imLang, $imIsbn, $imArk, $imLccn, $imOclc, $abbr);
+                $upd->execute();
+                $upd->close();
+
+                if ($hasOpenLibraryCols) {
+                    $imOlW = $ids['OpenLibraryWorkId']; $imOlE = $ids['OpenLibraryEditionId'];
+                    $upd2 = $db->prepare('UPDATE tblSongbooks SET OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Abbreviation = ?');
+                    $upd2->bind_param('sss', $imOlW, $imOlE, $abbr);
+                    $upd2->execute();
+                    $upd2->close();
+                }
+
+                logActivity('songbook.marcxml_import', 'songbook', $abbr, ['name' => $name, 'abbreviation' => $abbr]);
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                    . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'songbooks.marcxml_import');
+
+                $notes = [];
+                if ($skipped) { $notes[] = 'skipped invalid identifier(s): ' . implode(', ', $skipped); }
+                if (!empty($parsed['unmapped'])) { $notes[] = 'unmapped MARC tag(s): ' . implode(', ', array_slice($parsed['unmapped'], 0, 12)); }
+                $success = "Songbook '{$abbr}' created from MARCXML."
+                    . ($notes ? ' — ' . implode('; ', $notes) : '');
+                break;
+            }
+
             case 'update': {
                 /* @disabled-visible: admin surface (#1765) — the songbooks
                    management API loads the current row (incl. a disabled book,
@@ -3339,6 +3413,37 @@ $csrf = csrfToken();
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create songbook
             </button>
+        </form>
+
+        <!-- #1765 Feature 5 — create a songbook from an uploaded MARCXML file. -->
+        <form method="POST" class="card-admin p-3 mb-4" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+            <input type="hidden" name="action" value="marcxml_import">
+            <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
+            <p class="form-text small mt-0 mb-2">
+                Upload a MARCXML record to create a new songbook. MARCXML carries no abbreviation
+                (the song-URL code), so enter one below; the title and any bibliographic fields
+                (ISBN / ARK / OpenLibrary / LCCN / OCLC / publisher / year / language) are read from the file.
+            </p>
+            <div class="row g-2 align-items-end">
+                <div class="col-sm-4">
+                    <label class="form-label small" for="import-abbreviation">Abbreviation</label>
+                    <input type="text" class="form-control form-control-sm" id="import-abbreviation"
+                           name="abbreviation" maxlength="10" required
+                           pattern="[A-Za-z0-9]+" placeholder="e.g. SSS"
+                           oninput="this.value = this.value.toUpperCase()">
+                </div>
+                <div class="col-sm-5">
+                    <label class="form-label small" for="songbook-marcxml-file">MARCXML file</label>
+                    <input type="file" class="form-control form-control-sm" id="songbook-marcxml-file"
+                           name="marcxml_file" accept=".xml,application/xml,application/marcxml+xml" required>
+                </div>
+                <div class="col-sm-3">
+                    <button type="submit" class="btn btn-amber-solid btn-sm w-100">
+                        <i class="bi bi-upload me-1" aria-hidden="true"></i>Import songbook
+                    </button>
+                </div>
+            </div>
         </form>
 
     </div>
