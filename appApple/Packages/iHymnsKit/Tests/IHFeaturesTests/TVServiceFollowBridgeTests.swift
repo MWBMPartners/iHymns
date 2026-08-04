@@ -41,7 +41,7 @@ struct TVServiceFollowBridgeTests {
             hasAudio: false, hasSheetMusic: false, originCity: "", originCityId: nil, publicId: nil,
             arrangement: nil, writers: [], composers: [], arrangers: [], adaptors: [], translators: [], artists: [],
             components: components, tags: [], alternativeTitles: [], links: [], works: [], media: [],
-            translations: nil, annotations: nil, royaltyIds: nil
+            translations: nil, annotations: nil, royaltyIds: nil, subtitle: nil, disambiguation: nil, firstPublishedYear: nil, copyrightYears: nil, copyrightHolder: nil, externalIds: nil
         )
     }
 

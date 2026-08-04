@@ -76,7 +76,13 @@ struct SongComparisonViewModelTests {
             media: [],
             translations: nil,
             annotations: nil,
-            royaltyIds: nil
+            royaltyIds: nil,
+            subtitle: nil,
+            disambiguation: nil,
+            firstPublishedYear: nil,
+            copyrightYears: nil,
+            copyrightHolder: nil,
+            externalIds: nil
         )
     }
 
