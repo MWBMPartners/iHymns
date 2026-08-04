@@ -605,6 +605,26 @@ if ($page !== null) {
         'tag',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
+    /* #1769 P3 — when content gating is ON, the page=song fragment is
+       VIEWER-DEPENDENT: it gates copyrighted lyrics by tier and drops media
+       affordances the viewer can't use (even on a public-domain song). A
+       shared ETag / service-worker cache keyed by URL alone would then serve one
+       viewer's gated fragment to another. So exclude it from the shared cache and
+       send `private, no-store` — the service worker honours no-store (see
+       service-worker.js.php swResponseCacheable). Never personalise the shared
+       cache (rule #6); exclude it instead. FLAG OFF (the live default): this is a
+       single static-cached getAppSetting read and a pure no-op — page=song caches
+       byte-identically to before. Only page=song is affected (home/songbook have
+       no per-viewer render). */
+    $_gatedSongFragment = false;
+    if ($page === 'song') {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+        $_gatedSongFragment = function_exists('contentGatingEnabled') && contentGatingEnabled();
+    }
+    if ($_gatedSongFragment) {
+        $_shouldCachePage = false;
+        header('Cache-Control: private, no-store');
+    }
     if ($_shouldCachePage) {
         ob_start();
     }

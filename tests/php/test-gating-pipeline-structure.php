@@ -150,6 +150,28 @@ _psAssert(strpos($songSrc, 'songPageGatingDecide(') !== false,
 _psAssert(substr_count($songSrc, 'serviceMode_presenceCcliNumber(') === 1,
     '(e) song.php resolves the presence number exactly once (the design de-duplicated it)');
 
+/* ---- (f) cache exclusion (#1769 P3 Commit E): api.php excludes the gated song
+ * fragment from the shared cache + sends no-store, and the service worker honours
+ * no-store at its INCIDENTAL fragment/song put sites (not the deliberate download,
+ * which must still work for entitled users). ------------------------------- */
+$apiSrc = (string)file_get_contents($root . '/api.php');
+_psAssert(strpos($apiSrc, '$_gatedSongFragment') !== false
+       && strpos($apiSrc, "header('Cache-Control: private, no-store')") !== false,
+    '(f) api.php excludes the gated page=song fragment + sends Cache-Control: no-store');
+_psAssert((bool)preg_match('/\$_gatedSongFragment\s*\)\s*\{\s*\$_shouldCachePage\s*=\s*false;/s', $apiSrc),
+    '(f) the gated song fragment is removed from $_shouldCachePage (not shared-cached)');
+
+$swSrc = (string)file_get_contents($root . '/service-worker.js.php');
+_psAssert(strpos($swSrc, 'function swResponseCacheable(') !== false,
+    '(f) service-worker.js.php defines swResponseCacheable()');
+/* The two INCIDENTAL fetch-handler puts consult it (a gated no-store fragment
+   never lands in the URL-keyed PAGES_CACHE / RECENT_CACHE that could leak across
+   viewers of one device offline). */
+_psAssert(strpos($swSrc, 'offlinePage && response.ok && swResponseCacheable(response)') !== false,
+    '(f) the SW page-fragment put honours swResponseCacheable()');
+_psAssert(strpos($swSrc, 'isSongPage && response.ok && swResponseCacheable(response)') !== false,
+    '(f) the SW incidental song put honours swResponseCacheable()');
+
 /* ----------------------------------------------------------------------- */
 echo "\ngating-pipeline-structure: {$passed} passed, {$failures} failed\n";
 exit($failures > 0 ? 1 : 0);
