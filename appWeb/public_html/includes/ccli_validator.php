@@ -26,6 +26,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE source of the licence→tier
+   conferral overlaid onto the legacy $licenceToTier fallback in
+   resolveEffectiveTier(). Requires only db_mysql (no cycle). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 /**
  * Validate a CCLI licence number format.
@@ -237,7 +241,15 @@ function resolveEffectiveTier(int $userId): string
         $stmt->close();
     }
 
-    /* Map org licence types to access tiers */
+    /* Map org licence types to access tiers. The literal is the FALLBACK; the
+       ONE licence registry (#1769 P2) overlays its ConfersTier on top. This is
+       ENFORCEMENT-relevant (resolveEffectiveTier runs regardless of the gating
+       flag), so it is a PROVEN IDENTITY for every current input: the registry
+       confers ccli→ccli, ihymns_basic→free, ihymns_pro→premium (== the literal),
+       while mrl/custom confer nothing and fall through to the literal's default
+       'free' — the preserved "mrl→free" accident (the intended end-state flip
+       is a P6 owner decision, tracked separately). test-licence-registry.php
+       pins this no-op across all inputs. */
     $licenceToTier = [
         'none'         => 'public',
         'ihymns_basic' => 'free',
@@ -246,9 +258,16 @@ function resolveEffectiveTier(int $userId): string
         'premium'      => 'premium',
         'pro'          => 'pro',
     ];
+    /* Registry conferral map, fetched ONCE (licenceTypesAll degrades to the
+       byte-exact fallback on any failure — never throws). */
+    $registryLicences = licenceTypesAll($db);
 
     foreach ($orgLicences as $licence) {
-        $mapped = $licenceToTier[$licence] ?? 'free';
+        /* array_key_exists on ['confersTier'] would still ?? to null for the
+           legitimately-null mrl/custom, so a plain ?? is correct here: a null
+           conferral falls through to the legacy literal. */
+        $confers = $registryLicences[$licence]['confersTier'] ?? null;
+        $mapped  = $confers ?? ($licenceToTier[$licence] ?? 'free');
         if (tierLevelRank($db, $mapped) > tierLevelRank($db, $orgTier)) {
             $orgTier = $mapped;
         }

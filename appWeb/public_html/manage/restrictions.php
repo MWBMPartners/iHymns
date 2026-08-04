@@ -26,6 +26,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary the
+   require_licence picker sources from (was a const duplicated from
+   organisations.php). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -63,9 +67,9 @@ const RESTRICTIONS_EFFECTS = ['deny', 'allow'];
      includes/content_access.php::checkContentAccess().
    * FEATURES  — mirrors APP_CONFIG['features'] in includes/config.php;
      this is the full set a restriction rule can reference.
-   * LICENCE_TYPES — duplicated from organisations.php for now (same
-     4-row map); #459 migrates this to tblLicenceTypes, at which
-     point restrictions.php should source from there too. */
+   * LICENCE_TYPES — now sourced from the ONE licence registry
+     (includes/licence_registry.php, #459 delivered by #1769 P2), replacing the
+     const that duplicated organisations.php's map. */
 const RESTRICTIONS_PLATFORMS = [
     'PWA'    => 'PWA · Web app',
     'Apple'  => 'Apple · iOS / iPadOS / tvOS',
@@ -79,12 +83,14 @@ const RESTRICTIONS_FEATURES = [
     'shuffle'        => 'Shuffle / random song',
     'favorites'      => 'Favourites',
 ];
-const RESTRICTIONS_LICENCE_TYPES = [
-    'none'         => 'None — no licence on file',
-    'ihymns_basic' => 'iHymns Basic — public-domain only',
-    'ihymns_pro'   => 'iHymns Pro — full catalogue',
-    'ccli'         => 'CCLI — licence number required',
-];
+/* The licences a require_licence rule can demand — flat key => label for the
+   <select>, from the registry (NOT a const: it reads the DB). No 'none' (a rule
+   requiring "no licence" is meaningless); now also offers `mrl` + `custom`.
+   Degrades to LICENCE_TYPES_FALLBACK on an un-migrated install. */
+$RESTRICTIONS_LICENCE_TYPES = [];
+foreach (licenceTypesForPicker($db) as $ltKey => $ltInfo) {
+    $RESTRICTIONS_LICENCE_TYPES[$ltKey] = $ltInfo['label'];
+}
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -552,7 +558,7 @@ $csrf = csrfToken();
                     <!-- licence type picker -->
                     <div class="rx-picker d-none" data-picker-for="licence_type">
                         <select class="form-select form-select-sm rx-picker-select">
-                            <?php foreach (RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
+                            <?php foreach ($RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
                             <?php endforeach; ?>
                         </select>

@@ -30,6 +30,9 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    shape; the API layer uses userCanActOnOrg() with the bearer-token
    user shape. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary; replaces
+   the hardcoded key list below (fallback == today's literal exactly). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -75,11 +78,12 @@ $db = getDbMysqli();
 $error   = '';
 $success = '';
 
-/* Member-role allowlist now from the shared include (#719 PR 2c).
-   Licence-type list stays page-local — this surface accepts a
-   different set than organisations.php (per-row vs primary-type). */
+/* Member-role allowlist from the shared include (#719 PR 2c). Licence-type key
+   list now from the ONE registry (#459 / #1769 P2) — was the hardcoded literal
+   ['ccli','mrl','ihymns_basic','ihymns_pro','custom']; licenceTypeKeys() returns
+   exactly that on the fallback, and the live registry keeps them in SortOrder. */
 $MEMBER_ROLES  = ORG_MEMBER_ROLES;
-$LICENCE_TYPES = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
+$LICENCE_TYPES = licenceTypeKeys($db);
 
 /* Resolve which org IDs to show.
    - system-admin / global_admin → every org.

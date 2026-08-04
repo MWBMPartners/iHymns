@@ -1193,7 +1193,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
        into tblPlaces for country grouping / regional filters. */
     PhysicalCity     VARCHAR(255)   NULL DEFAULT NULL,
     PhysicalCityId   INT UNSIGNED   NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
+    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). Values: none | ccli | mrl | ihymns_basic | ihymns_pro | custom. Legacy primary-licence column; multi-licence rows live in tblOrganisationLicences',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
@@ -1248,7 +1248,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
 CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrganisationId  INT UNSIGNED    NOT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ccli, mrl, ihymns_basic, ihymns_pro, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ccli | mrl | ihymns_basic | ihymns_pro | custom',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
@@ -1275,7 +1275,7 @@ CREATE TABLE IF NOT EXISTS tblContentLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrgId           INT UNSIGNED    NULL DEFAULT NULL,
     UserId          INT UNSIGNED    NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ihymns_basic, ihymns_pro, ccli, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ihymns_basic | ihymns_pro | ccli | mrl | custom',
     LicenceKey      VARCHAR(100)    NOT NULL DEFAULT '',
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,

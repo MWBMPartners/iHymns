@@ -20,6 +20,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    legacy PhysicalCity display string only when the
    places-adoption migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* Licence-type registry (#459, built #1769 P2) — the ONE source of the licence
+   vocabulary. Replaces the hardcoded $LICENCE_TYPES literal below; degrades to
+   LICENCE_TYPES_FALLBACK on an un-migrated install. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -52,16 +56,14 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Machine key → human label + short description. The key is what the
-   DB / evaluator reference; the label is what every UI surface renders
-   so admins never see raw tokens like `ihymns_pro`. An admin-managed
-   catalogue (new schema) is the follow-up, tracked on #459. */
-$LICENCE_TYPES  = [
-    'none'         => ['label' => 'None',          'description' => 'No licence on file'],
-    'ihymns_basic' => ['label' => 'iHymns Basic',  'description' => 'Free — public-domain songs only'],
-    'ihymns_pro'   => ['label' => 'iHymns Pro',    'description' => 'Paid — full catalogue access'],
-    'ccli'         => ['label' => 'CCLI',          'description' => 'Christian Copyright Licensing International licence'],
-];
+/* Machine key → human label + short description, sourced from the ONE licence
+   registry (#459 delivered by #1769 P2 — was a hardcoded literal here). The key
+   is what the DB / evaluator reference; the label is what every UI surface
+   renders so admins never see raw tokens like `ihymns_pro`. includeNone:true
+   prepends the "None" empty-state (tblOrganisations.LicenceType DEFAULT 'none').
+   The picker now also offers `mrl` + `custom` (registry rows the old literal
+   omitted); it degrades to LICENCE_TYPES_FALLBACK on an un-migrated install. */
+$LICENCE_TYPES  = licenceTypesForPicker($db, true);
 $LICENCE_TYPE_KEYS = array_keys($LICENCE_TYPES);
 /* Member roles + slugify lifted into includes/organisation_validation.php
    (#719 PR 2c). Closure kept as a thin wrapper so existing call sites
