@@ -1,6 +1,21 @@
 # Gating model review & consolidation — analysis + plan (#1769)
 
-> **Status: ANALYSIS COMPLETE, awaiting owner's model choice (blocks the build, not P0/P1).**
+> **Status (2026-08-04): Owner chose MODEL 2. Build underway on `claude/gating-model-review` (from alpha).**
+> **P0 (dormant defect-fixes) COMPLETE — 5 commits, each mutation-proven, all no-ops while gating is off:**
+> - `2e9aa850` restrictions engine: deny beats allow at equal priority (`ORDER BY Effect DESC`) + audit tool + behavioural guard
+> - `c0f73b04` tier ordering reads the live `tblAccessTiers.Level` (tierLevelRank), const=fallback — custom tiers stop ranking 0 (OV-4)
+> - `51ddd88c` gating-family API actions gate on their page's entitlement + `admin_set_user_tier` validates tiers live (OV-10)
+> - `72a7ad3b` one shared `contentGatingMediaKindCap()` — no re-inlined kind→cap switches (OV-11)
+> - `74b79639` same-origin-aware CSRF (`validateCsrfRequest`) on tiers/restrictions/entitlements (rule #29)
+> **DEFERRED from P0 (with rationale, GIRFT — don't churn code scheduled for rewrite):**
+> - restrictions-form honesty (hide Effect for `require_*`) + dead `songbook`/`feature` picker options → **P4** (the form is fully rewritten there; and `songbook`/`feature` scopes are reachable via the native `content_access` query endpoint, so not provably dead — needs the P4 usage decision).
+> - seed `feature_gating_rules_enabled='0'` → **P1** (pairs with the schema batch; the flag already reads '0' when absent, so nothing is broken meanwhile).
+> - `gating-noop-verify` into the admin nav → **P4** (it belongs beside the readiness checklist on the new hub).
+> **NEXT: P1 — the one-pass additive-dormant schema batch.**
+>
+> ---
+> **(original analysis follows — still current)**
+> **Status: ANALYSIS COMPLETE, model chosen; P0 done, P1 next.**
 > Produced by a THREE-STAGE sequential Fable-5 deep analysis (owner directive: deep analysis = sequential
 > Fable 5, fall back to Opus). Every load-bearing claim was orchestrator-verified against source before this
 > doc was written (citations inline). Raw stage outputs: `scratchpad/gating-stage{1,2}-*.md` (this session).
