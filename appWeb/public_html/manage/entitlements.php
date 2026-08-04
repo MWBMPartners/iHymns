@@ -35,9 +35,11 @@ $error = '';
 
 /* ---------- POST: persist new mapping ---------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    /* CSRF check — matches the token minted by csrfToken() and stored in
-       the admin session. */
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* CSRF check (#1769 P0, rule #29: same-origin-aware). Still accepts the
+       token minted by csrfToken() and stored in the admin session, but ALSO the
+       never-stale X-Requested-With + host-match route, so this long-lived matrix
+       page doesn't throw a spurious CSRF error when its baked token rotates. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;

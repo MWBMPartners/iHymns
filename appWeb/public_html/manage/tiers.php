@@ -49,7 +49,11 @@ $validName = fn(string $n): ?string => validateTierName($n);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1769 P0, rule #29: same-origin-aware CSRF. Still accepts the baked
+       session token (unchanged for a normal form POST) but ALSO the never-stale
+       X-Requested-With + host-match route, so a long-lived tiers page whose
+       token has rotated/GC'd no longer throws a spurious CSRF error on save. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;

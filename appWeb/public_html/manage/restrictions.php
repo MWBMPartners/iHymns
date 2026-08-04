@@ -88,7 +88,9 @@ const RESTRICTIONS_LICENCE_TYPES = [
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1769 P0, rule #29: same-origin-aware CSRF (still accepts the baked
+       session token; adds the never-stale X-Requested-With route). */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
