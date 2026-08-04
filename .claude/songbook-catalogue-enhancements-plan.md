@@ -63,6 +63,25 @@ Fable-5 planned; file:line anchors are to be re-verified at implementation time 
 6. MARCXML handlers on the 3 pages (fixture in commit 1).
 7. Docs + wiki + .claude + CHANGELOG; alpha rehearsal checklist.
 
+## Feature 7 (added post-plan 2026-08-04): Internet Archive multiplicity + single-URL column deprecation
+Owner request: allow multiple Internet Archive links per song/songbook; treat as an external-link type.
+VERIFIED state: the `internet-archive` external-link TYPE already exists (migrate-external-links.php:214)
+with `AllowMultiple=1` but `AppliesTo='songbook'` only; `tblSongbooks.InternetArchiveUrl VARCHAR(500)` (#672)
+is a redundant single-value column; `tblSongExternalLinks` exists. So NO new type needed — consolidate:
+- **Migration (fold into commit 2)**: widen `internet-archive` AppliesTo → `song,songbook` (+ work/tune if
+  sensible) via the seed upsert (it already updates AppliesTo? — VERIFY: line 302 updates AllowMultiple; if
+  AppliesTo is NOT in the UPDATE set, add a separate idempotent AppliesTo widen so curator edits aren't
+  stomped — mirror the Google-Books "don't stomp curator-owned AppliesTo" care). Then an idempotent data step
+  migrating non-empty `tblSongbooks.InternetArchiveUrl` → `tblSongbookExternalLinks` (internet-archive type)
+  via `INSERT … WHERE NOT EXISTS`.
+- **Admin (commit 4)**: drop the dedicated single `InternetArchiveUrl` input from the songbook form; IA links
+  now go through the external-links card-list (already present). Ensure the song external-links editor offers
+  the type (AppliesTo widened).
+- **Render**: IA links come from the external-links panel; deprecate the column's dedicated render (leave the
+  column dormant — a separate MANUAL gated DROP later per rule #25 C6 style; owner may opt to drop immediately).
+- **MARCXML (commit 6)**: `856` archive.org → the internet-archive external-link type (multiple), NOT the column.
+- Same redundancy applies to `WebsiteUrl`/`WikipediaUrl` — noted as a follow-on, out of scope here.
+
 ## Adversarial notes
 - Don't fold songbook filter into songVisibleSql (breaks SongCount stability + admin raw sites + widen-guard).
 - `/songbooks` + home tiles filter on denormalised SongCount which disable does NOT change — only the getSongbooks predicate hides them.
