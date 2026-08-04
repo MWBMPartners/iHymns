@@ -1,0 +1,177 @@
+# =============================================================================
+# iHymns — Dependabot configuration
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+#
+# WHAT THIS DOES
+# --------------
+# Dependabot does TWO distinct things, and only ONE of them is configured by
+# this file:
+#
+#  1. **Version updates** (this file). Keeps dependencies current by opening
+#     PRs on a schedule. `target-branch` is PER-ENTRY and singular, so to keep
+#     `main`, `alpha` and `beta` all current we declare one entry per branch
+#     for each ecosystem. Updates are GROUPED so each ecosystem/branch produces
+#     at most a couple of PRs per week rather than a flood.
+#
+#  2. **Security updates** (NOT configurable here). When GitHub's Dependabot
+#     alerts fire, GitHub auto-opens a fix PR — but ONLY against the repository
+#     default branch (`main`). There is no config knob to fan those out to the
+#     release branches. So a security fix that lands on `main` is carried to
+#     `alpha`, `beta` and `release-candidate` by the companion workflow
+#     `.github/workflows/dependabot-security-backport.yml`, which cherry-picks
+#     the merged fix and opens a PR against each of those branches.
+#
+# Together: routine version bumps reach every active branch directly (this
+# file), and security fixes reach every active branch too (main directly +
+# the backport workflow). See docs/DEPLOYMENT / DEV_NOTES for the branch model
+# (alpha = active dev/deploy, beta = staging, main = stable; release-candidate
+# is planned — the backport workflow skips it gracefully until it exists).
+#
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# =============================================================================
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # npm — the web/PWA client + build tooling (package.json at repo root)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "javascript"]
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "alpha"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "javascript"]
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "beta"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "javascript"]
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions — the CI/CD workflows themselves (security-sensitive:
+  # a compromised action runs with repo credentials). Kept current on every
+  # active branch.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-all:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "alpha"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-all:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "beta"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-all:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  # ---------------------------------------------------------------------------
+  # Gradle — the Android/FireOS app dependencies. Version updates are tracked
+  # on `main`; security fixes reach the release branches via the backport
+  # workflow. (Extend with alpha/beta entries here if direct version PRs on
+  # those branches are wanted for mobile too.)
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "gradle"
+    directory: "/appAndroid"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "android"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      gradle-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # Swift Package Manager — the shared Apple `iHymnsKit` package. Same posture
+  # as Gradle: version updates on `main`, security fixes fanned out by the
+  # backport workflow.
+  # ---------------------------------------------------------------------------
+  - package-ecosystem: "swift"
+    directory: "/appApple/Packages/iHymnsKit"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "apple"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      swift-minor-and-patch:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]

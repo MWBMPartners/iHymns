@@ -1,0 +1,159 @@
+# =============================================================================
+# iHymns — Backport Dependabot / security fixes from `main` to the release
+#          branches (alpha, beta, release-candidate)
+#
+# Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+#
+# WHY THIS EXISTS
+# ---------------
+# GitHub's Dependabot SECURITY updates (and GitHub-authored security fix PRs)
+# can only be opened against the repository default branch (`main`) — there is
+# no config option to fan them out. `dependabot.yml` handles routine VERSION
+# updates on every branch directly, but a security fix that lands on `main`
+# would otherwise never reach the release branches. This workflow closes that
+# gap: when a qualifying fix is merged into `main`, it cherry-picks the merge
+# and opens a PR against each release branch.
+#
+# WHAT QUALIFIES (kept deliberately broad for safety — a missed security
+# backport is worse than an extra PR):
+#   * the merged PR was authored by `dependabot[bot]`, OR
+#   * it carries a `security` or `backport` label.
+# (Routine multi-branch version bumps already arrive via dependabot.yml, so in
+# practice this mostly carries the security-only, main-only fixes.)
+#
+# You can also run it by hand for any merged PR (workflow_dispatch → pr_number).
+#
+# ⚠️ CI ON THE BACKPORT PRs: PRs opened using the built-in `GITHUB_TOKEN` do
+# NOT trigger `on: pull_request` workflows (GitHub's deliberate recursion
+# guard), so the backport PRs will not auto-run `test.yml` until a human
+# pushes to them or closes/reopens them. To have CI run automatically, add a
+# repo secret `BACKPORT_PAT` (a fine-grained PAT with `contents:write` +
+# `pull_requests:write`) and this workflow will use it instead. Without it the
+# PRs are still created and labelled — they just need a manual check re-run.
+# =============================================================================
+
+name: Backport security fixes to release branches
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged PR number on main to backport"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: backport-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: Decide whether to backport
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+      pr: ${{ steps.decide.outputs.pr }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      - name: Evaluate qualification
+        id: decide
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isDispatch = context.eventName === 'workflow_dispatch';
+            let pr;
+            if (isDispatch) {
+              const num = Number(context.payload.inputs.pr_number);
+              pr = (await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: num,
+              })).data;
+            } else {
+              pr = context.payload.pull_request;
+            }
+
+            const merged = !!pr.merged_at || pr.merged === true;
+            const author = (pr.user && pr.user.login) || '';
+            const labels = (pr.labels || []).map(l => (l.name || l).toLowerCase());
+            const qualifies = merged && (
+              author === 'dependabot[bot]' ||
+              labels.includes('security') ||
+              labels.includes('backport')
+            );
+
+            core.info(`PR #${pr.number} merged=${merged} author=${author} labels=${labels.join(',')} -> backport=${qualifies}`);
+            core.setOutput('go', qualifies ? 'true' : 'false');
+            core.setOutput('pr', String(pr.number));
+            // The squash/merge commit that actually landed on main.
+            core.setOutput('sha', pr.merge_commit_sha || '');
+
+  backport:
+    name: Backport to ${{ matrix.target }}
+    needs: qualify
+    if: needs.qualify.outputs.go == 'true' && needs.qualify.outputs.sha != ''
+    runs-on: ubuntu-latest
+    continue-on-error: true          # one target failing must not block the others
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [alpha, beta, release-candidate]
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.BACKPORT_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Backport onto ${{ matrix.target }}
+        env:
+          GH_TOKEN: ${{ secrets.BACKPORT_PAT || secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          PR: ${{ needs.qualify.outputs.pr }}
+          SHA: ${{ needs.qualify.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # RC-graceful: skip any target branch that does not exist yet.
+          if ! git ls-remote --exit-code --heads origin "refs/heads/${TARGET}" >/dev/null 2>&1; then
+            echo "::notice title=Backport skipped::Branch '${TARGET}' does not exist yet — skipping (create it to activate)."
+            exit 0
+          fi
+
+          git fetch origin "${TARGET}" --depth=0
+          BRANCH="backport/${TARGET}/pr-${PR}"
+          git switch -c "${BRANCH}" "origin/${TARGET}"
+
+          # Cherry-pick the merged fix. `-x` records the source SHA in the message.
+          if ! git cherry-pick -x "${SHA}"; then
+            echo "::warning title=Backport conflict::Cherry-pick of ${SHA} onto ${TARGET} conflicted."
+            git cherry-pick --abort || true
+            # Leave a tracking issue rather than a broken PR.
+            gh issue create \
+              --title "Manual backport needed: PR #${PR} to ${TARGET} (security fix)" \
+              --body "Automated cherry-pick of the security fix merged in #${PR} (commit \`${SHA}\`) onto \`${TARGET}\` hit a conflict and needs a manual backport. This is a security-relevant change — please resolve promptly." \
+              --label "security,backport,dependencies" || true
+            exit 0
+          fi
+
+          git push origin "${BRANCH}"
+
+          gh pr create \
+            --base "${TARGET}" \
+            --head "${BRANCH}" \
+            --title "chore(security): backport #${PR} to ${TARGET}" \
+            --label "security,backport,dependencies" \
+            --body "Automated backport of the security/dependency fix merged in #${PR} (commit \`${SHA}\`) onto \`${TARGET}\`.
+
+          Opened by \`.github/workflows/dependabot-security-backport.yml\` because GitHub Dependabot security fixes only target the default branch. If CI does not start automatically, see the workflow header note about the \`BACKPORT_PAT\` secret.
+
+          ---
+          _Generated by [Claude Code](https://claude.ai/code)_" \
+            || echo "::warning::gh pr create failed for ${TARGET} (a PR may already exist)."
