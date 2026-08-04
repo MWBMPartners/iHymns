@@ -27,6 +27,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';   /* #1765 — mediaIdentifierPublicationClean(), the ONE validator */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';             /* #1765 — placeColumnExists() */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -63,6 +65,17 @@ try {
 } catch (\Throwable $e) {
     error_log('[catalogues] schema probe failed: ' . $e->getMessage());
 }
+
+/* #1765 Feature 3 — ArkId/OpenLibraryWorkId/OpenLibraryEditionId on
+   tblCatalogues (migrate-publication-metadata.php Stage 3, three columns in
+   one ALTER loop; probed as one unit — degrades to "fields not offered /
+   not written" on a pre-migration install). Collections carry no ISBN/ISSN
+   (those are a series/songbook concern), so the shared identifier partial is
+   rendered with $pifShowIsbnIssn = false below. */
+$hasPubIdCols = $hasSchema
+    && placeColumnExists($db, 'tblCatalogues', 'ArkId')
+    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryWorkId')
+    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryEditionId');
 
 /* ---- GET ?action=song_search ----
  * JSON typeahead used by the manage-members panel. Returns matching
@@ -120,7 +133,12 @@ if ($hasSchema
 
 /* ---- POST handlers ---- */
 if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With +
+       Origin/Referer host match, OR a still-valid session token) instead of
+       validateCsrf() alone, which goes stale on long-lived multi-tab admin
+       sessions. These forms are plain POSTs, so the session-token branch is
+       what fires today — the upgrade avoids the flaky single-path check. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -150,6 +168,17 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication identifiers, validated via the ONE
+                   shared validator (mediaIdentifierPublicationClean); persisted in
+                   a schema-tolerant secondary UPDATE after the INSERT below. */
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+
                 $stmt = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
                 $stmt->execute();
@@ -167,8 +196,21 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newId = (int)$db->insert_id;
                 $stmt->close();
 
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 logActivity('admin.catalogues.add', 'catalogue', (string)$newId, [
                     'slug' => $slug, 'title' => $title, 'visibility' => $visibility,
+                    'publication_ids' => $hasPubIdCols ? array_filter([
+                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
+                        'openlibrary_edition_id' => $olEditionVal,
+                    ], fn($v) => $v !== null) : null,
                 ]);
                 $success = "Collection '{$title}' created.";
                 break;
@@ -192,6 +234,16 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication identifiers, validated via the ONE
+                   shared validator; written in a schema-tolerant secondary UPDATE. */
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+
                 $stmt = $db->prepare(
                     'UPDATE tblCatalogues
                         SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?, Colour = ?
@@ -201,8 +253,21 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $stmt->close();
 
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 logActivity('admin.catalogues.update', 'catalogue', (string)$id, [
                     'title' => $title, 'visibility' => $visibility,
+                    'publication_ids' => $hasPubIdCols ? array_filter([
+                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
+                        'openlibrary_edition_id' => $olEditionVal,
+                    ], fn($v) => $v !== null) : null,
                 ]);
                 $success = "Collection updated.";
                 break;
@@ -289,9 +354,15 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
 $catalogues = [];
 if ($hasSchema) {
     try {
+        /* #1765 Feature 3 — hardcoded PHP constant columns (rule #5a),
+           appended only when they exist so a pre-migration install runs
+           exactly the old query. */
+        $pubIdSelect = $hasPubIdCols
+            ? ', c.ArkId, c.OpenLibraryWorkId, c.OpenLibraryEditionId'
+            : '';
         $stmt = $db->prepare(
             'SELECT c.Id, c.Slug, c.Title, c.Description, c.SortOrder, c.Visibility,
-                    c.Colour, c.CreatedAt, c.UpdatedAt,
+                    c.Colour, c.CreatedAt, c.UpdatedAt' . $pubIdSelect . ',
                     (SELECT COUNT(*) FROM tblCatalogueSongs cs WHERE cs.CatalogueId = c.Id) AS SongCount
                FROM tblCatalogues c
               ORDER BY c.SortOrder ASC, c.Title ASC'
@@ -412,6 +483,18 @@ if ($hasSchema && !empty($catalogues)) {
                                pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
                     </div>
                 </div>
+                <?php if ($hasPubIdCols): ?>
+                <div class="col-12">
+                    <?php
+                        /* #1765 Feature 3 — shared publication-identifier fieldset
+                           (ARK + OpenLibrary; no ISBN/ISSN for Collections). The
+                           SAME partial /manage/songbook-series uses (rule #22). */
+                        $pifMode = 'create'; $pifShowIsbnIssn = false; $pifHasOpenLibraryCols = true;
+                        require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                        unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+                    ?>
+                </div>
+                <?php endif; ?>
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
                         <i class="bi bi-plus me-1"></i>Create catalogue
@@ -512,6 +595,23 @@ if ($hasSchema && !empty($catalogues)) {
                                                        maxlength="7" pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB">
                                             </div>
                                         </div>
+                                        <?php if ($hasPubIdCols): ?>
+                                        <div class="col-12">
+                                            <?php
+                                                /* #1765 Feature 3 — shared partial, server-pre-filled
+                                                   from this row's values ($pifValues). Same partial the
+                                                   create form + series page use (rule #22). */
+                                                $pifMode = 'edit'; $pifShowIsbnIssn = false; $pifHasOpenLibraryCols = true;
+                                                $pifValues = [
+                                                    'ark_id'                 => $c['ArkId'] ?? '',
+                                                    'openlibrary_work_id'    => $c['OpenLibraryWorkId'] ?? '',
+                                                    'openlibrary_edition_id' => $c['OpenLibraryEditionId'] ?? '',
+                                                ];
+                                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols, $pifValues);
+                                            ?>
+                                        </div>
+                                        <?php endif; ?>
                                         <div class="col-md-3 text-end">
                                             <button type="submit" class="btn btn-sm btn-info">
                                                 <i class="bi bi-check2 me-1"></i>Save changes

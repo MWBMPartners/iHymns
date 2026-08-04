@@ -15009,6 +15009,29 @@ components:
           nullable: true
           description: Library of Congress Classification (#672)
           example: M2117
+        openLibraryWorkId:
+          type: string
+          nullable: true
+          description: OpenLibrary Work ID (#1765)
+          example: OL102749W
+        openLibraryEditionId:
+          type: string
+          nullable: true
+          description: OpenLibrary Edition ID (#1765)
+          example: OL7357422M
+        isPublicDomain:
+          type: boolean
+          description: Whether the songbook, as a published work, is in the public domain (#1765). Informational only — it does not itself gate access to any content.
+          example: false
+        isDisabled:
+          type: boolean
+          description: >-
+            Whether the songbook is disabled (#1765). A disabled songbook is
+            hidden from every public surface but stays fully visible and
+            editable under /manage. Always false in public API responses —
+            disabled books are filtered out server-side — and only ever true
+            in admin-mode reads.
+          example: false
 
     SongbookWriteInput:
       type: object

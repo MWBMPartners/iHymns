@@ -24,6 +24,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1765 — PUBLICATION_IDENTIFIER_TYPES + mediaIdentifierPublicationClean(),
+   the ONE validator for the isbn/issn/ark_id/openlibrary_work_id/
+   openlibrary_edition_id fields below. Never hand-roll a second copy of
+   the shape check. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php'; /* placeColumnExists() — generic INFORMATION_SCHEMA column probe (#1765) */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -71,6 +77,20 @@ try {
 } catch (\Throwable $e) {
     error_log('[songbook-series] schema probe failed: ' . $e->getMessage());
 }
+
+/* #1765 Feature 3 — Isbn/Issn/ArkId/OpenLibraryWorkId/OpenLibraryEditionId,
+   all five added in one migration stage (migrate-publication-metadata.php
+   Stage 2). Combined COUNT=5 probe rather than per-column (unlike
+   songbooks.php's finer-grained probes) — this page is lower-traffic and
+   the five columns land in a single ALTER loop together, so treating the
+   whole batch as one unit for rendering purposes is a reasonable
+   simplification; it still degrades safely (fields simply don't render,
+   handlers simply don't write them) on a pre-migration install. */
+$hasPubIdCols = $hasSchema && placeColumnExists($db, 'tblSongbookSeries', 'Isbn')
+    && placeColumnExists($db, 'tblSongbookSeries', 'Issn')
+    && placeColumnExists($db, 'tblSongbookSeries', 'ArkId')
+    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryWorkId')
+    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryEditionId');
 
 /* ---- GET ?action=songbook_search&q=… (#782 phase C) -------------------
  * JSON typeahead for the edit-modal's "Add a member" input. Returns
@@ -147,7 +167,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 
 /* ----- POST actions ----- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With
+       + Origin/Referer host match, OR a still-valid session token) rather
+       than validateCsrf() alone, which goes stale across long-lived
+       multi-tab sessions and produces the SPORADIC "CSRF error" class
+       rule #29 documents. This page's forms are plain POSTs (no
+       X-Requested-With header today), so the session-token branch is what
+       actually fires — the upgrade is about not regressing to the flaky
+       single-path check, not about wiring a new AJAX header. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -173,6 +201,28 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication-entity identifiers. Validated
+                   via the ONE shared validator, mediaIdentifierPublicationClean()
+                   (includes/media_identifiers.php); never a hand-rolled regex.
+                   Written in a schema-tolerant secondary UPDATE after the
+                   INSERT below (same pattern as songbooks.php) rather than
+                   growing this INSERT's own bind_param() call. */
+                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
+                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
+                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
+                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $isbnVal      = $isbnClean['value'];
+                $issnVal      = $issnClean['value'];
+                $arkVal       = $arkClean['value'];
+                $olWorkVal    = $olWorkClean['value'];
+                $olEditionVal = $olEditionClean['value'];
+
                 /* UNIQUE on Slug → check before insert for a friendly error. */
                 $stmt = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
@@ -188,9 +238,25 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblSongbookSeries
+                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.create', 'songbook_series', (string)$newId, [
                         'name' => $name, 'slug' => $slug, 'description' => $description,
+                        'publication_ids' => $hasPubIdCols ? array_filter([
+                            'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
+                            'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                        ], fn($v) => $v !== null) : null,
                     ]);
                 }
                 $success = "Series '{$name}' created.";
@@ -231,6 +297,24 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $dup->close();
                 if ($dupExists) { $error = "Slug '{$slug}' already taken by another series."; break; }
 
+                /* #1765 Feature 3 — publication-entity identifiers, same
+                   validated-via-shared-helper shape as 'create' above. */
+                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
+                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
+                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
+                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $isbnVal      = $isbnClean['value'];
+                $issnVal      = $issnClean['value'];
+                $arkVal       = $arkClean['value'];
+                $olWorkVal    = $olWorkClean['value'];
+                $olEditionVal = $olEditionClean['value'];
+
                 /* Reconcile membership rows. The edit modal posts:
                      member_ids[]            = [12, 47, 99]
                      member_sort[<id>]       = '10'
@@ -256,6 +340,20 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->bind_param('ssssi', $name, $slug, $description, $colour, $id);
                     $stmt->execute();
                     $stmt->close();
+
+                    /* #1765 Feature 3 — schema-tolerant secondary UPDATE,
+                       same pattern as songbooks.php, inside this same
+                       transaction so a downstream failure rolls it back too. */
+                    if ($hasPubIdCols) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblSongbookSeries
+                                SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
 
                     /* Step 1: remove rows not in $postedIds. Schema is
                        composite-PK (SeriesId, SongbookId) so DELETE is
@@ -314,6 +412,14 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                                 'Name' => $name, 'Slug' => $slug, 'Description' => $description,
                             ], array_flip($changed)),
                             'member_count'     => count($postedIds),
+                            /* #1765 Feature 3 — logged unconditionally (not diffed
+                               against a before-value, mirroring songbooks.php's
+                               own $auditExtras treatment of these same two
+                               columns) since $before doesn't carry them. */
+                            'publication_ids'  => $hasPubIdCols ? array_filter([
+                                'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
+                                'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                            ], fn($v) => $v !== null) : null,
                         ]);
                     }
                     $success = "Series '{$name}' updated.";
@@ -363,8 +469,14 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $rows = [];
 if ($hasSchema) {
     try {
+        /* #1765 Feature 3 — the five publication-id columns are hardcoded
+           PHP constants (rule #5a), appended only when they exist so an
+           un-migrated install issues exactly the pre-#1765 query. */
+        $pubIdSelect = $hasPubIdCols
+            ? ', s.Isbn, s.Issn, s.ArkId, s.OpenLibraryWorkId, s.OpenLibraryEditionId'
+            : '';
         $stmt = $db->prepare(
-            'SELECT s.Id, s.Name, s.Slug, s.Description, s.Colour, s.CreatedAt,
+            'SELECT s.Id, s.Name, s.Slug, s.Description, s.Colour, s.CreatedAt' . $pubIdSelect . ',
                     (SELECT COUNT(*) FROM tblSongbookSeriesMembership m WHERE m.SeriesId = s.Id) AS MemberCount
                FROM tblSongbookSeries s
               ORDER BY s.Name ASC'
@@ -480,6 +592,12 @@ if ($hasSchema) {
                                 'slug'        => (string)$r['Slug'],
                                 'description' => (string)$r['Description'],
                                 'colour'      => (string)($r['Colour'] ?? ''),  // #1181
+                                /* #1765 Feature 3 — '' when un-migrated (columns not selected). */
+                                'isbn'                   => (string)($r['Isbn'] ?? ''),
+                                'issn'                   => (string)($r['Issn'] ?? ''),
+                                'ark_id'                 => (string)($r['ArkId'] ?? ''),
+                                'openlibrary_work_id'    => (string)($r['OpenLibraryWorkId'] ?? ''),
+                                'openlibrary_edition_id' => (string)($r['OpenLibraryEditionId'] ?? ''),
                                 'members'     => $members,
                             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                             $deleteJson = json_encode([
@@ -557,6 +675,16 @@ if ($hasSchema) {
                     </div>
                 </div>
             </div>
+            <?php if ($hasPubIdCols): ?>
+            <?php
+                /* #1765 Feature 3 — shared publication-identifier fieldset
+                   (ISBN/ISSN/ARK/OpenLibrary), the SAME partial the
+                   /manage/catalogues create + edit forms use (rule #22). */
+                $pifMode = 'create'; $pifShowIsbnIssn = true; $pifHasOpenLibraryCols = true;
+                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+            ?>
+            <?php endif; ?>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create series
             </button>
@@ -609,6 +737,16 @@ if ($hasSchema) {
                                            placeholder="#RRGGBB — blank = theme default">
                                 </div>
                             </div>
+
+                            <?php if ($hasPubIdCols): ?>
+                            <?php
+                                /* #1765 Feature 3 — same shared fieldset as the create
+                                   form above; openSeriesEditModal() pre-fills these. */
+                                $pifMode = 'edit'; $pifShowIsbnIssn = true; $pifHasOpenLibraryCols = true;
+                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+                            ?>
+                            <?php endif; ?>
 
                             <hr>
 
@@ -836,6 +974,14 @@ if ($hasSchema) {
             var _es = document.getElementById('edit-colour-swatch');
             if (_ec) { _ec.value = row.colour || ''; }
             if (_es && row.colour && /^#[0-9A-Fa-f]{6}$/.test(row.colour)) { _es.value = row.colour; }
+            /* #1765 Feature 3 — publication identifiers (present only when the
+               migration has landed; guarded so a pre-migration modal is fine). */
+            [['edit-isbn','isbn'],['edit-issn','issn'],['edit-ark-id','ark_id'],
+             ['edit-openlibrary-work-id','openlibrary_work_id'],
+             ['edit-openlibrary-edition-id','openlibrary_edition_id']].forEach(function (pair) {
+                var el = document.getElementById(pair[0]);
+                if (el) { el.value = row[pair[1]] || ''; }
+            });
             document.getElementById('edit-title-label').textContent = row.name || '';
             const tbody = document.getElementById('edit-members-tbody');
             tbody.innerHTML = '';

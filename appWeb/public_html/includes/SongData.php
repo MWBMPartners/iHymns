@@ -605,6 +605,7 @@ class SongData
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $flagsSelect  = $this->_songbookFlagsSelect();
+        $openLibrarySelect = $this->_songbookOpenLibrarySelect();
         $stmt = $this->db->prepare(
             "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
                     b.Colour AS colour,
@@ -618,6 +619,7 @@ class SongData
                     {$bibSelect}
                     {$parentSelect}
                     {$flagsSelect}
+                    {$openLibrarySelect}
              FROM tblSongbooks b{$parentJoin}
              WHERE " . $this->_bookVisible() . "
              ORDER BY b.Name ASC"
@@ -971,6 +973,56 @@ class SongData
         return $this->_flagsSelectCache;
     }
     private ?string $_flagsSelectCache = null;
+
+    /**
+     * Same probe-once pattern as `_songbookFlagsSelect()` above, but for
+     * the Feature-3 (#1765) `OpenLibraryWorkId` / `OpenLibraryEditionId`
+     * pair — checked IN LOCKSTEP (`COUNT = 2`) for the same reason: the
+     * migration adds both in one Stage-1 loop, but a partial apply must
+     * still degrade column-by-column rather than 500 the whole
+     * getSongbooks()/getSongbook() call. Kept as a SEPARATE probe from
+     * `_songbookFlagsSelect()` (rather than widening that one to COUNT=4)
+     * because the two pairs are conceptually independent facts — a
+     * install could plausibly land the disable/PD flags before the
+     * OpenLibrary identifier columns (or vice versa) if a migration run
+     * is interrupted mid-loop — and Commit 3's guard already asserts the
+     * exact shape of `_songbookFlagsSelect()`'s own probe, so it's safer
+     * not to perturb it here.
+     *
+     * ELI5: the admin edit modal (and any future public consumer) needs
+     * to know "does this songbook have an OpenLibrary Work/Edition id?" —
+     * this quietly adds both to the row, or neither on an install that
+     * hasn't run the #1765 migration yet.
+     *
+     * @return string '' or a leading-comma SELECT tail (rule #5a — a
+     *                hardcoded PHP constant, never runtime data).
+     */
+    private function _songbookOpenLibrarySelect(): string
+    {
+        if (isset($this->_openLibrarySelectCache)) {
+            return $this->_openLibrarySelectCache;
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  IN ('OpenLibraryWorkId', 'OpenLibraryEditionId')"
+            );
+            $probe->execute();
+            $row = $probe->get_result()->fetch_row();
+            $probe->close();
+            $has = ($row !== null && (int)$row[0] === 2);
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        /* `b.`-qualified — same reason as _songbookBibSelect() above; the
+           parent-songbook self-join makes any unqualified column ambiguous. */
+        $this->_openLibrarySelectCache = $has
+            ? ', b.OpenLibraryWorkId AS openLibraryWorkId, b.OpenLibraryEditionId AS openLibraryEditionId'
+            : '';
+        return $this->_openLibrarySelectCache;
+    }
+    private ?string $_openLibrarySelectCache = null;
 
     /**
      * Pull `[abbr => [{id, name, slug}, ...]]` from the
@@ -1650,6 +1702,7 @@ class SongData
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $flagsSelect  = $this->_songbookFlagsSelect();
+        $openLibrarySelect = $this->_songbookOpenLibrarySelect();
         $stmt = $this->db->prepare(
             "SELECT b.Abbreviation AS id, b.Name AS name, b.SongCount AS songCount,
                     b.Colour AS colour,
@@ -1663,6 +1716,7 @@ class SongData
                     {$bibSelect}
                     {$parentSelect}
                     {$flagsSelect}
+                    {$openLibrarySelect}
              FROM tblSongbooks b{$parentJoin}
              WHERE b.Abbreviation = ? AND " . $this->_bookVisible() . "
             "

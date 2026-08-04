@@ -586,3 +586,67 @@ function mediaIdentifierPublicationValidate(string $slug, string $value): bool
     if ($reg['validate'] === null) return true;
     return (bool)preg_match($reg['validate'], $value);
 }
+
+/**
+ * Trim + validate a curator-typed publication identifier ready for direct
+ * column storage — the ONE place `/manage/songbooks`, `/manage/songbook-
+ * series` and `/manage/catalogues`' create/update handlers turn a raw
+ * `$_POST` value into either a clean string to bind or a friendly error,
+ * without each hand-rolling its own copy of the "empty → null, else
+ * validate" dance (Songbook/Catalogue Enhancements epic, #1765, commit 4 —
+ * rule #22 modularity: three admin pages needed the exact same three-line
+ * shape, so it lives here once).
+ *
+ * ELI5
+ * ----
+ * A curator types (or leaves blank) an ARK / OpenLibrary Work / OpenLibrary
+ * Edition / ISBN / ISSN box. This turns that into either
+ * `['value' => 'the cleaned string', 'error' => null]` — ready to bind
+ * straight into the column — or `['value' => null, 'error' => 'a friendly
+ * message']` when it doesn't look like a real one, so a blank box always
+ * means "not recorded" (NULL) and a malformed one is caught before it ever
+ * reaches a bind_param() call.
+ *
+ * DETAILED / WHY THIS DOESN'T CANONICALISE VIA THE identifier_normalize.php
+ * FOLDS
+ * ----------------------------------------------------------------------------
+ * `ihymns_canonical_ark()` / `ihymns_canonical_openlibrary()`
+ * (`includes/identifier_normalize.php`, commit 1 of this epic) accept a
+ * full resolver/OpenLibrary URL and clean it down to the bare canonical
+ * form — a richer paste-a-URL UX these three admin forms don't yet offer.
+ * This commit's explicit scope is "validate via
+ * `mediaIdentifierPublicationValidate()`, do not hand-roll" — a curator who
+ * pastes a full URL today gets a friendly rejection, not a silent
+ * auto-clean. Wiring the canonicalising fold in is a follow-on, not a
+ * regression: this function's contract (empty → null, malformed → error)
+ * does not change either way, so a future caller can swap the validation
+ * step for the canonicalising fold without touching anything downstream of
+ * this function's return shape.
+ *
+ * @param string $slug A PUBLICATION_IDENTIFIER_TYPES key, e.g. 'ark',
+ *                      'openlibrary-work', 'openlibrary-edition', 'isbn',
+ *                      'issn'.
+ * @param string $raw  The raw `$_POST` value (untrimmed is fine — this
+ *                      trims internally, same as every other field on
+ *                      these pages).
+ * @return array{value:?string,error:?string} `value` is the trimmed input
+ *              ready to bind, or null (either "left blank" — no error — or
+ *              "failed validation" — paired with a non-null `error`).
+ *              `error` is null on success (blank OR valid); a friendly
+ *              message naming the field's label on failure.
+ * @see appWeb/public_html/manage/songbooks.php        the ark_id / openlibrary_work_id / openlibrary_edition_id call sites
+ * @see appWeb/public_html/manage/songbook-series.php   the isbn / issn / ark_id / openlibrary_* call sites
+ * @see appWeb/public_html/manage/catalogues.php        the ark_id / openlibrary_* call sites
+ */
+function mediaIdentifierPublicationClean(string $slug, string $raw): array
+{
+    $value = trim($raw);
+    if ($value === '') {
+        return ['value' => null, 'error' => null];
+    }
+    if (!mediaIdentifierPublicationValidate($slug, $value)) {
+        $label = PUBLICATION_IDENTIFIER_TYPES[$slug]['label'] ?? $slug;
+        return ['value' => null, 'error' => "'{$value}' doesn't look like a valid {$label}."];
+    }
+    return ['value' => $value, 'error' => null];
+}

@@ -164,6 +164,21 @@ if (!empty($songs)) {
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
             <?php
+                /* Feature 2 (#1765) — informational Public Domain line for
+                   the songbook itself (as a published work). Gated on the
+                   key actually being present — SongData::_songbookFlagsSelect()
+                   only emits `isPublicDomain` once the migration has landed,
+                   so `array_key_exists` (not `!empty`) is the pre-migration
+                   safety check; NEVER a content gate, matching the plan's
+                   "ONE IsPublicDomain flag … never a gate" decision. */
+                if (array_key_exists('isPublicDomain', $book) && !empty($book['isPublicDomain'])):
+            ?>
+                <p class="text-muted small mb-0 mt-1" data-credit-kind="public-domain">
+                    <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
+                    Public Domain
+                </p>
+            <?php endif; ?>
+            <?php
                 /* #831 — "Compiled by …" line. Each compiler links to
                    their /musician/<slug> page when one exists; falls back
                    to a plain name span otherwise. Multiple compilers
