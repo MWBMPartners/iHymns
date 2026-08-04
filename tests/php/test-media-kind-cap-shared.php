@@ -22,14 +22,22 @@ declare(strict_types=1);
  *     kind and null for an unknown one.
  *   Part B (de-dup source scan) — the tell-tale `case 'sheet-music':` +
  *     `case 'musicxml':` switch appears ONLY inside the shared function (once
- *     in content_gating.php) and NOT in song.php or anywhere else, and both
- *     the enforcement module and the HTML page call the shared function.
+ *     in content_gating.php) and NOT in song.php, access_resolver.php, or
+ *     anywhere else; the enforcement pipeline (both accessApplySong() and
+ *     accessMediaAllowed() in access_resolver.php since #1769 P2 Commit E) and
+ *     the HTML page all CALL the shared function instead of re-inlining it.
  *
- * MUTATION PROOF (rule #34): re-inline the switch into song.php (or change a
- * mapping in the function) and this goes red; restore → green. (Proven by the
- * author via cp-backup.)
+ * NOTE (#1769 P2 Commit E): the two enforcement CONSUMERS moved out of
+ * content_gating.php into the Model-2 pipeline (includes/access_resolver.php) —
+ * contentGatingMediaKindCap() is still DEFINED in content_gating.php, but its
+ * uses are now accessApplySong()'s media filter + accessMediaAllowed().
  *
- * @link appWeb/public_html/includes/content_gating.php  contentGatingMediaKindCap() (#1769 P0)
+ * MUTATION PROOF (rule #34): re-inline the switch into song.php or
+ * access_resolver.php (or change a mapping in the function) and this goes red;
+ * restore → green. (Proven by the author via cp-backup.)
+ *
+ * @link appWeb/public_html/includes/content_gating.php   contentGatingMediaKindCap() (#1769 P0)
+ * @link appWeb/public_html/includes/access_resolver.php  the two enforcement consumers (#1769 P2)
  * @link appWeb/public_html/includes/pages/song.php       the HTML page consumer
  */
 
@@ -67,18 +75,27 @@ if (!function_exists('contentGatingMediaKindCap')) {
  * function; every consumer must call it, not re-inline it.
  * ========================================================================= */
 $cgFile   = $repoRoot . '/appWeb/public_html/includes/content_gating.php';
+$arFile   = $repoRoot . '/appWeb/public_html/includes/access_resolver.php';
 $songFile = $repoRoot . '/appWeb/public_html/includes/pages/song.php';
 $cgSrc    = (string)file_get_contents($cgFile);
+$arSrc    = (string)file_get_contents($arFile);
 $songSrc  = (string)file_get_contents($songFile);
 
-/* The media-kind switch's signature line. It should appear exactly once in
-   content_gating.php (inside contentGatingMediaKindCap) and never in song.php. */
+/* The media-kind switch's signature line. It should appear exactly once, inside
+   contentGatingMediaKindCap() in content_gating.php, and NOWHERE else — not in
+   song.php and not in the enforcement pipeline (access_resolver.php). */
 $cgSwitch   = substr_count($cgSrc, "case 'sheet-music':");
+$arSwitch   = substr_count($arSrc, "case 'sheet-music':");
 $songSwitch = substr_count($songSrc, "case 'sheet-music':");
 if ($cgSwitch !== 1) {
     $failures[] = "content_gating.php contains {$cgSwitch} `case 'sheet-music':` blocks — expected exactly 1 "
                 . "(inside contentGatingMediaKindCap). More than one means the kind→cap switch was re-inlined "
                 . "somewhere instead of calling the shared map (#1769 P0, OV-11).";
+}
+if ($arSwitch !== 0) {
+    $failures[] = "access_resolver.php contains {$arSwitch} `case 'sheet-music':` block(s) — expected 0; its "
+                . "media filter + byte gate must call contentGatingMediaKindCap() rather than re-inline the switch "
+                . "(#1769 P2 regression).";
 }
 if ($songSwitch !== 0) {
     $failures[] = "song.php contains {$songSwitch} `case 'sheet-music':` block(s) — expected 0; it must call "
@@ -88,11 +105,18 @@ if (!str_contains($songSrc, 'contentGatingMediaKindCap(')) {
     $failures[] = "song.php does not call contentGatingMediaKindCap() — its media-affordance gate must use the "
                 . "shared map so the page and the API agree.";
 }
-/* content_gating.php's own two consumers (payload strip + byte gate) plus the
-   definition = at least 3 references to the name. */
-if (substr_count($cgSrc, 'contentGatingMediaKindCap') < 3) {
-    $failures[] = "content_gating.php references contentGatingMediaKindCap fewer than 3 times — expected the "
-                . "definition plus its use in both contentGatingApply() and contentGatingMediaAllowed().";
+/* content_gating.php DEFINES the function (≥1 reference — the definition). */
+if (substr_count($cgSrc, 'contentGatingMediaKindCap') < 1) {
+    $failures[] = "content_gating.php no longer references contentGatingMediaKindCap — the shared map definition "
+                . "went missing (#1769 P0, OV-11).";
+}
+/* access_resolver.php's TWO enforcement consumers (accessApplySong()'s media
+   filter + accessMediaAllowed()) each CALL the shared map — the two uses that
+   moved out of content_gating.php in #1769 P2 Commit E. At least 2 call sites. */
+if (substr_count($arSrc, 'contentGatingMediaKindCap(') < 2) {
+    $failures[] = "access_resolver.php calls contentGatingMediaKindCap() fewer than 2 times — expected its use in "
+                . "BOTH accessApplySong()'s media filter and accessMediaAllowed() (#1769 P2 Commit E). A missing "
+                . "call means one path re-decided the kind→cap mapping for itself.";
 }
 
 if ($failures) {

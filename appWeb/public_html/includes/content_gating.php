@@ -195,211 +195,32 @@ function contentGating_userHasCcli(?int $userId): bool
  */
 function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA', ?string $presenceToken = null): array
 {
-    /* (A) Master switch — the deliberate dormant default. Unchanged: a 3-arg OR a
-       4-arg call returns byte-identical data when the flag is off, because we bail
-       here BEFORE touching the new presence-token path. */
+    /* (A) Master switch — the deliberate dormant default (rule A). Bail BEFORE
+       loading or touching the pipeline, so a 3-arg OR 4-arg call returns
+       byte-identical data when the flag is off. */
     if (!contentGatingEnabled()) {
         return $song;
     }
 
-    /* (C) Resolve the tier + caps inside try/catch — never throw out of here. */
+    /* #1769 P2 Model 2 — the ONE resolver + ONE pipeline. accessViewerContext()
+       resolves "who is asking?" (tier / caps / ccli / presence / bypass, with the
+       EXACT throw semantics the old inline resolution had — bypass + tier throws
+       propagate here → fail-open; the licences read is caught internally so it
+       cannot change the outcome); accessApplySong() makes every field-level
+       decision from that struct. Both are lazy-required — the master switch is
+       already on by here, and CG keeps NO file-scope dependency on them (which is
+       what breaks the require cycle: this file loads fully first, then these). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_context.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_resolver.php';
     try {
-        /* content-via-key — a vetted API key explicitly granted the separate
-           `content:gated` scope reads gated content UNSTRIPPED. DORMANT twice over:
-           it needs content_gating_enabled='1' AND a key actually carrying that scope.
-           The per-partner decision to ISSUE such a key is the operator's licensing
-           call — this is redistribution of gated/copyrighted content to an EXTERNAL
-           system, broader than the #1324 in-service presence-gated basis, so the scope
-           is kept SEPARATE from catalogue:read (a plain read key never unlocks it). */
-        if (function_exists('apiKeyFromRequest') && function_exists('apiKeyVerify')) {
-            $gatedKeyRaw = apiKeyFromRequest();
-            if ($gatedKeyRaw !== null && strncmp($gatedKeyRaw, 'ihk_', 4) === 0
-                && apiKeyVerify(getDbMysqli(), $gatedKeyRaw, 'content:gated') !== null) {
-                return $song;   /* authorised for gated content → strip nothing */
-            }
-        }
-
-        /* Effective tier: anonymous → 'public'; else highest of personal/org. */
-        $tier = ($userId === null) ? 'public' : resolveEffectiveTier($userId);
-        if ($tier === '') { $tier = 'public'; }
-        $hasCcli = contentGating_userHasCcli($userId);
-
-        /* #1335 / rule #26 — Service-Mode presence unlock. A congregant following a
-           live service carries an opaque presence token (a same-origin cookie set by
-           service-follow.js). When that token resolves to an ACTIVE session whose org
-           holds a LIVE 'ccli' licence, they ride that licence for copyrighted lyrics +
-           audio while present. We OR this grant into the per-cap decisions below (entity
-           grant OR tier grant OR presence grant). DORMANT: only attempted when a
-           non-empty token is supplied AND the service_mode helper + table are present —
-           a missing helper / un-migrated env / DB blip resolves to false (deny the
-           unlock, which leaves the plain tier verdict authoritative — the safe
-           direction). serviceMode_presenceCcliNumber returns the org's CCLI number on a
-           valid present token, or null. */
-        $presenceCcli = false;
-        if ($presenceToken !== null && $presenceToken !== '') {
-            try {
-                require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
-                if (function_exists('serviceMode_presenceCcliNumber') && function_exists('serviceMode_channel')) {
-                    $presenceCcli = (serviceMode_presenceCcliNumber(
-                        getDbMysqli(),
-                        $presenceToken,
-                        serviceMode_channel()
-                    ) !== null);
-                }
-            } catch (\Throwable $_e) {
-                /* Missing helper / un-migrated table / DB blip — deny the unlock. */
-                $presenceCcli = false;
-            }
-        }
-
-        /* The per-cap decisions + all payload trimming live in the legacy core
-           (#1769 P2 Commit A — a pure code-motion seam so tools/capture-gating-
-           goldens.php can exercise the exact pre-refactor logic DB-free over a
-           synthetic tier matrix, freezing the goldens the P2 pipeline is proven
-           against). The core is REPLACED by accessApplySong() in Commit E; it is
-           deleted then. It reads only $tier/$hasCcli/$presenceCcli/$song. */
-        return _contentGatingApplyLegacyCore($song, $tier, $hasCcli, $presenceCcli);
+        $viewer = accessViewerContext($userId, $platform, $presenceToken);
     } catch (\Throwable $_e) {
-        /* (C) Anything unexpected — return the song UNCHANGED. The master
-           switch already opted this env in; failing open here is preferable to
-           white-screening a public read, and is logged for an operator. */
+        /* (C) bypass / tier resolution threw — return the song UNCHANGED (the
+           same fail-open + log as the pre-P2 delegate's catch). */
         error_log('[content_gating] apply failed: ' . $_e->getMessage());
         return $song;
     }
-}
-
-/**
- * The payload-transform CORE of contentGatingApply — extracted verbatim as a
- * pure code-motion seam (#1769 P2 Commit A). It takes the already-resolved
- * $tier / $hasCcli / $presenceCcli (rebuilding the $can closure from them) so
- * that tools/capture-gating-goldens.php can drive it DB-free over a synthetic
- * tier matrix, freezing the golden outputs the P2 pipeline (accessApplySong)
- * is proven byte-identical against. TEMPORARY: Commit E replaces the two CG
- * delegates with the access_resolver.php pipeline and DELETES this core (the
- * goldens are frozen by then). Reads only its four parameters + $song.
- *
- * @internal #1769 P2 scaffolding — do not call from new code.
- */
-function _contentGatingApplyLegacyCore(array $song, string $tier, bool $hasCcli, bool $presenceCcli): array
-{
-    /* Per-cap decisions via the SHARED registry-backed resolver (rule B). */
-    $can = static function (string $action) use ($tier, $hasCcli): bool {
-        $r = checkTierAccess($tier, $action, $hasCcli);
-        return !empty($r['allowed']);
-    };
-
-    $canViewLyrics      = $can('view_lyrics');
-    /* The two CCLI-gated caps get the presence OR-grant (rule #26). The others
-       (lyrics/midi/pdf/offline) are NOT covered by the in-service exception —
-       presence rides the org's CCLI licence, which licenses copyrighted-lyric
-       DISPLAY + accompaniment audio, not MIDI/PDF/offline redistribution. */
-    $canViewCopyrighted = $can('view_copyrighted') || $presenceCcli;
-    $canPlayAudio       = $can('play_audio')       || $presenceCcli;
-    $canDownloadMidi    = $can('download_midi');
-    $canDownloadPdf     = $can('download_pdf');
-    $canOfflineSave     = $can('offline_save');
-
-    /* Copyrighted = lyrics NOT public domain (LYRICS axis only — PD gating
-       is per-axis, never AND music). The payload exposes the bool already. */
-    $isCopyrighted = array_key_exists('lyricsPublicDomain', $song)
-        && $song['lyricsPublicDomain'] === false;
-
-    /* --- Lyric BODY gate ------------------------------------------------
-       Strip the lyric body when the tier can't view lyrics at all, OR the
-       song is copyrighted and the tier can't view copyrighted material.
-       Metadata stays so the client can still show a "locked" card with
-       title/number/credits and an upgrade prompt. */
-    $denyLyricBody = (!$canViewLyrics) || ($isCopyrighted && !$canViewCopyrighted);
-    if ($denyLyricBody) {
-        /* The lyric body lives in `components`; per-line + whole-song
-           translations/annotations would leak the text, so drop them too.
-           Only unset keys that exist (graceful if the shape changes). */
-        foreach (['components', 'translations', 'annotations', 'vocalParts'] as $bodyKey) {
-            if (array_key_exists($bodyKey, $song)) {
-                unset($song[$bodyKey]);
-            }
-        }
-        $song['contentRestricted'] = true;
-        $song['restrictionReason'] = (!$canViewLyrics)
-            ? 'lyrics_not_available_on_tier'
-            : 'copyrighted_requires_higher_tier';
-    }
-
-    /* --- Media gates ----------------------------------------------------
-       The song_detail payload's `media` is an array of tblSongMedia rows,
-       each `{kind, streamUrl(/song-media/<id>), ...}`. We DROP a media row
-       the tier can't use (rather than null its URL) so the affordance
-       disappears entirely. Kinds: audio | sheet-music | midi | musicxml. */
-    if (!empty($song['media']) && is_array($song['media'])) {
-        /* kind→cap via the ONE shared map (contentGatingMediaKindCap, OV-11);
-           each cap resolves to the tier boolean already computed above. */
-        $capBool = [
-            'play_audio'    => $canPlayAudio,
-            'download_midi' => $canDownloadMidi,
-            'download_pdf'  => $canDownloadPdf,
-        ];
-        $song['media'] = array_values(array_filter(
-            $song['media'],
-            static function ($m) use ($capBool): bool {
-                $kind = is_array($m) ? (string)($m['kind'] ?? '') : '';
-                $cap  = contentGatingMediaKindCap($kind);
-                return $cap === null ? true : ($capBool[$cap] ?? true);
-            }
-        ));
-    }
-
-    /* Keep the boolean indicator flags consistent with what's now emittable
-       so a client badge ("has audio") doesn't promise media we stripped. */
-    if (!$canPlayAudio && array_key_exists('hasAudio', $song)) {
-        $song['hasAudio'] = false;
-    }
-    if (!$canDownloadPdf && array_key_exists('hasSheetMusic', $song)) {
-        $song['hasSheetMusic'] = false;
-    }
-
-    /* --- Offline affordance --------------------------------------------
-       Tell the client whether this song may be saved offline on this tier.
-       Additive key — clients that don't read it are unaffected; clients
-       that do can hide the "save offline" button. */
-    $song['offlineAllowed'] = $canOfflineSave;
-
-    /* --- Admin-defined enforcement rules (#1481 P2) ---------------------
-       Runs LAST, after every built-in trim above, and is itself a no-op
-       unless the SECOND nested flag (feature_gating_rules_enabled) is on
-       — gatingRulesApply() checks that flag internally, so a 3-arg or
-       4-arg call with content_gating_enabled='1' but the rules flag
-       still '0' returns $song completely unchanged from this point.
-       Rules resolve their capability via capValueForTierAction()
-       (fail-open on null — never the fail-closed matrix), are restricted
-       to DB-defined caps only (never one of the 7 built-ins gated above),
-       and are re-verified against the no-escalation invariant before
-       their output is accepted. See includes/gating_rules.php. */
-    $song = gatingRulesApply($song, $tier);
-
-    return $song;
-}
-
-/**
- * The kind→cap decision CORE of contentGatingMediaAllowed — extracted verbatim
- * as a pure code-motion seam (#1769 P2 Commit A). See
- * _contentGatingApplyLegacyCore for the full rationale. Replaced by
- * accessMediaAllowed() and DELETED in Commit E.
- *
- * @internal #1769 P2 scaffolding — do not call from new code.
- */
-function _contentGatingMediaAllowedLegacyCore(string $kind, string $tier, bool $hasCcli, bool $presenceCcli): bool
-{
-    $can = static function (string $action) use ($tier, $hasCcli): bool {
-        $r = checkTierAccess($tier, $action, $hasCcli);
-        return !empty($r['allowed']);
-    };
-
-    /* kind→cap via the ONE shared map (OV-11). Audio keeps its Service-Mode
-       presence OR-grant: a present congregant may hear audio even without
-       the tier cap (this OR is byte-gate-specific, so it stays here). */
-    $cap = contentGatingMediaKindCap($kind);
-    if ($cap === null) { return true; }  /* unknown kind — leave it */
-    return $can($cap) || ($cap === 'play_audio' && $presenceCcli);
+    return accessApplySong($song, $viewer);
 }
 
 /**
@@ -441,38 +262,19 @@ function contentGatingMediaAllowed(string $kind, ?int $userId, ?string $presence
         return true;
     }
 
+    /* #1769 P2 — the same ONE pipeline as contentGatingApply(). The viewer is
+       built with apiKeyScopes=[] so NO bypass is resolved and NO request headers
+       are read — the pre-P2 byte gate had no bypass branch, and accessMediaAllowed
+       does not consult bypass either. presenceCcli is resolved inside
+       accessViewerContext exactly as before (audio-only OR-grant). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_context.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_resolver.php';
     try {
-        /* Same effective-tier resolution as contentGatingApply(). */
-        $tier = ($userId === null) ? 'public' : resolveEffectiveTier($userId);
-        if ($tier === '') { $tier = 'public'; }
-        $hasCcli = contentGating_userHasCcli($userId);
-
-        /* Presence unlock (rule #26) — rides the org's LIVE ccli licence for the
-           duration of the service. Covers AUDIO only, exactly as in the payload
-           path: a CCLI licence covers accompaniment playback, not MIDI/PDF
-           redistribution. Any failure ⇒ no unlock (the safe direction). */
-        $presenceCcli = false;
-        if ($presenceToken !== null && $presenceToken !== '') {
-            try {
-                require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
-                if (function_exists('serviceMode_presenceCcliNumber') && function_exists('serviceMode_channel')) {
-                    $presenceCcli = (serviceMode_presenceCcliNumber(
-                        getDbMysqli(),
-                        $presenceToken,
-                        serviceMode_channel()
-                    ) !== null);
-                }
-            } catch (\Throwable $_e) {
-                $presenceCcli = false;
-            }
-        }
-
-        /* The kind→cap decision lives in the legacy core (#1769 P2 Commit A —
-           see contentGatingApply). Replaced by accessMediaAllowed() in Commit E. */
-        return _contentGatingMediaAllowedLegacyCore($kind, $tier, $hasCcli, $presenceCcli);
+        $viewer = accessViewerContext($userId, 'PWA', $presenceToken, []);
     } catch (\Throwable $_e) {
-        /* Fail open + log, matching contentGatingApply()'s (C) branch. */
+        /* Fail open + log, matching the pre-P2 (C) branch. */
         error_log('[content_gating] media gate failed: ' . $_e->getMessage());
         return true;
     }
+    return accessMediaAllowed($kind, [], $viewer);
 }
