@@ -417,3 +417,62 @@ None of Q1-Q5 blocks starting Option C's seam fixes or scheduling #1339.
 14. **Docs to update with any change** (#1577 set): `includes/pages/help.php` two topics,
     `help/live-follow.md`, `wiki/Live-Follow-&-Service-Mode.md`, plus the Apple `HelpView`
     noted there.
+
+---
+
+## Owner direction (2026-08-05, during the session) — CAPTURE, not yet built
+
+The owner steered #1770 with these concrete requirements. They REPLACE the need
+to guess at Q1 (quick-session capability): the answer is "Quick should be
+capable", with specifics:
+
+1. **Quick "Go Live" — session persists across songs.** The leader must be able
+   to start a session on one song and then **navigate to another song with the
+   session staying open**, followers moving with them. If today's `live_follow_*`
+   closes/loses the session on song change, that is a bug to fix. (Design: the
+   session lives on the leader's *session id*, not the song; each song view
+   re-broadcasts `CurrentSongId`. Verify the follower poll re-resolves the new
+   song.)
+
+2. **Quick "Go Live" — ~15-minute leader-idle auto-close.** While a quick session
+   is open, if the **leader doesn't interact with iHymns for ~15 min**, the
+   session auto-closes (frees followers, stops the CCLI unlock in #3). Design: a
+   `LastLeaderSeenAt` heartbeat on the session + a prune that closes stale quick
+   sessions (mirror the Service Mode `_occurrenceEndUtc` hard-cap prune, but
+   idle-based). Timeout value is owner-tunable; 15 min is the starting default.
+
+3. **CCLI unlock from the HOST's licence to followers (Quick sessions).** If the
+   signed-in leader has a CCLI number on **their own user account OR one of their
+   organisations**, that unlocks CCLI-copyrighted songs for **everyone following**
+   their session, for **as long as the session is active and they are following**.
+   (Extends the Service-Mode Phase-3 presence-CCLI unlock, rule #26, to the
+   host-licence, venueless case.)
+   ⚠️ **Licensing flag raised to owner:** a CCLI licence generally requires the
+   followers to be *physically present at the licensed venue/congregation*. In
+   Service Mode the venue rotating code IS that proof-of-presence (owner accepted
+   this basis, #1324). A Quick session has **no venue / no proof-of-presence**, so
+   unlocking CCLI for anyone with the follow link may exceed the licence's terms.
+   Owner asked for it regardless — this is the owner's licensing call, recorded
+   here. Implementation should still bind the unlock to (a) an active session and
+   (b) an actively-following presence token, and stop it the instant the session
+   closes or following stops, to keep the exposure as narrow as the mechanism
+   allows.
+
+4. **Service Mode — ProPresenter as the operator console.** The intent behind
+   Service Mode is for **ProPresenter to dynamically drive the songs** (act as the
+   broadcaster/console): when the operator advances a song/section in ProPresenter,
+   the live iHymns session's `CurrentSongId` follows. Design surface: a
+   ProPresenter-facing broadcast endpoint (API-key or session-scoped token) that
+   calls the SAME `service_broadcast` core both existing front-ends use (rule #26
+   — one broadcaster core, never re-forked). Likely a small adapter to
+   ProPresenter's network/stage-display or webhook protocol; needs its own
+   analysis pass.
+
+**Consequence for the design options:** this lands us on **Option A** (one front
+door, two backends), with the Quick backend gaining real capability (persist +
+idle-timeout + host-CCLI unlock) and the Service backend gaining a ProPresenter
+driver. B (full collapse) and the "keep Quick minimal" reading of C are ruled out
+by the above. Next step when #1770 is scheduled: a Fable planning pass over these
+four requirements (schema deltas — `LastLeaderSeenAt`, host-CCLI resolution;
+endpoints; the ProPresenter adapter), then Sonnet implementation, all
+additive/dormant per house style.
