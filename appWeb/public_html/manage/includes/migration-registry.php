@@ -3763,4 +3763,65 @@ return [
             return false;
         },
     ],
+
+    'consolidate-org-licences' => [
+        'script' => 'migrate-consolidate-org-licences.php',
+        'card' => [
+            'title'  => 'Consolidate org licences (#1769 P5)',
+            'body'   => 'DM-1 — completes the org-licence consolidation into'
+                      . ' <code>tblOrganisationLicences</code> that the shipped'
+                      . ' &ldquo;Organisation licences (#640)&rdquo; card began.'
+                      . ' That backfill carried LicenceType + LicenceNumber but'
+                      . ' NOT the legacy <code>tblOrganisations.LicenceExpiresAt</code>;'
+                      . ' this fill-NULL-only pass carries the expiry so the join'
+                      . ' table is a genuine superset before any (deferred, gated)'
+                      . ' legacy-column retire. It also consolidates any'
+                      . ' hand-written org-scoped <code>tblContentLicences</code>'
+                      . ' ghost rows (that table has no writer, so this is a'
+                      . ' zero-row no-op on a normal install; a ghost that confers'
+                      . ' a tier is REPORTED before migrating, since the tier'
+                      . ' resolver would then see it). Verified no-op for'
+                      . ' resolution (resolveEffectiveTier unions on LicenceType'
+                      . ' only, never ExpiresAt). Data-only; idempotent — the'
+                      . ' probe doubles as a drift detector. Recovery:'
+                      . ' <code>revert-consolidate-org-licences.php</code> (CLI).'
+                      . ' Requires the &ldquo;Organisation licences (#640)&rdquo; card.',
+            'button' => 'Consolidate Org Licences',
+        ],
+        /* Data-derived drift-detecting probe (rule #19; reconcile-isrc-denorm
+           precedent). PENDING when the join table is absent (prereq card not run
+           — Apply-all orders it first), OR a legacy expiry is still uncarried, OR
+           a hand-written org-scoped ghost is not yet in the join table. APPLIED
+           otherwise. Any error → pending (safe). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblOrganisationLicences')) { return true; }
+            try {
+                if (_migProbe_columnExists($db, 'tblOrganisations', 'LicenceExpiresAt')) {
+                    $r = $db->query(
+                        "SELECT 1 FROM tblOrganisationLicences ol
+                           JOIN tblOrganisations o
+                             ON o.Id = ol.OrganisationId AND ol.LicenceType = o.LicenceType
+                          WHERE ol.ExpiresAt IS NULL
+                            AND o.LicenceExpiresAt IS NOT NULL
+                            AND o.LicenceType NOT IN ('none', '') LIMIT 1"
+                    );
+                    if ($r && $r->fetch_row() !== null) { return true; }
+                }
+                if (_migProbe_tableExists($db, 'tblContentLicences')) {
+                    $r = $db->query(
+                        "SELECT 1 FROM tblContentLicences cl
+                          WHERE cl.OrgId IS NOT NULL AND cl.LicenceType NOT IN ('none', '')
+                            AND NOT EXISTS (
+                                SELECT 1 FROM tblOrganisationLicences ol
+                                 WHERE ol.OrganisationId = cl.OrgId AND ol.LicenceType = cl.LicenceType
+                            ) LIMIT 1"
+                    );
+                    if ($r && $r->fetch_row() !== null) { return true; }
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
 ];
