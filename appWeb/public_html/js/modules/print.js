@@ -24,9 +24,9 @@ import { apiFetch } from '../utils/api-client.js';
    `label` = editor display; `options` = editable per-block option keys + defaults. */
 export const PRINT_BLOCK_TYPES = {
     title:       { label: 'Title',           options: {} },
-    subtitle:    { label: 'Songbook + number', options: { showBook: true, showNumber: true } },
+    subtitle:    { label: 'Songbook + number', options: { showBook: true, showNumber: true, bookAbbr: false } },  /* #1767 B — bookAbbr shows the abbreviation instead of the full name */
     credits:     { label: 'Credits (authors)', options: {} },
-    lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1 } },
+    lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1, align: 'left', size: 'md' } },  /* #1767 A — align + font scale */
     copyright:   { label: 'Copyright',       options: {} },
     identifiers: { label: 'CCLI / ISWC',     options: { ccli: true, iswc: true } },
     scripture:   { label: 'Scripture ref.',  options: {} },                        /* #1767 N — tblSongScriptureRefs via ?include=scriptureRefs */
@@ -114,6 +114,10 @@ function renderLyrics(song, block) {
     const order = (Array.isArray(song.arrangement) && song.arrangement.length)
         ? song.arrangement.map(i => components[i]).filter(Boolean) : components;
     const cols = parseInt(block.columns, 10) === 2 ? 2 : 1;
+    /* #1767 A — per-block alignment + font scale (relative to the page base font
+       set in printCss). Defaults (left / md=1em) preserve the prior rendering. */
+    const align = (block.align === 'center' || block.align === 'right') ? block.align : 'left';
+    const scale = block.size === 'lg' ? '1.15em' : block.size === 'sm' ? '0.9em' : '1em';
     const body = order.map((comp) => {
         const lines = Array.isArray(comp.lines) ? comp.lines : [];
         const chords = Array.isArray(comp.chords) ? comp.chords : [];
@@ -129,7 +133,7 @@ function renderLyrics(song, block) {
         }).join('');
         return `<div class="print-component ${typeClass}">${label}${linesHtml}</div>`;
     }).join('');
-    return `<div class="print-lyrics" style="columns:${cols};column-gap:1.5em">${body || '<p>(No lyrics)</p>'}</div>`;
+    return `<div class="print-lyrics" style="columns:${cols};column-gap:1.5em;text-align:${align};font-size:${scale}">${body || '<p>(No lyrics)</p>'}</div>`;
 }
 
 function renderBlock(song, block) {
@@ -139,7 +143,12 @@ function renderBlock(song, block) {
         case 'subtitle': {
             const bits = [];
             if (block.showBook !== false && (song.songbookName || song.songbook)) {
-                bits.push(esc(song.songbookName || song.songbook));
+                /* #1767 B — bookAbbr prints the abbreviation (song.songbook) rather
+                   than the full name; falls back to whichever is present. */
+                const bookLabel = (block.bookAbbr === true)
+                    ? (song.songbook || song.songbookName)
+                    : (song.songbookName || song.songbook);
+                bits.push(esc(bookLabel));
             }
             if (block.showNumber !== false && song.number != null && parseInt(song.number, 10) > 0) {
                 bits.push('#' + parseInt(song.number, 10));

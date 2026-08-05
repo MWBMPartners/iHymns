@@ -53,9 +53,9 @@ $csrf    = csrfToken();
    drives the server-side gate; both enumerate the same 9 types. */
 $BLOCK_SCHEMA = [
     'title'       => [],
-    'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool'],
+    'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool', 'bookAbbr' => 'bool'],   // #1767 B
     'credits'     => [],
-    'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols'],
+    'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols', 'align' => 'align', 'size' => 'size'],  // #1767 A
     'copyright'   => [],
     'identifiers' => ['ccli' => 'bool', 'iswc' => 'bool'],
     'scripture'   => [],                          // #1767 N
@@ -116,6 +116,9 @@ function ptSanitiseBlocks(array $raw, array $schema): array
                     break;
                 case 'size':
                     $row[$key] = in_array($v, ['sm', 'md', 'lg'], true) ? $v : 'md';
+                    break;
+                case 'align':                                    // #1767 A
+                    $row[$key] = in_array($v, ['left', 'center', 'right'], true) ? $v : 'left';
                     break;
                 case 'str':
                 default:
@@ -592,6 +595,12 @@ if ($hasSchema) {
             if (key === 'size') {
                 const sizes = [['sm', 'Small'], ['md', 'Medium'], ['lg', 'Large']];
                 const opts = sizes.map(([v, t]) => `<option value="${v}"${value === v ? ' selected' : ''}>${t}</option>`).join('');
+                return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
+                    + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
+            }
+            if (key === 'align') {   // #1767 A — text alignment select
+                const aligns = [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']];
+                const opts = aligns.map(([v, t]) => `<option value="${v}"${value === v ? ' selected' : ''}>${t}</option>`).join('');
                 return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
                     + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
             }
