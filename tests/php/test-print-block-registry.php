@@ -150,11 +150,44 @@ foreach ($jsKeys as $t) {
     foreach ($onlyPhp as $k) { $fail[] = "Block '$t' option '$k' is accepted by \$BLOCK_SCHEMA but has no PRINT_BLOCK_TYPES default — the editor never offers it (unreachable)."; }
 }
 
+/* ---- 4. PAGE OPTIONS: PRINT_PAGE_OPTIONS (print.js) == $PAGE_OPTION_SCHEMA (php) ----
+   Same rule-#35 lockstep as the block types (#1767 G/V/AB/AM/F): a page option
+   the editor offers but the server doesn't allow-list is silently dropped on
+   save; one the server accepts but the editor never renders is unreachable. */
+$jsPageRegion = ptRegion($jsSrc, '/PRINT_PAGE_OPTIONS\s*=\s*\{(.*?)\n\};/s');
+$jsPageKeys   = [];
+if (preg_match_all('/^\s*(\w+)\s*:\s*\{/m', $jsPageRegion, $jm)) {
+    $jsPageKeys = $jm[1];
+}
+$phpPageRegion = ptRegion($phpSrc, '/\$PAGE_OPTION_SCHEMA\s*=\s*\[(.*?)\n\];/s');
+$phpPageKeys   = [];
+/* Anchor to LINE-START keys (`/m` + `^\s*`): each top-level option is one line,
+   but its value nests a `'choices' => [...]` array — an un-anchored `'key' => [`
+   would wrongly capture that nested `choices` too. (This bug was caught on first
+   run precisely because the guard went red, not silently green — rule #34.) */
+if (preg_match_all("/^\s*'(\w+)'\s*=>\s*\[/m", $phpPageRegion, $ppm)) {
+    $phpPageKeys = $ppm[1];
+}
+sort($jsPageKeys); sort($phpPageKeys);
+
+const PT_MIN_PAGE_OPTS = 4;   // parser-sanity floor (there are 6)
+if (count($jsPageKeys) < PT_MIN_PAGE_OPTS) {
+    $fail[] = sprintf('PRINT_PAGE_OPTIONS parsed only %d options (< %d) — parser anchor moved or file emptied.',
+        count($jsPageKeys), PT_MIN_PAGE_OPTS);
+}
+if (count($phpPageKeys) < PT_MIN_PAGE_OPTS) {
+    $fail[] = sprintf('$PAGE_OPTION_SCHEMA parsed only %d options (< %d) — parser anchor moved or file emptied.',
+        count($phpPageKeys), PT_MIN_PAGE_OPTS);
+}
+foreach (array_diff($jsPageKeys, $phpPageKeys) as $k) { $fail[] = "Page option '$k' is in PRINT_PAGE_OPTIONS (print.js) but missing from \$PAGE_OPTION_SCHEMA (print-templates.php) — server would DROP it on save."; }
+foreach (array_diff($phpPageKeys, $jsPageKeys) as $k) { $fail[] = "Page option '$k' is in \$PAGE_OPTION_SCHEMA (print-templates.php) but missing from PRINT_PAGE_OPTIONS (print.js) — editor can't offer it."; }
+
 if ($fail) {
     fwrite(STDERR, "FAIL: print block-type registry drift (#1767, rule #35)\n");
     foreach ($fail as $f) { fwrite(STDERR, "  - $f\n"); }
     exit(1);
 }
 
-printf("OK: print block registry agrees — %d block types, option keys aligned across print.js + renderBlock() + \$BLOCK_SCHEMA.\n", count($jsKeys));
+printf("OK: print registry agrees — %d block types (option keys aligned across print.js + renderBlock() + \$BLOCK_SCHEMA) + %d page options aligned across PRINT_PAGE_OPTIONS + \$PAGE_OPTION_SCHEMA.\n",
+    count($jsKeys), count($jsPageKeys));
 exit(0);

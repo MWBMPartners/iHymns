@@ -39,6 +39,28 @@ export const PRINT_BLOCK_TYPES = {
     pagebreak:   { label: 'Page break',      options: {} },
 };
 
+/* Page-level option registry (#1767 G/V/AB/AM/F) — the SAME pattern as
+   PRINT_BLOCK_TYPES: one source of truth that drives the renderer (printCss),
+   the editor's page-options panel, AND the server allow-list ($PAGE_OPTION_SCHEMA
+   in manage/print-templates.php, held in lockstep by test-print-block-registry.php,
+   rule #35). Adding a page option = one line here + printCss support + the PHP
+   mirror. `kind` drives the editor control; `choices` lists enum values; `def` is
+   the default the renderer falls back to (so an un-set option reproduces the
+   prior output). */
+export const PRINT_PAGE_OPTIONS = {
+    fontPt:      { label: 'Base font (pt)',   kind: 'int',   def: 12, min: 6, max: 72 },
+    pageSize:    { label: 'Page size',        kind: 'enum',  def: 'A4',     choices: ['A4', 'Letter', 'Legal'] },       /* #1767 G */
+    lineHeight:  { label: 'Line spacing',     kind: 'enum',  def: 'normal', choices: ['tight', 'normal', 'relaxed'] }, /* #1767 F */
+    contrast:    { label: 'High contrast',    kind: 'enum',  def: 'normal', choices: ['normal', 'high'] },             /* #1767 V */
+    accentColor: { label: 'Accent colour',    kind: 'color', def: '' },                                                /* #1767 AM */
+    inkSaver:    { label: 'Ink-saver (mono)', kind: 'bool',  def: false },                                             /* #1767 AB */
+};
+
+/* Accepted CSS colour shape for the accent option — #rgb or #rrggbb. Validated
+   IDENTICALLY here and in the PHP sanitiser (an <input type=color> only ever
+   emits #rrggbb; this guards a crafted POST). */
+const PRINT_ACCENT_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 /* The 3 built-ins, expressed as block templates (so built-in + custom unify). */
 export const PRINT_BUILTIN_TEMPLATES = [
     { id: 'builtin:lyrics', name: 'Lyrics only', builtin: true, pageOptions: { fontPt: 12, columns: 1 },
@@ -272,32 +294,51 @@ export function renderTemplateBodyHtml(song, template) {
     return blocks.map(b => renderBlock(song, b)).join('\n');
 }
 
-/* The print CSS, parameterised by the template's page options. */
+/* The print CSS, parameterised by the template's page options (#1767 G/V/AB/AM/F).
+   Every option's ABSENCE reproduces the prior output: A4 + normal line-height +
+   normal contrast + no accent + colour on. */
 function printCss(pageOptions) {
-    const fontPt = parseInt((pageOptions && pageOptions.fontPt), 10) || 12;
+    const po = pageOptions || {};
+    const fontPt = parseInt(po.fontPt, 10) || 12;
+    /* G — paper size → @page size keyword (CSS accepts a4/letter/legal). */
+    const pageSize = ({ A4: 'A4', Letter: 'letter', Legal: 'legal' })[po.pageSize] || 'A4';
+    /* F — vertical rhythm. */
+    const lh = po.lineHeight === 'tight' ? 1.2 : po.lineHeight === 'relaxed' ? 1.6 : 1.35;
+    const highContrast = po.contrast === 'high';       /* V */
+    const inkSaver = po.inkSaver === true;              /* AB — force mono, drop accent */
+    /* V/AB — muted greys collapse to pure black for legibility / crisp mono. */
+    const cMuted  = (highContrast || inkSaver) ? '#000' : '#555';
+    const cMuted2 = (highContrast || inkSaver) ? '#000' : '#444';
+    const cFaint  = (highContrast || inkSaver) ? '#000' : '#777';
+    /* AM — accent colour on title + labels; suppressed by ink-saver (mono). */
+    const accent = (!inkSaver && typeof po.accentColor === 'string' && PRINT_ACCENT_RE.test(po.accentColor))
+        ? po.accentColor : '';
+    const titleColor = accent || '#000';
+    const labelColor = accent || cMuted2;
     return `
     * { box-sizing: border-box; }
+    @page { size: ${pageSize}; }
     body { font-family: Georgia, 'Times New Roman', serif; color: #000; background: #fff;
-           margin: 1.5cm; font-size: ${fontPt}pt; line-height: 1.35; }
-    .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; }
-    .print-subtitle { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
-    .print-credits { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.8em; }
-    .print-scripture { font-size: ${fontPt - 2}pt; color: #444; font-style: italic; margin: 0 0 0.5em; }
-    .print-tune { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.5em; }
-    .print-themes { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
+           margin: 1.5cm; font-size: ${fontPt}pt; line-height: ${lh}; }
+    .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; color: ${titleColor}; }
+    .print-subtitle { font-size: ${fontPt - 2}pt; color: ${cMuted}; margin: 0 0 0.6em; }
+    .print-credits { font-size: ${fontPt - 2}pt; color: ${cMuted2}; margin: 0 0 0.8em; }
+    .print-scripture { font-size: ${fontPt - 2}pt; color: ${cMuted2}; font-style: italic; margin: 0 0 0.5em; }
+    .print-tune { font-size: ${fontPt - 2}pt; color: ${cMuted2}; margin: 0 0 0.5em; }
+    .print-themes { font-size: ${fontPt - 2}pt; color: ${cMuted}; margin: 0 0 0.6em; }
     .print-component { margin: 0 0 0.9em; break-inside: avoid; }
-    .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: #444; margin-bottom: 0.2em; }
+    .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: ${labelColor}; margin-bottom: 0.2em; }
     .lyric-chorus .print-line, .lyric-refrain .print-line { font-style: italic; }
     .print-line { margin: 0.05em 0; }
-    .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: 0.15em 0 0; }
+    .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: ${cMuted}; white-space: pre-wrap; margin: 0.15em 0 0; }
     .print-text { margin: 0 0 0.8em; }
-    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: #444; }
+    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: ${cMuted2}; }
     .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
     .print-qr { margin: 0.9em 0; text-align: center; break-inside: avoid; }
     .print-qr-img { display: inline-block; }
-    .print-qr-img svg { width: 100%; height: 100%; display: block; }
-    .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: #444; margin-top: 0.3em; word-break: break-all; }
-    .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: #777; }
+    .print-qr-img svg { width: 100%; height: 100%; display: block;${inkSaver ? ' filter: grayscale(1);' : ''} }
+    .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cMuted2}; margin-top: 0.3em; word-break: break-all; }
+    .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: ${cFaint}; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
 }
 
