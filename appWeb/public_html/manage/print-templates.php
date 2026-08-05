@@ -574,18 +574,15 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, prepareQrForSong }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
 
         bootSortableTables(); // sortable list headers (#844)
 
-        /* #1767 R — pinned CDN + vendored fallback path for the QR renderer, from
-           the same APP_CONFIG['libraries'] registry index.php/service-projection
-           read (rule #36). Used to pre-generate a sample QR so the preview of a
-           `qr` block is faithful, not a URL-text placeholder. */
-        const QR_LIB = <?= json_encode(APP_CONFIG['libraries']['qrcodegen'] ?? null, $JSON_SAFE) ?>;
+        // #1767 R — a `qr` block previews as an <img> to the same-origin /qr.php
+        // (CueRCode-backed) endpoint; no client-side QR library is loaded here.
 
         // Existing templates for the Edit pre-load. JSON_HEX_* flags applied
         // server-side so this inline literal can't break out of the script.
@@ -921,20 +918,8 @@ if ($hasSchema) {
         });
 
         buildPalette();
-
-        /* #1767 R — pre-generate the sample QR (same fixed permalink for the
-           sample song) so a `qr` block previews as a real code, not the URL-text
-           fallback. Fire-and-forget; refresh the preview when it lands if the
-           editor is already open on a template that uses a qr block. Never
-           throws — prepareQrForSong swallows a library failure and the block
-           degrades to the URL text. */
-        prepareQrForSong(PRINT_SAMPLE_SONG, { blocks: [{ type: 'qr' }] },
-            { cdn: QR_LIB && QR_LIB.js_cdn, local: QR_LIB && QR_LIB.js_local })
-            .then(() => {
-                if (!editorEl.classList.contains('d-none')
-                    && working.blocks.some(b => b.type === 'qr')) { renderPreview(); }
-            })
-            .catch(() => {});
+        /* #1767 R — the QR block previews via an <img> to /qr.php (CueRCode-backed);
+           renderTemplateBodyHtml emits it directly, so no QR pre-pass is needed. */
     </script>
     <?php endif; ?>
 

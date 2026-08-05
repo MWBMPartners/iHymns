@@ -1831,12 +1831,6 @@ if (!empty($breadcrumbItems)) {
             'pdfjsWorkerCdn'  => $libs['pdfjs']['worker_cdn'],
             'pdfjsLocal'      => $libs['pdfjs']['js_local'],
             'pdfjsWorkerLocal'=> $libs['pdfjs']['worker_local'],
-            /* #1767 R — QR-code print block. Same CDN→vendored dynamic-import()
-               fallback pattern as pdfjs above (browsers don't honour SRI on
-               dynamic import, so print.js tries the pinned CDN then the local
-               vendored copy — rule #36). */
-            'qrCdn'           => $libs['qrcodegen']['js_cdn'],
-            'qrLocal'         => $libs['qrcodegen']['js_local'],
             'audioBasePath'   => '/data/audio/',
             'musicBasePath'   => '/data/music/',
             'dnt'             => USER_DNT,

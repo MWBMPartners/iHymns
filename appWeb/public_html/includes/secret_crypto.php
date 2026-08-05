@@ -473,6 +473,13 @@ function secretSettingKeys(): array
            never touches the encryption layer directly. */
         'intappsapi_api_key',
         'intappsapi_hmac_secret',
+        /* CueRCode QR-generation gateway API key (owner directive 2026-08-05 —
+           QR via CueRCode across iHymns). Registered the moment the
+           /manage/configuration card can write it, so it is encrypted at rest
+           from its very first save (same custody pattern as the intapps
+           credentials). Read back transparently decrypted via getAppSetting();
+           includes/cuercode_client.php never touches the encryption layer. */
+        'cuercode_api_key',
     ];
 }
 
