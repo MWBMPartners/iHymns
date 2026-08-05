@@ -28,5 +28,20 @@ Every feature behaviourally verified with `node` against the shared `renderTempl
 2. Else continue the queue: Z/J (with live-DB verify), then #1770 Live Follow UX; #91 FINAL docs is LAST.
 3. Open the #1767 PR (base `alpha`) when the no-schema slice is deemed a complete unit — or continue adding Z/J to this branch first.
 
+## QR via CueRCode (owner directive mid-session 2026-08-05) — same branch
+
+Owner: *"QR must come from our CueRCode service (github.com/MWBMPartners/CueRCode) via its API — throughout iHymns."* My #1767 R block had used the vendored `qrcode-generator`; reworked it + migrated the other QR surface. Tracking issue **#1782**; CLAUDE.md **rule #38**; design `.claude/qr-cuercode-integration-plan.md`.
+
+- `115b4a3e` — `includes/cuercode_client.php` (server client, mirrors `intapps_client.php`: SSRF-hardened, size-capped, dormant-until-keyed, `cuercode_api_key` in `secretSettingKeys()`) + `qr.php` (same-origin image endpoint, streams bytes, `immutable` cache, 503-when-unconfigured) + print.js R block → plain `<img>` to `/qr.php` (removed prepareQrForSong/qrcodegen loader) + dropped index.php qrCdn/qrLocal.
+- `4f6d3db5` — service-projection `renderQr()` → `<img>` to `/qr.php`; removed vendored `qrcodegen` (config `libraries` entry, download-vendor step); retired `tests/test-qr.js`; new `tests/test-qr-cuercode.js` (tree-derived, comment-stripped, mutation-proven — both surfaces use `/qr.php`, key server-side, no client-side QR fingerprint).
+- `09d35fbf` — CLAUDE.md rule #38 + red flag + rule #26 correction + CHANGELOG.
+
+**CueRCode API contract** (its `api/v1/openapi.json`): `POST {base}/api/v1/generate`, header `X-API-Key: cuercode_<40hex>` (secret), body `{type:'url',input:{url},customization:{format,size,ecc,…}}`, 200 → `{success,data:{image:"data:…;base64,…",mime_type,format}}`. CueRCode repo cloned at `/workspace/cuercode` (attached this session).
+
+**⚠️ Blockers / remaining (all tracked on #1782):**
+1. **API key** — dormant until an iHymns→CueRCode `cuercode_` key is provisioned (CueRCode admin panel) + saved on `/manage/configuration`. Live round-trip UNVERIFIED here (no key); everything else verified (syntax, guard, graceful 503).
+2. **`/manage/configuration` credential card NOT yet built** — the base-URL + API-key fields. DEFERRED (not rushed) because it mirrors the large secret-handling `save_intappsapi` card and needs care. **This is the next build step**: mirror the `save_intappsapi` action + intapps credential card in `manage/configuration.php`, using `CUERCODE_SETTING_BASE_URL`/`CUERCODE_SETTING_API_KEY` from `cuercode_client.php` and the existing `$saveSetting` closure + "leave blank to keep the stored secret" pattern. Without it the owner has no UI to paste the key.
+3. Defensible defaults taken: base URL `https://cuercode.net`; no offline fallback lib; HTTP-immutable caching only (a shared `tblQrCache` is a noted follow-up).
+
 ## Prior-session context (other branches, unaffected)
 `claude/songbook-catalogue-enhancements` (#93 publishers, 20 commits) + fix branches `fix/db-backup-streaming-1771`, `fix/v1-songlink-note-bindparam-1739`, `fix/importer-writes-credits-1736` — all pushed. See `2026-08-04-HANDOFF.md` on the songbook branch.
