@@ -29,6 +29,9 @@ export const PRINT_BLOCK_TYPES = {
     lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1 } },
     copyright:   { label: 'Copyright',       options: {} },
     identifiers: { label: 'CCLI / ISWC',     options: { ccli: true, iswc: true } },
+    scripture:   { label: 'Scripture ref.',  options: {} },                        /* #1767 N — tblSongScriptureRefs via ?include=scriptureRefs */
+    tune:        { label: 'Tune + metre',    options: { showMetre: true } },       /* #1767 O — tuneName base + metre via ?include=tune */
+    themes:      { label: 'Themes / tags',   options: {} },                        /* #1767 P — song.tags (#1152 theme vocab), already in payload */
     text:        { label: 'Custom text',     options: { content: '' } },
     permalink:   { label: 'Permalink (URL)', options: {} },
     spacer:      { label: 'Spacer',          options: { size: 'md' } },
@@ -57,6 +60,16 @@ export const PRINT_SAMPLE_SONG = {
     title: 'Amazing Grace', songbookName: 'Sample Hymnal', songbook: 'SAMPLE', number: 1,
     language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',
     writers: ['John Newton'], composers: ['Traditional'],
+    /* Sample enrichment so the editor preview renders the #1767 N/O/P blocks.
+       In the real print path these arrive on song_data (tags) or via
+       ?include=scriptureRefs,tune (scriptureRefs, tune). */
+    tuneName: 'New Britain',
+    tune: { name: 'New Britain', meter: 'C.M.' },
+    tags: [{ name: 'Grace' }, { name: 'Salvation' }, { name: 'Assurance' }],
+    scriptureRefs: [
+        { book: 'Ephesians', chapter: 2, verseStart: 8, verseEnd: 9 },
+        { book: 'John', chapter: 1, verseStart: 16 },
+    ],
     components: [
         { type: 'verse', number: 1, lines: ['Amazing grace! how sweet the sound', 'That saved a wretch like me!'], chords: ['G        G7       C   G', 'G            D'] },
         { type: 'chorus', number: 0, lines: ['Praise God, praise God'], chords: ['C    G'] },
@@ -146,6 +159,53 @@ function renderBlock(song, block) {
             if (block.iswc !== false && song.iswc) { bits.push('ISWC ' + esc(song.iswc)); }
             return bits.length ? `<div class="print-footer">${bits.join('<br>')}</div>` : '';
         }
+        case 'scripture': {
+            /* #1767 N — scripture cross-references (tblSongScriptureRefs, #1112),
+               carried on the song only when the print fetch asked for
+               ?include=scriptureRefs. Renders nothing when absent (graceful, like
+               copyright/identifiers). Each ref → "Book C:Vs–Ve". */
+            const refs = Array.isArray(song.scriptureRefs) ? song.scriptureRefs : [];
+            const fmt = refs.map((r) => {
+                const bookName = String(r.book || '').trim();
+                if (!bookName) { return ''; }
+                let s = bookName;
+                const ch = parseInt(r.chapter, 10);
+                if (!isNaN(ch) && ch > 0) { s += ' ' + ch; }
+                const vs = parseInt(r.verseStart, 10);
+                if (!isNaN(vs) && vs > 0) {
+                    s += ':' + vs;
+                    const ve = parseInt(r.verseEnd, 10);
+                    if (!isNaN(ve) && ve > vs) { s += '–' + ve; }   // en dash for the range
+                }
+                return s;
+            }).filter(Boolean);
+            return fmt.length ? `<div class="print-scripture">${fmt.map(esc).join('; ')}</div>` : '';
+        }
+        case 'tune': {
+            /* #1767 O — tune name (base `tuneName`, always present) + metre
+               (MeterCode, carried on song.tune only via ?include=tune, #1748).
+               "Tune: <name> · <metre>" — folds to just one when the other is absent. */
+            const tuneName = String((song.tune && song.tune.name) || song.tuneName || '').trim();
+            const metre = (block.showMetre !== false)
+                ? String((song.tune && song.tune.meter) || '').trim() : '';
+            if (!tuneName && !metre) { return ''; }
+            let label;
+            if (tuneName && metre) { label = `Tune: ${esc(tuneName)} · ${esc(metre)}`; }
+            else if (tuneName)     { label = `Tune: ${esc(tuneName)}`; }
+            else                   { label = `Metre: ${esc(metre)}`; }
+            return `<div class="print-tune">${label}</div>`;
+        }
+        case 'themes': {
+            /* #1767 P — theme/tag chips (song.tags, #1152 standard vocabulary),
+               already on the base song_data payload. Rendered as a comma list. */
+            const tags = Array.isArray(song.tags) ? song.tags : [];
+            const names = tags
+                .map(t => (typeof t === 'string') ? t : (t && t.name) || '')
+                .map(s => String(s).trim())
+                .filter(Boolean);
+            return names.length
+                ? `<div class="print-themes">Themes: ${names.map(esc).join(', ')}</div>` : '';
+        }
         case 'text':
             return block.content ? `<div class="print-text">${esc(block.content)}</div>` : '';
         case 'permalink': {
@@ -190,6 +250,9 @@ function printCss(pageOptions) {
     .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; }
     .print-subtitle { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
     .print-credits { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.8em; }
+    .print-scripture { font-size: ${fontPt - 2}pt; color: #444; font-style: italic; margin: 0 0 0.5em; }
+    .print-tune { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.5em; }
+    .print-themes { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
     .print-component { margin: 0 0 0.9em; break-inside: avoid; }
     .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: #444; margin-bottom: 0.2em; }
     .lyric-chorus .print-line, .lyric-refrain .print-line { font-style: italic; }
@@ -232,7 +295,11 @@ function printDoc(html) {
 async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
-        const res = await apiFetch(`${base}?action=song_data&id=${encodeURIComponent(songId)}`,
+        /* #1767 N/O — opt-in enrichment so the Scripture-reference and Tune+metre
+           blocks have data. Back-compat: unknown/absent include blocks are ignored
+           server-side and omitted from the payload; tags ship on the base shape. */
+        const res = await apiFetch(
+            `${base}?action=song_data&id=${encodeURIComponent(songId)}&include=scriptureRefs,tune`,
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (!res.ok) { return null; }
         const json = await res.json();

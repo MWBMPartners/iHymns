@@ -58,6 +58,9 @@ $BLOCK_SCHEMA = [
     'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols'],
     'copyright'   => [],
     'identifiers' => ['ccli' => 'bool', 'iswc' => 'bool'],
+    'scripture'   => [],                          // #1767 N
+    'tune'        => ['showMetre' => 'bool'],     // #1767 O
+    'themes'      => [],                          // #1767 P
     'text'        => ['content' => 'str'],
     'permalink'   => [],
     'spacer'      => ['size' => 'size'],
@@ -327,6 +330,9 @@ if ($hasSchema) {
         .pt-preview-paper .print-title    { font-size: 1.5em; font-weight: bold; margin: 0 0 .1em; }
         .pt-preview-paper .print-subtitle { font-size: .85em; color: #555; margin: 0 0 .6em; }
         .pt-preview-paper .print-credits  { font-size: .85em; color: #444; margin: 0 0 .8em; }
+        .pt-preview-paper .print-scripture { font-size: .85em; color: #444; font-style: italic; margin: 0 0 .5em; }
+        .pt-preview-paper .print-tune      { font-size: .85em; color: #444; margin: 0 0 .5em; }
+        .pt-preview-paper .print-themes    { font-size: .85em; color: #555; margin: 0 0 .6em; }
         .pt-preview-paper .print-component { margin: 0 0 .9em; }
         .pt-preview-paper .print-label    { font-weight: bold; font-size: .85em; color: #444; margin-bottom: .2em; }
         .pt-preview-paper .lyric-chorus .print-line,
