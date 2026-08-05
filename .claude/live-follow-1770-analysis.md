@@ -492,3 +492,17 @@ additive/dormant per house style.
    Stored as minutes; all three layers are additive/dormant columns/settings
    (rule #20). This mirrors other iHymns per-user/per-org/per-app precedence
    (e.g. card layout, language prefs) — reuse that pattern, don't re-fork it.
+
+6. **DECISION on Q1 (owner, 2026-08-05):** Quick "Go Live" gets the **full
+   operator console as an OPTION — not mandatory.** A leader can drive songs by
+   section from the console if they want, but a bare "everyone follow my current
+   song" Quick session stays valid with no console interaction required. And
+   (confirming req. #3) the **host-CCLI unlock DOES apply to Live Followers in a
+   Quick Go Live session** — same mechanism as Service Mode, keyed off the
+   host's own user/org CCLI licence, active only while the session is live and
+   the follower is following. → This lands the design firmly on **Option A**
+   (one front door, two backends; Quick backend gains optional-console +
+   host-CCLI unlock + persistence + configurable idle-timeout). Option B/C are
+   closed. Remaining pre-build sub-decisions (media copy scope, ProPresenter
+   protocol specifics) are implementation details with defensible defaults, to
+   be settled in the planning pass — none block starting #1770 when scheduled.
