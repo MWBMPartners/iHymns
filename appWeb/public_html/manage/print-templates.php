@@ -581,8 +581,9 @@ if ($hasSchema) {
 
         bootSortableTables(); // sortable list headers (#844)
 
-        // #1767 R — a `qr` block previews as an <img> to the same-origin /qr.php
-        // (CueRCode-backed) endpoint; no client-side QR library is loaded here.
+        // #1767 R — a `qr` block previews as an image element pointing at the
+        // same-origin /qr.php (CueRCode-backed) endpoint, emitted client-side by
+        // print.js renderBlock('qr'); no client-side QR library is loaded here.
 
         // Existing templates for the Edit pre-load. JSON_HEX_* flags applied
         // server-side so this inline literal can't break out of the script.

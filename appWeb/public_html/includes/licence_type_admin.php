@@ -330,7 +330,10 @@ function licenceTypeAdminReferenceCounts(\mysqli $db, string $key): array
     /* @deleted-visible: FK pre-check (#1694 / #1769 P4) — a soft-deleted song
        still carries its rights-fact licence key and can be restored losslessly,
        so deleting a licence type it references would orphan the restored row.
-       Hidden rows MUST be counted here; the delete-refusal must see them. */
+       Hidden rows MUST be counted here; the delete-refusal must see them.
+       @disabled-visible: same reasoning for #1765 — a song in a DISABLED songbook
+       still references the licence key, so the delete-safety count must include it
+       (an admin FK pre-check, never a public read). */
     if (_ltaColumnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')) {
         $counts['Songs (lyrics rights fact)'] = $countWhere($db, 'SELECT COUNT(*) FROM tblSongs WHERE LyricsRightsLicenceKey = ?', $key);
     }

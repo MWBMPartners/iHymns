@@ -578,6 +578,10 @@ function ed2_songbookRightsDefaults(\mysqli $db, string $abbr): ?array {
     }
     if (!$colsPresent) { return null; }
     try {
+        /* @disabled-visible: editor admin surface (#1765) — the song editor must
+           read a songbook's default rights even when the book is disabled/hidden
+           from the public site, so a curator can still edit its songs. Never a
+           public read (api2 is the authenticated editor API). */
         $s = $db->prepare(
             'SELECT DefaultLyricsRightsLicenceKey, DefaultMusicRightsLicenceKey
                FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
@@ -1726,7 +1730,10 @@ try {
                — the curator is editing THIS exact song by direct id (the same
                editor-context rationale as ed2_buildSongSnapshot's load read); a
                soft-deleted song's rights value must still be readable to record
-               the change, and this reads only the one rights column, never lists. */
+               the change, and this reads only the one rights column, never lists.
+               @disabled-visible: same editor-context rationale for #1765 — a song
+               in a disabled songbook is still editable by direct id in the admin
+               editor; this single-song by-id read must not filter on book visibility. */
             $prev = null;
             $ps = $db->prepare("SELECT `{$column}` FROM tblSongs WHERE SongId = ? LIMIT 1");
             $ps->bind_param('s', $songId);

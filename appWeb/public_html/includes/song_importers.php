@@ -599,7 +599,7 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            tables at all, so every importer (OpenSong / OpenLyrics / ChordPro /
            the #1633 interchange format) parsed writers/composers correctly and
            then dropped them: a bulk-imported song arrived with no credits and no
-           tblCreditPeople/tblMusicians registry rows.
+           tblMusicians registry rows.
 
            INSERT-ONLY: this function has already established (the pre-flight
            existence + title-dedupe checks above) that this is a BRAND-NEW song —

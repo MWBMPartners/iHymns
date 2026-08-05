@@ -3868,7 +3868,10 @@ return [
                        NULL fact still needs deriving so the fact is correct the
                        moment it is ever restored; the pass is complete only when
                        NO song (visible or hidden) has an underivable NULL fact.
-                       Deliberately not scoped to visible-only rows. */
+                       Deliberately not scoped to visible-only rows.
+                       @disabled-visible: same posture for #1765 — a song in a
+                       disabled songbook must also have its rights fact derived, so
+                       this completeness probe must see disabled-book rows too. */
                     $stmt = $db->prepare(
                         "SELECT 1 FROM tblSongs s
                            JOIN tblContentRestrictions r
