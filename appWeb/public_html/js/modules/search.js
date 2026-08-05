@@ -8,9 +8,8 @@
  * and the dedicated search page.
  *
  * ARCHITECTURE (#1014 — DB-direct rewrite):
- *   Search is a LIVE MySQL query. The search page, the header
- *   typeahead, and lyrics search all hit the server API
- *   (`?action=search` / `?action=suggest`) on every keystroke
+ *   Search is a LIVE MySQL query. The search page and lyrics search
+ *   hit the server API (`?action=search`) on every keystroke
  *   (debounced). There is NO client-side corpus and NO Fuse.js index
  *   anymore — staleness is impossible because every read is live.
  *
@@ -29,14 +28,13 @@ import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
    on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
    itself, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
-/* #1594 part 2 — ARIA-only pass (imported for its side effect only —
-   see combobox-a11y.js's own doc-comment). The header autocomplete
-   below already has working Arrow/Enter/Escape key handling and
-   scrollIntoView — LOWEST risk of the #1594 part-2 call sites, so this
-   file's keydown logic is untouched; only role=combobox/listbox/option,
-   aria-selected and aria-activedescendant are added on top of the
-   existing class-only ('.active') highlight. */
-import './combobox-a11y.js';
+/* #307 — the header-search autocomplete typeahead (which imported
+   combobox-a11y.js for its ARIA, #1594 part 2) was removed as dead code: its
+   `_initAutocomplete` had zero callers, so the dropdown, its CSS, the
+   `?action=suggest` endpoint and SongData::suggestSongs() were all deleted. The
+   combobox-a11y side-effect import went with it — nothing in this module uses
+   `window.iHymnsComboboxA11y` any more (the shared module lives on for
+   place-search.js et al., which import it themselves). */
 
 /** Results fetched per page (and per "Load more" click). */
 const PAGE_SIZE = 50;
@@ -521,215 +519,6 @@ export class Search {
                 </a>`;
         });
         return html;
-    }
-
-    /* =====================================================================
-     * AUTOCOMPLETE / SUGGESTIONS (#307) — live `?action=suggest`
-     * ===================================================================== */
-
-    /**
-     * Initialise autocomplete behaviour on a search input.
-     * Shows a dropdown of matching songs as the user types.
-     *
-     * @param {HTMLInputElement} input The search input element
-     */
-    _initAutocomplete(input) {
-        let acTimer = null;
-
-        /* Ensure the input's parent is positioned for the dropdown */
-        const parent = input.closest('.input-group') || input.parentElement;
-        if (parent) parent.style.position = 'relative';
-
-        input.addEventListener('input', () => {
-            clearTimeout(acTimer);
-            const q = input.value.trim();
-            if (q.length < 2) {
-                this._closeAutocomplete(input);
-                return;
-            }
-            acTimer = setTimeout(() => this._showAutocomplete(input, q), 300);
-        });
-
-        /* Close autocomplete when input loses focus (with delay for click) */
-        input.addEventListener('blur', () => {
-            setTimeout(() => this._closeAutocomplete(input), 200);
-        });
-    }
-
-    /**
-     * Show autocomplete suggestions below the input (live MySQL query).
-     *
-     * @param {HTMLInputElement} input The search input
-     * @param {string} query Current query
-     */
-    async _showAutocomplete(input, query) {
-        /* Stale-response guard — only the newest request may render. */
-        const seq = ++this._acSeq;
-
-        let suggestions;
-        try {
-            const url = new URL(this.app.config.apiUrl, window.location.origin);
-            url.searchParams.set('action', 'suggest');
-            url.searchParams.set('q', query);
-            const response = await apiFetch(url);
-            if (!response.ok) throw new Error(`Suggest API: HTTP ${response.status}`);
-            const data = await response.json();
-            suggestions = data.suggestions || [];
-        } catch (error) {
-            /* Offline / server error — fall back to the precached slim
-               index so the header typeahead still works offline (WS-I). */
-            try {
-                const index = await this._getSlimIndex();
-                suggestions = this._filterSlimIndex(index, query, '').slice(0, 8);
-            } catch (_e) {
-                this._closeAutocomplete(input);
-                return;
-            }
-        }
-
-        /* A newer keystroke superseded this request, or the input was
-           cleared/blurred while we were waiting — discard. */
-        if (seq !== this._acSeq) return;
-        if (input.value.trim() !== query) return;
-
-        if (!suggestions.length) {
-            this._closeAutocomplete(input);
-            return;
-        }
-
-        /* Find or create dropdown */
-        const parent = input.closest('.input-group') || input.parentElement;
-        let dropdown = parent.querySelector('.search-autocomplete');
-        if (!dropdown) {
-            dropdown = document.createElement('div');
-            dropdown.className = 'search-autocomplete';
-            dropdown.setAttribute('role', 'listbox');
-            parent.appendChild(dropdown);
-        }
-
-        dropdown.innerHTML = suggestions.map((song, i) => {
-            return `<a href="/song/${escapeHtml(song.id)}"
-                       class="search-autocomplete-item${i === 0 ? ' active' : ''}"
-                       data-navigate="song"
-                       data-song-id="${escapeHtml(song.id)}"
-                       data-index="${i}"
-                       role="option">
-                        <span class="song-num">${escapeHtml(song.songbook || '')} ${song.number || ''}</span>
-                        <span>${escapeHtml(toTitleCase(song.title || ''))}</span>
-                    </a>`;
-        }).join('');
-
-        /* Click handler for suggestions */
-        dropdown.querySelectorAll('.search-autocomplete-item').forEach(item => {
-            item.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                this._closeAutocomplete(input);
-                if (this.app.router) {
-                    this.app.router.navigate('/song/' + item.dataset.songId);
-                } else {
-                    window.location.href = item.href;
-                }
-            });
-        });
-
-        /* #1594 part 2 — the template above already marks index 0 'active'
-           via the class (the pre-existing highlight mechanism, untouched);
-           this layers the ARIA half on top so that highlight is actually
-           visible to assistive tech, not just sighted mouse/keyboard
-           users. */
-        if (window.iHymnsComboboxA11y) {
-            window.iHymnsComboboxA11y.applyComboboxAria({
-                input, panel: dropdown,
-                items: Array.from(dropdown.querySelectorAll('.search-autocomplete-item')),
-                activeIndex: 0, idPrefix: (input.id || 'search') + '-autocomplete',
-            });
-        }
-    }
-
-    /**
-     * Close the autocomplete dropdown for a given input.
-     *
-     * @param {HTMLInputElement} input The search input
-     */
-    _closeAutocomplete(input) {
-        const parent = input.closest('.input-group') || input.parentElement;
-        const dropdown = parent?.querySelector('.search-autocomplete');
-        if (dropdown) dropdown.remove();
-        /* #1594 part 2 — the dropdown these attributes referenced no
-           longer exists; leaving them would point aria-controls /
-           aria-activedescendant at stale/removed ids (mirrors
-           place-search.js's own explicit teardown). */
-        if (window.iHymnsComboboxA11y) {
-            window.iHymnsComboboxA11y.applyComboboxAria({ input, panel: null, items: [], activeIndex: -1, idPrefix: (input.id || 'search') + '-autocomplete', expanded: false });
-        }
-        input.removeAttribute('aria-controls');
-    }
-
-    /**
-     * Handle keyboard navigation within the autocomplete dropdown.
-     * Returns true if the event was consumed.
-     *
-     * @param {KeyboardEvent} e The keydown event
-     * @param {HTMLInputElement} input The search input
-     * @returns {boolean} True if event was handled
-     */
-    _handleAutocompleteKeydown(e, input) {
-        const parent = input.closest('.input-group') || input.parentElement;
-        const dropdown = parent?.querySelector('.search-autocomplete');
-        if (!dropdown) return false;
-
-        const items = dropdown.querySelectorAll('.search-autocomplete-item');
-        if (items.length === 0) return false;
-
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            this._closeAutocomplete(input);
-            return true;
-        }
-
-        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-            e.preventDefault();
-            const activeItem = dropdown.querySelector('.search-autocomplete-item.active');
-            let idx = activeItem ? parseInt(activeItem.dataset.index, 10) : -1;
-
-            if (e.key === 'ArrowDown') {
-                idx = Math.min(idx + 1, items.length - 1);
-            } else {
-                idx = Math.max(idx - 1, 0);
-            }
-
-            items.forEach(item => item.classList.remove('active'));
-            items[idx]?.classList.add('active');
-            items[idx]?.scrollIntoView({ block: 'nearest' });
-            /* #1594 part 2 — the pre-existing class-only highlight above is
-               untouched; this layers aria-selected + aria-activedescendant
-               on top so the SAME highlight move is announced to assistive
-               tech (it previously moved a CSS class a screen reader has no
-               way to observe). */
-            if (window.iHymnsComboboxA11y) {
-                window.iHymnsComboboxA11y.applyComboboxAria({
-                    input, panel: dropdown, items: Array.from(items),
-                    activeIndex: idx, idPrefix: (input.id || 'search') + '-autocomplete',
-                });
-            }
-            return true;
-        }
-
-        if (e.key === 'Enter') {
-            const activeItem = dropdown.querySelector('.search-autocomplete-item.active');
-            if (activeItem) {
-                e.preventDefault();
-                this._closeAutocomplete(input);
-                if (this.app.router) {
-                    this.app.router.navigate('/song/' + activeItem.dataset.songId);
-                } else {
-                    window.location.href = activeItem.href;
-                }
-                return true;
-            }
-        }
-
-        return false;
     }
 
 }

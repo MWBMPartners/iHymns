@@ -3193,45 +3193,12 @@ body.reduce-motion .related-songs-chevron {
     }
 }
 
-/* ==========================================================================
- * SEARCH AUTOCOMPLETE (#307) — Dropdown suggestions below search input
- * ========================================================================= */
-
-.search-autocomplete {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bs-body-bg);
-    border: 1px solid var(--bs-border-color);
-    border-top: none;
-    border-radius: 0 0 0.5rem 0.5rem;
-    max-height: 300px;
-    overflow-y: auto;
-    z-index: 1050;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.search-autocomplete-item {
-    padding: 0.5rem 1rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    text-decoration: none;
-    color: inherit;
-}
-
-.search-autocomplete-item:hover,
-.search-autocomplete-item.active {
-    background: var(--bs-tertiary-bg);
-}
-
-.search-autocomplete-item .song-num {
-    color: var(--bs-secondary-color);
-    font-size: 0.85em;
-    min-width: 3rem;
-}
+/* SEARCH AUTOCOMPLETE (#307) — removed. The header-search typeahead dropdown
+ * (.search-autocomplete*) shipped with zero JS callers (the `_initAutocomplete`
+ * cluster in search.js was never wired to any input); the live search page
+ * (initSearchPage → ?action=search) is the real, reachable search. The dead
+ * client cluster, its CSS, the ?action=suggest endpoint and suggestSongs() were
+ * all removed together. Re-add cleanly if a real typeahead is ever built. */
 
 /* ==========================================================================
  * PRIVACY SETTINGS SECTION — Analytics consent toggle on Settings page

@@ -9438,42 +9438,23 @@ if ($action !== null) {
          * SEARCH AUTOCOMPLETE (#307)
          * ================================================================= */
 
-        /* -----------------------------------------------------------------
-         * Get search suggestions (autocomplete)
-         * Parameters: q (required, min 2 chars)
-         * ----------------------------------------------------------------- */
-        case 'suggest':
-            $suggestQ = trim($_GET['q'] ?? '');
-
-            if (mb_strlen($suggestQ) < 2) {
-                sendJson(['suggestions' => []]);
-                break;
-            }
-
-            /* Live, relevance-ranked typeahead (D2 prefix match) via the
-               shared SongData pipeline — replaces the old inline
-               Title LIKE scan, and powers the header autocomplete now
-               that the client no longer holds a Fuse corpus (#1014). */
-            $suggestRows = $songData->suggestSongs($suggestQ, 8);
-
-            /* Respect the active language filter the same way the main
-               search does — untagged songs always pass. */
-            $_sgPred = makeLanguageFilterPredicate(
-                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
-            );
-            $suggestRows = array_values(array_filter($suggestRows, $_sgPred));
-
-            $suggestions = array_map(static function (array $r): array {
-                return [
-                    'id'       => $r['id'] ?? '',
-                    'title'    => $r['title'] ?? '',
-                    'songbook' => $r['songbook'] ?? '',
-                    'number'   => $r['number'] ?? null,
-                ];
-            }, $suggestRows);
-
-            sendJson(['suggestions' => $suggestions]);
-            break;
+        /* =================================================================
+         * `suggest` (typeahead) — REMOVED in #307.
+         *
+         * The header-search autocomplete dropdown it powered (the
+         * `_initAutocomplete` cluster in js/modules/search.js) shipped with
+         * ZERO JS callers — `_initAutocomplete` was never invoked on any
+         * input — so the endpoint had no in-repo, native (Apple/Android) or
+         * documented-external consumer. The live, reachable search is
+         * `?action=search` (js/modules/search.js `initSearchPage()`), which
+         * this never fed. The dead client cluster, its CSS, the SongData
+         * `suggestSongs()` method and the api-docs entry were removed with it.
+         *
+         * ⚠ An OUT-OF-REPO caller (an API-key partner, a curl script) would now
+         * get `400 Unknown action` — the accepted, stated blind spot of the
+         * orphan guard (it reports "no in-repo caller", never "no caller on
+         * Earth"). Re-add cleanly if a real typeahead is ever built.
+         * ================================================================= */
 
         /* =================================================================
          * USER PREFERENCES (#310) — REMOVED in #1671 F5

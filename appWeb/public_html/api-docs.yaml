@@ -5864,43 +5864,10 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
-  /api.php?action=suggest:
-    get:
-      operationId: suggest
-      tags: [Discovery]
-      summary: Typeahead suggestions for the search box
-      description: |
-        Lightweight, relevance-ranked title typeahead (live MySQL). Uses the
-        same FULLTEXT BOOLEAN prefix strategy as `action=search` (`+term*`)
-        with a LIKE fallback for sub-3-char queries, returning at most 8
-        minimal rows. Honours the active language filter. Powers the header
-        autocomplete (#1014).
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [suggest] }
-        - name: q
-          in: query
-          required: true
-          schema: { type: string, minLength: 2 }
-      responses:
-        "200":
-          description: Suggestion list (empty when q is shorter than 2 chars)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  suggestions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:       { type: string, example: CP-0202 }
-                        title:    { type: string, example: Amazing Grace }
-                        songbook: { type: string, example: CP }
-                        number:   { type: integer, nullable: true, example: 202 }
+  # /api.php?action=suggest — REMOVED in #307 (header-search autocomplete was
+  # dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
+  # endpoint had no in-repo, native or documented-external consumer). The live
+  # search is `action=search`. Re-add if a real typeahead is ever built.
 
   /api.php?action=related_songs:
     get:
