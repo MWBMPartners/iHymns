@@ -92,13 +92,15 @@ declare(strict_types=1);
  *   one legitimate shape doesn't fit it.
  *
  * #1736 — the bulk importers (`includes/song_importers.php`,
- *   `_bulkImport_saveSong()`) parse writers/composers/etc. out of the
- *   source document but currently DROP them — they never INSERT into any
- *   of the six role tables at all. So they are correctly NOT flagged by
- *   this guard (nothing to promote if nothing is written); wiring the
- *   importers to persist credits (and promote them) is tracked separately
- *   as #1736 and deliberately out of scope for this guard, which only
- *   ever asserts "if you write the role table, you must also promote".
+ *   `_bulkImport_saveSong()`) parse writers/composers/etc. and, since #1736
+ *   landed, PERSIST them: saveSong now INSERTs the role tables and calls
+ *   `musicianPromote()` on each name (the exact save_song_core.php shape). So
+ *   this guard's tree-derivation now INCLUDES saveSong as a credit-writer and
+ *   verifies its promote call automatically — precisely the "future-proof"
+ *   property #1736 predicted ("the moment saveSong writes credit tables, the
+ *   tree-derived check will flag it and demand promote"). Nothing here is
+ *   hardcoded to the importer; it qualifies through the same derivation as
+ *   every other writer.
  *
  * Pure source-tree scan — no DB — so it slots into the CI lint step.
  *

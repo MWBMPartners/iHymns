@@ -593,6 +593,69 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $insComp->close();
         }
 
+        /* #1736 — write the parsed credits. Until now saveSong wrote NO credit
+           tables at all, so every importer (OpenSong / OpenLyrics / ChordPro /
+           the #1633 interchange format) parsed writers/composers correctly and
+           then dropped them: a bulk-imported song arrived with no credits and no
+           tblCreditPeople/tblMusicians registry rows.
+
+           INSERT-ONLY: this function has already established (the pre-flight
+           existence + title-dedupe checks above) that this is a BRAND-NEW song —
+           an existing SongId / normalised-title match returns 'skipped' before the
+           transaction opens. So the "re-import: replace vs merge vs leave" design
+           question resolves to LEAVE — a re-import never reaches here — and this
+           block needs no DELETE (unlike save_song_core.php's whole-song re-save).
+
+           Mirrors save_song_core.php's credit write (rule #22): the SAME
+           creditEntryNormalise() decompose + musicianPromote() registry upsert,
+           so a name-string from OpenSong's <author> lands as First/Surname/Suffix
+           in the registry exactly as a curator-typed credit does, and the #960
+           side-effect guard (which demands every credit-writing file also call
+           musicianPromote) is satisfied here. Same 5 core role tables the editor
+           DELETE/INSERT loop uses (tblSongArtists is #587-migration-gated and no
+           importer parses artists, so it is deliberately omitted here). All inside
+           the import transaction — commits / rolls back atomically with the song. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+        $creditInserts = [
+            'writers'     => 'INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)',
+            'composers'   => 'INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)',
+            'arrangers'   => 'INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)',
+            'adaptors'    => 'INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)',
+            'translators' => 'INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)',
+        ];
+        $regParts = []; /* composed Name => richest {first,surname,suffix} seen across roles */
+        foreach ($creditInserts as $key => $sql) {
+            $entries = $song[$key] ?? [];
+            if (!is_array($entries) || !$entries) { continue; }
+            $stmt = $db->prepare($sql);
+            $seenCredit = [];   /* per-role, case-insensitive dedup (#1178 posture) */
+            foreach ($entries as $raw) {
+                $entry = creditEntryNormalise($raw);
+                if ($entry === null) { continue; }
+                $dedupKey = function_exists('mb_strtolower') ? mb_strtolower($entry['name']) : strtolower($entry['name']);
+                if (isset($seenCredit[$dedupKey])) { continue; }
+                $seenCredit[$dedupKey] = true;
+                $stmt->bind_param('ss', $songId, $entry['name']);
+                $stmt->execute();
+                /* Keep the richest parts for this name across all roles (a name
+                   typed one way in Writers and another in Composers picks the more
+                   complete decomposition for the single registry upsert). */
+                if (!isset($regParts[$entry['name']])
+                    || ($regParts[$entry['name']]['first'] === '' && $regParts[$entry['name']]['surname'] === '' && $regParts[$entry['name']]['suffix'] === '')
+                ) {
+                    $regParts[$entry['name']] = [
+                        'first'   => $entry['first'],
+                        'surname' => $entry['surname'],
+                        'suffix'  => $entry['suffix'],
+                    ];
+                }
+            }
+            $stmt->close();
+        }
+        foreach ($regParts as $regName => $p) {
+            musicianPromote($db, $regName, $p);
+        }
+
         /* Revision audit row (#400). Same shape as save_song writes. */
         try {
             $editor = function_exists('getCurrentUser') ? getCurrentUser() : null;
@@ -4569,12 +4632,13 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
         /* Song dict in the exact shape _bulkImport_saveSong() consumes — the same
            key set _bulkImport_assembleSong() produces for OpenLyrics/PP6, so this
            format needs no special case anywhere downstream.
-           ⚠️ KNOWN LIMITATION (not introduced here): saveSong currently hardcodes
-           copyright / ccli / verified / the public-domain + media flags to empty
-           on INSERT and does not write writers/composers at all, so the richer
-           metadata carried below is parsed, validated and then dropped by the
-           shared saver. Every other importer already loses it the same way; fixing
-           it belongs in saveSong (one change, all formats), not in a fork here. */
+           Credits (writers/composers/…) ARE now persisted by saveSong (#1736) —
+           the shared saver writes the credit tables + promotes the registry, so
+           every importer inherits it. ⚠️ REMAINING LIMITATION (not introduced
+           here): saveSong still hardcodes copyright / ccli / verified / the
+           public-domain + media flags to empty on INSERT, so those carried below
+           are still dropped. Fixing THAT belongs in saveSong too (one change, all
+           formats), not in a fork here. */
         $songDict = [
             'id'                 => $songId,
             'title'              => $title,
