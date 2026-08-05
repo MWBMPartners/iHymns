@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Credit People (#545)
+ * iHymns — Admin: Musicians (formerly "Credit People", #545; display renamed #1741 P2-B / #1772)
  *
  * Catalogue-wide CRUD for the people credited on songs, unioned
  * across tblSongWriters / tblSongComposers / tblSongArrangers /
@@ -583,6 +583,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 $newId = registerMusicianByName($db, $name);
                 if ($newId > 0) { $registered++; } else { $skipped++; }
             }
+
+            /* #1772 — self-heal the byte-variant names the register loop above
+               "skips". A candidate like "Eddie James " (trailing space) already
+               has a collation-matching registry row ("Eddie James"), so the loop
+               finds it and skips — but the credit rows keep their stray bytes and
+               the counter never clears. Reconciliation rewrites those credit rows
+               to the registry's exact spelling (and auto-registers any name with
+               no registry row at all), so pressing "Add all now" actually drives
+               the counter to zero. Same shared core the migration runs (rule #22);
+               runs inside this same transaction. */
+            $reconcile = musicianReconcileCreditNameBytes($db);
+
             $db->commit();
 
             $logMusician('bulk_register_remaining', '', [
@@ -590,9 +602,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 'registered'  => $registered,
                 'skipped'     => $skipped,
                 'candidates'  => count($names),
+                'reconciled_rewritten' => $reconcile['rewritten'],
+                'reconciled_adopted'   => $reconcile['adopted'],
+                'reconciled_new'       => $reconcile['registered'],
+                'reconciled_ambiguous' => $reconcile['ambiguous'],
             ]);
+            $reconFixed = $reconcile['rewritten'] + $reconcile['registered'];
             $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
-                     . ' registered' . ($skipped > 0 ? ", {$skipped} already registered (skipped)" : '') . '.';
+                     . ' registered'
+                     . ($reconFixed > 0 ? ", {$reconcile['adopted']} matched an existing registry spelling and {$reconcile['rewritten']} credit row(s) tidied" : '')
+                     . ($reconcile['ambiguous'] > 0 ? ", {$reconcile['ambiguous']} left for duplicate review (registry has two matching rows)" : '')
+                     . '.';
         } catch (\Throwable $tx) {
             $db->rollback();
             throw $tx;
@@ -2010,7 +2030,7 @@ try {
     error_log('[manage/musicians.php] load failed: ' . $e->getMessage());
     logActivityError('admin.musicians.list', 'musician', '', $e);
     $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
-    $error = 'Could not load credit people: ' . $e->getMessage() . $where;
+    $error = 'Could not load musicians: ' . $e->getMessage() . $where;
 }
 
 /* ----------------------------------------------------------------------
@@ -2088,7 +2108,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Credit People</h1>
+        <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Musicians</h1>
         <p class="text-secondary small mb-3">
             Every individual credited as a writer, composer, arranger, adaptor or
             translator across the catalogue, plus every pre-registered name in
@@ -2121,7 +2141,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <span>
                     <strong><?= number_format($totalInUseUnregistered) ?></strong>
                     <?= $totalInUseUnregistered === 1 ? 'person is' : 'people are' ?> credited on a song
-                    but <em><?= $totalInUseUnregistered === 1 ? "isn't" : "aren't" ?></em> saved to Credit People yet.
+                    but <em><?= $totalInUseUnregistered === 1 ? "isn't" : "aren't" ?></em> in your Musicians list yet.
                 </span>
                 <!-- #1543 — plain-English CTA labels. The action still "promotes"
                      (bulk_register_unregistered) internally; only the user-facing
@@ -2130,7 +2150,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <i class="bi bi-magic me-1"></i>Review &amp; add (checks for duplicates)
                 </a>
                 <form method="POST" class="d-inline"
-                      onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to Credit People as new entries?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
+                      onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to your Musicians list?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="bulk_register_unregistered">
                     <button type="submit" class="btn btn-sm btn-outline-info">

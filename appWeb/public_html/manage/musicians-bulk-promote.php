@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Credit People Bulk Promote (#846)
+ * iHymns — Admin: Add Musicians in Bulk (formerly "Bulk Promote Credit People", #846; display renamed #1772)
  *
  * Companion surface to /manage/musicians. Lists every distinct
  * name used on a song-credit row that doesn't yet have a matching
@@ -136,8 +136,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         $db->begin_transaction();
         try {
-            foreach ($rowAction as $name => $act) {
-                $name = trim((string)$name);
+            foreach ($rowAction as $rawName => $act) {
+                /* #1772 — keep the EXACT bytes the form posted ($origName) as
+                   well as the trimmed identity ($name). The candidate may carry
+                   stray whitespace ("Eddie James " with a trailing space); the
+                   merge branch below needs the original bytes to re-point the
+                   real credit rows, while register/skip use the tidy form. */
+                $origName = (string)$rawName;
+                $name = trim($origName);
                 $act  = (string)$act;
                 if ($name === '' || $name === 'skip' && $act === 'skip') {
                     $skipped++;
@@ -174,7 +180,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     }
                     $registered++;
                 } elseif ($act === 'merge') {
-                    $targetId = (int)($mergeTo[$name] ?? 0);
+                    /* Tolerate either key form for the target lookup — the
+                       browser may or may not have preserved stray whitespace in
+                       the merge_to[] field name (#1772). */
+                    $targetId = (int)($mergeTo[$origName] ?? $mergeTo[$name] ?? 0);
                     if ($targetId <= 0) { $failed++; continue; }
 
                     $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
@@ -184,20 +193,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                     if (!$row) { $failed++; continue; }
                     $targetName = (string)$row['Name'];
-                    if ($targetName === $name) { $skipped++; continue; }
 
-                    /* Re-point every song-credit row from the typed
-                       source name to the registry target name across
-                       the five join tables. Mirrors the single-row
-                       `merge` action's cascade in /manage/musicians. */
+                    /* Re-point every song-credit row from the candidate name to
+                       the registry target's EXACT spelling across the five join
+                       tables. #1772: match on the collation (`Name = ?`) so a
+                       stray-byte variant ("Eddie James " with a trailing space)
+                       IS caught — the old code trimmed the candidate, saw it now
+                       equalled the target, and skipped as "nothing to do", which
+                       is exactly why the "Eddie James → Eddie James" merge could
+                       never clear the counter. `BINARY Name <> BINARY ?` excludes
+                       rows already byte-correct so a genuine no-op merge still
+                       counts as "skipped" rather than "merged". */
                     $rowsAffected = 0;
                     foreach (_CP_BULK_CREDIT_TABLES as $tbl) {
-                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
-                        $stmt->bind_param('ss', $targetName, $name);
+                        $stmt = $db->prepare(
+                            "UPDATE {$tbl} SET Name = ? WHERE Name = ? AND BINARY Name <> BINARY ?"
+                        );
+                        $stmt->bind_param('sss', $targetName, $origName, $targetName);
                         $stmt->execute();
                         $rowsAffected += $stmt->affected_rows;
                         $stmt->close();
                     }
+                    if ($rowsAffected === 0) { $skipped++; continue; }
 
                     if (function_exists('logActivity')) {
                         logActivity('musician.bulk_merge', 'musician', (string)$targetId, [
@@ -337,7 +354,7 @@ if (!empty($registryByName)) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf) ?>">
-    <title>Bulk Promote Credit People — iHymns Admin</title>
+    <title>Add Musicians in Bulk — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -347,12 +364,12 @@ if (!empty($registryByName)) {
 
     <div class="container-admin py-4">
         <h1 class="h4 mb-1">
-            <i class="bi bi-people me-2"></i>Bulk Promote Credit People
+            <i class="bi bi-people me-2"></i>Add Musicians in Bulk
         </h1>
         <p class="text-secondary small mb-3">
-            Names that appear on a song-credit row but don't yet have a <code>tblMusicians</code> registry entry.
-            Bulk-promote in one submit. Fuzzy matches against existing registry rows are flagged so you can
-            <em>merge</em> typos / spelling-variants into the canonical row instead of registering duplicates.
+            Names that appear on a song credit but aren't in your Musicians list yet.
+            Add them all in one submit. Where a name closely matches one you already have, it's flagged so you can
+            <em>merge</em> typos / spelling-variants into the existing musician instead of creating a duplicate.
             <a href="/manage/musicians" class="link-secondary">← back to Musicians</a>
         </p>
 

@@ -3980,4 +3980,59 @@ return [
             return false;
         },
     ],
+    'reconcile-credit-name-bytes' => [
+        'script' => 'migrate-reconcile-credit-name-bytes.php',
+        'card' => [
+            'title'  => 'Reconcile credit-name bytes (#1772)',
+            'body'   => 'Clears the &ldquo;N people are credited but aren&rsquo;t'
+                      . ' saved to the registry yet&rdquo; counter on Musicians /'
+                      . ' Credit People when it is STUCK above zero (the weeks-old'
+                      . ' &ldquo;Eddie James&rdquo; case). A song-credit row and its'
+                      . ' registry row hold the SAME name spelled with different'
+                      . ' invisible bytes (a trailing space, a non-breaking space),'
+                      . ' so the list page — which links them by EXACT byte match —'
+                      . ' never links them and the person shows &ldquo;In use&rdquo;'
+                      . ' forever. This rewrites every legacy credit row to its'
+                      . ' registry row&rsquo;s exact spelling (or normalises + auto-'
+                      . 'registers a name with no registry row at all). New credits'
+                      . ' never hit this — their bytes are trimmed at write time.'
+                      . ' Identity-preserving: it can never merge two DISTINCT people'
+                      . ' (a genuine registry duplicate is reported, not touched).'
+                      . ' Data-only; idempotent — the probe doubles as a drift'
+                      . ' detector.',
+            'button' => 'Reconcile Credit-Name Bytes',
+        ],
+        /* Data-derived drift-detecting probe (rule #19/#35 — this SQL is the same
+           definition the helper acts on and the banner counts). PENDING when any
+           REAL cited name (TRIM(Name) <> '' — blank/whitespace-only rows are junk,
+           not people, and are skipped in lockstep by the helper) has NO byte-exact
+           registry row. BINARY forces bytewise comparison (the default collation
+           is case- and trailing-space-insensitive, which is exactly what hides the
+           mismatch). APPLIED otherwise. Any error (a credit table absent on a bare
+           install) → not pending (safe — nothing to reconcile). */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $res = $db->query(
+                    "SELECT 1 FROM (
+                            SELECT Name FROM tblSongWriters
+                            UNION ALL SELECT Name FROM tblSongComposers
+                            UNION ALL SELECT Name FROM tblSongArrangers
+                            UNION ALL SELECT Name FROM tblSongAdaptors
+                            UNION ALL SELECT Name FROM tblSongTranslators
+                         ) u
+                        WHERE TRIM(u.Name) <> ''
+                          AND NOT EXISTS (
+                                SELECT 1 FROM tblMusicians p
+                                 WHERE BINARY p.Name = BINARY u.Name
+                          )
+                        LIMIT 1"
+                );
+                $needs = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needs;
+            } catch (\Throwable $e) {
+                return false;
+            }
+        },
+    ],
 ];

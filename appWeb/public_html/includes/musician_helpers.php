@@ -1450,6 +1450,169 @@ function musicianPromote(\mysqli $db, string $name, array $parts = []): int
 }
 
 /**
+ * iHymns — canonical BYTES for a person name (invisible-junk fold).
+ *
+ * ELI5: two names that LOOK identical on screen can be stored as different
+ * bytes — one has a stray trailing space, a non-breaking space instead of a
+ * normal one, or an accented letter encoded two different ways. This tidies a
+ * name down to one canonical byte-string WITHOUT ever changing which person it
+ * is: it only removes/normalises the invisible stuff.
+ *
+ * DETAILED / WHY: this is identity-PRESERVING on purpose — it must never fold
+ * two genuinely different people together (that is what the fuzzy merge UX is
+ * for). It only: (a) NFC-composes Unicode so "é" as one code point equals "é"
+ * as e + combining-accent (https://unicode.org/reports/tr15/ Form C — the
+ * composed form, NOT the KD decomposition used by the search-fold at line ~903,
+ * which would strip accents and IS lossy); (b) turns NBSP / zero-width space /
+ * BOM into an ordinary space; (c) collapses any run of whitespace to one ASCII
+ * space; (d) trims. Used only as the fallback canonical when NO registry row
+ * exists to adopt a spelling from (see musicianReconcileCreditNameBytes()).
+ *
+ * @param string $name Raw stored name (may carry invisible byte variants).
+ * @return string      Canonical bytes ('' if the name was blank/whitespace-only).
+ */
+function musicianCanonicalNameBytes(string $name): string
+{
+    if (class_exists('\Normalizer')) {
+        $n = \Normalizer::normalize($name, \Normalizer::FORM_C);
+        if (is_string($n)) { $name = $n; }
+    }
+    /* NBSP (U+00A0), zero-width space (U+200B), BOM / ZWNBSP (U+FEFF) → space,
+       then any whitespace run → one ASCII space, then trim. */
+    $name = preg_replace('/[\x{00A0}\x{200B}\x{FEFF}]/u', ' ', $name) ?? $name;
+    $name = preg_replace('/\s+/u', ' ', $name) ?? $name;
+    return trim($name);
+}
+
+/**
+ * iHymns — reconcile legacy credit-name BYTES against the registry (#1772).
+ *
+ * ELI5: fixes the "1 person is credited but isn't saved to the registry yet"
+ * counter that would never reach zero (the weeks-old "Eddie James" bug). The
+ * cause: a song-credit row and its registry row hold the SAME name spelled with
+ * slightly different invisible bytes (a stray space, an NBSP). The list page
+ * matches the two by EXACT bytes, so it never links them and the counter sticks
+ * on 1 forever — and the "Merge into Eddie James" button couldn't fix it
+ * either (it trimmed the candidate, saw it now equalled the target, and skipped
+ * as "nothing to do"). This walks every cited name that has no byte-exact
+ * registry row and repairs it.
+ *
+ * DETAILED / WHY: for each distinct cited Name (across the five role tables)
+ * that has NO byte-exact tblMusicians row:
+ *   (a) exactly one registry row COLLATION-matches → adopt that row's exact
+ *       spelling into the credit tables (the Eddie James case — the canonical
+ *       lives in the registry; this is what "Merge into X" was meant to do);
+ *   (b) NO registry row matches → normalise the bytes via
+ *       musicianCanonicalNameBytes() and auto-register the result
+ *       (registerMusicianByName(), the ONE registry insert path);
+ *   (c) TWO+ registry rows collation-match → the registry itself has a
+ *       duplicate, unsafe to auto-pick; left for the registry-dedup UX (#1773)
+ *       and reported as 'ambiguous'.
+ * Every operation is identity-preserving (collation-equal / whitespace / NFC
+ * are all "the same person"), so this can never silently merge two DISTINCT
+ * people. Idempotent: a second run finds nothing (every cited name now
+ * byte-matches a registry row). Blank / whitespace-only cited names are junk,
+ * not real people — they are skipped, matching the migration probe's
+ * `TRIM(Name) <> ''` (rule #35: the probe and this helper share one definition).
+ *
+ * Transaction-agnostic: opens NO transaction of its own so callers that already
+ * run inside one (bulk_register_unregistered, the migration) can wrap it. Every
+ * value is bound; the only interpolated tokens are the hardcoded table names
+ * (rule #5).
+ *
+ * @param \mysqli $db Live connection (includes/db_mysql.php::getDbMysqli()).
+ * @return array{scanned:int,rewritten:int,registered:int,adopted:int,ambiguous:int,names:array<int,array<string,mixed>>}
+ */
+function musicianReconcileCreditNameBytes(\mysqli $db): array
+{
+    /* The five song-credit tables that carry a free-text person Name. Hardcoded
+       constants — safe to interpolate into the SQL below (rule #5). */
+    static $tables = [
+        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+        'tblSongAdaptors', 'tblSongTranslators',
+    ];
+
+    $report = ['scanned' => 0, 'rewritten' => 0, 'registered' => 0,
+               'adopted' => 0, 'ambiguous' => 0, 'names' => []];
+
+    /* (1) Every distinct cited name, deduped by EXACT bytes (PHP array keys are
+           byte-exact — unlike a SQL UNION, which folds under the collation and
+           would lose the very byte-variant we are hunting). */
+    $citedSql = implode("\n            UNION ALL\n            ", array_map(
+        static fn(string $t): string => "SELECT Name FROM {$t}",
+        $tables
+    ));
+    $citedBytes = [];
+    foreach ($db->query($citedSql)->fetch_all(MYSQLI_ASSOC) as $r) {
+        $citedBytes[(string)$r['Name']] = true;
+    }
+
+    /* (2) Registry names, deduped by EXACT bytes. */
+    $regBytes = [];
+    foreach ($db->query('SELECT Name FROM tblMusicians')->fetch_all(MYSQLI_ASSOC) as $r) {
+        $regBytes[(string)$r['Name']] = true;
+    }
+
+    /* (3) The stuck set: cited, real (not blank/whitespace-only), and with no
+           byte-exact registry row. */
+    foreach (array_keys($citedBytes) as $bad) {
+        if (trim($bad) === '') { continue; }        // junk row, not a person
+        if (isset($regBytes[$bad])) { continue; }   // already byte-matched
+        $report['scanned']++;
+
+        /* Collation-matching registry rows (case- + trailing-space-insensitive),
+           deduped by exact bytes so a genuine registry duplicate is detectable. */
+        $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Name = ?');
+        $stmt->bind_param('s', $bad);
+        $stmt->execute();
+        $collationMatches = [];
+        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $m) {
+            $collationMatches[(string)$m['Name']] = true;
+        }
+        $stmt->close();
+
+        $registerAfter = false;
+        if (count($collationMatches) === 1) {
+            $canonical = (string) array_key_first($collationMatches);  // adopt registry spelling
+        } elseif (count($collationMatches) > 1) {
+            $report['ambiguous']++;
+            $report['names'][] = ['name' => $bad, 'action' => 'ambiguous',
+                                  'candidates' => array_keys($collationMatches)];
+            continue;
+        } else {
+            $canonical = musicianCanonicalNameBytes($bad);
+            if ($canonical === '') { continue; }     // normalised to nothing → junk
+            $registerAfter = true;
+        }
+
+        /* (4) Rewrite the credit rows from the bad bytes to the canonical bytes.
+               BINARY in the WHERE touches ONLY the exact bad-byte rows, never a
+               collation-equal sibling that is already correct. */
+        if ($canonical !== $bad) {
+            foreach ($tables as $t) {
+                $up = $db->prepare("UPDATE {$t} SET Name = ? WHERE BINARY Name = ?");
+                $up->bind_param('ss', $canonical, $bad);
+                $up->execute();
+                $report['rewritten'] += $up->affected_rows;
+                $up->close();
+            }
+        }
+
+        /* (5) Ensure a registry row exists for the canonical bytes. */
+        if ($registerAfter) {
+            $newId = registerMusicianByName($db, $canonical);
+            if ($newId > 0) { $report['registered']++; }
+            $report['names'][] = ['name' => $bad, 'action' => 'registered', 'canonical' => $canonical];
+        } else {
+            $report['adopted']++;
+            $report['names'][] = ['name' => $bad, 'action' => 'adopted', 'canonical' => $canonical];
+        }
+    }
+
+    return $report;
+}
+
+/**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
  * migrate-musicians-flags.php; detecting one is sufficient to
@@ -2581,8 +2744,8 @@ function musicianCitedUnregisteredNames(\mysqli $db): array
               UNION ALL
               SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
           ) u
-         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
-         GROUP BY u.Name
+         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE BINARY p.Name = BINARY u.Name)
+         GROUP BY BINARY u.Name
          ORDER BY TotalUsage DESC, u.Name ASC
     ";
     /* mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT

@@ -4011,7 +4011,7 @@ $csrf = csrfToken();
                                            class="form-control form-control-sm"
                                            id="edit-compiler-add-search"
                                            list="edit-compiler-datalist"
-                                           placeholder="Type a name from Credit People"
+                                           placeholder="Type a name from Musicians"
                                            autocomplete="off">
                                     <datalist id="edit-compiler-datalist"></datalist>
                                 </div>
@@ -4024,9 +4024,9 @@ $csrf = csrfToken();
                                 </div>
                             </div>
                             <div class="form-text small text-muted mt-1">
-                                Person must already exist in Credit People. Use
-                                <a href="/manage/musicians">Manage people</a>
-                                to register a new compiler before adding them here.
+                                Person must already exist in Musicians. Use
+                                <a href="/manage/musicians">Manage musicians</a>
+                                to add a new compiler before adding them here.
                             </div>
                         </div>
                         <?php endif; ?>
