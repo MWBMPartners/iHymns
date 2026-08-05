@@ -593,9 +593,14 @@ class SongData
      */
     public function getSongbooks(): array
     {
+        /* #150 — alphabetise ignoring a leading article ("The Australian Hymn
+           Book" files under A, not T). Shared helper so the fuzzy dedup fold
+           (ihymns_sim_normalise) is not re-forked for a sort key (rule #22). */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'sort_helpers.php';
+
         if ($this->jsonMode) {
             $books = $this->jsonData['songbooks'] ?? [];
-            usort($books, fn($a, $b) => strcmp($a['name'] ?? '', $b['name'] ?? ''));
+            ihymns_sort_by_title_key($books, 'name');
             return $books;
         }
 
@@ -622,7 +627,7 @@ class SongData
                     {$openLibrarySelect}
              FROM tblSongbooks b{$parentJoin}
              WHERE " . $this->_bookVisible() . "
-             ORDER BY b.Name ASC"
+             ORDER BY b.Name ASC"   /* deterministic fetch base; #150 re-sorts article-aware in PHP below */
         );
         $stmt->execute();
         $result = $stmt->get_result();
@@ -643,6 +648,11 @@ class SongData
             $books[] = $this->_normaliseSongbookParent($row);
         }
         $stmt->close();
+
+        /* #150 — final order ignores a leading article. The SQL ORDER BY above
+           only guarantees a deterministic fetch; the human-facing alphabetical
+           order (the home tiles + /songbooks list consume this) is set here. */
+        ihymns_sort_by_title_key($books, 'name');
 
         /* Attach series memberships, compilers, alt names, external
            links and contained-language sets in batch queries (#782
