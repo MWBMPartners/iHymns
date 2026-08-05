@@ -1485,7 +1485,7 @@ function musicianCanonicalNameBytes(string $name): string
 }
 
 /**
- * iHymns — reconcile legacy credit-name BYTES against the registry (#1772).
+ * iHymns — reconcile legacy credit-name BYTES against the registry (#1784).
  *
  * ELI5: fixes the "1 person is credited but isn't saved to the registry yet"
  * counter that would never reach zero (the weeks-old "Eddie James" bug). The
@@ -1506,7 +1506,7 @@ function musicianCanonicalNameBytes(string $name): string
  *       musicianCanonicalNameBytes() and auto-register the result
  *       (registerMusicianByName(), the ONE registry insert path);
  *   (c) TWO+ registry rows collation-match → the registry itself has a
- *       duplicate, unsafe to auto-pick; left for the registry-dedup UX (#1773)
+ *       duplicate, unsafe to auto-pick; left for the registry-dedup UX (#1785)
  *       and reported as 'ambiguous'.
  * Every operation is identity-preserving (collation-equal / whitespace / NFC
  * are all "the same person"), so this can never silently merge two DISTINCT

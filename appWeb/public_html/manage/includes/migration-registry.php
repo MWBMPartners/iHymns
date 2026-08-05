@@ -3983,7 +3983,7 @@ return [
     'reconcile-credit-name-bytes' => [
         'script' => 'migrate-reconcile-credit-name-bytes.php',
         'card' => [
-            'title'  => 'Reconcile credit-name bytes (#1772)',
+            'title'  => 'Reconcile credit-name bytes (#1784)',
             'body'   => 'Clears the &ldquo;N people are credited but aren&rsquo;t'
                       . ' saved to the registry yet&rdquo; counter on Musicians /'
                       . ' Credit People when it is STUCK above zero (the weeks-old'

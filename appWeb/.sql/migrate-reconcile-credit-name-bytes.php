@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Reconcile legacy credit-name BYTES against the registry (#1772).
+ * iHymns — Reconcile legacy credit-name BYTES against the registry (#1784).
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -32,7 +32,7 @@ declare(strict_types=1);
  *         into the credit tables (the Eddie James case);
  *     (b) no registry row matches → normalise the bytes and auto-register;
  *     (c) two+ registry rows collation-match → left for the registry-dedup UX
- *         (#1773) and reported as 'ambiguous'.
+ *         (#1785) and reported as 'ambiguous'.
  *   Every operation is identity-preserving (collation-equal / whitespace / NFC
  *   are "the same person") — it can NEVER merge two DISTINCT people.
  *
@@ -118,7 +118,7 @@ if ($report['ambiguous'] > 0) {
     _migCreditBytes_out(sprintf(
         '[warn] %d name%s left untouched — the registry itself has two rows that '
             . 'collation-match, so the canonical spelling is ambiguous. Resolve '
-            . 'these on the registry-dedup review page (#1773).',
+            . 'these on the registry-dedup review page (#1785).',
         $report['ambiguous'], $report['ambiguous'] === 1 ? '' : 's'
     ));
     foreach ($report['names'] as $n) {

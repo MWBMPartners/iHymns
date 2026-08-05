@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Musicians (formerly "Credit People", #545; display renamed #1741 P2-B / #1772)
+ * iHymns — Admin: Musicians (formerly "Credit People", #545; display renamed #1741 P2-B / #1784)
  *
  * Catalogue-wide CRUD for the people credited on songs, unioned
  * across tblSongWriters / tblSongComposers / tblSongArrangers /
@@ -584,7 +584,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 if ($newId > 0) { $registered++; } else { $skipped++; }
             }
 
-            /* #1772 — self-heal the byte-variant names the register loop above
+            /* #1784 — self-heal the byte-variant names the register loop above
                "skips". A candidate like "Eddie James " (trailing space) already
                has a collation-matching registry row ("Eddie James"), so the loop
                finds it and skips — but the credit rows keep their stray bytes and

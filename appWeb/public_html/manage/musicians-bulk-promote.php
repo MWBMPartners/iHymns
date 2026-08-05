@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Add Musicians in Bulk (formerly "Bulk Promote Credit People", #846; display renamed #1772)
+ * iHymns — Admin: Add Musicians in Bulk (formerly "Bulk Promote Credit People", #846; display renamed #1784)
  *
  * Companion surface to /manage/musicians. Lists every distinct
  * name used on a song-credit row that doesn't yet have a matching
@@ -137,7 +137,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         $db->begin_transaction();
         try {
             foreach ($rowAction as $rawName => $act) {
-                /* #1772 — keep the EXACT bytes the form posted ($origName) as
+                /* #1784 — keep the EXACT bytes the form posted ($origName) as
                    well as the trimmed identity ($name). The candidate may carry
                    stray whitespace ("Eddie James " with a trailing space); the
                    merge branch below needs the original bytes to re-point the
@@ -182,7 +182,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 } elseif ($act === 'merge') {
                     /* Tolerate either key form for the target lookup — the
                        browser may or may not have preserved stray whitespace in
-                       the merge_to[] field name (#1772). */
+                       the merge_to[] field name (#1784). */
                     $targetId = (int)($mergeTo[$origName] ?? $mergeTo[$name] ?? 0);
                     if ($targetId <= 0) { $failed++; continue; }
 
@@ -196,7 +196,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
                     /* Re-point every song-credit row from the candidate name to
                        the registry target's EXACT spelling across the five join
-                       tables. #1772: match on the collation (`Name = ?`) so a
+                       tables. #1784: match on the collation (`Name = ?`) so a
                        stray-byte variant ("Eddie James " with a trailing space)
                        IS caught — the old code trimmed the candidate, saw it now
                        equalled the target, and skipped as "nothing to do", which
