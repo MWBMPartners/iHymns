@@ -1,5 +1,16 @@
 # #1769 P4 — management surfaces + DM-2 rights-facts derivation: implementation blueprint
 
+> **STATUS (2026-08-05): Commits A–F LANDED + pushed on `claude/gating-model-review`; G (this docs sweep) in progress.**
+> - A `5ff6a48c` licence-type CRUD · B `f4d97ce9` editor Rights panel · C `c1b1a15f` songbook default rights ·
+>   D `9fb9bc0a` DM-2 derive-rights-facts · E `f44296d5` restrictions Effect honesty + gating-noop gate ·
+>   F `067cd5c8` activity-log CI guard (+ fixed the tiers.php success-logging gap it found).
+> - Every commit a verified no-op while `content_gating_enabled='0'`; PHP 120/120 + node 50/50 CI-parity; all
+>   six new guards mutation-proven; DM-2 + fill-NULL-only sweep verified against a live DB.
+> - **NOT done (owner-gated, P6):** the master-switch flip + the `/manage/gating` hub (D8) + #1772–#1777 +
+>   the dead songbook/feature restriction pickers (tracked issue). Commit-C deviation: the songbook
+>   apply-to-songs is a checkbox on the save, not a separate `admin_…` action (one code path, same
+>   fill-NULL-only + IS NULL + logActivity contract).
+
 > Durable blueprint for P4 (branch `claude/gating-model-review`, follows P3 = `.claude/gating-p3-design.md`).
 > Produced by a sequential Fable design pass (orchestrator-verified against source), 2026-08-04.
 > PRIME INVARIANT (unchanged from P0–P3): every commit is a verified no-op while `content_gating_enabled='0'`
