@@ -43,8 +43,17 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 
-requireGlobalAdmin();
+/* #1769 P4 Commit E (D9) — gate on the manage_configuration entitlement, the
+   SAME check its new nav entry advertises (admin-links.php), rather than a raw
+   requireGlobalAdmin(). Admittance-identical at the default entitlement map
+   (manage_configuration defaults to global_admin only), but now a page and its
+   nav link can never drift (#1587) and an operator's override is honoured. */
+requireAuth();
 $currentUser = getCurrentUser();
+if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The manage_configuration entitlement is required.');
+}
 $activePage  = 'gating-noop-verify';
 
 const GATING_NOOP_SENTINEL = 'gating_noop_baseline';

@@ -122,6 +122,10 @@ $_adminLinks = [
        the credentials card above (manage_configuration) — rule: a page's
        own gate and its nav entry must agree (#1587). */
     ['intapps-status',       '/manage/intapps-status',          'bi-broadcast-pin',   'IntApps Gateway',       'manage_configuration',        'Operations' ],
+    /* Gating no-op verify (#1769) — the OFF-baseline / equivalence harness for the
+       content-gating refactor. Gated on manage_configuration, the SAME check the
+       page itself uses (#1587 — page gate and nav entry must agree). */
+    ['gating-noop-verify',   '/manage/gating-noop-verify',      'bi-shield-check',    'Gating No-op Verify',   'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
     ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 
