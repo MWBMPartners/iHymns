@@ -495,6 +495,21 @@ try {
 }
 $hasLineTranslations = !empty($lineTranslationsByLineId);
 
+/* #299 — inline chord charts. A song "has chords" when ANY component carries a
+   non-empty chord line (the `chords` parallel array to `lines`). This is a
+   song-level fact — identical for every visitor — so the shared-cache fragment
+   (rule #6) can decide it server-side: the toggle button + the chord rows are
+   rendered only when true (no dead control on a chordless song), and the
+   already-built, router-wired transpose.js auto-detects the `[data-chord]`
+   spans this emits. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'chord_display.php';
+$songHasChords = false;
+foreach ($components as $_c) {
+    foreach ((array)($_c['chords'] ?? []) as $_ch) {
+        if (ihymns_chord_line_has_content($_ch)) { $songHasChords = true; break 2; }
+    }
+}
+
 ?>
 
 <!-- ================================================================
@@ -1057,10 +1072,16 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                     ?>
                 </div>
 
-                <!-- Chord charts toggle (#299) -->
-                <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
+                <!-- Chord charts toggle (#299). Rendered ONLY when the song has
+                     chords (song-level, cacheable-safe — rule #6); wired by
+                     transpose.js's initSongPage() to toggle `.chords-visible` on
+                     the song page. No dead control on a chordless song. -->
+                <?php if ($songHasChords): ?>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords"
+                        aria-pressed="false" title="Show or hide chord charts">
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
                 </button>
+                <?php endif; ?>
 
                 <?php /* Per-line translation toggle (#1089 / #1100 P1). Rendered ONLY
                          when $hasLineTranslations is true (computed above from the
@@ -1240,6 +1261,7 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                     <?php endif; ?>
                 </div>
                 <!-- Lyrics lines -->
+                <?php $compChords = (array)($component['chords'] ?? []); ?>
                 <div class="lyric-lines">
                     <?php foreach ($lines as $lineIdx => $line): ?>
                         <?php
@@ -1250,7 +1272,13 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                                button itself, so this is just "does THIS line have one". */
                             $lineId = (int)($lineIds[$lineIdx] ?? 0);
                             $lineTr = ($lineId > 0) ? ($lineTranslationsByLineId[$lineId] ?? []) : [];
+                            /* #299 — the chord line above THIS lyric line, wrapped into
+                               per-chord <span data-chord> tokens transpose.js can rewrite.
+                               Empty string (no chords for this line) → no chord row. The
+                               whole chord layer is CSS-hidden until the user toggles it. */
+                            $chordHtml = $songHasChords ? ihymns_render_chord_line_html($compChords[$lineIdx] ?? '') : '';
                         ?>
+                        <?php if ($chordHtml !== ''): ?><div class="lyric-chords" aria-hidden="true"><?= $chordHtml ?></div><?php endif; ?>
                         <p class="lyric-line mb-1"><?= htmlspecialchars($line) ?></p>
                         <?php foreach ($lineTr as $lt): ?>
                             <p class="lyric-line-translation small text-muted fst-italic mb-1 d-none"

@@ -1433,6 +1433,31 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     margin-bottom: 0.15rem;
 }
 
+/* Inline chord charts (#299). The chord row sits above its lyric line and is
+   HIDDEN by default — the #btn-toggle-chords button (wired in transpose.js)
+   adds `.chords-visible` to `.page-song` to reveal it. Monospace + `pre` so the
+   spacing the server preserved keeps each chord roughly over its word; the
+   per-chord <span data-chord> tokens are what transpose.js rewrites. */
+.lyric-chords {
+    display: none;
+    font-family: var(--bs-font-monospace, "Courier New", monospace);
+    font-weight: 700;
+    font-size: 0.85em;
+    line-height: 1.1;
+    color: var(--accent-solid, var(--bs-primary));
+    white-space: pre;
+    overflow-x: auto;
+    margin: 0.2rem 0 0;
+}
+.page-song.chords-visible .lyric-chords {
+    display: block;
+}
+/* Each transposable chord token. Kept inline so the surrounding whitespace
+   runs (plain text nodes) preserve horizontal position. */
+.lyric-chords [data-chord] {
+    display: inline;
+}
+
 /* Verse styling — neutral border so it reads as the "default" block. */
 .lyric-verse {
     border-left-color: var(--card-border);

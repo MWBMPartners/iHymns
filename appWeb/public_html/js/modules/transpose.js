@@ -129,10 +129,32 @@ export class Transpose {
         /* Bind transpose controls */
         this.bindControls(songId, originalKey, hasChords);
 
+        /* #299 — wire the "Chords" show/hide toggle. The button + the
+           `.lyric-chords` rows are server-rendered only when the song has
+           chords (song.php), and the rows are CSS-hidden until `.chords-visible`
+           is present on the song page. Chords start HIDDEN (lyrics-first); the
+           button reveals them. aria-pressed tracks the state for assistive tech. */
+        this.bindChordToggle(songPage);
+
         /* Apply initial transpose if offset is non-zero */
         if (this.offset !== 0 && hasChords) {
             this.applyTranspose();
         }
+    }
+
+    /**
+     * Wire the #btn-toggle-chords button to reveal/hide the inline chord rows
+     * (#299). No-op when the button is absent (chordless song).
+     * @param {HTMLElement} songPage The `.page-song` root.
+     */
+    bindChordToggle(songPage) {
+        const btn = document.getElementById('btn-toggle-chords');
+        if (!btn || !songPage) return;
+        btn.addEventListener('click', () => {
+            const showing = songPage.classList.toggle('chords-visible');
+            btn.setAttribute('aria-pressed', showing ? 'true' : 'false');
+            btn.classList.toggle('active', showing);
+        });
     }
 
     /**
