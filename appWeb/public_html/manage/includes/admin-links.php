@@ -77,6 +77,9 @@ $_adminLinks = [
     /* Access — gating + permission surfaces (#819) */
     ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
     ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
+    /* Licence Types (#459 / #1769 P4) — the licence vocabulary (CCLI, MRL, …),
+       what each covers + any tier it confers (tblLicenceTypes). */
+    ['licence-types',        '/manage/licence-types',          'bi-patch-check',     'Licence Types',         'manage_licence_types',        'Access'     ],
     /* Feature Gating (#1481 P1) — defines ADDITIONAL admin-configurable
        capabilities (tblGatingCapabilities), which then auto-grow a column
        on the Access Tiers matrix above. Deliberately Global-Admin-only

@@ -448,6 +448,13 @@ tags:
       nothing for the two to drift on). External-link editing is
       page-only for now — these four actions cover scalar fields,
       aliases, credits, merge and delete.
+  - name: Admin — Licence Types
+    description: |
+      Licence-vocabulary CRUD (#459 / #1769 P4) — `tblLicenceTypes`: the
+      tokens every licence store writes, what each legally covers, and any
+      access tier it confers. Mirrors `/manage/licence-types` (both surfaces
+      call the SAME shared core in `includes/licence_type_admin.php`). Gated
+      on `manage_licence_types`.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -10185,6 +10192,179 @@ paths:
           description: Tune not found
 
   # ===========================================================================
+  # ADMIN — LICENCE TYPES  (#459 / #1769 P4)
+  #
+  # CRUD over the licence vocabulary (tblLicenceTypes): the tokens every
+  # licence store writes, what each legally covers, and any access tier it
+  # confers. The web page /manage/licence-types and these JSON twins share
+  # ONE core (includes/licence_type_admin.php). Gated on the
+  # manage_licence_types entitlement (default: admin + global_admin).
+  # ===========================================================================
+  /api.php?action=admin_licence_type_create:
+    post:
+      operationId: adminLicenceTypeCreate
+      tags: [Admin — Licence Types]
+      summary: Create a curator-defined licence type
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLicenceTypeInput"
+      responses:
+        "200":
+          description: Licence type created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Validation error (bad/missing key, label, coverage kind, authority)
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: Duplicate key, or the tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_update:
+    post:
+      operationId: adminLicenceTypeUpdate
+      tags: [Admin — Licence Types]
+      summary: Update a licence type (LicenceKey is immutable)
+      description: |
+        The `key` is never changed — too many stores reference it — so it is
+        ignored on update. Omitting `covers` clears coverage; a ticked kind
+        that already carried a qualifier object keeps it verbatim.
+        Editing `confers_tier`/`enabled` takes effect on members' resolved
+        tiers immediately, even while content gating is off.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminLicenceTypeInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Licence type updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: The tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_toggle:
+    post:
+      operationId: adminLicenceTypeToggle
+      tags: [Admin — Licence Types]
+      summary: Flip a licence type's Enabled flag
+      description: |
+        A disabled licence type is excluded from pickers + the registry union
+        but kept so historical rows keep resolving their label — the
+        soft-retire path, distinct from delete.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_toggle] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  enabled: { type: integer, description: The new Enabled state (0 or 1). }
+        "400":
+          description: Missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: The tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_delete:
+    post:
+      operationId: adminLicenceTypeDelete
+      tags: [Admin — Licence Types]
+      summary: Delete a curator licence type (refused for system/referenced rows)
+      description: |
+        Refused (409) when the row is a shipped system seed — disable it
+        instead — or when any store (organisations, org/content licences,
+        require_licence restrictions, song rights facts, songbook defaults)
+        still references its key. Disable it to retire it safely.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: Refused — system row, still-referenced key, or table not migrated
+
+  # ===========================================================================
   # ADMIN — ANALYTICS  (#719 PR 2d)
   # ===========================================================================
 
@@ -16068,6 +16248,56 @@ components:
           items:
             $ref: "#/components/schemas/AdminTuneCredit"
           description: Full replacement list, same omit-to-leave-unchanged posture as `aliases`.
+
+    AdminLicenceTypeInput:
+      type: object
+      description: |
+        Shared input for `admin_licence_type_create` and
+        `admin_licence_type_update` (#459 / #1769 P4). Mirrors
+        `manage/licence-types.php`'s POST field names exactly — both surfaces
+        validate via the SAME `licenceTypeAdminValidate()`
+        (`includes/licence_type_admin.php`). On update `key` is ignored
+        (LicenceKey is immutable).
+      required: [key, label]
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{1,29}$'
+          description: Lowercase token, immutable after create — the value every licence store writes. Ignored on update.
+        label:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 255
+        confers_tier:
+          type: string
+          nullable: true
+          description: A live tblAccessTiers.Name this licence also grants its holders. Blank/omitted = confers no tier. Validated against the live tiers table.
+        covers:
+          type: array
+          items:
+            type: string
+            enum: [lyrics_display, lyrics_print, music_reproduction, audio_playback]
+          description: Coverage kinds this licence legally unlocks. Full replacement list; empty/omitted clears coverage. Unknown kinds are rejected.
+        requires_number:
+          type: boolean
+          description: 1 = recording this licence needs a licence number (drives form validation only, never enforcement).
+        authority:
+          type: string
+          nullable: true
+          pattern: '^[a-z][a-z0-9_]{0,29}$'
+          description: Optional issuing-body token (e.g. ccli). Blank = unspecified.
+        authority_ref:
+          type: string
+          maxLength: 50
+          nullable: true
+        enabled:
+          type: boolean
+          description: 0 = soft-disabled (excluded from pickers/registry union, kept for historical resolution). Defaults to 1 on create.
+        sort_order:
+          type: integer
+          minimum: 0
 
     AdminDataHealthResponse:
       type: object

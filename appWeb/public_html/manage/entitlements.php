@@ -89,7 +89,7 @@ $groups = [
        "who can manage Works?" had to scan an unsorted list. Grouped here with
        the surfaces they sit beside in the admin nav. */
     'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_external_link_types', 'manage_duplicate_songs'],
-    'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_feature_gating'],
+    'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_licence_types', 'manage_feature_gating'],
     'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
     'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
     'Personalisation'    => ['manage_default_card_layout', 'customise_own_card_layout'],
@@ -186,6 +186,7 @@ $ENTITLEMENT_LABELS = [
     'manage_duplicate_songs'    => ['Merge duplicate songs',          'Review suggested duplicates and permanently merge two songs'],
     'manage_own_organisation'   => ['Manage your own organisation',   'Administer an organisation you own or admin, without a site-wide role'],
     'manage_feature_gating'     => ['Define gateable features',       'Create the capabilities that access tiers switch on and off'],
+    'manage_licence_types'      => ['Manage licence types',           'Define the licence vocabulary (CCLI, MRL, …), what each covers, and any tier it confers'],
     'manage_org_licences'       => ['Manage organisation licences',   'Add, change or remove an organisation\'s CCLI / streaming licences'],
     'manage_user_licences'      => ['Manage user licences',           'Attach or remove a licence held by an individual user'],
     'view_licence_audit'        => ['View licence audit',             'See how a user\'s effective licences were worked out'],

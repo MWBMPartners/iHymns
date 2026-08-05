@@ -100,6 +100,16 @@ return [
         'admin_group_member_remove'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_group_update'                    => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_groups'                          => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1769 P4 — licence-type vocabulary CRUD API. Same D1-default-A posture
+           as admin_tune / admin_tier: deliberate API-first surface, documented in
+           api-docs.yaml, reachable from the Swagger try-it-out console;
+           manage/licence-types.php does its own direct DB work via the SAME shared
+           includes/licence_type_admin.php cores (never a fork), so nothing
+           first-party calls the JSON twins yet. */
+        'admin_licence_type_create'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_delete'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_toggle'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_update'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_migrations_status'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_delete'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_add'         => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',

@@ -13828,6 +13828,76 @@ if ($action !== null) {
          *   name, display_name, level, description?, caps?: { ... }
          * }
          * ----------------------------------------------------------------- */
+        /* -----------------------------------------------------------------
+         * Licence-type CRUD (#459 / #1769 P4) — thin wrappers over the ONE
+         * shared core includes/licence_type_admin.php (same as /manage/licence-
+         * types). Gate on manage_licence_types (the page's entitlement, OV-10).
+         * 409 on an un-migrated table or a refused delete/duplicate key (status
+         * is the contract — rule #35). DORMANT: writes only the licence
+         * vocabulary; the live effect of ConfersTier/Enabled is the pre-existing
+         * P2-F conferral overlay, surfaced honestly on the page.
+         * ----------------------------------------------------------------- */
+        case 'admin_licence_type_create':
+        case 'admin_licence_type_update':
+        case 'admin_licence_type_toggle':
+        case 'admin_licence_type_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_licence_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_type_admin.php';
+            try {
+                $ltDb = getDbMysqli();
+                if (!licenceTypeAdminGates($ltDb)['hasTable']) {
+                    sendJson(['error' => 'The licence-type registry table has not been created on this environment yet.'], 409);
+                    break;
+                }
+                $ltBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+                $ltActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+                $ltId    = (int)($ltBody['id'] ?? 0);
+
+                if ($action === 'admin_licence_type_create') {
+                    $v = licenceTypeAdminValidate($ltDb, $ltBody, true);
+                    if ($v['errors']) { sendJson(['error' => implode(' ', $v['errors'])], 400); break; }
+                    $newId = licenceTypeAdminCreate($ltDb, $v['norm'], $ltActor);
+                    logActivity('api.admin.licence_types.create', 'licence_type', (string)$newId,
+                        ['key' => $v['norm']['key'], 'label' => $v['norm']['label']]);
+                    sendJson(['ok' => true, 'id' => $newId]);
+                } elseif ($action === 'admin_licence_type_update') {
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    $v = licenceTypeAdminValidate($ltDb, $ltBody, false);
+                    if ($v['errors']) { sendJson(['error' => implode(' ', $v['errors'])], 400); break; }
+                    licenceTypeAdminUpdate($ltDb, $ltId, $v['norm'], $ltActor);
+                    logActivity('api.admin.licence_types.update', 'licence_type', (string)$ltId,
+                        ['label' => $v['norm']['label'], 'confersTier' => $v['norm']['confers_tier']]);
+                    sendJson(['ok' => true]);
+                } elseif ($action === 'admin_licence_type_toggle') {
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    $state = licenceTypeAdminToggle($ltDb, $ltId, $ltActor);
+                    logActivity('api.admin.licence_types.toggle', 'licence_type', (string)$ltId, ['enabled' => $state]);
+                    sendJson(['ok' => true, 'enabled' => $state]);
+                } else { /* admin_licence_type_delete */
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    licenceTypeAdminDelete($ltDb, $ltId);
+                    logActivity('api.admin.licence_types.delete', 'licence_type', (string)$ltId, []);
+                    sendJson(['ok' => true]);
+                }
+            } catch (\RuntimeException $re) {
+                /* Duplicate key / delete refused (system or still-referenced). */
+                logActivityError('api.admin.licence_types', 'licence_type', (string)($ltId ?? 0), $re);
+                sendJson(['error' => $re->getMessage()], 409);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.licence_types', 'licence_type', (string)($ltId ?? 0), $te);
+                sendJson(['error' => 'Could not save the licence type.'], 500);
+            }
+            break;
+        }
+
         case 'admin_tier_create': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);

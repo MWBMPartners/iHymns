@@ -106,12 +106,50 @@ if ($win !== null) {
     }
 }
 
+/* Licence-type CRUD (#1769 P4): the four admin_licence_type_* actions are
+   FALL-THROUGH case labels sharing ONE handler body (the gate + dispatch live
+   under `case 'admin_licence_type_delete':`), so the $actionEntitlement loop's
+   trim-at-next-`case '` window would be empty for the first three. Bound the
+   whole group from its first label to the next non-licence case
+   (admin_tier_create) and assert the shared body gates on manage_licence_types
+   — the entitlement /manage/licence-types + its nav entry advertise (#1587). */
+$ltActions = [
+    'admin_licence_type_create',
+    'admin_licence_type_update',
+    'admin_licence_type_toggle',
+    'admin_licence_type_delete',
+];
+$ltStart = strpos($src, "case 'admin_licence_type_create'");
+$ltEnd   = strpos($src, "case 'admin_tier_create'");
+if ($ltStart === false || $ltEnd === false || $ltEnd <= $ltStart) {
+    $failures[] = "api.php: could not bound the admin_licence_type_* handler group "
+                . "(case 'admin_licence_type_create' … case 'admin_tier_create') — did the actions get "
+                . "renamed or moved? (#1769 P4 pin needs updating).";
+} else {
+    $ltWin = substr($src, $ltStart, $ltEnd - $ltStart);
+    foreach ($ltActions as $a) {
+        if (!str_contains($ltWin, "case '{$a}'")) {
+            $failures[] = "api.php: admin_licence_type_* group is missing `case '{$a}'` — the four CRUD "
+                        . "actions must share the one gated handler body (#1769 P4).";
+        }
+    }
+    if (!str_contains($ltWin, "userHasEntitlement('manage_licence_types'")) {
+        $failures[] = "api.php: admin_licence_type_* group does not gate on "
+                    . "userHasEntitlement('manage_licence_types', …) — the entitlement "
+                    . "/manage/licence-types advertises (#1769 P4, #1587).";
+    }
+    if (str_contains($ltWin, "in_array(\$authUser['Role'], ['admin', 'global_admin'])")) {
+        $failures[] = "api.php: admin_licence_type_* group still carries a raw-role gate — replace it with "
+                    . "userHasEntitlement('manage_licence_types', …) (#1769 P4).";
+    }
+}
+
 if ($failures) {
     fwrite(STDERR, "FAIL: gating-family admin-gate guard (#1769 P0, OV-10):\n\n");
     foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
     fwrite(STDERR, "\n");
     exit(1);
 }
-echo "PASS: gating-family API actions (tier CRUD, admin_restrictions, admin_set_user_tier) gate on their "
-   . "page's entitlement, and admin_set_user_tier validates tiers against the live catalogue.\n";
+echo "PASS: gating-family API actions (tier CRUD, admin_restrictions, admin_set_user_tier, licence-type CRUD) "
+   . "gate on their page's entitlement, and admin_set_user_tier validates tiers against the live catalogue.\n";
 exit(0);
