@@ -115,7 +115,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
+                $newTierId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1769 P4 — every gating action is logged (owner directive). */
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.create', 'access_tier', (string)$newTierId, [
+                        'name' => $name, 'displayName' => $displayName, 'level' => $level,
+                    ]);
+                }
                 $success = "Tier '{$name}' created.";
                 break;
             }
@@ -179,6 +186,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->bind_param($types, ...$args);
                 $stmt->execute();
                 $stmt->close();
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.update', 'access_tier', (string)$id, [
+                        'displayName' => $displayName, 'level' => $level,
+                    ]);
+                }
                 $success = 'Tier updated.';
                 break;
             }
@@ -208,6 +220,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $stmt->close();
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.delete', 'access_tier', (string)$id, ['name' => $name]);
+                }
                 $success = "Tier '{$name}' deleted.";
                 break;
             }
