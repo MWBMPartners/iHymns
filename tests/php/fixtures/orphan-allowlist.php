@@ -287,7 +287,10 @@ return [
      * empty result — "API-reachable, user-invisible, data-impossible".
      * ===================================================================== */
     'tables_reader_no_writer' => [
-        'tblSongAlternativeTitles' => '#1669 — SongData.php:955/966/2946 reads it; the creating migration has zero INSERTs. Writer is remediation X8',
+        /* tblSongAlternativeTitles graduated OUT of this list in #1783: the
+           duplicate_song endpoint (manage/editor/api2.php) now writes it via
+           INSERT...SELECT when copying a song's alt titles, so it is no longer
+           reader-with-no-writer. Removing the entry keeps the count exact. */
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',

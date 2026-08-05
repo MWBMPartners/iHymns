@@ -12729,6 +12729,49 @@ paths:
           description: Unknown songbook abbreviation
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=duplicate_song:
+    post:
+      operationId: editorDuplicateSong
+      tags: [Editor API v2]
+      summary: Duplicate a song into a hidden staging book as the start of a new songbook entry
+      description: |
+        POST, `edit_songs` role only. Copies an existing song — lyrics,
+        chords, credits, tags, external links, arrangement, key, alternative
+        titles and metadata — into the hidden `PENDING` staging songbook
+        (`IsOfficial=0`, `IsDisabled=1`) via the shared revision-restore copy
+        engine (`ed2_applySongSnapshot`), and returns the new song's id. The
+        copy is opened in the editor with the **Songbook and Song number
+        fields empty**; assigning a real songbook (the #1679 re-key) turns it
+        into a brand-new catalogue song. Reset on the copy: `Number`,
+        `Verified`, recording-level `Isrc`, media flags (media is not copied);
+        a fresh `PublicId`; a `'duplicate'` revision. (#1783)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId]
+              properties:
+                sourceId: { type: string, example: MP-1008, description: "SongId of the song to duplicate." }
+      responses:
+        "200":
+          description: Song duplicated into the PENDING staging book
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string, example: PENDING-000001, description: "The new staging-book SongId." }
+                  pendingSongbook: { type: string, example: PENDING }
+        "404":
+          description: Source song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Source song is soft-deleted
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=delete_song:
     post:
       operationId: editorSoftDeleteSong

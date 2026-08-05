@@ -508,6 +508,10 @@ function ed2_ensurePendingSongbook(\mysqli $db): void {
     static $done = false;
     if ($done) { return; }
     $abbr = ED2_PENDING_SONGBOOK;
+    /* @disabled-visible: this find-or-create existence probe MUST see the hidden
+       staging book — it is deliberately IsDisabled=1 (#1783), so filtering it out
+       via songbookVisibleSql() would make this re-INSERT a duplicate PENDING book
+       on every duplicate. It is an admin-only fixture, never a public read. */
     $q = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
     $q->bind_param('s', $abbr);
     $q->execute();
