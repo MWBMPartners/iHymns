@@ -41,6 +41,27 @@ claude/gating-model-review
 Owner can delete these on GitHub (Branches page) or `git push origin --delete <branch>` locally.
 
 ## ✅ PROGRESS LOG (this session, all on `claude/issue-sweep-fixes-89`, pushed)
+- **Musicians epic #1787 (NEW owner asks 2026-08-05, two messages + screenshots)** — filed epic
+  #1787 + children #1784/#1785/#1786.
+  - **#1784 LANDED** (commits `bb75b682` + ref-fix `34b990df`): the weeks-old "1 person credited but
+    not saved" stuck counter = an **invisible-byte mismatch** (credit-table `"Eddie James "` with a
+    trailing space vs registry `"Eddie James"`; list links by EXACT byte, never links them; fuzzy
+    shows "merge X into X"; merge button trimmed-then-skipped so it could never fix it). Fix:
+    `musicianReconcileCreditNameBytes()` shared core + `migrate-reconcile-credit-name-bytes.php`
+    (Apply-all card + drift probe) rewrites legacy credit bytes to the registry canonical / auto-
+    registers; "Add all N now" + the fuzzy-merge branch now call/behave correctly;
+    `musicianCitedUnregisteredNames()` aligned to BINARY (rule #35). **Verified end-to-end on live DB**
+    (inject→probe pending→reconcile adopt+register→probe clear→idempotent 0/0). Terminology swept
+    "Credit People"→"Musicians" on the live page/bulk-promote/songbook person-picker (UI-copy-only,
+    rule #24; internal ids + migration CARD titles unchanged). **⚠️ Owner must run the "Reconcile
+    Credit-Name Bytes" migration card on the shared DB after deploy to clear the live counter.**
+  - **Finding:** auto-register is ALREADY implemented — `musicianPromote()` runs on every credit-write
+    funnel (credit_upsert/save/importers/lyrics_ingest). New musicians auto-register with matching
+    trimmed bytes; the stuck-1 was purely legacy data.
+  - **#1785** (registry-vs-registry dedup + easier/disambiguated merge UX) and **#1786** (app-wide
+    multi-column sortable tables, admin+public) → **Fable deep-plan queued AFTER #1770** (sequential
+    Fable rule). Broader terminology-consistency audit tracked under the epic.
+
 - **#85** numberless `#0` in share title/breadcrumb/OG — fixed (pre-consolidation).
 - **#112** offline count missed saved-cache — fixed (pre-consolidation).
 - **6-branch consolidation** — DONE (see below), branch-delete blocked (safe list below).
