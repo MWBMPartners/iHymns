@@ -182,6 +182,28 @@ if (count($phpPageKeys) < PT_MIN_PAGE_OPTS) {
 foreach (array_diff($jsPageKeys, $phpPageKeys) as $k) { $fail[] = "Page option '$k' is in PRINT_PAGE_OPTIONS (print.js) but missing from \$PAGE_OPTION_SCHEMA (print-templates.php) — server would DROP it on save."; }
 foreach (array_diff($phpPageKeys, $jsPageKeys) as $k) { $fail[] = "Page option '$k' is in \$PAGE_OPTION_SCHEMA (print-templates.php) but missing from PRINT_PAGE_OPTIONS (print.js) — editor can't offer it."; }
 
+/* ---- 5. CONDITIONAL VISIBILITY vocab: PRINT_SHOWIF_CONDITIONS (js) == $SHOWIF_CONDITIONS (php) ----
+   The universal `showIf` block property (#1767 Y): a condition the editor offers
+   but the server doesn't allow-list is dropped on save (silent). */
+$jsShowIfRegion = ptRegion($jsSrc, '/PRINT_SHOWIF_CONDITIONS\s*=\s*\{(.*?)\n\};/s');
+$jsShowIf = [];
+if (preg_match_all('/^\s*(\w+)\s*:\s*\{/m', $jsShowIfRegion, $sjm)) { $jsShowIf = $sjm[1]; }
+/* PHP: $SHOWIF_CONDITIONS = ['always', 'hasChords', …]; — a flat string list. */
+$phpShowIfRegion = ptRegion($phpSrc, '/\$SHOWIF_CONDITIONS\s*=\s*\[(.*?)\];/s');
+$phpShowIf = [];
+if (preg_match_all("/'([a-zA-Z]\w*)'/", $phpShowIfRegion, $spm)) { $phpShowIf = $spm[1]; }
+sort($jsShowIf); sort($phpShowIf);
+
+const PT_MIN_SHOWIF = 4;   // parser-sanity floor (there are 7)
+if (count($jsShowIf) < PT_MIN_SHOWIF) {
+    $fail[] = sprintf('PRINT_SHOWIF_CONDITIONS parsed only %d conditions (< %d) — parser anchor moved.', count($jsShowIf), PT_MIN_SHOWIF);
+}
+if (count($phpShowIf) < PT_MIN_SHOWIF) {
+    $fail[] = sprintf('$SHOWIF_CONDITIONS parsed only %d conditions (< %d) — parser anchor moved.', count($phpShowIf), PT_MIN_SHOWIF);
+}
+foreach (array_diff($jsShowIf, $phpShowIf) as $c) { $fail[] = "showIf condition '$c' is in PRINT_SHOWIF_CONDITIONS (print.js) but missing from \$SHOWIF_CONDITIONS (print-templates.php) — server would DROP it on save."; }
+foreach (array_diff($phpShowIf, $jsShowIf) as $c) { $fail[] = "showIf condition '$c' is in \$SHOWIF_CONDITIONS (print-templates.php) but missing from PRINT_SHOWIF_CONDITIONS (print.js) — editor can't offer it / renderer can't evaluate it."; }
+
 if ($fail) {
     fwrite(STDERR, "FAIL: print block-type registry drift (#1767, rule #35)\n");
     foreach ($fail as $f) { fwrite(STDERR, "  - $f\n"); }

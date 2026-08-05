@@ -61,6 +61,41 @@ export const PRINT_PAGE_OPTIONS = {
    emits #rrggbb; this guards a crafted POST). */
 const PRINT_ACCENT_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 
+/* True when any component carries a non-empty chord line. */
+function componentsHaveChords(song) {
+    const comps = Array.isArray(song && song.components) ? song.components : [];
+    return comps.some(c => Array.isArray(c && c.chords)
+        && c.chords.some(x => String(Array.isArray(x) ? x.join('') : (x || '')).trim() !== ''));
+}
+
+/* Conditional block visibility (#1767 Y) — a UNIVERSAL `showIf` property any block
+   may carry (not a per-type option), so one template can adapt to each song:
+   e.g. a chords block only when the song has chords, a CCLI block only when it
+   has a number. Evaluated by blockVisible() before rendering; unknown/absent =>
+   visible (fail-open). The name set is mirrored by $SHOWIF_CONDITIONS in
+   manage/print-templates.php, held in lockstep by the registry guard (rule #35).
+   'always' is the default (no showIf) and is kept in the list so the editor's
+   select has an explicit "always show" choice. */
+export const PRINT_SHOWIF_CONDITIONS = {
+    always:       { label: 'Always show',            test: () => true },
+    hasChords:    { label: 'Only if it has chords',  test: (s) => componentsHaveChords(s) },
+    hasCopyright: { label: 'Only if copyrighted',    test: (s) => !!(s && s.copyright && String(s.copyright).trim()) },
+    hasCcli:      { label: 'Only if it has a CCLI #', test: (s) => !!(s && s.ccli && String(s.ccli).trim()) },
+    hasScripture: { label: 'Only if it has scripture', test: (s) => Array.isArray(s && s.scriptureRefs) && s.scriptureRefs.length > 0 },
+    hasThemes:    { label: 'Only if it has themes',   test: (s) => Array.isArray(s && s.tags) && s.tags.length > 0 },
+    hasTune:      { label: 'Only if it has a tune',   test: (s) => !!(s && ((s.tune && s.tune.name) || s.tuneName)) },
+};
+
+/* Evaluate a block's showIf against the song. Fail-open: no condition, 'always',
+   an unknown name, or a throwing predicate all render the block. */
+function blockVisible(song, block) {
+    const cond = block && block.showIf;
+    if (!cond || cond === 'always') { return true; }
+    const rule = PRINT_SHOWIF_CONDITIONS[cond];
+    if (!rule || typeof rule.test !== 'function') { return true; }
+    try { return !!rule.test(song); } catch (_e) { return true; }
+}
+
 /* The 3 built-ins, expressed as block templates (so built-in + custom unify). */
 export const PRINT_BUILTIN_TEMPLATES = [
     { id: 'builtin:lyrics', name: 'Lyrics only', builtin: true, pageOptions: { fontPt: 12, columns: 1 },
@@ -159,6 +194,9 @@ function renderLyrics(song, block) {
 }
 
 function renderBlock(song, block) {
+    /* #1767 Y — universal conditional visibility: hide the block when its showIf
+       condition doesn't hold for this song (fail-open on unknown/absent). */
+    if (!blockVisible(song, block)) { return ''; }
     switch (block.type) {
         case 'title':
             return `<h1 class="print-title">${esc(song.title || 'Untitled')}</h1>`;

@@ -68,6 +68,12 @@ $BLOCK_SCHEMA = [
     'pagebreak'   => [],
 ];
 
+/* The CANONICAL conditional-visibility vocabulary (#1767 Y) — a UNIVERSAL block
+   property `showIf` any block may carry. Mirrors PRINT_SHOWIF_CONDITIONS in
+   js/modules/print.js, held in lockstep by the registry guard (rule #35). A
+   posted showIf not in this list (or 'always', the default) is dropped. */
+$SHOWIF_CONDITIONS = ['always', 'hasChords', 'hasCopyright', 'hasCcli', 'hasScripture', 'hasThemes', 'hasTune'];
+
 /* The CANONICAL page-option allow-list (#1767 G/V/AB/AM/F) — mirrors
    PRINT_PAGE_OPTIONS in js/modules/print.js, held in lockstep by
    tests/php/test-print-block-registry.php (rule #35). Each entry's `kind` drives
@@ -105,11 +111,12 @@ try {
  * Drops unknown types and unknown option keys; coerces every kept
  * value to its declared kind. Returns a clean array safe to persist.
  *
- * @param array $raw          The json_decode'd POST blocks (assoc).
- * @param array $schema       $BLOCK_SCHEMA.
- * @return array              Sanitised ordered block list.
+ * @param array $raw               The json_decode'd POST blocks (assoc).
+ * @param array $schema            $BLOCK_SCHEMA.
+ * @param array $showIfConditions  $SHOWIF_CONDITIONS (universal visibility vocab).
+ * @return array                   Sanitised ordered block list.
  */
-function ptSanitiseBlocks(array $raw, array $schema): array
+function ptSanitiseBlocks(array $raw, array $schema, array $showIfConditions = []): array
 {
     $clean = [];
     foreach ($raw as $block) {
@@ -117,6 +124,14 @@ function ptSanitiseBlocks(array $raw, array $schema): array
         $type = (string)($block['type'] ?? '');
         if (!isset($schema[$type])) { continue; }            // unknown type — drop
         $row = ['type' => $type];
+        /* #1767 Y — a UNIVERSAL showIf on ANY block. Kept only when it names a
+           known condition and isn't the 'always' default (which we omit to keep
+           the stored JSON minimal — absent showIf == always visible). */
+        if (isset($block['showIf'])
+            && in_array($block['showIf'], $showIfConditions, true)
+            && $block['showIf'] !== 'always') {
+            $row['showIf'] = (string)$block['showIf'];
+        }
         foreach ($schema[$type] as $key => $kind) {
             if (!array_key_exists($key, $block)) { continue; } // option not posted — use renderer default
             $v = $block[$key];
@@ -209,7 +224,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $error = 'Add at least one block before saving.';
                     break;
                 }
-                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA);
+                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA, $SHOWIF_CONDITIONS);
                 if ($blocks === []) {
                     $error = 'None of the submitted blocks were recognised.';
                     break;
@@ -559,7 +574,7 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, prepareQrForSong }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, prepareQrForSong }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
@@ -745,13 +760,21 @@ if ($hasSchema) {
                     ? `<div class="row g-2 align-items-end mt-1">${optKeys.map(k => optionFieldHtml(block.type, k, block[k])).join('')}</div>`
                     : '<div class="small text-muted mt-1">No options.</div>';
 
+                /* #1767 Y — universal conditional-visibility select. */
+                const curShowIf = block.showIf || 'always';
+                const showIfHtml = `<select class="form-select form-select-sm w-auto" data-showif aria-label="When to show the ${esc(reg.label || block.type)} block">`
+                    + Object.keys(PRINT_SHOWIF_CONDITIONS).map(c =>
+                        `<option value="${esc(c)}"${c === curShowIf ? ' selected' : ''}>${esc(PRINT_SHOWIF_CONDITIONS[c].label)}</option>`).join('')
+                    + `</select>`;
+
                 const row = document.createElement('div');
                 row.className = 'pt-block-row p-2 bg-body-tertiary';
                 row.dataset.index = String(i);
                 row.innerHTML =
-                    `<div class="d-flex align-items-center gap-2">`
+                    `<div class="d-flex align-items-center gap-2 flex-wrap">`
                   +   `<span class="badge bg-secondary-subtle text-secondary-emphasis">${i + 1}</span>`
                   +   `<strong class="small">${esc(reg.label || block.type)}</strong>`
+                  +   showIfHtml
                   +   `<div class="ms-auto btn-group btn-group-sm">`
                   +     `<button type="button" class="btn btn-outline-secondary" data-act="up"${i === 0 ? ' disabled' : ''} title="Move up" aria-label="Move ${esc(reg.label || block.type)} block up"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>`
                   +     `<button type="button" class="btn btn-outline-secondary" data-act="down"${i === working.blocks.length - 1 ? ' disabled' : ''} title="Move down" aria-label="Move ${esc(reg.label || block.type)} block down"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>`
@@ -789,6 +812,18 @@ if ($hasSchema) {
 
         // ---- delegated handlers on the block list (option edits + reorder/remove) ----
         function onBlockMutate(ev) {
+            // #1767 Y — universal showIf select (any block).
+            const showIfCtl = ev.target.closest('[data-showif]');
+            if (showIfCtl) {
+                const row = showIfCtl.closest('[data-index]');
+                if (!row) { return; }
+                const block = working.blocks[parseInt(row.dataset.index, 10)];
+                if (!block) { return; }
+                const v = showIfCtl.value;
+                if (v && v !== 'always') { block.showIf = v; } else { delete block.showIf; }
+                renderPreview();
+                return;
+            }
             const ctl = ev.target.closest('[data-opt]');
             if (!ctl) { return; }
             const row = ctl.closest('[data-index]');
