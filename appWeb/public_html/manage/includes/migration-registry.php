@@ -3754,4 +3754,32 @@ return [
             return false;
         },
     ],
+
+    'publishers-entity' => [
+        'script' => 'migrate-publishers-entity.php',
+        'card' => [
+            'title'  => 'Publishers registry (#93)',
+            'body'   => 'Creates <code>tblPublishers</code> (persons + companies,'
+                      . ' with imprint / catalogue grouping via a self-FK),'
+                      . ' <code>tblSongbookPublishers</code> (multi-publisher copyright'
+                      . ' M:N), plus the forward-looking <code>tblPublisherAliases</code>'
+                      . ' + <code>tblPublisherExternalLinks</code> (rule #20 one-pass'
+                      . ' batch). Promotes the free-text <code>tblSongbooks.Publisher</code>'
+                      . ' to a first-class registry; the free-text column is KEPT as a'
+                      . ' JOIN-free denorm display mirror, so nothing existing breaks.'
+                      . ' Backfills the registry from distinct Publisher strings + links'
+                      . ' each book. Additive + idempotent — safe to re-run.',
+            'button' => 'Run Publishers Migration',
+        ],
+        /* 4-clause OR-probe (rule #19): the four new tables. Never `=> true`.
+           The backfill has no schema signal of its own (it is INSERT IGNORE
+           against uq_Slug / uq_book_pub_role, self-healing on re-run), so —
+           exactly like 'publication-metadata' above — the card measures schema
+           completion (all four tables present), not per-row backfill status. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblPublishers')
+            || !_migProbe_tableExists($db, 'tblSongbookPublishers')
+            || !_migProbe_tableExists($db, 'tblPublisherAliases')
+            || !_migProbe_tableExists($db, 'tblPublisherExternalLinks'),
+    ],
 ];
