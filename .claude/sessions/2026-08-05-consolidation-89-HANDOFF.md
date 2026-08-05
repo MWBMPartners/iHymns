@@ -55,9 +55,23 @@ Owner can delete these on GitHub (Branches page) or `git push origin --delete <b
   steering: quick-session persistence, configurable idle-timeout hierarchy, host-CCLI unlock,
   ProPresenter-as-console). NOT built — awaiting scheduling + a planning pass.
 
-**STILL TO DO this queue:** duplicate-song feature (NEW, #108 in tasks — building next);
-thorough documentation sweep (all .md/in-app/OpenAPI/Swagger UI/.claude); version bump.
-**#1770 is parked** on the owner's one remaining call (quick-session capability scope) — non-blocking.
+- **Duplicate-song feature (#1783, NEW owner ask)** — Fable-analysed (Option C: hidden staging
+  book, `.claude/duplicate-song-1783-plan.md`). Commits 1-3 DONE + pushed + **verified end-to-end
+  against a live DB**: `duplicate_song` endpoint (`api2.php`) copies via the revision-restore
+  engine into a hidden `PENDING` staging book (IsDisabled=1), resets Number/Verified/Isrc/media,
+  fresh PublicId; editor Duplicate button + `?duplicate=` deep-link; Metadata tab shows empty
+  Songbook + Number. Verified: components/lines/credits/tags copied, `load_song.isPendingDuplicate`
+  true, cleanup done. **REMAINING (tracked follow-ups):** commit 4 = per-line enrichment +
+  scripture-ref copy (needs the positional line-id remap); commit 5 = mutation-proven contract
+  guard (`test-editor-duplicate-contract.js`) + add `duplicate` to `test-editor-deep-links.js`;
+  commit 6 = D5 counterpart auto-link (lift the `song_link_add` group-resolution, don't fork).
+  Per-line presenter `Note` not carried (same as revision restore — file a `for consideration`).
+
+**STILL TO DO this queue:** #1783 commits 4-6 (above); thorough documentation sweep
+(all .md/in-app/OpenAPI/Swagger UI/.claude); version bump.
+**#1770 DECIDED** (Option A — quick console optional, host-CCLI unlock to quick followers,
+slide-level ProPresenter control on scheduled). Full spec in `live-follow-1770-analysis.md`;
+build is queued behind #1783 (needs its own Fable planning pass over the 7 captured requirements).
 
 ## 🔜 QUEUE (owner-stated order, adjust/bundle as sensible)
 1. **#1770 Live Follow / Service Mode UX rethink** (ad-hoc vs scheduled) — Fable 5 sequential deep
