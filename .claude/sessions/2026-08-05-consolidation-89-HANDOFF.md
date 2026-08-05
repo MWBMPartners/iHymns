@@ -40,6 +40,25 @@ claude/gating-model-review
 ```
 Owner can delete these on GitHub (Branches page) or `git push origin --delete <branch>` locally.
 
+## ✅ PROGRESS LOG (this session, all on `claude/issue-sweep-fixes-89`, pushed)
+- **#85** numberless `#0` in share title/breadcrumb/OG — fixed (pre-consolidation).
+- **#112** offline count missed saved-cache — fixed (pre-consolidation).
+- **6-branch consolidation** — DONE (see below), branch-delete blocked (safe list below).
+- **#288** song-page tags rendered server-side — commit `e9fcf3e7`.
+- **#150** article-aware songbook sort (`includes/sort_helpers.php` + guard) — commit `ff24d850`.
+- **#307** dead search-autocomplete removed (client+CSS+endpoint+`suggestSongs`+api-docs+test) — `3e5e2a46`.
+- **#299** inline chord charts + toggle + transpose wiring (`includes/chord_display.php` + guard) — `b62333f5`.
+- **#302** set-list "Save as PDF" (browser print, house-style) + dead page-button removed — `02ffc165`.
+- **Print tweak** — Songbook+number block prints nothing for unofficial/catalogue songs
+  (`songInPublishedBook()` in print.js) + in-app note + `help/exporting.md` — `86a2e56d`.
+- **#1770 direction captured** in `.claude/live-follow-1770-analysis.md` (Fable analysis + owner
+  steering: quick-session persistence, configurable idle-timeout hierarchy, host-CCLI unlock,
+  ProPresenter-as-console). NOT built — awaiting scheduling + a planning pass.
+
+**STILL TO DO this queue:** duplicate-song feature (NEW, #108 in tasks — building next);
+thorough documentation sweep (all .md/in-app/OpenAPI/Swagger UI/.claude); version bump.
+**#1770 is parked** on the owner's one remaining call (quick-session capability scope) — non-blocking.
+
 ## 🔜 QUEUE (owner-stated order, adjust/bundle as sensible)
 1. **#1770 Live Follow / Service Mode UX rethink** (ad-hoc vs scheduled) — Fable 5 sequential deep
    analysis + planning (fallback Opus), then Sonnet/Haiku impl. "as discussed yesterday."
