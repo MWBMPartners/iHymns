@@ -476,3 +476,19 @@ by the above. Next step when #1770 is scheduled: a Fable planning pass over thes
 four requirements (schema deltas — `LastLeaderSeenAt`, host-CCLI resolution;
 endpoints; the ProPresenter adapter), then Sonnet implementation, all
 additive/dormant per house style.
+
+5. **Quick-session idle timeout is a CONFIGURABLE HIERARCHY (owner, 2026-08-05).**
+   The ~15-min auto-close (req. #2) is not a fixed constant — it resolves through
+   a precedence chain, most-authoritative first:
+   - **App (global) admin** sets the application default (15 min out of the box)
+     — an `tblAppSettings` key, e.g. `live_follow_idle_timeout_minutes`.
+   - **Organisation** may **override** the app default for its members, AND may
+     **enforce** it (lock it) so members cannot change their own — but only when
+     the org has turned enforcement on. (Two org columns: the value + an
+     `EnforceIdleTimeout` flag.)
+   - **User** may set their own timeout — HONOURED only when their org is not
+     enforcing one.
+   Resolution: `org.enforce ? org.value : (user.value ?? org.value ?? app.default)`.
+   Stored as minutes; all three layers are additive/dormant columns/settings
+   (rule #20). This mirrors other iHymns per-user/per-org/per-app precedence
+   (e.g. card layout, language prefs) — reuse that pattern, don't re-fork it.
