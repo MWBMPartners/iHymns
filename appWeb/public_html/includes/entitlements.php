@@ -237,6 +237,16 @@ const ENTITLEMENTS = [
     'manage_access_tiers'         => ['admin', 'global_admin'],
     'assign_user_tier'            => ['admin', 'global_admin'],
 
+    /* Licence-type vocabulary (#459 / #1769 P4) — CRUD over tblLicenceTypes:
+       what licence types exist (CCLI, MRL, …), what each legally covers, and any
+       access tier it confers. Kept DISTINCT from manage_access_tiers because
+       Plans (tiers) and Licences are different Model-2 nouns with their own admin
+       tabs; defaults match the sibling gating surfaces so no admittance changes.
+       ⚠ Editing a licence's ConfersTier/Enabled acts on live tier resolution
+       immediately (resolveEffectiveTier's conferral overlay reads the live table
+       regardless of the content-gating master switch) — the page surfaces this. */
+    'manage_licence_types'        => ['admin', 'global_admin'],
+
     /* Admin-configurable feature gating (#1481 P1) — DEFINING new gateable
        capabilities (tblGatingCapabilities) + enforcement rules
        (tblGatingRules, P2) is Global-Admin-only, deliberately narrower than

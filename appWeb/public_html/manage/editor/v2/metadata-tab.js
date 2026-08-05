@@ -118,6 +118,10 @@ export function mountMetadataTab(container, opts) {
        container on every `song`-slice change, so this panel is torn down and
        re-mounted with it. */
     let extIdsDetach = null;
+    /* #1769 P4 — teardown for the "Rights" fieldset. Same reason as the two
+       panels above: render() wipes the container on every `song`-slice change,
+       so the panel is torn down and re-mounted with it. */
+    let rightsPanelDetach = null;
 
     /**
      * @param {string}   field
@@ -273,6 +277,7 @@ export function mountMetadataTab(container, opts) {
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
+        if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }
         container.innerHTML = '';
         const row = document.createElement('div');
         row.className = 'row g-3';
@@ -538,6 +543,17 @@ export function mountMetadataTab(container, opts) {
                 extIdsDetach = m.mountExternalIdsPanel(container, { songId: songId, toast: toast, onIsrcDenorm: onIsrcDenorm });
             })
             .catch((e) => { console.error('[metadata-tab] external-ids panel failed to load:', e); });
+
+        /* Rights (#1769 P4) — the per-song lyrics/music licence pickers. Same
+           dynamically-imported-panel pattern as the two above (own fieldset, own
+           teardown var). Reads its vocab from window._iHymnsLicenceTypes and its
+           songbook-default hint from the store's songbookRightsDefaults slice. */
+        import('./rights-panel.js')
+            .then((m) => {
+                if (disposed || !container.isConnected) { return; }
+                rightsPanelDetach = m.mountRightsPanel(container, { songId: songId, store: store, api: api, toast: toast });
+            })
+            .catch((e) => { console.error('[metadata-tab] rights panel failed to load:', e); });
     }
 
     /**
@@ -576,6 +592,7 @@ export function mountMetadataTab(container, opts) {
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
+        if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }
         container.innerHTML = '';
     };
 }

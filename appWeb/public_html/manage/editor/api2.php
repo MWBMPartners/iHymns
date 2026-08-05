@@ -419,6 +419,17 @@ const ED2_META_FIELDS = [
     'musicPublicDomain'  => ['MusicPublicDomain', 'i'],
     'hasAudio'           => ['HasAudio', 'i'],
     'hasSheetMusic'      => ['HasSheetMusic', 'i'],
+    /* #1769 P4 — per-song RIGHTS FACTS (the licence a song's lyrics / music are
+       covered by). Both columns ship dormant in the P1 gating-facts batch and
+       may be absent on an un-migrated install, so — like the identity columns
+       above — the KEY stays in this static allow-list while the WRITE is gated
+       (ed2_rightsColsPresent() 409, metadata_field_update below). They take a
+       DEDICATED validation branch (value must be '' → NULL or a live licence
+       key, else 422) rather than the generic string coercion, and land their
+       own audit key (admin.song.rights_set). Nothing ENFORCES on them until P6
+       — see .claude/gating-p4-design.md. */
+    'lyricsRightsLicenceKey' => ['LyricsRightsLicenceKey', 's'],
+    'musicRightsLicenceKey'  => ['MusicRightsLicenceKey', 's'],
 ];
 
 /* --------------------------------------------------------------- Helpers --- */
@@ -510,6 +521,79 @@ function ed2_songIdentityColsPresent(\mysqli $db): array {
            safe direction, matching every other existence probe in this file. */
     }
     return $presence;
+}
+
+/**
+ * Memoised probe: do the per-song RIGHTS-FACT columns exist on this install
+ * (#1769 P4 / P1 gating-facts batch)? A dedicated sibling of
+ * ed2_songIdentityColsPresent() — same shape, same degrade-to-false-on-failure
+ * posture — so metadata_field_update can 409 a rights write (and the restore
+ * loop can skip a rights restore) on an un-migrated install rather than throw a
+ * raw mysqli_sql_exception under STRICT.
+ *
+ * @return array<string,bool> column name => present
+ */
+function ed2_rightsColsPresent(\mysqli $db): array {
+    static $presence = null;
+    if ($presence !== null) { return $presence; }
+    $presence = ['LyricsRightsLicenceKey' => false, 'MusicRightsLicenceKey' => false];
+    try {
+        $r = $db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs'
+                AND COLUMN_NAME IN ('LyricsRightsLicenceKey','MusicRightsLicenceKey')"
+        );
+        if ($r) {
+            while ($row = $r->fetch_row()) { $presence[$row[0]] = true; }
+            $r->close();
+        }
+    } catch (\Throwable $_e) {
+        /* Degrade to "not migrated" — the safe direction (rule #9). */
+    }
+    return $presence;
+}
+
+/**
+ * The songbook's default rights-fact keys, as a PREFILL HINT for the editor's
+ * rights panel (#1769 P4, D4: a hint the curator may adopt, NEVER an automatic
+ * write). Returns `['lyrics'=>?key, 'music'=>?key]` when the tblSongbooks
+ * default columns exist, or `null` on an un-migrated install so the client can
+ * simply omit the hint. Existence-gated (rule #9) + try/caught.
+ *
+ * @return array{lyrics:?string,music:?string}|null
+ */
+function ed2_songbookRightsDefaults(\mysqli $db, string $abbr): ?array {
+    if ($abbr === '') { return null; }
+    static $colsPresent = null;
+    if ($colsPresent === null) {
+        $colsPresent = false;
+        try {
+            $r = $db->query(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks'
+                    AND COLUMN_NAME IN ('DefaultLyricsRightsLicenceKey','DefaultMusicRightsLicenceKey')"
+            );
+            if ($r) { $colsPresent = ((int)($r->fetch_row()[0] ?? 0)) === 2; $r->close(); }
+        } catch (\Throwable $_e) { $colsPresent = false; }
+    }
+    if (!$colsPresent) { return null; }
+    try {
+        $s = $db->prepare(
+            'SELECT DefaultLyricsRightsLicenceKey, DefaultMusicRightsLicenceKey
+               FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+        );
+        $s->bind_param('s', $abbr);
+        $s->execute();
+        $row = $s->get_result()->fetch_assoc();
+        $s->close();
+        if (!$row) { return null; }
+        return [
+            'lyrics' => ($row['DefaultLyricsRightsLicenceKey'] ?? '') !== '' ? (string)$row['DefaultLyricsRightsLicenceKey'] : null,
+            'music'  => ($row['DefaultMusicRightsLicenceKey']  ?? '') !== '' ? (string)$row['DefaultMusicRightsLicenceKey']  : null,
+        ];
+    } catch (\Throwable $_e) {
+        return null;
+    }
 }
 
 /**
@@ -1075,6 +1159,7 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
     /* Scalars — only the allow-listed editable columns (same coercion as
        metadata_field_update). */
     $ed2IdentityPresence = ed2_songIdentityColsPresent($db);   // #1741 P1 gate
+    $ed2RightsPresence   = ed2_rightsColsPresent($db);          // #1769 P4 gate
     $ed2WroteIsrc = false;
     /* #1741 P5c — captured in the scalar loop, restored AFTER it through the
        ONE tune write core so TuneId lands in lockstep with TuneName. */
@@ -1103,6 +1188,12 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
            optional field on an un-migrated install (mirrors works.php's
            partial-apply posture, P4 plan §2 gating note). */
         if (array_key_exists($column, $ed2IdentityPresence) && !$ed2IdentityPresence[$column]) { continue; }
+        /* #1769 P4 — same partial-apply posture for the rights-fact columns:
+           skip a restore of one that doesn't exist on this un-migrated install
+           rather than throw under STRICT (the identity-column precedent above).
+           No key VALIDATION on restore — the snapshot's value was valid when
+           saved and a stale registry mustn't block a whole revision restore. */
+        if (array_key_exists($column, $ed2RightsPresence) && !$ed2RightsPresence[$column]) { continue; }
         if (!array_key_exists($column, $songRow)) { continue; }
         $raw = $songRow[$column];
         if ($type === 'i') {
@@ -1113,8 +1204,9 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
             $value = $raw === null ? '' : trim((string)$raw);
             /* 'TuneName' deliberately absent (#1741 P5c) — it is captured and
                skipped above, then restored via ed2_songTuneApply() after the
-               loop; it can never reach this generic scalar path. */
-            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
+               loop; it can never reach this generic scalar path. The two #1769
+               P4 rights-fact columns are nullable too ('' → NULL = no fact). */
+            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle', 'LyricsRightsLicenceKey', 'MusicRightsLicenceKey'], true) && $value === '') { $value = null; }
         }
         $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
         if ($value === null) { $np = null; $u->bind_param('ss', $np, $songId); }
@@ -1356,10 +1448,19 @@ try {
            component-content snapshot, like media. */
         $enrichment = lineEnrichmentForSong($db, $songId);
 
+        /* #1769 P4 — the song's songbook default rights keys, a PREFILL HINT
+           for the rights panel (D4: a hint the curator may adopt, never an
+           automatic write). null on an un-migrated install so the client omits
+           the hint. Read off the snapshot's SongbookAbbr — not the song fact
+           columns, so a revision restore never carries it. */
+        $songbookAbbr = (string)($snapshot['song']['SongbookAbbr'] ?? '');
+        $songbookRightsDefaults = ed2_songbookRightsDefaults($db, $songbookAbbr);
+
         ed2_respond(array_merge(['ok' => true], $snapshot, [
             'media'            => $media,
             'lineTranslations' => $enrichment['translations'],
             'lineAnnotations'  => $enrichment['annotations'],
+            'songbookRightsDefaults' => $songbookRightsDefaults,
         ]));
         break;
     }
@@ -1594,6 +1695,66 @@ try {
             }
             logActivity('song.metadata', 'song', $songId, ['field' => $field, 'tuneId' => $tuneResult['tuneId']]);
             ed2_respond(['ok' => true, 'field' => 'tuneName', 'tuneId' => $tuneResult['tuneId']]);
+        }
+
+        /* ---- #1769 P4 — RIGHTS FACTS are not a generic scalar update -------
+           A per-song rights key must be either cleared ('' → NULL) or a licence
+           key that EXISTS in the live registry — never arbitrary free text (the
+           generic path would happily store a typo). Self-contained like the
+           SongbookAbbr / TuneName branches above: own existence gate (409 on an
+           un-migrated install, rule #9/#35), own entitlement (edit_songs — the
+           PD-flag class, P4 D3; equivalence-neutral at the default entitlement
+           map, which is exactly this file's editor-role gate), own validation
+           (422), own before/after audit key (admin.song.rights_set), own
+           response. Nothing ENFORCES on the stored fact until P6. */
+        if ($column === 'LyricsRightsLicenceKey' || $column === 'MusicRightsLicenceKey') {
+            $ed2RightsPresence = ed2_rightsColsPresent($db);
+            if (empty($ed2RightsPresence[$column])) {
+                ed2_respond(['ok' => false, 'error' => 'This install has not applied the gating-facts migration card yet (run it at /manage/setup-database).'], 409);
+            }
+            ed2_requireEntitlement('edit_songs');
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+            $rightsKey = trim((string)($raw ?? ''));
+            if ($rightsKey !== '' && !in_array($rightsKey, licenceTypeKeys($db), true)) {
+                /* Status is the contract (rule #35) — the panel branches on 422. */
+                ed2_respond(['ok' => false, 'error' => 'Unknown licence key "' . $rightsKey . '". Pick one defined on /manage/licence-types.'], 422);
+            }
+            $rightsValue = $rightsKey === '' ? null : $rightsKey;
+
+            /* Before/after for the audit — read the current value first.
+               @deleted-visible: editor before/after audit read (#1694 / #1769 P4)
+               — the curator is editing THIS exact song by direct id (the same
+               editor-context rationale as ed2_buildSongSnapshot's load read); a
+               soft-deleted song's rights value must still be readable to record
+               the change, and this reads only the one rights column, never lists. */
+            $prev = null;
+            $ps = $db->prepare("SELECT `{$column}` FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $ps->bind_param('s', $songId);
+            $ps->execute();
+            $prevRow = $ps->get_result()->fetch_assoc();
+            $ps->close();
+            if ($prevRow) { $prev = $prevRow[$column]; }
+
+            $db->begin_transaction();
+            try {
+                $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
+                if ($rightsValue === null) { $np = null; $u->bind_param('ss', $np, $songId); }
+                else { $u->bind_param('ss', $rightsValue, $songId); }
+                $u->execute();
+                $u->close();
+                ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('admin.song.rights_set', 'song', $songId, [
+                'field'  => $field,
+                'column' => $column,
+                'from'   => ($prev === '' ? null : $prev),
+                'to'     => $rightsValue,
+            ]);
+            ed2_respond(['ok' => true, 'field' => $field, 'value' => $rightsValue]);
         }
 
         /* Coerce per the allow-listed type; numberless/empty → NULL where the

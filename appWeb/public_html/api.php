@@ -612,6 +612,26 @@ if ($page !== null) {
         'tag',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
+    /* #1769 P3 — when content gating is ON, the page=song fragment is
+       VIEWER-DEPENDENT: it gates copyrighted lyrics by tier and drops media
+       affordances the viewer can't use (even on a public-domain song). A
+       shared ETag / service-worker cache keyed by URL alone would then serve one
+       viewer's gated fragment to another. So exclude it from the shared cache and
+       send `private, no-store` — the service worker honours no-store (see
+       service-worker.js.php swResponseCacheable). Never personalise the shared
+       cache (rule #6); exclude it instead. FLAG OFF (the live default): this is a
+       single static-cached getAppSetting read and a pure no-op — page=song caches
+       byte-identically to before. Only page=song is affected (home/songbook have
+       no per-viewer render). */
+    $_gatedSongFragment = false;
+    if ($page === 'song') {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+        $_gatedSongFragment = function_exists('contentGatingEnabled') && contentGatingEnabled();
+    }
+    if ($_gatedSongFragment) {
+        $_shouldCachePage = false;
+        header('Cache-Control: private, no-store');
+    }
     if ($_shouldCachePage) {
         ob_start();
     }
@@ -1003,6 +1023,11 @@ if ($action !== null) {
                     && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                     $rndPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
+                /* #1769 P3 — single-song call stays on the contentGatingApply
+                   delegate BY DECISION: the delegate IS the #1769 pipeline, and
+                   one call has no viewer to hoist (unlike songbook_export). Do
+                   not "finish migrating" this to accessViewerContext — it would
+                   only re-copy the delegate's bail/try/fail-open surface. */
                 $song    = contentGatingApply($song, $rndUid, $rndPlat, $rndPresence);
                 sendJson(['song' => $song]);
             }
@@ -1178,6 +1203,8 @@ if ($action !== null) {
                     && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                     $sdPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
+                /* #1769 P3 — single-song read stays on the delegate by decision
+                   (see the random-song note): one call, no viewer to hoist. */
                 $song   = contentGatingApply($song, $sdUid, $sdPlat, $sdPresence);
                 /* #1679 — `redirectedFrom` is present ONLY when the requested id
                    was a dead permalink we followed, so the wire shape stays
@@ -1282,14 +1309,27 @@ if ($action !== null) {
                    in one request. A per-song gate that the bulk endpoint beside
                    it doesn't honour is not a gate.
 
-                   contentGatingApply() is the same registry-backed resolver the
+                   The pipeline is the same registry-backed resolver the
                    single-song path uses (rule #28B — never a second matrix), and
                    fail-opens per song, so a malformed row degrades to unchanged
                    rather than emptying the export. The presence token rides along
                    for the Service-Mode CCLI unlock (rule #26), read from the same
-                   cookie and shape-validated exactly as :857/:974 do. */
+                   cookie and shape-validated exactly as :857/:974 do.
+
+                   #1769 P3 — this loop builds the #1769 viewer ONCE (it is
+                   song-independent) and maps accessApplySong per song, instead of
+                   contentGatingApply rebuilding the whole viewer
+                   (resolveEffectiveTier's recursive CTE + userHasValidCcli +
+                   licences + presence + api-key probe) N times — a pure perf win.
+                   Byte-identical: same (uid, plat, pres) → same viewer →
+                   accessApplySong(s, V) === contentGatingApply(s, …) per song
+                   (proven by test-gating-equivalence). apiKeyScopes stays the
+                   default null so the content:gated bypass is self-resolved once,
+                   exactly as the per-song delegate did. */
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
-                if (function_exists('contentGatingApply')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_context.php';
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_resolver.php';
+                if (function_exists('accessViewerContext') && function_exists('accessApplySong')) {
                     $exAuth2 = $exAuth ?? getAuthenticatedUser();
                     $exUid2  = $exAuth2 ? (int)$exAuth2['Id'] : null;
                     $exPlat2 = $exPlat ?? trim((string)($_GET['platform'] ?? 'PWA'));
@@ -1298,10 +1338,22 @@ if ($action !== null) {
                         && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                         $exPres = (string)$_COOKIE['ihymns_sf_presence_token'];
                     }
-                    $sbSongs = array_map(
-                        static fn(array $s): array => contentGatingApply($s, $exUid2, $exPlat2, $exPres),
-                        $sbSongs
-                    );
+                    /* Viewer built ONCE, in try/catch: a bypass/tier-resolution
+                       throw fails open for the whole export (leave $sbSongs
+                       unstripped) + logs — the delegate's per-song fail-open,
+                       collapsed to all-or-nothing (a mid-loop transient can no
+                       longer yield a mixed export; the deterministic output is
+                       unchanged). Per-song accessApplySong keeps its own
+                       try/catch, so a malformed row still degrades alone. */
+                    try {
+                        $exViewer = accessViewerContext($exUid2, $exPlat2, $exPres);
+                        $sbSongs  = array_map(
+                            static fn(array $s): array => accessApplySong($s, $exViewer),
+                            $sbSongs
+                        );
+                    } catch (\Throwable $_e) {
+                        error_log('[content_gating] apply failed: ' . $_e->getMessage());
+                    }
                 }
             }
             sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
@@ -2044,6 +2096,10 @@ if ($action !== null) {
                             && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
                             $audioPres = (string)$_COOKIE['ihymns_sf_presence_token'];
                         }
+                        /* #1769 P3 — the bulk_audio gate stays on the delegate by
+                           decision: it resolves ONE 'audio' verdict per request
+                           (emptying the whole manifest), not per row, so there is
+                           no viewer to hoist. Do not migrate this to accessMediaAllowed. */
                         if (!contentGatingMediaAllowed('audio', $audioUid, $audioPres)) {
                             $manifest = [];
                         }
@@ -8008,7 +8064,13 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'admin_restrictions':
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: this LIST action was raw-role-gated while its
+               sibling create/delete restriction actions already use
+               userHasEntitlement('manage_content_restrictions', …) — the same
+               entitlement the /manage/restrictions page and nav advertise. Align
+               it so a role that clears the page also clears its list API and vice
+               versa. Behaviour-neutral at the default entitlements. */
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -10614,14 +10676,36 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $targetUserId = (int)($body['user_id'] ?? 0);
             $newTier = trim($body['tier'] ?? '');
-            $validTiers = ['public', 'free', 'ccli', 'premium', 'pro'];
 
-            if ($targetUserId <= 0 || !in_array($newTier, $validTiers)) {
-                sendJson(['error' => 'Valid user_id and tier (public/free/ccli/premium/pro) required.'], 400);
+            if ($targetUserId <= 0 || $newTier === '') {
+                sendJson(['error' => 'Valid user_id and tier required.'], 400);
                 break;
             }
 
             $db = getDbMysqli();
+
+            /* #1769 P0, OV-10: validate the tier against the LIVE tblAccessTiers
+               catalogue, not a hardcoded five-name list. A curator-created tier is
+               assignable from /manage/users (which validates against the live
+               table), so the API must accept it too — the old list silently
+               rejected every custom tier, the same operation with two different
+               validity rules. Degrade-safe (rule #28C): if the catalogue can't be
+               read, fall back to the reserved names rather than throwing. */
+            $tierValid = false;
+            try {
+                $tchk = $db->prepare('SELECT 1 FROM tblAccessTiers WHERE Name = ? LIMIT 1');
+                $tchk->bind_param('s', $newTier);
+                $tchk->execute();
+                $tierValid = $tchk->get_result()->num_rows > 0;
+                $tchk->close();
+            } catch (\Throwable $_e) {
+                $tierValid = in_array($newTier, ['public', 'free', 'ccli', 'premium', 'pro'], true);
+            }
+            if (!$tierValid) {
+                sendJson(['error' => "Unknown access tier '{$newTier}'."], 400);
+                break;
+            }
+
             $stmt = $db->prepare('UPDATE tblUsers SET AccessTier = ?, UpdatedAt = NOW() WHERE Id = ?');
             $stmt->bind_param('si', $newTier, $targetUserId);
             $stmt->execute();
@@ -13828,13 +13912,87 @@ if ($action !== null) {
          *   name, display_name, level, description?, caps?: { ... }
          * }
          * ----------------------------------------------------------------- */
+        /* -----------------------------------------------------------------
+         * Licence-type CRUD (#459 / #1769 P4) — thin wrappers over the ONE
+         * shared core includes/licence_type_admin.php (same as /manage/licence-
+         * types). Gate on manage_licence_types (the page's entitlement, OV-10).
+         * 409 on an un-migrated table or a refused delete/duplicate key (status
+         * is the contract — rule #35). DORMANT: writes only the licence
+         * vocabulary; the live effect of ConfersTier/Enabled is the pre-existing
+         * P2-F conferral overlay, surfaced honestly on the page.
+         * ----------------------------------------------------------------- */
+        case 'admin_licence_type_create':
+        case 'admin_licence_type_update':
+        case 'admin_licence_type_toggle':
+        case 'admin_licence_type_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_licence_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_type_admin.php';
+            try {
+                $ltDb = getDbMysqli();
+                if (!licenceTypeAdminGates($ltDb)['hasTable']) {
+                    sendJson(['error' => 'The licence-type registry table has not been created on this environment yet.'], 409);
+                    break;
+                }
+                $ltBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+                $ltActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+                $ltId    = (int)($ltBody['id'] ?? 0);
+
+                if ($action === 'admin_licence_type_create') {
+                    $v = licenceTypeAdminValidate($ltDb, $ltBody, true);
+                    if ($v['errors']) { sendJson(['error' => implode(' ', $v['errors'])], 400); break; }
+                    $newId = licenceTypeAdminCreate($ltDb, $v['norm'], $ltActor);
+                    logActivity('api.admin.licence_types.create', 'licence_type', (string)$newId,
+                        ['key' => $v['norm']['key'], 'label' => $v['norm']['label']]);
+                    sendJson(['ok' => true, 'id' => $newId]);
+                } elseif ($action === 'admin_licence_type_update') {
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    $v = licenceTypeAdminValidate($ltDb, $ltBody, false);
+                    if ($v['errors']) { sendJson(['error' => implode(' ', $v['errors'])], 400); break; }
+                    licenceTypeAdminUpdate($ltDb, $ltId, $v['norm'], $ltActor);
+                    logActivity('api.admin.licence_types.update', 'licence_type', (string)$ltId,
+                        ['label' => $v['norm']['label'], 'confersTier' => $v['norm']['confers_tier']]);
+                    sendJson(['ok' => true]);
+                } elseif ($action === 'admin_licence_type_toggle') {
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    $state = licenceTypeAdminToggle($ltDb, $ltId, $ltActor);
+                    logActivity('api.admin.licence_types.toggle', 'licence_type', (string)$ltId, ['enabled' => $state]);
+                    sendJson(['ok' => true, 'enabled' => $state]);
+                } else { /* admin_licence_type_delete */
+                    if ($ltId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+                    licenceTypeAdminDelete($ltDb, $ltId);
+                    logActivity('api.admin.licence_types.delete', 'licence_type', (string)$ltId, []);
+                    sendJson(['ok' => true]);
+                }
+            } catch (\RuntimeException $re) {
+                /* Duplicate key / delete refused (system or still-referenced). */
+                logActivityError('api.admin.licence_types', 'licence_type', (string)($ltId ?? 0), $re);
+                sendJson(['error' => $re->getMessage()], 409);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.licence_types', 'licence_type', (string)($ltId ?? 0), $te);
+                sendJson(['error' => 'Could not save the licence type.'], 500);
+            }
+            break;
+        }
+
         case 'admin_tier_create': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: gate on the SAME entitlement the /manage/tiers page
+               and its nav entry use (manage_access_tiers), not a raw role list —
+               otherwise narrowing that entitlement locks the page but not this API.
+               Behaviour-neutral at the default entitlements (admin+global_admin). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -13942,7 +14100,8 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: entitlement-gated to match the page (see admin_tier_create). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14066,7 +14225,8 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* #1769 P0, OV-10: entitlement-gated to match the page (see admin_tier_create). */
+            if (!$authUser || !userHasEntitlement('manage_access_tiers', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }

@@ -139,6 +139,16 @@ $recordingIdTypesForJs = array_map(
     static fn(array $t): array => ['label' => $t['label'], 'scope' => $t['scope']],
     mediaIdentifierRecordingTypes()
 );
+
+/* #1769 P4 — the licence vocabulary for the Metadata tab's rights-panel.js,
+   shipped the SAME way the two registries above are (rule #35's "server-derive
+   the vocab, no second list"): the panel builds its two rights pickers from
+   THIS map (key => {label, description}), never a hand-typed licence list, so
+   it can never offer a key api2.php's rights branch would then 422 on. On an
+   un-migrated install licenceTypesForPicker() falls back to the byte-exact P1
+   seeds (licence_registry.php), so the pickers still populate. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+$licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -272,6 +282,11 @@ $recordingIdTypesForJs = array_map(
          shipped to a classic global"). -->
     <script>window._iHymnsRecordingIdTypes = <?= json_encode($recordingIdTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
+    <!-- #1769 P4 — licence vocabulary (key -> {label,description}) for the Metadata tab's
+         rights-panel.js pickers. Same emit shape + flags + "classic global registry map"
+         convention as the two above. -->
+    <script>window._iHymnsLicenceTypes = <?= json_encode($licenceTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
          (editor/index.php, organisations.php, songbooks.php, musicians.php, venues.php,
@@ -350,7 +365,7 @@ $recordingIdTypesForJs = array_map(
            is separate from the song scalars. structure-tab.js's per-component
            enrichment panel (enrichment-panel.js) reads + writes these two
            slices directly. */
-        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [] });
+        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], songbookRightsDefaults: null });
         let teardowns = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
@@ -446,6 +461,10 @@ $recordingIdTypesForJs = array_map(
                    tab's per-line enrichment panel from having anything to show. */
                 store.set('lineTranslations', data.lineTranslations || []);
                 store.set('lineAnnotations', data.lineAnnotations || []);
+                /* #1769 P4 — the songbook's default rights keys, a prefill HINT
+                   for the Metadata tab's rights panel (D4). null on an
+                   un-migrated install, so the panel simply shows no hint. */
+                store.set('songbookRightsDefaults', data.songbookRightsDefaults || null);
                 currentSongId = id;
                 mountTabs(id);
                 try { history.replaceState(null, '', '?song=' + encodeURIComponent(id)); } catch (_e) {}

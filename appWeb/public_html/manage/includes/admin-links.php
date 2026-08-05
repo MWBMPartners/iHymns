@@ -80,6 +80,9 @@ $_adminLinks = [
     /* Access — gating + permission surfaces (#819) */
     ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
     ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
+    /* Licence Types (#459 / #1769 P4) — the licence vocabulary (CCLI, MRL, …),
+       what each covers + any tier it confers (tblLicenceTypes). */
+    ['licence-types',        '/manage/licence-types',          'bi-patch-check',     'Licence Types',         'manage_licence_types',        'Access'     ],
     /* Feature Gating (#1481 P1) — defines ADDITIONAL admin-configurable
        capabilities (tblGatingCapabilities), which then auto-grow a column
        on the Access Tiers matrix above. Deliberately Global-Admin-only
@@ -122,6 +125,10 @@ $_adminLinks = [
        the credentials card above (manage_configuration) — rule: a page's
        own gate and its nav entry must agree (#1587). */
     ['intapps-status',       '/manage/intapps-status',          'bi-broadcast-pin',   'IntApps Gateway',       'manage_configuration',        'Operations' ],
+    /* Gating no-op verify (#1769) — the OFF-baseline / equivalence harness for the
+       content-gating refactor. Gated on manage_configuration, the SAME check the
+       page itself uses (#1587 — page gate and nav entry must agree). */
+    ['gating-noop-verify',   '/manage/gating-noop-verify',      'bi-shield-check',    'Gating No-op Verify',   'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
     ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 

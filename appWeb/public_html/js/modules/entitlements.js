@@ -83,6 +83,10 @@ export const ENTITLEMENTS = {
     manage_content_restrictions: ['admin', 'global_admin'],
     manage_access_tiers:         ['admin', 'global_admin'],
     assign_user_tier:            ['admin', 'global_admin'],
+    /* Licence-type vocabulary CRUD (#459 / #1769 P4) — tblLicenceTypes. Mirror of
+       the PHP map (includes/entitlements.php); held in lockstep by
+       tests/php/test-entitlement-parity.php. */
+    manage_licence_types:        ['admin', 'global_admin'],
     /* Admin-configurable feature gating (#1481 P1) — defining capabilities/
        rules is Global-Admin-only; per-tier values stay manage_access_tiers. */
     manage_feature_gating:       ['global_admin'],

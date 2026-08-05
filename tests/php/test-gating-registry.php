@@ -198,6 +198,98 @@ _tgrAssert(
 );
 
 /* ------------------------------------------------------------------------ *
+ * 6. The optional 5th `enforce` tuple element (#1769 P2). All DB-free:
+ *    tierCapEnforceShapeValid() is pure; the round-trip goes through the pure
+ *    tierCapsMergeUnion(); the frozen-7 guard reads the TIER_CAPS constant.
+ * ------------------------------------------------------------------------ */
+
+/* (6a) tierCapEnforceShapeValid() truth table. */
+$shapeValid = [
+    'payload list'            => ['payload' => ['components', 'translations']],
+    'media list'              => ['media' => ['audio', 'midi']],
+    'actions list'            => ['actions' => ['view_copyrighted']],
+    'coverage key'            => ['requiresCoverage' => 'lyrics_display'],
+    'all four keys'           => ['payload' => ['x'], 'media' => ['audio'], 'actions' => ['a'], 'requiresCoverage' => 'music_reproduction'],
+];
+foreach ($shapeValid as $label => $desc) {
+    _tgrAssert(tierCapEnforceShapeValid($desc) === true, "(6a) valid enforce descriptor accepted: $label");
+}
+$shapeInvalid = [
+    'empty array'             => [],
+    'unknown key alone'       => ['bogus' => 1],
+    'unknown key alongside'   => ['payload' => ['ok'], 'bogus' => 2],
+    'payload not array'       => ['payload' => 'notarray'],
+    'payload empty-string el' => ['payload' => ['ok', '']],
+    'payload non-string el'   => ['payload' => ['ok', 123]],
+    'coverage unknown kind'   => ['requiresCoverage' => 'not_a_coverage_kind'],
+    'coverage empty string'   => ['requiresCoverage' => ''],
+    'coverage not a string'   => ['requiresCoverage' => ['lyrics_display']],
+];
+foreach ($shapeInvalid as $label => $desc) {
+    _tgrAssert(tierCapEnforceShapeValid($desc) === false, "(6a) invalid enforce descriptor rejected: $label");
+}
+
+/* (6b) 5-tuple round-trip through the pure merge: a valid EnforceJson lands as
+   tuple[4]; a malformed / shape-invalid / absent one leaves a plain 4-tuple. */
+$enforceDesc = ['payload' => ['components'], 'media' => ['audio']];
+$withEnforce = tierCapsMergeUnion([
+    ['CapKey' => 'CanGateThing', 'Label' => 'Gate', 'Description' => 'x', 'DefaultValue' => 0, 'EmitInApi' => 1,
+     'EnforceJson' => json_encode($enforceDesc)],
+]);
+_tgrAssert(
+    ($withEnforce['union']['CanGateThing'][4] ?? null) === $enforceDesc,
+    '(6b) a shape-valid EnforceJson decodes into tuple[4]'
+);
+_tgrAssert(count($withEnforce['union']['CanGateThing']) === 5, '(6b) the enforced cap is a 5-tuple');
+
+$badJson = tierCapsMergeUnion([
+    ['CapKey' => 'CanBadJson', 'Label' => 'Bad', 'Description' => 'x', 'DefaultValue' => 0, 'EmitInApi' => 1,
+     'EnforceJson' => '{not valid json'],
+]);
+_tgrAssert(count($badJson['union']['CanBadJson']) === 4, '(6b) a malformed EnforceJson leaves a plain 4-tuple');
+_tgrAssert(!array_key_exists(4, $badJson['union']['CanBadJson']), '(6b) …with no tuple[4]');
+
+$shapeBad = tierCapsMergeUnion([
+    ['CapKey' => 'CanShapeBad', 'Label' => 'ShapeBad', 'Description' => 'x', 'DefaultValue' => 0, 'EmitInApi' => 1,
+     'EnforceJson' => json_encode(['unknownKey' => 1])],
+]);
+_tgrAssert(count($shapeBad['union']['CanShapeBad']) === 4, '(6b) a shape-invalid EnforceJson leaves a plain 4-tuple');
+
+$nullEnforce = tierCapsMergeUnion([
+    ['CapKey' => 'CanNullEnforce', 'Label' => 'Null', 'Description' => 'x', 'DefaultValue' => 0, 'EmitInApi' => 1,
+     'EnforceJson' => null],
+]);
+_tgrAssert(count($nullEnforce['union']['CanNullEnforce']) === 4, '(6b) a NULL EnforceJson leaves a plain 4-tuple');
+
+/* Additivity — a row WITH enforce leaves every built-in TIER_CAPS entry
+   untouched (the frozen 7 are not DB rows and never gain a [4]). */
+foreach (TIER_CAPS as $k => $v) {
+    if (($withEnforce['union'][$k] ?? null) !== $v) {
+        _tgrAssert(false, "(6b) code key '$k' unchanged by a cap carrying enforce");
+    }
+}
+_tgrAssert(true, '(6b) every built-in TIER_CAPS entry is untouched by an enforce-carrying DB cap');
+
+/* (6c) frozen-7-no-enforce — the MUTATION SENTINEL. Adding a 5th element to
+   ANY built-in TIER_CAPS entry (the checklist's "add enforce to a column cap")
+   turns one of these assertions red. Derived from the constant, not a typed
+   list, so a newly-added built-in cap is covered automatically. */
+foreach (array_keys(TIER_CAPS) as $k) {
+    _tgrAssert(!array_key_exists(4, TIER_CAPS[$k]), "(6c) built-in cap '$k' carries NO enforce element (tuple[4] absent)");
+    _tgrAssert(count(TIER_CAPS[$k]) === 4, "(6c) built-in cap '$k' is exactly a 4-tuple");
+    _tgrAssert(tierCapEnforce($k) === null, "(6c) tierCapEnforce('$k') === null for every built-in cap");
+}
+
+/* (6d) tierCapEnforce() on an unresolvable key ⇒ null (no DB touch needed:
+   tierCapsEffective() degrades to TIER_CAPS with no DB). */
+_tgrAssert(tierCapEnforce('CanTotallyUnknownKey') === null, '(6d) tierCapEnforce() on an unknown key is null');
+
+/* (6e) the EnforceJson existence probe exists + is callable (its I/O degrade
+   path is proven behaviourally on a live DB / the mutation checklist; here we
+   only assert the symbol is wired so a rename is caught). */
+_tgrAssert(function_exists('gatingCapEnforceColumnExists'), '(6e) gatingCapEnforceColumnExists() is defined');
+
+/* ------------------------------------------------------------------------ *
  * 5. Migration-registry 'gating-registry' probe — multi-object OR-probe.
  *    Stub the four _migProbe_* helpers (same pattern as
  *    test-migration-registry.php) but make _migProbe_tableExists()

@@ -40,6 +40,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the legacy PublicationCity display string only when the
    places-adoption migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* Licence vocabulary (#1769 P4 Commit C) — the ONE registry the songbook
+   default rights-key pickers draw from + validate against (rule #35, no second
+   list). Falls back to the byte-exact P1 seeds on an un-migrated install. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -1370,6 +1374,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
                 $displayAbbr = trim((string)($_POST['display_abbr']     ?? ''));
                 $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
+
+                /* #1769 P4 Commit C — songbook DEFAULT rights keys. '' → NULL,
+                   else must be a live licence key (validated against the ONE
+                   registry, never a hand-typed list — rule #35). $applyRights
+                   drives the fill-NULL-only sweep further down. */
+                $defLyricsRights = trim((string)($_POST['default_lyrics_rights'] ?? ''));
+                $defMusicRights  = trim((string)($_POST['default_music_rights']  ?? ''));
+                $applyRights     = !empty($_POST['apply_rights_to_songs']);
+                $rightsKeyValid  = licenceTypeKeys($db);
+                foreach ([['lyrics', $defLyricsRights], ['music', $defMusicRights]] as [$_side, $_val]) {
+                    if ($_val !== '' && !in_array($_val, $rightsKeyValid, true)) {
+                        $error = "Default {$_side} rights key '{$_val}' is not a defined licence type.";
+                        break 2;
+                    }
+                }
+                $defLyricsRights = $defLyricsRights === '' ? null : $defLyricsRights;
+                $defMusicRights  = $defMusicRights  === '' ? null : $defMusicRights;
                 /* Places adoption sweep — display string + FK. */
                 $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
                 $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
@@ -1681,6 +1702,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->bind_param('ssi', $olWorkId, $olEditionId, $id);
                         $stmt->execute();
                         $stmt->close();
+                    }
+                    /* #1769 P4 Commit C — songbook DEFAULT rights keys, schema-
+                       tolerant separate UPDATE (the columns land with the
+                       gating-facts card, later than tblSongbooks itself). */
+                    $rightsColsLive = placeColumnExists($db, 'tblSongbooks', 'DefaultLyricsRightsLicenceKey')
+                        && placeColumnExists($db, 'tblSongbooks', 'DefaultMusicRightsLicenceKey');
+                    if ($rightsColsLive) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblSongbooks
+                                SET DefaultLyricsRightsLicenceKey = ?, DefaultMusicRightsLicenceKey = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('ssi', $defLyricsRights, $defMusicRights, $id);
+                        $stmt->execute();
+                        $stmt->close();
+
+                        /* Apply-to-songs (D4): fill ONLY songs that carry no
+                           rights key yet — the `IS NULL` clause is the whole
+                           safety promise, so it never overwrites a song a curator
+                           already set. Song-column-gated (they arrive with the
+                           same card). Counts drive the audit + toast. Never an
+                           automatic write: it runs only when the curator ticked
+                           the box AND a default is set for that side. */
+                        $rightsAppliedLyrics = 0;
+                        $rightsAppliedMusic  = 0;
+                        $songRightsColsLive  = placeColumnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')
+                            && placeColumnExists($db, 'tblSongs', 'MusicRightsLicenceKey');
+                        if ($applyRights && $songRightsColsLive) {
+                            if ($defLyricsRights !== null) {
+                                $stmt = $db->prepare(
+                                    'UPDATE tblSongs SET LyricsRightsLicenceKey = ?
+                                      WHERE SongbookAbbr = ? AND LyricsRightsLicenceKey IS NULL'
+                                );
+                                $stmt->bind_param('ss', $defLyricsRights, $oldAbbr);
+                                $stmt->execute();
+                                $rightsAppliedLyrics = $stmt->affected_rows;
+                                $stmt->close();
+                            }
+                            if ($defMusicRights !== null) {
+                                $stmt = $db->prepare(
+                                    'UPDATE tblSongs SET MusicRightsLicenceKey = ?
+                                      WHERE SongbookAbbr = ? AND MusicRightsLicenceKey IS NULL'
+                                );
+                                $stmt->bind_param('ss', $defMusicRights, $oldAbbr);
+                                $stmt->execute();
+                                $rightsAppliedMusic = $stmt->affected_rows;
+                                $stmt->close();
+                            }
+                        }
                     }
 
                     /* #782 phase C — reconcile series memberships for this
@@ -2026,6 +2096,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $auditExtras['openlibrary_work_id']    = $olWorkId;
                         $auditExtras['openlibrary_edition_id'] = $olEditionId;
                     }
+                    /* #1769 P4 Commit C — record the default rights keys + any
+                       fill-NULL-only sweep counts in the audit (owner directive:
+                       every gating action is logged). Gated on the columns being
+                       live so a pre-migration edit logs exactly as before. */
+                    if ($rightsColsLive ?? false) {
+                        $auditExtras['default_lyrics_rights'] = $defLyricsRights;
+                        $auditExtras['default_music_rights']  = $defMusicRights;
+                        if ($applyRights) {
+                            $auditExtras['rights_applied_lyrics'] = $rightsAppliedLyrics ?? 0;
+                            $auditExtras['rights_applied_music']  = $rightsAppliedMusic ?? 0;
+                        }
+                    }
                     logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
                         'before'             => array_intersect_key($beforeRow, array_flip($changed)),
@@ -2048,6 +2130,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $success = $abbrChanged
                         ? "Songbook '{$oldAbbr}' → '{$newAbbr}'" . ($alsoRename ? ' (song references updated).' : ' (song references kept — resolve manually).')
                         : "Songbook '{$oldAbbr}' updated.";
+                    /* Surface the fill-NULL-only sweep result so the curator sees
+                       exactly how many songs the defaults reached. */
+                    if (($rightsColsLive ?? false) && $applyRights
+                        && (($rightsAppliedLyrics ?? 0) > 0 || ($rightsAppliedMusic ?? 0) > 0)) {
+                        $success .= ' Applied rights defaults to '
+                            . (int)($rightsAppliedLyrics ?? 0) . ' lyrics + '
+                            . (int)($rightsAppliedMusic ?? 0) . ' music song-field(s) with no key set.';
+                    }
                 } catch (\Throwable $e) {
                     $db->rollback();
                     throw $e;
@@ -2950,6 +3040,17 @@ try {
         ? ', b.DisplayAbbr'
         : ', NULL AS DisplayAbbr';
 
+    /* #1769 P4 Commit C — songbook DEFAULT rights keys (a prefill hint the song
+       editor's rights panel adopts). NULL AS … keeps the payload keys present on
+       an un-migrated install so the edit modal stays openable. */
+    $hasRightsDefaultCols = placeColumnExists($db, 'tblSongbooks', 'DefaultLyricsRightsLicenceKey')
+        && placeColumnExists($db, 'tblSongbooks', 'DefaultMusicRightsLicenceKey');
+    $rightsSelect = $hasRightsDefaultCols
+        ? ', b.DefaultLyricsRightsLicenceKey, b.DefaultMusicRightsLicenceKey'
+        : ', NULL AS DefaultLyricsRightsLicenceKey, NULL AS DefaultMusicRightsLicenceKey';
+    /* Licence vocab for the two default-rights pickers in the edit modal. */
+    $licenceRightsPicker = licenceTypesForPicker($db);
+
     /* Same probe pattern for the #782 phase A parent columns. When
        the schema is live, also LEFT JOIN to the parent row so the
        list-page Parent column can render abbreviation + name in one
@@ -2979,7 +3080,7 @@ try {
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . $pubMetaSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . $pubMetaSelect . $rightsSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
@@ -3264,6 +3365,10 @@ $csrf = csrfToken();
                                            flag, both booleans, both absent(→false) pre-migration. */
                                         'is_disabled'         => $hasDisableCol   && (int)($r['IsDisabled']    ?? 0) === 1,
                                         'is_public_domain'    => $hasPubDomainCol && (int)($r['IsPublicDomain'] ?? 0) === 1,
+                                        /* #1769 P4 Commit C — songbook default rights keys ('' when unset
+                                           or pre-migration; the SELECT NULL-fills the columns either way). */
+                                        'default_lyrics_rights' => $r['DefaultLyricsRightsLicenceKey'] ?? '',
+                                        'default_music_rights'  => $r['DefaultMusicRightsLicenceKey']  ?? '',
                                         /* #782 phase B — parent fields. Defaults
                                            keep the modal openable on a pre-migration
                                            deployment (the LEFT JOIN above only
@@ -3683,6 +3788,49 @@ $csrf = csrfToken();
                             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-form-fields.php';
                             unset($sbfMode, $sbfShowPickColourBtn, $sbfHasPubDomainCol, $sbfHasOpenLibraryCols);
                         ?>
+
+                        <?php if ($hasRightsDefaultCols ?? false): ?>
+                        <!-- #1769 P4 Commit C — songbook DEFAULT rights keys. A prefill
+                             HINT the song editor's Rights panel offers per song (D4);
+                             setting one here NEVER rewrites any song by itself — the
+                             "Apply to songs" button below fills only songs that have no
+                             rights key yet. Edit-modal only (needs an existing songbook Id);
+                             stays outside the shared Add/Edit partial by design (#1765 rule
+                             #22 — the create form has no songs to apply defaults to). */ -->
+                        <div class="mb-3 border-top pt-2">
+                            <label class="form-label small text-muted d-block mb-1">
+                                <i class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
+                            </label>
+                            <div class="row g-2">
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label small mb-1" for="edit-default-lyrics-rights">Lyrics rights</label>
+                                    <select class="form-select form-select-sm" name="default_lyrics_rights" id="edit-default-lyrics-rights">
+                                        <option value="">— none —</option>
+                                        <?php foreach (($licenceRightsPicker ?? []) as $lk => $ld): ?>
+                                            <option value="<?= htmlspecialchars((string)$lk) ?>"><?= htmlspecialchars((string)($ld['label'] ?? $lk)) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label small mb-1" for="edit-default-music-rights">Music rights</label>
+                                    <select class="form-select form-select-sm" name="default_music_rights" id="edit-default-music-rights">
+                                        <option value="">— none —</option>
+                                        <?php foreach (($licenceRightsPicker ?? []) as $lk => $ld): ?>
+                                            <option value="<?= htmlspecialchars((string)$lk) ?>"><?= htmlspecialchars((string)($ld['label'] ?? $lk)) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" value="1"
+                                       name="apply_rights_to_songs" id="edit-apply-rights-to-songs">
+                                <label class="form-check-label small" for="edit-apply-rights-to-songs">
+                                    On save, apply these defaults to songs in this book that have <strong>no</strong> rights key yet
+                                </label>
+                                <div class="form-text small">Never overwrites a song that already has a rights key. Nothing is enforced yet.</div>
+                            </div>
+                        </div>
+                        <?php endif; ?>
 
                         <!-- #873 — "Apply this language to all songs in this
                              songbook" cleanup action. Pushes the songbook's
@@ -4145,6 +4293,17 @@ $csrf = csrfToken();
                element to populate here. */
             var _editIsPublicDomain = document.getElementById('edit-is-public-domain');
             if (_editIsPublicDomain) { _editIsPublicDomain.checked = !!row.is_public_domain; }
+
+            /* #1769 P4 Commit C — default rights pickers (present only when the
+               gating-facts columns are migrated). Pre-select the saved defaults;
+               always reset the apply-to-songs checkbox so a re-open never re-runs
+               a fill the curator didn't ask for this time. */
+            var _dlr = document.getElementById('edit-default-lyrics-rights');
+            if (_dlr) { _dlr.value = row.default_lyrics_rights || ''; }
+            var _dmr = document.getElementById('edit-default-music-rights');
+            if (_dmr) { _dmr.value = row.default_music_rights || ''; }
+            var _art = document.getElementById('edit-apply-rights-to-songs');
+            if (_art) { _art.checked = false; }
 
             /* #681 — IETF BCP 47 composite picker. The picker's
                setTag() decomposes the saved tag and pre-fills the

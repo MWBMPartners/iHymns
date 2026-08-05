@@ -194,6 +194,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
     IsChristian     TINYINT(1)      NOT NULL DEFAULT 1 COMMENT 'Christian-corpus filter axis (#1045): iHymns surfaces only WHERE IsChristian=1; the shared iLyricsDB core applies no filter. Every iHymns songbook is Christian, hence default 1.',
     Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
+    DefaultLyricsRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'EDITOR-DEFAULT only, NEVER resolver-read (#1769 P1): pre-fills the Rights panel LyricsRightsLicenceKey for new songs in this book and powers the P4 apply-to-all-songs bulk action. The resolver reads ONLY the per-song fact — no inheritance chase, no JOIN, and tblSongs NULL keeps its single meaning (no requirement). NO FK (degrade-safe). DORMANT until the P4 editor reads it',
+    DefaultMusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'EDITOR-DEFAULT only, NEVER resolver-read (#1769 P1): pre-fills the Rights panel MusicRightsLicenceKey for new songs in this book; see DefaultLyricsRightsLicenceKey. NO FK (degrade-safe). DORMANT until the P4 editor reads it',
 
     /* Bibliographic + authority-control identifiers (#672). All
        optional, all VARCHAR — no FKs, no CHECK constraints. Curators
@@ -290,6 +292,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
+    LyricsRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song LYRICS-rights requirement FACT (#1769 P1, Model 2): tblLicenceTypes.LicenceKey a viewer must hold (via their org licence set or Service-Mode presence) for gated lyric actions on this song. NULL = no per-song requirement — plan caps + LyricsPublicDomain alone govern. NO FK, degrade-safe like tblUsers.AccessTier: an unknown or retired key degrades to no-requirement, never blocks a save or read. DORMANT until the P2 resolver reads it',
+    MusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song MUSIC-rights requirement FACT (#1769 P1 / #1768): tblLicenceTypes.LicenceKey required for music-reproduction actions (chord display, sheet music, MusicXML, MIDI — plan Q3: MIDI counts). NULL = no per-song requirement — plan caps + MusicPublicDomain alone govern. NO FK (degrade-safe, see LyricsRightsLicenceKey). Song-grain first (#1768 Q2); the arrangement-grain override is the reserved pair on tblSongArrangements. DORMANT until the P2 resolver reads it',
     Availability        VARCHAR(20)     NOT NULL DEFAULT 'available' COMMENT 'available | paid_only | unavailable (#1090 audit). Owner-driven rights gate read by content_access.php — distinct from the blanket PD flags; VARCHAR not ENUM',
     IsExplicit          TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Explicit-content flag (#1046); 0 for the Christian corpus, axis exists for generic/secular imports',
     Genre               VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Free-text secondary genre (#1046): Hymn / Contemporary Worship / … (NOT the Christian-filter axis — that is tblSongbooks.IsChristian)',
@@ -323,6 +327,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_Isrc              (Isrc),
     INDEX idx_Iswc              (Iswc),
     INDEX idx_Ccli              (Ccli),
+    INDEX idx_LyricsRightsLicence (LyricsRightsLicenceKey),
+    INDEX idx_MusicRightsLicence  (MusicRightsLicenceKey),
     INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
@@ -1191,7 +1197,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
        into tblPlaces for country grouping / regional filters. */
     PhysicalCity     VARCHAR(255)   NULL DEFAULT NULL,
     PhysicalCityId   INT UNSIGNED   NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
+    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). Values: none | ccli | mrl | ihymns_basic | ihymns_pro | custom. Legacy primary-licence column; multi-licence rows live in tblOrganisationLicences',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
@@ -1246,7 +1252,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
 CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrganisationId  INT UNSIGNED    NOT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ccli, mrl, ihymns_basic, ihymns_pro, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ccli | mrl | ihymns_basic | ihymns_pro | custom',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
@@ -1273,7 +1279,7 @@ CREATE TABLE IF NOT EXISTS tblContentLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrgId           INT UNSIGNED    NULL DEFAULT NULL,
     UserId          INT UNSIGNED    NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ihymns_basic, ihymns_pro, ccli, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ihymns_basic | ihymns_pro | ccli | mrl | custom',
     LicenceKey      VARCHAR(100)    NOT NULL DEFAULT '',
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
@@ -3202,6 +3208,8 @@ CREATE TABLE IF NOT EXISTS tblSongArrangements (
     Description        TEXT          NULL DEFAULT NULL COMMENT 'Free-text notes about this arrangement',
     KeySignature       VARCHAR(10)   NULL DEFAULT NULL COMMENT 'Structured key, e.g. G, Bb, F#m — home for the future transpose feature',
     CapoFret           TINYINT       NULL DEFAULT NULL COMMENT 'Capo fret position for chord display (0-12); NULL = none',
+    MusicRightsStatus  VARCHAR(20)   NULL DEFAULT NULL COMMENT 'RESERVED DORMANT (#1769 P1 / #1768 Q2): arrangement-grain music-rights status — pd | licensed | restricted (app-validated growable vocabulary, VARCHAR never ENUM, rule #20). NULL = inherit the song-grain facts (tblSongs.MusicPublicDomain + MusicRightsLicenceKey). Nothing reads this yet; the arrangement-grain gate flips on later with zero migration',
+    MusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'RESERVED DORMANT (#1769 P1 / #1768 Q2): arrangement-grain requirement override — tblLicenceTypes.LicenceKey needed for music-reproduction actions on THIS arrangement. NULL = inherit song-grain. NO FK (degrade-safe, matches tblSongs.MusicRightsLicenceKey)',
     CreatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -4956,6 +4964,7 @@ CREATE TABLE IF NOT EXISTS tblGatingCapabilities (
     Description   VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Checkbox tooltip / hint text',
     DefaultValue  TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Assumed 0/1 value when a tier has not set this cap (mirrors the TIER_CAPS 4-tuple default slot)',
     EmitInApi     TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1 = surfaced as a camelCase key on the public access_tiers API emit (rule #28 contract stays additive-only -- the 7 built-ins are unaffected)',
+    EnforceJson   JSON         NULL DEFAULT NULL COMMENT 'Enforcement mapping this admin-defined cap CARRIES (#1769 P1): object keyed by behaviour kind from the includes/gating_rules.php catalog (strip_payload_keys | drop_media_kinds | requiresCoverage | ...), value = kind-specific params. Mirrors the additive 5th enforce element TIER_CAPS gains in P2 so a cap definition and its enforcement live in ONE place and tblGatingRules can retire (P5). NULL = definition-only cap (identical to pre-#1769 behaviour -- what keeps this dormant). App-validated growable JSON, never ENUM (rule #20)',
     Enabled       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0 = soft-disabled -- excluded from the tierCapsEffective() union but kept for audit/history; hard-delete is separate and blocked while tblGatingRules references the CapKey',
     SortOrder     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Display order on the /manage/tiers matrix and the /manage/feature-gating list',
     Source        VARCHAR(20)  NOT NULL DEFAULT 'admin' COMMENT 'provenance vocabulary -- VARCHAR not ENUM (rule #20); "admin" today, room to grow (e.g. a future bulk-import source) with no ALTER',
@@ -5035,6 +5044,76 @@ CREATE TABLE IF NOT EXISTS tblIntAppsSync (
     UNIQUE KEY uq_IntAppsSync_ScopeChannelApp (Scope, Channel, AppSlug)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='IntAppsAPI gateway local snapshot + refresh bookkeeping (#1725/#1727). Dormant until tblAppSettings.intappsapi_enabled_channels names the current channel; fail-open contract lives in includes/intapps_client.php.';
+
+-- ============================================================================
+-- GATING FACTS + LICENCE-TYPE REGISTRY (#1769 P1, Model 2) — the one-pass
+-- additive-dormant schema batch for the access-model consolidation. Creates
+-- the #459 licence vocabulary table and the per-entity rights-requirement
+-- FACT columns (mirrored above on tblSongs / tblSongbooks / tblSongArrangements
+-- / tblGatingCapabilities). EVERYTHING here is DORMANT: no code reads any of
+-- these objects until #1769 P2 wires the licence registry + resolver, and the
+-- whole family only acts when tblAppSettings.content_gating_enabled = 1
+-- (rule #28 A). Mirrors appWeb/.sql/migrate-add-gating-facts-and-licence-types.php
+-- (rule #19 — DDL stays token-identical, COMMENT text included).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblLicenceTypes (#459, built by #1769 P1) — THE licence vocabulary + per-type
+-- metadata. Collapses the six hardcoded licence-vocab sites (organisations.php,
+-- restrictions.php, my-organisations.php, the ccli_validator licence-to-tier
+-- map, and the two divergent schema comments). A licence type declares WHAT IT
+-- LEGALLY COVERS (CoversJson) and WHICH TIER IT CONFERS (ConfersTier — the
+-- previously hidden bridge, now a visible attribute). The ABSENCE of a licence
+-- is the absence of a row; there is deliberately NO "none" row (all three
+-- licence stores filter LicenceType <> "none" before the vocabulary is read).
+-- P2 keeps the legacy hardcoded maps as the un-migrated fallback.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLicenceTypes (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LicenceKey     VARCHAR(30)  NOT NULL COMMENT 'THE licence vocabulary token (#459/#1769) -- the value every licence store writes (tblOrganisations.LicenceType, tblOrganisationLicences.LicenceType, tblContentLicences.LicenceType) and every requirement fact names (tblSongs LyricsRightsLicenceKey/MusicRightsLicenceKey, require_licence restriction targets). Lowercase snake, grammar ^[a-z][a-z0-9_]{1,29}$ app-validated in includes/licence_registry.php (P2) -- VARCHAR never ENUM (rule #20). Absence of a licence is the ABSENCE of a row, not a none row',
+    Label          VARCHAR(100) NOT NULL COMMENT 'Curator-facing display name, e.g. CCLI, iHymns Pro',
+    Description    VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Curator-facing hint text shown in pickers and on the admin Licences tab',
+    ConfersTier    VARCHAR(30)  NULL DEFAULT NULL COMMENT 'tblAccessTiers.Name this licence ALSO grants its holders -- the now-visible licence-to-tier bridge that was the hidden hardcoded map in ccli_validator.php (#1769 OV-6). NULL = confers no tier. NO FK, degrade-safe like tblUsers.AccessTier: an unknown or renamed tier degrades to no conferral, never RESTRICT-fails',
+    CoversJson     JSON         NULL DEFAULT NULL COMMENT 'Coverage SET this licence legally unlocks: object keyed by coverage kind -- lyrics_display | lyrics_print | music_reproduction | audio_playback (growable app-validated vocabulary, LICENCE_COVERAGE_KINDS in includes/licence_registry.php, P2; VARCHAR-in-JSON never ENUM, rule #20) -- value = per-kind qualifier object, {} = unqualified, RESERVED for future regional/time-box qualifiers so richer coverage never needs an ALTER. NULL = no legal coverage (a plan-conferral licence acts through ConfersTier only)',
+    RequiresNumber TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = recording this licence needs a licence number entered (CCLI/MRL); drives P4 form validation only, never enforcement',
+    Authority      VARCHAR(30)  NULL DEFAULT NULL COMMENT 'RESERVED (#1769 P1): issuing-body vocabulary -- ccli | onelicense | ihymns | ... (app-validated, VARCHAR never ENUM). NULL = unspecified. Nothing reads it yet; exists so a per-issuer picker grouping or validation route never needs an ALTER',
+    AuthorityRef   VARCHAR(50)  NULL DEFAULT NULL COMMENT 'RESERVED (#1769 P1): the issuing-authority reference for this licence product (e.g. a CCLI product/programme code) -- free text, NULL = none. Dormant sibling of tblSongTags.CcliThemeId',
+    Enabled        TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0 = soft-disabled -- excluded from pickers and the P2 registry union but kept so historical org-licence rows keep resolving their label; hard-delete is refused while any store references the key (app-enforced -- no FK exists to enforce it)',
+    SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Display order in pickers and on the admin Licences tab',
+    Source         VARCHAR(20)  NOT NULL DEFAULT 'curator' COMMENT 'Provenance vocabulary -- system (shipped seed) | curator (admin-created); VARCHAR never ENUM (rule #20)',
+    CreatedBy      INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who created this licence type (NULL for seeds)',
+    UpdatedBy      INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who last edited it',
+    CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_LicenceTypes_Key      (LicenceKey),
+    INDEX      idx_LicenceTypes_Enabled (Enabled, SortOrder),
+
+    CONSTRAINT fk_LicenceTypes_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_LicenceTypes_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='THE licence-type vocabulary + per-type metadata (#459, built by #1769 P1) -- collapses the six hardcoded licence-vocab sites. DORMANT until includes/licence_registry.php (P2) reads it; the legacy hardcoded maps survive as the un-migrated fallback.';
+
+-- Seed the licence-type vocabulary (#1769 P1). INSERT IGNORE keyed on the
+-- uq_LicenceTypes_Key UNIQUE: re-running never clobbers curator edits to a
+-- row. ConfersTier mirrors the legacy hardcoded licence-to-tier map in
+-- ccli_validator.php (ccli->ccli, ihymns_basic->free, ihymns_pro->premium);
+-- mrl and custom confer NO tier (#1769 sub-question 5). mrl ships Enabled=1
+-- because my-organisations.php already records mrl licences today and the
+-- whole family is dormant behind content_gating_enabled anyway (rule #28 A).
+INSERT IGNORE INTO tblLicenceTypes
+    (LicenceKey, Label, Description, ConfersTier, CoversJson, RequiresNumber, Authority, AuthorityRef, Enabled, SortOrder, Source) VALUES
+    ('ccli',         'CCLI',         'Christian Copyright Licensing International -- Church Copyright Licence. Covers displaying and printing copyrighted LYRICS for congregational use. Licence number required.', 'ccli',    '{"lyrics_display": {}, "lyrics_print": {}}', 1, 'ccli',   NULL, 1, 10, 'system'),
+    ('mrl',          'MRL',          'Music Reproduction Licence (CCLI) -- covers reproducing the MUSICAL WORK: sheet music, chord charts, MusicXML, MIDI (#1768). Licence number required.',                       NULL,      '{"music_reproduction": {}}',                 1, 'ccli',   NULL, 1, 20, 'system'),
+    ('ihymns_basic', 'iHymns Basic', 'Free iHymns plan licence -- public-domain songs only. Confers the free tier; carries no legal coverage of its own.',                                                          'free',    NULL,                                         0, 'ihymns', NULL, 1, 30, 'system'),
+    ('ihymns_pro',   'iHymns Pro',   'Paid iHymns plan licence -- full catalogue access. Confers the premium tier; carries no legal coverage of its own.',                                                          'premium', NULL,                                         0, 'ihymns', NULL, 1, 40, 'system'),
+    ('custom',       'Custom',       'Free-form licence recorded by an organisation. Coverage and tier conferral are set per install by a curator.',                                                                NULL,      NULL,                                         0, NULL,     NULL, 1, 50, 'system');
+
+-- feature_gating_rules_enabled was never seeded (#1769 P0 finding, deferred to
+-- this batch). Reads already default to 0 when the row is absent, so this is a
+-- pure make-the-switch-visible seed, not a behaviour change.
+INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
+    ('feature_gating_rules_enabled', '0', 'Enable the admin-defined payload-rules engine (/manage/feature-gating). Nested under content_gating_enabled -- rules apply only when BOTH are 1. Seeded 0 by #1769 P1 (deferred from P0).');
 
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)

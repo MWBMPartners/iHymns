@@ -26,6 +26,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary the
+   require_licence picker sources from (was a const duplicated from
+   organisations.php). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -63,9 +67,9 @@ const RESTRICTIONS_EFFECTS = ['deny', 'allow'];
      includes/content_access.php::checkContentAccess().
    * FEATURES  — mirrors APP_CONFIG['features'] in includes/config.php;
      this is the full set a restriction rule can reference.
-   * LICENCE_TYPES — duplicated from organisations.php for now (same
-     4-row map); #459 migrates this to tblLicenceTypes, at which
-     point restrictions.php should source from there too. */
+   * LICENCE_TYPES — now sourced from the ONE licence registry
+     (includes/licence_registry.php, #459 delivered by #1769 P2), replacing the
+     const that duplicated organisations.php's map. */
 const RESTRICTIONS_PLATFORMS = [
     'PWA'    => 'PWA · Web app',
     'Apple'  => 'Apple · iOS / iPadOS / tvOS',
@@ -79,16 +83,20 @@ const RESTRICTIONS_FEATURES = [
     'shuffle'        => 'Shuffle / random song',
     'favorites'      => 'Favourites',
 ];
-const RESTRICTIONS_LICENCE_TYPES = [
-    'none'         => 'None — no licence on file',
-    'ihymns_basic' => 'iHymns Basic — public-domain only',
-    'ihymns_pro'   => 'iHymns Pro — full catalogue',
-    'ccli'         => 'CCLI — licence number required',
-];
+/* The licences a require_licence rule can demand — flat key => label for the
+   <select>, from the registry (NOT a const: it reads the DB). No 'none' (a rule
+   requiring "no licence" is meaningless); now also offers `mrl` + `custom`.
+   Degrades to LICENCE_TYPES_FALLBACK on an un-migrated install. */
+$RESTRICTIONS_LICENCE_TYPES = [];
+foreach (licenceTypesForPicker($db) as $ltKey => $ltInfo) {
+    $RESTRICTIONS_LICENCE_TYPES[$ltKey] = $ltInfo['label'];
+}
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1769 P0, rule #29: same-origin-aware CSRF (still accepts the baked
+       session token; adds the never-stale X-Requested-With route). */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -116,6 +124,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!array_key_exists($restrictionType, RESTRICTIONS_TYPES)) {
                     $error = 'Invalid restriction type.'; break;
                 }
+                /* #1769 P4 Commit E (D10) — Effect HONESTY. content_access.php
+                   IGNORES Effect for every require_* type ("licence found → pass;
+                   absent → deny", never an allow/deny toggle — see that file's
+                   note beside the require_licence branch). Storing Effect='allow'
+                   on such a row is a lie the engine can't honour, so normalise it
+                   to 'deny' server-side. This is ENGINE-DEAD → a provably zero
+                   behaviour change (the value was already ignored), and it stops
+                   the row from claiming a policy it never had. The UI hides the
+                   Effect control for these types too (see the form's JS). */
+                if (str_starts_with($restrictionType, 'require_')) {
+                    $effect = 'deny';
+                }
                 if (!in_array($effect, RESTRICTIONS_EFFECTS, true)) {
                     $error = 'Effect must be allow or deny.'; break;
                 }
@@ -135,7 +155,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $targetType, $targetId, $effect, $priority, $reason
                 );
                 $stmt->execute();
+                $newRestrictionId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1769 P4 — every gating action is logged (owner directive). */
+                if (function_exists('logActivity')) {
+                    logActivity('admin.restrictions.create', 'content_restriction', (string)$newRestrictionId, [
+                        'entityType'      => $entityType,
+                        'entityId'        => $entityId,
+                        'restrictionType' => $restrictionType,
+                        'targetId'        => $targetId,
+                        'effect'          => $effect,
+                        'priority'        => $priority,
+                    ]);
+                }
                 $success = 'Restriction created.';
                 break;
             }
@@ -147,6 +179,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $stmt->close();
+                if (function_exists('logActivity')) {
+                    logActivity('admin.restrictions.delete', 'content_restriction', (string)$id, []);
+                }
                 $success = 'Restriction removed.';
                 break;
             }
@@ -492,9 +527,14 @@ $csrf = csrfToken();
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-2">
+                <!-- #1769 P4 (D10) — Effect is meaningful ONLY for block_* rules;
+                     content_access.php ignores it for require_* (licence found →
+                     pass, absent → deny). Hidden by JS for require_* types, and
+                     the server normalises those to 'deny' regardless, so the
+                     control can never store a policy the engine won't honour. -->
+                <div class="col-sm-2" id="rx-effect-group">
                     <label class="form-label small">Effect</label>
-                    <select name="effect" class="form-select form-select-sm">
+                    <select name="effect" id="rx-effect" class="form-select form-select-sm">
                         <option value="deny" selected>deny</option>
                         <option value="allow">allow</option>
                     </select>
@@ -554,7 +594,7 @@ $csrf = csrfToken();
                     <!-- licence type picker -->
                     <div class="rx-picker d-none" data-picker-for="licence_type">
                         <select class="form-select form-select-sm rx-picker-select">
-                            <?php foreach (RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
+                            <?php foreach ($RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -608,6 +648,19 @@ $csrf = csrfToken();
                 if (form && typeof window.initEntityPickers === 'function') {
                     window.initEntityPickers(form);
                 }
+                /* #1769 P4 (D10) — hide the Effect control for require_* types,
+                   where the engine ignores it (the server normalises them to
+                   'deny' too). Pure affordance honesty; the server is the gate. */
+                var typeSel = document.getElementById('rx-restriction-type');
+                var effGroup = document.getElementById('rx-effect-group');
+                var effSel  = document.getElementById('rx-effect');
+                function syncEffect() {
+                    if (!typeSel || !effGroup) { return; }
+                    var isRequire = typeSel.value.indexOf('require_') === 0;
+                    effGroup.style.display = isRequire ? 'none' : '';
+                    if (isRequire && effSel) { effSel.value = 'deny'; }
+                }
+                if (typeSel) { typeSel.addEventListener('change', syncEffect); syncEffect(); }
             })();
         </script>
 

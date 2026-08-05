@@ -274,7 +274,7 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
        here rather than checked separately so a wildcard and a specific rule
        compete on the same Priority ladder — note the ordering does NOT prefer a
        specific rule over a wildcard, so an equal-priority pair is decided by
-       Effect alone.
+       Effect alone (deny winning, #1769 — see the ORDER BY note below).
 
        ⚠️ UNWRAPPED READ — the one exception to this file's fail-open posture.
        `tblContentRestrictions` is treated as always-present, and under mysqli
@@ -284,20 +284,29 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
        song-media.php, audio-media.php and api.php's `content_access` do not.
        Flagged during the #1158 annotation pass, deliberately not changed here.
 
-       ⚠️ `ORDER BY … Effect ASC` sorts 'allow' BEFORE 'deny' (a < d), and the
-       loop below returns on the FIRST rule that matches. So at equal Priority a
-       matching allow WINS. This file's header, schema.sql:1080 and
-       manage/restrictions.php:22 all state the opposite ("deny beats allow at
-       equal priority"). Documented here as observed behaviour; also flagged
-       during the #1158 pass rather than changed, since flipping it changes live
-       verdicts. */
+       `ORDER BY … Effect DESC` sorts 'deny' BEFORE 'allow' (d > a), and the
+       loop below returns on the FIRST rule that matches — so at equal Priority
+       a matching DENY wins, exactly as this file's header, schema.sql:1296 and
+       manage/restrictions.php:22/285 all state ("deny beats allow at equal
+       priority"). This was the #1158-flagged inversion (`Effect ASC` made allow
+       win, contradicting every piece of documentation and the admin form's own
+       copy); it is corrected here in #1769 P0. The fix is uniquely cheap NOW:
+       content-gating enforcement is dormant on all three docroots, and
+       tools/audit-restriction-ordering.php confirmed no live equal-priority
+       mixed-effect (allow+deny) clusters exist for any entity, so flipping the
+       tiebreak changes ZERO verdicts today while making the on-state match the
+       promise. It MUST re-run per docroot before first-enable (readiness
+       checklist). Note the primary key stays `Priority DESC`, so a higher-
+       priority allow carve-out ("everyone blocked, except this org") still
+       overrides a lower-priority deny — only the ambiguous EQUAL-priority tie
+       moves from allow to deny. */
     $cols = 'RestrictionType, TargetType, TargetId, Effect, Priority, Reason'
           . ($hasActionCol ? ', AppliesToAction' : '');
     $stmt = $db->prepare(
         "SELECT {$cols}
          FROM tblContentRestrictions
          WHERE EntityType = ? AND (EntityId = ? OR EntityId = '*')
-         ORDER BY Priority DESC, Effect ASC"
+         ORDER BY Priority DESC, Effect DESC"
     );
     $stmt->bind_param('ss', $entityType, $entityId);
     $stmt->execute();

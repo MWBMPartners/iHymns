@@ -26,19 +26,33 @@ declare(strict_types=1);
  * by migrate-add-tier-capabilities-json.php (rule #20: a growable
  * vocabulary is JSON, never an ENUM or one-column-per-feature).
  *
- * Tuple shape (4 elements): [short_label, full_description, storage, default]
+ * Tuple shape (4 elements, plus an optional 5th):
+ *   [short_label, full_description, storage, default, enforce?]
  *   - short_label  : table column header on /manage/tiers.php
  *   - full_description : tooltip / checkbox hint
  *   - storage      : 'column' (own TINYINT column) | 'json'
  *                    (key inside tblAccessTiers.Capabilities)
  *   - default      : 0 | 1 — value assumed when the json key is absent
  *                    or the Capabilities column hasn't been migrated yet
+ *   - enforce      : OPTIONAL descriptor (#1769 P2) telling the content
+ *                    pipeline WHAT this cap gates — an assoc array with any
+ *                    of: 'payload' => [payload keys to strip],
+ *                    'media' => [media kinds to withhold],
+ *                    'actions' => [action names it governs],
+ *                    'requiresCoverage' => a licence coverage kind
+ *                    (licence_registry LICENCE_COVERAGE_KINDS). ADDITIVE:
+ *                    absent on the frozen 7 built-in caps and on every
+ *                    tuple today; a DB-defined cap gains it only when its
+ *                    tblGatingCapabilities.EnforceJson decodes to a
+ *                    shape-valid descriptor (tierCapEnforceShapeValid()).
+ *                    Read via tierCapEnforce(); ZERO production callers in
+ *                    P2 (inert until an emitter adopts it in P3+).
  *
  * BACK-COMPAT: tiers.php destructures `[$lbl, $hint]` (2 elements) from
- * each tuple. PHP list-destructuring of a 4-element array binds only the
- * first two and ignores the rest — so widening to a 4-tuple is a no-op
- * for those call sites (verified). The helpers below read storage /
- * default / per-tier values without touching that pattern.
+ * each tuple. PHP list-destructuring binds only the first two and ignores
+ * the rest — so widening to a 4- or 5-tuple is a no-op for those call
+ * sites (verified). The helpers below read storage / default / enforce /
+ * per-tier values without touching that pattern.
  *
  * Direct access is blocked so this file can't be loaded as an
  * arbitrary endpoint via an open Apache config.
@@ -178,12 +192,28 @@ if (!function_exists('tierCapsMergeUnion')) {
             /* Same 4-tuple shape as every TIER_CAPS entry — storage is
                ALWAYS 'json' for a DB-defined cap (rule #20/#28: a growable
                vocabulary never gets its own tblAccessTiers column). */
-            $union[$capKey] = [
+            $tuple = [
                 (string)($row['Label'] ?? $capKey),
                 (string)($row['Description'] ?? ''),
                 'json',
                 ((int)($row['DefaultValue'] ?? 0)) === 1 ? 1 : 0,
             ];
+            /* Optional 5th `enforce` element (#1769 P2) — appended ONLY when the
+               row carries an EnforceJson that decodes to a shape-valid
+               descriptor. A NULL/empty/malformed/shape-invalid EnforceJson
+               leaves the tuple a plain 4-tuple, byte-identical to pre-#1769, so
+               a DB row without enforce is indistinguishable from before this
+               change (the frozen 7 code caps are not DB rows and never reach
+               here). ADDITIVE: nothing writes EnforceJson in P2, so this branch
+               is inert on every live install today. */
+            if (array_key_exists('EnforceJson', $row)
+                && $row['EnforceJson'] !== null && $row['EnforceJson'] !== '') {
+                $decodedEnforce = json_decode((string)$row['EnforceJson'], true);
+                if (is_array($decodedEnforce) && tierCapEnforceShapeValid($decodedEnforce)) {
+                    $tuple[4] = $decodedEnforce;
+                }
+            }
+            $union[$capKey] = $tuple;
             $emit[$capKey] = ((int)($row['EmitInApi'] ?? 1)) === 1;
         }
 
@@ -211,6 +241,44 @@ if (!function_exists('gatingCapabilitiesTableExists')) {
                 "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
                   WHERE TABLE_SCHEMA = DATABASE()
                     AND TABLE_NAME = 'tblGatingCapabilities' LIMIT 1"
+            );
+            $stmt->execute();
+            $cached = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+}
+
+/**
+ * Has the EnforceJson column landed on tblGatingCapabilities yet (#1769 P2)?
+ *
+ * Same existence-gate shape as gatingCapabilitiesTableExists() /
+ * tierCapsColumnExists() — request-cached, INFORMATION_SCHEMA with a bound
+ * param, any throw ⇒ false (degrade to "no enforce descriptor"). mysqli runs
+ * STRICT app-wide (includes/db_mysql.php), so _tierCapsUnionAndEmit() MUST gate
+ * the `, EnforceJson` SELECT clause on this — SELECTing a non-existent column
+ * throws rather than returning false. Dormant: the column is brand-new and
+ * unwritten in P2, so this is inert until a curator (P3+) populates it.
+ *
+ * @param \mysqli $db Live connection from getDbMysqli().
+ * @return bool true once migrate-add-gating-facts-and-licence-types.php has run.
+ */
+if (!function_exists('gatingCapEnforceColumnExists')) {
+    function gatingCapEnforceColumnExists(\mysqli $db): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblGatingCapabilities'
+                    AND COLUMN_NAME = 'EnforceJson' LIMIT 1"
             );
             $stmt->execute();
             $cached = $stmt->get_result()->fetch_row() !== null;
@@ -261,8 +329,16 @@ if (!function_exists('_tierCapsUnionAndEmit')) {
                 $conn = getDbMysqli();
             }
             if ($conn instanceof \mysqli && gatingCapabilitiesTableExists($conn)) {
+                /* Append `, EnforceJson` ONLY when the column exists (#1769 P2).
+                   The clause is a hardcoded constant string chosen by an
+                   existence probe — NOT interpolated user input (rule #5) — and
+                   mysqli STRICT would THROW on selecting a non-existent column,
+                   so an un-migrated docroot must omit it. Dormant: with the
+                   column present but unwritten, every row's EnforceJson is NULL
+                   and tierCapsMergeUnion() leaves the tuple a 4-tuple. */
+                $enforceCol = gatingCapEnforceColumnExists($conn) ? ', EnforceJson' : '';
                 $stmt = $conn->prepare(
-                    'SELECT CapKey, Label, Description, DefaultValue, EmitInApi
+                    'SELECT CapKey, Label, Description, DefaultValue, EmitInApi' . $enforceCol . '
                        FROM tblGatingCapabilities
                       WHERE Enabled = 1
                       ORDER BY SortOrder ASC, CapKey ASC'
@@ -385,6 +461,99 @@ if (!function_exists('tierCapDefault')) {
            the default; coerce to 0/1 so an un-migrated install reads every
            json cap at a sane baseline. */
         return ((int)(tierCapsEffective()[$k][3] ?? 0)) === 1 ? 1 : 0;
+    }
+}
+
+/**
+ * Is $e a well-formed `enforce` descriptor (#1769 P2)?
+ *
+ * The optional 5th TIER_CAPS tuple element tells the content pipeline WHAT a
+ * cap gates. A valid descriptor is a NON-EMPTY assoc array whose keys are all
+ * drawn from the four recognised ones — any unknown key rejects the WHOLE
+ * descriptor (a typo must never silently pass into the registry) — and whose
+ * present values are correctly typed:
+ *   - 'payload'  => string[]  (payload keys to strip; each non-empty)
+ *   - 'media'    => string[]  (media kinds to withhold; each non-empty)
+ *   - 'actions'  => string[]  (action names it governs; each non-empty)
+ *   - 'requiresCoverage' => a licence coverage kind that
+ *                    licenceCoverageKindValid() accepts (LICENCE_COVERAGE_KINDS
+ *                    in includes/licence_registry.php).
+ *
+ * Anything else — a non-array, an empty array, an unknown key, a non-string
+ * list member, or an unrecognised coverage kind — is INVALID, so
+ * tierCapsMergeUnion() drops it and the tuple stays a plain 4-tuple (the
+ * byte-identical additive default). Pure + I/O-free except a lazy require of
+ * licence_registry.php ONLY when a 'requiresCoverage' key is actually present,
+ * so this adds no file-scope dependency to the widely-loaded validators and
+ * stays inert (no production caller in P2).
+ *
+ * @param array $e Candidate descriptor.
+ * @return bool
+ */
+if (!function_exists('tierCapEnforceShapeValid')) {
+    function tierCapEnforceShapeValid(array $e): bool
+    {
+        if ($e === []) {
+            return false;   /* an empty descriptor conveys nothing */
+        }
+        $known = ['payload' => 1, 'media' => 1, 'actions' => 1, 'requiresCoverage' => 1];
+        foreach (array_keys($e) as $k) {
+            if (!isset($known[$k])) {
+                return false;   /* unknown key ⇒ reject the whole descriptor */
+            }
+        }
+        foreach (['payload', 'media', 'actions'] as $listKey) {
+            if (array_key_exists($listKey, $e)) {
+                if (!is_array($e[$listKey])) {
+                    return false;
+                }
+                foreach ($e[$listKey] as $v) {
+                    if (!is_string($v) || $v === '') {
+                        return false;
+                    }
+                }
+            }
+        }
+        if (array_key_exists('requiresCoverage', $e)) {
+            $cov = $e['requiresCoverage'];
+            if (!is_string($cov) || $cov === '') {
+                return false;
+            }
+            /* Lazy require — only reached when a descriptor names a coverage
+               kind, which no descriptor does in P2. Keeps licence_registry.php
+               off the file-scope dependency graph of every access_tier_validation
+               consumer. */
+            if (!function_exists('licenceCoverageKindValid')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'licence_registry.php';
+            }
+            if (!licenceCoverageKindValid($cov)) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+/**
+ * The `enforce` descriptor for a capability key, or null (#1769 P2).
+ *
+ * Reads the effective registry's optional 5th tuple element and returns it only
+ * when it is shape-valid; otherwise null. The frozen 7 built-in caps carry no
+ * enforce element, so this returns null for every one of them — a DB-defined
+ * cap gains one only through a shape-valid tblGatingCapabilities.EnforceJson.
+ *
+ * ZERO production callers in P2 — the resolver/pipeline that will consume this
+ * is wired in P3+. Kept here now so the registry is the ONE place enforcement
+ * intent is read (rule #28: never a second matrix).
+ *
+ * @param string $k Capability key.
+ * @return array|null The validated descriptor, or null when absent/invalid.
+ */
+if (!function_exists('tierCapEnforce')) {
+    function tierCapEnforce(string $k): ?array
+    {
+        $e = tierCapsEffective()[$k][4] ?? null;
+        return (is_array($e) && tierCapEnforceShapeValid($e)) ? $e : null;
     }
 }
 
