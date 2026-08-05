@@ -6,6 +6,31 @@ This doc reconciles the design-workflow outputs (`pt_features.md`, `pt_schema.md
 `pt_review.md`) after the adversarial review found the *build plan* and the *schema design*
 contradicted each other. **Where they disagree, the schema-design version wins** (review gap #1).
 
+## STATUS — 2026-08-05 (branch `claude/print-templates-1767`, off `alpha`)
+
+**Shipped this pass (6 commits, all pushed, all verified via node + php-lint + the mutation-proven guard):**
+
+| commit | features |
+|---|---|
+| 1 `2ef711f3` | rule-#35 registry guard (`test-print-block-registry.php`) + this plan doc |
+| 2 `853965e8` | N Scripture · O Tune+metre · P Themes blocks |
+| 3 `8f606c07` | R QR-code block (async pre-pass, CDN→vendored fallback) |
+| 4 `08ce00bf` | A lyrics align+scale · B songbook-abbr mode |
+| 5 `00b5ee15` | G page-size · F line-spacing · V high-contrast · AM accent · AB ink-saver (+ `PRINT_PAGE_OPTIONS` registry, guard extended) |
+| 6 `5f023cdb` | Y conditional block visibility (`showIf`, universal, guard extended) |
+
+Guard now covers: 14 block types + per-type option keys + 6 page options + 7 showIf conditions,
+all mutation-proven (break→red→restore byte-identical).
+
+**Buildable-now, still open (this branch, follow-up pass):** Z (clone + JSON import/export),
+J (system default via `IsDefault`), and the H-family multi-page/running-headers/page-numbering
+(U/T/AA/AG — high-risk, patchy `@page` browser support; may prefer server-PDF). Z/J add DB-backed
+admin POST actions + a public-API default-selection change that want live-DB behavioural
+verification (GIRFT) before shipping — deferred, not skipped.
+
+**Decision-gated (NOT this branch — batched on #1767, non-blocking):** the schema + server-PDF
+half (D/E/K/L/AK/AL/W/X/AC/AD/AJ + data-prereq Q/S/AH). See "Batched owner decisions" below.
+
 ## The current system (grounded, 2026-08-05)
 
 - **`appWeb/public_html/js/modules/print.js`** — the client renderer. `PRINT_BLOCK_TYPES` registry
