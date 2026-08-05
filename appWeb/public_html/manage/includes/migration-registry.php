@@ -3687,4 +3687,80 @@ return [
             return !$haveFlag;
         },
     ],
+
+    'derive-rights-facts' => [
+        'script' => 'migrate-derive-rights-facts.php',
+        'card' => [
+            'title'  => 'Derive rights facts from restrictions (#1769 P4)',
+            'body'   => 'DM-2 — one-shot, fill-NULL-only pass that copies each'
+                      . ' song&rsquo;s existing <code>require_licence</code>'
+                      . ' restriction (the licence key in'
+                      . ' <code>tblContentRestrictions.TargetId</code>) into the'
+                      . ' matching Model-2 per-song FACT column'
+                      . ' (<code>tblSongs.LyricsRightsLicenceKey</code> /'
+                      . ' <code>MusicRightsLicenceKey</code>), so the new resolver'
+                      . ' reads exactly what the old restriction rows implied.'
+                      . ' Which column a licence maps to is decided by the ONE'
+                      . ' shared fold <code>rightsFactColumnForLicence()</code>'
+                      . ' (lyrics coverage &rarr; lyrics column, music &rarr;'
+                      . ' music; plan-conferral / audio-only &rarr; no fact,'
+                      . ' reported). NEVER overwrites a fact a curator already'
+                      . ' set. Data-only (no DDL); idempotent — safe to re-run;'
+                      . ' the probe doubles as a live drift detector. DORMANT:'
+                      . ' the derived fact enforces nothing until #1769 P6.'
+                      . ' Recovery: <code>revert-derive-rights-facts.php</code>'
+                      . ' (CLI). Requires the &ldquo;Gating facts + licence-type'
+                      . ' registry&rdquo; card above.',
+            'button' => 'Derive Rights Facts',
+        ],
+        /* Data-derived drift-detecting probe (rule #19; the reconcile-isrc-denorm
+           precedent). PENDING when: the P1 fact columns aren't live yet (stays
+           pending until that prerequisite card runs — Apply-all orders it first),
+           OR any song carries a require_licence restriction whose licence maps to
+           a fact column that is still NULL (i.e. running the pass would fill
+           something). APPLIED when there is no restriction store (nothing to
+           derive) or every derivable fact is already set. The column choice comes
+           from the SAME shared fold the migration uses, so probe + migration can
+           never disagree (rule #22/#35). Any error → pending (safe direction). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongs', 'MusicRightsLicenceKey')) {
+                return true;
+            }
+            if (!_migProbe_tableExists($db, 'tblContentRestrictions')) {
+                return false;   // no restriction store ⇒ nothing to derive ⇒ applied
+            }
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+            try {
+                foreach (licenceTypesAll($db) as $key => $def) {
+                    $col = rightsFactColumnForLicence($def['covers'] ?? null);
+                    if ($col === null) { continue; }
+                    /* $col is a hard-coded fact-column constant from the shared
+                       fold (never input); $key is bound.
+                       @deleted-visible: migration completeness probe (#1694) —
+                       the reconcile-isrc precedent's exact posture. A hidden /
+                       soft-deleted song with a require_licence restriction and a
+                       NULL fact still needs deriving so the fact is correct the
+                       moment it is ever restored; the pass is complete only when
+                       NO song (visible or hidden) has an underivable NULL fact.
+                       Deliberately not scoped to visible-only rows. */
+                    $stmt = $db->prepare(
+                        "SELECT 1 FROM tblSongs s
+                           JOIN tblContentRestrictions r
+                             ON r.EntityType = 'song' AND r.EntityId = s.SongId
+                            AND r.RestrictionType = 'require_licence' AND r.TargetId = ?
+                          WHERE s.`{$col}` IS NULL LIMIT 1"
+                    );
+                    $stmt->bind_param('s', $key);
+                    $stmt->execute();
+                    $pending = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($pending) { return true; }
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
 ];

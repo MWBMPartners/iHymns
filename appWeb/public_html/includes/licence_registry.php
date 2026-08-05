@@ -242,6 +242,40 @@ function licenceCovers(?\mysqli $db, string $key, string $coverageKind): bool
     return $t !== null && is_array($t['covers']) && array_key_exists($coverageKind, $t['covers']);
 }
 
+/**
+ * Which per-song RIGHTS-FACT column a licence's coverage set maps to (#1769 P4
+ * D5). The ONE fold the DM-2 derivation migration, its registry probe and its
+ * test all call — never re-typed (rule #22/#35), so the migration and its
+ * completeness probe can never disagree on the mapping.
+ *
+ * Mapping (LYRICS precedence — the seeds are disjoint, so precedence only
+ * matters for a hypothetical future both-covering licence, which is rarer than
+ * a lyrics-only one and is the safer default to record first):
+ *   lyrics_display OR lyrics_print   -> 'LyricsRightsLicenceKey'
+ *   music_reproduction (and no lyrics)-> 'MusicRightsLicenceKey'
+ *   neither (plan-conferral or audio-only, e.g. ihymns_basic/pro/custom)
+ *                                     -> null  (no fact column; skip + report)
+ *
+ * `audio_playback` deliberately maps to NO fact column — the two fact columns
+ * are lyrics/music rights only; audio gating stays a tier cap (CanPlayAudio),
+ * not a per-song rights fact.
+ *
+ * @param ?array $covers The licence's decoded coverage map (kind => qualifier),
+ *                       i.e. a row's `covers` from licenceTypesAll(); null/[] ⇒ null.
+ * @return ?string       'LyricsRightsLicenceKey' | 'MusicRightsLicenceKey' | null
+ */
+function rightsFactColumnForLicence(?array $covers): ?string
+{
+    if (!is_array($covers) || $covers === []) { return null; }
+    if (array_key_exists('lyrics_display', $covers) || array_key_exists('lyrics_print', $covers)) {
+        return 'LyricsRightsLicenceKey';
+    }
+    if (array_key_exists('music_reproduction', $covers)) {
+        return 'MusicRightsLicenceKey';
+    }
+    return null;
+}
+
 /** All licence keys, in registry (SortOrder) order. */
 function licenceTypeKeys(?\mysqli $db = null): array
 {
