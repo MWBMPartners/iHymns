@@ -24,16 +24,77 @@ import { apiFetch } from '../utils/api-client.js';
    `label` = editor display; `options` = editable per-block option keys + defaults. */
 export const PRINT_BLOCK_TYPES = {
     title:       { label: 'Title',           options: {} },
-    subtitle:    { label: 'Songbook + number', options: { showBook: true, showNumber: true } },
+    subtitle:    { label: 'Songbook + number', options: { showBook: true, showNumber: true, bookAbbr: false } },  /* #1767 B — bookAbbr shows the abbreviation instead of the full name */
     credits:     { label: 'Credits (authors)', options: {} },
-    lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1 } },
+    lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1, align: 'left', size: 'md' } },  /* #1767 A — align + font scale */
     copyright:   { label: 'Copyright',       options: {} },
     identifiers: { label: 'CCLI / ISWC',     options: { ccli: true, iswc: true } },
+    scripture:   { label: 'Scripture ref.',  options: {} },                        /* #1767 N — tblSongScriptureRefs via ?include=scriptureRefs */
+    tune:        { label: 'Tune + metre',    options: { showMetre: true } },       /* #1767 O — tuneName base + metre via ?include=tune */
+    themes:      { label: 'Themes / tags',   options: {} },                        /* #1767 P — song.tags (#1152 theme vocab), already in payload */
     text:        { label: 'Custom text',     options: { content: '' } },
     permalink:   { label: 'Permalink (URL)', options: {} },
+    qr:          { label: 'QR code',         options: { size: 'md' } },            /* #1767 R — QR of the permalink, rendered as an <img> to the CueRCode-backed /qr.php */
     spacer:      { label: 'Spacer',          options: { size: 'md' } },
     pagebreak:   { label: 'Page break',      options: {} },
 };
+
+/* Page-level option registry (#1767 G/V/AB/AM/F) — the SAME pattern as
+   PRINT_BLOCK_TYPES: one source of truth that drives the renderer (printCss),
+   the editor's page-options panel, AND the server allow-list ($PAGE_OPTION_SCHEMA
+   in manage/print-templates.php, held in lockstep by test-print-block-registry.php,
+   rule #35). Adding a page option = one line here + printCss support + the PHP
+   mirror. `kind` drives the editor control; `choices` lists enum values; `def` is
+   the default the renderer falls back to (so an un-set option reproduces the
+   prior output). */
+export const PRINT_PAGE_OPTIONS = {
+    fontPt:      { label: 'Base font (pt)',   kind: 'int',   def: 12, min: 6, max: 72 },
+    pageSize:    { label: 'Page size',        kind: 'enum',  def: 'A4',     choices: ['A4', 'Letter', 'Legal'] },       /* #1767 G */
+    lineHeight:  { label: 'Line spacing',     kind: 'enum',  def: 'normal', choices: ['tight', 'normal', 'relaxed'] }, /* #1767 F */
+    contrast:    { label: 'High contrast',    kind: 'enum',  def: 'normal', choices: ['normal', 'high'] },             /* #1767 V */
+    accentColor: { label: 'Accent colour',    kind: 'color', def: '' },                                                /* #1767 AM */
+    inkSaver:    { label: 'Ink-saver (mono)', kind: 'bool',  def: false },                                             /* #1767 AB */
+};
+
+/* Accepted CSS colour shape for the accent option — #rgb or #rrggbb. Validated
+   IDENTICALLY here and in the PHP sanitiser (an <input type=color> only ever
+   emits #rrggbb; this guards a crafted POST). */
+const PRINT_ACCENT_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/* True when any component carries a non-empty chord line. */
+function componentsHaveChords(song) {
+    const comps = Array.isArray(song && song.components) ? song.components : [];
+    return comps.some(c => Array.isArray(c && c.chords)
+        && c.chords.some(x => String(Array.isArray(x) ? x.join('') : (x || '')).trim() !== ''));
+}
+
+/* Conditional block visibility (#1767 Y) — a UNIVERSAL `showIf` property any block
+   may carry (not a per-type option), so one template can adapt to each song:
+   e.g. a chords block only when the song has chords, a CCLI block only when it
+   has a number. Evaluated by blockVisible() before rendering; unknown/absent =>
+   visible (fail-open). The name set is mirrored by $SHOWIF_CONDITIONS in
+   manage/print-templates.php, held in lockstep by the registry guard (rule #35).
+   'always' is the default (no showIf) and is kept in the list so the editor's
+   select has an explicit "always show" choice. */
+export const PRINT_SHOWIF_CONDITIONS = {
+    always:       { label: 'Always show',            test: () => true },
+    hasChords:    { label: 'Only if it has chords',  test: (s) => componentsHaveChords(s) },
+    hasCopyright: { label: 'Only if copyrighted',    test: (s) => !!(s && s.copyright && String(s.copyright).trim()) },
+    hasCcli:      { label: 'Only if it has a CCLI #', test: (s) => !!(s && s.ccli && String(s.ccli).trim()) },
+    hasScripture: { label: 'Only if it has scripture', test: (s) => Array.isArray(s && s.scriptureRefs) && s.scriptureRefs.length > 0 },
+    hasThemes:    { label: 'Only if it has themes',   test: (s) => Array.isArray(s && s.tags) && s.tags.length > 0 },
+    hasTune:      { label: 'Only if it has a tune',   test: (s) => !!(s && ((s.tune && s.tune.name) || s.tuneName)) },
+};
+
+/* Evaluate a block's showIf against the song. Fail-open: no condition, 'always',
+   an unknown name, or a throwing predicate all render the block. */
+function blockVisible(song, block) {
+    const cond = block && block.showIf;
+    if (!cond || cond === 'always') { return true; }
+    const rule = PRINT_SHOWIF_CONDITIONS[cond];
+    if (!rule || typeof rule.test !== 'function') { return true; }
+    try { return !!rule.test(song); } catch (_e) { return true; }
+}
 
 /* The 3 built-ins, expressed as block templates (so built-in + custom unify). */
 export const PRINT_BUILTIN_TEMPLATES = [
@@ -57,6 +118,16 @@ export const PRINT_SAMPLE_SONG = {
     title: 'Amazing Grace', songbookName: 'Sample Hymnal', songbook: 'SAMPLE', number: 1,
     language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',
     writers: ['John Newton'], composers: ['Traditional'],
+    /* Sample enrichment so the editor preview renders the #1767 N/O/P blocks.
+       In the real print path these arrive on song_data (tags) or via
+       ?include=scriptureRefs,tune (scriptureRefs, tune). */
+    tuneName: 'New Britain',
+    tune: { name: 'New Britain', meter: 'C.M.' },
+    tags: [{ name: 'Grace' }, { name: 'Salvation' }, { name: 'Assurance' }],
+    scriptureRefs: [
+        { book: 'Ephesians', chapter: 2, verseStart: 8, verseEnd: 9 },
+        { book: 'John', chapter: 1, verseStart: 16 },
+    ],
     components: [
         { type: 'verse', number: 1, lines: ['Amazing grace! how sweet the sound', 'That saved a wretch like me!'], chords: ['G        G7       C   G', 'G            D'] },
         { type: 'chorus', number: 0, lines: ['Praise God, praise God'], chords: ['C    G'] },
@@ -100,6 +171,10 @@ function renderLyrics(song, block) {
     const order = (Array.isArray(song.arrangement) && song.arrangement.length)
         ? song.arrangement.map(i => components[i]).filter(Boolean) : components;
     const cols = parseInt(block.columns, 10) === 2 ? 2 : 1;
+    /* #1767 A — per-block alignment + font scale (relative to the page base font
+       set in printCss). Defaults (left / md=1em) preserve the prior rendering. */
+    const align = (block.align === 'center' || block.align === 'right') ? block.align : 'left';
+    const scale = block.size === 'lg' ? '1.15em' : block.size === 'sm' ? '0.9em' : '1em';
     const body = order.map((comp) => {
         const lines = Array.isArray(comp.lines) ? comp.lines : [];
         const chords = Array.isArray(comp.chords) ? comp.chords : [];
@@ -115,17 +190,25 @@ function renderLyrics(song, block) {
         }).join('');
         return `<div class="print-component ${typeClass}">${label}${linesHtml}</div>`;
     }).join('');
-    return `<div class="print-lyrics" style="columns:${cols};column-gap:1.5em">${body || '<p>(No lyrics)</p>'}</div>`;
+    return `<div class="print-lyrics" style="columns:${cols};column-gap:1.5em;text-align:${align};font-size:${scale}">${body || '<p>(No lyrics)</p>'}</div>`;
 }
 
 function renderBlock(song, block) {
+    /* #1767 Y — universal conditional visibility: hide the block when its showIf
+       condition doesn't hold for this song (fail-open on unknown/absent). */
+    if (!blockVisible(song, block)) { return ''; }
     switch (block.type) {
         case 'title':
             return `<h1 class="print-title">${esc(song.title || 'Untitled')}</h1>`;
         case 'subtitle': {
             const bits = [];
             if (block.showBook !== false && (song.songbookName || song.songbook)) {
-                bits.push(esc(song.songbookName || song.songbook));
+                /* #1767 B — bookAbbr prints the abbreviation (song.songbook) rather
+                   than the full name; falls back to whichever is present. */
+                const bookLabel = (block.bookAbbr === true)
+                    ? (song.songbook || song.songbookName)
+                    : (song.songbookName || song.songbook);
+                bits.push(esc(bookLabel));
             }
             if (block.showNumber !== false && song.number != null && parseInt(song.number, 10) > 0) {
                 bits.push('#' + parseInt(song.number, 10));
@@ -146,6 +229,53 @@ function renderBlock(song, block) {
             if (block.iswc !== false && song.iswc) { bits.push('ISWC ' + esc(song.iswc)); }
             return bits.length ? `<div class="print-footer">${bits.join('<br>')}</div>` : '';
         }
+        case 'scripture': {
+            /* #1767 N — scripture cross-references (tblSongScriptureRefs, #1112),
+               carried on the song only when the print fetch asked for
+               ?include=scriptureRefs. Renders nothing when absent (graceful, like
+               copyright/identifiers). Each ref → "Book C:Vs–Ve". */
+            const refs = Array.isArray(song.scriptureRefs) ? song.scriptureRefs : [];
+            const fmt = refs.map((r) => {
+                const bookName = String(r.book || '').trim();
+                if (!bookName) { return ''; }
+                let s = bookName;
+                const ch = parseInt(r.chapter, 10);
+                if (!isNaN(ch) && ch > 0) { s += ' ' + ch; }
+                const vs = parseInt(r.verseStart, 10);
+                if (!isNaN(vs) && vs > 0) {
+                    s += ':' + vs;
+                    const ve = parseInt(r.verseEnd, 10);
+                    if (!isNaN(ve) && ve > vs) { s += '–' + ve; }   // en dash for the range
+                }
+                return s;
+            }).filter(Boolean);
+            return fmt.length ? `<div class="print-scripture">${fmt.map(esc).join('; ')}</div>` : '';
+        }
+        case 'tune': {
+            /* #1767 O — tune name (base `tuneName`, always present) + metre
+               (MeterCode, carried on song.tune only via ?include=tune, #1748).
+               "Tune: <name> · <metre>" — folds to just one when the other is absent. */
+            const tuneName = String((song.tune && song.tune.name) || song.tuneName || '').trim();
+            const metre = (block.showMetre !== false)
+                ? String((song.tune && song.tune.meter) || '').trim() : '';
+            if (!tuneName && !metre) { return ''; }
+            let label;
+            if (tuneName && metre) { label = `Tune: ${esc(tuneName)} · ${esc(metre)}`; }
+            else if (tuneName)     { label = `Tune: ${esc(tuneName)}`; }
+            else                   { label = `Metre: ${esc(metre)}`; }
+            return `<div class="print-tune">${label}</div>`;
+        }
+        case 'themes': {
+            /* #1767 P — theme/tag chips (song.tags, #1152 standard vocabulary),
+               already on the base song_data payload. Rendered as a comma list. */
+            const tags = Array.isArray(song.tags) ? song.tags : [];
+            const names = tags
+                .map(t => (typeof t === 'string') ? t : (t && t.name) || '')
+                .map(s => String(s).trim())
+                .filter(Boolean);
+            return names.length
+                ? `<div class="print-themes">Themes: ${names.map(esc).join(', ')}</div>` : '';
+        }
         case 'text':
             return block.content ? `<div class="print-text">${esc(block.content)}</div>` : '';
         case 'permalink': {
@@ -162,6 +292,31 @@ function renderBlock(song, block) {
             const url = origin + '/song/' + encodeURIComponent(pid);
             return `<div class="print-permalink">Find this song online:<br>`
                 + `<span class="print-permalink-url">${esc(url)}</span></div>`;
+        }
+        case 'qr': {
+            /* #1767 R — a scannable QR of the public permalink. The QR image is
+               generated by the CueRCode API server-side and served by the
+               same-origin /qr.php endpoint (owner directive 2026-08-05 — QR via
+               CueRCode; the secret key never reaches the browser). So this stays
+               a PURE synchronous <img> emit: no client library, no async pre-pass.
+               The URL caption is ALWAYS shown, so if /qr.php can't produce a code
+               (CueRCode not yet configured / unreachable → 503 → the <img> fails)
+               the reader still has the link (the "typed fallback always shows"
+               principle). onerror hides the broken-image glyph in the print
+               window (which carries no CSP); if a page's CSP blocks the handler
+               it degrades harmlessly to a hidden-by-nothing image beside the URL. */
+            const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+            const pid = song.publicId || song.id || '';
+            if (!pid) { return ''; }
+            const url = origin + '/song/' + encodeURIComponent(pid);
+            const px = block.size === 'lg' ? 170 : block.size === 'sm' ? 90 : 128;
+            /* SVG scales, so a fixed 512 canvas prints crisply at any px. */
+            const src = origin + '/qr.php?data=' + encodeURIComponent(url) + '&format=svg&size=512';
+            return `<div class="print-qr">`
+                + `<img class="print-qr-img" src="${esc(src)}" alt="QR code linking to this song online"`
+                + ` width="${px}" height="${px}" style="width:${px}px;height:${px}px"`
+                + ` onerror="this.style.display='none'">`
+                + `<div class="print-qr-caption">${esc(url)}</div></div>`;
         }
         case 'spacer': {
             const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
@@ -180,25 +335,50 @@ export function renderTemplateBodyHtml(song, template) {
     return blocks.map(b => renderBlock(song, b)).join('\n');
 }
 
-/* The print CSS, parameterised by the template's page options. */
+/* The print CSS, parameterised by the template's page options (#1767 G/V/AB/AM/F).
+   Every option's ABSENCE reproduces the prior output: A4 + normal line-height +
+   normal contrast + no accent + colour on. */
 function printCss(pageOptions) {
-    const fontPt = parseInt((pageOptions && pageOptions.fontPt), 10) || 12;
+    const po = pageOptions || {};
+    const fontPt = parseInt(po.fontPt, 10) || 12;
+    /* G — paper size → @page size keyword (CSS accepts a4/letter/legal). */
+    const pageSize = ({ A4: 'A4', Letter: 'letter', Legal: 'legal' })[po.pageSize] || 'A4';
+    /* F — vertical rhythm. */
+    const lh = po.lineHeight === 'tight' ? 1.2 : po.lineHeight === 'relaxed' ? 1.6 : 1.35;
+    const highContrast = po.contrast === 'high';       /* V */
+    const inkSaver = po.inkSaver === true;              /* AB — force mono, drop accent */
+    /* V/AB — muted greys collapse to pure black for legibility / crisp mono. */
+    const cMuted  = (highContrast || inkSaver) ? '#000' : '#555';
+    const cMuted2 = (highContrast || inkSaver) ? '#000' : '#444';
+    const cFaint  = (highContrast || inkSaver) ? '#000' : '#777';
+    /* AM — accent colour on title + labels; suppressed by ink-saver (mono). */
+    const accent = (!inkSaver && typeof po.accentColor === 'string' && PRINT_ACCENT_RE.test(po.accentColor))
+        ? po.accentColor : '';
+    const titleColor = accent || '#000';
+    const labelColor = accent || cMuted2;
     return `
     * { box-sizing: border-box; }
+    @page { size: ${pageSize}; }
     body { font-family: Georgia, 'Times New Roman', serif; color: #000; background: #fff;
-           margin: 1.5cm; font-size: ${fontPt}pt; line-height: 1.35; }
-    .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; }
-    .print-subtitle { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
-    .print-credits { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.8em; }
+           margin: 1.5cm; font-size: ${fontPt}pt; line-height: ${lh}; }
+    .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; color: ${titleColor}; }
+    .print-subtitle { font-size: ${fontPt - 2}pt; color: ${cMuted}; margin: 0 0 0.6em; }
+    .print-credits { font-size: ${fontPt - 2}pt; color: ${cMuted2}; margin: 0 0 0.8em; }
+    .print-scripture { font-size: ${fontPt - 2}pt; color: ${cMuted2}; font-style: italic; margin: 0 0 0.5em; }
+    .print-tune { font-size: ${fontPt - 2}pt; color: ${cMuted2}; margin: 0 0 0.5em; }
+    .print-themes { font-size: ${fontPt - 2}pt; color: ${cMuted}; margin: 0 0 0.6em; }
     .print-component { margin: 0 0 0.9em; break-inside: avoid; }
-    .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: #444; margin-bottom: 0.2em; }
+    .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: ${labelColor}; margin-bottom: 0.2em; }
     .lyric-chorus .print-line, .lyric-refrain .print-line { font-style: italic; }
     .print-line { margin: 0.05em 0; }
-    .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: 0.15em 0 0; }
+    .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: ${cMuted}; white-space: pre-wrap; margin: 0.15em 0 0; }
     .print-text { margin: 0 0 0.8em; }
-    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: #444; }
+    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: ${cMuted2}; }
     .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
-    .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: #777; }
+    .print-qr { margin: 0.9em 0; text-align: center; break-inside: avoid; }
+    .print-qr-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
+    .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cMuted2}; margin-top: 0.3em; word-break: break-all; }
+    .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: ${cFaint}; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
 }
 
@@ -232,13 +412,23 @@ function printDoc(html) {
 async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
-        const res = await apiFetch(`${base}?action=song_data&id=${encodeURIComponent(songId)}`,
+        /* #1767 N/O — opt-in enrichment so the Scripture-reference and Tune+metre
+           blocks have data. Back-compat: unknown/absent include blocks are ignored
+           server-side and omitted from the payload; tags ship on the base shape. */
+        const res = await apiFetch(
+            `${base}?action=song_data&id=${encodeURIComponent(songId)}&include=scriptureRefs,tune`,
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (!res.ok) { return null; }
         const json = await res.json();
         return json.song || null;
     } catch (_e) { return null; }
 }
+
+/* #1767 R / owner directive 2026-08-05 — QR is now generated by the CueRCode API
+   server-side and served by the same-origin /qr.php endpoint; renderBlock('qr')
+   emits a plain <img> to it. There is deliberately NO client-side QR library or
+   async pre-pass here any more (the old vendored `qrcode-generator` approach was
+   removed — the secret CueRCode key must never reach the browser). */
 
 /* Fetch curated custom templates (scope=song); merge after the built-ins. Failure or
    an un-migrated install yields just the built-ins (graceful). */
@@ -317,6 +507,8 @@ function showPicker(app, songId, templates) {
         app.showToast?.('Preparing print…', 'info', 1500);
         const song = await fetchSong(app, songId);
         if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
+        /* #1767 R — a `qr` block renders as an <img> to the same-origin /qr.php
+           (CueRCode-backed) endpoint; no pre-pass needed. */
         if (!printDoc(buildPrintDoc(song, tpl))) {
             app.showToast?.('Pop-up blocked — allow pop-ups to print.', 'warning', 4000);
         }

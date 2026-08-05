@@ -878,6 +878,38 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_intappsapi] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_cuercode') {
+            /* CueRCode QR-generation gateway (owner directive 2026-08-05). Base
+               URL (https-only) + the secret API key (blank = leave the stored
+               value alone, the same convention every secret field here uses).
+               Requires cuercode_client.php for the setting-key constants (rule
+               #35 — one source of truth for the literal key names). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cuercode_client.php';
+            try {
+                $cuercodeBaseUrlIn = trim((string)($_POST[CUERCODE_SETTING_BASE_URL] ?? ''));
+                if ($cuercodeBaseUrlIn === '') {
+                    $cuercodeBaseUrlIn = CUERCODE_DEFAULT_BASE_URL;
+                }
+                if (!str_starts_with($cuercodeBaseUrlIn, 'https://')) {
+                    throw new \RuntimeException('CueRCode base URL must start with "https://".');
+                }
+                $cuercodeApiKeyIn = trim((string)($_POST[CUERCODE_SETTING_API_KEY] ?? ''));
+
+                $changedKeys = [CUERCODE_SETTING_BASE_URL];
+                $saveSetting($db, CUERCODE_SETTING_BASE_URL, $cuercodeBaseUrlIn);
+                if ($cuercodeApiKeyIn !== '') {
+                    $changedKeys[] = CUERCODE_SETTING_API_KEY;
+                    $saveSetting($db, CUERCODE_SETTING_API_KEY, $cuercodeApiKeyIn);
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', CUERCODE_SETTING_BASE_URL,
+                        ['keys' => $changedKeys], 'success'); /* key NAMES only — the secret VALUE is never logged */
+                }
+                $saveSuccess = 'CueRCode QR settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_cuercode] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -967,6 +999,14 @@ $intappsHmacSecretSet      = ((string)(getAppSetting(INTAPPS_SETTING_HMAC_SECRET
 /* Resolved runtime state — the SAME function every consumer calls, so this
    badge can never disagree with actual behaviour (rule #35). */
 $intappsResolvedEnabled    = intappsEnabled();
+
+/* CueRCode QR-generation gateway (owner directive 2026-08-05 — QR via CueRCode).
+   Same secret convention: the base URL is echoed as-typed; the API-key VALUE is
+   never read into a form var, only whether it is SET (for the badge). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cuercode_client.php';
+$cuercodeBaseUrlVal = (string)(getAppSetting(CUERCODE_SETTING_BASE_URL, CUERCODE_DEFAULT_BASE_URL) ?? CUERCODE_DEFAULT_BASE_URL);
+$cuercodeApiKeySet  = ((string)(getAppSetting(CUERCODE_SETTING_API_KEY, '') ?? '')) !== '';
+$cuercodeConfigured = cuercodeConfigured();
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -1280,6 +1320,61 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>Save IntAppsAPI settings
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         CUERCODE QR SECTION (owner directive 2026-08-05) — dormant until keyed
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-qr-code me-2"></i>CueRCode QR Generator
+            </h2>
+            <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                Credentials for the <a href="https://cuercode.net" class="link-light" target="_blank" rel="noopener">CueRCode</a>
+                service, which generates every QR code in iHymns (the print-template QR block and the
+                Service-Projection join QR) via its API — server-side, so the secret key never reaches a
+                browser. <strong>Dormant until keyed</strong>: with no API key saved, the <code>/qr.php</code>
+                endpoint answers 503 and each QR surface falls back to the plain URL/code text.
+            </p>
+            <?php if (!$cuercodeApiKeySet): ?>
+                <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting an API key.</strong>
+                    Generate a key in the CueRCode admin panel and paste it below; QR codes light up the
+                    moment it is saved.
+                </p>
+            <?php endif; ?>
+            <form method="post" class="row g-3 align-items-end mb-2">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_cuercode">
+                <div class="col-md-6">
+                    <label for="cuercode_base_url" class="form-label">Base URL</label>
+                    <input type="text" name="cuercode_base_url" id="cuercode_base_url"
+                           class="form-control" placeholder="<?= htmlspecialchars(CUERCODE_DEFAULT_BASE_URL, ENT_QUOTES, 'UTF-8') ?>"
+                           value="<?= htmlspecialchars($cuercodeBaseUrlVal, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Must start with <code>https://</code>. Default is the production CueRCode service.</div>
+                </div>
+                <div class="col-md-6">
+                    <label for="cuercode_api_key" class="form-label">
+                        API key <?= $cuercodeApiKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <input type="password" name="cuercode_api_key" id="cuercode_api_key"
+                           class="form-control" autocomplete="off"
+                           placeholder="<?= $cuercodeApiKeySet ? '(unchanged — leave blank to keep)' : 'cuercode_…' ?>">
+                    <div class="form-text">Generated in the CueRCode admin panel. Encrypted at rest.</div>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save CueRCode settings
                     </button>
                 </div>
             </form>

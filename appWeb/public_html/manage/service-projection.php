@@ -20,10 +20,10 @@ declare(strict_types=1);
  * Reuses the shared admin chrome for the SETUP view; projection mode is a
  * full-bleed, high-contrast overlay. Beside the large rotating join code it
  * now also renders a scannable QR of the join URL (#1339, the "buildable
- * half" — see renderQr() below), via the vendored `qrcode-generator`
- * library (kazuhikoarase, MIT; pinned + SRI-recorded per rule #1587 —
- * APP_CONFIG['libraries']['qrcodegen'] in includes/config.php). The QR is
- * an ACCELERATOR, not a replacement: the typed code stays the primary,
+ * half" — see renderQr() below), served by the same-origin /qr.php endpoint
+ * which generates it via our CueRCode service server-side (owner directive
+ * 2026-08-05 — QR via CueRCode; the secret key never reaches this page). The QR
+ * is an ACCELERATOR, not a replacement: the typed code stays the primary,
  * always-visible fallback for a congregant without a working camera (or a
  * screen reader — the QR carries no information the code text doesn't
  * already, so it's marked aria-hidden), and any QR generation failure
@@ -268,10 +268,9 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
-        /* Pinned CDN URL + SRI (reference-only, see includes/config.php) + local
-           vendored fallback path for the QR renderer (#1339, rule #1587). Same
-           registry index.php/api-docs.php read for Bootstrap/jQuery/Swagger UI. */
-        const QR_LIB = <?= json_encode(APP_CONFIG['libraries']['qrcodegen'] ?? null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        /* QR is now served by the same-origin /qr.php endpoint (CueRCode-backed,
+           owner directive 2026-08-05) — no client-side QR library is loaded here
+           any more; renderQr() below just points an <img> at it. */
         const ROTATE_MS = 30000;
         let session = null, rotateTimer = null, broadcaster = null;
 
@@ -333,41 +332,16 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
            typed code is the authoritative, always-visible, screen-reader
            fallback whether or not the QR ever renders.
 
-           Library: the vendored `qrcode-generator` (kazuhikoarase, MIT — see
-           includes/config.php's QR_LIB entry for the full pinning rationale),
-           loaded via dynamic import() from the pinned CDN URL with a fallback
-           to the local vendored copy — the SAME pattern sheet-music.js
-           already uses for PDF.js, because browsers don't support the
-           `integrity` attribute on dynamic import() the way they do for
-           `<script src>`. qrModulePromise memoises a SUCCESSFUL load; a
-           failure clears it so the next code rotation (30s later) retries
-           rather than staying broken for the rest of the service. */
+           QR source: the same-origin /qr.php endpoint, which generates the code
+           via our CueRCode service server-side (owner directive 2026-08-05 — QR
+           via CueRCode across iHymns; the secret key never reaches this page).
+           This replaced the old client-side vendored `qrcode-generator` dynamic
+           import. /qr.php answers 503 when CueRCode isn't configured/reachable,
+           so the <img> simply fails to load and the typed-code fallback shows —
+           and a new code rotation (30s later) issues a fresh <img> that retries. */
         const qrWrap = document.getElementById('svc-proj-qr-wrap');
         const qrBox = document.getElementById('svc-proj-qr');
         const qrFallback = document.getElementById('svc-proj-qr-fallback');
-        let qrModulePromise = null;
-
-        function loadQrModule() {
-            if (qrModulePromise) return qrModulePromise;
-            const attempt = (async function () {
-                if (!QR_LIB || !QR_LIB.js_cdn || !QR_LIB.js_local) {
-                    throw new Error('QR library not registered in APP_CONFIG.');
-                }
-                let mod;
-                try {
-                    mod = await import(/* webpackIgnore: true */ QR_LIB.js_cdn);
-                } catch (cdnErr) {
-                    console.warn('[service-projection] QR CDN import failed, trying local vendor copy:', cdnErr);
-                    mod = await import('/' + QR_LIB.js_local);
-                }
-                const factory = mod && (mod.default || mod.qrcode);
-                if (typeof factory !== 'function') { throw new Error('Unexpected QR module shape.'); }
-                return factory;
-            })();
-            attempt.catch(function () { qrModulePromise = null; });
-            qrModulePromise = attempt;
-            return attempt;
-        }
 
         /* The real join route (js/modules/service-follow.js's joinService() +
            the anonymous POST-only `service_join` action in api.php) has no
@@ -385,34 +359,35 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
             return JOIN_BASE + '/?svc_code=' + encodeURIComponent(code);
         }
 
-        async function renderQr(code) {
+        function renderQr(code) {
             if (!qrBox || !qrWrap || !qrFallback || !code) return;
-            try {
-                const qrcodeFactory = await loadQrModule();
-                /* 0 = auto-pick the smallest version that fits the URL; 'M'
-                   (~15% recovery) trades some error-correction headroom for
-                   larger, more camera-friendly modules at a fixed box size —
-                   this is a short static URL, not a noisy environment, so 'H'
-                   would only shrink modules for no real robustness gain. */
-                const qr = qrcodeFactory(0, 'M');
-                qr.addData(joinUrlFor(code), 'Byte');
-                qr.make();
-                qrBox.innerHTML = qr.createSvgTag({ scalable: true, alt: 'QR code to join the service' });
+            /* SVG scales, so a fixed 512 canvas is crisp at any projector size. */
+            const src = '/qr.php?data=' + encodeURIComponent(joinUrlFor(code)) + '&format=svg&size=512';
+            const img = document.createElement('img');
+            img.alt = 'QR code to join the service';
+            img.className = 'img-fluid';
+            /* Listeners attached BEFORE src is set (below) so a cached instant
+               load can't fire before we're listening. */
+            img.addEventListener('load', function () {
                 qrWrap.classList.remove('d-none');
                 qrFallback.classList.add('d-none');
                 qrFallback.textContent = '';
-            } catch (e) {
-                /* Never a blank box — hide the (possibly half-drawn) QR card
-                   and say so in plain text next to the still-working typed
-                   code. console.error so /manage/*'s error monitor (#1599)
-                   can surface this in the activity log even though nobody's
-                   watching the projector's console. */
-                console.error('[service-projection] QR generation failed:', e);
+            });
+            img.addEventListener('error', function () {
+                /* Never a blank box — hide the QR card and point at the still-
+                   working typed code. /qr.php answers 503 when CueRCode isn't
+                   configured/reachable. console.error so /manage/*'s error
+                   monitor (#1599) surfaces it even though nobody watches the
+                   projector's console. */
+                console.error('[service-projection] QR image failed to load from /qr.php');
                 qrBox.innerHTML = '';
                 qrWrap.classList.add('d-none');
                 qrFallback.classList.remove('d-none');
                 qrFallback.textContent = 'QR code unavailable right now — use the code above.';
-            }
+            });
+            qrBox.innerHTML = '';
+            qrBox.appendChild(img);
+            img.src = src;
         }
 
         function showCode(code) {

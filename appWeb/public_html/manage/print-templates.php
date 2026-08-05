@@ -53,15 +53,38 @@ $csrf    = csrfToken();
    drives the server-side gate; both enumerate the same 9 types. */
 $BLOCK_SCHEMA = [
     'title'       => [],
-    'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool'],
+    'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool', 'bookAbbr' => 'bool'],   // #1767 B
     'credits'     => [],
-    'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols'],
+    'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols', 'align' => 'align', 'size' => 'size'],  // #1767 A
     'copyright'   => [],
     'identifiers' => ['ccli' => 'bool', 'iswc' => 'bool'],
+    'scripture'   => [],                          // #1767 N
+    'tune'        => ['showMetre' => 'bool'],     // #1767 O
+    'themes'      => [],                          // #1767 P
     'text'        => ['content' => 'str'],
     'permalink'   => [],
+    'qr'          => ['size' => 'size'],          // #1767 R
     'spacer'      => ['size' => 'size'],
     'pagebreak'   => [],
+];
+
+/* The CANONICAL conditional-visibility vocabulary (#1767 Y) — a UNIVERSAL block
+   property `showIf` any block may carry. Mirrors PRINT_SHOWIF_CONDITIONS in
+   js/modules/print.js, held in lockstep by the registry guard (rule #35). A
+   posted showIf not in this list (or 'always', the default) is dropped. */
+$SHOWIF_CONDITIONS = ['always', 'hasChords', 'hasCopyright', 'hasCcli', 'hasScripture', 'hasThemes', 'hasTune'];
+
+/* The CANONICAL page-option allow-list (#1767 G/V/AB/AM/F) — mirrors
+   PRINT_PAGE_OPTIONS in js/modules/print.js, held in lockstep by
+   tests/php/test-print-block-registry.php (rule #35). Each entry's `kind` drives
+   coercion in ptSanitisePageOptions(); an option not listed here is DROPPED. */
+$PAGE_OPTION_SCHEMA = [
+    'fontPt'      => ['kind' => 'int',  'min' => 6, 'max' => 72],
+    'pageSize'    => ['kind' => 'enum', 'choices' => ['A4', 'Letter', 'Legal']],
+    'lineHeight'  => ['kind' => 'enum', 'choices' => ['tight', 'normal', 'relaxed']],
+    'contrast'    => ['kind' => 'enum', 'choices' => ['normal', 'high']],
+    'accentColor' => ['kind' => 'color'],
+    'inkSaver'    => ['kind' => 'bool'],
 ];
 
 /* JSON-encode flags that make a value safe to drop into an inline
@@ -88,11 +111,12 @@ try {
  * Drops unknown types and unknown option keys; coerces every kept
  * value to its declared kind. Returns a clean array safe to persist.
  *
- * @param array $raw          The json_decode'd POST blocks (assoc).
- * @param array $schema       $BLOCK_SCHEMA.
- * @return array              Sanitised ordered block list.
+ * @param array $raw               The json_decode'd POST blocks (assoc).
+ * @param array $schema            $BLOCK_SCHEMA.
+ * @param array $showIfConditions  $SHOWIF_CONDITIONS (universal visibility vocab).
+ * @return array                   Sanitised ordered block list.
  */
-function ptSanitiseBlocks(array $raw, array $schema): array
+function ptSanitiseBlocks(array $raw, array $schema, array $showIfConditions = []): array
 {
     $clean = [];
     foreach ($raw as $block) {
@@ -100,6 +124,14 @@ function ptSanitiseBlocks(array $raw, array $schema): array
         $type = (string)($block['type'] ?? '');
         if (!isset($schema[$type])) { continue; }            // unknown type — drop
         $row = ['type' => $type];
+        /* #1767 Y — a UNIVERSAL showIf on ANY block. Kept only when it names a
+           known condition and isn't the 'always' default (which we omit to keep
+           the stored JSON minimal — absent showIf == always visible). */
+        if (isset($block['showIf'])
+            && in_array($block['showIf'], $showIfConditions, true)
+            && $block['showIf'] !== 'always') {
+            $row['showIf'] = (string)$block['showIf'];
+        }
         foreach ($schema[$type] as $key => $kind) {
             if (!array_key_exists($key, $block)) { continue; } // option not posted — use renderer default
             $v = $block[$key];
@@ -113,6 +145,9 @@ function ptSanitiseBlocks(array $raw, array $schema): array
                 case 'size':
                     $row[$key] = in_array($v, ['sm', 'md', 'lg'], true) ? $v : 'md';
                     break;
+                case 'align':                                    // #1767 A
+                    $row[$key] = in_array($v, ['left', 'center', 'right'], true) ? $v : 'left';
+                    break;
                 case 'str':
                 default:
                     $row[$key] = mb_substr((string)$v, 0, 2000); // custom text — cap length
@@ -125,20 +160,39 @@ function ptSanitiseBlocks(array $raw, array $schema): array
 }
 
 /**
- * Sanitise decoded page options. Keeps only fontPt (clamped 6–72) and
- * columns (1|2). Returns null when nothing valid was supplied.
+ * Sanitise decoded page options against $PAGE_OPTION_SCHEMA (#1767 G/V/AB/AM/F).
+ *
+ * Drops unknown keys; coerces each kept value to its declared kind (int clamp,
+ * enum membership, #rgb/#rrggbb colour, bool). Returns null when nothing valid
+ * was supplied. We persist the RE-ENCODED clean options, never the raw POST.
+ *
+ * @param mixed $raw      The json_decode'd POST page_options (assoc), or non-array.
+ * @param array $schema   $PAGE_OPTION_SCHEMA.
+ * @return array|null     Sanitised page options, or null when empty.
  */
-function ptSanitisePageOptions($raw): ?array
+function ptSanitisePageOptions($raw, array $schema): ?array
 {
     if (!is_array($raw)) { return null; }
     $out = [];
-    if (isset($raw['fontPt'])) {
-        $out['fontPt'] = max(6, min(72, (int)$raw['fontPt']));
+    foreach ($schema as $key => $def) {
+        if (!array_key_exists($key, $raw)) { continue; }   // not posted — renderer default
+        $v = $raw[$key];
+        switch ($def['kind']) {
+            case 'int':
+                $out[$key] = max((int)$def['min'], min((int)$def['max'], (int)$v));
+                break;
+            case 'enum':
+                if (in_array($v, $def['choices'], true)) { $out[$key] = $v; }  // else drop
+                break;
+            case 'color':
+                $s = (string)$v;
+                if ($s !== '' && preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $s)) { $out[$key] = $s; }
+                break;
+            case 'bool':
+                $out[$key] = (bool)$v;
+                break;
+        }
     }
-    /* NB: no page-level `columns` here (#1350 Phase 2 review) — the renderer
-       (print.js) only reads pageOptions.fontPt, and column layout is a per-LYRICS
-       block option, so a page-level columns key would be unreachable + unused.
-       Re-add here only alongside an editor control + renderer support. */
     return $out ?: null;
 }
 
@@ -170,7 +224,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $error = 'Add at least one block before saving.';
                     break;
                 }
-                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA);
+                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA, $SHOWIF_CONDITIONS);
                 if ($blocks === []) {
                     $error = 'None of the submitted blocks were recognised.';
                     break;
@@ -179,7 +233,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
                 /* Page options decode → sanitise → JSON or NULL. */
                 $rawPageOpts = json_decode((string)($_POST['page_options_json'] ?? ''), true);
-                $pageOpts    = ptSanitisePageOptions($rawPageOpts);
+                $pageOpts    = ptSanitisePageOptions($rawPageOpts, $PAGE_OPTION_SCHEMA);
                 $pageOptsJson = $pageOpts !== null
                     ? json_encode($pageOpts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
                     : null; // bound as SQL NULL below
@@ -327,6 +381,9 @@ if ($hasSchema) {
         .pt-preview-paper .print-title    { font-size: 1.5em; font-weight: bold; margin: 0 0 .1em; }
         .pt-preview-paper .print-subtitle { font-size: .85em; color: #555; margin: 0 0 .6em; }
         .pt-preview-paper .print-credits  { font-size: .85em; color: #444; margin: 0 0 .8em; }
+        .pt-preview-paper .print-scripture { font-size: .85em; color: #444; font-style: italic; margin: 0 0 .5em; }
+        .pt-preview-paper .print-tune      { font-size: .85em; color: #444; margin: 0 0 .5em; }
+        .pt-preview-paper .print-themes    { font-size: .85em; color: #555; margin: 0 0 .6em; }
         .pt-preview-paper .print-component { margin: 0 0 .9em; }
         .pt-preview-paper .print-label    { font-weight: bold; font-size: .85em; color: #444; margin-bottom: .2em; }
         .pt-preview-paper .lyric-chorus .print-line,
@@ -334,7 +391,25 @@ if ($hasSchema) {
         .pt-preview-paper .print-line     { margin: .05em 0; }
         .pt-preview-paper .print-chord    { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: .15em 0 0; }
         .pt-preview-paper .print-text     { margin: 0 0 .8em; }
+        .pt-preview-paper .print-qr       { margin: .9em 0; text-align: center; }
+        .pt-preview-paper .print-qr-img   { display: inline-block; }
+        .pt-preview-paper .print-qr-img svg { width: 100%; height: 100%; display: block; }
+        .pt-preview-paper .print-qr-caption { font-family: 'Courier New', monospace; font-size: .7em; color: #444; margin-top: .3em; word-break: break-all; }
+        .pt-preview-paper .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
         .pt-preview-paper .print-footer   { margin-top: 1em; font-size: .8em; color: #777; }
+        /* #1767 V/AB/AM — preview reflections of the page colour options. */
+        .pt-preview-paper.pt-high-contrast .print-subtitle,
+        .pt-preview-paper.pt-high-contrast .print-credits,
+        .pt-preview-paper.pt-high-contrast .print-scripture,
+        .pt-preview-paper.pt-high-contrast .print-tune,
+        .pt-preview-paper.pt-high-contrast .print-themes,
+        .pt-preview-paper.pt-high-contrast .print-label,
+        .pt-preview-paper.pt-high-contrast .print-chord,
+        .pt-preview-paper.pt-high-contrast .print-footer { color: #000; }
+        .pt-preview-paper.pt-mono, .pt-preview-paper.pt-mono * { color: #000 !important; }
+        .pt-preview-paper.pt-mono .print-qr-img svg { filter: grayscale(1); }
+        .pt-preview-paper.pt-accent .print-title { color: var(--pt-accent); }
+        .pt-preview-paper.pt-accent .print-label { color: var(--pt-accent); }
         .pt-block-row { border: 1px solid var(--bs-border-color, #444); border-radius: .375rem; }
     </style>
 </head>
@@ -454,13 +529,9 @@ if ($hasSchema) {
                     <!-- Left column: meta + palette + block list -->
                     <div class="col-lg-7">
                         <div class="row g-2 mb-3">
-                            <div class="col-sm-8">
+                            <div class="col-12">
                                 <label class="form-label small mb-1" for="pt-name">Name</label>
                                 <input type="text" class="form-control form-control-sm" id="pt-name" name="name" maxlength="120" required>
-                            </div>
-                            <div class="col-sm-4">
-                                <label class="form-label small mb-1" for="pt-fontpt">Base font (pt)</label>
-                                <input type="number" class="form-control form-control-sm" id="pt-fontpt" min="6" max="72" value="12">
                             </div>
                         </div>
 
@@ -468,6 +539,9 @@ if ($hasSchema) {
                             <input class="form-check-input" type="checkbox" name="is_active" value="1" id="pt-active" checked>
                             <label class="form-check-label small" for="pt-active">Active — offer this template in the print dialog</label>
                         </div>
+
+                        <label class="form-label small mb-1">Page options</label>
+                        <div class="row g-2 align-items-end mb-3" id="pt-page-options"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
 
                         <label class="form-label small mb-1">Add a block</label>
                         <div class="d-flex flex-wrap gap-2 mb-3" id="pt-palette"><!-- buttons injected by JS --></div>
@@ -500,12 +574,15 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_SAMPLE_SONG, renderTemplateBodyHtml }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
 
         bootSortableTables(); // sortable list headers (#844)
+
+        // #1767 R — a `qr` block previews as an <img> to the same-origin /qr.php
+        // (CueRCode-backed) endpoint; no client-side QR library is loaded here.
 
         // Existing templates for the Edit pre-load. JSON_HEX_* flags applied
         // server-side so this inline literal can't break out of the script.
@@ -519,21 +596,29 @@ if ($hasSchema) {
                 .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
-        const editorEl  = $('#pt-editor');
-        const listEl    = $('#pt-block-list');
-        const paletteEl = $('#pt-palette');
-        const previewEl = $('#pt-preview');
-        const nameEl    = $('#pt-name');
-        const fontEl    = $('#pt-fontpt');
-        const activeEl  = $('#pt-active');
-        const idEl      = $('#pt-id');
-        const titleEl   = $('#pt-editor-title');
+        const editorEl    = $('#pt-editor');
+        const listEl      = $('#pt-block-list');
+        const paletteEl   = $('#pt-palette');
+        const pageOptsEl  = $('#pt-page-options');   // #1767 — page-options panel host
+        const previewEl   = $('#pt-preview');
+        const nameEl      = $('#pt-name');
+        const activeEl    = $('#pt-active');
+        const idEl        = $('#pt-id');
+        const titleEl     = $('#pt-editor-title');
 
         // The working template the editor mutates; serialised to hidden inputs on submit.
         let working = freshTemplate();
 
         function freshTemplate() {
-            return { id: null, name: '', isActive: true, pageOptions: { fontPt: 12 }, blocks: [] };
+            return { id: null, name: '', isActive: true, pageOptions: defaultPageOptions(), blocks: [] };
+        }
+
+        // Seed pageOptions with every registry default, so a fresh template
+        // starts explicit and the controls all have a value to bind to.
+        function defaultPageOptions() {
+            const po = {};
+            Object.keys(PRINT_PAGE_OPTIONS).forEach((k) => { po[k] = PRINT_PAGE_OPTIONS[k].def; });
+            return po;
         }
 
         // A new block, seeded with the registry's default options (deep-cloned).
@@ -560,6 +645,71 @@ if ($hasSchema) {
             });
         }
 
+        // ---- page-options panel, driven by PRINT_PAGE_OPTIONS (#1767 G/V/AB/AM/F) ----
+        function buildPageOptions() {
+            pageOptsEl.innerHTML = '';
+            Object.keys(PRINT_PAGE_OPTIONS).forEach((key) => {
+                const def = PRINT_PAGE_OPTIONS[key];
+                const cur = (working.pageOptions[key] !== undefined && working.pageOptions[key] !== null)
+                    ? working.pageOptions[key] : def.def;
+                const id  = 'pt-po-' + key;
+                const col = document.createElement('div');
+                col.className = 'col-auto';
+                if (def.kind === 'bool') {
+                    col.innerHTML = `<div class="form-check mt-4"><input class="form-check-input" type="checkbox" id="${id}" data-page-opt="${esc(key)}"${cur ? ' checked' : ''}>`
+                        + `<label class="form-check-label small" for="${id}">${esc(def.label)}</label></div>`;
+                } else if (def.kind === 'int') {
+                    col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
+                        + `<input type="number" class="form-control form-control-sm" id="${id}" data-page-opt="${esc(key)}" min="${def.min}" max="${def.max}" value="${esc(cur)}" style="width:6rem">`;
+                } else if (def.kind === 'enum') {
+                    const opts = def.choices.map(c => `<option value="${esc(c)}"${String(cur) === String(c) ? ' selected' : ''}>${esc(c)}</option>`).join('');
+                    col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
+                        + `<select class="form-select form-select-sm" id="${id}" data-page-opt="${esc(key)}">${opts}</select>`;
+                } else if (def.kind === 'color') {
+                    /* An <input type=color> can't represent "no accent", so pair it
+                       with an enable checkbox; unchecked = '' (renderer default). */
+                    const has = typeof cur === 'string' && cur !== '';
+                    const val = has ? cur : '#333333';
+                    col.innerHTML = `<div class="d-flex align-items-center gap-2 mt-4">`
+                        + `<div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="${id}-on" data-page-opt-enable="${esc(key)}"${has ? ' checked' : ''}>`
+                        + `<label class="form-check-label small" for="${id}-on">${esc(def.label)}</label></div>`
+                        + `<input type="color" class="form-control form-control-color form-control-sm" id="${id}" data-page-opt="${esc(key)}" value="${esc(val)}"${has ? '' : ' disabled'} aria-label="${esc(def.label)}">`
+                        + `</div>`;
+                }
+                pageOptsEl.appendChild(col);
+            });
+        }
+
+        function onPageOptMutate(ev) {
+            // Colour enable/disable toggle (the accent checkbox).
+            const enableCtl = ev.target.closest('[data-page-opt-enable]');
+            if (enableCtl) {
+                const key = enableCtl.getAttribute('data-page-opt-enable');
+                const colorInput = pageOptsEl.querySelector(`[data-page-opt="${key}"]`);
+                if (enableCtl.checked) {
+                    if (colorInput) { colorInput.disabled = false; working.pageOptions[key] = colorInput.value; }
+                } else {
+                    if (colorInput) { colorInput.disabled = true; }
+                    working.pageOptions[key] = '';
+                }
+                renderPreview();
+                return;
+            }
+            const ctl = ev.target.closest('[data-page-opt]');
+            if (!ctl) { return; }
+            const key = ctl.getAttribute('data-page-opt');
+            const def = PRINT_PAGE_OPTIONS[key];
+            if (!def) { return; }
+            let val;
+            if (def.kind === 'bool') { val = ctl.checked; }
+            else if (def.kind === 'int') { val = Math.max(def.min, Math.min(def.max, parseInt(ctl.value, 10) || def.def)); }
+            else { val = ctl.value; }
+            working.pageOptions[key] = val;
+            renderPreview();
+        }
+        pageOptsEl.addEventListener('input', onPageOptMutate);
+        pageOptsEl.addEventListener('change', onPageOptMutate);
+
         // ---- option input for a single block option, driven by the registry default's type ----
         function optionFieldHtml(type, key, value) {
             const id = `pt-opt-${type}-${key}-${Math.random().toString(36).slice(2, 8)}`;
@@ -574,6 +724,12 @@ if ($hasSchema) {
             if (key === 'size') {
                 const sizes = [['sm', 'Small'], ['md', 'Medium'], ['lg', 'Large']];
                 const opts = sizes.map(([v, t]) => `<option value="${v}"${value === v ? ' selected' : ''}>${t}</option>`).join('');
+                return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
+                    + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
+            }
+            if (key === 'align') {   // #1767 A — text alignment select
+                const aligns = [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']];
+                const opts = aligns.map(([v, t]) => `<option value="${v}"${value === v ? ' selected' : ''}>${t}</option>`).join('');
                 return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
                     + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
             }
@@ -601,13 +757,21 @@ if ($hasSchema) {
                     ? `<div class="row g-2 align-items-end mt-1">${optKeys.map(k => optionFieldHtml(block.type, k, block[k])).join('')}</div>`
                     : '<div class="small text-muted mt-1">No options.</div>';
 
+                /* #1767 Y — universal conditional-visibility select. */
+                const curShowIf = block.showIf || 'always';
+                const showIfHtml = `<select class="form-select form-select-sm w-auto" data-showif aria-label="When to show the ${esc(reg.label || block.type)} block">`
+                    + Object.keys(PRINT_SHOWIF_CONDITIONS).map(c =>
+                        `<option value="${esc(c)}"${c === curShowIf ? ' selected' : ''}>${esc(PRINT_SHOWIF_CONDITIONS[c].label)}</option>`).join('')
+                    + `</select>`;
+
                 const row = document.createElement('div');
                 row.className = 'pt-block-row p-2 bg-body-tertiary';
                 row.dataset.index = String(i);
                 row.innerHTML =
-                    `<div class="d-flex align-items-center gap-2">`
+                    `<div class="d-flex align-items-center gap-2 flex-wrap">`
                   +   `<span class="badge bg-secondary-subtle text-secondary-emphasis">${i + 1}</span>`
                   +   `<strong class="small">${esc(reg.label || block.type)}</strong>`
+                  +   showIfHtml
                   +   `<div class="ms-auto btn-group btn-group-sm">`
                   +     `<button type="button" class="btn btn-outline-secondary" data-act="up"${i === 0 ? ' disabled' : ''} title="Move up" aria-label="Move ${esc(reg.label || block.type)} block up"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>`
                   +     `<button type="button" class="btn btn-outline-secondary" data-act="down"${i === working.blocks.length - 1 ? ' disabled' : ''} title="Move down" aria-label="Move ${esc(reg.label || block.type)} block down"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>`
@@ -620,8 +784,23 @@ if ($hasSchema) {
         }
 
         // ---- live preview via the shared renderer ----
+        // Reflect the page options the print CSS applies (fontPt, line spacing,
+        // contrast/ink-saver, accent) so the preview stays faithful. Colour is
+        // applied via preview-skin classes + a --pt-accent variable rather than
+        // printCss (which isn't exported); structure comes from the shared renderer.
         function renderPreview() {
-            previewEl.style.fontSize = (parseInt(working.pageOptions.fontPt, 10) || 12) + 'pt';
+            const po = working.pageOptions || {};
+            previewEl.style.fontSize   = (parseInt(po.fontPt, 10) || 12) + 'pt';
+            previewEl.style.lineHeight = po.lineHeight === 'tight' ? '1.2'
+                                       : po.lineHeight === 'relaxed' ? '1.6' : '1.35';
+            const ink  = po.inkSaver === true;
+            const high = po.contrast === 'high';
+            previewEl.classList.toggle('pt-mono', ink);
+            previewEl.classList.toggle('pt-high-contrast', high && !ink);
+            const accent = (!ink && typeof po.accentColor === 'string'
+                && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(po.accentColor)) ? po.accentColor : '';
+            previewEl.classList.toggle('pt-accent', !!accent);
+            if (accent) { previewEl.style.setProperty('--pt-accent', accent); }
             previewEl.innerHTML = renderTemplateBodyHtml(
                 PRINT_SAMPLE_SONG,
                 { blocks: working.blocks, pageOptions: working.pageOptions }
@@ -630,6 +809,18 @@ if ($hasSchema) {
 
         // ---- delegated handlers on the block list (option edits + reorder/remove) ----
         function onBlockMutate(ev) {
+            // #1767 Y — universal showIf select (any block).
+            const showIfCtl = ev.target.closest('[data-showif]');
+            if (showIfCtl) {
+                const row = showIfCtl.closest('[data-index]');
+                if (!row) { return; }
+                const block = working.blocks[parseInt(row.dataset.index, 10)];
+                if (!block) { return; }
+                const v = showIfCtl.value;
+                if (v && v !== 'always') { block.showIf = v; } else { delete block.showIf; }
+                renderPreview();
+                return;
+            }
             const ctl = ev.target.closest('[data-opt]');
             if (!ctl) { return; }
             const row = ctl.closest('[data-index]');
@@ -668,11 +859,7 @@ if ($hasSchema) {
             renderPreview();
         });
 
-        // font-size input feeds pageOptions
-        fontEl.addEventListener('input', () => {
-            working.pageOptions.fontPt = Math.max(6, Math.min(72, parseInt(fontEl.value, 10) || 12));
-            renderPreview();
-        });
+        // (page-option inputs feed working.pageOptions via onPageOptMutate, wired above.)
 
         // ---- open / close the editor ----
         function openEditor(tpl) {
@@ -681,17 +868,20 @@ if ($hasSchema) {
                     id: tpl.id,
                     name: tpl.name,
                     isActive: tpl.isActive !== false,
-                    pageOptions: Object.assign({ fontPt: 12 }, tpl.pageOptions || {}),
+                    /* Registry defaults first, then the saved template's values on
+                       top — so an older template missing a newer option still gets
+                       a sensible default and every control has a value to bind. */
+                    pageOptions: Object.assign(defaultPageOptions(), tpl.pageOptions || {}),
                     blocks: JSON.parse(JSON.stringify(Array.isArray(tpl.blocks) ? tpl.blocks : [])),
                   }
                 : freshTemplate();
 
             idEl.value     = working.id ? String(working.id) : '';
             nameEl.value   = working.name || '';
-            fontEl.value   = String(parseInt(working.pageOptions.fontPt, 10) || 12);
             activeEl.checked = working.isActive;
             titleEl.innerHTML = '<i class="bi bi-pencil-square me-2"></i>' + (working.id ? 'Edit template' : 'New template');
 
+            buildPageOptions();
             renderBlocks();
             renderPreview();
             editorEl.classList.remove('d-none');
@@ -721,13 +911,15 @@ if ($hasSchema) {
                 alert('Add at least one block before saving.');
                 return;
             }
-            working.pageOptions.fontPt = Math.max(6, Math.min(72, parseInt(fontEl.value, 10) || 12));
+            // working.pageOptions is kept current by onPageOptMutate; just serialise.
             $('#pt-blocks-json').value        = JSON.stringify(working.blocks);
             $('#pt-page-options-json').value   = JSON.stringify(working.pageOptions);
             // name + is_active submit as native form fields.
         });
 
         buildPalette();
+        /* #1767 R — the QR block previews via an <img> to /qr.php (CueRCode-backed);
+           renderTemplateBodyHtml emits it directly, so no QR pre-pass is needed. */
     </script>
     <?php endif; ?>
 
