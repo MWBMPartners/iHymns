@@ -297,9 +297,12 @@ if ($mode === 'song') {
     $abbrW = abs($abbrBbox[4] - $abbrBbox[0]);
     imagettftext($img, 11, 0, $badgeX + (int)((80 - $abbrW) / 2), $badgeY + 25, $white, $fontBold, $abbr);
 
-    /* Song number next to badge */
-    $numText = '#' . (int)$songInfo['number'];
-    imagettftext($img, 13, 0, $badgeX + 92, $badgeY + 25, $grey, $fontRegular, $numText);
+    /* Song number next to badge (#85 — a numberless song must not draw "#0";
+       (int)null === 0, so only render the number when there is a real one). */
+    $_songNum = (int)($songInfo['number'] ?? 0);
+    if ($_songNum > 0) {
+        imagettftext($img, 13, 0, $badgeX + 92, $badgeY + 25, $grey, $fontRegular, '#' . $_songNum);
+    }
 
     /* --- Song title (large, centred in safe zone) --- */
     $title = $songInfo['title'] ?? 'Untitled';

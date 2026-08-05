@@ -307,9 +307,12 @@ try {
                     $_seen[strtolower($_lang)] = true;
                 }
             }
+            /* #85 — a song with no number must NOT read "#0" in the share title:
+               (int)null === 0, so only append "#N" when there is a real number. */
+            $_ogNum  = (int)($ogSong['number'] ?? 0);
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
-                     . ' #' . (int)$ogSong['number'];
+                     . ($_ogNum > 0 ? ' #' . $_ogNum : '');
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
                            . ' on ' . $app["Application"]["Name"];
@@ -442,7 +445,8 @@ try {
                 ['name' => 'Home',      'url' => getCanonicalUrl('/')],
                 ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
                 ['name' => $ogSong['songbookName'], 'url' => getCanonicalUrl('/songbook/' . $songbookId)],
-                ['name' => '#' . (int)$ogSong['number'], 'url' => $canonicalUrl],
+                /* #85 — leaf crumb: the song number, or its title when it has none (never "#0"). */
+                ['name' => ((int)($ogSong['number'] ?? 0) > 0 ? '#' . (int)$ogSong['number'] : (string)($ogSong['title'] ?? '')), 'url' => $canonicalUrl],
             ];
         }
     }
