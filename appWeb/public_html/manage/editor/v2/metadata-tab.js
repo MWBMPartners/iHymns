@@ -198,11 +198,19 @@ export function mountMetadataTab(container, opts) {
      *    that did not happen.
      */
     function renderSongbookSelect(song, field, label, column) {
+        /* #1783 — a not-yet-assigned duplicate lives in the hidden staging book.
+           Present it as an ASSIGNMENT: the field starts EMPTY (the owner's "empty
+           Songbook"), the staging book itself is excluded from the options, and
+           picking a book IS the assignment (the existing songbook re-key runs it,
+           so no separate Assign panel and no second save model). The Number field
+           is already empty because the duplicate's Number is NULL. */
+        const isPending = !!store.get('pendingDuplicate');
+
         const wrap = document.createElement('div');
         const lab = document.createElement('label');
         lab.className = 'form-label small mb-1';
         lab.htmlFor = 'meta-' + field;
-        lab.textContent = label;
+        lab.textContent = isPending ? (label + ' — assign to save') : label;
 
         const current = song[column] != null ? String(song[column]) : '';
 
@@ -216,20 +224,29 @@ export function mountMetadataTab(container, opts) {
            the wrong songbook. Idempotent, so it can run again when the real
            catalogue arrives. */
         function fillOptions() {
-            const books = (getSongbooks() || []).slice();
-            if (current !== '' && !books.some((b) => b.abbr === current)) {
+            let books = (getSongbooks() || []).slice();
+            if (isPending) {
+                /* Never offer the staging book (= current) as a target. */
+                books = books.filter((b) => b.abbr !== current);
+            } else if (current !== '' && !books.some((b) => b.abbr === current)) {
                 books.unshift({ abbr: current, name: current });
             }
             sel.innerHTML = '';
+            if (isPending) {
+                const ph = document.createElement('option');
+                ph.value = '';
+                ph.textContent = '— choose a songbook —';
+                sel.appendChild(ph);
+            }
             books.forEach((b) => {
                 const o = document.createElement('option');
                 o.value = b.abbr;
                 o.textContent = (b.name && b.name !== b.abbr) ? (b.name + ' (' + b.abbr + ')') : b.abbr;
                 sel.appendChild(o);
             });
-            /* Re-assert the selection: replacing the options resets it, and the
-               control must keep showing the book the song is in. */
-            sel.value = current;
+            /* Re-assert the selection: replacing the options resets it. A pending
+               duplicate stays EMPTY (unassigned); a normal song keeps its book. */
+            sel.value = isPending ? '' : current;
         }
         fillOptions();
 
@@ -247,24 +264,34 @@ export function mountMetadataTab(container, opts) {
 
         const help = document.createElement('div');
         help.className = 'form-text small';
-        help.textContent = 'Moving a song re-keys its id and clears its number.';
+        help.textContent = isPending
+            ? 'Pick a songbook to assign this duplicate — that saves it as a new song. Then set its number below. You can edit anything else first.'
+            : 'Moving a song re-keys its id and clears its number.';
 
         sel.addEventListener('change', () => {
             const target = sel.value;
-            if (target === current) { return; }
-            const confirmed = window.confirm(
-                'Move this song to songbook "' + target + '"?\n\n'
-                + 'This is a move, not a label change:\n'
-                + '  • the song gets a NEW id (' + (current || '?') + '-… becomes ' + target + '-…)\n'
-                + '  • its song number is cleared\n'
-                + '  • the old id becomes a permanent redirect to the new one\n\n'
-                + 'Moving it back later will NOT restore the old id or number.'
-            );
-            if (!confirmed) { sel.value = current; return; }
+            if (!target || target === current) { return; }
+            /* A pending duplicate is a minutes-old copy with no public id, no
+               number and no history to lose, so the scary generic move-confirm
+               (redirects, cleared number) is wrong for it — picking a book simply
+               assigns it. A normal song keeps the move confirm. */
+            if (!isPending) {
+                const confirmed = window.confirm(
+                    'Move this song to songbook "' + target + '"?\n\n'
+                    + 'This is a move, not a label change:\n'
+                    + '  • the song gets a NEW id (' + (current || '?') + '-… becomes ' + target + '-…)\n'
+                    + '  • its song number is cleared\n'
+                    + '  • the old id becomes a permanent redirect to the new one\n\n'
+                    + 'Moving it back later will NOT restore the old id or number.'
+                );
+                if (!confirmed) { sel.value = current; return; }
+            }
             /* Immediate — no debouncedSave. The store is NOT updated optimistically:
-               a successful move makes the shell re-open the song under its new id,
-               which re-hydrates the whole slice from the server. */
-            save(field, target, () => { sel.value = current; });
+               a successful move/assign makes the shell re-open the song under its
+               new id, which re-hydrates the whole slice from the server (and the
+               re-opened song is no longer a pending duplicate, so the field renders
+               normally). */
+            save(field, target, () => { sel.value = isPending ? '' : current; });
         });
 
         wrap.append(lab, sel, help);
