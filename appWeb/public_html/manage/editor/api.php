@@ -557,8 +557,16 @@ switch ($action) {
                      VALUES (?, ?, ?, ?), (?, ?, ?, ?)'
                 );
                 $emptyNote = '';
+                /* #1739 — bind types MUST match the 8 values in order:
+                   GroupId(int), SongId(VARCHAR string, e.g. "MP-1008" — rule #27),
+                   Note(string), CreatedBy(int) — twice. The old 'issiisis'
+                   transposed the last pair: it bound $note (the counterpart note)
+                   as an INT — silently coercing it to 0/'' so the note was DROPPED —
+                   and $createdBy as a string. Correct string is 'issiissi'. The
+                   sibling single-row INSERT below already binds 'issi' correctly;
+                   only this two-row branch had the transposition. */
                 $ins->bind_param(
-                    'issiisis',
+                    'issiissi',
                     $newGroup, $srcId, $emptyNote, $createdBy,
                     $newGroup, $tgtId, $note,      $createdBy
                 );
