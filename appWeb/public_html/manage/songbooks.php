@@ -31,6 +31,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    openlibrary_edition_id fields below (Feature 3). Never hand-roll a
    second copy of the shape check. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+/* #93 — IHYMNS_PUBLISHER_ROLES vocabulary for the multi-publisher picker's
+   per-row Role dropdown + its server-side validation (VARCHAR not ENUM,
+   rule #20). One map, PHP + JS both read it; never a hand-rolled role list. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 /* Places registry helper — exposes placeColumnExists() so the
    create / update paths can persist PublicationCityId alongside
    the legacy PublicationCity display string only when the
@@ -602,6 +606,58 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=publisher_search&q=… (#93) --------------------------
+ * JSON typeahead for BOTH the free-text Publisher field (datalist, create
+ * + edit) and the edit-modal multi-publisher registry picker. Returns
+ * active tblPublishers rows matching the query. Pre-migration safe — an
+ * INFORMATION_SCHEMA probe returns [] (not a 500) when tblPublishers
+ * hasn't been created yet, so the field degrades to a plain text box.
+ * ----------------------------------------------------------------------- */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'publisher_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    try {
+        $probe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPublishers' LIMIT 1"
+        );
+        if (!$probe || $probe->fetch_row() === null) {
+            echo json_encode(['suggestions' => [], 'note' => 'tblPublishers not yet created — run /manage/setup-database']);
+            exit;
+        }
+        if ($q === '') {
+            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 ORDER BY Name ASC LIMIT ?');
+            $stmt->bind_param('i', $limit);
+        } else {
+            $like = '%' . $q . '%';
+            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
+            $stmt->bind_param('si', $like, $limit);
+        }
+        $stmt->execute();
+        $res  = $stmt->get_result();
+        $sugg = [];
+        while ($row = $res->fetch_assoc()) {
+            $sugg[] = [
+                'id'   => (int)$row['Id'],
+                'name' => (string)$row['Name'],
+                'slug' => (string)($row['Slug'] ?? ''),
+                'kind' => (string)($row['Kind'] ?? ''),
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['suggestions' => $sugg], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[publisher_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- GET ?action=apply_song_language_count&songbook_id=… (#873) -------
  * JSON impact-preview for the "Apply this language to all songs in this
  * songbook" cleanup action. Returns:
@@ -893,6 +949,23 @@ try {
     $hasCompilersSchema = $probeComp->get_result()->fetch_row() !== null;
     $probeComp->close();
 } catch (\Throwable $_e) { /* probe failure → compilers UI stays hidden */ }
+
+/* Probe for tblSongbookPublishers (#93) — the multi-publisher M:N. Same hoist
+   rationale as $hasCompilersSchema: the POST handler's reconciliation block +
+   the render map both need the flag. Pre-migration deployments skip the whole
+   publisher picker silently and the free-text Publisher field stays authoritative. */
+$hasPublishersSchema = false;
+try {
+    $probePub = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblSongbookPublishers'
+          LIMIT 1"
+    );
+    $probePub->execute();
+    $hasPublishersSchema = $probePub->get_result()->fetch_row() !== null;
+    $probePub->close();
+} catch (\Throwable $_e) { /* probe failure → publisher picker stays hidden */ }
 
 /* Probe for tblSongbookAlternativeTitles (#832). Same hoist
    rationale as $hasSeriesSchema — POST handler needs the gate. */
@@ -1729,6 +1802,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
 
+                    /* #93 — reconcile the multi-publisher registry links for
+                       this songbook. The edit modal posts three parallel
+                       arrays: publisher_ids[] (tblPublishers FKs),
+                       publisher_roles[] (an IHYMNS_PUBLISHER_ROLES key) and
+                       publisher_notes[]. DELETE-then-INSERT in this same
+                       transaction (like compilers). De-dup by (id, role) — the
+                       uq_book_pub_role UNIQUE allows one publisher in several
+                       roles but never the same role twice. Schema-gated by
+                       $hasPublishersSchema. When the picker is non-empty the
+                       free-text tblSongbooks.Publisher denorm is re-synced to
+                       the FIRST (primary) publisher's name so the display mirror
+                       follows the registry (TuneName<->TuneId pattern); an empty
+                       picker leaves the curator's typed Publisher string as-is. */
+                    $postedPublisherSet = [];
+                    if ($hasPublishersSchema) {
+                        $rawPubIds   = $_POST['publisher_ids']   ?? [];
+                        $rawPubRoles = $_POST['publisher_roles'] ?? [];
+                        $rawPubNotes = $_POST['publisher_notes'] ?? [];
+                        if (!is_array($rawPubIds))   $rawPubIds   = [];
+                        if (!is_array($rawPubRoles)) $rawPubRoles = [];
+                        if (!is_array($rawPubNotes)) $rawPubNotes = [];
+                        $publisherRows = [];
+                        $seenPubKeys   = [];
+                        foreach ($rawPubIds as $idx => $rawPid) {
+                            $ppid = (int)$rawPid;
+                            if ($ppid <= 0) continue;
+                            $role = (string)($rawPubRoles[$idx] ?? 'publisher');
+                            if (!array_key_exists($role, IHYMNS_PUBLISHER_ROLES)) $role = 'publisher';
+                            $key = $ppid . "\0" . $role;
+                            if (isset($seenPubKeys[$key])) continue;   /* de-dup (id, role) */
+                            $seenPubKeys[$key] = true;
+                            $note = trim((string)($rawPubNotes[$idx] ?? ''));
+                            $publisherRows[] = [
+                                'pid'   => $ppid,
+                                'role'  => $role,
+                                'note'  => ($note !== '' ? mb_substr($note, 0, 255) : null),
+                                'order' => count($publisherRows),
+                            ];
+                        }
+
+                        $stmt = $db->prepare('DELETE FROM tblSongbookPublishers WHERE SongbookId = ?');
+                        $stmt->bind_param('i', $id);
+                        $stmt->execute();
+                        $stmt->close();
+
+                        if ($publisherRows) {
+                            $stmt = $db->prepare(
+                                'INSERT INTO tblSongbookPublishers
+                                     (SongbookId, PublisherId, Role, SortOrder, Note)
+                                  VALUES (?, ?, ?, ?, ?)'
+                            );
+                            foreach ($publisherRows as $pr) {
+                                $stmt->bind_param('iisis', $id, $pr['pid'], $pr['role'], $pr['order'], $pr['note']);
+                                $stmt->execute();
+                                $postedPublisherSet[] = $pr['pid'];
+                            }
+                            $stmt->close();
+
+                            /* Denorm sync — the free-text Publisher mirror
+                               follows the primary (first-listed) publisher. */
+                            $primaryPid  = $publisherRows[0]['pid'];
+                            $nameStmt = $db->prepare('SELECT Name FROM tblPublishers WHERE Id = ?');
+                            $nameStmt->bind_param('i', $primaryPid);
+                            $nameStmt->execute();
+                            $primaryName = $nameStmt->get_result()->fetch_assoc()['Name'] ?? null;
+                            $nameStmt->close();
+                            if ($primaryName !== null) {
+                                $upd = $db->prepare('UPDATE tblSongbooks SET Publisher = ? WHERE Id = ?');
+                                $upd->bind_param('si', $primaryName, $id);
+                                $upd->execute();
+                                $upd->close();
+                            }
+                        }
+                    }
+
                     /* #832 — reconcile songbook alternative names. The edit
                        modal posts parallel arrays:
                          alt_name_titles[]  — the alt name string
@@ -1853,6 +2001,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     if ($hasCompilersSchema) {
                         $auditExtras['compiler_person_ids'] = $postedCompilerSet;
+                    }
+                    if ($hasPublishersSchema) {
+                        $auditExtras['publisher_ids'] = $postedPublisherSet;
                     }
                     if ($hasAltNamesSchema) {
                         $auditExtras['alternative_names'] = $postedAltNames;
@@ -2582,6 +2733,44 @@ if ($hasCompilersSchema) {
     }
 }
 
+/* ----- Publishers map (#93) -------------------------------------------
+ *       SongbookId => [{publisher_id, publisher_name, publisher_slug,
+ *       role, sort_order, note}, …] in SortOrder asc. Single batch fetch
+ *       per page-load (like $sbCompilersMap). Schema-conditional via
+ *       $hasPublishersSchema; a pre-migration deployment loads the page
+ *       with the multi-publisher section silently empty and the free-text
+ *       Publisher field authoritative. ----- */
+$sbPublishersMap = [];
+if ($hasPublishersSchema) {
+    try {
+        $res = $db->query(
+            'SELECT sp.SongbookId, sp.PublisherId, sp.Role, sp.SortOrder, sp.Note,
+                    p.Name AS PublisherName, p.Slug AS PublisherSlug
+               FROM tblSongbookPublishers sp
+               JOIN tblPublishers p ON p.Id = sp.PublisherId
+              ORDER BY sp.SongbookId ASC, sp.SortOrder ASC, p.Name ASC'
+        );
+        if ($res) {
+            while ($prow = $res->fetch_assoc()) {
+                $sb = (int)$prow['SongbookId'];
+                if (!isset($sbPublishersMap[$sb])) $sbPublishersMap[$sb] = [];
+                $sbPublishersMap[$sb][] = [
+                    'publisher_id'   => (int)$prow['PublisherId'],
+                    'publisher_name' => (string)$prow['PublisherName'],
+                    'publisher_slug' => (string)($prow['PublisherSlug'] ?? ''),
+                    'role'           => (string)$prow['Role'],
+                    'sort_order'     => (int)$prow['SortOrder'],
+                    'note'           => (string)($prow['Note'] ?? ''),
+                ];
+            }
+            $res->close();
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/songbooks.php publishers fetch] ' . $e->getMessage());
+        $sbPublishersMap = [];
+    }
+}
+
 /* ----- Alternative-names map (#832) -----------------------------------
  *       SongbookId => [{title, sortOrder, note}, …] in SortOrder asc.
  *       Same caching strategy as $sbSeriesMap — single batch fetch
@@ -3092,6 +3281,12 @@ $csrf = csrfToken();
                                            person_slug, note. Empty list pre-migration or for
                                            songbooks with no compilers. */
                                         'compilers'             => $sbCompilersMap[(int)$r['Id']] ?? [],
+                                        /* #93 — publisher registry links attached to this
+                                           songbook, in SortOrder. Each item carries
+                                           publisher_id, publisher_name, publisher_slug, role,
+                                           note. Empty list pre-migration or for songbooks with
+                                           no registry publishers. */
+                                        'publishers'            => $sbPublishersMap[(int)$r['Id']] ?? [],
                                         /* #832 — alternative names attached to this songbook,
                                            in SortOrder. Each item carries title + note. Empty
                                            list pre-migration or for songbooks with no alts. */
@@ -3688,6 +3883,60 @@ $csrf = csrfToken();
                         </div>
                         <?php endif; ?>
 
+                        <?php if ($hasPublishersSchema): ?>
+                        <!-- #93 — Publishers (registry). Multi-row picker where
+                             each row pairs a tblPublishers entry with a Role
+                             (publisher / co-publisher / distributor / …) and an
+                             optional note. Array-index ⇒ SortOrder on save; the
+                             hidden inputs are publisher_ids[] / publisher_roles[]
+                             / publisher_notes[] in parallel arrays. The FIRST row
+                             is the primary publisher and re-syncs the free-text
+                             Publisher field above on save. -->
+                        <div class="mb-3" id="edit-publishers-block">
+                            <label class="form-label d-flex justify-content-between align-items-center">
+                                <span>Publishers <span class="text-muted small">(registry)</span></span>
+                                <a href="/manage/publishers" class="small text-info"
+                                   title="Manage publishers — add a company/person, set imprint parent, aliases, …">
+                                    <i class="bi bi-building me-1" aria-hidden="true"></i>Manage publishers
+                                </a>
+                            </label>
+                            <div class="form-text small mb-2">
+                                One or more publishers for this book (multi-publisher copyright). The
+                                first-listed publisher becomes the primary and updates the free-text
+                                <em>Publisher</em> field above when you save. Leave empty to keep the
+                                free-text value as typed.
+                            </div>
+
+                            <!-- Existing rows render here; the boot script clears +
+                                 repopulates from row.publishers when the modal opens. -->
+                            <div id="edit-publishers-rows" class="vstack gap-2 mb-2"></div>
+
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-8">
+                                    <label class="form-label small" for="edit-publisher-add-search">Add a publisher</label>
+                                    <input type="text"
+                                           class="form-control form-control-sm"
+                                           id="edit-publisher-add-search"
+                                           list="edit-publisher-add-datalist"
+                                           placeholder="Type a publisher name from the registry"
+                                           autocomplete="off">
+                                    <datalist id="edit-publisher-add-datalist"></datalist>
+                                </div>
+                                <div class="col-md-4">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-info w-100"
+                                            id="edit-publisher-add-btn">
+                                        <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="form-text small text-muted mt-1">
+                                Publisher must already exist in the registry. Use
+                                <a href="/manage/publishers">Manage publishers</a> to register a new one first.
+                            </div>
+                        </div>
+                        <?php endif; ?>
+
                         <?php if ($hasAltNamesSchema): ?>
                         <!-- #832 — Alternative songbook names. Multi-row chip list:
                              each row pairs an alt-title with an optional Note
@@ -4044,6 +4293,28 @@ $csrf = csrfToken();
                 /* Clear the add-search field too so reopening the modal
                    doesn't leave a stale half-typed name behind. */
                 const addInput = document.getElementById('edit-compiler-add-search');
+                if (addInput) addInput.value = '';
+            })();
+
+            /* #93 — populate the publishers picker from row.publishers.
+               Container only exists when the schema probe says yes; clear +
+               repopulate on every open so opening row B after row A doesn't
+               carry A's publishers over. */
+            (function () {
+                const container = document.getElementById('edit-publishers-rows');
+                if (!container || !window._iHymnsBuildPublisherRow) return;
+                container.innerHTML = '';
+                const pubs = Array.isArray(row.publishers) ? row.publishers : [];
+                pubs.forEach(p => {
+                    container.appendChild(window._iHymnsBuildPublisherRow({
+                        publisherId:   p.publisher_id || 0,
+                        publisherName: p.publisher_name || '',
+                        publisherSlug: p.publisher_slug || '',
+                        role:          p.role || 'publisher',
+                        note:          p.note || '',
+                    }));
+                });
+                const addInput = document.getElementById('edit-publisher-add-search');
                 if (addInput) addInput.value = '';
             })();
 
@@ -4779,6 +5050,131 @@ $csrf = csrfToken();
     })();
     </script>
 
+    <!-- Publishers registry picker (#93). Multi-row picker: each row pairs a
+         tblPublishers entry with a Role and an optional note. Hidden inputs
+         publisher_ids[] / publisher_roles[] / publisher_notes[] in parallel
+         arrays; DOM order ⇒ SortOrder on save; the first row is the primary
+         and re-syncs the free-text Publisher field on save. -->
+    <script>
+    (function () {
+        const addInput = document.getElementById('edit-publisher-add-search');
+        const addBtn   = document.getElementById('edit-publisher-add-btn');
+        const dl       = document.getElementById('edit-publisher-add-datalist');
+        const rowsEl   = document.getElementById('edit-publishers-rows');
+        if (!addInput || !rowsEl) return;  /* schema not live → block absent */
+
+        const PUB_ROLES = <?= json_encode(IHYMNS_PUBLISHER_ROLES, JSON_UNESCAPED_UNICODE) ?>;
+
+        let labelToId = new Map();
+        let inflight  = null;
+        let debounce  = null;
+
+        const lookup = (query) => {
+            if (inflight) inflight.abort();
+            const ac = new AbortController();
+            inflight = ac;
+            const url = '/manage/songbooks?action=publisher_search&q=' + encodeURIComponent(query) + '&limit=20';
+            fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                .then(r => r.ok ? r.json() : { suggestions: [] })
+                .then(data => {
+                    const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+                    labelToId = new Map();
+                    dl.innerHTML = list.map(s => {
+                        const n = (s.name || '').replace(/"/g, '&quot;');
+                        labelToId.set(s.name, { id: s.id, slug: s.slug || '' });
+                        return '<option value="' + n + '"></option>';
+                    }).join('');
+                })
+                .catch(err => { if (err.name !== 'AbortError') { /* silent */ } });
+        };
+
+        addInput.addEventListener('input', () => {
+            const v = addInput.value.trim();
+            if (v === '') { dl.innerHTML = ''; return; }
+            clearTimeout(debounce);
+            debounce = setTimeout(() => lookup(v), 200);
+        });
+        addInput.addEventListener('focus', () => lookup(addInput.value.trim()));
+
+        const commitAdd = () => {
+            const v = addInput.value.trim();
+            if (v === '') return;
+            const hit = labelToId.get(v);
+            if (!hit) {
+                /* Soft warn — a publisher must exist in the registry (the FK
+                   needs a real tblPublishers row). Curator picks from the
+                   dropdown or registers it first on /manage/publishers. */
+                addInput.classList.add('is-invalid');
+                setTimeout(() => addInput.classList.remove('is-invalid'), 1500);
+                return;
+            }
+            /* Skip only if the SAME publisher is already present — the table
+               allows one publisher in several roles, but a plain re-add of the
+               same name in the default role is almost always a mistake. */
+            const existing = rowsEl.querySelector('input[name="publisher_ids[]"][value="' + Number(hit.id) + '"]');
+            if (existing) { addInput.value = ''; return; }
+            rowsEl.appendChild(window._iHymnsBuildPublisherRow({
+                publisherId: hit.id, publisherName: v, publisherSlug: hit.slug, role: 'publisher', note: '',
+            }));
+            addInput.value = '';
+            dl.innerHTML = '';
+        };
+        if (addBtn) addBtn.addEventListener('click', commitAdd);
+        addInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); commitAdd(); }
+        });
+
+        window._iHymnsBuildPublisherRow = function (data) {
+            const card = document.createElement('div');
+            card.className = 'card bg-dark border-secondary';
+            const pid  = Number(data.publisherId) || 0;
+            const nm   = String(data.publisherName || '');
+            const sl   = String(data.publisherSlug || '');
+            const nt   = String(data.note || '');
+            const role = String(data.role || 'publisher');
+            const pubLink = sl
+                ? '<a href="/publisher/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
+                  + escapeHtmlPub(nm) + ' <i class="bi bi-box-arrow-up-right small" aria-hidden="true"></i></a>'
+                : escapeHtmlPub(nm);
+            let roleOpts = '';
+            Object.keys(PUB_ROLES).forEach(k => {
+                roleOpts += '<option value="' + k + '"' + (k === role ? ' selected' : '') + '>' + escapeHtmlPub(PUB_ROLES[k]) + '</option>';
+            });
+            card.innerHTML =
+                '<div class="card-body py-2">' +
+                  '<div class="d-flex align-items-center gap-2">' +
+                    '<i class="bi bi-grip-vertical text-muted" aria-hidden="true"></i>' +
+                    '<div class="flex-grow-1">' +
+                      '<div class="small fw-semibold">' + pubLink + '</div>' +
+                      '<input type="hidden" name="publisher_ids[]" value="' + pid + '">' +
+                      '<div class="row g-1 mt-1">' +
+                        '<div class="col-5">' +
+                          '<select class="form-select form-select-sm" name="publisher_roles[]">' + roleOpts + '</select>' +
+                        '</div>' +
+                        '<div class="col-7">' +
+                          '<input type="text" class="form-control form-control-sm" name="publisher_notes[]" ' +
+                                  'placeholder="Optional note" maxlength="255" value="' + escapeHtmlPub(nt) + '">' +
+                        '</div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger" ' +
+                            'data-action="remove-publisher" title="Remove this publisher">' +
+                      '<i class="bi bi-x-lg"></i>' +
+                    '</button>' +
+                  '</div>' +
+                '</div>';
+            card.querySelector('[data-action=remove-publisher]').addEventListener('click', () => card.remove());
+            return card;
+        };
+
+        function escapeHtmlPub(s) {
+            return String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+    })();
+    </script>
+
     <!-- Alternative-names chip-list editor (#832). Pure-text picker —
          no FK, no typeahead — just type-and-Enter to add. Each row
          carries hidden alt_name_titles[] / alt_name_notes[] inputs,
@@ -4987,6 +5383,43 @@ $csrf = csrfToken();
                 }
             });
         })();
+    </script>
+
+    <!-- #93 — registry-backed datalist typeahead on the free-text Publisher
+         field (create + edit). Debounced fetch of ?action=publisher_search
+         fills each field's own datalist. Pre-migration returns [] so the
+         field stays a plain text box. -->
+    <script>
+    (function () {
+        document.querySelectorAll('input.js-publisher-search').forEach(function (input) {
+            const dl = document.getElementById(input.getAttribute('list'));
+            if (!dl) return;
+            let debounce = null;
+            let inflight = null;
+            function lookup(q) {
+                if (inflight) inflight.abort();
+                const ac = new AbortController();
+                inflight = ac;
+                fetch('/manage/songbooks?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=20',
+                      { credentials: 'same-origin', signal: ac.signal })
+                    .then(function (r) { return r.ok ? r.json() : { suggestions: [] }; })
+                    .then(function (data) {
+                        const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+                        dl.innerHTML = list.map(function (s) {
+                            return '<option value="' + (s.name || '').replace(/"/g, '&quot;') + '"></option>';
+                        }).join('');
+                    })
+                    .catch(function (err) { if (err.name !== 'AbortError') { /* silent */ } });
+            }
+            input.addEventListener('input', function () {
+                const q = input.value.trim();
+                if (q === '') { dl.innerHTML = ''; return; }
+                clearTimeout(debounce);
+                debounce = setTimeout(function () { lookup(q); }, 200);
+            });
+            input.addEventListener('focus', function () { lookup(input.value.trim()); });
+        });
+    })();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

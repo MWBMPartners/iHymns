@@ -184,8 +184,16 @@ $sbfHasOpenLibraryCols = isset($sbfHasOpenLibraryCols) ? (bool)$sbfHasOpenLibrar
 </div>
 <div class="mb-3">
     <label class="form-label<?= $sbfMode === 'create' ? ' small' : '' ?>" for="<?= $sbfMode ?>-publisher">Publisher</label>
-    <input type="text" class="form-control<?= $sbfMode === 'create' ? ' form-control-sm' : '' ?>"
-           name="publisher" id="<?= $sbfMode ?>-publisher" maxlength="255" placeholder="e.g. Praise Trust">
+    <?php /* #93 — registry-backed typeahead: the datalist is populated from
+             ?action=publisher_search by the boot script below (both create +
+             edit). This is the "quick" path; the Edit modal's richer
+             multi-publisher picker (with roles) supersedes it on save when
+             used. A pre-migration install returns no suggestions, so the field
+             degrades to a plain text box. */ ?>
+    <input type="text" class="form-control<?= $sbfMode === 'create' ? ' form-control-sm' : '' ?> js-publisher-search"
+           name="publisher" id="<?= $sbfMode ?>-publisher" maxlength="255" placeholder="e.g. Praise Trust"
+           list="<?= $sbfMode ?>-publisher-datalist" autocomplete="off">
+    <datalist id="<?= $sbfMode ?>-publisher-datalist"></datalist>
 </div>
 <div class="mb-3">
     <label class="form-label<?= $sbfMode === 'create' ? ' small' : '' ?>" for="<?= $sbfMode ?>-publication-year">Publication year / edition</label>
