@@ -201,6 +201,11 @@ const ENTITLEMENTS = [
        ELI5: same "who can edit the catalogue" people as Works/Musicians.
        @see #1748 */
     'manage_tunes'         => ['admin', 'global_admin'],
+    /* Publishers (#93) — tblPublishers registry CRUD (persons + companies,
+       imprint/catalogue grouping, multi-publisher copyright). Mirrors
+       manage_tunes/manage_works exactly — same "who curates the catalogue"
+       people. @see #93 */
+    'manage_publishers'    => ['admin', 'global_admin'],
     /* External-link types + URL patterns (#845) — controlled-vocabulary
        registry that drives every "Find this … elsewhere" panel and
        the URL auto-detect module. Curator-managed; same gate as the
