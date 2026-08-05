@@ -63,6 +63,7 @@ $BLOCK_SCHEMA = [
     'themes'      => [],                          // #1767 P
     'text'        => ['content' => 'str'],
     'permalink'   => [],
+    'qr'          => ['size' => 'size'],          // #1767 R
     'spacer'      => ['size' => 'size'],
     'pagebreak'   => [],
 ];
@@ -340,6 +341,11 @@ if ($hasSchema) {
         .pt-preview-paper .print-line     { margin: .05em 0; }
         .pt-preview-paper .print-chord    { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: .15em 0 0; }
         .pt-preview-paper .print-text     { margin: 0 0 .8em; }
+        .pt-preview-paper .print-qr       { margin: .9em 0; text-align: center; }
+        .pt-preview-paper .print-qr-img   { display: inline-block; }
+        .pt-preview-paper .print-qr-img svg { width: 100%; height: 100%; display: block; }
+        .pt-preview-paper .print-qr-caption { font-family: 'Courier New', monospace; font-size: .7em; color: #444; margin-top: .3em; word-break: break-all; }
+        .pt-preview-paper .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
         .pt-preview-paper .print-footer   { margin-top: 1em; font-size: .8em; color: #777; }
         .pt-block-row { border: 1px solid var(--bs-border-color, #444); border-radius: .375rem; }
     </style>
@@ -506,12 +512,18 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_SAMPLE_SONG, renderTemplateBodyHtml }
+        import { PRINT_BLOCK_TYPES, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, prepareQrForSong }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
 
         bootSortableTables(); // sortable list headers (#844)
+
+        /* #1767 R — pinned CDN + vendored fallback path for the QR renderer, from
+           the same APP_CONFIG['libraries'] registry index.php/service-projection
+           read (rule #36). Used to pre-generate a sample QR so the preview of a
+           `qr` block is faithful, not a URL-text placeholder. */
+        const QR_LIB = <?= json_encode(APP_CONFIG['libraries']['qrcodegen'] ?? null, $JSON_SAFE) ?>;
 
         // Existing templates for the Edit pre-load. JSON_HEX_* flags applied
         // server-side so this inline literal can't break out of the script.
@@ -734,6 +746,20 @@ if ($hasSchema) {
         });
 
         buildPalette();
+
+        /* #1767 R — pre-generate the sample QR (same fixed permalink for the
+           sample song) so a `qr` block previews as a real code, not the URL-text
+           fallback. Fire-and-forget; refresh the preview when it lands if the
+           editor is already open on a template that uses a qr block. Never
+           throws — prepareQrForSong swallows a library failure and the block
+           degrades to the URL text. */
+        prepareQrForSong(PRINT_SAMPLE_SONG, { blocks: [{ type: 'qr' }] },
+            { cdn: QR_LIB && QR_LIB.js_cdn, local: QR_LIB && QR_LIB.js_local })
+            .then(() => {
+                if (!editorEl.classList.contains('d-none')
+                    && working.blocks.some(b => b.type === 'qr')) { renderPreview(); }
+            })
+            .catch(() => {});
     </script>
     <?php endif; ?>
 
