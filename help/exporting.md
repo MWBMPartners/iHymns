@@ -38,6 +38,19 @@ Exact formatting (verse/chorus labels, chords, metadata) follows each program's 
 
 ---
 
+## 🖨 Printing & saving as PDF
+
+You can also print a song or a set list on paper — or save it as a **PDF** — without any projection software:
+
+- **A song** — use the **Print** option on the song page. Curators can design **print templates** (which blocks appear, page size, chords, and more) on **Manage → Print Templates**; the print dialog then offers those templates.
+- **A set list** — open the set list and use **Print** or the **Save as PDF** button. You get a tidy document with a cover page, the running order, and each song's words. (There's no separate download — your browser's print dialog is where "Save as PDF" lives, and the file is named after the set list.)
+
+### Songbook & number on printouts
+
+The **Songbook + number** block on a print template is **context-aware**: it prints the songbook and the song's number **only for songs in a published (official) songbook**. A song that lives in an **unofficial songbook** or a **catalogue** — which don't have song numbers — prints **nothing** for that block, because a book reference and number aren't relevant to that song. You don't need to configure anything; official-hymnal songs show their book and number as normal, and everything else quietly omits it.
+
+---
+
 ## 🛠 If nothing downloads
 
 If the **Export ▾** menu opens but tapping a format doesn't produce a download:

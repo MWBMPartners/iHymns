@@ -68,6 +68,21 @@ function componentsHaveChords(song) {
         && c.chords.some(x => String(Array.isArray(x) ? x.join('') : (x || '')).trim() !== ''));
 }
 
+/* True when the song lives in a PUBLISHED (official) songbook. A song in an
+   unofficial songbook, a catalogue, or any non-published grouping (rule #24 —
+   `tblSongbooks.IsOfficial = 0`) has no meaningful "Songbook + number", because
+   such books don't assign published song numbers. The "Songbook + number"
+   (subtitle) block outputs NOTHING for those songs — the songbook reference and
+   the number are simply not relevant to the printout (owner directive
+   2026-08-05). Determinant: the explicit `isOfficial` flag when the payload
+   carries it (authoritative), otherwise the presence of a positive song number
+   (the observable proxy — an unofficial/catalogue song has none). */
+function songInPublishedBook(song) {
+    if (song && song.isOfficial != null) { return !!song.isOfficial; }
+    const n = song ? parseInt(song.number, 10) : NaN;
+    return Number.isFinite(n) && n > 0;
+}
+
 /* Conditional block visibility (#1767 Y) — a UNIVERSAL `showIf` property any block
    may carry (not a per-type option), so one template can adapt to each song:
    e.g. a chords block only when the song has chords, a CCLI block only when it
@@ -201,6 +216,12 @@ function renderBlock(song, block) {
         case 'title':
             return `<h1 class="print-title">${esc(song.title || 'Untitled')}</h1>`;
         case 'subtitle': {
+            /* Owner directive 2026-08-05 — a song not in a published (official)
+               songbook (unofficial book / catalogue / non-published grouping)
+               has no meaningful "Songbook + number", so the WHOLE block outputs
+               nothing: both the songbook reference AND the number are suppressed,
+               not just the (already number-gated) number. See songInPublishedBook(). */
+            if (!songInPublishedBook(song)) { return ''; }
             const bits = [];
             if (block.showBook !== false && (song.songbookName || song.songbook)) {
                 /* #1767 B — bookAbbr prints the abbreviation (song.songbook) rather

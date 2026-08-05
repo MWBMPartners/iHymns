@@ -544,7 +544,16 @@ if ($hasSchema) {
                         <div class="row g-2 align-items-end mb-3" id="pt-page-options"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
 
                         <label class="form-label small mb-1">Add a block</label>
-                        <div class="d-flex flex-wrap gap-2 mb-3" id="pt-palette"><!-- buttons injected by JS --></div>
+                        <div class="d-flex flex-wrap gap-2 mb-2" id="pt-palette"><!-- buttons injected by JS --></div>
+                        <div class="alert alert-info py-2 px-3 small mb-3" role="note">
+                            <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                            <strong>Songbook &amp; number blocks are context-aware.</strong>
+                            The <em>Songbook&nbsp;+&nbsp;number</em> block prints <strong>nothing</strong> for a
+                            song that isn&rsquo;t in a published (official) songbook &mdash; e.g. a song in an
+                            unofficial songbook or a catalogue, which has no song number. Both the songbook name
+                            and the number are hidden for such songs, because they aren&rsquo;t relevant to that
+                            song. Official-hymnal songs print their book and number as normal.
+                        </div>
 
                         <label class="form-label small mb-1">Blocks (in print order)</label>
                         <div class="vstack gap-2" id="pt-block-list"><!-- rows injected by JS --></div>
