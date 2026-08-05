@@ -349,6 +349,11 @@ export class Router {
                    separated). Empty / unknown slug renders the page's
                    own friendly empty state. */
                 return { page: 'tune', params: { slug: segments[1] || '' } };
+            case 'publisher':
+                /* #93 — /publisher/<slug>: who a publisher is + the
+                   songbooks they published. Empty / unknown slug renders
+                   the page's own friendly empty state. */
+                return { page: 'publisher', params: { slug: segments[1] || '' } };
             case 'iswc':
                 /* #940 — /iswc/<code> lists every song that shares the
                    ISWC. The code is the standard T-NNN.NNN.NNN-N format

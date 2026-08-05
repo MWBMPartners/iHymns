@@ -757,6 +757,16 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tune.php';
             break;
 
+        case 'publisher':
+            /* #93 — /publisher/<slug> public page: who a publisher is + the
+               songbooks they published. Empty slug → friendly empty state
+               (the page renders its own not-found), not a hard error.
+               Deliberately NOT in $_cacheablePages (the tune/iswc precedent —
+               a cheap indexed anonymous read). */
+            $publisherSlug = isset($_GET['slug']) ? trim((string)$_GET['slug']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'publisher.php';
+            break;
+
         case 'iswc':
         case 'ipi':
         case 'isni':
