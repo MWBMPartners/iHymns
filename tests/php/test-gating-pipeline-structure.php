@@ -172,6 +172,46 @@ _psAssert(strpos($swSrc, 'offlinePage && response.ok && swResponseCacheable(resp
 _psAssert(strpos($swSrc, 'isSongPage && response.ok && swResponseCacheable(response)') !== false,
     '(f) the SW incidental song put honours swResponseCacheable()');
 
+/* ---- (g) fact-column CONTAINMENT lock (#1769 P4): the two per-song rights-fact
+ * columns may be referenced ONLY by the P4 management / migration surface — the
+ * admin write path, the reference-count reader, the licence registry helper, the
+ * migration card + the dead resolver branch. If ANY OTHER file under
+ * public_html/ names them, a fact has leaked toward a read/enforcement path (the
+ * generalisation of the SongData-specific lock (a) above). TREE-DERIVED: scans
+ * every .php recursively, so a leak into a NEW file is caught without editing a
+ * typed list here. The allow-set is a superset across the P4 commit sequence
+ * (songbooks.php lands in Commit C, the licence_registry helper in Commit D) —
+ * extra allowed entries only PERMIT; the lock still fails on an unexpected file.
+ * (Flipping this — emitting the fact from a public path — is a deliberate P6 act;
+ * the guard failing then is the intended signal.) */
+$factCols = ['LyricsRightsLicenceKey', 'MusicRightsLicenceKey'];
+$factAllow = [
+    'includes/access_resolver.php',           // the DELIBERATELY-DEAD resolver branch (P2)
+    'includes/licence_type_admin.php',        // reference counts (P4 Commit A)
+    'includes/licence_registry.php',          // rightsFactColumnForLicence() helper (P4 Commit D)
+    'manage/includes/migration-registry.php', // the P1 gating-facts card DDL + probe
+    'manage/editor/api2.php',                  // the admin WRITE path (P4 Commit B)
+    'manage/songbooks.php',                    // songbook DEFAULT rights columns (P4 Commit C)
+];
+$factOffenders = [];
+$factSaw = 0;
+$rig = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(
+    $root, \FilesystemIterator::SKIP_DOTS));
+foreach ($rig as $f) {
+    if ($f->getExtension() !== 'php') { continue; }
+    $src = (string)file_get_contents($f->getPathname());
+    $hit = false;
+    foreach ($factCols as $c) { if (strpos($src, $c) !== false) { $hit = true; break; } }
+    if (!$hit) { continue; }
+    $rel = ltrim(str_replace($root, '', $f->getPathname()), '/');
+    $factSaw++;
+    if (!in_array($rel, $factAllow, true)) { $factOffenders[] = $rel; }
+}
+_psAssert($factSaw > 0, '(g) the fact-column containment scan actually found references to check');
+_psAssert($factOffenders === [],
+    '(g) the rights-fact columns are referenced only by the P4 management/migration surface'
+    . ($factOffenders ? ' — LEAKED into: ' . implode(', ', $factOffenders) : ''));
+
 /* ----------------------------------------------------------------------- */
 echo "\ngating-pipeline-structure: {$passed} passed, {$failures} failed\n";
 exit($failures > 0 ? 1 : 0);
