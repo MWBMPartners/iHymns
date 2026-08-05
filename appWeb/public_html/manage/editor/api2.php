@@ -375,6 +375,16 @@ const ED2_CREDIT_TABLES = [
     'artists'     => 'tblSongArtists',
 ];
 
+/** #1783 — the hidden staging songbook a duplicated song lands in until the
+ *  curator assigns it a real book + number. A song's id IS `<Abbr>-<n>`
+ *  (rule #27), so a duplicate cannot be truly bookless; it lives here
+ *  (IsOfficial=0, IsDisabled=1 → hidden from every public read via
+ *  songbookVisibleSql, still editable under /manage) and the editor PRESENTS
+ *  its Songbook + Number fields as empty. The ONE definition — every client
+ *  surface receives it from a server response (`load_index.pendingSongbook`),
+ *  never re-types the literal (rule #35). */
+const ED2_PENDING_SONGBOOK = 'PENDING';
+
 /** Editable scalar field -> [column, bind-type]. Allow-list (CLAUDE.md #5): the
  *  column name is the only non-bound SQL fragment and comes from this constant,
  *  never from input. */
@@ -481,6 +491,51 @@ function ed2_songMediaTableExists(\mysqli $db): bool {
         $exists = false;
     }
     return $exists;
+}
+
+/**
+ * #1783 — find-or-create the hidden staging songbook (ED2_PENDING_SONGBOOK) a
+ * duplicated song lives in until the curator assigns it a real book. Idempotent
+ * + self-healing across the three docroots (a DATA row, not DDL — schema.sql is
+ * untouched, so rule #19 imposes nothing; mirrors the tuneFindOrCreateByName
+ * precedent). `IsOfficial=0` always; `IsDisabled=1` only when that column exists
+ * (#1765) — a pre-#1765 install degrades to a visible staging book, acceptable
+ * because all three docroots share the one migrated DB in practice. Called in
+ * autocommit (before the duplicate's own transaction) so the staging book is a
+ * durable fixture regardless of whether a given duplicate commits or rolls back.
+ */
+function ed2_ensurePendingSongbook(\mysqli $db): void {
+    static $done = false;
+    if ($done) { return; }
+    $abbr = ED2_PENDING_SONGBOOK;
+    $q = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+    $q->bind_param('s', $abbr);
+    $q->execute();
+    $present = $q->get_result()->fetch_row() !== null;
+    $q->close();
+    if ($present) { $done = true; return; }
+
+    $hasDisabled = false;
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks'
+                AND COLUMN_NAME = 'IsDisabled' LIMIT 1"
+        );
+        $hasDisabled = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) { $hasDisabled = false; }
+
+    $name = 'Pending duplicates';
+    if ($hasDisabled) {
+        $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, IsOfficial, IsDisabled) VALUES (?, ?, 0, 1)');
+    } else {
+        $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, IsOfficial) VALUES (?, ?, 0)');
+    }
+    $ins->bind_param('ss', $abbr, $name);
+    $ins->execute();
+    $ins->close();
+    $done = true;
 }
 
 /**
@@ -1465,6 +1520,12 @@ try {
             'lineTranslations' => $enrichment['translations'],
             'lineAnnotations'  => $enrichment['annotations'],
             'songbookRightsDefaults' => $songbookRightsDefaults,
+            /* #1783 — true when this is a not-yet-assigned duplicate (lives in
+               the hidden staging book). The Metadata tab then renders the
+               Songbook + Number fields EMPTY (the "Assign to songbook" panel).
+               Added HERE, in the case, not in ed2_buildSongSnapshot(), so a
+               revision snapshot never carries it. */
+            'isPendingDuplicate' => ($songbookAbbr === ED2_PENDING_SONGBOOK),
         ]));
         break;
     }
@@ -1526,6 +1587,122 @@ try {
 
         logActivity('song.create', 'song', $songId, ['title' => $title, 'songbook' => $abbr]);
         ed2_respond(['ok' => true, 'songId' => $songId, 'title' => $title, 'songbook' => $abbr]);
+        break;
+    }
+
+    /* ---- duplicate_song (POST, #1783) — copy an existing song into the hidden
+           staging book (ED2_PENDING_SONGBOOK) as a starting point for a NEW
+           songbook. The duplicate opens in the editor with EMPTY Songbook +
+           Number (presented over the staging home); the curator assigns a real
+           book + number, which re-keys it (songRelocate, #1679) into a brand-new
+           song. Copy machinery is the revision-restore engine
+           ed2_applySongSnapshot() — NO second copy loop (rule #22). ---- */
+    case 'duplicate_song': {
+        ed2_requireEntitlement('edit_songs');
+        $sourceId = trim((string)($body['sourceId'] ?? ''));
+        if ($sourceId === '') { ed2_respond(['ok' => false, 'error' => 'sourceId is required.'], 400); }
+
+        /* Same builder load_song + a revision snapshot use — so the duplicate is
+           exactly as faithful as a restore, via the same funnel. */
+        $snap = ed2_buildSongSnapshot($db, $sourceId);
+        if ($snap === null) { ed2_respond(['ok' => false, 'error' => 'Source song not found.'], 404); }
+        /* Restore-first (#1694): a soft-deleted source is under review — the
+           curator restores it before copying. Status IS the contract (rule #35). */
+        if ((int)($snap['song']['IsDeleted'] ?? 0) === 1) {
+            ed2_respond(['ok' => false, 'error' => 'Cannot duplicate a deleted song — restore it first.'], 409);
+        }
+
+        $title = mb_substr(trim((string)($snap['song']['Title'] ?? 'New Song')), 0, 500);
+        if ($title === '') { $title = 'New Song'; }
+
+        /* Reset identity/lifecycle on the snapshot copy BEFORE apply
+           (ed2_applySongSnapshot writes ED2_META_FIELDS scalars from $snap['song']):
+             Number NULL         — the owner's "empty song number" (set at assign)
+             Verified 0          — not reviewed in its new context (D4)
+             Isrc NULL           — recording-level id tied to media we don't copy (D2)
+             HasAudio/HasSheet 0 — media rows are NOT copied (D3); flags must not
+                                   claim media that isn't there.
+           SongbookAbbr needs no reset — apply never writes it (#1679 exclusion). */
+        $snap['song']['Number']        = null;
+        $snap['song']['Verified']      = 0;
+        $snap['song']['Isrc']          = null;
+        $snap['song']['HasAudio']      = 0;
+        $snap['song']['HasSheetMusic'] = 0;
+
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+
+        /* Staging book is a durable fixture — ensure it in autocommit, before tx. */
+        ed2_ensurePendingSongbook($db);
+        $pendingAbbr = ED2_PENDING_SONGBOOK;
+
+        $db->begin_transaction();
+        try {
+            $newId = ed2_allocateSongId($db, $pendingAbbr);
+            $norm  = ed2_normalizeTitle($title);
+            if (songPublicId_columnReady($db)) {
+                $pubId = songPublicId_mintUnique($db);
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
+                $ins->bind_param('sssss', $newId, $pubId, $title, $norm, $pendingAbbr);
+            } else {
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $newId, $title, $norm, $pendingAbbr);
+            }
+            $ins->execute();
+            $ins->close();
+
+            /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
+               flags reset above), components + lyric lines + per-line chords,
+               ArrangementJson, all six credit roles (+musicianPromote), tags, and
+               external links — all through the ONE apply engine. */
+            ed2_applySongSnapshot($db, $newId, $snap);
+
+            /* Extra content NOT carried by ED2_META_FIELDS / the snapshot, copied
+               explicitly. Each guarded so a missing optional table (un-migrated
+               install) is skipped, never aborting the duplicate — the failed
+               statement has no effect and the tx stays valid. */
+            foreach ([
+                'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature) '
+                    . 'SELECT ?, OriginalKey, Tempo, TimeSignature FROM tblSongKeys WHERE SongId = ?',
+                'INSERT INTO tblSongAlternativeTitles (SongId, Title, Language, SortOrder, Note) '
+                    . 'SELECT ?, Title, Language, SortOrder, Note FROM tblSongAlternativeTitles WHERE SongId = ?',
+            ] as $copySql) {
+                try {
+                    $cp = $db->prepare($copySql);
+                    $cp->bind_param('ss', $newId, $sourceId);
+                    $cp->execute();
+                    $cp->close();
+                } catch (\Throwable $_ce) {
+                    error_log('[editor duplicate_song] optional copy skipped: ' . $_ce->getMessage());
+                }
+            }
+            /* Genre / IsExplicit / Availability — import-populated tblSongs columns
+               (not in ED2_META_FIELDS). Best-effort UPDATE from the source row. */
+            try {
+                $g = $db->prepare('UPDATE tblSongs t JOIN tblSongs s ON s.SongId = ? '
+                    . 'SET t.Genre = s.Genre, t.IsExplicit = s.IsExplicit, t.Availability = s.Availability '
+                    . 'WHERE t.SongId = ?');
+                $g->bind_param('ss', $sourceId, $newId);
+                $g->execute();
+                $g->close();
+            } catch (\Throwable $_ge) {
+                error_log('[editor duplicate_song] Genre/Explicit/Availability copy skipped: ' . $_ge->getMessage());
+            }
+
+            /* One forced 'duplicate' revision — a fresh trail; the source's
+               revisions are never copied (rule: id-derived state). */
+            ed2_touchRevision($db, $newId, $ed2UserId, 'duplicate', true);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        /* Post-commit, best-effort (parity with create_song, #1742). */
+        try { songbookRecomputeSongCount($db, $pendingAbbr); }
+        catch (\Throwable $_e) { error_log('[editor duplicate_song] SongCount recompute failed: ' . $_e->getMessage()); }
+
+        logActivity('song.duplicate', 'song', $newId, ['source' => $sourceId, 'title' => $title]);
+        ed2_respond(['ok' => true, 'songId' => $newId, 'sourceId' => $sourceId, 'title' => $title]);
         break;
     }
 
@@ -4392,6 +4569,10 @@ try {
             'ok'        => true,
             'songs'     => $songData->getSongsSlimIndex(),
             'songbooks' => $books,
+            /* #1783 — the staging-book abbr, so the client can exclude it as a
+               move TARGET (a duplicate is assigned FROM it, never TO it) without
+               hardcoding the literal (rule #35). */
+            'pendingSongbook' => ED2_PENDING_SONGBOOK,
         ]);
         break;
     }
