@@ -506,3 +506,28 @@ additive/dormant per house style.
    closed. Remaining pre-build sub-decisions (media copy scope, ProPresenter
    protocol specifics) are implementation details with defensible defaults, to
    be settled in the planning pass — none block starting #1770 when scheduled.
+
+7. **Scheduled Go Live = operator console + external presentation-app control at
+   SLIDE granularity (owner, 2026-08-05).** The full **Scheduled** (Service Mode)
+   path must have BOTH:
+   - the built-in **operator console** (already present — drive songs/sections
+     from `manage/service-projection.php` / `manage/service-lead.php`), AND
+   - the ability to be **driven by ProPresenter and similar presentation apps**,
+     tracking them **as they change slides within a song** — not just song→song.
+     So when the ProPresenter operator advances to "Verse 2" or "Chorus", the
+     live iHymns session advances the followers' view to that **section/slide**,
+     not merely the whole song.
+   **Design consequence (for the planning pass):** the broadcast model must carry
+   **section/slide granularity**, not only `CurrentSongId`. Add a current-slide
+   indicator to the session (e.g. `CurrentComponentId` / a section index keyed to
+   the song's components) that `service_broadcast` sets and `service_poll` /
+   `service-follow.js` honour by scrolling/highlighting the active section. The
+   ProPresenter adapter maps an incoming slide-change (via ProPresenter's network
+   link / stage-display / webhook protocol — needs its own protocol spike) to
+   (song, section) and calls the SAME shared broadcast core (rule #26 — one
+   broadcaster core; both the built-in console and the external driver go through
+   it). "Similar apps" ⇒ the adapter is a thin protocol shim over a stable
+   internal broadcast contract, so OpenLP / ProPresenter / etc. each get their own
+   shim without re-forking the core. This slide-level model is additive over the
+   existing song-level `CurrentSongId` (song-level stays the fallback when a
+   driver only reports song changes).
