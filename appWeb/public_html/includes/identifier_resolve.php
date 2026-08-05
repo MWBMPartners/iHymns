@@ -93,6 +93,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';   /* #1749 full unification — songExternalIdUnionArmSql(), the ONE store-union predicate builder */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 — songServableSql() */
 
 /**
  * True when $table exists in the current database schema.
@@ -215,7 +216,11 @@ function _ihymns_resolve_songs_sql(string $column, string $visibleSql, bool $wit
        calls it with '1=1'/a real predicate and asserts on the returned
        text), so it cannot itself hold a literal songVisibleSql(...) call
        without losing that property. No code path invokes this builder
-       with anything other than a real songVisibleSql() result at runtime. */
+       with anything other than a real songVisibleSql() result at runtime.
+       @disabled-visible: same reasoning, one predicate over (#1765) — the
+       caller's $visibleSql ALREADY carries songServableSql() too when
+       $publicOnly (its default), so this builder text-splices whatever it's
+       handed either way. */
     $extraGuard = ($column === 'Ccli') ? " AND s.{$column} <> ''" : '';
     /* #1749 full unification — the union arm is now BUILT by the shared
        songExternalIdUnionArmSql() (includes/song_external_ids.php), never
@@ -289,9 +294,23 @@ function _ihymns_resolve_use_store(bool $storeTableExists, ?string $storeIdType)
  *                       'isrc'). null = pre-#1749 behaviour (column only) —
  *                       the iswc/ccli call sites pass null since there is no
  *                       companion store column for those schemes yet.
+ * @param bool        $publicOnly   #1765 Feature 1 — true (default) ALSO
+ *                       requires `songServableSql()` (the song's songbook
+ *                       isn't disabled), matching every other public read in
+ *                       this codebase's fail-safe default. Every PUBLIC
+ *                       caller of this driver (currently `identifier.php`
+ *                       via `ihymns_resolve_identifier()`) keeps the
+ *                       default. A future internal/system caller that must
+ *                       resolve identity across a disabled book too (the
+ *                       `lyrics_ingest.php` resolver shape — see
+ *                       `lyricsIngest_resolveSong()`'s `@deleted-visible:`
+ *                       markers for the identical reasoning one predicate
+ *                       over) passes `false` and marks its call site
+ *                       `@disabled-visible: <reason>`, exactly like the
+ *                       soft-delete half already does.
  * @return list<array<string,mixed>>
  */
-function _ihymns_resolve_songs(\mysqli $db, string $column, string $canonical, ?string $storeIdType = null): array
+function _ihymns_resolve_songs(\mysqli $db, string $column, string $canonical, ?string $storeIdType = null, bool $publicOnly = true): array
 {
     if (!in_array($column, ['Iswc', 'Ccli', 'Isrc'], true)) {
         return [];
@@ -302,7 +321,14 @@ function _ihymns_resolve_songs(\mysqli $db, string $column, string $canonical, ?
            second INFORMATION_SCHEMA idiom). Un-migrated install ⇒ exactly
            the pre-#1749 single-column query. */
         $useStore = _ihymns_resolve_use_store(_ihymns_table_exists($db, 'tblSongExternalIds'), $storeIdType);
-        $stmt = $db->prepare(_ihymns_resolve_songs_sql($column, songVisibleSql($db, 's'), $useStore));   /* #1694 — visible songs only */
+        /* #1694 — visible (not soft-deleted) songs only.
+           #1765 Feature 1 — PUBLIC callers (the default) also exclude a song
+           whose songbook has been disabled; see the parameter doc above. */
+        $visibleSql = songVisibleSql($db, 's');
+        if ($publicOnly) {
+            $visibleSql .= ' AND ' . songServableSql($db, 's');
+        }
+        $stmt = $db->prepare(_ihymns_resolve_songs_sql($column, $visibleSql, $useStore));
         if ($useStore) {
             $stmt->bind_param('sss', $canonical, $storeIdType, $canonical);
         } else {
@@ -386,6 +412,10 @@ function _ihymns_resolve_musicians(\mysqli $db, string $scheme, string $canonica
  * @param \mysqli $db
  * @param string  $scheme  One of IHYMNS_ID_SCHEMES's keys (iswc/ccli/bowi/isrc/ipi/isni).
  * @param string  $rawCode Curator/importer/URL-decoded raw value, any separator style.
+ * @param bool    $publicOnly #1765 Feature 1 — forwarded to `_ihymns_resolve_songs()`
+ *                    (see its doc-block); true (default, fail-safe) for every
+ *                    public caller — `includes/pages/identifier.php` is the
+ *                    only one today and never overrides it.
  * @return array{
  *     scheme:string, label:string, canonical:string,
  *     entity:'work'|'song'|'musician',
@@ -394,7 +424,7 @@ function _ihymns_resolve_musicians(\mysqli $db, string $scheme, string $canonica
  *     musicians:list<array{id:int,name:string,slug:string}>
  * }
  */
-function ihymns_resolve_identifier(\mysqli $db, string $scheme, string $rawCode): array
+function ihymns_resolve_identifier(\mysqli $db, string $scheme, string $rawCode, bool $publicOnly = true): array
 {
     $registry = IHYMNS_ID_SCHEMES[$scheme] ?? null;
     $label    = $registry['label']  ?? strtoupper($scheme);
@@ -437,11 +467,11 @@ function ihymns_resolve_identifier(\mysqli $db, string $scheme, string $rawCode)
         switch ($scheme) {
             case 'iswc':
                 $result['work']  = _ihymns_resolve_work($db, 'Iswc', $canonical);
-                $result['songs'] = _ihymns_resolve_songs($db, 'Iswc', $canonical);
+                $result['songs'] = _ihymns_resolve_songs($db, 'Iswc', $canonical, null, $publicOnly);
                 break;
             case 'ccli':
                 $result['work']  = _ihymns_resolve_work($db, 'Ccli', $canonical);
-                $result['songs'] = _ihymns_resolve_songs($db, 'Ccli', $canonical);
+                $result['songs'] = _ihymns_resolve_songs($db, 'Ccli', $canonical, null, $publicOnly);
                 break;
             case 'bowi':
                 $result['work'] = _ihymns_resolve_work($db, 'Bowi', $canonical);
@@ -452,7 +482,7 @@ function ihymns_resolve_identifier(\mysqli $db, string $scheme, string $rawCode)
                    manual second recording) resolve here — the column arm
                    below it is now the un-migrated-install degradation path,
                    not the primary lookup (see this file's own doc-block). */
-                $result['songs'] = _ihymns_resolve_songs($db, 'Isrc', $canonical, 'isrc');
+                $result['songs'] = _ihymns_resolve_songs($db, 'Isrc', $canonical, 'isrc', $publicOnly);
                 break;
             case 'ipi':
             case 'isni':

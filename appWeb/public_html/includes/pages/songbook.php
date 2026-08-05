@@ -88,7 +88,15 @@ if (!empty($songs)) {
        deliberately: test-songbook-render-parity.php renders this REAL template
        against a stub getDbMysqli(), and loading the predicate helper here
        would drag the real db_mysql.php into that stubbed world (redeclare
-       fatal) for zero behavioural gain. */
+       fatal) for zero behavioural gain.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       disabled book's songs are ALREADY absent from $songs (getSongsSlimIndex()
+       delegates to SongData::_visible(), which now composes songServableSql()
+       too), so this decoration query's own rows for that book are minted but
+       never consumed either. Moot in practice: $book itself would already be
+       null (404, above) for a disabled book's OWN page — this only matters
+       for the theoretical case of a song's SongbookAbbr disagreeing with the
+       page's $bookAbbr, which getSongsSlimIndex($bookAbbr) already scopes out. */
     $creditsStmt = $creditsDb->prepare(
         'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
            FROM tblSongs s
@@ -155,6 +163,21 @@ if (!empty($songs)) {
                 <?php endif; ?>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
+            <?php
+                /* Feature 2 (#1765) — informational Public Domain line for
+                   the songbook itself (as a published work). Gated on the
+                   key actually being present — SongData::_songbookFlagsSelect()
+                   only emits `isPublicDomain` once the migration has landed,
+                   so `array_key_exists` (not `!empty`) is the pre-migration
+                   safety check; NEVER a content gate, matching the plan's
+                   "ONE IsPublicDomain flag … never a gate" decision. */
+                if (array_key_exists('isPublicDomain', $book) && !empty($book['isPublicDomain'])):
+            ?>
+                <p class="text-muted small mb-0 mt-1" data-credit-kind="public-domain">
+                    <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
+                    Public Domain
+                </p>
+            <?php endif; ?>
             <?php
                 /* #831 — "Compiled by …" line. Each compiler links to
                    their /musician/<slug> page when one exists; falls back

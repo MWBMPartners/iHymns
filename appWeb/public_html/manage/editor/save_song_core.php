@@ -180,6 +180,9 @@ function editorSaveSongCore(): array
             /* @deleted-visible: write-path state read (#1694) — saving into a
                hidden row is harmless and restore-preserving; its own book must
                still be found or the save would silently relabel it Misc. */
+            /* @disabled-visible: same reasoning, one predicate over (#1765) — a
+               song in a publicly-disabled book must keep its own SongbookAbbr on
+               save (the admin editor is not scoped to visible-only rows). */
             $keep = getDbMysqli()->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
             $keep->bind_param('s', $songId);
             $keep->execute();

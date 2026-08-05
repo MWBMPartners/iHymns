@@ -274,6 +274,173 @@ function ihymns_canonical_ipi(string $raw): string
 }
 
 /**
+ * Canonicalise an ARK (Archival Resource Key).
+ *
+ * ELI5: turn "ark:/13960/t8jf3w89z", "ARK:/13960/t8jf3w89z",
+ * "https://n2t.net/ark:/13960/t8jf3w89z" or the percent-encoded
+ * "ark%3A%2F13960%2Ft8jf3w89z" all into the SAME canonical
+ * "ark:/13960/t8jf3w89z" — or `null` when the input doesn't contain a
+ * shape-valid ARK at all.
+ *
+ * DETAILED / WHY
+ * --------------
+ * A curator pastes an ARK from wherever they found it — a library catalogue
+ * record's bare identifier, a resolver URL a browser bar shows after
+ * following a link (n2t.net, arks.princeton.edu, and dozens of other
+ * institutional resolvers all forward `https://<host>/ark:/<NAAN>/<name>`),
+ * or a URL-encoded copy pasted out of a query string. All four must land on
+ * the SAME stored value for a later lookup to find the row, exactly the
+ * problem `ihymns_canonical_iswc()` solves for ISWC — this is that same
+ * trichotomy applied to the ARK Alliance's identifier scheme.
+ *
+ * ALGORITHM: percent-decode first (so an encoded resolver URL's `ark%3A%2F…`
+ * is treated identically to `ark:/…`), then find the first case-insensitive
+ * `ark:/` anywhere in the decoded string and take EVERYTHING from there to
+ * the end — a resolver URL's scheme/host/path prefix carries no information
+ * the canonical form needs, so it is simply discarded rather than parsed.
+ * The `ark:/` scheme token itself is forced to lowercase (the ARK spec
+ * treats the scheme as case-insensitive) but the NAAN and name are kept
+ * BYTE-FOR-BYTE — an ARK name is explicitly case-SENSITIVE per the ARK
+ * specification, so "canonicalising" it to a single case would silently
+ * corrupt distinct identifiers into collisions.
+ *
+ * SHAPE VALIDATION happens LAST, against the exact contract this function
+ * promises: `ark:/` + 5–9 digit NAAN (the ARK spec's Name Assigning
+ * Authority Number range) + `/` + one-or-more printable-ASCII name chars
+ * (`!` 0x21 through `~` 0x7E — i.e. any visible ASCII character, no space,
+ * matching the ARK spec's tolerance for punctuation/qualifiers inside a
+ * name). Anything that doesn't fit — no `ark:/` found at all, a NAAN outside
+ * 5–9 digits, or no name segment — is `null`, never a best-effort guess.
+ *
+ * @param string $raw Curator/importer/URL-pasted input, any of the accepted shapes.
+ * @return string|null '' for an empty (still "valid" — ARK is optional
+ *                      everywhere it's stored) input, `null` when non-empty
+ *                      but no shape-valid ARK could be found, else the
+ *                      canonical "ark:/NAAN/name" string.
+ * @link https://arks.org/about/what-is-an-ark/          ARK specification (California Digital Library / ARK Alliance)
+ * @link https://n2t.net/e/ark_ids.html                   NAAN / ARK syntax reference
+ * @see appWeb/public_html/includes/media_identifiers.php PUBLICATION_IDENTIFIER_TYPES['ark'] — the sibling registry entry
+ */
+function ihymns_canonical_ark(string $raw): ?string
+{
+    $raw = trim($raw);
+    if ($raw === '') return '';
+
+    /* Percent-decode BEFORE searching — a resolver URL copied out of an
+       already-encoded context (e.g. a redirect query string) carries
+       "ark%3A%2F13960%2Ft8jf3w89z" rather than "ark:/13960/t8jf3w89z", and
+       both must resolve to the identical candidate substring below. */
+    $decoded = rawurldecode($raw);
+
+    /* Find the FIRST "ark:/" (case-insensitive scheme token) anywhere in the
+       string and take the rest of the line — this is what lets a bare id, a
+       full resolver URL, or a decoded percent-encoded URL all converge on
+       the same extraction step regardless of what came before it. */
+    if (preg_match('/ark:\/.*/i', $decoded, $m) !== 1) {
+        return null;
+    }
+    /* Force the scheme token to lowercase; everything after the 5th
+       character (NAAN + '/' + name) is preserved byte-for-byte — an ARK
+       name is case-SENSITIVE per spec, unlike ISWC/CCLI/BOWI above. */
+    $candidate = 'ark:/' . substr(trim($m[0]), 5);
+
+    if (preg_match('#^ark:/\d{5,9}/[!-~]+$#', $candidate) !== 1) {
+        return null;
+    }
+    return $candidate;
+}
+
+/**
+ * Canonicalise an OpenLibrary Work or Edition identifier.
+ *
+ * ELI5: turn a bare "OL102749W" / "ol102749w", or a full
+ * "https://openlibrary.org/works/OL102749W/Some-Slug" URL, into the ONE
+ * canonical uppercase "OL102749W" — but only if it's the RIGHT kind (a Work
+ * id where a Work was asked for, an Edition id where an Edition was asked
+ * for). Ask for the wrong kind and you get `null`, not a wrong-shaped
+ * answer.
+ *
+ * DETAILED / WHY A $kind PARAMETER RATHER THAN ONE FUNCTION THAT ACCEPTS
+ * EITHER
+ * ----------------------------------------------------------------------------
+ * OpenLibrary Work ids (`OL…W`) and Edition ids (`OL…M`) are DIFFERENT
+ * entities — a Work is the abstract "the hymnal as a bibliographic work"
+ * (openlibrary.org/works/…), an Edition is one specific printing
+ * (openlibrary.org/books/…). `tblSongbooks`/`tblSongbookSeries`/
+ * `tblCatalogues` each get TWO separate nullable columns for this reason
+ * (`OpenLibraryWorkId` / `OpenLibraryEditionId` — see the epic plan's
+ * migration section), so a curator pasting an Edition URL into the Work
+ * field (or vice versa) is a real, easy-to-make mistake this function
+ * exists to catch AT THE FOLD, not downstream: `ihymns_canonical_openlibrary
+ * ($editionUrl, 'work')` returns `null` rather than silently accepting an
+ * Edition id into a Work-typed column.
+ *
+ * ALGORITHM: if the input contains a `/works/<id>` or `/books/<id>` URL path
+ * segment (case-insensitive, an optional trailing `/Some-Slug` ignored —
+ * OpenLibrary URLs carry a human-readable slug after the id that is not
+ * part of the identifier), extract just `<id>`; otherwise the whole trimmed
+ * input is treated as a bare id already. Uppercase it, then validate against
+ * EXACTLY the pattern for the requested `$kind` — `/^OL\d+W$/` for 'work',
+ * `/^OL\d+M$/` for 'edition'. An id extracted from a `/books/…` URL will
+ * never match the 'work' pattern (it ends `M`, not `W`) and vice versa,
+ * which is what makes cross-kind input `null` without any extra bookkeeping.
+ *
+ * @param string $raw  Curator/importer/URL-pasted input, bare id or full URL.
+ * @param string $kind 'work' or 'edition' — which OpenLibrary id family the
+ *                     caller is asking to validate against.
+ * @return string|null '' for an empty input, `null` when non-empty but not a
+ *                      shape-valid id of the REQUESTED kind (incl. a
+ *                      well-formed id of the OTHER kind), else the canonical
+ *                      uppercase "OL<digits><W|M>" string.
+ * @throws \InvalidArgumentException when $kind is neither 'work' nor 'edition' — a caller bug, not a data problem.
+ * @link https://openlibrary.org/dev/docs/api/books  OpenLibrary identifier shapes (Work vs Edition)
+ * @see appWeb/public_html/includes/media_identifiers.php PUBLICATION_IDENTIFIER_TYPES — the sibling registry entries
+ */
+function ihymns_canonical_openlibrary(string $raw, string $kind): ?string
+{
+    if ($kind !== 'work' && $kind !== 'edition') {
+        throw new \InvalidArgumentException(
+            "ihymns_canonical_openlibrary(): \$kind must be 'work' or 'edition', got " . var_export($kind, true)
+        );
+    }
+    $raw = trim($raw);
+    if ($raw === '') return '';
+
+    /* A URL: pull just the id out of the /works/<id> or /books/<id> path
+       segment (stopping at the next '/', '?' or '#' — a trailing "/Some-
+       Slug", query string, or fragment is not part of the identifier). A
+       bare id (no such path segment present) passes through untouched. */
+    $candidate = $raw;
+    if (preg_match('~/(works|books)/([^/?#]+)~i', $raw, $m) === 1) {
+        $candidate = $m[2];
+    }
+    $candidate = strtoupper(trim($candidate));
+
+    $pattern = $kind === 'work' ? '/^OL\d+W$/' : '/^OL\d+M$/';
+    return preg_match($pattern, $candidate) === 1 ? $candidate : null;
+}
+
+/* NOTE — deliberately NOT registered in IHYMNS_ID_SCHEMES / NOT wired into
+   ihymns_normalize_identifier() (Songbook/Catalogue Enhancements epic §Feature
+   6, commit 1 of 7).
+   ELI5: this file knows how to CLEAN an ARK or OpenLibrary id, but nothing
+   yet asks it to.
+   DETAILED / WHY: `IHYMNS_ID_SCHEMES` is the registry that drives the public
+   `/iswc/ /ccli/ /bowi/ /isrc/ /ipi/ /isni/` alias routes (router.js +
+   api.php) AND `tests/test-identifier-routes.js`'s tree-derived route
+   coverage (rule #34 — that test walks this registry's keys, so adding one
+   here would silently demand a NEW public route + JS wiring this commit
+   does not ship). ARK and OpenLibrary ids are being added ONLY as songbook/
+   series/catalogue metadata columns (Feature 3) — there is no `/ark/<id>` or
+   `/openlibrary/<id>` public resolver page planned yet, and registering the
+   scheme here without one would make the route-coverage test demand a route
+   that does not exist. If/when a public resolver page for these is scoped,
+   add the registry entries AND the routes in the SAME commit — never one
+   without the other. See `.claude/songbook-catalogue-enhancements-plan.md`
+   "Current-state facts" for this exact deferral decision.
+   @see tests/test-identifier-routes.js */
+
+/**
  * Dispatch: canonicalise $raw for the named $scheme.
  *
  * ELI5: "I have a scheme name (a string like 'iswc') and a value someone

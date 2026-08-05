@@ -71,7 +71,10 @@ try {
        were real usage of its CCLI number whether or not the song was later
        soft-deleted; hiding it here would UNDER-report licensed usage, and
        under-reporting is the direction that violates the licence. (Diverges
-       from the plan's §2 first guess, deliberately.) */
+       from the plan's §2 first guess, deliberately.)
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       song's past views were real CCLI usage whether or not its songbook is
+       CURRENTLY disabled; admin reporting must not under-report. */
     $stmt = $db->prepare(
         "SELECT s.SongId        AS song_id,
                 s.Title          AS title,

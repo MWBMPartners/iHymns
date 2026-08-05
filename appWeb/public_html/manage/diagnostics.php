@@ -210,7 +210,10 @@ $DIAGNOSTICS_PRESETS = [
         . "ORDER BY DATA_LENGTH DESC;",
     /* @deleted-visible: diagnostics console (#1694) — canned queries report
        the PHYSICAL database (soft-deleted rows are still rows); admins reading
-       this page are debugging storage, not the catalogue. */
+       this page are debugging storage, not the catalogue.
+       @disabled-visible: same reasoning, one predicate over (#1765) — this
+       preset counts every physical tblSongbooks/tblSongs row regardless of
+       IsDisabled; it is a storage diagnostic, not a catalogue view. */
     'Song / songbook counts' =>
         "SELECT\n"
         . "  (SELECT COUNT(*) FROM tblSongs)     AS songs,\n"

@@ -156,6 +156,11 @@ function songbookRecomputeSongCount(\mysqli $db, string ...$abbrs): void
         return;   /* nothing to do — zero DB round trips, not even the songVisibleSql() probe */
     }
 
+    /* @disabled-visible: SongCount recompute family (#1765) — see
+       includes/song_soft_delete.php's _songSoftDeleteRecountSongbook() for
+       the full reasoning (the plan's adversarial notes: SongCount does NOT
+       change when a book is disabled, so folding songServableSql() in here
+       would make the count and the disable toggle disagree). */
     $stmt = $db->prepare(
         /* #1694 D1 — SongCount counts VISIBLE songs; songVisibleSql() is
            resolved ONCE for this prepared statement and reused across every

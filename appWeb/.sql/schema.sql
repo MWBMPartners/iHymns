@@ -182,6 +182,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',
     Colour          VARCHAR(7)      NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)',
     IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
+    IsDisabled      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Disable-a-songbook flag (Feature 1, epic #1765): 1 = hidden from every public read, still visible and editable under /manage; reversible, nothing deleted. Read-path enforcement lands in commit 3 (songbookVisibleSql()); this column is dormant until then; DEFAULT 0 keeps every existing songbook visible',
+    IsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Public-domain flag for the songbook as a published work (Feature 2, epic #1765) - informational only, never a content gate; mirrors the tblSongs LyricsPublicDomain / MusicPublicDomain precedent. DEFAULT 0 so no existing songbook is retroactively marked PD',
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     /* Publication city — VARCHAR mirror for JOIN-free reads + FK
@@ -206,6 +208,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     LcpNumber           VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Library of Congress permalink / project number (#672)',
     Isbn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'ISBN-10 or ISBN-13 (dashes optional) (#672)',
     ArkId               VARCHAR(80)     NULL DEFAULT NULL COMMENT 'Archival Resource Key (e.g. ark:/13960/t8jf3w89z) (#672)',
+    OpenLibraryWorkId   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Open Library Work id, e.g. OL102749W (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=work',
+    OpenLibraryEditionId VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Open Library Edition id, e.g. OL7357422M (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=edition',
     IsniId              VARCHAR(25)     NULL DEFAULT NULL COMMENT 'International Standard Name Identifier (16 digits, optional spacing) (#672)',
     ViafId              VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Virtual International Authority File ID (#672)',
     Lccn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Library of Congress Control Number (#672)',
@@ -2478,6 +2482,9 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     UpdatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)        NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default) (#1181)',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the collection (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672). No Isbn/Issn on this table - a curated collection (rule #24: catalogue internally, Collection in UI) is not itself a catalogued serial publication, see the plan adversarial notes section',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the collection, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the collection, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     UNIQUE KEY uk_Slug (Slug),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
@@ -2919,6 +2926,11 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeries (
                  COMMENT 'URL-safe lowercase form for /series/<slug> public listing pages',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)    NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB inherited by all member songbooks; empty = theme default (#1181)',
+    Isbn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISBN for the series as a whole (Feature 3, epic #1765); mirrors tblSongbooks.Isbn (#672). Deliberately absent from tblCatalogues - see the plan adversarial notes section',
+    Issn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISSN for the series as a whole (Feature 3, epic #1765); a series is the one publication entity of the three that commonly carries a serial number. Deliberately absent from tblSongbooks and tblCatalogues',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the series (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672)',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the series, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the series, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     KEY idx_Name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -3749,6 +3761,138 @@ ALTER TABLE tblWorks
 ALTER TABLE tblSongs
     ADD CONSTRAINT fk_Songs_DeletedBy
         FOREIGN KEY (DeletedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- ============================================================================
+-- FAMILY: PUBLISHERS (#93 / epic #1765) — the songbook Publisher promoted from
+-- the free-text tblSongbooks.Publisher scalar to a first-class registry of
+-- persons AND companies, with multi-publisher copyright (M:N) and imprint /
+-- catalogue grouping (self-FK). Mirrors the tblTunes family idiom (registry +
+-- aliases + external links) and the tblSongbookCompilers M:N idiom.
+-- Forward-looking ONE-PASS batch (rule #20): the aliases + external-links
+-- tables ship now so the family never needs a second migration, even though
+-- their editor panels land alongside. The free-text tblSongbooks.Publisher
+-- column STAYS as a JOIN-free denorm display mirror (same pattern as
+-- TuneName<->TuneId), so every existing reader keeps working with no JOIN;
+-- migrate-publishers-entity.php backfills the registry from DISTINCT non-empty
+-- Publisher strings. ENTIRELY additive + idempotent.
+-- ----------------------------------------------------------------------------
+-- tblPublishers — the registry. A publisher is a company OR a person (Kind),
+-- optionally linked to tblMusicians (a musician who is also a publisher is not
+-- duplicated). ParentId self-FK models imprint / catalogue grouping (mirrors
+-- tblWorks.ParentWorkId / tblSongTags.ParentId).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublishers (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ParentId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'Self-FK: imprint / catalogue grouping — an imprint points to its parent publisher (mirrors tblWorks.ParentWorkId / tblSongTags.ParentId). NULL = top-level. (#93)',
+    Name           VARCHAR(255) NOT NULL COMMENT 'Publisher display name (company name, or the person''s name for a person-publisher).',
+    Slug           VARCHAR(120) NOT NULL COMMENT 'URL-safe handle, unique.',
+    Kind           VARCHAR(20)  NOT NULL DEFAULT 'company' COMMENT 'Publisher kind — app-validated vocabulary, VARCHAR not ENUM (rule #20): company | person | imprint | society | other.',
+    MusicianId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional FK to tblMusicians for a person-publisher, so a musician who also publishes is not duplicated. NULL for a pure company. (#93)',
+    Subtitle       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional publisher subtitle / tagline.',
+    Disambiguation VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named publishers.',
+    Ipi            VARCHAR(20)  NULL DEFAULT NULL COMMENT 'Interested-Parties Information number (publishers hold these too). NULL (not empty string) so absent values coexist under uq_Ipi.',
+    Isni           VARCHAR(20)  NULL DEFAULT NULL COMMENT 'ISNI. NULL (not empty string) so absent values coexist under uq_Isni.',
+    CityName       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Publisher city display string (denorm mirror of CityId, same pattern as tblWorks.OriginCity).',
+    CityId         INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblPlaces for the publisher city (mirrors tblWorks.OriginCityId).',
+    Notes          TEXT         NULL DEFAULT NULL,
+    IsActive       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT 'Soft-hide a defunct publisher from pickers without deleting its songbook links.',
+    CreatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Slug     (Slug),
+    UNIQUE KEY uq_Ipi      (Ipi),
+    UNIQUE KEY uq_Isni     (Isni),
+    INDEX      idx_Parent   (ParentId),
+    INDEX      idx_Kind     (Kind),
+    INDEX      idx_Musician (MusicianId),
+    INDEX      idx_Name     (Name),
+    INDEX      idx_Active   (IsActive),
+    INDEX      idx_City     (CityId),
+
+    CONSTRAINT fk_Publisher_Parent
+        FOREIGN KEY (ParentId)   REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Publisher_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)  ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Publisher_City
+        FOREIGN KEY (CityId)     REFERENCES tblPlaces(Id)     ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Songbook publishers as first-class entities — persons + companies (#93 / epic #1765).';
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookPublishers (#93) — the many-to-many between songbooks and
+-- publishers (multi-publisher copyright). Mirrors tblSongbookCompilers exactly;
+-- Role is an app-validated VARCHAR vocabulary (not ENUM, rule #20). The nullable
+-- ValidFrom/ValidTo reserve rights-window tracking so a future "publisher held
+-- rights 1990-2005" need costs no ALTER (rule #20 forward-looking).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookPublishers (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongbookId   INT UNSIGNED NOT NULL,
+    PublisherId  INT UNSIGNED NOT NULL,
+    Role         VARCHAR(30)  NOT NULL DEFAULT 'publisher' COMMENT 'Role in this songbook — app-validated, VARCHAR not ENUM: publisher | co-publisher | distributor | imprint | administrator | printer.',
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL DEFAULT NULL,
+    ValidFrom    DATE         NULL DEFAULT NULL COMMENT 'Reserved (#93): start of this publisher''s rights window for this book. Dormant until a rights-window feature lands.',
+    ValidTo      DATE         NULL DEFAULT NULL COMMENT 'Reserved (#93): end of this publisher''s rights window for this book. Dormant until a rights-window feature lands.',
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_book_pub_role (SongbookId, PublisherId, Role),
+    INDEX      idx_book (SongbookId),
+    INDEX      idx_pub  (PublisherId),
+
+    CONSTRAINT fk_sbpub_book
+        FOREIGN KEY (SongbookId)  REFERENCES tblSongbooks(Id)  ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_sbpub_pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Songbook<->publisher many-to-many for multi-publisher copyright (#93).';
+
+-- ----------------------------------------------------------------------------
+-- tblPublisherAliases (#93) — alternate names a publisher is known by (former
+-- names, imprints-as-strings). Mirrors tblTuneAliases / tblMusicianAliases;
+-- indexed rows, not JSON. Feeds publisher typeahead matching.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublisherAliases (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    PublisherId INT UNSIGNED NOT NULL,
+    Name        VARCHAR(255) NOT NULL,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_PubName (PublisherId, Name),
+    INDEX      idx_Pub    (PublisherId),
+    INDEX      idx_Name   (Name),
+
+    CONSTRAINT fk_PubAlias_Pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Alternate / former names for a publisher (#93).';
+
+-- ----------------------------------------------------------------------------
+-- tblPublisherExternalLinks (#93) — per-publisher external-link rows. Mirrors
+-- tblTuneExternalLinks / tblWorkExternalLinks exactly (rule #15: a new
+-- external-links entity gets its own tbl<Entity>ExternalLinks table, never a
+-- generic FK column).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublisherExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    PublisherId INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_pub  (PublisherId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id)      ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_pub
+        FOREIGN KEY (LinkTypeId)  REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-publisher external-link rows (#93), mirroring tblTuneExternalLinks.';
 
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on

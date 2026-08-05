@@ -24,6 +24,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1765 — PUBLICATION_IDENTIFIER_TYPES + mediaIdentifierPublicationClean(),
+   the ONE validator for the isbn/issn/ark_id/openlibrary_work_id/
+   openlibrary_edition_id fields below. Never hand-roll a second copy of
+   the shape check. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php'; /* placeColumnExists() — generic INFORMATION_SCHEMA column probe (#1765) */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -72,6 +78,20 @@ try {
     error_log('[songbook-series] schema probe failed: ' . $e->getMessage());
 }
 
+/* #1765 Feature 3 — Isbn/Issn/ArkId/OpenLibraryWorkId/OpenLibraryEditionId,
+   all five added in one migration stage (migrate-publication-metadata.php
+   Stage 2). Combined COUNT=5 probe rather than per-column (unlike
+   songbooks.php's finer-grained probes) — this page is lower-traffic and
+   the five columns land in a single ALTER loop together, so treating the
+   whole batch as one unit for rendering purposes is a reasonable
+   simplification; it still degrades safely (fields simply don't render,
+   handlers simply don't write them) on a pre-migration install. */
+$hasPubIdCols = $hasSchema && placeColumnExists($db, 'tblSongbookSeries', 'Isbn')
+    && placeColumnExists($db, 'tblSongbookSeries', 'Issn')
+    && placeColumnExists($db, 'tblSongbookSeries', 'ArkId')
+    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryWorkId')
+    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryEditionId');
+
 /* ---- GET ?action=songbook_search&q=… (#782 phase C) -------------------
  * JSON typeahead for the edit-modal's "Add a member" input. Returns
  * matching rows from tblSongbooks ranked by name. Excludes songbooks
@@ -95,6 +115,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $excl    = array_values(array_filter(array_map('intval', explode(',', $exclRaw))));
     $exclPh  = $excl ? implode(',', array_fill(0, count($excl), '?')) : '0';
     try {
+        /* @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision); a curator must
+           still be able to add a disabled book as a series member. */
         $like = '%' . $q . '%';
         if ($q === '') {
             $sql = "SELECT Id, Abbreviation, Name
@@ -142,9 +165,49 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     exit;
 }
 
+/* ---- GET ?action=marcxml_export&id=N (#1765 Feature 5) ------------------
+ * Streams the series as a downloadable MARCXML file via the shared helper.
+ * Admin-gated (the manage_songbooks entitlement above); read-only; emitted
+ * before any HTML. SELECT * so the new identifier columns are picked up only
+ * when the migration has landed. */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'marcxml_export'
+) {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+    $id = (int)($_GET['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM tblSongbookSeries WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Series not found.';
+        exit;
+    }
+    marcxmlAdmin_sendExport([
+        'Name'                 => $row['Name'] ?? '',
+        'Isbn'                 => $row['Isbn'] ?? '',
+        'Issn'                 => $row['Issn'] ?? '',
+        'ArkId'                => $row['ArkId'] ?? '',
+        'OpenLibraryWorkId'    => $row['OpenLibraryWorkId'] ?? '',
+        'OpenLibraryEditionId' => $row['OpenLibraryEditionId'] ?? '',
+    ], [], [], 'series', (string)($row['Slug'] ?? $row['Name'] ?? 'series'));
+}
+
 /* ----- POST actions ----- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With
+       + Origin/Referer host match, OR a still-valid session token) rather
+       than validateCsrf() alone, which goes stale across long-lived
+       multi-tab sessions and produces the SPORADIC "CSRF error" class
+       rule #29 documents. This page's forms are plain POSTs (no
+       X-Requested-With header today), so the session-token branch is what
+       actually fires — the upgrade is about not regressing to the flaky
+       single-path check, not about wiring a new AJAX header. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -170,6 +233,28 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication-entity identifiers. Validated
+                   via the ONE shared validator, mediaIdentifierPublicationClean()
+                   (includes/media_identifiers.php); never a hand-rolled regex.
+                   Written in a schema-tolerant secondary UPDATE after the
+                   INSERT below (same pattern as songbooks.php) rather than
+                   growing this INSERT's own bind_param() call. */
+                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
+                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
+                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
+                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $isbnVal      = $isbnClean['value'];
+                $issnVal      = $issnClean['value'];
+                $arkVal       = $arkClean['value'];
+                $olWorkVal    = $olWorkClean['value'];
+                $olEditionVal = $olEditionClean['value'];
+
                 /* UNIQUE on Slug → check before insert for a friendly error. */
                 $stmt = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
@@ -185,12 +270,91 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblSongbookSeries
+                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.create', 'songbook_series', (string)$newId, [
                         'name' => $name, 'slug' => $slug, 'description' => $description,
+                        'publication_ids' => $hasPubIdCols ? array_filter([
+                            'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
+                            'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                        ], fn($v) => $v !== null) : null,
                     ]);
                 }
                 $success = "Series '{$name}' created.";
+                break;
+            }
+
+            case 'marcxml_import': {
+                /* #1765 Feature 5 — create a series from an uploaded MARCXML
+                   file. Parse + validate via the shared helper (never touches
+                   the DB), then reuse this page's create shape. A slightly-off
+                   identifier is skipped (not fatal); the slug auto-suffixes if
+                   taken so a re-import never collides. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+                $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'series');
+                if (!$parsed['ok']) { $error = $parsed['error']; break; }
+                $name = trim((string)($parsed['fields']['Name'] ?? ''));
+                if ($name === '') { $error = 'The MARCXML record has no title (245 $a) to create a series from.'; break; }
+                $name = mb_substr($name, 0, 120);
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'Isbn' => 'isbn', 'Issn' => 'issn', 'ArkId' => 'ark',
+                    'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $idIsbn = $ids['Isbn']; $idIssn = $ids['Issn']; $idArk = $ids['ArkId'];
+                $idOlW  = $ids['OpenLibraryWorkId']; $idOlE = $ids['OpenLibraryEditionId'];
+
+                $base = $slugFor($name); if ($base === '') { $base = 'series'; }
+                $base = mb_substr($base, 0, 112);
+                $slug = $base; $suffix = 1;
+                while (true) {
+                    $chk = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
+                    $chk->bind_param('s', $slug);
+                    $chk->execute();
+                    $taken = $chk->get_result()->fetch_row() !== null;
+                    $chk->close();
+                    if (!$taken) { break; }
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $emptyDesc = ''; $emptyColour = '';
+                $ins = $db->prepare('INSERT INTO tblSongbookSeries (Name, Slug, Description, Colour) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $name, $slug, $emptyDesc, $emptyColour);
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+
+                if ($hasPubIdCols) {
+                    $upd = $db->prepare(
+                        'UPDATE tblSongbookSeries
+                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                          WHERE Id = ?'
+                    );
+                    $upd->bind_param('sssssi', $idIsbn, $idIssn, $idArk, $idOlW, $idOlE, $newId);
+                    $upd->execute();
+                    $upd->close();
+                }
+
+                if (function_exists('logActivity')) {
+                    logActivity('songbook_series.marcxml_import', 'songbook_series', (string)$newId, [
+                        'name' => $name, 'slug' => $slug,
+                    ]);
+                }
+                $notes = [];
+                if ($skipped) { $notes[] = 'skipped invalid identifier(s): ' . implode(', ', $skipped); }
+                if (!empty($parsed['unmapped'])) { $notes[] = 'unmapped MARC tag(s): ' . implode(', ', array_slice($parsed['unmapped'], 0, 12)); }
+                $success = "Series '{$name}' created from MARCXML (slug '{$slug}')."
+                    . ($notes ? ' — ' . implode('; ', $notes) : '');
                 break;
             }
 
@@ -228,6 +392,24 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $dup->close();
                 if ($dupExists) { $error = "Slug '{$slug}' already taken by another series."; break; }
 
+                /* #1765 Feature 3 — publication-entity identifiers, same
+                   validated-via-shared-helper shape as 'create' above. */
+                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
+                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
+                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
+                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $isbnVal      = $isbnClean['value'];
+                $issnVal      = $issnClean['value'];
+                $arkVal       = $arkClean['value'];
+                $olWorkVal    = $olWorkClean['value'];
+                $olEditionVal = $olEditionClean['value'];
+
                 /* Reconcile membership rows. The edit modal posts:
                      member_ids[]            = [12, 47, 99]
                      member_sort[<id>]       = '10'
@@ -253,6 +435,20 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->bind_param('ssssi', $name, $slug, $description, $colour, $id);
                     $stmt->execute();
                     $stmt->close();
+
+                    /* #1765 Feature 3 — schema-tolerant secondary UPDATE,
+                       same pattern as songbooks.php, inside this same
+                       transaction so a downstream failure rolls it back too. */
+                    if ($hasPubIdCols) {
+                        $stmt = $db->prepare(
+                            'UPDATE tblSongbookSeries
+                                SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
+                              WHERE Id = ?'
+                        );
+                        $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
 
                     /* Step 1: remove rows not in $postedIds. Schema is
                        composite-PK (SeriesId, SongbookId) so DELETE is
@@ -311,6 +507,14 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                                 'Name' => $name, 'Slug' => $slug, 'Description' => $description,
                             ], array_flip($changed)),
                             'member_count'     => count($postedIds),
+                            /* #1765 Feature 3 — logged unconditionally (not diffed
+                               against a before-value, mirroring songbooks.php's
+                               own $auditExtras treatment of these same two
+                               columns) since $before doesn't carry them. */
+                            'publication_ids'  => $hasPubIdCols ? array_filter([
+                                'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
+                                'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                            ], fn($v) => $v !== null) : null,
                         ]);
                     }
                     $success = "Series '{$name}' updated.";
@@ -360,8 +564,14 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $rows = [];
 if ($hasSchema) {
     try {
+        /* #1765 Feature 3 — the five publication-id columns are hardcoded
+           PHP constants (rule #5a), appended only when they exist so an
+           un-migrated install issues exactly the pre-#1765 query. */
+        $pubIdSelect = $hasPubIdCols
+            ? ', s.Isbn, s.Issn, s.ArkId, s.OpenLibraryWorkId, s.OpenLibraryEditionId'
+            : '';
         $stmt = $db->prepare(
-            'SELECT s.Id, s.Name, s.Slug, s.Description, s.Colour, s.CreatedAt,
+            'SELECT s.Id, s.Name, s.Slug, s.Description, s.Colour, s.CreatedAt' . $pubIdSelect . ',
                     (SELECT COUNT(*) FROM tblSongbookSeriesMembership m WHERE m.SeriesId = s.Id) AS MemberCount
                FROM tblSongbookSeries s
               ORDER BY s.Name ASC'
@@ -477,6 +687,12 @@ if ($hasSchema) {
                                 'slug'        => (string)$r['Slug'],
                                 'description' => (string)$r['Description'],
                                 'colour'      => (string)($r['Colour'] ?? ''),  // #1181
+                                /* #1765 Feature 3 — '' when un-migrated (columns not selected). */
+                                'isbn'                   => (string)($r['Isbn'] ?? ''),
+                                'issn'                   => (string)($r['Issn'] ?? ''),
+                                'ark_id'                 => (string)($r['ArkId'] ?? ''),
+                                'openlibrary_work_id'    => (string)($r['OpenLibraryWorkId'] ?? ''),
+                                'openlibrary_edition_id' => (string)($r['OpenLibraryEditionId'] ?? ''),
                                 'members'     => $members,
                             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                             $deleteJson = json_encode([
@@ -495,6 +711,13 @@ if ($hasSchema) {
                                         title="Edit series + members">
                                     <i class="bi bi-pencil"></i>
                                 </button>
+                                <!-- #1765 Feature 5 — export this series as a MARCXML file. -->
+                                <a class="btn btn-sm btn-outline-secondary"
+                                   href="?action=marcxml_export&amp;id=<?= (int)$r['Id'] ?>"
+                                   title="Export this series as MARCXML" download>
+                                    <i class="bi bi-filetype-xml" aria-hidden="true"></i>
+                                    <span class="visually-hidden">Export MARCXML</span>
+                                </a>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openSeriesDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete series (memberships cascade)">
@@ -554,9 +777,42 @@ if ($hasSchema) {
                     </div>
                 </div>
             </div>
+            <?php if ($hasPubIdCols): ?>
+            <?php
+                /* #1765 Feature 3 — shared publication-identifier fieldset
+                   (ISBN/ISSN/ARK/OpenLibrary), the SAME partial the
+                   /manage/catalogues create + edit forms use (rule #22). */
+                $pifMode = 'create'; $pifShowIsbnIssn = true; $pifHasOpenLibraryCols = true;
+                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+            ?>
+            <?php endif; ?>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create series
             </button>
+        </form>
+
+        <!-- #1765 Feature 5 — create a series from an uploaded MARCXML file. -->
+        <form method="POST" class="card-admin p-3 mb-4" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+            <input type="hidden" name="action" value="marcxml_import">
+            <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
+            <p class="form-text small mt-0 mb-2">
+                Upload a MARCXML record to create a new series. The title (245 $a) and any
+                ISBN / ISSN / ARK / OpenLibrary identifiers are read; the slug is derived from the title.
+            </p>
+            <div class="row g-2 align-items-end">
+                <div class="col-sm-8">
+                    <label class="form-label small" for="series-marcxml-file">MARCXML file</label>
+                    <input type="file" class="form-control form-control-sm" id="series-marcxml-file"
+                           name="marcxml_file" accept=".xml,application/xml,application/marcxml+xml" required>
+                </div>
+                <div class="col-sm-4">
+                    <button type="submit" class="btn btn-amber btn-sm w-100">
+                        <i class="bi bi-upload me-1" aria-hidden="true"></i>Import series
+                    </button>
+                </div>
+            </div>
         </form>
 
         <!-- Edit Modal -->
@@ -606,6 +862,16 @@ if ($hasSchema) {
                                            placeholder="#RRGGBB — blank = theme default">
                                 </div>
                             </div>
+
+                            <?php if ($hasPubIdCols): ?>
+                            <?php
+                                /* #1765 Feature 3 — same shared fieldset as the create
+                                   form above; openSeriesEditModal() pre-fills these. */
+                                $pifMode = 'edit'; $pifShowIsbnIssn = true; $pifHasOpenLibraryCols = true;
+                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+                            ?>
+                            <?php endif; ?>
 
                             <hr>
 
@@ -833,6 +1099,14 @@ if ($hasSchema) {
             var _es = document.getElementById('edit-colour-swatch');
             if (_ec) { _ec.value = row.colour || ''; }
             if (_es && row.colour && /^#[0-9A-Fa-f]{6}$/.test(row.colour)) { _es.value = row.colour; }
+            /* #1765 Feature 3 — publication identifiers (present only when the
+               migration has landed; guarded so a pre-migration modal is fine). */
+            [['edit-isbn','isbn'],['edit-issn','issn'],['edit-ark-id','ark_id'],
+             ['edit-openlibrary-work-id','openlibrary_work_id'],
+             ['edit-openlibrary-edition-id','openlibrary_edition_id']].forEach(function (pair) {
+                var el = document.getElementById(pair[0]);
+                if (el) { el.value = row[pair[1]] || ''; }
+            });
             document.getElementById('edit-title-label').textContent = row.name || '';
             const tbody = document.getElementById('edit-members-tbody');
             tbody.innerHTML = '';

@@ -302,7 +302,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 /* @deleted-visible: refuse-on-cite integrity count (#1694) — a
                    soft-deleted song still cites the language and would come
                    back citing it on restore, so it must keep blocking the
-                   delete. */
+                   delete.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a song/songbook in a disabled state still cites
+                   the language and must keep blocking the delete; disabled
+                   is reversible, same as soft-delete. */
                 $stmt = $db->prepare(
                     'SELECT
                         (SELECT COUNT(*) FROM tblSongs     WHERE Language = ? OR Language LIKE ?) AS songs,

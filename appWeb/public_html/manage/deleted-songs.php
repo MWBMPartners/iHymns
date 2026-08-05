@@ -171,7 +171,11 @@ try {
     $ready = songSoftDeleteReady($db);
     if ($ready) {
         /* LEFT JOIN because fk_Songs_DeletedBy is ON DELETE SET NULL — the
-           deleting account may since have been removed. */
+           deleting account may since have been removed.
+           @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision); a deleted song
+           whose book is ALSO disabled must still show in this review queue
+           so a curator can restore it. */
         $q = $db->prepare(
             'SELECT s.SongId, s.Title, s.SongbookAbbr, s.DeletedAt, s.DeletedReason, s.DeleteNote,
                     u.Username AS DeletedByName

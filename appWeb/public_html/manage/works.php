@@ -350,6 +350,9 @@ if ($hasSchema
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     try {
+        /* @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision); a curator can
+           still add a song from a disabled book into a Work. */
         $like = '%' . $q . '%';
         if ($q === '') {
             $sql = "SELECT SongId, Title, SongbookAbbr, Number

@@ -159,9 +159,20 @@ jobs:
         run: |
           {
             echo "set net:timeout 20"
-            echo "set net:max-retries 3"
+            # max-retries bumped 3 -> 6: the alpha SFTP target intermittently drops
+            # the connection MID-mirror (Deploy #509 and two prior runs failed with
+            # lftp exit 1 after several minutes of successful transfers, not at
+            # connect). More per-operation retries give a flaky target more chances.
+            echo "set net:max-retries 6"
             echo "set net:reconnect-interval-base 5"
             echo "set net:reconnect-interval-multiplier 1"
+            # persist-retries: when the WHOLE connection is lost mid-transfer (the
+            # actual #509 failure mode — files were streaming, then the socket died),
+            # reopen and resume the mirror rather than aborting the deploy. Bounded so
+            # a truly dead target still fails fast under the 20-min job cap above.
+            echo "set net:persist-retries 6"
+            # Cap the exponential-ish backoff so retries don't stretch toward the cap.
+            echo "set net:reconnect-interval-max 30"
             echo "set mirror:no-empty-dirs yes"
           } >> "$HOME/.lftprc"
 

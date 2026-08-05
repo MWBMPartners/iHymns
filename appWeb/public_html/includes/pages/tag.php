@@ -61,14 +61,16 @@ if ($tagSlug !== '') {
                book below, the same cross-songbook shape writer.php uses
                for the same reason (one theme spans many hymnals). */
             require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
             $stmt = $tdb->prepare(
                 'SELECT s.SongId AS id, s.Title AS title,
                         s.SongbookAbbr AS songbook, s.Number AS number
                    FROM tblSongTagMap tm
                    JOIN tblSongs s ON s.SongId = tm.SongId
                   WHERE tm.TagId = ? AND ' . songVisibleSql($tdb, 's') . '
+                    AND ' . songServableSql($tdb, 's') . '
                   ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC'
-            );   /* #1694 — visible songs only */
+            );   /* #1694/#1765 — visible songs only, in a non-disabled songbook */
             $stmt->bind_param('i', $tagInfo['id']);
             $stmt->execute();
             $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);

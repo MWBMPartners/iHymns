@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  tests/php/fixtures/marcxml-songbook.xml — test-marcxml.php's songbook fixture
+
+  A realistic MARCXML bibliographic record for a public-domain 19th-century
+  hymnal, hand-built to exercise EVERY MARC field marcxmlFieldMap('songbook')
+  (includes/marcxml.php) maps to a tblSongbooks column, PLUS the
+  not-mapped-to-a-column cases (an unrecognised 500 note tag; two 856 $u
+  values — one archive.org, one generic publisher site — that both land in
+  the entity's `links` list per the Feature 7 amendment, see marcxml.php's
+  file doc-block).
+
+  Field-by-field, what this fixture is here to prove marcxmlMapToEntity()
+  gets right:
+    001/leader  present but carry no mapped data (record-identity plumbing only)
+    008         language fallback source (pos 35-37 = "eng") — NOT actually
+                consulted here since 041 also supplies "eng"; 041 wins by
+                contract, this fixture proves that priority holds
+    245 $a/$b   title -> Name, subtitle -> altTitles
+    250 $a      edition statement -> PublicationYear (join mode, combines
+                with 264 $c below into "New ed., 1900")
+    264 $a/$b/$c  place/publisher/date -> PublicationCity/Publisher/PublicationYear
+    020 $a      ISBN, WITH a trailing parenthetical qualifier and hyphens
+                (realistic MARC shape) -> cleaned + validated -> Isbn
+    010 $a      LCCN -> Lccn
+    035 $a      "(OCoLC)ocm..." OCLC control number -> stripped -> OclcNumber
+    041 $a      language code "eng" -> folded to BCP-47 "en" -> Language
+    024 7 $a/$2 ARK via the Other-Standard-Identifier field -> ArkId
+    856 (x5)    OpenLibrary Work, OpenLibrary Edition, Wikipedia (all map to
+                columns), archive.org and one wholly generic URL (both fall
+                through to `links`, unclassified at this pure-module layer)
+    500 $a      an unrecognised tag -> `unmapped`
+
+  @see tests/php/test-marcxml.php
+  @see appWeb/public_html/includes/marcxml.php  marcxmlFieldMap('songbook')
+-->
+<record xmlns="http://www.loc.gov/MARC21/slim">
+  <leader>00000nam a2200000 a 4500</leader>
+  <controlfield tag="001">testfixture-sacred-songs-solos</controlfield>
+  <controlfield tag="008">100101s1900    enk           00    eng d</controlfield>
+  <datafield tag="245" ind1=" " ind2="0">
+    <subfield code="a">Sacred Songs and Solos</subfield>
+    <subfield code="b">twelve hundred hymns for use at all services of the church</subfield>
+  </datafield>
+  <datafield tag="250" ind1=" " ind2=" ">
+    <subfield code="a">New ed.</subfield>
+  </datafield>
+  <datafield tag="264" ind1=" " ind2="1">
+    <subfield code="a">London</subfield>
+    <subfield code="b">Morgan and Scott</subfield>
+    <subfield code="c">1900</subfield>
+  </datafield>
+  <datafield tag="020" ind1=" " ind2=" ">
+    <subfield code="a">978-0-19-999123-4 (pbk.)</subfield>
+  </datafield>
+  <datafield tag="010" ind1=" " ind2=" ">
+    <subfield code="a">2005006014</subfield>
+  </datafield>
+  <datafield tag="035" ind1=" " ind2=" ">
+    <subfield code="a">(OCoLC)ocm60560967</subfield>
+  </datafield>
+  <datafield tag="041" ind1="0" ind2=" ">
+    <subfield code="a">eng</subfield>
+  </datafield>
+  <datafield tag="024" ind1="7" ind2=" ">
+    <subfield code="a">ark:/13960/t8jf3w89z</subfield>
+    <subfield code="2">ark</subfield>
+  </datafield>
+  <datafield tag="856" ind1="4" ind2="1">
+    <subfield code="u">https://openlibrary.org/works/OL102749W/Sacred_Songs_and_Solos</subfield>
+  </datafield>
+  <datafield tag="856" ind1="4" ind2="1">
+    <subfield code="u">https://openlibrary.org/books/OL7353617M/Sacred_Songs_and_Solos</subfield>
+  </datafield>
+  <datafield tag="856" ind1="4" ind2="2">
+    <subfield code="u">https://en.wikipedia.org/wiki/Sacred_Songs_and_Solos</subfield>
+  </datafield>
+  <datafield tag="856" ind1="4" ind2="2">
+    <subfield code="u">https://archive.org/details/sacredsongssolos00sank</subfield>
+  </datafield>
+  <datafield tag="856" ind1="4" ind2="2">
+    <subfield code="u">https://example-publisher.com/catalog/12345</subfield>
+  </datafield>
+  <datafield tag="500" ind1=" " ind2=" ">
+    <subfield code="a">Some general note that has no mapping in marcxmlFieldMap().</subfield>
+  </datafield>
+</record>

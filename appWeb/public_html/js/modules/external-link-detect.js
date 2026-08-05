@@ -54,6 +54,23 @@
         { slug: 'cyber-hymnal',          hosts: ['hymntime.com', 'cyberhymnal.org'] },
         { slug: 'internet-archive',      hosts: ['archive.org'] },
         { slug: 'open-library',          hosts: ['openlibrary.org'] },
+        /* Google Books (#1765 Feature 4) — the bundled fallback that mirrors
+           the tblExternalLinkPatterns seed (migrate-publication-metadata.php
+           Stage 5) so URL -> provider auto-detect recognises Google Books
+           even before the DB patterns are loaded (rule #11). Two real URL
+           shapes, non-overlapping in practice:
+             - books.google.<tld>/books?id=...     exact host (eq), priority 62
+             - google.<tld>/books/edition/...      subdomain-suffix host + path,
+                                                   priority 63 (loses to the
+                                                   exact rule if both matched). */
+        { slug: 'google-books',          hosts: [
+            'books.google.com', 'books.google.co.uk', 'books.google.de',
+            'books.google.fr', 'books.google.ca', 'books.google.com.au',
+        ], hostMatch: 'eq' },
+        { slug: 'google-books',          hosts: [
+            'google.com', 'google.co.uk', 'google.de',
+            'google.fr', 'google.ca', 'google.com.au',
+        ], pathPrefix: '/books/edition/' },
         { slug: 'oclc-worldcat',         hosts: ['worldcat.org'] },
         { slug: 'viaf',                  hosts: ['viaf.org'] },
         { slug: 'loc-name-authority',    hosts: ['id.loc.gov'] },

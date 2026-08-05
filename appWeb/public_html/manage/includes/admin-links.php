@@ -65,6 +65,9 @@ $_adminLinks = [
     /* Tunes (#1748) — tblTunes registry CRUD; directly under Works, the
        page it shares the tuneFindOrCreateByName() funnel with. */
     ['tunes',                '/manage/tunes',                  'bi-music-note-beamed', 'Tunes',               'manage_tunes',                'Catalogue'  ],
+    /* Publishers (#93) — tblPublishers registry CRUD; a catalogue entity like
+       Tunes/Works. Gate MUST equal manage/publishers.php's own gate (rule #1587). */
+    ['publishers',           '/manage/publishers',             'bi-building',        'Publishers',            'manage_publishers',           'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
     /* Print templates (#1350 Phase 2) — curator-authored block-based song-print
        layouts (tblPrintTemplates). Curator-level, same entitlement as the other

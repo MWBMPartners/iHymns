@@ -80,7 +80,10 @@ function songIdPrefixProbeAndFixup(\mysqli $db): array
         $stale = [];
         /* @deleted-visible: integrity fixup (#1694) — prefix/abbr drift is a
            PHYSICAL defect that must be repaired on hidden rows too, or a
-           restore brings the drift back. */
+           restore brings the drift back.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           prefix drift must be repaired in a disabled songbook's rows too,
+           or re-enabling the book would surface the drift. */
         $res   = $db->query(
             "SELECT SongId, SongbookAbbr
                FROM tblSongs

@@ -27,6 +27,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';   /* #1765 — mediaIdentifierPublicationClean(), the ONE validator */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';             /* #1765 — placeColumnExists() */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -64,6 +66,17 @@ try {
     error_log('[catalogues] schema probe failed: ' . $e->getMessage());
 }
 
+/* #1765 Feature 3 — ArkId/OpenLibraryWorkId/OpenLibraryEditionId on
+   tblCatalogues (migrate-publication-metadata.php Stage 3, three columns in
+   one ALTER loop; probed as one unit — degrades to "fields not offered /
+   not written" on a pre-migration install). Collections carry no ISBN/ISSN
+   (those are a series/songbook concern), so the shared identifier partial is
+   rendered with $pifShowIsbnIssn = false below. */
+$hasPubIdCols = $hasSchema
+    && placeColumnExists($db, 'tblCatalogues', 'ArkId')
+    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryWorkId')
+    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryEditionId');
+
 /* ---- GET ?action=song_search ----
  * JSON typeahead used by the manage-members panel. Returns matching
  * songs from tblSongs ranked by title. Optional `exclude_ids` keeps
@@ -95,7 +108,11 @@ if ($hasSchema
                  WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
                    AND " . songVisibleSql($db, 's') . "
                  ORDER BY s.Title ASC
-                 LIMIT ?";   /* #1694 — hidden songs are not offered for membership */
+                 LIMIT ?";   /* #1694 — hidden songs are not offered for membership.
+                                @disabled-visible: admin surface (#1765) — disabled
+                                songbooks stay fully visible/editable in /manage
+                                (owner decision); a curator can still add a song from
+                                a disabled book into a Collection. */
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ssi', $like, $like, $limit);
         $stmt->execute();
@@ -114,9 +131,44 @@ if ($hasSchema
     exit;
 }
 
+/* ---- GET ?action=marcxml_export&id=N (#1765 Feature 5) ------------------
+ * Streams the Collection as a downloadable MARCXML file via the shared
+ * helper. Admin-gated (the manage_songbooks entitlement above); read-only;
+ * emitted before any HTML. Collections carry only ARK + OpenLibrary, and
+ * name their title column 'Title' (the marcxml 'catalogue' field map knows). */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'marcxml_export'
+) {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+    $id = (int)($_GET['id'] ?? 0);
+    $stmt = $db->prepare('SELECT * FROM tblCatalogues WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Collection not found.';
+        exit;
+    }
+    marcxmlAdmin_sendExport([
+        'Title'                => $row['Title'] ?? '',
+        'ArkId'                => $row['ArkId'] ?? '',
+        'OpenLibraryWorkId'    => $row['OpenLibraryWorkId'] ?? '',
+        'OpenLibraryEditionId' => $row['OpenLibraryEditionId'] ?? '',
+    ], [], [], 'catalogue', (string)($row['Slug'] ?? $row['Title'] ?? 'collection'));
+}
+
 /* ---- POST handlers ---- */
 if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1765 rule #29 — validateCsrfRequest() (same-origin: X-Requested-With +
+       Origin/Referer host match, OR a still-valid session token) instead of
+       validateCsrf() alone, which goes stale on long-lived multi-tab admin
+       sessions. These forms are plain POSTs, so the session-token branch is
+       what fires today — the upgrade avoids the flaky single-path check. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -146,6 +198,17 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication identifiers, validated via the ONE
+                   shared validator (mediaIdentifierPublicationClean); persisted in
+                   a schema-tolerant secondary UPDATE after the INSERT below. */
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+
                 $stmt = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
                 $stmt->execute();
@@ -163,10 +226,79 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newId = (int)$db->insert_id;
                 $stmt->close();
 
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 logActivity('admin.catalogues.add', 'catalogue', (string)$newId, [
                     'slug' => $slug, 'title' => $title, 'visibility' => $visibility,
+                    'publication_ids' => $hasPubIdCols ? array_filter([
+                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
+                        'openlibrary_edition_id' => $olEditionVal,
+                    ], fn($v) => $v !== null) : null,
                 ]);
                 $success = "Collection '{$title}' created.";
+                break;
+            }
+
+            case 'marcxml_import': {
+                /* #1765 Feature 5 — create a Collection from an uploaded
+                   MARCXML file. Imported hidden (Visibility=admin_only) so a
+                   curator reviews it before it goes public. A slightly-off
+                   identifier is skipped, not fatal; the slug auto-suffixes. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+                $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'catalogue');
+                if (!$parsed['ok']) { $error = $parsed['error']; break; }
+                $title = trim((string)($parsed['fields']['Title'] ?? ''));
+                if ($title === '') { $error = 'The MARCXML record has no title (245 $a) to create a Collection from.'; break; }
+                $title = mb_substr($title, 0, 255);
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'ArkId' => 'ark', 'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $idArk = $ids['ArkId']; $idOlW = $ids['OpenLibraryWorkId']; $idOlE = $ids['OpenLibraryEditionId'];
+
+                $base = $slugFor($title); if ($base === '') { $base = 'collection'; }
+                $base = mb_substr($base, 0, 250);
+                $slug = $base; $suffix = 1;
+                while (true) {
+                    $chk = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
+                    $chk->bind_param('s', $slug);
+                    $chk->execute();
+                    $taken = $chk->get_result()->fetch_row() !== null;
+                    $chk->close();
+                    if (!$taken) { break; }
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $desc = null; $sortOrder = 0; $visibility = 'admin_only'; $colour = '';
+                $ins = $db->prepare(
+                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility, Colour) VALUES (?, ?, ?, ?, ?, ?)'
+                );
+                $ins->bind_param('sssiss', $slug, $title, $desc, $sortOrder, $visibility, $colour);
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+
+                if ($hasPubIdCols) {
+                    $upd = $db->prepare('UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?');
+                    $upd->bind_param('sssi', $idArk, $idOlW, $idOlE, $newId);
+                    $upd->execute();
+                    $upd->close();
+                }
+
+                logActivity('admin.catalogues.marcxml_import', 'catalogue', (string)$newId, [
+                    'title' => $title, 'slug' => $slug,
+                ]);
+                $notes = [];
+                if ($skipped) { $notes[] = 'skipped invalid identifier(s): ' . implode(', ', $skipped); }
+                if (!empty($parsed['unmapped'])) { $notes[] = 'unmapped MARC tag(s): ' . implode(', ', array_slice($parsed['unmapped'], 0, 12)); }
+                $success = "Collection '{$title}' created from MARCXML (slug '{$slug}') — hidden until you set its visibility."
+                    . ($notes ? ' — ' . implode('; ', $notes) : '');
                 break;
             }
 
@@ -188,6 +320,16 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
                 }
 
+                /* #1765 Feature 3 — publication identifiers, validated via the ONE
+                   shared validator; written in a schema-tolerant secondary UPDATE. */
+                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
+                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
+                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
+                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
+                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
+                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
+                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+
                 $stmt = $db->prepare(
                     'UPDATE tblCatalogues
                         SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?, Colour = ?
@@ -197,8 +339,21 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $stmt->close();
 
+                if ($hasPubIdCols) {
+                    $stmt = $db->prepare(
+                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
                 logActivity('admin.catalogues.update', 'catalogue', (string)$id, [
                     'title' => $title, 'visibility' => $visibility,
+                    'publication_ids' => $hasPubIdCols ? array_filter([
+                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
+                        'openlibrary_edition_id' => $olEditionVal,
+                    ], fn($v) => $v !== null) : null,
                 ]);
                 $success = "Collection updated.";
                 break;
@@ -285,9 +440,15 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
 $catalogues = [];
 if ($hasSchema) {
     try {
+        /* #1765 Feature 3 — hardcoded PHP constant columns (rule #5a),
+           appended only when they exist so a pre-migration install runs
+           exactly the old query. */
+        $pubIdSelect = $hasPubIdCols
+            ? ', c.ArkId, c.OpenLibraryWorkId, c.OpenLibraryEditionId'
+            : '';
         $stmt = $db->prepare(
             'SELECT c.Id, c.Slug, c.Title, c.Description, c.SortOrder, c.Visibility,
-                    c.Colour, c.CreatedAt, c.UpdatedAt,
+                    c.Colour, c.CreatedAt, c.UpdatedAt' . $pubIdSelect . ',
                     (SELECT COUNT(*) FROM tblCatalogueSongs cs WHERE cs.CatalogueId = c.Id) AS SongCount
                FROM tblCatalogues c
               ORDER BY c.SortOrder ASC, c.Title ASC'
@@ -408,9 +569,41 @@ if ($hasSchema && !empty($catalogues)) {
                                pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
                     </div>
                 </div>
+                <?php if ($hasPubIdCols): ?>
+                <div class="col-12">
+                    <?php
+                        /* #1765 Feature 3 — shared publication-identifier fieldset
+                           (ARK + OpenLibrary; no ISBN/ISSN for Collections). The
+                           SAME partial /manage/songbook-series uses (rule #22). */
+                        $pifMode = 'create'; $pifShowIsbnIssn = false; $pifHasOpenLibraryCols = true;
+                        require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                        unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols);
+                    ?>
+                </div>
+                <?php endif; ?>
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
                         <i class="bi bi-plus me-1"></i>Create catalogue
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- #1765 Feature 5 — create a Collection from an uploaded MARCXML file. -->
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
+            <form method="POST" class="row g-2 align-items-end small" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                <input type="hidden" name="action" value="marcxml_import">
+                <div class="col-md-8">
+                    <label class="form-label small mb-0" for="collection-marcxml-file">MARCXML file</label>
+                    <input type="file" class="form-control form-control-sm" id="collection-marcxml-file"
+                           name="marcxml_file" accept=".xml,application/xml,application/marcxml+xml" required>
+                    <div class="form-text small">Reads the title (245 $a) + ARK / OpenLibrary identifiers; imported hidden for review.</div>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-sm btn-info w-100">
+                        <i class="bi bi-upload me-1" aria-hidden="true"></i>Import Collection
                     </button>
                 </div>
             </form>
@@ -447,6 +640,13 @@ if ($hasSchema && !empty($catalogues)) {
                                             title="Edit">
                                         <i class="bi bi-pencil"></i>
                                     </button>
+                                    <!-- #1765 Feature 5 — export this Collection as a MARCXML file. -->
+                                    <a class="btn btn-sm btn-outline-secondary"
+                                       href="?action=marcxml_export&amp;id=<?= (int)$c['Id'] ?>"
+                                       title="Export this Collection as MARCXML" download>
+                                        <i class="bi bi-filetype-xml" aria-hidden="true"></i>
+                                        <span class="visually-hidden">Export MARCXML</span>
+                                    </a>
                                     <button type="button" class="btn btn-sm btn-outline-secondary"
                                             data-bs-toggle="collapse"
                                             data-bs-target="#cat-members-<?= (int)$c['Id'] ?>"
@@ -508,6 +708,28 @@ if ($hasSchema && !empty($catalogues)) {
                                                        maxlength="7" pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB">
                                             </div>
                                         </div>
+                                        <?php if ($hasPubIdCols): ?>
+                                        <div class="col-12">
+                                            <?php
+                                                /* #1765 Feature 3 — shared partial, server-pre-filled
+                                                   from this row's values ($pifValues). Same partial the
+                                                   create form + series page use (rule #22). */
+                                                $pifMode = 'edit'; $pifShowIsbnIssn = false; $pifHasOpenLibraryCols = true;
+                                                /* #1765 review — this partial is rendered once PER Collection row
+                                                   (all edit forms are in the DOM at load; Bootstrap .collapse only
+                                                   hides via CSS), so give each row's fields a unique id suffix to
+                                                   avoid duplicate element ids + broken <label for> association. */
+                                                $pifIdSuffix = '-' . (int)$c['Id'];
+                                                $pifValues = [
+                                                    'ark_id'                 => $c['ArkId'] ?? '',
+                                                    'openlibrary_work_id'    => $c['OpenLibraryWorkId'] ?? '',
+                                                    'openlibrary_edition_id' => $c['OpenLibraryEditionId'] ?? '',
+                                                ];
+                                                require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publication-identifiers-fields.php';
+                                                unset($pifMode, $pifShowIsbnIssn, $pifHasOpenLibraryCols, $pifValues, $pifIdSuffix);
+                                            ?>
+                                        </div>
+                                        <?php endif; ?>
                                         <div class="col-md-3 text-end">
                                             <button type="submit" class="btn btn-sm btn-info">
                                                 <i class="bi bi-check2 me-1"></i>Save changes

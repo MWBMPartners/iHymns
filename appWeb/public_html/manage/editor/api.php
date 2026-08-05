@@ -155,7 +155,9 @@ switch ($action) {
         }
         try {
             header('X-Content-Type-Options: nosniff');
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: the editor's export must still
+               reach a disabled songbook. */
+            $songData = SongData::forAdmin();
             $songs = $songData->getSongs($abbr);
             $songbook = null;
             foreach ($songData->getSongbooks() as $b) {
@@ -188,7 +190,10 @@ switch ($action) {
      * ----------------------------------------------------------------- */
     case 'load_index':
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: the editor sidebar must keep
+               listing songs/songbooks that have been disabled from the
+               public site. */
+            $songData = SongData::forAdmin();
             echo json_encode([
                 'meta'      => $songData->getMeta(),
                 'songbooks' => $songData->getSongbooks(),
@@ -220,7 +225,9 @@ switch ($action) {
             break;
         }
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: opening a song that lives in
+               a disabled songbook must still work in the editor. */
+            $songData = SongData::forAdmin();
             $song = $songData->getSongById($songId);
             if ($song === null) {
                 http_response_code(404);
@@ -323,7 +330,9 @@ switch ($action) {
             $ids = array_slice($ids, 0, 2000);
         }
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: bulk operations must reach
+               songs in a disabled songbook too. */
+            $songData = SongData::forAdmin();
             $out = [];
             foreach ($ids as $rawId) {
                 $id = trim((string)$rawId);
@@ -379,6 +388,9 @@ switch ($action) {
      * (#782 phase D).
      * ----------------------------------------------------------------- */
     case 'get_song_links':
+        /* @disabled-visible: admin editor API (#1765) — lists a song's links for
+           the editor; operates on songs/songbooks regardless of public disabled
+           state (the whole editor API is admin/entitlement-gated). */
         $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
         if ($songId === '') {
             http_response_code(400);
@@ -457,6 +469,8 @@ switch ($action) {
      *     loss of a multi-member group).
      * ----------------------------------------------------------------- */
     case 'add_song_link':
+        /* @disabled-visible: admin editor API (#1765) — cross-book link write;
+           both endpoints may live in a disabled book, which stays fully editable. */
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST method required.']);
@@ -682,6 +696,8 @@ switch ($action) {
      * single song.
      * ----------------------------------------------------------------- */
     case 'suggest_song_links':
+        /* @disabled-visible: admin editor API (#1765) — suggestion review over all
+           songs regardless of public disabled state (admin/entitlement-gated). */
         $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
         if ($songId === '') {
             http_response_code(400);
@@ -961,6 +977,8 @@ switch ($action) {
      * Response: { songsAffected, added, removed }
      * ----------------------------------------------------------------- */
     case 'bulk_tag':
+        /* @disabled-visible: admin editor API (#1765) — bulk tag write over the
+           selected songs regardless of their book's public disabled state. */
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST required.']);
@@ -1230,6 +1248,8 @@ switch ($action) {
      * replaced via the same code path save_song uses.
      * ----------------------------------------------------------------- */
     case 'restore_revision':
+        /* @disabled-visible: admin editor API (#1765) — revision restore loads the
+           song row regardless of its book's public disabled state. */
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST required.']);
@@ -2588,7 +2608,9 @@ switch ($action) {
         $oneId    = trim((string)($_GET['id'] ?? ''));
         $maxLines = max(0, (int)($_GET['maxLinesPerSlide'] ?? 0));
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: exporting must reach a
+               disabled songbook's songs. */
+            $songData = SongData::forAdmin();
             $songs    = [];
             $stem     = 'EasyWorship';
             if ($oneId !== '') {
@@ -2818,6 +2840,8 @@ switch ($action) {
      *      migrate-bulk-import-skipped-songids.php migration yet.
      * ----------------------------------------------------------------- */
     case 'bulk_import_skipped_csv':
+        /* @disabled-visible: admin editor API (#1765) — CSV of skipped-import rows
+           spans all songs/songbooks regardless of public disabled state. */
         $jobId = (int)($_GET['job_id'] ?? 0);
         if ($jobId <= 0) {
             http_response_code(400);
@@ -3015,6 +3039,8 @@ switch ($action) {
      *   7. logActivity('song-media.upload', 'song', $songId, ...).
      * ----------------------------------------------------------------- */
     case 'song_media_upload':
+        /* @disabled-visible: admin editor API (#1765) — media upload existence
+           check over all songs regardless of public disabled state. */
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST method required.']);
