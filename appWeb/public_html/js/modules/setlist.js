@@ -1083,6 +1083,10 @@ export class SetList {
                             aria-label="Print set list" title="Print">
                         <i class="fa-solid fa-print" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-pdf-btn"
+                            aria-label="Save set list as PDF" title="Save as PDF">
+                        <i class="fa-solid fa-file-pdf" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-template-btn"
                             aria-label="Save this set list as a reusable template" title="Save as template">
                         <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
@@ -1155,6 +1159,18 @@ export class SetList {
 
         /* Print set list (#113) */
         container.querySelector('#setlist-print-btn')?.addEventListener('click', () => {
+            this.printSetList(list);
+        });
+
+        /* #302 — "Save as PDF" is the same clean, well-titled document as Print
+           (cover + running order + full lyrics); the browser's print dialog is
+           where "Save as PDF" lives, and the doc <title> ("<name> — iHymns Set
+           List") becomes the default PDF filename. This is the house-style,
+           dependency-free PDF path (identical to the song print, print.js) —
+           no server or client PDF library, shared-hosting friendly. A discrete,
+           clearly-labelled entry point makes the capability discoverable (many
+           users don't know Print → Save as PDF). */
+        container.querySelector('#setlist-pdf-btn')?.addEventListener('click', () => {
             this.printSetList(list);
         });
 
