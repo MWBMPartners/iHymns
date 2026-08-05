@@ -1105,11 +1105,43 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                 </button>
             </div>
 
+            <?php
+                /* #288 — song tags, rendered SERVER-SIDE. Tags are song-level
+                   (identical for every visitor), so a shared-cache fragment
+                   (rule #6) may emit them directly — no JS, no per-user data,
+                   no re-fetch. Each chip links to /tag/<slug>, the route
+                   tag.php already serves (rule #33), navigated in-SPA via
+                   data-navigate="tag". The container is OMITTED ENTIRELY when
+                   the song carries no tags, so there is no empty "Tags:" label
+                   and no dead control — this closes the #288 orphan, where the
+                   block shipped hidden (`display:none`) with zero JS to
+                   populate it, so tags rode `song_detail` and were discarded. */
+                $songTags = array_values(array_filter(
+                    (array)($song['tags'] ?? []),
+                    static fn($t) => is_array($t) && trim((string)($t['name'] ?? '')) !== ''
+                ));
+            ?>
+            <?php if (!empty($songTags)): ?>
             <!-- Song tags display (#288) -->
-            <div id="song-tags-container" class="mt-2 mb-3" style="display:none">
-                <small class="text-muted"><i class="fa-solid fa-tags me-1"></i>Tags:</small>
-                <span id="song-tags-list"></span>
+            <div id="song-tags-container" class="mt-2 mb-3">
+                <small class="text-muted"><i class="fa-solid fa-tags me-1" aria-hidden="true"></i>Tags:</small>
+                <span id="song-tags-list">
+                    <?php foreach ($songTags as $t): ?>
+                        <?php
+                            $tName = trim((string)$t['name']);
+                            $tSlug = trim((string)($t['slug'] ?? ''));
+                        ?>
+                        <?php if ($tSlug !== ''): ?>
+                            <a href="/tag/<?= htmlspecialchars($tSlug, ENT_QUOTES) ?>"
+                               data-navigate="tag"
+                               class="badge rounded-pill text-bg-secondary text-decoration-none song-tag-chip"><?= htmlspecialchars($tName) ?></a>
+                        <?php else: ?>
+                            <span class="badge rounded-pill text-bg-secondary song-tag-chip"><?= htmlspecialchars($tName) ?></span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </span>
             </div>
+            <?php endif; ?>
         </div>
     </div>
 
