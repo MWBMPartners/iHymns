@@ -1453,8 +1453,13 @@ foreach ($components as $_c) {
 
     <!-- Report a missing song (→ /request page #656/#658) + suggest a structured
          correction for THIS song (#1092 — posts {songId, field, proposed} to
-         song_correction_submit; the server reads the current value itself). -->
-    <div class="mt-3 small">
+         song_correction_submit; the server reads the current value itself).
+         `song-page-feedback` + `d-print-none` mark this whole block as screen-only:
+         Bootstrap's d-print-none covers a direct browser print of the song page,
+         and the class is also targeted by the set-list print stylesheet (which
+         opens its own window without Bootstrap loaded), so a printed set list no
+         longer carries these forms (#1788). -->
+    <div class="mt-3 small song-page-feedback d-print-none">
         <a href="/request" data-navigate="request" class="text-muted text-decoration-none me-3">
             <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>Report a missing song
         </a>

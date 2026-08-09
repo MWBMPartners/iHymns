@@ -3469,7 +3469,19 @@ export class SetList {
         .print-song-header h2 { font-size: 18pt; margin: 0 0 0.2em; }
         .print-song-meta { color: #666; font-size: 10pt; margin: 0; }
 
-        /* Song content overrides */
+        /* Song content overrides. #1788 — the injected fragment is the FULL
+           song page, which carries screen-only chrome (the "Report a missing
+           song" / "Suggest a correction" block + its form, the media player,
+           external links) that must never appear on a printed set list. This
+           print window has no Bootstrap loaded, so Bootstrap's own
+           `.d-print-none` utility does nothing here — we re-declare it, plus the
+           feedback block's stable class/id, so anything the app already marks
+           screen-only is honoured in the set-list print too. (The proper fix —
+           rendering each song through the #1767 print-template engine instead of
+           injecting the live page — is tracked as the full remedy.) */
+        .print-song-content .d-print-none,
+        .print-song-content .song-page-feedback,
+        .print-song-content #song-correction-form,
         .print-song-content .breadcrumb,
         .print-song-content .song-navigation,
         .print-song-content .d-flex.flex-wrap.gap-2,
