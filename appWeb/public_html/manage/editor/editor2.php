@@ -318,8 +318,12 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
          helper (mirrors the v1 editor's index.php load order, #887); v2's export.js
          (ITEMS registry, mounted below via mountExportMenu) calls into the same
          window.iHymnsProPresenter this pair exposes, so without it PP7 export
-         throws "protobufjs runtime not found" the first time it's invoked. -->
+         throws "protobufjs runtime not found" the first time it's invoked.
+         #1788 — pp7-proto-static.js (CSP-safe `pbjs -t static` schema) loads
+         between the runtime and the exporter; the exporter prefers it over the
+         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses. -->
     <script src="vendor/protobuf.min.js"></script>
+    <script src="protos/pp7-proto-static.js"></script>
     <script src="propresenter-export.js"></script>
     <script src="format-export.js"></script>
 
