@@ -41,6 +41,24 @@ claude/gating-model-review
 Owner can delete these on GitHub (Branches page) or `git push origin --delete <branch>` locally.
 
 ## ✅ PROGRESS LOG (this session, all on `claude/issue-sweep-fixes-89`, pushed)
+- **Owner bug batch 2026-08-05 (5 issues filed #1788–#1792)**:
+  - **#1788 ProPresenter 7+ export broken (CSP unsafe-eval)** — root cause CONFIRMED:
+    `propresenter-export.js` loads schema via `protobuf.Root.fromJSON` (reflection) → `.encode()`
+    codegens via `new Function()` → refused by the enforcing nonce CSP (#117). Only PP7 (protobuf)
+    hits it. **Fix = protobufjs static-module (`pbjs -t static-module`)** — the .proto sources (118)
+    are present but `protobufjs-cli` isn't installed + no offline npx, so it needs `npm i protobufjs-cli`
+    via the proxy, then rewire `init()`. NOT done yet. NEVER add `'unsafe-eval'` (would gut the CSP).
+  - **#1789 setlist Print junk + no template choice** — INTERIM FIX LANDED (`60cd3bc6`): tagged the
+    report/correction block `song-page-feedback d-print-none` in song.php + the setlist print CSS now
+    hides `.d-print-none`/`.song-page-feedback`/`#song-correction-form`. FULL fix (render each song via
+    the #1767 print-template engine so setlist Print offers/honours a template) → folded into #1767.
+  - **#1790 setlist share = playlist** (open link → tap song → navigate; drop Import + "Use") → Fable.
+  - **#1791 setlist collab via share-link** (no account/email invite; capability-URL edit token) → Fable.
+  - **#1792 Go Live/Join Live untestable** = the `Channel` wall (rule #26): desktop-on-dev + phone-on-www
+    are different channels → always "wrong code". Fix = same-channel test procedure + clearer cross-channel
+    error + (maybe) admin cross-channel bridge → planned under #1770.
+  - Owner flagged "more, especially Editor2, later" — expect an Editor2 bug batch next.
+
 - **Musicians epic #1787 (NEW owner asks 2026-08-05, two messages + screenshots)** — filed epic
   #1787 + children #1784/#1785/#1786.
   - **#1784 LANDED** (commits `bb75b682` + ref-fix `34b990df`): the weeks-old "1 person credited but
