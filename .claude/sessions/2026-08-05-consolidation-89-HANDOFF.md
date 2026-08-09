@@ -52,6 +52,12 @@ Owner can delete these on GitHub (Branches page) or `git push origin --delete <b
     report/correction block `song-page-feedback d-print-none` in song.php + the setlist print CSS now
     hides `.d-print-none`/`.song-page-feedback`/`#song-correction-form`. FULL fix (render each song via
     the #1767 print-template engine so setlist Print offers/honours a template) → folded into #1767.
+  - **#1788 LANDED** (commit `453c6dc2`): PP7 export was dead under the nonce CSP — reflection
+    protobuf (`Root.fromJSON`→lazy `new Function` codegen) is refused by #117. Fixed with a
+    precompiled **static** encoder (`pbjs -t static` → `protos/pp7-proto-static.js` +
+    `tools/build-proto-static.js`), exporter prefers it, loaded on all 3 surfaces. Proven
+    BYTE-IDENTICAL to reflection + CSP-safe (`tests/test-propresenter-static-csp.js`, mutation-proven).
+    `protobufjs-cli` = documented one-off install, NOT a committed devDep. NEVER add `unsafe-eval`.
   - **#1790 setlist share = playlist** (open link → tap song → navigate; drop Import + "Use") → Fable.
   - **#1791 setlist collab via share-link** (no account/email invite; capability-URL edit token) → Fable.
   - **#1792 Go Live/Join Live untestable** = the `Channel` wall (rule #26): desktop-on-dev + phone-on-www
