@@ -2783,7 +2783,9 @@ export class SetList {
         const viewerIsOwner = sharedData.isOwner === true;
         document.getElementById('shared-setlist-banner')?.classList.toggle('d-none', viewerIsOwner);
         document.getElementById('shared-setlist-owner-note')?.classList.toggle('d-none', !viewerIsOwner);
-        document.getElementById('shared-setlist-import-btn')?.classList.toggle('d-none', viewerIsOwner);
+        /* #1790 — the top "Import" button became the "Start set list" button (shown
+           to everyone, owner included); only the single bottom "Save a copy" button
+           is hidden for the owner now (nothing to import into itself, #1535). */
         document.getElementById('shared-setlist-import-btn-bottom')?.classList.toggle('d-none', viewerIsOwner);
 
         if (titleEl) titleEl.textContent = sharedData.name;
@@ -2823,14 +2825,15 @@ export class SetList {
            which resolves them asynchronously. We re-read them at click time
            rather than at render time so "Next: <title>" is populated if
            enrichment has landed, and degrades to a plain "Next" if not. */
-        songsContainer?.addEventListener('click', (e) => {
-            const link = e.target instanceof HTMLElement
-                ? e.target.closest('.shared-song-item a[data-navigate="song"]')
-                : null;
-            if (!link) return;
-
+        /* #1790 — extracted so the explicit "Start set list" button arms the
+           Prev/Next context the SAME way a tap does (no second copy of the
+           title-harvest + setPlaylistContext call — modularity rule). Titles are
+           re-read from the DOM at arm time so "Next: <title>" is populated once
+           enrichSharedSongItems() has landed, and degrades to a plain "Next"
+           before then. */
+        const armSharedContext = () => {
             const titles = {};
-            songsContainer.querySelectorAll('.shared-song-item').forEach((item) => {
+            songsContainer?.querySelectorAll('.shared-song-item').forEach((item) => {
                 const id = item.dataset.songId;
                 const t  = item.querySelector('.shared-song-title')?.textContent?.trim();
                 /* Pre-enrichment the anchor still shows the raw id — storing
@@ -2838,7 +2841,6 @@ export class SetList {
                    plain word. */
                 if (id && t && t !== id) titles[id] = t;
             });
-
             this.setPlaylistContext({
                 songIds:  sharedData.songIds,
                 titles,
@@ -2846,6 +2848,27 @@ export class SetList {
                 source:   'shared',
                 sourceId: String(sharedData.shareId || sharedData.id || ''),
             });
+        };
+
+        songsContainer?.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('.shared-song-item a[data-navigate="song"]')
+                : null;
+            if (!link) return;
+            /* The router's own delegated handler performs the navigation; we only
+               arm the context first so the bar is correct on arrival. */
+            armSharedContext();
+        });
+
+        /* #1790 — explicit "Start set list" button: arm the context, then jump to
+           song 1 — for users who don't discover tap-to-play. Shown to everyone
+           (owner included; you can play your own shared list). No-op on an empty
+           list. */
+        document.getElementById('shared-setlist-start-btn')?.addEventListener('click', () => {
+            const firstId = sharedData.songIds && sharedData.songIds[0];
+            if (!firstId) return;
+            armSharedContext();
+            this.app.router.navigate('/song/' + encodeURIComponent(firstId));
         });
 
         /* Bind import buttons — skipped entirely for the owner (#1535); their
@@ -2861,7 +2884,8 @@ export class SetList {
                 }
             };
 
-            document.getElementById('shared-setlist-import-btn')?.addEventListener('click', importHandler);
+            /* #1790 — only the single bottom "Save a copy" button remains
+               (the top button is now "Start set list"). */
             document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
         }
     }

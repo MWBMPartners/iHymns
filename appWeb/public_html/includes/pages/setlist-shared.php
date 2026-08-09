@@ -1,15 +1,18 @@
 <?php
 
 /**
- * iHymns — Shared Set List Page Template (#147)
+ * iHymns — Shared Set List Page Template (#147, playlist-first #1790)
  *
  * PURPOSE:
- * Displays a read-only view of a shared set list received via URL.
- * The set list data is encoded in the URL as base64 JSON and decoded
- * client-side by the SetList JS module. This template provides the
- * shell which JavaScript populates dynamically.
+ * The page a recipient lands on from a shared set-list link. It is
+ * playlist-first (#1790): tapping any song — or the "Start set list"
+ * button — arms the Prev/Next bar from this list with NO sign-in and NO
+ * Import (setlist.js initSharedSetListPage); saving a personal copy is a
+ * secondary action. This template is the shell that JS populates.
  *
- * Loaded via AJAX: api.php?page=setlist-shared
+ * Data comes from the server-side share store (`setlist_get`, keyed by the
+ * short share id in the URL; a legacy base64-in-URL payload is still parsed
+ * as a fallback). Loaded via AJAX: api.php?page=setlist-shared
  */
 
 declare(strict_types=1);
@@ -64,8 +67,12 @@ declare(strict_types=1);
         <div id="shared-setlist-banner" class="alert alert-info d-flex align-items-center gap-2 mb-3" role="status">
             <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
             <div>
-                <strong>Shared Set List</strong>
-                <small class="d-block">Someone shared this set list with you. Import it to use it.</small>
+                <strong>Shared set list</strong>
+                <!-- #1790 — playlist framing. Tapping any song already arms the
+                     Prev/Next bar from this list (setlist.js initSharedSetListPage),
+                     with no sign-in and no Import — so the copy now leads with that
+                     instead of instructing the user to Import first. -->
+                <small class="d-block">Tap any song to start &mdash; Prev/Next will follow this list. No sign-in needed.</small>
                 <!-- Live-link note (#1380) — shown by JS only when the share resolves
                      the owner's CURRENT set list (data.live === true), so edits the
                      owner makes flow through to this view. -->
@@ -94,9 +101,14 @@ declare(strict_types=1);
                 <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i>
                 <span id="shared-setlist-title"></span>
             </h1>
-            <button type="button" class="btn btn-primary btn-sm" id="shared-setlist-import-btn">
-                <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
-                Import to My Set Lists
+            <!-- #1790 — primary action is now PLAY, not Import. Arms the Prev/Next
+                 bar from this list and jumps to song 1 (wired in setlist.js
+                 initSharedSetListPage). Shown to everyone, owner included — you can
+                 play your own shared list. Import is demoted to a secondary
+                 "Save a copy" below. -->
+            <button type="button" class="btn btn-primary btn-sm" id="shared-setlist-start-btn">
+                <i class="fa-solid fa-play me-1" aria-hidden="true"></i>
+                Start set list
             </button>
         </div>
 
@@ -109,11 +121,14 @@ declare(strict_types=1);
             <!-- Songs rendered by JS -->
         </div>
 
-        <!-- Bottom import button -->
+        <!-- #1790 — Import demoted to ONE secondary "Save a copy" button (was two
+             primary "Import" buttons that steered every recipient into the wrong
+             flow). The id stays `shared-setlist-import-btn-bottom` so the #1535
+             owner-hide + the import handler keep working unchanged. -->
         <div class="text-center mt-4">
-            <button type="button" class="btn btn-primary" id="shared-setlist-import-btn-bottom">
+            <button type="button" class="btn btn-outline-secondary" id="shared-setlist-import-btn-bottom">
                 <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
-                Import to My Set Lists
+                Save a copy to My Set Lists
             </button>
             <div class="mt-2">
                 <a href="/setlist" class="btn btn-outline-secondary btn-sm" data-navigate="setlist">
