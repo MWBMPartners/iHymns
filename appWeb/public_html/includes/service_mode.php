@@ -1702,6 +1702,45 @@ const SERVICE_MODE_SECTION_LABEL_MAP = [
 ];
 
 /**
+ * #1798 — PURE parse of a driver's free-text section label into a normalised
+ * word-key + optional trailing number, tolerant of the SPACE form ("Pre Chorus
+ * 2", which some presentation tools emit) that the old letters-only regex in
+ * serviceMode_resolveSectionIndex() rejected outright.
+ *
+ * Extracted pure (no DB) so `tests/php/test-service-section-resolve.php` can
+ * prove the parse without a song fixture (rule #34). resolveSectionIndex() is
+ * the ONE caller; it matches `wordKey` against the song's stored component types
+ * (exact first, coarse-fold fallback — see there), which is what lets a section
+ * stored as `tag`/`coda`/`interlude`/`vamp` be addressed by its own name.
+ *
+ * @param string $sectionRef Free-text label from the driver payload.
+ * @return array{word:string,wordKey:string,num:?int}|null null when unparseable.
+ */
+function serviceMode_sectionLabelParse(string $sectionRef): ?array
+{
+    $sectionRef = trim($sectionRef);
+    if ($sectionRef === '') {
+        return null;
+    }
+    /* Split an optional TRAILING integer from the label; the label itself may
+       carry interior spaces/hyphens ("Pre Chorus", "pre-chorus"). */
+    if (!preg_match('/^(.*?)\s*(\d*)\s*$/', $sectionRef, $m)) {
+        return null;
+    }
+    $word = strtolower(trim($m[1]));
+    $num  = ($m[2] !== '') ? (int)$m[2] : null;
+    if ($word === '') {
+        $word = 'verse'; /* documented default — a bare number means a verse */
+    }
+    /* Fold spaces + hyphens away so "Pre Chorus" ≡ "pre-chorus" ≡ "prechorus". */
+    $wordKey = (string)preg_replace('/[\s\-]+/', '', $word);
+    if ($wordKey === '') {
+        return null;
+    }
+    return ['word' => $word, 'wordKey' => $wordKey, 'num' => $num];
+}
+
+/**
  * #1770 — memoised probe: does `tblSongs.ArrangementJson` (#892) exist on
  * THIS install? Mirrors `SongData::_hasArrangementColumn()`'s pattern
  * (private to that class — this is the standalone equivalent for
@@ -1840,18 +1879,15 @@ function serviceMode_resolveSectionIndex(\mysqli $db, string $songId, string $se
     if ($songId === '' || $sectionRef === '') {
         return null;
     }
-    if (!preg_match('/^([a-zA-Z\-]*)\s*(\d*)\s*$/', $sectionRef, $m)) {
+    /* #1798 — parse via the shared pure helper so the space form ("Pre Chorus
+       2") is handled identically here and in the guard. Returns the folded
+       word-key + optional trailing number, or null when unparseable. */
+    $parsed = serviceMode_sectionLabelParse($sectionRef);
+    if ($parsed === null) {
         return null;
     }
-    $word = strtolower(trim($m[1]));
-    $num  = ($m[2] !== '') ? (int)$m[2] : null;
-    if ($word === '') {
-        $word = 'verse'; /* documented default — see doc-block above */
-    }
-    $type = SERVICE_MODE_SECTION_LABEL_MAP[$word] ?? null;
-    if ($type === null) {
-        return null; /* unrecognised label — unresolvable, not a guess */
-    }
+    $wordKey = $parsed['wordKey'];   /* lower-cased, spaces/hyphens stripped: "prechorus", "tag", "verse" */
+    $num     = $parsed['num'];
 
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
     try {
@@ -1864,10 +1900,35 @@ function serviceMode_resolveSectionIndex(\mysqli $db, string $songId, string $se
     }
     $ordered = serviceMode_projectArrangement($db, $songId, $components);
 
+    /* #1798 — two-pass type resolution (was single-pass, which folded the
+       INCOMING label to a coarse type and matched that against the RAW stored
+       type — so a component stored as `tag`/`coda`/`interlude`/`vamp` could
+       never be addressed by its own name, since the map folds tag→outro etc.).
+       PASS 1: exact stored-type match (own-name addressing — the fix). PASS 2:
+       only if the label named no stored type directly, fall back to the coarse
+       SERVICE_MODE_SECTION_LABEL_MAP alias fold, matching a component whose OWN
+       type also folds to the same coarse bucket (so `o`/`outro`/`ending` still
+       resolve, and a coarse alias can still reach a fine-grained section when no
+       literal one exists). $normType strips spaces/hyphens so "pre-chorus" ≡
+       "prechorus". */
+    $normType = static fn(string $s): string => (string)preg_replace('/[\s\-]+/', '', strtolower($s));
+
     $ofType = [];
     foreach ($ordered as $idx => $c) {
-        if ((string)($c['type'] ?? '') === $type) {
+        if ($normType((string)($c['type'] ?? '')) === $wordKey) {
             $ofType[] = ['idx' => (int)$idx, 'number' => (int)($c['number'] ?? 0)];
+        }
+    }
+    if (!$ofType) {
+        $coarse = SERVICE_MODE_SECTION_LABEL_MAP[$wordKey] ?? null;
+        if ($coarse === null) {
+            return null; /* unrecognised label AND not a stored type — unresolvable, not a guess */
+        }
+        foreach ($ordered as $idx => $c) {
+            $ctype = $normType((string)($c['type'] ?? ''));
+            if ($ctype === $normType($coarse) || (SERVICE_MODE_SECTION_LABEL_MAP[$ctype] ?? null) === $coarse) {
+                $ofType[] = ['idx' => (int)$idx, 'number' => (int)($c['number'] ?? 0)];
+            }
         }
     }
     if (!$ofType) {
