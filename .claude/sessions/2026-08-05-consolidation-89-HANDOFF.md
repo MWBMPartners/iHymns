@@ -5,6 +5,12 @@ NO PR stacking — one branch → alpha via a single later PR. Owner has NOT ask
 
 ## 🔴 IN-PROGRESS THIS SESSION (2026-08-10) — read first
 
+**Owner's active queue (2026-08-10, do in order, autonomously):** #1767 ✅ → #1778 ✅ → **#1158 (NEXT)** → #90 → #94 → #1770 → #1792 → #1785 → #1786 → #1783 (already done, confirm) → *[editor2 bug batch — not yet received]* → **#91 LAST (postponed to the very end, even after editor2)**. #1791 client (C4–C7) is NOT in this list — stays paused server-complete.
+
+- **#1767 print templates — ✅ buildable scope COMPLETE.** Z (clone + JSON import/export) + J (system default) landed (`4025ac8c`), docs (`c47b5cd7`). Prior 6 commits (A/B/F/G/N/O/P/R/V/Y/AB/AM) + CueRCode card (`96028999`) already in branch. **Remaining = decision-gated only** (server-PDF, uploadable layouts E, org branding D/K/L, AK usage-count, H-family multi-page) — the 4 owner decisions re-surfaced on #1767; non-blocking.
+- **#1778 gating hub — ✅ buildable scope COMPLETE.** `/manage/gating` hub + readiness checklist (`3acc68b6`), CHANGELOG (`33800414`). Read-only overview; the master-switch FLIP + the six #1772–#1777 decisions remain owner-only (as the issue mandates). P6 tooling done, activation is the owner's.
+
+
 - **#1783 duplicate-song — ✅ COMPLETE** (commits 1-6; see the queue entry below). Follow-ups filed as #1793 (`for consideration`).
 - **#1791 collab-by-link — SERVER DONE, CLIENT PENDING.** Plan: `.claude/setlist-sharing-1790-1791-plan.md` (C3=#1790 already shipped). Gate defaults taken (owner unanswered, all recommended): **G1=A** (never-expire default + optional per-link expiry; the auto-cap-to-list-expiry "C" part deferred), **G2 deferred** (view links stay 8-hex; edit links are 43-char tokens — flip to long view tokens later is one line), **G3=A** (owner identity never echoed), **G4=A** (fully anonymous edit — the owner's literal ask).
   - **C1 (`7679d33d`)** — schema: `tblSharedSetlists` +Scope/Label/RevokedAt/ExpiresAt/LastUsedAt/EditCount +idx_Expiry, ShareId 16→64. Migration `migrate-setlist-share-scope.php` + registry `setlist-share-scope` + schema.sql mirror + new probe helper `_migProbe_columnCharLength`. Applied+idempotent on live DB.
