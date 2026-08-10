@@ -17447,6 +17447,19 @@ if ($action !== null) {
             /* Identical message for missing / expired / wrong code so liveness
                can't be probed cheaply (combined with the rate limit). */
             if (!$row) {
+                /* #1792 — before the deliberately-opaque generic message, check
+                   whether this well-formed code is live on ANOTHER channel: the
+                   "host on my laptop's dev URL, join on my phone's live PWA"
+                   test is exactly this cross-channel case, and the generic
+                   "not found" made it read as broken. The hint fires ONLY for a
+                   code the caller already holds validly elsewhere, so it does
+                   NOT re-open the anti-probe leak (see the helper's doc-block).
+                   The per-IP join budget was already spent unconditionally
+                   above (recordRateLimitHit), so this adds no free oracle. */
+                if (serviceMode_codeOnOtherChannel($db, $code, $channel)) {
+                    logActivity('live.session.join', 'live_session', '', ['reason' => 'wrong_channel'], 'failure');
+                    sendJson(['ok' => false, 'error' => SERVICE_MODE_WRONG_CHANNEL_MESSAGE], 404); break;
+                }
                 /* §3.2 breadcrumb — no numeric id to log (nothing matched); the
                    reason is generic on purpose (never the code, never "wrong
                    code" vs "expired" — that would re-open the anti-probe leak). */
@@ -18111,6 +18124,17 @@ if ($action !== null) {
                    and counts rows, which is what makes "budget only failures"
                    work at all. */
                 recordRateLimitHit('service_join', $svcIp, false);
+                /* #1792 — cross-channel hint, placed AFTER recordRateLimitHit so
+                   a cross-channel probe spends rate-limit budget exactly like
+                   any other failed join (no new free oracle). Fires only for a
+                   code already live on another docroot — the wrong-web-address
+                   case — never revealing a CURRENT-channel session's liveness
+                   (anti-probe opacity preserved; see the helper's doc-block). */
+                if (serviceMode_codeOnOtherChannel($db, $code, $channel)) {
+                    logActivity('service.presence.join', 'organisation', '', ['reason' => 'wrong_channel', 'channel' => $channel], 'failure');
+                    sendJson(['ok' => false, 'error' => SERVICE_MODE_WRONG_CHANNEL_MESSAGE], 404);
+                    break;
+                }
                 logActivity('service.presence.join', 'organisation', '', ['reason' => $joinFailReason ?? 'code_not_active', 'channel' => $channel], 'failure');
                 sendJson(['ok' => false, 'error' => 'That code has expired. Check the screen for the new code.'], 404);
                 break;

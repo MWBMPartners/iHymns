@@ -709,6 +709,114 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
 }
 
 /**
+ * #1792 — the ONE user-facing message shown when a join code is well-formed and
+ * live, but on a DIFFERENT docroot than the one the congregant is on.
+ *
+ * ELI5: the three iHymns web addresses (the dev site, the preview site, the live
+ * site) share one database, but each only "sees" the live sessions started on
+ * itself — the Channel wall (rule #26). So the instinctive test — start the
+ * session on your laptop's dev URL, join on your phone's live PWA — always fails
+ * with "wrong code", which reads as "the feature is broken" when it is actually
+ * the wall doing its job. This message turns that dead-end into the fix.
+ *
+ * DEFINED ONCE (rule #35 — a "keep these two in sync" comment is the bug, not
+ * the fix): both `live_follow_join` and `service_join` reference this constant,
+ * and `tests/php/test-live-follow-cross-channel.php` asserts they do, so the
+ * wording can never drift between the two entry points. Environment-agnostic on
+ * purpose — it never names WHICH other environment (that would be a needless
+ * extra signal); "same web address" is the actionable instruction.
+ */
+const SERVICE_MODE_WRONG_CHANNEL_MESSAGE =
+    'That code belongs to a different iHymns environment (for example the live '
+    . 'site vs a preview). Make sure both devices are using the same web '
+    . 'address, then try again.';
+
+/**
+ * #1792 — is this join code live on a channel OTHER than the caller's?
+ *
+ * ELI5: answers the narrow question "does this exact code belong to a DIFFERENT
+ * iHymns web address right now?", so a failed join can say "you're on the wrong
+ * address" (SERVICE_MODE_WRONG_CHANNEL_MESSAGE) instead of the opaque generic
+ * error — the fix for the owner's recurring "can't test Go Live / Join Live"
+ * (the desktop-on-dev + phone-on-www case is exactly this).
+ *
+ * DETAILED — why this does NOT re-open the anti-probe leak (rule #26 I6, the
+ * opacity that keeps a prober from learning a CURRENT-channel session's
+ * liveness): it returns true ONLY for a code already valid on ANOTHER channel,
+ * i.e. the caller demonstrably holds a real code but is on the wrong docroot. It
+ * reveals nothing about any session on the CURRENT channel (the thing the
+ * opacity protects); it grants no access (that same code would join fine on the
+ * correct address); it names no environment/org/venue; and every call sits
+ * behind the SAME per-IP join rate limit as its caller (both join endpoints
+ * budget the attempt), so it is not a new cheap oracle. A random code-guesser
+ * effectively never lands on a code that is live somewhere else, and if one did,
+ * the rate limit already bounds that just as it bounds any lucky guess.
+ *
+ * Covers BOTH live-session families sharing the #1268 spine — Quick / Live
+ * Follow (`tblLiveFollowSessions.SessionCode`) and Service Mode
+ * (`tblLiveFollowJoinCodes.Code`) — with the SAME active + heartbeat-fresh
+ * predicates the real joins use, so a stale code elsewhere does NOT trigger the
+ * hint (it falls through to the generic message, correctly).
+ *
+ * This is an EXISTENCE probe, deliberately NOT a second copy of
+ * serviceMode_resolveJoin()'s venue/ambiguity disambiguation (rule #22) — the
+ * hint needs only "does a joinable code exist on another channel", never which
+ * session it is.
+ *
+ * @param string $currentChannel  serviceMode_channel() for THIS docroot.
+ * @return bool  true iff a fresh, active session/code with this code exists on a
+ *               channel != $currentChannel.
+ */
+function serviceMode_codeOnOtherChannel(\mysqli $db, string $code, string $currentChannel): bool
+{
+    if ($code === '') { return false; }
+    /* Trusted int constant, interpolated (not a bound value) — mirrors
+       serviceMode_resolveJoin()'s own freshness interpolation. */
+    $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
+
+    /* Quick / Live Follow: the code is the session's own SessionCode. Idle-fresh
+       gated exactly like live_follow_join's resolve (#1770 C2), so an
+       idle-closed session elsewhere doesn't produce a stale hint. */
+    $idleFresh = serviceMode_idleFreshSql($db, 's');
+    $q = $db->prepare(
+        "SELECT 1
+           FROM tblLiveFollowSessions s
+          WHERE s.SessionCode = ?
+            AND s.Channel <> ?
+            AND s.IsActive = 1
+            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)" . $idleFresh . "
+          LIMIT 1"
+    );
+    $q->bind_param('ss', $code, $currentChannel);
+    $q->execute();
+    $hit = (bool) $q->get_result()->fetch_row();
+    $q->close();
+    if ($hit) { return true; }
+
+    /* Service Mode: the code is a rotating tblLiveFollowJoinCodes.Code. Same
+       live-status + expiry + freshness predicates as serviceMode_resolveJoin(). */
+    $live = serviceMode_codeLiveStatusSql();
+    $q2 = $db->prepare(
+        "SELECT 1
+           FROM tblLiveFollowJoinCodes c
+           JOIN tblLiveFollowSessions s ON s.Id = c.SessionId
+          WHERE c.Code = ?
+            AND c.Status IN ({$live})
+            AND c.ExpiresAt > UTC_TIMESTAMP()
+            AND s.Channel <> ?
+            AND s.SessionKind = 'service'
+            AND s.IsActive = 1
+            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+          LIMIT 1"
+    );
+    $q2->bind_param('ss', $code, $currentChannel);
+    $q2->execute();
+    $hit2 = (bool) $q2->get_result()->fetch_row();
+    $q2->close();
+    return $hit2;
+}
+
+/**
  * #1406 — cached probe: does `tblServicePresence.Role` exist yet? Gates every
  * Role read/write so `service_join`/`service_poll` stay dormant-safe on an
  * un-migrated install (the column ships via the Phase-2 schema batch,
