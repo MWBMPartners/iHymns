@@ -151,6 +151,11 @@ check('v2 shell accepts the #number= FRAGMENT form, not only ?number= '
     + '(missing-numbers.php emits the fragment, which never reaches PHP)',
     /location\.hash/.test(shell) && /number=/.test(shell));
 
+check('v2 shell reads ?duplicate= (#1783 — the cold-load duplicate entry, '
+    + 'asserted now so the handler is guarded before any page emits the link, '
+    + 'exactly like ?open=)',
+    /\$_GET\[['"]duplicate['"]\]/.test(shell));
+
 /* ---- 4. the prefill cannot mint a duplicate ----------------------------- */
 
 const sidebar = readFileSync(join(PUB, 'manage/editor/v2/sidebar.js'), 'utf8')
