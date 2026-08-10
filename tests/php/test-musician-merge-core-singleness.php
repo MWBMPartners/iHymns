@@ -136,20 +136,27 @@ $patterns = [
 ];
 
 /* Pinned, derived-and-justified allow-list — see the file doc-block above
-   for the reasoning behind each entry. Keyed by "relative/path.php|scope"
-   so a stale OR missing entry is separately detectable (rule #34: a guard
-   must be able to fail in BOTH directions). */
+   for the reasoning behind each entry. Keyed by
+   "relative/path.php|scope|pattern-label" — the PATTERN LABEL is part of
+   the key (not just file+scope) so that a mutation which REMOVES one of
+   musicianMergeExecute()'s two statement shapes (say, its DELETE) while
+   its OTHER shape (the credit-rename cascade) still matches in the same
+   function is still caught as "missing" rather than masked by the
+   scope still being present for a different reason (rule #34: a guard
+   must be able to fail in BOTH directions — this file's own mutation
+   testing caught exactly this gap in an earlier, coarser-keyed draft). */
 $allowed = [
-    'includes/musician_helpers.php|function musicianMergeExecute()'                     => true,
-    'includes/musician_helpers.php|function musicianReconcileCreditNameBytes()'         => true,
-    'manage/musicians.php|case \'rename\''                                              => true,
-    'manage/musicians.php|case \'delete_from_registry\''                                => true,
-    'api.php|case \'admin_musician_rename\''                                            => true,
-    'api.php|case \'admin_musician_delete\''                                            => true,
-    'manage/musicians-bulk-promote.php|$act === \'merge\''                              => true,
+    'includes/musician_helpers.php|function musicianMergeExecute()|credit-rename-cascade'             => true,
+    'includes/musician_helpers.php|function musicianMergeExecute()|musicians-delete'                   => true,
+    'includes/musician_helpers.php|function musicianReconcileCreditNameBytes()|credit-rename-cascade'  => true,
+    'manage/musicians.php|case \'rename\'|credit-rename-cascade'                                       => true,
+    'manage/musicians.php|case \'delete_from_registry\'|musicians-delete'                               => true,
+    'api.php|case \'admin_musician_rename\'|credit-rename-cascade'                                     => true,
+    'api.php|case \'admin_musician_delete\'|musicians-delete'                                          => true,
+    'manage/musicians-bulk-promote.php|$act === \'merge\'|credit-rename-cascade'                        => true,
 ];
 
-$found = []; // "$rel|$scope" => list of "$label @ line N"
+$found = []; // "$rel|$scope|$label" => list of "line N"
 $it = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($pubDir, FilesystemIterator::SKIP_DOTS)
 );
@@ -168,8 +175,8 @@ foreach ($it as $file) {
                 continue;
             }
             $scope = musMcsEnclosingScope($lines, $i);
-            $key = "{$rel}|{$scope}";
-            $found[$key][] = "{$label} @ line " . ($i + 1);
+            $key = "{$rel}|{$scope}|{$label}";
+            $found[$key][] = 'line ' . ($i + 1);
         }
     }
 }
