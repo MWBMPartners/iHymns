@@ -3,6 +3,16 @@
 **Working branch: `claude/issue-sweep-fixes-89`** (off `alpha`). ALL future work + commits go here.
 NO PR stacking — one branch → alpha via a single later PR. Owner has NOT asked for the PR yet.
 
+## 🔴 IN-PROGRESS THIS SESSION (2026-08-10) — read first
+
+- **#1783 duplicate-song — ✅ COMPLETE** (commits 1-6; see the queue entry below). Follow-ups filed as #1793 (`for consideration`).
+- **#1791 collab-by-link — SERVER DONE, CLIENT PENDING.** Plan: `.claude/setlist-sharing-1790-1791-plan.md` (C3=#1790 already shipped). Gate defaults taken (owner unanswered, all recommended): **G1=A** (never-expire default + optional per-link expiry; the auto-cap-to-list-expiry "C" part deferred), **G2 deferred** (view links stay 8-hex; edit links are 43-char tokens — flip to long view tokens later is one line), **G3=A** (owner identity never echoed), **G4=A** (fully anonymous edit — the owner's literal ask).
+  - **C1 (`7679d33d`)** — schema: `tblSharedSetlists` +Scope/Label/RevokedAt/ExpiresAt/LastUsedAt/EditCount +idx_Expiry, ShareId 16→64. Migration `migrate-setlist-share-scope.php` + registry `setlist-share-scope` + schema.sql mirror + new probe helper `_migProbe_columnCharLength`. Applied+idempotent on live DB.
+  - **C2a (`dc3ea408`)** — id fold `sharedSetlistSafeShareId()`/`SHARE_ID_RE` across setlist_get/og-image/index.php/setlist.js; token-column gate `_sharedSetlistTokenColumns()`; resolver scope/revoke/expire awareness + `songsDetailed`; setlist_get additive scope/canWrite/shareId; **ONE write core `setlistCollabPerformUpdate()`** extracted (setlist_collab_update refactored to delegate). test-setlist-collab guard updated + mutation-proven.
+  - **C2b (`c5070055`)** — setlist_share mint gains scope/label/expiresAt + mint rate-limit + 43-char edit tokens; NEW endpoints `setlist_token_update` (anonymous, per-token rate-limit, same-origin, owner-lock) / `setlist_share_list` / `setlist_share_revoke`; api-docs.yaml + orphan-allowlist. Both C2a/C2b runtime-verified against live DB (18 + 15 assertions). **DORMANT** until the C1 card is run on each env.
+  - **REMAINING: C4** (client — owner share modal: create view/edit link, copy, active-links list + revoke; shared-page edit surface when `canWrite`, pushing to `setlist_token_update`; extract the row template shared with `renderSharedSetListDetail`), **C5** (add-song box on both edit surfaces), **C6** (`tests/php/test-setlist-share-tokens.php`: share-id-fold consumer guard + scope-vocab + both writers reach the core + same-origin present — mutation-proven), **C7** (docs: extend setlist_share/setlist_get contract in api-docs, help topic + wiki, CHANGELOG, close-out #1790/#1791). All client-side vanilla JS — mind rule #30 (no inline scripts in the fragment; wire from the router / existing setlist.js init).
+  - Suites green through C2b: **PHP 131/131, node 51/51.** Nothing half-done; safe stopping point.
+
 ## ✅ DONE — 6-branch consolidation into `claude/issue-sweep-fixes-89`
 
 All six branches merged (sequential `git merge`, additive conflicts resolved as UNION), pushed to
