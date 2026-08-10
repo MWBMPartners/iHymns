@@ -286,42 +286,26 @@ return [
          * --------------------------------------------------------------- */
 
         /* ---------------------------------------------------------------
-         * 1g. #1770 C4 — the external presentation-app driver family. This
-         * PR deliberately lands the SERVER half only (the "DORMANT SERVER
-         * foundation" scope): `service_drive` is the stable internal
-         * contract any automation (a ProPresenter-class shim, a Companion
-         * webhook, a curl loop) can drive a church's Service-Mode session
-         * through, authenticated by a `tblServiceDriverKeys` credential
-         * (#1770 C1, dormant schema) rather than a login; the three
-         * `service_driver_key_*` actions are that credential's lifecycle
-         * (mint/revoke/list).
+         * 1g. #1770 C4/C5 — the external presentation-app driver family.
+         * `service_drive` is the stable internal contract any OUT-OF-REPO
+         * automation (a ProPresenter-class shim, a Companion webhook, a curl
+         * loop) can drive a church's Service-Mode session through,
+         * authenticated by a `tblServiceDriverKeys` credential (#1770 C1,
+         * dormant schema) rather than a login — that consumer is, by
+         * construction, invisible to an in-repo scan (same posture as the
+         * admin/org JSON API-parity family above) and may stay allowlisted
+         * indefinitely, unless a future in-repo test harness starts
+         * exercising it directly.
          *
-         * Nothing first-party calls any of the four yet because the
-         * consumers are, by design, split across LATER work: `service_drive`
-         * is called by out-of-repo automation once an org-admin has minted a
-         * key (the plan's own worked "done" scenario — "a curl loop drives a
-         * church's projected service … through a minted driver key" — is
-         * necessarily an out-of-repo caller, invisible to any in-repo scan,
-         * same posture as the admin/org JSON API-parity family above); the
-         * `service_driver_key_*` lifecycle trio is meant to be called from an
-         * admin UI card on /manage/service-projection ("Presentation-app
-         * control", plan §4.6) that is EXPLICITLY DEFERRED past this PR's
-         * server-only scope, alongside the rest of #1770's client work
-         * (C5/C6) and docs (C8).
-         *
-         * Self-cleaning: the moment the admin card lands and calls
-         * service_driver_key_{mint,revoke,list}, those three entries go
-         * stale and the guard demands their removal in that same commit —
-         * exactly the F5/F6 pattern this file's history already proves out.
-         * service_drive itself may stay allowlisted indefinitely (an
-         * out-of-repo caller is invisible to this scan by construction, the
-         * SAME reasoning as the admin/org API-parity family), unless a
-         * future in-repo test harness starts exercising it directly.
+         * The self-cleaning worked as designed here too: the credential's
+         * lifecycle trio (`service_driver_key_mint`/`_revoke`/`_list`) went
+         * from server-only (C4) to caller'd the moment #1770 C5's
+         * "Presentation-app control" admin card landed on
+         * /manage/service-projection (plan §4.6) — their three entries were
+         * removed in that same commit, exactly the F5/F6 pattern this
+         * file's history already proves out.
          * --------------------------------------------------------------- */
         'service_drive'                         => 'deliberate API-first surface #1770 C4; out-of-repo driver-shim consumer (curl/Companion/ProPresenter-class automation), invisible to an in-repo scan by construction — same posture as the admin/org API-parity family',
-        'service_driver_key_mint'               => 'deliberate #1770 C4 server-only landing; consumer is the /manage/service-projection admin card deferred to a later #1770 commit (C5/C6/C8 scope)',
-        'service_driver_key_revoke'             => 'deliberate #1770 C4 server-only landing; consumer is the /manage/service-projection admin card deferred to a later #1770 commit (C5/C6/C8 scope)',
-        'service_driver_key_list'               => 'deliberate #1770 C4 server-only landing; consumer is the /manage/service-projection admin card deferred to a later #1770 commit (C5/C6/C8 scope)',
     ],
 
     /* =====================================================================

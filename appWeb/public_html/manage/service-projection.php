@@ -123,6 +123,33 @@ if ($schemaReady) {
 $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://')
           . preg_replace('/[^a-zA-Z0-9.\-:]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'ihymns.app'));
 $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 7 => 'Sun'];
+
+/* #1770 §4.6 — "Presentation-app control" card: mint/list/revoke durable
+   driver keys for an external presentation app (ProPresenter-class shim,
+   a Stream Deck script, a Companion webhook) to drive THIS org's Service
+   Mode sessions via the api.php `service_drive` action. Own probe — the
+   #1770 C1 batch is a SEPARATE migration from the #1335 Phase-2 tables
+   $schemaReady already gates on, so a $schemaReady install can still be
+   pre-#1770 (the page's existing pattern: probe-gate, don't assume). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+$driverKeysReady = _svcProjTableExists($db, 'tblServiceDriverKeys');
+/* Orgs to offer in the picker: every org that has at least one venue THIS
+   operator can already see above (never a superset of what they can drive —
+   the server-side org-admin gate on the mint/revoke/list endpoints is the
+   real authority, this is just what the picker offers). */
+$driverKeyOrgs = [];
+if ($driverKeysReady && $venues) {
+    $orgIdsForKeys = array_values(array_unique(array_map(static fn(array $v): int => (int)$v['OrgId'], $venues)));
+    if ($orgIdsForKeys) {
+        $ph = implode(',', array_fill(0, count($orgIdsForKeys), '?'));
+        $types = str_repeat('i', count($orgIdsForKeys));
+        $stmt = $db->prepare("SELECT Id, Name FROM tblOrganisations WHERE Id IN ($ph) ORDER BY Name ASC");
+        $stmt->bind_param($types, ...$orgIdsForKeys);
+        $stmt->execute();
+        $driverKeyOrgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -214,6 +241,88 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                     <div id="svc-start-error" class="text-danger small mt-2" role="alert"></div>
                 </div>
             </div>
+        <?php endif; ?>
+
+        <!-- ===========================
+             PRESENTATION-APP CONTROL (#1770 §4.6) — durable driver keys for
+             an external presentation app (ProPresenter-class shim, a Stream
+             Deck script, a Companion webhook) to drive Service Mode sessions
+             without a human clicking here. Own probe from $schemaReady above
+             — #1770 C1 is a separate migration.
+             =========================== -->
+        <?php if ($schemaReady): ?>
+        <div class="card mt-4" style="max-width: 720px;">
+            <div class="card-body">
+                <h2 class="h6 mb-2"><i class="bi bi-key me-2"></i>Presentation-app control</h2>
+                <p class="small text-secondary mb-3">
+                    Mint a durable key so an external presentation app can drive this organisation's
+                    live session — advance the song and section — without a person clicking here.
+                    The key is shown once; paste it straight into the shim's config.
+                </p>
+                <?php if (!$driverKeysReady): ?>
+                    <div class="alert alert-warning small mb-0">
+                        <i class="bi bi-database-exclamation me-1"></i>Not migrated yet on this environment.
+                        <a href="/manage/setup-database">Run “Live Follow: capable Quick sessions” in Database Setup</a>.
+                    </div>
+                <?php elseif (!$driverKeyOrgs): ?>
+                    <div class="alert alert-info small mb-0">
+                        Add a venue under <a href="/manage/venues">Venues</a> first — a driver key belongs to the
+                        organisation that owns a venue.
+                    </div>
+                <?php else: ?>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold" for="dk-org">Organisation</label>
+                        <select id="dk-org" class="form-select form-select-sm" style="max-width: 320px;">
+                            <?php foreach ($driverKeyOrgs as $o): ?>
+                                <option value="<?= (int)$o['Id'] ?>"><?= htmlspecialchars((string)$o['Name'], ENT_QUOTES, 'UTF-8') ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div id="dk-list-wrap" class="mb-3">
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr class="text-secondary small">
+                                        <th>Label</th><th>Prefix</th><th>Venue</th><th>Protocol</th>
+                                        <th>Last used</th><th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dk-list-body">
+                                    <tr><td colspan="6" class="text-secondary small">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <form id="dk-mint-form" class="row g-2 align-items-end">
+                        <div class="col-sm-4">
+                            <label class="form-label small" for="dk-label">Label</label>
+                            <input type="text" id="dk-label" class="form-control form-control-sm"
+                                   placeholder="e.g. Sanctuary ProPresenter" maxlength="120" required>
+                        </div>
+                        <div class="col-sm-3">
+                            <label class="form-label small" for="dk-venue">Venue <span class="text-secondary">(optional)</span></label>
+                            <select id="dk-venue" class="form-select form-select-sm">
+                                <option value="">Any venue of this org</option>
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
+                            <label class="form-label small" for="dk-protocol">Protocol</label>
+                            <select id="dk-protocol" class="form-select form-select-sm">
+                                <?php foreach (SERVICE_DRIVER_KEY_PROTOCOLS as $proto): ?>
+                                    <option value="<?= htmlspecialchars($proto, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars(ucfirst($proto), ENT_QUOTES, 'UTF-8') ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-sm-2">
+                            <button type="submit" class="btn btn-sm btn-amber-solid w-100"><i class="bi bi-key me-1"></i>Mint</button>
+                        </div>
+                    </form>
+                    <div id="dk-mint-result" class="small mt-2"></div>
+                <?php endif; ?>
+            </div>
+        </div>
         <?php endif; ?>
     </div>
 
@@ -458,6 +567,118 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                     .then(function (d) { if (d && d.ok && d.code) showCode(d.code); }).catch(function () {});
             }
         });
+
+        /* ---- Presentation-app control (#1770 §4.6) ------------------------
+           Only present in the DOM when $driverKeysReady && $driverKeyOrgs
+           (PHP-gated above), so this whole block is a no-op elsewhere.
+           Same-origin AJAX via the SAME apiCall() helper above — the
+           X-Requested-With header alone satisfies validateCsrfRequest()
+           (rule #29) for the two writers (mint/revoke). */
+        const dkOrgSel = document.getElementById('dk-org');
+        if (dkOrgSel) {
+            const dkVenueSel   = document.getElementById('dk-venue');
+            const dkListBody   = document.getElementById('dk-list-body');
+            const dkMintForm   = document.getElementById('dk-mint-form');
+            const dkMintResult = document.getElementById('dk-mint-result');
+
+            const dkEsc = function (s) {
+                return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+                    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                });
+            };
+            const dkFmtDate = function (s) {
+                if (!s) return '—';
+                try { return new Date(String(s).replace(' ', 'T') + 'Z').toLocaleString(); } catch (_e) { return dkEsc(s); }
+            };
+
+            function dkFillVenues() {
+                const orgId = dkOrgSel.value;
+                dkVenueSel.innerHTML = '<option value="">Any venue of this org</option>';
+                VENUES.filter(function (v) { return String(v.OrgId) === orgId; }).forEach(function (v) {
+                    const o = document.createElement('option');
+                    o.value = String(v.Id); o.textContent = v.Name;
+                    dkVenueSel.appendChild(o);
+                });
+            }
+
+            function dkRenderList(keys) {
+                dkListBody.innerHTML = '';
+                if (!keys.length) {
+                    dkListBody.innerHTML = '<tr><td colspan="6" class="text-secondary small">No driver keys yet.</td></tr>';
+                    return;
+                }
+                keys.forEach(function (k) {
+                    const venue = k.venueId ? (VENUES.find(function (v) { return v.Id === k.venueId; }) || {}).Name || ('#' + k.venueId) : 'Any';
+                    const tr = document.createElement('tr');
+                    if (!k.active) { tr.classList.add('text-secondary'); }
+                    tr.innerHTML = '<td>' + dkEsc(k.label) + '</td>'
+                        + '<td><code>' + dkEsc(k.prefix) + '…</code></td>'
+                        + '<td>' + dkEsc(venue) + '</td>'
+                        + '<td>' + dkEsc(k.protocol) + '</td>'
+                        + '<td>' + dkFmtDate(k.lastUsedAt) + '</td>'
+                        + '<td class="text-end"></td>';
+                    if (k.active) {
+                        const revokeBtn = document.createElement('button');
+                        revokeBtn.type = 'button';
+                        revokeBtn.className = 'btn btn-sm btn-outline-danger';
+                        revokeBtn.textContent = 'Revoke';
+                        revokeBtn.addEventListener('click', function () { dkRevoke(k.id); });
+                        tr.lastElementChild.appendChild(revokeBtn);
+                    } else {
+                        tr.lastElementChild.textContent = 'revoked';
+                    }
+                    dkListBody.appendChild(tr);
+                });
+            }
+
+            function dkLoadList() {
+                dkListBody.innerHTML = '<tr><td colspan="6" class="text-secondary small">Loading…</td></tr>';
+                apiCall('service_driver_key_list', { method: 'GET', query: '&orgId=' + encodeURIComponent(dkOrgSel.value) })
+                    .then(function (d) { dkRenderList((d && d.keys) || []); })
+                    .catch(function () { dkListBody.innerHTML = '<tr><td colspan="6" class="text-danger small">Could not load keys.</td></tr>'; });
+            }
+
+            function dkRevoke(id) {
+                if (!window.confirm('Revoke this driver key? Anything using it stops working immediately.')) { return; }
+                apiCall('service_driver_key_revoke', { method: 'POST', body: { id: id, orgId: parseInt(dkOrgSel.value, 10) } })
+                    .then(function () { dkLoadList(); });
+            }
+
+            dkOrgSel.addEventListener('change', function () { dkFillVenues(); dkLoadList(); });
+            dkFillVenues();
+            dkLoadList();
+
+            dkMintForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                dkMintResult.innerHTML = '';
+                const label = document.getElementById('dk-label').value.trim();
+                if (!label) { return; }
+                const body = {
+                    orgId: parseInt(dkOrgSel.value, 10),
+                    label: label,
+                    protocol: document.getElementById('dk-protocol').value,
+                };
+                const venueVal = dkVenueSel.value;
+                if (venueVal) { body.venueId = parseInt(venueVal, 10); }
+                apiCall('service_driver_key_mint', { method: 'POST', body: body }).then(function (d) {
+                    if (!d || !d.ok) {
+                        dkMintResult.innerHTML = '<span class="text-danger">' + dkEsc((d && d.error) || 'Could not mint the key.') + '</span>';
+                        return;
+                    }
+                    /* The RAW key is shown here ONCE — the server never stores
+                       it (only its SHA-256 hash), so this is the only chance
+                       to copy it. user-select:all makes triple-click select
+                       the whole thing. */
+                    dkMintResult.innerHTML = '<div class="alert alert-warning py-2 px-3 mb-0">'
+                        + '<strong>Copy this key now — it will not be shown again:</strong><br>'
+                        + '<code style="user-select:all;">' + dkEsc(d.key) + '</code></div>';
+                    document.getElementById('dk-label').value = '';
+                    dkLoadList();
+                }).catch(function () {
+                    dkMintResult.innerHTML = '<span class="text-danger">Network error.</span>';
+                });
+            });
+        }
     </script>
     <?php endif; ?>
 
