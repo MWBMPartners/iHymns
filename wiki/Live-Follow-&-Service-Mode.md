@@ -150,6 +150,8 @@ Both cards are OR-probed, so the dashboard's pending count only clears once each
 
 `dev.ihymns.app`, `beta.ihymns.app`/`www.ihymns.app` (and any other subdomain) all share **one** MySQL database, but each is stamped with its own `Channel` value, and every join/poll/broadcast/gate/prune query filters on it. In practice: **sessions never cross environments.** A leader on `dev` and a follower on `www` will never find each other, no matter how correct the code is — this is the single most common real-world failure mode ("Session not found" while the leader's own screen still says LIVE) and the fix is always "put both devices on the exact same address," never a code or account problem.
 
+**#1792 — the join now names this case.** Rather than the opaque "not found", both `service_join` and `live_follow_join`, when their channel-scoped resolve misses, call `serviceMode_codeOnOtherChannel()` — an existence probe over the *other* channels (both the Quick `SessionCode` and the Service rotating-code families) — and, on a hit, return **"That code belongs to a different iHymns environment … make sure both devices are using the same web address"** (the one `SERVICE_MODE_WRONG_CHANNEL_MESSAGE` constant). This does **not** weaken the anti-probe opacity (rule #26 I6): it fires only for a code the caller already holds validly *somewhere else*, so it reveals nothing about a current-channel session's liveness, grants no access, names no specific environment, and rides the same per-IP join rate limit. Guard: `tests/php/test-live-follow-cross-channel.php`.
+
 This is the one place in this feature's docs where naming the underlying mechanism (`Channel`) is appropriate — everywhere else (help docs, in-app copy) it's described only as "the same iHymns web address."
 
 ---

@@ -586,9 +586,17 @@ declare(strict_types=1);
                         <a href="/settings">Settings</a>, or a church admin can set an organisation-wide
                         value under Organisations. Keep the leader's screen awake all the same
                         &mdash; if it sleeps for more than a few minutes the session pauses and
-                        followers may need to re-join. Everyone must be on the same iHymns site
-                        address. Signing out, or going live again (which makes a new code), ends the
-                        previous session.
+                        followers may need to re-join. Signing out, or going live again (which makes
+                        a new code), ends the previous session.
+                    </p>
+                    <p class="small text-muted mb-0 mt-2">
+                        <strong>Everyone must be on the same iHymns web address.</strong> If you're
+                        testing on two of your own devices, open the host page and the join page at
+                        the <em>identical</em> address (both on the live site, or both on the same
+                        test site) &mdash; a session started at one address can only be joined from
+                        that same address. If you join from a different one, iHymns now tells you so
+                        directly (&ldquo;That code belongs to a different iHymns environment&hellip;&rdquo;)
+                        rather than just saying the code wasn't found.
                     </p>
                 </div>
             </div>

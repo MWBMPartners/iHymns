@@ -52,6 +52,16 @@ straight away.
 
 ## 🙋 Joining a session
 
+> ### 📱💻 Testing it on two of your own devices?
+> **Use the same web address on both.** iHymns runs at more than one address (the live
+> site and one or more preview/test sites), and — on purpose, so a rehearsal on a test site
+> can never be joined by a real congregation on the live site — a session started at one
+> address can **only** be joined from that same address. The instinctive test (start it on
+> your laptop's preview URL, join on your phone's live app) will always be refused. So: open
+> the **host** page and the **join** page at the **identical** web address — both on
+> `ihymns.app`, or both on the same test site — and it works. If you get *"That code belongs
+> to a different iHymns environment…"*, that mismatch is exactly what's happening.
+
 You can join either kind of session from two places:
 
 - **Join Live** on any song page
@@ -94,8 +104,8 @@ Codes rotate roughly every 30 seconds, so if one is refused, just read the **cur
 | No **Go Live** button at all | You're signed out — it only appears when you're signed in | Sign in, then reload the page |
 | *"That doesn't look like a valid session code."* | The code isn't 4–12 letters/digits once spaces and dashes are stripped out | Re-type the code. Remember it never contains 0, 1, O, I, L or U |
 | *"That code isn't active. Check the screen and try again."* | The code has moved on, or you're on the wrong site | Read the **current** code straight off the screen |
-| *"Session not found or ended."* even though the leader's screen shows LIVE | You're probably on a **different iHymns site address** to the leader | Make sure you're both on exactly the same address (e.g. both on `ihymns.app`, or both on the test site) |
-| Same message, but you're genuinely on the same address | The leader's screen fell asleep, the code was mistyped, or the 4-hour limit was reached | Ask the leader to wake their screen (it revives automatically), then re-join |
+| *"That code belongs to a different iHymns environment…"* | You and the leader are on **different iHymns site addresses** (for example the live site vs a preview/test site). iHymns now recognises this case and tells you directly instead of just saying "not found" | Make sure **both** devices use exactly the same web address — both on `ihymns.app`, or both on the same test/preview site — then re-join |
+| *"Session not found or ended."* even though the leader's screen shows LIVE | You're on the same address, but the leader's screen fell asleep, the code was mistyped, or the 4-hour limit was reached | Ask the leader to wake their screen (it revives automatically), then read the current code and re-join |
 | *"The live session has ended."* / *"The service has ended."* mid-way through | The leader ended it, signed out, went live again, their screen slept, or time ran out | Get the new code and re-join |
 | *"Your live session ended (closed or timed out after inactivity)."* — seen by the **leader** | The session auto-closed because there was no genuine interaction for a while (having the app merely open doesn't count) | Tap **Go Live** again for a fresh code; adjust the idle timeout under Settings if it's closing sooner than you'd like |
 | *"iHymns is down for maintenance — try the code again in a minute. The leader's code is fine."* | The site is briefly in maintenance mode | Wait a minute and try again — nothing is wrong with the code |
