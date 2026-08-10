@@ -1003,3 +1003,380 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
         return null;
     }
 }
+
+/* =============================================================================
+ * #1770 C2 — Leader-idle auto-close for Quick (host) sessions (req #2/#5).
+ * =============================================================================
+ * ELI5: today a Quick "follow my song" session never notices when the leader
+ * has actually put the phone down — only a browser closing/crashing kills it,
+ * and if that never happens the session (and, once #1770 C3's presence unlock
+ * lands, any CCLI grant riding on it) can live forever. This section adds a
+ * per-session "how long since a REAL person last drove this?" clock and a
+ * cheap way to ask "has that clock run out?" so every place that reads or
+ * writes a session can answer consistently.
+ *
+ * DETAILED — the whole family is additive + column-existence-gated
+ * (`tblLiveFollowSessions.LastLeaderSeenAt` / `IdleTimeoutMins`, shipped
+ * dormant by #1770 C1). `serviceMode_idleColumnsExist()` is the ONE probe
+ * every helper below defers to (mirrors `serviceMode_presenceRoleColumnExists()`
+ * a few hundred lines up) so an un-migrated docroot degrades to exactly
+ * today's behaviour — no idle enforcement, no extra columns referenced, no
+ * STRICT-mode throw. `serviceMode_idleFreshSql()` is the ONE SQL fragment
+ * every consumer (create/update/heartbeat/join/poll/prune) appends — nobody
+ * hand-types the `TIMESTAMPDIFF(...)` comparison a second time (CLAUDE.md
+ * modularity rule; guard G2a in the plan polices this).
+ *
+ * WHY TWO TIMESTAMPS, NOT ONE. `LastHeartbeatAt` already exists and answers
+ * "is the tab still open/backgrounded-but-alive?" (the 180s
+ * LIVE_SESSION_FRESHNESS_SECONDS window above) — an automated beat sent every
+ * ~30s keeps it fresh with zero human involvement. `LastLeaderSeenAt` answers
+ * a DIFFERENT question: "did a human actually DO something recently?".
+ * Conflating the two is the exact bug this feature exists to fix — an
+ * abandoned-but-still-open tab would heartbeat forever and never be
+ * recognised as abandoned. So `LastLeaderSeenAt` is bumped ONLY by genuine
+ * interaction: session create, a real `live_follow_update` broadcast (the
+ * host changed what's showing — driving IS interaction), or an explicit
+ * client-declared `leaderActive:true` flag on the heartbeat (added so
+ * reading/scrolling without navigating still counts, once the #1770 C5+
+ * client starts sending it) — never the bare automated beat by itself.
+ *
+ * @see .claude/live-follow-1770-plan.md §3.1, §4.1, §4.2, §5
+ * ============================================================================= */
+
+/**
+ * App-level fallback when `tblAppSettings.live_follow_idle_timeout_minutes`
+ * is unset (the #1406 `SERVICE_MODE_POLL_MS_*` precedent — a freeform
+ * tblAppSettings key needs no migration to add or to read).
+ */
+const LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY  = 'live_follow_idle_timeout_minutes';
+const LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES  = 15;
+/** `tblUsers.Settings` JSON root key (rule #28 "new prefs are JSON" posture —
+ *  a personal preference gets a key, never a new tblUsers column). */
+const LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY = 'liveIdleTimeoutMins';
+/** §10 S5 — 5..240 minutes; 240 = the existing 4h `ExpiresAt` hard ceiling
+ *  (SERVICE_MODE_HARD_CEILING_HOURS above), so "never" is structurally
+ *  meaningless and needs no sentinel value. */
+const LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES = 5;
+const LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES = 240;
+/** §4.1 — cap on one opportunistic prune pass, same rationale as
+ *  SERVICE_MODE_CODE_RETIRE_LIMIT above (piggy-backed on a hot request path,
+ *  must never turn a routine create/join into a long-running write). */
+const LIVE_FOLLOW_IDLE_PRUNE_LIMIT = 20;
+
+/**
+ * #1770 — memoised probe: do BOTH idle columns exist on
+ * `tblLiveFollowSessions` yet? Lockstep on purpose (the rule-#25 gate
+ * discipline this codebase already uses for `lyricLinesMirrorPresent()` /
+ * `…SyncReady()`) — the prune predicate needs `IdleTimeoutMins` and
+ * `LastLeaderSeenAt` together, so a half-applied ALTER (which #1770 C1's
+ * single migration transaction makes practically impossible, but a partial
+ * manual patch could still produce) must not be treated as "ready".
+ *
+ * WHY: mysqli runs under MYSQLI_REPORT_STRICT (db_mysql.php), so selecting a
+ * missing column THROWS rather than returning nothing — the #1228 lesson.
+ * Every caller below goes through this probe rather than assuming the #1770
+ * C1 migration has been RUN (schema.sql having the columns is not the same
+ * as an install having applied them — migrations are web-run, never
+ * auto-applied, rule #19).
+ */
+function serviceMode_idleColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblLiveFollowSessions'
+                AND COLUMN_NAME IN ('LastLeaderSeenAt', 'IdleTimeoutMins')"
+        );
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        $cached = ($count === 2);
+    } catch (\Throwable $_e) {
+        /* Probe failure — degrade as "not migrated yet" (fail closed on the
+           columns, fail OPEN on caller behaviour: no idle enforcement,
+           exactly today's posture). */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1770 — memoised probe: do BOTH org-layer idle columns exist on
+ * `tblOrganisations` yet? Same lockstep rationale as
+ * serviceMode_idleColumnsExist() — `EnforceIdleTimeout` is only meaningful
+ * alongside `LiveIdleTimeoutMins`.
+ */
+function serviceMode_orgIdleColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblOrganisations'
+                AND COLUMN_NAME IN ('LiveIdleTimeoutMins', 'EnforceIdleTimeout')"
+        );
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        $cached = ($count === 2);
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1770 — THE one idle-freshness SQL fragment. Returns `''` (no-op) on an
+ * un-migrated install; otherwise a leading- `AND (...)` clause that reads
+ * TRUE for a session that is NOT idle-expired:
+ *
+ *   IdleTimeoutMins IS NULL           -- legacy row / service session / never stamped
+ *   OR LastLeaderSeenAt IS NULL       -- stamped-column but not-yet-seen row
+ *   OR TIMESTAMPDIFF(MINUTE, LastLeaderSeenAt, UTC_TIMESTAMP()) < IdleTimeoutMins
+ *
+ * NULL-SAFETY IS THE DORMANCY (plan §11 landmine 2): a `NOT NULL DEFAULT 15`
+ * column would have retroactively idle-closed every in-flight session the
+ * instant the migration ran. Both NULL branches read as "never idle" so a
+ * legacy/service/un-stamped row is untouched.
+ *
+ * $alias is a HARDCODED CALL-SITE CONSTANT (never request input) naming
+ * either a table alias ('s') or, for an alias-less single-table query, the
+ * bare table name itself (MySQL accepts `tablename.column` there) — the
+ * regex guard below is defence-in-depth mirroring
+ * serviceMode_codeLiveStatusSql()'s treatment of its own trusted constants
+ * (rule #5: the only legitimate SQL interpolations are hardcoded source
+ * constants or allow-list-validated values — this is the former, checked
+ * like the latter).
+ *
+ * DEVIATION FROM THE PLAN'S LITERAL SIGNATURE: the plan text (§4.1) writes
+ * `serviceMode_idleFreshSql(string $alias = 's'): string` with no `$db`
+ * parameter — but answering "un-migrated?" requires a live connection to
+ * probe INFORMATION_SCHEMA (serviceMode_idleColumnsExist() takes `\mysqli`,
+ * as every other existence probe in this file does), so `$db` is added as
+ * the first parameter here. Every call site in this commit passes it.
+ *
+ * @param \mysqli $db
+ * @param string  $alias Table alias or bare table name to qualify columns with.
+ * @return string '' pre-migration, else ' AND (...)' ready to append to a WHERE
+ *                clause or nest inside a boolean expression.
+ */
+function serviceMode_idleFreshSql(\mysqli $db, string $alias = 's'): string
+{
+    if (!serviceMode_idleColumnsExist($db)) {
+        return '';
+    }
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $alias)) {
+        throw new \RuntimeException('Invalid SQL alias literal: ' . var_export($alias, true));
+    }
+    return " AND ({$alias}.IdleTimeoutMins IS NULL OR {$alias}.LastLeaderSeenAt IS NULL"
+         . " OR TIMESTAMPDIFF(MINUTE, {$alias}.LastLeaderSeenAt, UTC_TIMESTAMP()) < {$alias}.IdleTimeoutMins)";
+}
+
+/**
+ * #1770 §5 — THE idle-timeout precedence resolver: app default → org layer →
+ * user layer → an org's ENFORCED override, in that priority. Called ONCE, at
+ * `live_follow_create`, and the result is STAMPED onto the new row
+ * (`IdleTimeoutMins`) — every gate/prune predicate afterwards reads the
+ * stamped column, never re-resolves this chain per-row (§3.1's "stamp-at-
+ * create, not resolve-at-read" design: an admin changing the app default
+ * mid-session affects the NEXT session, not running ones).
+ *
+ * ELI5: "how long can this leader go quiet before we close their session?" —
+ * ask their church first (if the church has LOCKED an answer, that wins,
+ * picking the strictest if they belong to several); otherwise ask the
+ * leader's own preference; otherwise fall back to whatever their church
+ * suggests as a default; otherwise use the site-wide default.
+ *
+ * PRECEDENCE (owner's formula, analysis §491): `enforced ?? (user ?? orgDefault ?? appDefault)`.
+ *   1. App default   — `getAppSetting('live_follow_idle_timeout_minutes')`,
+ *      falling back to LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES (15).
+ *   2. Org layer      — every ACTIVE org the user belongs to
+ *      (`tblOrganisationMembers` ⋈ `tblOrganisations WHERE IsActive = 1`)
+ *      with a non-NULL `LiveIdleTimeoutMins`. Any org with
+ *      `EnforceIdleTimeout = 1` contributes to $enforced (the MINIMUM such
+ *      value wins outright across a multi-org user — most-restrictive,
+ *      deterministic, fails toward safety, §10 S3); every other org
+ *      contributes to $orgDefault (again the minimum).
+ *   3. User layer     — `tblUsers.Settings` JSON root key
+ *      `liveIdleTimeoutMins` (an int > 0; anything else is ignored).
+ *   4. Resolution      — `$enforced ?? ($user ?? ($orgDefault ?? $appDefault))`,
+ *      clamped to [LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES,
+ *      LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES].
+ *
+ * Column-existence-gated at both layers (serviceMode_orgIdleColumnsExist(),
+ * and the user layer simply reads a JSON key that is absent pre-#1770 UI —
+ * absence is not an error, just "no preference set"). Every DB read here is
+ * wrapped: a resolver failure must never break session creation, so any
+ * \Throwable degrades that ONE layer to "not set" rather than propagating.
+ *
+ * @param \mysqli $db
+ * @param int     $userId The host creating the session (>0 — Quick sessions
+ *                         always have an authenticated HostUserId).
+ * @return int Resolved minutes, clamped to the app-wide [5, 240] band.
+ */
+function serviceMode_resolveIdleTimeoutMins(\mysqli $db, int $userId): int
+{
+    /* --- 1. App default ---------------------------------------------- */
+    $appDefault = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES;
+    if (function_exists('getAppSetting')) {
+        $raw = getAppSetting(LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)$appDefault);
+        if ($raw !== null && is_numeric($raw) && (int)$raw > 0) {
+            $appDefault = (int)$raw;
+        }
+    }
+
+    /* --- 2. Org layer (enforced + default), minimum-wins -------------- */
+    $enforced   = null;
+    $orgDefault = null;
+    if ($userId > 0 && serviceMode_orgIdleColumnsExist($db)) {
+        try {
+            $stmt = $db->prepare(
+                'SELECT o.LiveIdleTimeoutMins AS Mins, o.EnforceIdleTimeout AS Enforce
+                   FROM tblOrganisationMembers m
+                   JOIN tblOrganisations o ON o.Id = m.OrgId
+                  WHERE m.UserId = ? AND o.IsActive = 1 AND o.LiveIdleTimeoutMins IS NOT NULL'
+            );
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            foreach ($rows as $r) {
+                $mins = (int)$r['Mins'];
+                if ($mins <= 0) {
+                    continue;
+                }
+                if ((int)$r['Enforce'] === 1) {
+                    $enforced = ($enforced === null) ? $mins : min($enforced, $mins);
+                } else {
+                    $orgDefault = ($orgDefault === null) ? $mins : min($orgDefault, $mins);
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no org layer" — never break create. */
+        }
+    }
+
+    /* --- 3. User layer -------------------------------------------------- */
+    $userVal = null;
+    if ($userId > 0) {
+        try {
+            $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $rawSettings = $row['Settings'] ?? null;
+            $arr = (is_string($rawSettings) && $rawSettings !== '') ? json_decode($rawSettings, true) : null;
+            if (is_array($arr) && isset($arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY])
+                && is_numeric($arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY])) {
+                $candidate = (int)$arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY];
+                if ($candidate > 0) {
+                    $userVal = $candidate;
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no user preference set". */
+        }
+    }
+
+    /* --- 4. Resolve + clamp --------------------------------------------- */
+    $resolved = $enforced ?? ($userVal ?? ($orgDefault ?? $appDefault));
+    return max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, $resolved));
+}
+
+/**
+ * #1770 §4.1 — opportunistic, best-effort prune of Quick (host) sessions that
+ * have gone idle-expired. Piggy-backed on `live_follow_create` /
+ * `live_follow_join` (both run whenever Quick is in use at all; this host has
+ * no cron wired to the web app — the SAME rationale as
+ * serviceMode_retireExpiredCodes() above), capped at
+ * LIVE_FOLLOW_IDLE_PRUNE_LIMIT so a routine create/join can never become a
+ * long-running write, and CHANNEL-FILTERED (rule #26) so alpha traffic only
+ * ever prunes alpha sessions.
+ *
+ * ELI5: every so often, while somebody is starting or joining a Quick
+ * session anyway, take a quick look for any OTHER Quick sessions on this
+ * environment whose leader clearly wandered off — and quietly close them.
+ *
+ * DETAILED — for each idle-expired `SessionKind = 'host'` row found:
+ *   1. `IsActive = 0` (re-checked with `AND IsActive = 1` so two concurrent
+ *      prune passes can't double-count one session).
+ *   2. Revoke that session's `tblServicePresence` rows (`IsActive = 0` by
+ *      `SessionId`) — the instant-stop half of the #1770 C3 host-CCLI
+ *      mitigation. Harmless here in isolation (nothing mints Quick presence
+ *      rows until C3 lands), but the prune must already do this so C3 does
+ *      not have to touch this function again — see plan §11 landmine 4:
+ *      "presence revocation must be on EVERY session-death path".
+ *   3. `liveActivitySessionPush($db, $id, 'end')` (best-effort, mirrors
+ *      every other session-end path in this file) so a native app's Live
+ *      Activity doesn't sit stuck "live" forever.
+ *
+ * Wrapped in ONE try/catch, matching serviceMode_retireExpiredCodes()'s
+ * posture: a prune failure (lock contention, a transient DB hiccup) must
+ * NEVER fail the create/join it rides in on.
+ *
+ * @param \mysqli $db
+ * @param string  $channel serviceMode_channel() of the CURRENT request.
+ * @return int Sessions pruned (0 is normal).
+ */
+function serviceMode_pruneIdleQuickSessions(\mysqli $db, string $channel): int
+{
+    if (!serviceMode_idleColumnsExist($db)) {
+        return 0;
+    }
+    try {
+        $cap = (int) LIVE_FOLLOW_IDLE_PRUNE_LIMIT;
+        $stmt = $db->prepare(
+            "SELECT Id FROM tblLiveFollowSessions
+              WHERE SessionKind = 'host' AND IsActive = 1 AND Channel = ?
+                AND IdleTimeoutMins IS NOT NULL AND LastLeaderSeenAt IS NOT NULL
+                AND TIMESTAMPDIFF(MINUTE, LastLeaderSeenAt, UTC_TIMESTAMP()) >= IdleTimeoutMins
+              LIMIT {$cap}"
+        );
+        $stmt->bind_param('s', $channel);
+        $stmt->execute();
+        $ids = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+        $stmt->close();
+
+        if (!$ids) {
+            return 0;
+        }
+
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'live_activity_push.php';
+
+        $pruned = 0;
+        foreach ($ids as $id) {
+            $upd = $db->prepare("UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE Id = ? AND IsActive = 1");
+            $upd->bind_param('i', $id);
+            $upd->execute();
+            $changed = $upd->affected_rows;
+            $upd->close();
+            if ($changed <= 0) {
+                continue; /* Already closed by a concurrent pass. */
+            }
+            $pruned++;
+
+            $rev = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+            $rev->bind_param('i', $id);
+            $rev->execute();
+            $rev->close();
+
+            if (function_exists('liveActivitySessionPush')) {
+                liveActivitySessionPush($db, $id, 'end');
+            }
+        }
+        return $pruned;
+    } catch (\Throwable $e) {
+        error_log('[service_mode/pruneIdleQuickSessions] ' . $e->getMessage());
+        return 0;
+    }
+}

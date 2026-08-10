@@ -17025,6 +17025,25 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
+            /* #1770 C2 — resolve + stamp the leader-idle timeout. Gated on
+               the idle columns existing: on an un-migrated install neither
+               query runs, so create stays byte-identical to pre-#1770. On a
+               migrated install the resolved value is stamped on THIS row
+               (see includes/service_mode.php's "stamp-at-create" doc-block)
+               so every later gate/prune reads a pure column, never re-runs
+               the app→org→user precedence chain per request. */
+            $idleColsExist   = serviceMode_idleColumnsExist($db);
+            $idleTimeoutMins = $idleColsExist ? serviceMode_resolveIdleTimeoutMins($db, $userId) : null;
+
+            /* #1770 C2 — opportunistic idle-session prune, piggy-backed on
+               this hot path (mirrors serviceMode_retireExpiredCodes()'s own
+               placement rationale: no cron on this host). Self-gated + fully
+               wrapped internally — a prune failure can never fail this
+               create. Run BEFORE the supersede below so a host whose OWN
+               prior session just went idle is pruned via this path rather
+               than silently superseded with no 'end' push. */
+            serviceMode_pruneIdleQuickSessions($db, $channel);
+
             /* Reject an unknown songId up front — the CurrentSongId FK would
                otherwise throw 1452 under STRICT → an uncaught 500. */
             if ($songId !== null) {
@@ -17076,15 +17095,32 @@ if ($action !== null) {
                 $code = '';
                 for ($i = 0; $i < 6; $i++) { $code .= $alphabet[random_int(0, $alphaMax)]; }
                 try {
-                    $ins = $db->prepare(
-                        'INSERT INTO tblLiveFollowSessions
-                            (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
-                             CurrentComponentIndex, StateJson, Channel, IsActive, StartedAt,
-                             LastHeartbeatAt, ExpiresAt, StateRevision)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
-                                 DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0)'
-                    );
-                    $ins->bind_param('siississ', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson, $channel);
+                    /* #1770 C2 — two INSERT shapes (the service_join
+                       Role-gate precedent, api.php's serviceMode_presenceRoleColumnExists
+                       branch) rather than one dynamically-built column list:
+                       clearer to read, and mysqli's bind_param type string
+                       must match the placeholder count exactly either way. */
+                    if ($idleColsExist) {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblLiveFollowSessions
+                                (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
+                                 CurrentComponentIndex, StateJson, Channel, IsActive, StartedAt,
+                                 LastHeartbeatAt, ExpiresAt, StateRevision, LastLeaderSeenAt, IdleTimeoutMins)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
+                                     DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0, UTC_TIMESTAMP(), ?)'
+                        );
+                        $ins->bind_param('siississi', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson, $channel, $idleTimeoutMins);
+                    } else {
+                        $ins = $db->prepare(
+                            'INSERT INTO tblLiveFollowSessions
+                                (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
+                                 CurrentComponentIndex, StateJson, Channel, IsActive, StartedAt,
+                                 LastHeartbeatAt, ExpiresAt, StateRevision)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
+                                     DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0)'
+                        );
+                        $ins->bind_param('siississ', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson, $channel);
+                    }
                     $ins->execute();
                     $ins->close();
                     $inserted = true;
@@ -17105,8 +17141,10 @@ if ($action !== null) {
 
             /* #1429 — sessionId exposed so the native app can immediately
                register a Live Activity push token against THIS session
-               (apns_register's kind=liveActivity branch requires it). */
-            sendJson(['ok' => true, 'code' => $code, 'revision' => 0, 'sessionId' => $newSessionId]);
+               (apns_register's kind=liveActivity branch requires it).
+               #1770 C2 — idleTimeoutMins is ADDITIVE (null pre-migration);
+               a client that doesn't read the key is unaffected. */
+            sendJson(['ok' => true, 'code' => $code, 'revision' => 0, 'sessionId' => $newSessionId, 'idleTimeoutMins' => $idleTimeoutMins]);
             break;
         }
 
@@ -17157,13 +17195,26 @@ if ($action !== null) {
             $preRow = $preSel->get_result()->fetch_assoc();
             $preSel->close();
 
+            /* #1770 C2 — a genuine broadcast IS leader interaction, so
+               LastLeaderSeenAt is bumped unconditionally here (gated only on
+               the column existing, never on a client flag — unlike the
+               heartbeat's opt-in `leaderActive`, an actual song/section
+               change needs no client cooperation to count as "a human is
+               driving"). The WHERE gains the idle-freshness predicate so a
+               broadcast against an idle-expired session falls through to the
+               SAME pre-existing 409 the host client already tears down on
+               (live-follow.js:186-191) — zero client change needed for the
+               close-detection path. Both fragments are '' pre-migration, so
+               this SQL is byte-identical to the pre-#1770 statement then. */
+            $idleFreshSql  = serviceMode_idleFreshSql($db, 'tblLiveFollowSessions');
+            $leaderSeenSet = serviceMode_idleColumnsExist($db) ? ', LastLeaderSeenAt = UTC_TIMESTAMP()' : '';
             $upd = $db->prepare(
                 'UPDATE tblLiveFollowSessions
                     SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
-                        LastHeartbeatAt = UTC_TIMESTAMP(),
+                        LastHeartbeatAt = UTC_TIMESTAMP()' . $leaderSeenSet . ',
                         ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR),
                         StateRevision = StateRevision + 1
-                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1' . $idleFreshSql
             );
             $upd->bind_param('sissi', $songId, $componentIndex, $stateJson, $code, $userId);
             $upd->execute();
@@ -17197,18 +17248,31 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             $userId = (int)$authUser['Id'];
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
             $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+            /* #1770 C2 — an EXPLICIT, client-declared "a human touched the
+               app since the last beat" flag. The automated 30s keepalive
+               ALONE must never bump LastLeaderSeenAt (plan §11 landmine 3:
+               that recreates the immortal-abandoned-tab bug this feature
+               exists to fix) — only a genuine leaderActive:true does. A
+               pre-#1770 C5 client never sends this key, so `$leaderActive`
+               is always false for it and this endpoint's SQL is unchanged
+               for such callers even on a migrated install. */
+            $leaderActive = !empty($body['leaderActive']);
 
             $db = getDbMysqli();
+            $idleColsExist = serviceMode_idleColumnsExist($db);
+            $leaderSeenSet = ($idleColsExist && $leaderActive) ? ', LastLeaderSeenAt = UTC_TIMESTAMP()' : '';
+
             /* Keepalive only — does NOT bump StateRevision (no state changed). */
             $hb = $db->prepare(
                 'UPDATE tblLiveFollowSessions
-                    SET LastHeartbeatAt = UTC_TIMESTAMP(),
+                    SET LastHeartbeatAt = UTC_TIMESTAMP()' . $leaderSeenSet . ',
                         ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR)
                   WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
             );
@@ -17218,10 +17282,17 @@ if ($action !== null) {
 
             /* Liveness via existence, NOT affected_rows: two heartbeats in the
                same second write identical timestamps, so affected_rows (changed
-               rows) would be 0 even though the session is fine. */
+               rows) would be 0 even though the session is fine.
+               #1770 C2 — the idle-freshness predicate is folded into THIS
+               read (not the UPDATE above, whose job is only to keep
+               LastHeartbeatAt/ExpiresAt current) so an idle-expired session
+               still gets touched harmlessly but answers ok:false — the same
+               signal live-follow.js already treats as "session ended"
+               (:214), so this needs no client change to take effect. */
+            $idleFreshSql = serviceMode_idleFreshSql($db, 'tblLiveFollowSessions');
             $chk = $db->prepare(
                 'SELECT 1 FROM tblLiveFollowSessions
-                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1' . $idleFreshSql
             );
             $chk->bind_param('si', $code, $userId);
             $chk->execute();
@@ -17292,13 +17363,18 @@ if ($action !== null) {
                (service_mode.php) — the ONE unified live-session window shared
                with Service Mode; keep this literal in sync. #1386 */
             $channel = serviceMode_channel();
+            /* #1770 C2 — idle-expired sessions stop resolving here too (the
+               same 404 anti-probe path below already covers "not found" and
+               "expired", so an idle-closed host looks identical to an ended
+               one — I6). '' pre-migration, byte-identical SQL then. */
+            $idleFreshSql = serviceMode_idleFreshSql($db, 's');
             $stmt = $db->prepare(
                 'SELECT s.Id, s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
                         u.DisplayName AS HostName
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
                   WHERE s.SessionCode = ? AND s.Channel = ? AND s.IsActive = 1
-                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)'
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)' . $idleFreshSql
             );
             $stmt->bind_param('ss', $code, $channel);
             $stmt->execute();
@@ -17367,9 +17443,18 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* #1405 side-finding fix (rule #26) — Channel filter, mirrors join. */
             $channel = serviceMode_channel();
+            /* #1770 C2 — the Fresh expression gains the idle predicate,
+               NESTED inside its own parens (idleFreshSql's fragment opens
+               with " AND (" and closes its own paren, so appending it right
+               before Fresh's closing ")" nests cleanly: `(IsActive = 1 AND
+               ... AND (IdleTimeoutMins IS NULL OR ...))`). No table alias
+               here, so the trusted call-site constant IS the bare table
+               name — see serviceMode_idleFreshSql()'s doc-block. '' when
+               un-migrated → byte-identical SQL to pre-#1770. */
+            $idleFreshSql = serviceMode_idleFreshSql($db, 'tblLiveFollowSessions');
             $stmt = $db->prepare(
                 'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
-                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)) AS Fresh
+                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)' . $idleFreshSql . ') AS Fresh
                    FROM tblLiveFollowSessions
                   WHERE SessionCode = ? AND Channel = ?'
             );
