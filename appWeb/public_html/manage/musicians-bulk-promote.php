@@ -43,6 +43,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    shared constant now that this page's own private _CP_BULK_CREDIT_TABLES
    five-table copy is retired in favour of it. require_once is idempotent. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1785 C8 — musicianDisambiguationPayloadBulk(), the ONE shared
+   disambiguation-payload builder every #1785 merge affordance consumes
+   (rule #22 — never re-forked per surface); this page's fuzzy-match
+   option labels use it to show #id/lifespan/use-count (plan §8.3).
+   require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -275,6 +281,32 @@ try {
             }
         }
         usort($c['matches'], static fn($a, $b) => $b['score'] <=> $a['score']);
+    }
+    unset($c);
+
+    /* #1785 C8 (plan §8.3) — disambiguate every fuzzy-match option so a
+       curator can tell "which registry row is this?" instead of a bare
+       name: #id, born/died, use-count (the SAME shared payload builder
+       every other #1785 disambiguation surface uses, rule #22 — never
+       re-forked), plus the byte-variant classification of the match
+       AGAINST THIS CANDIDATE's own name (musicianNameVariantClass()) so
+       the option can also say WHY the two look alike. ONE bulk round-trip
+       for every matched registry id across the whole page, not per-row. */
+    $matchedIds = [];
+    foreach ($candidates as $c) {
+        foreach ($c['matches'] as $m) { $matchedIds[$m['id']] = true; }
+    }
+    $matchPayloads = $matchedIds ? musicianDisambiguationPayloadBulk($db, array_keys($matchedIds)) : [];
+    foreach ($candidates as &$c) {
+        foreach ($c['matches'] as &$m) {
+            $p = $matchPayloads[$m['id']] ?? null;
+            $m['born']           = $p['born']           ?? null;
+            $m['died']           = $p['died']            ?? null;
+            $m['disambiguation'] = $p['disambiguation']  ?? '';
+            $m['useCount']       = $p['useCount']         ?? 0;
+            $m['variant']        = musicianNameVariantClass($c['name'], $m['name']);
+        }
+        unset($m);
     }
     unset($c);
 
@@ -515,11 +547,25 @@ if (!empty($registryByName)) {
                                             </option>
                                             <?php foreach ($c['matches'] as $m):
                                                 $optVal = 'merge:' . (int)$m['id'];
+                                                /* #1785 C8 (plan §8.3) — "#id · b. 1961 · 12 credits" so a curator
+                                                   can tell WHICH registry row this is, not just its bare name —
+                                                   the same class of fix as the parent page's typeahead labels. An
+                                                   <option> can't hold markup, so the byte-variant classification
+                                                   (musicianNameVariantClass()) rides a data-variant attribute the
+                                                   JS below surfaces as a small text hint under the select once
+                                                   this option is chosen, rather than inline in the label itself. */
+                                                $matchBits = ['#' . (int)$m['id']];
+                                                if (!empty($m['born'])) { $matchBits[] = 'b. ' . $m['born']; }
+                                                if (!empty($m['died'])) { $matchBits[] = 'd. ' . $m['died']; }
+                                                if (!empty($m['useCount'])) { $matchBits[] = $m['useCount'] . ' credit' . ($m['useCount'] === 1 ? '' : 's'); }
+                                                if (!empty($m['disambiguation'])) { $matchBits[] = $m['disambiguation']; }
                                             ?>
                                                 <option value="<?= htmlspecialchars($optVal, ENT_QUOTES, 'UTF-8') ?>"
                                                         data-score="<?= number_format($m['score'], 3, '.', '') ?>"
+                                                        data-variant="<?= htmlspecialchars((string)($m['variant'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
                                                         <?= $optVal === $defaultVal ? 'selected' : '' ?>>
                                                     Merge into <?= htmlspecialchars($m['name']) ?>
+                                                    — <?= htmlspecialchars(implode(' · ', $matchBits), ENT_QUOTES, 'UTF-8') ?>
                                                     (<?= round($m['score'] * 100) ?>%)
                                                 </option>
                                             <?php endforeach; ?>
@@ -528,6 +574,11 @@ if (!empty($registryByName)) {
                                             <?php endif; ?>
                                             <option value="skip">Skip</option>
                                         </select>
+
+                                        <!-- #1785 C8 (plan §8.3) — variant hint for the currently-chosen
+                                             merge-target option, populated from its data-variant attribute
+                                             (an <option> can't hold markup, so the badge lives here instead). -->
+                                        <div class="small text-info row-variant-hint d-none"></div>
 
                                         <!-- Secondary registry picker. Only shown after the curator
                                              picks "Merge into other registry person…" in the main
@@ -600,6 +651,19 @@ if (!empty($registryByName)) {
         const isFuzzyMatchOption = (opt) =>
             opt && opt.value && opt.value.startsWith('merge:') && opt.hasAttribute('data-score');
 
+        /* #1785 C8 (plan §8.3) — human-readable label for a
+           musicianNameVariantClass() key, mirroring MUSICIAN_NAME_
+           VARIANT_LABELS (includes/musician_helpers.php) so the wording
+           matches every other #1785 surface that renders this badge —
+           never re-worded per call site. */
+        const VARIANT_LABELS = {
+            'identical': 'identical bytes',
+            'unicode-normalisation': 'differs only by Unicode form (combining vs. precomposed accent)',
+            'whitespace': 'differs only by invisible spacing',
+            'case': 'differs only by letter case',
+            'punctuation': 'differs only by punctuation/accents',
+        };
+
         function rowParts(rowOrSel) {
             const row = rowOrSel.closest ? rowOrSel.closest('tr') : rowOrSel;
             return {
@@ -608,7 +672,22 @@ if (!empty($registryByName)) {
                 other:  row.querySelector('.row-other-select'),
                 hAct:   row.querySelector('.row-action-hidden'),
                 hMerge: row.querySelector('.row-merge-hidden'),
+                hint:   row.querySelector('.row-variant-hint'),
             };
+        }
+
+        /* #1785 C8 — show/hide the variant hint for whichever merge-target
+           option is currently selected. A "different words" fuzzy match
+           (no variant) or a non-merge action (register/skip/other) both
+           hide the hint — it only makes sense next to an actual byte-
+           variant merge candidate. */
+        function syncVariantHint(p) {
+            if (!p.hint) return;
+            const opt = p.main.selectedOptions && p.main.selectedOptions[0];
+            const variant = opt ? opt.getAttribute('data-variant') : '';
+            if (!variant) { p.hint.classList.add('d-none'); p.hint.textContent = ''; return; }
+            p.hint.textContent = variant + ' — ' + (VARIANT_LABELS[variant] || variant);
+            p.hint.classList.remove('d-none');
         }
 
         /* Sync hidden POST fields to whatever the visible selects
@@ -616,6 +695,7 @@ if (!empty($registryByName)) {
            on initial page load so the first form-submit always reflects
            the curator's actual choice. */
         function syncRow(p) {
+            syncVariantHint(p);
             const val = p.main.value;
             if (val === 'register' || val === 'skip') {
                 p.hAct.value = val;

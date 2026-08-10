@@ -271,7 +271,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
  * includes/musician_helpers.php — so it's testable independent of
  * this dispatch block and reusable if another surface ever needs the
  * same "pick a credit person" search.
- * ---------------------------------------------------------------------- */
+ *
+ * #1785 C8 — ADDITIVE disambiguation fields (plan §8.1). A candidate
+ * whose "name" collides visually with another (two byte-variants, or
+ * just two different people who share a spelling) used to render as two
+ * identical-looking <option> labels — "which is merging into which?"
+ * (problem 2 of the #1785 issue body). Every REGISTRY candidate (never
+ * the in-use-only bucket — hydrating that would need a second, non-id
+ * lookup path musicianDisambiguationPayloadBulk() doesn't offer) now
+ * carries disambiguation/born/died/type/useCount from the SAME shared
+ * payload builder the review page uses (rule #22 — one builder, never
+ * re-forked per surface), plus `variant`: the byte-variant classification
+ * of this candidate AGAINST THE SOURCE name (musicianNameVariantClass(),
+ * only computed when `exclude_name` is present — i.e. an open merge
+ * always supplies it). All additive — the pre-existing
+ * {key,id,name,total} shape is untouched, so the member-picker consumer
+ * (which filters on `c.id` alone, musicians.php's memberLabelToKey/
+ * portrayedByLabelToKey blocks below) is unaffected. -------------------- */
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'merge_target_search') {
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
@@ -285,6 +301,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
     try {
         $db = getDbMysqli();
         $candidates = searchMusicianMergeTargets($db, $q, $excludeId, $excludeName, $limit);
+
+        /* #1785 C8 — hydrate the registry-bucket candidates (those with
+           a real `id`) with the shared disambiguation payload, in ONE
+           bulk round-trip rather than per-row. */
+        $registryIds = array_values(array_filter(array_map(
+            static fn(array $c) => $c['id'],
+            $candidates
+        )));
+        $payloads = $registryIds ? musicianDisambiguationPayloadBulk($db, $registryIds) : [];
+        foreach ($candidates as &$c) {
+            if ($c['id'] === null || !isset($payloads[$c['id']])) { continue; }
+            $p = $payloads[$c['id']];
+            $c['disambiguation'] = $p['disambiguation'];
+            $c['born']           = $p['born'];
+            $c['died']           = $p['died'];
+            $c['type']           = $p['type'];
+            $c['useCount']       = $p['useCount'];
+            $c['variant']        = $excludeName !== '' ? musicianNameVariantClass($excludeName, $c['name']) : null;
+        }
+        unset($c);
+
         echo json_encode(['candidates' => $candidates], JSON_UNESCAPED_UNICODE);
         exit;
     } catch (\Throwable $e) {
@@ -2638,7 +2675,13 @@ try {
                         <!-- Song-credit re-point preview (#583). The Source
                              aggregate already carries per-role counts in its
                              data-person attribute, so we render them inline
-                             when the modal opens — no extra round-trip. -->
+                             when the modal opens — no extra round-trip.
+                             #1785 C8 — the sixth "Artist" role joined the
+                             other five in the underlying data back at C5
+                             (MUSICIAN_CREDIT_ROLE_TABLES), but this preview
+                             widget itself was never updated to show it — so
+                             `total` included artist credits while the five
+                             visible pills didn't sum to it. Added here. -->
                         <div id="mus-merge-credit-preview" class="alert alert-info py-2 small mb-3 d-none">
                             <div class="fw-semibold mb-1">
                                 <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
@@ -2650,8 +2693,33 @@ try {
                                 <span>Arranger&nbsp;<strong id="mus-merge-count-arranger">0</strong></span>
                                 <span>Adaptor&nbsp;<strong id="mus-merge-count-adaptor">0</strong></span>
                                 <span>Translator&nbsp;<strong id="mus-merge-count-translator">0</strong></span>
+                                <span>Artist&nbsp;<strong id="mus-merge-count-artist">0</strong></span>
                                 <span class="ms-auto">Total&nbsp;<strong id="mus-merge-count-total">0</strong></span>
                             </div>
+                        </div>
+
+                        <!-- #1785 C8 — disambiguation comparison (plan §8.2):
+                             the direct answer to "which is merging into
+                             which?" (problem 2 of the #1785 issue body).
+                             Populated once a target is actually picked from
+                             the typeahead (its payload is what the
+                             merge_target_search endpoint's #1785 C8
+                             additive fields carry) — hidden until then, since
+                             a half-typed target has nothing to compare. -->
+                        <div id="mus-merge-disambig" class="row g-2 small mb-3 d-none">
+                            <div class="col-6">
+                                <div class="border rounded p-2">
+                                    <div class="text-secondary">Source (removed)</div>
+                                    <div id="mus-merge-disambig-source" class="fw-semibold"></div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="border rounded p-2">
+                                    <div class="text-secondary">Target (survives)</div>
+                                    <div id="mus-merge-disambig-target" class="fw-semibold"></div>
+                                </div>
+                            </div>
+                            <div class="col-12" id="mus-merge-disambig-variant"></div>
                         </div>
 
                         <div id="mus-merge-children" class="d-none">
@@ -4718,11 +4786,35 @@ try {
                used on /manage/songbooks (same <input> + <datalist> +
                debounced-GET shape), just against
                ?action=merge_target_search instead of loading every
-               person into the DOM up front. */
+               person into the DOM up front.
+               #1785 C8 — `labelToCandidate` is the additive sibling: maps
+               the SAME full label to the whole candidate object (now
+               carrying disambiguation/born/died/type/useCount/variant, plan
+               §8.1) so a pick can render the disambiguation comparison
+               panel without a second round-trip. Keying BOTH maps on the
+               full disambiguated label (not the bare name) is what fixes
+               the underlying bug: two byte-variant candidates used to
+               render two visually IDENTICAL <option> labels, so picking
+               either one collided in labelToKey; disambiguated labels
+               (#id · lifespan · credits) can no longer collide. */
             let labelToKey = new Map();
+            let labelToCandidate = new Map();
             let targetInflight = null;
             let targetDebounce  = null;
             const currentExclude = { id: 0, name: '' };
+
+            /* #1785 C8 — "Eddie James — #45 · 12 credits · b. 1961". Only
+               a registry candidate (c.id truthy) carries the additive
+               fields; an in-use-only name keeps its existing plain label. */
+            function candidateLabel(c) {
+                if (!c.id) { return c.name + ' (not yet in registry)'; }
+                const bits = ['#' + c.id];
+                if (c.useCount) { bits.push(c.useCount + ' credit' + (c.useCount === 1 ? '' : 's')); }
+                if (c.born) { bits.push('b. ' + c.born); }
+                if (c.died) { bits.push('d. ' + c.died); }
+                if (c.disambiguation) { bits.push(c.disambiguation); }
+                return c.name + ' — ' + bits.join(' · ');
+            }
 
             function targetLookup(query) {
                 if (targetInflight) targetInflight.abort();
@@ -4738,13 +4830,49 @@ try {
                     .then(data => {
                         const list = Array.isArray(data.candidates) ? data.candidates : [];
                         labelToKey = new Map();
+                        labelToCandidate = new Map();
                         targetDatalist.innerHTML = list.map(c => {
-                            const label = c.name + (c.id ? '' : ' (not yet in registry)');
+                            const label = candidateLabel(c);
                             labelToKey.set(label, c.key);
+                            labelToCandidate.set(label, c);
                             return '<option value="' + label.replace(/"/g, '&quot;') + '"></option>';
                         }).join('');
                     })
                     .catch(err => { if (err.name !== 'AbortError') { /* silent — search is a nicety, not critical path */ } });
+            }
+
+            /* #1785 C8 — render the source-vs-target disambiguation panel
+               (plan §8.2's direct answer to "which is merging into
+               which?"). Hidden until a real target candidate is picked;
+               cleared (not just hidden) on every fresh merge open below. */
+            const disambigWrap    = document.getElementById('mus-merge-disambig');
+            const disambigSource  = document.getElementById('mus-merge-disambig-source');
+            const disambigTarget  = document.getElementById('mus-merge-disambig-target');
+            const disambigVariant = document.getElementById('mus-merge-disambig-variant');
+            const VARIANT_LABELS = {
+                'identical': 'identical bytes',
+                'unicode-normalisation': 'differs only by Unicode form (combining vs. precomposed accent)',
+                'whitespace': 'differs only by invisible spacing',
+                'case': 'differs only by letter case',
+                'punctuation': 'differs only by punctuation/accents',
+            };
+            function renderDisambig(candidate) {
+                if (!disambigWrap) return;
+                if (!candidate || !candidate.id) { disambigWrap.classList.add('d-none'); return; }
+                disambigSource.textContent = currentExclude.name || '(unregistered)';
+                const tBits = [];
+                if (candidate.born) { tBits.push('b. ' + candidate.born); }
+                if (candidate.died) { tBits.push('d. ' + candidate.died); }
+                if (candidate.disambiguation) { tBits.push(candidate.disambiguation); }
+                disambigTarget.textContent = candidate.name + (tBits.length ? ' (' + tBits.join(', ') + ')' : '');
+                if (candidate.variant) {
+                    const label = VARIANT_LABELS[candidate.variant] || candidate.variant;
+                    disambigVariant.innerHTML = '<span class="badge bg-info-subtle text-info-emphasis">'
+                        + candidate.variant + '</span> <span class="text-secondary">' + label + '</span>';
+                } else {
+                    disambigVariant.innerHTML = '<span class="badge bg-secondary-subtle text-secondary-emphasis">different words</span>';
+                }
+                disambigWrap.classList.remove('d-none');
             }
 
             targetTxt?.addEventListener('input', () => {
@@ -4757,6 +4885,7 @@ try {
                    enable on a half-typed, unresolved name (#583's
                    irreversible-merge guard depends on a REAL target). */
                 targetKeyIn.value = labelToKey.get(v) || '';
+                renderDisambig(labelToCandidate.get(v) || null);
                 refreshSubmitState();
                 if (v.trim() === '') {
                     targetDatalist.innerHTML = '';
@@ -4796,7 +4925,9 @@ try {
                 if (confirmCb) confirmCb.checked = false;
 
                 /* Per-role re-point preview (#583). The byName aggregate
-                   already carries every count we need; just display them. */
+                   already carries every count we need; just display them.
+                   #1785 C8 — the "Artist" pill joins the other five (see
+                   the credit-preview markup's own doc-comment above). */
                 const previewWrap = document.getElementById('mus-merge-credit-preview');
                 if (previewWrap) {
                     document.getElementById('mus-merge-count-writer').textContent     = person.writers     || 0;
@@ -4804,6 +4935,7 @@ try {
                     document.getElementById('mus-merge-count-arranger').textContent   = person.arrangers   || 0;
                     document.getElementById('mus-merge-count-adaptor').textContent    = person.adaptors    || 0;
                     document.getElementById('mus-merge-count-translator').textContent = person.translators || 0;
+                    document.getElementById('mus-merge-count-artist').textContent     = person.artists     || 0;
                     document.getElementById('mus-merge-count-total').textContent      = person.total       || 0;
                     previewWrap.classList.remove('d-none');
                 }
@@ -4820,6 +4952,9 @@ try {
                 targetTxt.value      = '';
                 targetKeyIn.value    = '';
                 targetDatalist.innerHTML = '';
+                labelToKey = new Map();
+                labelToCandidate = new Map();
+                renderDisambig(null); // #1785 C8 — clear any stale comparison from a prior merge open
 
                 /* Source children — render each link + IPI + ISNI as a
                    checkbox row (default checked = keep on target). IPI
