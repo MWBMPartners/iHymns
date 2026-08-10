@@ -28,6 +28,14 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared duplicate/counterpart similarity scorer (#1216, rule #22) — this
+   page used to carry its own private _musBulkNormalise()/_musBulkTokens()/
+   _musBulkSimilarity() fork of the same maths (its own doc-comment even
+   said "mirrors the scoring shape from build-song-link-suggestions.php" —
+   i.e. it already knew it was a fork). #1785 C3 deletes that fork and
+   points every call site at the shared ihymns_sim_name_*() functions
+   instead (#1785 C2 added the NAME-scoring section this page needs). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -55,68 +63,16 @@ const _CP_BULK_CREDIT_TABLES = [
     'translator' => 'tblSongTranslators',
 ];
 
-/**
- * Cheap normalised-name similarity in [0, 1]. Mirrors the scoring
- * shape from includes/tools/build-song-link-suggestions.php (#808 / #937): lowercase,
- * strip punctuation, collapse whitespace, then 1 - (edit-distance /
- * max-length). Token-set bonus boosts "John Newton" vs "Newton, John".
- *
- * Pure-PHP — no external libraries. Runs O(n²) over candidate × registry
- * pairs but the row counts are typically a few hundred each, so the
- * full scan is sub-second on a modern host.
- */
-function _musBulkNormalise(string $s): string
-{
-    $s = mb_strtolower($s, 'UTF-8');
-    $s = (string)preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s);
-    $s = (string)preg_replace('/\s+/u', ' ', $s);
-    return trim($s);
-}
-function _musBulkTokens(string $s): array
-{
-    $n = _musBulkNormalise($s);
-    if ($n === '') return [];
-    return array_filter(explode(' ', $n), static fn($t) => $t !== '');
-}
-function _musBulkSimilarity(string $a, string $b): float
-{
-    $na = _musBulkNormalise($a);
-    $nb = _musBulkNormalise($b);
-    if ($na === '' || $nb === '') return 0.0;
-    if ($na === $nb) return 1.0;
-
-    /* PHP's levenshtein is byte-based and capped at 255 chars per
-       string — fine for personal-name lengths. Fall back to
-       similar_text for anything longer (covers organisation-style
-       group names that occasionally appear). */
-    if (strlen($na) <= 255 && strlen($nb) <= 255) {
-        $dist = levenshtein($na, $nb);
-        $max  = max(strlen($na), strlen($nb));
-        $editScore = $max > 0 ? 1.0 - ($dist / $max) : 0.0;
-    } else {
-        similar_text($na, $nb, $pct);
-        $editScore = $pct / 100.0;
-    }
-
-    /* Token-set bonus — names that are anagrams of word-tokens
-       ("Newton, John" vs "John Newton") get a high overlap score
-       even when raw edit distance penalises the comma + spacing. */
-    $ta = _musBulkTokens($a);
-    $tb = _musBulkTokens($b);
-    if (!$ta || !$tb) return $editScore;
-    $inter = count(array_intersect($ta, $tb));
-    $union = count(array_unique(array_merge($ta, $tb)));
-    $tokenScore = $union > 0 ? $inter / $union : 0.0;
-
-    /* Blend — favour token overlap when one input is short, edit when
-       both are long. The 0.6 / 0.4 weights are tuned to score
-       "J. Newton" vs "John Newton" at ≈ 0.85 (the default threshold). */
-    return 0.6 * $tokenScore + 0.4 * $editScore;
-}
-
 /* ----- POST: bulk promote ----- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1785 C3 — validateCsrfRequest() (rule #29) replaces the baked-
+       token-only validateCsrf(). Strict widening: this form still posts
+       csrf_token on every submit (unchanged below), so the existing
+       session-token path keeps working byte-for-byte; the same-origin
+       X-Requested-With path is additive should a future fetch()-based
+       submit ever replace the plain <form method="POST"> this page uses
+       today. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -306,7 +262,7 @@ try {
     /* Compute fuzzy matches against the registry. */
     foreach ($candidates as &$c) {
         foreach ($registryRows as $r) {
-            $score = _musBulkSimilarity($c['name'], (string)$r['Name']);
+            $score = ihymns_sim_name_score($c['name'], (string)$r['Name']);
             if ($score >= $threshold) {
                 $c['matches'][] = [
                     'id'    => (int)$r['Id'],
@@ -326,7 +282,7 @@ try {
     if ($candCount <= 2000) {
         for ($i = 0; $i < $candCount; $i++) {
             for ($j = $i + 1; $j < $candCount; $j++) {
-                $score = _musBulkSimilarity($candidates[$i]['name'], $candidates[$j]['name']);
+                $score = ihymns_sim_name_score($candidates[$i]['name'], $candidates[$j]['name']);
                 if ($score >= $threshold) {
                     $candidates[$i]['twins'][] = ['name' => $candidates[$j]['name'], 'score' => round($score, 3)];
                     $candidates[$j]['twins'][] = ['name' => $candidates[$i]['name'], 'score' => round($score, 3)];
