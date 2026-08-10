@@ -51,9 +51,15 @@ foreach ([$apiFile, $docsFile, $notifFile] as $f) {
         exit(1);
     }
 }
-$apiSrc   = (string)file_get_contents($apiFile);
-$docsSrc  = (string)file_get_contents($docsFile);
-$notifSrc = (string)file_get_contents($notifFile);
+$collabFile = $root . '/appWeb/public_html/includes/setlist_collab.php';
+if (!is_readable($collabFile)) { fwrite(STDERR, "FATAL: could not read $collabFile\n"); exit(1); }
+$apiSrc    = (string)file_get_contents($apiFile);
+$docsSrc   = (string)file_get_contents($docsFile);
+$notifSrc  = (string)file_get_contents($notifFile);
+/* #1791 — the collaborative write SQL moved OUT of the api.php case body into
+   the shared core setlistCollabPerformUpdate() (so setlist_token_update reuses
+   the exact same write). The structural safety invariant below now lives here. */
+$collabSrc = (string)file_get_contents($collabFile);
 
 $failures = 0;
 $passed   = 0;
@@ -297,17 +303,26 @@ _scAssert(str_contains($update, '403'),
     'a caller without edit access gets 403');
 _scAssert(str_contains($update, 'setlistCollabSanitiseSongs('),
     'setlist_collab_update reuses the shared song sanitiser');
+/* #1791 — the write itself moved to the shared core so setlist_token_update
+   reuses the EXACT same UPDATE. The case must DELEGATE to it, not re-inline
+   the SQL. */
+_scAssert(str_contains($update, 'setlistCollabPerformUpdate('),
+    'setlist_collab_update writes through the shared setlistCollabPerformUpdate() core');
 
 /* THE SYNC HAZARD. The collaborative write must be an UPDATE of one existing
    row — never a DELETE, never an INSERT into the owner's namespace. A DELETE
-   here would let a collaborator destroy the owner's setlists, which is the
-   failure mode that turns sharing into data loss. */
-_scAssert(str_contains($update, 'UPDATE tblUserSetlists'),
-    'setlist_collab_update writes via UPDATE');
-_scAssert(!str_contains($update, 'DELETE FROM tblUserSetlists'),
-    'setlist_collab_update NEVER deletes from tblUserSetlists');
-_scAssert(!str_contains($update, 'INSERT INTO tblUserSetlists'),
-    'setlist_collab_update NEVER inserts into tblUserSetlists');
+   here would let a collaborator (or a token-edit holder, #1791) destroy the
+   owner's setlists, which is the failure mode that turns sharing into data
+   loss. The SQL now lives in setlistCollabPerformUpdate(), so the invariant is
+   checked THERE — in the core both write paths funnel through. */
+_scAssert(str_contains($collabSrc, 'function setlistCollabPerformUpdate('),
+    'the shared write core setlistCollabPerformUpdate() exists');
+_scAssert(str_contains($collabSrc, 'UPDATE tblUserSetlists'),
+    'the write core writes via UPDATE');
+_scAssert(!str_contains($collabSrc, 'DELETE FROM tblUserSetlists'),
+    'the write core NEVER deletes from tblUserSetlists');
+_scAssert(!str_contains($collabSrc, 'INSERT INTO tblUserSetlists'),
+    'the write core NEVER inserts into tblUserSetlists');
 
 /* And the owner-scoped bulk sync must stay owner-scoped: no collaborator
    table may be consulted inside it, or a collaborator's replace-mode payload

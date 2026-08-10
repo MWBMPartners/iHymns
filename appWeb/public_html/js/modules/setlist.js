@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 
@@ -2728,11 +2728,14 @@ export class SetList {
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
-        /* Determine if this is a server-side short ID or legacy base64 data.
-         * Short IDs are 8 hex characters; legacy base64 strings are longer
-         * and contain characters outside the hex range. */
+        /* Determine if this is a server-side share ID or legacy inline base64
+         * data. A server id is the shared-fold grammar (#1791): legacy 8-hex OR
+         * a base64url capability token, 6–64 chars, no base64 padding. A legacy
+         * inline blob carries `+`/`/`/`=` and runs far longer, so it correctly
+         * falls to parseLegacySharedSetlist(). SHARE_ID_RE is the client mirror
+         * of PHP sharedSetlistSafeShareId(). */
         let sharedData = null;
-        const isShortId = /^[a-f0-9]{6,16}$/.test(shareData);
+        const isShortId = SHARE_ID_RE.test(shareData);
 
         if (isShortId) {
             /* Fetch from server-side storage (#155) */

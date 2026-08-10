@@ -714,8 +714,11 @@ try {
             }
         } catch (\Throwable $_e) { /* schema missing — no JSON-LD */ }
     }
-    /* Shared setlist page: /setlist/shared/abc123 */
-    elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
+    /* Shared setlist page: /setlist/shared/abc123 — #1791 widened the id class
+       from `[a-f0-9]+` to the shared-fold grammar `[A-Za-z0-9_-]{6,64}` (legacy
+       8-hex AND base64url capability tokens; the authoritative fold is
+       sharedSetlistSafeShareId(), which resolveWire re-validates below). */
+    elseif (preg_match('#^/setlist/shared/([A-Za-z0-9_-]{6,64})$#', $requestPath, $matches)) {
         $pageType = 'other';
         $shareId = $matches[1];
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';

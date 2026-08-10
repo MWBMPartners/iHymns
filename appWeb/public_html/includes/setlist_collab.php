@@ -382,3 +382,88 @@ function setlistCollabSanitiseSongs($songs, int $max = 200): array
     }
     return $clean;
 }
+
+/**
+ * Thrown by setlistCollabPerformUpdate() when the clean songs array cannot be
+ * JSON-encoded (malformed UTF-8). A dedicated type so every caller maps it to
+ * the SAME 400 "invalid characters" response the inline original produced —
+ * distinguished by TYPE, not by regex-matching a message (rule #35). Extends
+ * RuntimeException so an existing broad `catch (\Throwable)` still turns it into
+ * a clean 500 rather than a white-screen if a new caller forgets the 400 branch.
+ */
+class SetlistCollabEncodeException extends \RuntimeException {}
+
+/**
+ * The ONE write core for a collaborative set-list edit (#1791).
+ *
+ * ELI5: takes an already-cleaned song list and writes it onto the OWNER's one
+ * set-list row — it can only ever UPDATE that single existing row, never insert
+ * or delete one.
+ *
+ * Extracted verbatim (byte-for-byte behaviour) from the `setlist_collab_update`
+ * case so the token-edit path (`setlist_token_update`, #1791) writes through the
+ * EXACT same encode-refuse-on-false → targeted-UPDATE sequence. Two write paths
+ * to tblUserSetlists.SongsJson would drift, and the drift would be invisible
+ * until a token edit produced a row the owner's client couldn't render — the
+ * same argument setlistCollabSanitiseSongs() was extracted under (#1638).
+ *
+ * The structural safety argument is INHERITED, not re-made: this is an UPDATE of
+ * one already-existing (UserId, SetlistId) row with LIMIT 1 — it can neither
+ * INSERT a row into the owner's namespace nor DELETE one, so the worst a
+ * compromised edit link can do is rewrite the songs of the one list it names.
+ *
+ * The CALLER is responsible for authorisation (owner resolution / token gate)
+ * and for sanitising via setlistCollabSanitiseSongs() before calling — this core
+ * assumes $cleanSongs is already the stored shape and $ownerUserId is the
+ * resolved, trusted owner.
+ *
+ * @param \mysqli $db          Live connection.
+ * @param int     $ownerUserId The RESOLVED owner (never the client's claim).
+ * @param string  $setlistId   tblUserSetlists.SetlistId.
+ * @param array   $cleanSongs  Output of setlistCollabSanitiseSongs().
+ * @param string  $newName     Optional rename; '' leaves the owner's title alone.
+ * @return array{changed:int,songs:array}
+ * @throws SetlistCollabEncodeException on malformed-UTF-8 encode failure.
+ */
+function setlistCollabPerformUpdate(
+    \mysqli $db,
+    int $ownerUserId,
+    string $setlistId,
+    array $cleanSongs,
+    string $newName = ''
+): array {
+    $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* json_encode returns FALSE on malformed UTF-8, and binding false writes an
+       empty string — which would silently blank somebody else's setlist. Refuse
+       instead: a rejected save the user can see beats a successful one that ate
+       the list. */
+    if ($songsJson === false) {
+        throw new SetlistCollabEncodeException('Song list could not be encoded (invalid characters).');
+    }
+
+    if ($newName !== '') {
+        $upd = $db->prepare(
+            'UPDATE tblUserSetlists
+                SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+              WHERE UserId = ? AND SetlistId = ?
+              LIMIT 1'
+        );
+        $upd->bind_param('ssis', $newName, $songsJson, $ownerUserId, $setlistId);
+    } else {
+        $upd = $db->prepare(
+            'UPDATE tblUserSetlists
+                SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+              WHERE UserId = ? AND SetlistId = ?
+              LIMIT 1'
+        );
+        $upd->bind_param('sis', $songsJson, $ownerUserId, $setlistId);
+    }
+    $upd->execute();
+    /* affected_rows is 0 both when the row vanished AND when the payload was
+       byte-identical to what is already stored, so it is NOT a failure — only
+       information the caller may report. */
+    $changed = $upd->affected_rows;
+    $upd->close();
+
+    return ['changed' => $changed, 'songs' => $cleanSongs];
+}

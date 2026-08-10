@@ -48,6 +48,15 @@ export const STORAGE_LANGUAGE_FILTER    = 'songbook-language-filter';
    context between tabs where someone is comparing two lists. */
 export const STORAGE_PLAYLIST_CONTEXT   = 'ihymns_playlist_context';
 
+/* Shared set-list id grammar (#1791) — the CLIENT mirror of PHP
+   sharedSetlistSafeShareId()'s `^[A-Za-z0-9_-]{6,64}$`. Matches a server
+   share-id (legacy 8-hex OR a base64url capability token) and, crucially,
+   does NOT match a legacy base64 blob (those carry `+`/`/`/`=` and run far
+   longer than 64 chars) — so the shared page still routes an old inline-payload
+   link to parseLegacySharedSetlist(). Kept in sync with the PHP fold by the C6
+   guard (tests/php/test-setlist-share-tokens.php), not by this comment. */
+export const SHARE_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+
 /* Status & consent */
 export const STORAGE_ANALYTICS_CONSENT  = 'ihymns_analytics_consent';
 export const STORAGE_ANALYTICS_DEBUG    = 'ihymns_analytics_debug';

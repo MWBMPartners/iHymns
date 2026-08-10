@@ -2423,13 +2423,16 @@ if ($action !== null) {
              * hole. Widening the id itself is the stronger fix but must not
              * invalidate existing links, so it is tracked separately. */
             enforceReadRateLimitKeyed('setlist_get', 120);
-            $shareId = isset($_GET['id']) ? preg_replace('/[^a-f0-9]/', '', strtolower(trim($_GET['id']))) : '';
-            if ($shareId === '' || strlen($shareId) > 16) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+            /* #1791 — the ONE share-id fold: accepts legacy 8-hex AND base64url
+               capability tokens (case-preserving — a token is case-sensitive),
+               replacing the old `[a-f0-9]` strip that would have silently
+               mangled every new long token. */
+            $shareId = isset($_GET['id']) ? sharedSetlistSafeShareId((string)$_GET['id']) : '';
+            if ($shareId === '') {
                 sendJson(['error' => 'Invalid or missing set list ID.'], 400);
                 break;
             }
-
-            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
             /* #1380 / FIX 5 — the live-vs-snapshot projection (and the XSS-safe id
                allow-list) now lives in the ONE shared resolver so the social card
@@ -2451,7 +2454,7 @@ if ($action !== null) {
                    link to a row that no longer exists. 410 Gone is the honest
                    answer: the resource was here, isn't now. */
                 sharedSetlistMarkViewed($shareId);
-                sendJson(['unavailable' => true, 'reason' => 'revoked', 'id' => $shareId], 410);
+                sendJson(['unavailable' => true, 'reason' => ($wire['reason'] ?? 'revoked'), 'id' => $shareId], 410);
                 break;
             }
 
@@ -2478,22 +2481,45 @@ if ($action !== null) {
                 }
             }
 
+            /* #1791 — server-stated write capability (the client never
+               re-derives it, rule #35). canWrite requires an EDIT-scope link on
+               a LIVE setlist whose owner's account is not locked (#1698). The
+               link is already known non-revoked / non-expired here (the resolver
+               returned unavailable otherwise). scope + shareId are additive keys
+               a pre-C4 client simply ignores — dormant by construction. */
+            $shareScope = ($wire['scope'] ?? 'view') === 'edit' ? 'edit' : 'view';
+            $canWrite   = false;
+            if ($shareScope === 'edit' && !empty($wire['live']) && $sharedOwnerUserId !== null) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_status.php';
+                $canWrite = !userContentLocked(userOwnerState($db, (int)$sharedOwnerUserId));
+            }
+
             /* PUBLIC-SAFE response — strict ALLOW-LIST. NEVER echo any of the
                owner-identifying fields: owner (anon UUID), _ownerUserId,
                _sourceSetlistId, CreatedBy, or any email. The only fields that
-               leave the server are: id, name, songs, live, isOwner (a boolean),
-               created, updated, and (optionally) arrangements. (#1380 / #1535) */
+               leave the server are: id, shareId, name, songs, live, scope,
+               canWrite, isOwner (a boolean), created, updated, and (optionally)
+               arrangements / songsDetailed. (#1380 / #1535 / #1791) */
             $response = [
-                'id'      => $meta['id'] ?? $shareId,
-                'name'    => $wire['name'],
-                'songs'   => $wire['songs'],
-                'live'    => $wire['live'],
-                'isOwner' => $viewerIsOwner,
-                'created' => $meta['created'] ?? null,
-                'updated' => $meta['updated'] ?? null,
+                'id'       => $meta['id'] ?? $shareId,
+                'shareId'  => $shareId,
+                'name'     => $wire['name'],
+                'songs'    => $wire['songs'],
+                'live'     => $wire['live'],
+                'scope'    => $shareScope,
+                'canWrite' => $canWrite,
+                'isOwner'  => $viewerIsOwner,
+                'created'  => $meta['created'] ?? null,
+                'updated'  => $meta['updated'] ?? null,
             ];
             if (!empty($wire['arrangements'])) {
                 $response['arrangements'] = $wire['arrangements'];
+            }
+            /* The editable OBJECT shape is handed over ONLY to a writer — same
+               data the view already exposes, so no new disclosure, but no reason
+               to ship it to read-only holders. */
+            if ($canWrite && !empty($wire['songsDetailed'])) {
+                $response['songsDetailed'] = $wire['songsDetailed'];
             }
 
             sendJson($response);
@@ -11353,15 +11379,6 @@ if ($action !== null) {
                 /* Same sanitiser the owner's own sync uses, so a collaborator
                    cannot store a shape the owner's client can't render. */
                 $cleanSongs = setlistCollabSanitiseSongs($body['songs']);
-                $songsJson  = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                /* json_encode returns FALSE on malformed UTF-8, and binding
-                   false writes an empty string — which would silently blank
-                   somebody else's setlist. Refuse instead: a rejected save the
-                   user can see beats a successful one that ate the list. */
-                if ($songsJson === false) {
-                    sendJson(['error' => 'Song list could not be encoded (invalid characters).'], 400);
-                    break;
-                }
 
                 /* Name is optional: omit it to leave the owner's title alone.
                    A blank string is treated as "not supplied" rather than as a
@@ -11370,29 +11387,16 @@ if ($action !== null) {
                     ? mb_substr(trim((string)$body['name']), 0, 200)
                     : '';
 
-                if ($newName !== '') {
-                    $upd = $db->prepare(
-                        'UPDATE tblUserSetlists
-                            SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
-                          WHERE UserId = ? AND SetlistId = ?
-                          LIMIT 1'
-                    );
-                    $upd->bind_param('ssis', $newName, $songsJson, $realOwnerId, $setlistId);
-                } else {
-                    $upd = $db->prepare(
-                        'UPDATE tblUserSetlists
-                            SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
-                          WHERE UserId = ? AND SetlistId = ?
-                          LIMIT 1'
-                    );
-                    $upd->bind_param('sis', $songsJson, $realOwnerId, $setlistId);
+                /* The ONE write core (#1791) — the encode-refuse-on-false →
+                   targeted single-row UPDATE, shared with setlist_token_update
+                   so the two paths to SongsJson can never drift (rule #35). */
+                try {
+                    $writeResult = setlistCollabPerformUpdate($db, $realOwnerId, $setlistId, $cleanSongs, $newName);
+                } catch (\SetlistCollabEncodeException $enc) {
+                    sendJson(['error' => $enc->getMessage()], 400);
+                    break;
                 }
-                $upd->execute();
-                /* affected_rows is 0 both when the row vanished AND when the
-                   payload was byte-identical to what is already stored, so it
-                   is NOT reported as a failure — only as information. */
-                $changed = $upd->affected_rows;
-                $upd->close();
+                $changed = (int)$writeResult['changed'];
 
                 /* Audit (#535). A write to somebody else's data is exactly the
                    thing an owner may later want to ask "who did that?" about. */
@@ -11406,7 +11410,7 @@ if ($action !== null) {
                 sendJson([
                     'ok'      => true,
                     'changed' => $changed,
-                    'songs'   => $cleanSongs,
+                    'songs'   => $writeResult['songs'],
                 ]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_update] ' . $e->getMessage());
