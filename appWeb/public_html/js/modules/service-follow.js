@@ -16,6 +16,11 @@
 
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+/* #1770 C5 — device id + presence-cookie set/clear extracted into the
+   shared util so live-follow.js's Quick-session follower can consume the
+   SAME identity (CLAUDE.md modularity rule; presence-identity.js's own
+   doc-comment has the full "why"). */
+import { deviceId, setPresenceCookie, clearPresenceCookie } from '../utils/presence-identity.js';
 
 /* sessionStorage key carrying a pending section scroll across a FULL page load
    (the non-SPA fallback path). Not in constants.js: that file is the registry
@@ -32,7 +37,6 @@ const SF_SCROLL_TIMEOUT_MS = 5000;
 
 const SF_POLL_MS      = 2500;                       // follower poll cadence
 const SF_PRESENCE_KEY = 'ihymns_sf_presence';       // sessionStorage: {token, rev}
-const SF_DEVICE_KEY   = 'ihymns_sf_device';         // localStorage: durable anon device id
 const SF_CODE_RE      = /^[A-Z0-9]{4,12}$/;
 
 export class ServiceFollow {
@@ -60,7 +64,7 @@ export class ServiceFollow {
                 if (saved && saved.token) {
                     this.token = saved.token;
                     this.rev = (typeof saved.rev === 'number') ? saved.rev : 0;
-                    this._setPresenceCookie(this.token);   /* re-assert for the gate after a reload */
+                    setPresenceCookie(this.token);   /* re-assert for the gate after a reload */
                     this._showBanner();
                     this._startPolling();
                 }
@@ -94,19 +98,61 @@ export class ServiceFollow {
                 }
             }
         } catch (_e) { /* private mode — land at the top, as before */ }
+
+        /* #1770 C6 (rule #33) — a `?svc_code=` deep link. Two emitters point
+           at it: the Service-Projection join QR (manage/service-projection.php,
+           live since #1339) and the Quick host's own "show code" view
+           (live-follow.js, #1770 C6) — and until now NOTHING read it, the
+           exact standing violation the #1770 plan's analysis flagged (P5): a
+           URL parameter another page emits is a contract, and an unread one
+           fails with no error, no toast, nothing to grep. init() runs on
+           EVERY full load (booted once from app.js), so this fires whether
+           the link opened cold or the SPA shell was already warm.
+           NEVER auto-joins (Q3 default, plan §10 S6) — a prefetch, a link
+           preview bot, or an accidental tap must not silently drop someone
+           into a live session; the confirm below is the one-tap gate. The
+           param is stripped via replaceState regardless of outcome so a
+           refresh/back never re-prompts with a stale or already-used code. */
+        this._readSvcCodeParam();
     }
 
-    /** Durable anonymous device id (NOT a login) — minted once, kept in localStorage. */
-    _deviceId() {
-        let id = null;
-        try { id = localStorage.getItem(SF_DEVICE_KEY); } catch (_e) {}
-        if (!id) {
-            id = (window.crypto && crypto.randomUUID)
-                ? crypto.randomUUID()
-                : ('dev-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
-            try { localStorage.setItem(SF_DEVICE_KEY, id); } catch (_e) {}
-        }
-        return id;
+    /**
+     * Read + consume a `?svc_code=` query param (rule #33 — see init()'s
+     * doc-comment for the two emitters). Strip/validate with the SAME
+     * fold a typed code goes through, then hand off to a one-tap confirm
+     * (`_confirmJoinFromDeepLink`) — never an auto-join.
+     */
+    _readSvcCodeParam() {
+        let raw = '';
+        try {
+            raw = new URLSearchParams(window.location.search).get('svc_code') || '';
+        } catch (_e) { return; }
+        if (!raw) { return; }
+
+        /* Strip the param from the address bar unconditionally — even an
+           invalid/garbled code must not keep re-prompting on every back/
+           forward within this tab (mirrors the #1343-B soft-canonicalise
+           replaceState pattern router.js already uses elsewhere). */
+        try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('svc_code');
+            window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+        } catch (_e) { /* ignore — worst case the param lingers in the bar */ }
+
+        const code = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (!SF_CODE_RE.test(code)) { return; }
+        this._confirmJoinFromDeepLink(code);
+    }
+
+    /** One-tap confirm before joining from a scanned/linked code (never automatic). */
+    async _confirmJoinFromDeepLink(code) {
+        if (this.token) { return; } /* already following something — don't interrupt */
+        const ok = await this.app.showConfirm(
+            'Join the live session with code ' + code + '?',
+            { title: 'Join live session', okText: 'Join', cancelText: 'Not now', okClass: 'btn-amber-solid' }
+        );
+        if (!ok || this.token) { return; } /* re-check: a race could have joined another session while the dialog was open */
+        await this._doJoin(code);
     }
 
     async joinService() {
@@ -130,7 +176,7 @@ export class ServiceFollow {
 
     async _doJoin(code) {
         try {
-            const r = await this._api('service_join', { method: 'POST', body: { code: code, presenceDeviceId: this._deviceId() } });
+            const r = await this._api('service_join', { method: 'POST', body: { code: code, presenceDeviceId: deviceId() } });
             /* Maintenance/unavailable env (503) — the anonymous congregant doesn't
                bypass maintenance, so distinguish "site down" from "wrong code". */
             if (r.status === 503 || (r.data && r.data.maintenance)) {
@@ -164,7 +210,7 @@ export class ServiceFollow {
             this.token = r.data.presenceToken;
             this.rev = (typeof r.data.revision === 'number') ? r.data.revision : 0;
             try { sessionStorage.setItem(SF_PRESENCE_KEY, JSON.stringify({ token: this.token, rev: this.rev })); } catch (_e) {}
-            this._setPresenceCookie(this.token);
+            setPresenceCookie(this.token);
             this._showBanner();
             this._startPolling();
             this.app.showToast('You’re following the service.', 'success');
@@ -181,7 +227,7 @@ export class ServiceFollow {
         this._pendingScroll = null;
         this._stopPolling();
         try { sessionStorage.removeItem(SF_PRESENCE_KEY); } catch (_e) {}
-        this._clearPresenceCookie();
+        clearPresenceCookie();
         this._removeBanner();
         if (token) { this._api('service_leave', { method: 'POST', body: { presenceToken: token } }).catch(() => {}); }
         if (!silent) { this.app.showToast('Left the service.', 'info'); }
@@ -357,19 +403,6 @@ export class ServiceFollow {
     _removeBanner() {
         const bar = document.getElementById('service-follow-banner');
         if (bar && bar.parentNode) { bar.parentNode.removeChild(bar); }
-    }
-
-    /* The Phase-3 content gate (song.php) reads this same-origin cookie to grant
-       a present congregant the org's CCLI unlock for gated lyrics. It's an opaque
-       presence nonce (not a credential); set on join, cleared on leave/end. */
-    _setPresenceCookie(token) {
-        try {
-            const secure = (location.protocol === 'https:') ? '; Secure' : '';
-            document.cookie = 'ihymns_sf_presence_token=' + encodeURIComponent(token) + '; path=/; SameSite=Lax' + secure;
-        } catch (_e) {}
-    }
-    _clearPresenceCookie() {
-        try { document.cookie = 'ihymns_sf_presence_token=; path=/; Max-Age=0; SameSite=Lax'; } catch (_e) {}
     }
 
     /* Anonymous same-origin call. X-Requested-With satisfies the api.php CSRF

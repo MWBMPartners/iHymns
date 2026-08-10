@@ -453,17 +453,18 @@ if ($driverKeysReady && $venues) {
         const qrFallback = document.getElementById('svc-proj-qr-fallback');
 
         /* The real join route (js/modules/service-follow.js's joinService() +
-           the anonymous POST-only `service_join` action in api.php) has no
-           URL-based auto-join today — a congregant always lands on the home
-           page and types the code into the "Join a live service" prompt.
-           Scanning this URL still saves the trip to find the site + the
-           button: it opens straight to the app (same origin this session is
-           bound to, so the #1268/rule-#26 Channel wall is automatic), where
-           the code is displayed prominently either way. The `svc_code` query
-           param is otherwise inert today (the home route ignores unknown
-           query strings) but forward-compatible with a future auto-fill —
-           see the doc-comment on serviceMode_resolveJoin()'s "QR deep-link"
-           remark in includes/service_mode.php. */
+           the anonymous POST-only `service_join` action in api.php) never
+           auto-joins from a URL — a congregant types the code into the
+           "Join a live service" prompt. Scanning this URL saves the trip to
+           find the site + the button: it opens straight to the app (same
+           origin this session is bound to, so the #1268/rule-#26 Channel
+           wall is automatic). #1770 C6 — `service-follow.js`'s init() now
+           READS this `svc_code` param (it didn't for the QR's first ~5
+           weeks live, #1339→#1770 — the standing rule-#33 gap the #1770
+           plan's analysis flagged): it strips the param, validates it with
+           the same fold a typed code goes through, and opens a one-tap
+           CONFIRM prompt pre-filled with the code — never an auto-join
+           (anti-probe + no join-on-prefetch/link-preview). */
         function joinUrlFor(code) {
             return JOIN_BASE + '/?svc_code=' + encodeURIComponent(code);
         }
