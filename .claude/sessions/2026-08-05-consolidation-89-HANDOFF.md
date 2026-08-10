@@ -100,20 +100,33 @@ Owner can delete these on GitHub (Branches page) or `git push origin --delete <b
   steering: quick-session persistence, configurable idle-timeout hierarchy, host-CCLI unlock,
   ProPresenter-as-console). NOT built — awaiting scheduling + a planning pass.
 
-- **Duplicate-song feature (#1783, NEW owner ask)** — Fable-analysed (Option C: hidden staging
-  book, `.claude/duplicate-song-1783-plan.md`). Commits 1-3 DONE + pushed + **verified end-to-end
-  against a live DB**: `duplicate_song` endpoint (`api2.php`) copies via the revision-restore
-  engine into a hidden `PENDING` staging book (IsDisabled=1), resets Number/Verified/Isrc/media,
-  fresh PublicId; editor Duplicate button + `?duplicate=` deep-link; Metadata tab shows empty
-  Songbook + Number. Verified: components/lines/credits/tags copied, `load_song.isPendingDuplicate`
-  true, cleanup done. **REMAINING (tracked follow-ups):** commit 4 = per-line enrichment +
-  scripture-ref copy (needs the positional line-id remap); commit 5 = mutation-proven contract
-  guard (`test-editor-duplicate-contract.js`) + add `duplicate` to `test-editor-deep-links.js`;
-  commit 6 = D5 counterpart auto-link (lift the `song_link_add` group-resolution, don't fork).
-  Per-line presenter `Note` not carried (same as revision restore — file a `for consideration`).
+- **Duplicate-song feature (#1783, NEW owner ask) — ✅ COMPLETE (commits 1-6).** Option C
+  (hidden `PENDING` staging book, `.claude/duplicate-song-1783-plan.md`, now marked AS-BUILT).
+  Commits 1-3 (`34b86654`, `81471f66`) + 3 CI-gap fixes (`1f54583d`) landed earlier. This
+  session: **commit 4** (`b6a74519`) — per-line enrichment (`tblLyricLineTranslations` /
+  `tblLyricLineAnnotations`) + scripture refs (`tblSongScriptureRefs`) re-anchored onto the NEW
+  song's lines via a positional src→new line-id map (best-effort; un-migrated optional table is
+  caught + skipped). **Runtime-verified** against a live-DB fixture: translations/annotations/
+  scripture land on the new line ids, `EndLineId` remaps, whole-song scripture `StartLineId` stays
+  NULL, source untouched. **Commit 5** (`841e9217`) — mutation-proven guards
+  `tests/test-editor-duplicate-contract.js` (client↔server↔shell contract + no client `'PENDING'`
+  literal) + `tests/php/test-duplicate-copy-set.php` (copy-set: resets, ONE apply path, enrichment
+  re-anchored, no move/personal-state leak) + explicit `?duplicate=` leg in
+  `test-editor-deep-links.js`; all 7 legs proven able to fail. **Commit 6** = this docs pass.
+  Full suite green: **node 52/52, PHP 132/132.**
+  **Deferred (filed `for consideration`, non-blocking):** per-line presenter `Note` carry;
+  a `/manage/duplicate-songs` `?duplicate=` emitter; a `songRelocate()` no-redirect flag for
+  staging-origin moves; **D5 counterpart auto-link — re-decided**: NOT auto-linked at duplicate
+  time (a PENDING draft link is premature + would surface a draft in the source's counterpart
+  panel + need re-keying on assign); the correct place is ASSIGN time and it needs a source
+  marker — deferred rather than done wrong.
+  **ProjectBrief.md** full refresh deferred to the FINAL docs sweep (#91). **Wiki editor page**
+  NOT updated — no `iHymns.wiki/` checkout in this environment (flag for the docs sweep).
 
-**STILL TO DO this queue:** #1783 commits 4-6 (above); thorough documentation sweep
-(all .md/in-app/OpenAPI/Swagger UI/.claude); version bump.
+**STILL TO DO this queue:** #1789 set-list print full fix (via #1767 engine); #1791
+collab-by-link; #1785/#1786 musicians-dedup + app-wide sortable tables; #1792/#1770 Live
+Follow UX; then the thorough documentation sweep (all .md/in-app/OpenAPI/Swagger UI/.claude
++ ProjectBrief refresh + Wiki) and the version bump — all LAST (#91). #1783 is DONE.
 **#1770 DECIDED** (Option A — quick console optional, host-CCLI unlock to quick followers,
 slide-level ProPresenter control on scheduled). Full spec in `live-follow-1770-analysis.md`;
 build is queued behind #1783 (needs its own Fable planning pass over the 7 captured requirements).

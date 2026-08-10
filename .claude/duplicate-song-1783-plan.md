@@ -1,5 +1,17 @@
 # #1783 — Duplicate a song as a starting point for a new songbook
 
+> **AS-BUILT (2026-08-10).** Shipped on `claude/issue-sweep-fixes-89` (Option C — hidden
+> `PENDING` staging book). Commits: `34b86654` (server endpoint + editor reach, 1-2),
+> `81471f66` (Metadata empty Songbook+Number, 3), `1f54583d` (3 CI-gap fixes),
+> `b6a74519` (commit 4 — per-line enrichment + scripture-ref re-anchor), `841e9217`
+> (commit 5 — mutation-proven guards). Guards: `tests/test-editor-duplicate-contract.js`,
+> `tests/php/test-duplicate-copy-set.php`, `?duplicate=` leg in `test-editor-deep-links.js`.
+> **Deferred (for consideration):** per-line presenter `Note` carry (§2.4), a
+> `/manage/duplicate-songs` `?duplicate=` emitter, a `songRelocate()` no-redirect flag for
+> staging-origin moves, and D5 counterpart auto-link (re-decided: best at ASSIGN time, needs
+> a source marker — not auto-linked at duplicate time, where a PENDING draft link is
+> premature). Wiki editor page NOT updated (no `iHymns.wiki/` checkout in this environment).
+
 **Deep analysis + implementation plan (read-only pass, 2026-08-05).**
 Feature (owner's words): a song often exists in multiple songbooks almost identically. Add
 the ability to DUPLICATE a song; in the duplicate the **Songbook** and **Song number**
