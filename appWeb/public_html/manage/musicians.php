@@ -2242,15 +2242,15 @@ try {
         <!-- People table -->
         <div class="card bg-dark border-secondary p-2 mb-3">
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle mb-0 mus-sortable admin-table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
                         <tr>
                             <th scope="col" data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
-                            <th scope="col" data-col-priority="primary"   class="text-center">Roles</th>
+                            <th scope="col" data-col-priority="primary"   class="text-center" data-sort-key="roles" data-sort-type="text">Roles</th>
                             <th scope="col" data-col-priority="primary"   class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
                             <th scope="col" data-col-priority="secondary" data-sort-key="source" data-sort-type="text">Source</th>
                             <th scope="col" data-col-priority="secondary" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
-                            <th scope="col" data-col-priority="tertiary"  class="text-end">Meta</th>
+                            <th scope="col" data-col-priority="tertiary"  class="text-end" data-sort-key="meta" data-sort-type="number">Meta</th>
                             <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -2348,7 +2348,7 @@ try {
                             $akaList = array_map(static fn(array $a): string => (string)$a['Name'], $p['aliases'] ?? []);
                             $akaAttr = implode(' · ', $akaList);
                         ?>
-                            <tr id="mus-person-<?= (int)$p['Id'] ?>"
+                            <tr id="mus-person-<?= (int)($p['registry_id'] ?? 0) ?>"
                                 data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
@@ -2382,7 +2382,7 @@ try {
                                         </span>
                                     <?php endif; ?>
                                 </td>
-                                <td data-col-priority="primary" class="text-center">
+                                <td data-col-priority="primary" class="text-center" data-sort-value="<?= htmlspecialchars($rolesCsv, ENT_QUOTES) ?>">
                                     <span class="badge role-pill role-w"  <?= $writers     ? '' : 'data-zero' ?>>W&middot;<?= $writers ?></span>
                                     <span class="badge role-pill role-c"  <?= $composers   ? '' : 'data-zero' ?>>C&middot;<?= $composers ?></span>
                                     <span class="badge role-pill role-ar" <?= $arrangers   ? '' : 'data-zero' ?>>Ar&middot;<?= $arrangers ?></span>
@@ -2396,7 +2396,7 @@ try {
                                     <?php $life = $lifespan($p['birth_date'], $p['death_date']);
                                           echo $life !== '' ? $life : '<span class="text-secondary">—</span>'; ?>
                                 </td>
-                                <td data-col-priority="tertiary" class="text-end meta-col">
+                                <td data-col-priority="tertiary" class="text-end meta-col" data-sort-value="<?= (int)($p['link_count'] + $p['ipi_count']) ?>">
                                     <?php if ($p['link_count'] > 0): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis badge-icon-count"
                                               title="<?= (int)$p['link_count'] ?> external link(s)">

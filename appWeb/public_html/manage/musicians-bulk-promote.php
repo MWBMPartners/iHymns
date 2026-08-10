@@ -441,12 +441,12 @@ if (!empty($registryByName)) {
             </div>
 
             <div class="card-admin p-0">
-                <table class="table table-sm table-hover align-middle mb-0 mus-sortable admin-table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Candidate name</th>
                             <th data-col-priority="primary"   class="text-center" data-sort-key="total" data-sort-type="number">Uses</th>
-                            <th data-col-priority="secondary" class="text-center">Roles</th>
+                            <th data-col-priority="secondary" class="text-center" data-sort-key="roles" data-sort-type="number">Roles</th>
                             <th data-col-priority="tertiary"  data-sort-key="best" data-sort-type="number">Best match</th>
                             <th data-col-priority="primary"   style="min-width:18rem;">Action</th>
                         </tr>
@@ -470,7 +470,7 @@ if (!empty($registryByName)) {
                                 <td data-col-priority="primary"   class="text-center" data-sort-value="<?= (int)$c['total'] ?>">
                                     <strong><?= number_format($c['total']) ?></strong>
                                 </td>
-                                <td data-col-priority="secondary" class="text-center small">
+                                <td data-col-priority="secondary" class="text-center small" data-sort-value="<?= (int)($c['writers'] + $c['composers'] + $c['arrangers'] + $c['adaptors'] + $c['translators'] + $c['artists']) ?>">
                                     <?php $roleChip = static function (string $label, int $n): string {
                                         if ($n <= 0) return '';
                                         return '<span class="badge bg-secondary-subtle text-secondary-emphasis me-1">' . htmlspecialchars($label) . '·' . $n . '</span>';
@@ -782,6 +782,15 @@ if (!empty($registryByName)) {
             }
         });
     })();
+    </script>
+
+    <!-- Sortable table headers (#1786 sweep / #1799 fix — this table was
+         tagged `mus-sortable`, which the module never matches (default
+         selector is `table.cp-sortable`), AND the page never booted the
+         module at all, so header clicks were a silent no-op either way. -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
