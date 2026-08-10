@@ -231,7 +231,10 @@ function musicianDuplicatesDateLabel(?string $date, ?string $precision): ?string
  * @param list<array{musicianId:int,name:string}> $aliasRows Bucket C source;
  *        pass [] to skip alias-signal detection entirely (e.g. an
  *        un-migrated install, or a unit test that only exercises A/B).
- * @param array{threshold?:float,bucketCap?:int} $opts
+ * @param array{threshold?:float,bucketCap?:int,groupsOnly?:bool} $opts
+ *        `groupsOnly` (default false): skip Bucket B/C entirely — the cheap
+ *        fast path musicianDuplicatesCountBucketA() uses for the
+ *        /manage/musicians CTA badge (plan §7's "count-only, no scoring").
  * @return array{
  *     groups: list<array{members:list<int>,pairs:list<array{0:int,1:int,2:?string}>}>,
  *     pairs:  list<array{aId:int,bId:int,score:float,signal:string,variant:?string}>,
@@ -247,6 +250,7 @@ function musicianDuplicatesFindCandidates(array $rows, array $aliasRows = [], ar
     if ($threshold > 1.0) { $threshold = 1.0; }
     $bucketCap = isset($opts['bucketCap']) ? (int)$opts['bucketCap'] : MUSDUP_DEFAULT_BUCKET_CAP;
     if ($bucketCap < 1) { $bucketCap = 1; }
+    $groupsOnly = !empty($opts['groupsOnly']);
 
     /* Index + de-duplicate by id (defensive — a caller-supplied fixture
        could repeat an id; the live orchestrator never will). */
@@ -349,102 +353,105 @@ function musicianDuplicatesFindCandidates(array $rows, array $aliasRows = [], ar
         }
     }
 
-    /* ---------------------------------------------------------------
-     * Bucket B — fuzzy candidates via metaphone blocking.
-     *
-     * ONE combined dictionary for two-token-plus names, populated under
-     * BOTH each name's first-token key AND its last-token key — NOT two
-     * separate first-only / last-only dictionaries. That's what actually
-     * catches a comma-reversed pair: "Newton, John" tokenises to
-     * [newton, john] (first=newton, last=john) while "John Newton"
-     * tokenises to [john, newton] (first=john, last=newton) — the two
-     * names' OWN first/last never match each other positionally, but
-     * "Newton, John"'s first token metaphone equals "John Newton"'s LAST
-     * token metaphone (and vice-versa), so only a SHARED key space finds
-     * them. Single-token names get their own separate metaWhole
-     * dictionary (a name with only one token has no first/last split to
-     * cross-match against).
-     * ------------------------------------------------------------- */
-    $blockToken = [];
-    $blockWhole = [];
-    foreach ($metaFirst as $id => $m) { if ($m !== '') { $blockToken[$m][] = $id; } }
-    foreach ($metaLast  as $id => $m) { if ($m !== '') { $blockToken[$m][] = $id; } }
-    foreach ($blockToken as $m => $ids) { $blockToken[$m] = array_values(array_unique($ids)); }
-    foreach ($metaWhole as $id => $m) { if ($m !== '') { $blockWhole[$m][] = $id; } }
-
     $fuzzyPairsScored = 0;
     $pairs = [];
 
-    $scoreBlock = function (array $ids, string $blockLabel) use (
-        &$skippedBuckets, $bucketCap, &$seenPairs, $pairKey, &$fuzzyPairsScored,
-        &$pairs, $byId, $threshold, $pairAllowed
-    ): void {
-        if (count($ids) < 2) { return; }
-        if (count($ids) > $bucketCap) {
-            $skippedBuckets[] = ['key' => $blockLabel, 'size' => count($ids)];
-            return;
-        }
-        $n = count($ids);
-        for ($i = 0; $i < $n; $i++) {
-            for ($j = $i + 1; $j < $n; $j++) {
-                $a = $ids[$i]; $b = $ids[$j];
-                $key = $pairKey($a, $b);
-                if (isset($seenPairs[$key])) { continue; } // already a Bucket A pair, or scored via another block
-                if (!$pairAllowed($byId[$a], $byId[$b])) { continue; }
-                $seenPairs[$key] = true; // mark BEFORE scoring so overlapping blocks (first+last token) never double-count
-                $fuzzyPairsScored++;
-                $score = ihymns_sim_name_score($byId[$a]['name'], $byId[$b]['name']);
-                if ($score < $threshold) { continue; }
-                $pairs[] = [
-                    'aId'    => $a,
-                    'bId'    => $b,
-                    'score'  => $score,
-                    'signal' => 'fuzzy',
-                    'variant' => musicianNameVariantClass($byId[$a]['name'], $byId[$b]['name']),
-                ];
-            }
-        }
-    };
-    foreach ($blockToken as $m => $ids) { $scoreBlock($ids, 'metaToken:' . $m); }
-    foreach ($blockWhole as $m => $ids) { $scoreBlock($ids, 'metaWhole:' . $m); }
+    if (!$groupsOnly) {
+        /* -----------------------------------------------------------
+         * Bucket B — fuzzy candidates via metaphone blocking.
+         *
+         * ONE combined dictionary for two-token-plus names, populated
+         * under BOTH each name's first-token key AND its last-token key
+         * — NOT two separate first-only / last-only dictionaries.
+         * That's what actually catches a comma-reversed pair: "Newton,
+         * John" tokenises to [newton, john] (first=newton, last=john)
+         * while "John Newton" tokenises to [john, newton] (first=john,
+         * last=newton) — the two names' OWN first/last never match each
+         * other positionally, but "Newton, John"'s first token
+         * metaphone equals "John Newton"'s LAST token metaphone (and
+         * vice-versa), so only a SHARED key space finds them.
+         * Single-token names get their own separate metaWhole
+         * dictionary (a name with only one token has no first/last
+         * split to cross-match against).
+         * ----------------------------------------------------------- */
+        $blockToken = [];
+        $blockWhole = [];
+        foreach ($metaFirst as $id => $m) { if ($m !== '') { $blockToken[$m][] = $id; } }
+        foreach ($metaLast  as $id => $m) { if ($m !== '') { $blockToken[$m][] = $id; } }
+        foreach ($blockToken as $m => $ids) { $blockToken[$m] = array_values(array_unique($ids)); }
+        foreach ($metaWhole as $id => $m) { if ($m !== '') { $blockWhole[$m][] = $id; } }
 
-    /* ---------------------------------------------------------------
-     * Bucket C — alias signal (gated by the CALLER passing $aliasRows;
-     * the live orchestrator only does so when
-     * musicianAliasesTableExists() is true, rule #9).
-     * ------------------------------------------------------------- */
-    if ($aliasRows) {
-        $aliasByFold = [];
-        foreach ($aliasRows as $al) {
-            $ownerId = (int)($al['musicianId'] ?? 0);
-            $name    = (string)($al['name'] ?? '');
-            if ($ownerId <= 0 || $name === '' || !isset($byId[$ownerId])) { continue; }
-            $f = ihymns_sim_name_normalise($name);
-            if ($f === '') { continue; }
-            $aliasByFold[$f][] = $ownerId;
-        }
-        foreach ($aliasByFold as $f => $ownerIds) {
-            $matchIds = $foldBuckets[$f] ?? [];
-            if (!$matchIds) { continue; }
-            $candidateIds = array_values(array_unique(array_merge($matchIds, $ownerIds)));
-            if (count($candidateIds) > $bucketCap) {
-                $skippedBuckets[] = ['key' => 'alias:' . $f, 'size' => count($candidateIds)];
-                continue;
+        $scoreBlock = function (array $ids, string $blockLabel) use (
+            &$skippedBuckets, $bucketCap, &$seenPairs, $pairKey, &$fuzzyPairsScored,
+            &$pairs, $byId, $threshold, $pairAllowed
+        ): void {
+            if (count($ids) < 2) { return; }
+            if (count($ids) > $bucketCap) {
+                $skippedBuckets[] = ['key' => $blockLabel, 'size' => count($ids)];
+                return;
             }
-            foreach ($ownerIds as $ownerId) {
-                foreach ($matchIds as $matchId) {
-                    if ($matchId === $ownerId) { continue; } // the alias IS this row's own name — not a signal
-                    $key = $pairKey($ownerId, $matchId);
-                    if (isset($seenPairs[$key])) { continue; }
-                    if (!$pairAllowed($byId[$ownerId], $byId[$matchId])) { continue; }
-                    $seenPairs[$key] = true;
+            $n = count($ids);
+            for ($i = 0; $i < $n; $i++) {
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $a = $ids[$i]; $b = $ids[$j];
+                    $key = $pairKey($a, $b);
+                    if (isset($seenPairs[$key])) { continue; } // already a Bucket A pair, or scored via another block
+                    if (!$pairAllowed($byId[$a], $byId[$b])) { continue; }
+                    $seenPairs[$key] = true; // mark BEFORE scoring so overlapping blocks (first+last token) never double-count
+                    $fuzzyPairsScored++;
+                    $score = ihymns_sim_name_score($byId[$a]['name'], $byId[$b]['name']);
+                    if ($score < $threshold) { continue; }
                     $pairs[] = [
-                        'aId'     => $ownerId,
-                        'bId'     => $matchId,
-                        'score'   => 1.0,
-                        'signal'  => 'alias-match',
-                        'variant' => musicianNameVariantClass($byId[$ownerId]['name'], $byId[$matchId]['name']),
+                        'aId'    => $a,
+                        'bId'    => $b,
+                        'score'  => $score,
+                        'signal' => 'fuzzy',
+                        'variant' => musicianNameVariantClass($byId[$a]['name'], $byId[$b]['name']),
                     ];
+                }
+            }
+        };
+        foreach ($blockToken as $m => $ids) { $scoreBlock($ids, 'metaToken:' . $m); }
+        foreach ($blockWhole as $m => $ids) { $scoreBlock($ids, 'metaWhole:' . $m); }
+
+        /* -----------------------------------------------------------
+         * Bucket C — alias signal (gated by the CALLER passing
+         * $aliasRows; the live orchestrator only does so when
+         * musicianAliasesTableExists() is true, rule #9).
+         * ----------------------------------------------------------- */
+        if ($aliasRows) {
+            $aliasByFold = [];
+            foreach ($aliasRows as $al) {
+                $ownerId = (int)($al['musicianId'] ?? 0);
+                $name    = (string)($al['name'] ?? '');
+                if ($ownerId <= 0 || $name === '' || !isset($byId[$ownerId])) { continue; }
+                $f = ihymns_sim_name_normalise($name);
+                if ($f === '') { continue; }
+                $aliasByFold[$f][] = $ownerId;
+            }
+            foreach ($aliasByFold as $f => $ownerIds) {
+                $matchIds = $foldBuckets[$f] ?? [];
+                if (!$matchIds) { continue; }
+                $candidateIds = array_values(array_unique(array_merge($matchIds, $ownerIds)));
+                if (count($candidateIds) > $bucketCap) {
+                    $skippedBuckets[] = ['key' => 'alias:' . $f, 'size' => count($candidateIds)];
+                    continue;
+                }
+                foreach ($ownerIds as $ownerId) {
+                    foreach ($matchIds as $matchId) {
+                        if ($matchId === $ownerId) { continue; } // the alias IS this row's own name — not a signal
+                        $key = $pairKey($ownerId, $matchId);
+                        if (isset($seenPairs[$key])) { continue; }
+                        if (!$pairAllowed($byId[$ownerId], $byId[$matchId])) { continue; }
+                        $seenPairs[$key] = true;
+                        $pairs[] = [
+                            'aId'     => $ownerId,
+                            'bId'     => $matchId,
+                            'score'   => 1.0,
+                            'signal'  => 'alias-match',
+                            'variant' => musicianNameVariantClass($byId[$ownerId]['name'], $byId[$matchId]['name']),
+                        ];
+                    }
                 }
             }
         }
@@ -774,4 +781,85 @@ function musicianFindRegistryDuplicates(\mysqli $db, array $opts = []): array
         'pairs'  => $pairsOut,
         'stats'  => $candidates['stats'],
     ];
+}
+
+/**
+ * iHymns — PURE lifespan-conflict check (#1785 §7). Given two hydrated
+ * payloads, does their recorded lifespan actively DISAGREE — a signal
+ * that the pair might be two genuinely different people who happen to
+ * share (a variant of) a name, not one person spelled two ways?
+ *
+ * ELI5: if both sides have a birth year on file and the years are
+ * different, that's a red flag worth a curator's extra "are you sure" —
+ * this is the musician-registry sibling of the #1218 same-official-
+ * songbook merge guard on `/manage/duplicate-songs`.
+ *
+ * DETAILED: compares at YEAR granularity (the coarsest precision either
+ * side might carry — `musicianDuplicatesDateLabel()`'s year-only output
+ * is already just the first 4 characters of ANY precision level), and
+ * only when BOTH sides actually have a value for that field — a blank
+ * side is "unknown", never treated as a conflict. Checked for birth AND
+ * death independently; either disagreeing is a conflict. Applied
+ * uniformly to EVERY merge action (byte-variant groups and fuzzy pairs
+ * alike) — the review page's server-side POST handler re-checks this
+ * regardless of which section a candidate rendered in, never trusting
+ * the client's own force=1 flag alone (defense in depth for a
+ * destructive, irreversible action).
+ */
+function musicianDuplicatesLifespanConflict(array $a, array $b): bool
+{
+    $bornA = $a['born'] ?? null; $bornB = $b['born'] ?? null;
+    if ($bornA && $bornB && substr((string)$bornA, 0, 4) !== substr((string)$bornB, 0, 4)) {
+        return true;
+    }
+    $diedA = $a['died'] ?? null; $diedB = $b['died'] ?? null;
+    if ($diedA && $diedB && substr((string)$diedA, 0, 4) !== substr((string)$diedB, 0, 4)) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * iHymns — the CHEAP CTA-badge count (#1785 §7): "how many high-
+ * confidence duplicate groups exist right now", WITHOUT paying for the
+ * fuzzy-scoring pass. Bucket A only (`groupsOnly`), dismissal-filtered.
+ * Used by the `/manage/musicians` "Musician duplicates" CTA badge — the
+ * same "count only, don't render" idiom as that page's own #846
+ * bulk-promote CTA badge, so a curator sees a non-zero number invite
+ * them in without the full scan running on every load of a DIFFERENT
+ * page.
+ */
+function musicianDuplicatesCountBucketA(\mysqli $db): int
+{
+    $profileCols = musicianProfileColumnsExist($db);
+    $disambigCol = $profileCols['Disambiguation'] ? 'Disambiguation' : "'' AS Disambiguation";
+    $stmt = $db->prepare("SELECT Id, Name, {$disambigCol} FROM tblMusicians");
+    $stmt->execute();
+    $rawRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $rows = [];
+    foreach ($rawRows as $r) {
+        $rows[] = [
+            'id'             => (int)$r['Id'],
+            'name'           => (string)$r['Name'],
+            'disambiguation' => (string)($r['Disambiguation'] ?? ''),
+        ];
+    }
+
+    $candidates = musicianDuplicatesFindCandidates($rows, [], ['groupsOnly' => true]);
+    if (!$candidates['groups']) {
+        return 0;
+    }
+
+    $dismissedPairs = musicianDuplicatesFetchDismissedPairs($db);
+    $count = 0;
+    foreach ($candidates['groups'] as $g) {
+        $allDismissed = true;
+        foreach ($g['pairs'] as [$a, $b]) {
+            if (!isset($dismissedPairs[musicianDuplicatesPairKey($a, $b)])) { $allDismissed = false; break; }
+        }
+        if (!$allDismissed) { $count++; }
+    }
+    return $count;
 }

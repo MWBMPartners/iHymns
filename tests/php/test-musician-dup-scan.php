@@ -286,9 +286,52 @@ assertEq(musicianDuplicatesDateLabel('1823-03-17', 'day'), '1823-03-17', 'day pr
 assertEq(musicianDuplicatesDateLabel('1823-03-17', null), '1823', 'no precision recorded -> falls back to year-only (un-migrated-install shape)');
 
 /* ------------------------------------------------------------------------ *
- * 8 — Empty input is well-defined, not a crash.                          *
+ * 9 — groupsOnly (the CTA-badge fast path, #1785 §7): Bucket A only, no    *
+ *     fuzzy scoring performed at all.                                    *
  * ------------------------------------------------------------------------ */
-echo "\n8 — empty input\n";
+echo "\n9 — groupsOnly fast path\n";
+
+$goRows = [
+    ['id' => 50, 'name' => 'Eddie James'],
+    ['id' => 51, 'name' => 'Eddie  James'], // Bucket A fold-equal
+    ['id' => 52, 'name' => 'John Newton'],
+    ['id' => 53, 'name' => 'Newton, John'], // would be a Bucket B fuzzy pair, NOT fold-equal
+];
+$go = musicianDuplicatesFindCandidates($goRows, [], ['groupsOnly' => true]);
+assertTrue(findGroupWithMembers($go['groups'], [50, 51]) !== null, 'Bucket A group still found with groupsOnly=true');
+assertEq($go['pairs'], [], 'groupsOnly=true -> Bucket B/C never run, pairs is empty even though a fuzzy pair WOULD exist');
+assertEq($go['stats']['fuzzyPairsScored'], 0, 'groupsOnly=true -> fuzzyPairsScored stays 0 (no scoring work done at all)');
+
+/* ------------------------------------------------------------------------ *
+ * 10 — musicianDuplicatesLifespanConflict() — the merge force-gate signal. *
+ * ------------------------------------------------------------------------ */
+echo "\n10 — musicianDuplicatesLifespanConflict()\n";
+
+assertTrue(
+    musicianDuplicatesLifespanConflict(['born' => '1823', 'died' => null], ['born' => '1825', 'died' => null]),
+    'differing birth years, both present -> conflict'
+);
+assertTrue(
+    musicianDuplicatesLifespanConflict(['born' => null, 'died' => '1901'], ['born' => null, 'died' => '1899']),
+    'differing death years, both present -> conflict'
+);
+assertTrue(
+    !musicianDuplicatesLifespanConflict(['born' => '1823', 'died' => null], ['born' => null, 'died' => null]),
+    'one side blank birth year -> NOT a conflict (unknown, not disagreeing)'
+);
+assertTrue(
+    !musicianDuplicatesLifespanConflict(['born' => '1823-03-17', 'died' => null], ['born' => '1823', 'died' => null]),
+    'same YEAR at different precisions (day vs year-only) -> NOT a conflict (year-granularity comparison)'
+);
+assertTrue(
+    !musicianDuplicatesLifespanConflict(['born' => null, 'died' => null], ['born' => null, 'died' => null]),
+    'neither side has any date -> NOT a conflict'
+);
+
+/* ------------------------------------------------------------------------ *
+ * 11 — Empty input is well-defined, not a crash.                         *
+ * ------------------------------------------------------------------------ */
+echo "\n11 — empty input\n";
 
 $empty = musicianDuplicatesFindCandidates([]);
 assertEq($empty['groups'], [], 'no rows -> no groups');

@@ -344,15 +344,12 @@ return [
            scanner is concerned, and needs its OWN entry, below, rather than
            inheriting the retired one. */
         'tblMusicianLinks' => 'deliberate legacy fallback — index.php:541 / includes/pages/musician.php:288 read it only `if (empty($linksUnified))`, i.e. on a pre-backfill install. Dead on migrated installs BY DESIGN; #1741 P2-B renamed from tblCreditPersonLinks (originally allowlisted, then retired #1741 P2-A when the table became a view — see the note above)',
-        /* #1785 C6 lands the READER (musicianDuplicatesFetchDismissedPairs() /
-           musicianDuplicatesDismissedTableExists(), includes/musician_duplicates.php)
-           one commit ahead of the WRITER — the review page's dismiss/undismiss
-           actions (C7, the very next commit in the same #1785 PR) are what
-           actually INSERT/DELETE rows here. Temporary by construction: this
-           entry is removed the moment C7 lands (the guard's own "no stale
-           allowlist entries" check then proves it, rather than trusting this
-           comment to be remembered). */
-        'tblMusicianDuplicatesDismissed' => '#1785 C6 — reader (the scan\'s dismissal filter) ships one commit ahead of the writer (C7\'s dismiss/undismiss actions, same PR). Remove this entry in C7.',
+        /* tblMusicianDuplicatesDismissed's #1785 C6 entry RETIRED in C7:
+           manage/musician-duplicates.php now writes it too (dismiss INSERT
+           / undismiss DELETE), so it is no longer reader-with-no-writer.
+           Removing the entry keeps the count exact (the same self-cleaning
+           shape as the tblSongAlternativeTitles / tblTuneAliases notes
+           above). */
     ],
 
     /* =====================================================================

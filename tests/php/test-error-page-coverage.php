@@ -490,7 +490,7 @@ $exemptions = [
         'paths' => [
             'api.php', 'includes/song_soft_delete.php', 'manage/api-keys.php', 'manage/duplicate-songs.php',
             'manage/editor/api.php', 'manage/editor/api2.php', 'manage/languages.php',
-            'manage/setup-database.php', 'manage/tags.php',
+            'manage/musician-duplicates.php', 'manage/setup-database.php', 'manage/tags.php',
         ],
     ],
     412 => [

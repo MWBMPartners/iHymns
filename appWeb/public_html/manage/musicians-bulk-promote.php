@@ -330,6 +330,12 @@ if (!empty($registryByName)) {
             Add them all in one submit. Where a name closely matches one you already have, it's flagged so you can
             <em>merge</em> typos / spelling-variants into the existing musician instead of creating a duplicate.
             <a href="/manage/musicians" class="link-secondary">← back to Musicians</a>
+            <!-- #1785 §7 — cross-link to the registry-duplicate review page. A
+                 DIFFERENT job: this page finds cited-but-UNREGISTERED names;
+                 /manage/musician-duplicates finds registry rows that are
+                 probably the same person spelled two ways. -->
+            &middot; Looking for duplicates <em>already in</em> the registry (not cited names waiting to be added)?
+            <a href="/manage/musician-duplicates" class="link-secondary">Review musician duplicates →</a>
         </p>
 
         <?php if ($success): ?>

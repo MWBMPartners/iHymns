@@ -48,6 +48,11 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    admin_musician_* API endpoints in /api.php so a tweak to the
    link-type set or the row-shape rules lands on both surfaces. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1785 §7/§8 — the registry-duplicate scan helper (the cheap Bucket-A-
+   only CTA-badge count below) + the shared disambiguation payload
+   builder the merge-target typeahead/Merge-modal preview consume
+   (#1785 C8). require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
 /* Places registry helper — exposes placesUpsertFromPayload() +
    musicianPlaceIdColumnsExist(), used by the add / update_person
    handlers to persist BirthPlaceId / DeathPlaceId alongside the
@@ -1995,6 +2000,18 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
 $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
     $p['total'] > 0 && $p['registry_id'] === null
 ));
+
+/* #1785 §7 — cheap CTA badge for the duplicates-review page: Bucket A
+   (byte-variant) group count ONLY, no fuzzy scoring (musicianDuplicates
+   CountBucketA()'s own doc-block). Wrapped defensively — a failure here
+   (e.g. an un-migrated dependency) must never break the parent Musicians
+   page over a nicety badge; it just hides the CTA. */
+$dupeGroupCount = 0;
+try {
+    $dupeGroupCount = musicianDuplicatesCountBucketA($db);
+} catch (\Throwable $_e) {
+    $dupeGroupCount = 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -2087,6 +2104,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <i class="bi bi-person-plus me-1"></i>Add all <?= number_format($totalInUseUnregistered) ?> now
                     </button>
                 </form>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($dupeGroupCount > 0): ?>
+            <!-- #1785 §7 — CTA into the registry-duplicate review page,
+                 beside the #846 bulk-promote CTA above. Distinct job:
+                 that one finds cited-but-UNREGISTERED names; this one
+                 finds registry rows that are probably the SAME person
+                 spelled two ways. Count is Bucket-A-only (cheap, no
+                 fuzzy scoring) — the review page itself also surfaces
+                 the fuzzy "similar names" section, so the true total is
+                 usually higher than this badge. -->
+            <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 py-2">
+                <i class="bi bi-people-fill" aria-hidden="true"></i>
+                <span>
+                    <strong><?= number_format($dupeGroupCount) ?></strong>
+                    probable duplicate <?= $dupeGroupCount === 1 ? 'group' : 'groups' ?> in your Musicians registry —
+                    the same person spelled two different ways.
+                </span>
+                <a href="/manage/musician-duplicates" class="btn btn-sm btn-outline-warning ms-auto">
+                    <i class="bi bi-git-compare me-1"></i>Review duplicates
+                </a>
             </div>
         <?php endif; ?>
 
