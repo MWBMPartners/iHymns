@@ -16015,99 +16015,34 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
-                $stmt->bind_param('ii', $sourceId, $targetId);
-                $stmt->execute();
-                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-                $byId = [];
-                foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
-                if (!isset($byId[$sourceId])) { sendJson(['error' => 'Source person not found.'], 404); break; }
-                if (!isset($byId[$targetId])) { sendJson(['error' => 'Target person not found.'], 404); break; }
-                $sourceName = $byId[$sourceId];
-                $targetName = $byId[$targetId];
 
-                $db->begin_transaction();
-                $affected     = [];
-                $linksKept    = 0;
-                $linksDropped = 0;
-                $ipiKept      = 0;
-                $ipiDropped   = 0;
+                /* #1785 C4 — the ONE merge core, shared with
+                   manage/musicians.php's `case 'merge'`. source_id/
+                   target_id/same-id were already validated above (kept
+                   HERE rather than delegated so this endpoint keeps its
+                   own 400 wording/status), so only the "not found"
+                   \InvalidArgumentException can be thrown at this call
+                   site — caught immediately below and mapped to the
+                   SAME 404 + wording this endpoint always returned. Any
+                   OTHER \Throwable (a genuine DB failure) falls through
+                   to the outer catch, unchanged from before extraction. */
                 try {
-                    /* Re-point song-credit rows: source → target across
-                       all five tables. */
-                    $tables = [
-                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                        'tblSongAdaptors', 'tblSongTranslators',
-                    ];
-                    foreach ($tables as $tbl) {
-                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
-                        $stmt->bind_param('ss', $targetName, $sourceName);
-                        $stmt->execute();
-                        $affected[$tbl] = $stmt->affected_rows;
-                        $stmt->close();
-                    }
-
-                    /* Migrate the chosen child rows from source → target.
-                       Anything not in keep_link_ids / keep_ipi_ids gets
-                       dropped via the cascade when the source row is
-                       deleted below. */
-                    $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
-                    $stmt->close();
-
-                    $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
-                    $stmt->close();
-
-                    if ($keepLinks && $sourceLinkIds) {
-                        $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
-                        if ($toMove) {
-                            $upd = $db->prepare(
-                                'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
-                            );
-                            foreach ($toMove as $lid) {
-                                $upd->bind_param('iii', $targetId, $lid, $sourceId);
-                                $upd->execute();
-                                $linksKept += $upd->affected_rows;
-                            }
-                            $upd->close();
-                        }
-                    }
-                    $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
-
-                    if ($keepIpi && $sourceIpiIds) {
-                        $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
-                        if ($toMove) {
-                            $upd = $db->prepare(
-                                'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
-                            );
-                            foreach ($toMove as $iid) {
-                                $upd->bind_param('iii', $targetId, $iid, $sourceId);
-                                $upd->execute();
-                                $ipiKept += $upd->affected_rows;
-                            }
-                            $upd->close();
-                        }
-                    }
-                    $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
-
-                    /* Drop the source registry row. Cascade removes
-                       any child rows we chose not to migrate. */
-                    $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    $db->commit();
-                } catch (\Throwable $txErr) {
-                    $db->rollback();
-                    throw $txErr;
+                    $report = musicianMergeExecute($db, $sourceId, $targetId, [
+                        'keepLinkIds' => $keepLinks,
+                        'keepIpiIds'  => $keepIpi,
+                    ]);
+                } catch (\InvalidArgumentException $e) {
+                    sendJson(['error' => $e->getMessage()], 404);
+                    break;
                 }
+
+                $sourceName = $report['sourceName'];
+                $targetName = $report['targetName'];
+                $affected     = $report['affected'];
+                $linksKept    = $report['linksKept'];
+                $linksDropped = $report['linksDropped'];
+                $ipiKept      = $report['ipiKept'];
+                $ipiDropped   = $report['ipiDropped'];
 
                 $totalRenamed = array_sum($affected);
                 logActivity('api.admin.musician.merge', 'musician', (string)$targetId, [

@@ -1852,6 +1852,205 @@ function musicianReconcileCreditNameBytes(\mysqli $db): array
     return $report;
 }
 
+/* =========================================================================
+ * MERGE CORE (#1785 C4/C5)
+ *
+ * ELI5: this is the ONE function that actually merges two registry people
+ * into one. Both places in the app that offer a "Merge" button — the
+ * /manage/musicians page and the admin API — used to each carry their own
+ * near-identical copy of this logic; this extracts it once so a future fix
+ * (or the #1785 registry-duplicates review page) only has to land in one
+ * place.
+ *
+ * DETAILED / WHY extracted as its own function rather than left inline
+ * twice (rule #22's modularity argument applied to a MUTATION path, not
+ * just a scoring one): manage/musicians.php's `case 'merge'` and api.php's
+ * `admin_musician_merge` were two byte-similar inline forks (#1785 plan
+ * §1) — same five-table UPDATE loop, same link/IPI kept-vs-dropped
+ * bookkeeping, same DELETE + FK-cascade tail. A bug fixed in one (e.g. the
+ * discovered tblSongArtists gap, or the alias/relation cascade-delete data
+ * loss, both closed by #1785 C5) had to be independently re-applied to the
+ * other or it would silently reappear the next time someone touched only
+ * one surface. C4 extracts this function BEHAVIOUR-PRESERVING (still the
+ * five original tables — verified via a before/after fixture diff on a
+ * scratch DB through BOTH call sites); C5 hardens it in a separate,
+ * separately-reviewable commit (six tables via MUSICIAN_CREDIT_ROLE_TABLES,
+ * alias/relation carry-over instead of silent cascade-delete, source name
+ * preserved as a target alias).
+ * ========================================================================= */
+
+/**
+ * iHymns — execute a musician-registry merge: re-point every song-credit
+ * row from source → target, migrate the chosen link/IPI child rows, then
+ * delete the source registry row (#1785 C4/C5).
+ *
+ * ELI5: "fold person A into person B" — every song that currently credits
+ * A's exact spelling gets updated to credit B's spelling instead, then A's
+ * now-empty registry entry is removed. The admin picks which of A's
+ * external links / IPI numbers should survive on B; anything not picked
+ * is dropped when A's row is deleted (the database's own ON DELETE CASCADE
+ * does that part).
+ *
+ * DETAILED: owns its OWN transaction (both original call sites did, and
+ * neither ever nested this inside another transaction, so there is no
+ * caller today that needs to wrap it in a larger unit of work). On any
+ * failure it rolls back and RE-THROWS — the caller's own outer handler
+ * (musicians.php's page-level try/catch, api.php's endpoint-level
+ * try/catch) is what turns that into a user-facing error, exactly as it
+ * did before extraction.
+ *
+ * Validation failures (missing id, same id, row not found) throw a typed
+ * `\InvalidArgumentException` rather than returning a sentinel — this
+ * lets each caller map the SAME failure onto its OWN error shape (a page
+ * banner + $error string for musicians.php; a `sendJson([...], 400|404)`
+ * for api.php) without this function knowing anything about either
+ * surface (rule #35 — the CALL SITE decides the status/shape, not this
+ * function inspecting who's calling). Both current callers pre-validate
+ * "missing id" / "same id" themselves BEFORE calling this (keeping their
+ * own, surface-appropriate wording), so in practice only the "not found"
+ * exceptions are ever reachable through them; the "missing/same id"
+ * checks here exist as defence-in-depth for a FUTURE caller (e.g. the
+ * #1785 registry-duplicates review page) that might not pre-validate.
+ *
+ * @param \mysqli $db       Live connection.
+ * @param int     $sourceId tblMusicians.Id — the row that will be DELETED.
+ * @param int     $targetId tblMusicians.Id — the row that survives.
+ * @param array{keepLinkIds?:list<int>,keepIpiIds?:list<int>} $opts
+ * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int}
+ * @throws \InvalidArgumentException on any refusal (missing side / same id / not found).
+ */
+function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $opts = []): array
+{
+    if ($sourceId <= 0 || $targetId <= 0) {
+        throw new \InvalidArgumentException('Both source and target person ids are required.');
+    }
+    if ($sourceId === $targetId) {
+        throw new \InvalidArgumentException('Source and target must be different people.');
+    }
+
+    $keepLinkIds = array_map('intval', $opts['keepLinkIds'] ?? []);
+    $keepIpiIds  = array_map('intval', $opts['keepIpiIds']  ?? []);
+
+    /* Look up both rows. Source name is what we cascade in the
+       song-credit tables; target name is the surviving spelling. */
+    $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
+    $stmt->bind_param('ii', $sourceId, $targetId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $byId = [];
+    foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
+    if (!isset($byId[$sourceId])) { throw new \InvalidArgumentException('Source person not found.'); }
+    if (!isset($byId[$targetId])) { throw new \InvalidArgumentException('Target person not found.'); }
+    $sourceName = $byId[$sourceId];
+    $targetName = $byId[$targetId];
+
+    $db->begin_transaction();
+    try {
+        /* Re-point song-credit rows: source name → target name across
+           the credit tables. #1785 C4 keeps this the original FIVE
+           tables (behaviour-preserving extraction, proven by a
+           before/after fixture diff); C5 hardens it to
+           MUSICIAN_CREDIT_ROLE_TABLES's six tables in the very next
+           commit — see that commit's body for why this list changes
+           there and not here. */
+        $tables = [
+            'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
+            'tblSongAdaptors', 'tblSongTranslators',
+        ];
+        $affected = [];
+        foreach ($tables as $tbl) {
+            $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+            $stmt->bind_param('ss', $targetName, $sourceName);
+            $stmt->execute();
+            $affected[$tbl] = $stmt->affected_rows;
+            $stmt->close();
+        }
+
+        /* Migrate the chosen child rows from source → target. Anything
+           not in keepLinkIds / keepIpiIds gets dropped via the cascade
+           when the source registry row is deleted below. */
+        $linksKept    = 0;
+        $linksDropped = 0;
+        $ipiKept      = 0;
+        $ipiDropped   = 0;
+
+        /* Count links currently on the source so we can report
+           kept-vs-dropped accurately. */
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+        $stmt->close();
+
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+        $stmt->close();
+
+        /* Re-point each kept child row. Anything from keepLinkIds that
+           isn't actually on the source is silently ignored — the form
+           might be stale. */
+        if ($keepLinkIds && $sourceLinkIds) {
+            $toMove = array_intersect($keepLinkIds, array_map('intval', $sourceLinkIds));
+            if ($toMove) {
+                $upd = $db->prepare(
+                    'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
+                );
+                foreach ($toMove as $lid) {
+                    $upd->bind_param('iii', $targetId, $lid, $sourceId);
+                    $upd->execute();
+                    $linksKept += $upd->affected_rows;
+                }
+                $upd->close();
+            }
+        }
+        $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
+
+        if ($keepIpiIds && $sourceIpiIds) {
+            $toMove = array_intersect($keepIpiIds, array_map('intval', $sourceIpiIds));
+            if ($toMove) {
+                $upd = $db->prepare(
+                    'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
+                );
+                foreach ($toMove as $iid) {
+                    $upd->bind_param('iii', $targetId, $iid, $sourceId);
+                    $upd->execute();
+                    $ipiKept += $upd->affected_rows;
+                }
+                $upd->close();
+            }
+        }
+        $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
+
+        /* Drop the source registry row. Cascade removes any child rows
+           we chose not to migrate (and, today, silently eats the
+           source's aliases + relations too — that's the second #1796
+           defect; #1785 C5 fixes it by carrying them over BEFORE this
+           DELETE runs). */
+        $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $stmt->close();
+
+        $db->commit();
+    } catch (\Throwable $e) {
+        $db->rollback();
+        throw $e;
+    }
+
+    return [
+        'sourceName'   => $sourceName,
+        'targetName'   => $targetName,
+        'affected'     => $affected,
+        'linksKept'    => $linksKept,
+        'linksDropped' => $linksDropped,
+        'ipiKept'      => $ipiKept,
+        'ipiDropped'   => $ipiDropped,
+    ];
+}
+
 /**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
