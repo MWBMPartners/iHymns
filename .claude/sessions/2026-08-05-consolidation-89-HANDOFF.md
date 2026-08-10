@@ -8,6 +8,10 @@ NO PR stacking — one branch → alpha via a single later PR. Owner has NOT ask
 **Owner's active queue (2026-08-10, do in order, autonomously):** #1767 ✅ → #1778 ✅ → **#1158 (NEXT)** → #90 → #94 → #1770 → #1792 → #1785 → #1786 → #1783 (already done, confirm) → *[editor2 bug batch — not yet received]* → **#91 LAST (postponed to the very end, even after editor2)**. #1791 client (C4–C7) is NOT in this list — stays paused server-complete.
 
 - **#1767 print templates — ✅ buildable scope COMPLETE.** Z (clone + JSON import/export) + J (system default) landed (`4025ac8c`), docs (`c47b5cd7`). Prior 6 commits (A/B/F/G/N/O/P/R/V/Y/AB/AM) + CueRCode card (`96028999`) already in branch. **Remaining = decision-gated only** (server-PDF, uploadable layouts E, org branding D/K/L, AK usage-count, H-family multi-page) — the 4 owner decisions re-surfaced on #1767; non-blocking.
+- **#90 ranked new-work proposals — ✅ filed as #1794** (`for consideration`).
+- **#94 Internet-Archive OCR importer — ✅ feasibility proposal filed as #1795** (owner decision A/B/C pending; network-blocked in sandbox; recommends Phase-1-audit-first).
+- **#1158 annotation backfill — ✅ one governed batch** (`63f5e635`, SongData credit-accessor family); multi-session program continues (next: SongData search-method group, then api.php by case group).
+- **#1770 Live Follow UX rethink — 🟡 Fable planning pass IN FLIGHT** (Option A decided; 7 owner requirements captured in `live-follow-1770-analysis.md` §423–534). Fable agent producing `.claude/live-follow-1770-plan.md` (one-pass schema: LastLeaderSeenAt heartbeat, 3-layer idle-timeout precedence, host-CCLI unlock, CurrentComponentId slide-granularity, external-driver token; + commit staging). Sonnet build follows the plan. **#1792 (Go Live testability / Channel wall) is coupled — hold until the #1770 plan lands.**
 - **#1778 gating hub — ✅ buildable scope COMPLETE.** `/manage/gating` hub + readiness checklist (`3acc68b6`), CHANGELOG (`33800414`). Read-only overview; the master-switch FLIP + the six #1772–#1777 decisions remain owner-only (as the issue mandates). P6 tooling done, activation is the owner's.
 
 
