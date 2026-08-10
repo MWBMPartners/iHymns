@@ -2763,6 +2763,30 @@ CREATE TABLE IF NOT EXISTS tblMusicianRelations (
   COMMENT='Group/band/collective -> individual member musicians (#1502).';
 
 
+-- ----------------------------------------------------------------------------
+-- tblMusicianDuplicatesDismissed (#1785) — a curator's "these two registry
+-- rows are NOT the same person" memory for /manage/musician-duplicates.
+-- Mirrors tblSongLinkSuggestionsDismissed: pair normalised (IdA < IdB,
+-- numeric), UNIQUE per pair, FK-cascaded so merging/deleting either person
+-- auto-cleans the dismissal. Scores are deliberately NOT stored — the scan
+-- recomputes live (#1785 §3.4), so a stored score could only go stale.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblMusicianDuplicatesDismissed (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    MusicianIdA  INT UNSIGNED NOT NULL COMMENT 'Always numerically < MusicianIdB (#1785)',
+    MusicianIdB  INT UNSIGNED NOT NULL,
+    DismissedBy  INT UNSIGNED NULL DEFAULT NULL COMMENT 'tblUsers.Id; NULL = user since deleted',
+    DismissedAt  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Reason       VARCHAR(255) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_pair (MusicianIdA, MusicianIdB),
+    KEY idx_B (MusicianIdB),
+    CONSTRAINT fk_MusDupDism_A FOREIGN KEY (MusicianIdA) REFERENCES tblMusicians(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_MusDupDism_B FOREIGN KEY (MusicianIdB) REFERENCES tblMusicians(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================================
 -- FAMILY: MUSICIANS BACK-COMPAT VIEWS (#1741 P2)
 --

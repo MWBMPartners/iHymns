@@ -4088,4 +4088,16 @@ return [
             || !_migProbe_columnExists($db, 'tblOrganisations', 'LiveIdleTimeoutMins')
             || !_migProbe_columnExists($db, 'tblOrganisations', 'EnforceIdleTimeout'),
     ],
+
+    'musician-duplicates-dismissed' => [
+        'script' => 'migrate-musician-duplicates-dismissed.php',
+        'card' => [
+            'title'  => 'Musicians: duplicate-review dismissals (#1785)',
+            'body'   => 'Creates <code>tblMusicianDuplicatesDismissed</code> so "not the same '
+                      . 'person" decisions on /manage/musician-duplicates persist. Idempotent.',
+            'button' => 'Run Musician Duplicates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblMusicianDuplicatesDismissed'),
+    ],
 ];
