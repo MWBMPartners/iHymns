@@ -186,3 +186,53 @@ MariaDB socket `/run/mysqld/mysqld.sock`; restart: `mkdir -p /run/mysqld && chow
 /run/mysqld && nohup mariadbd --user=mysql --datadir=/var/lib/mysql --socket=/run/mysqld/mysqld.sock &`.
 Creds `appWeb/.auth/db_credentials.php` → `127.0.0.1:3306/ihymns_live` (149 tables). CI globs
 `tests/php/*.php` + `tests/*.js`.
+
+---
+
+## 2026-08-10 — owner queue drained (all on `claude/issue-sweep-fixes-89`, pushed; NO PR yet)
+
+Owner queue was `1767 1778 1158 90 94 1770 1792 1785 1786` (+ 91 LAST, after a not-yet-received
+editor2 bug batch). All built, verified (PHP **143** / node **53** green), pushed. Suite baseline rose
+136→143 across the session (7 new/extended guards). Branch HEAD `417a77d2`.
+
+### Landed this session
+- **#1770** Live Follow/Service Mode rework — C1–C8 (`559ac465`→`99e9d13a`): one-pass dormant schema
+  (`tblLiveFollowSessions` idle cols, `tblOrganisations` override cols, `tblServiceDriverKeys`), leader-idle
+  auto-close + 3-layer precedence resolver, host-CCLI unlock for Quick followers, ONE broadcast core
+  `serviceMode_applyBroadcast()` + `service_drive` external-driver endpoint + key lifecycle + admin card,
+  host bar / activity tracking / presence cookie / optional console / `?svc_code=` reader / settings
+  surfaces, 6 mutation-proven guards, docs. Spike follow-up **#1797** filed.
+- **#1792** channel-wall testability (`65682f64` impl + `3e9034bc` docs) — `serviceMode_codeOnOtherChannel()`
+  cross-channel hint + same-address docs. **AUDIT FINDING**: the same-env happy path has NO logic bug;
+  channel is DOCROOT-derived (`ihymns_environment()`), so a same-URL test is channel-consistent. Likely
+  real causes = (1) two devices on different docroots (desktop dev-URL + phone prod-PWA), (2) 180s
+  freshness going stale on a backgrounded mobile host tab.
+- **#1785** Musicians dedup — C1–C10 (`325c4446`→`6181f62f`): dismissals table, shared NAME scorer +
+  variant classifier, deleted bulk-promote's private scorer fork, ONE `musicianMergeExecute()` core,
+  six-table + alias/relation hardening (closes **#1796**), scan helper, `/manage/musician-duplicates`
+  review page, disambiguation everywhere, 5 guards. Follow-ups **#1799**/**#1800** filed.
+- **#1798** (spike-found) sectionRef fold bug — `d7d44be5`: two-pass exact-then-coarse type match +
+  space-form parse + guard (3 legs mutation-proven).
+- **#1786** admin sortable-table adoption — `03aa8b6d`→`417a77d2`: every admin data-list table wired
+  (found **12 more** tagged-but-never-booted pages beyond #1799), tree-derived coverage guard, closes **#1799**.
+
+### Issues filed this session
+#1793–#1795 (earlier), **#1796** (musician merge data-loss, fixed by #1785 C4/C5), **#1797** (ProPresenter
+shim spike + plan `.claude/propresenter-shim-1797-plan.md`), **#1798** (sectionRef, fixed), **#1799**
+(musicians pre-existing defects, fixed by #1786), **#1800** (musician merge for-consideration).
+
+### OPEN owner decisions (all non-blocking; recap on each issue in owner-question shape)
+- **#1792** — widen `LIVE_SESSION_FRESHNESS_SECONDS` 180→600s? rec **A** (yes; idle-close now bounds dead sessions).
+- **#1797** — build the in-repo `service_drive` extension (D2 = dormant `tblServiceSongAliases`) + defer the
+  out-of-repo Node bridge (D1); confirm D3 (fuzzy never auto-drives) / D4 (PP 7.9+ only). #1798 already fixed.
+- **#1786** — public app has NO data `<table>`s (card/list layouts); rec **A** admin-only now, **B** (sort on
+  card/list layouts) as a separate future feature.
+- Earlier standing decisions still parked: #1767 remainder (5 features), #94 IA-OCR, #1778/#1772–#1777 gating flip.
+
+### DEPLOY-TIME migration cards (web-run, per env) when the branch lands
+"Live Follow capability" (#1770 C1) · "musician duplicate-dismissals" (#1785 C1) · "Reconcile Credit-Name
+Bytes" (#1784) · provision CueRCode + iHymns→CueRCode key (#1767 R / #38). All dormant/no-op until run.
+
+### Remaining
+Only **#91** (FINAL docs/help/wiki/OpenAPI/.claude + v1.5000.x bump) — gated LAST, after the editor2 bug
+batch the owner said they'd send. Branch is PR-ready to `alpha` whenever the owner asks (no PR opened yet).
