@@ -4067,4 +4067,25 @@ return [
             || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditCount')
             || _migProbe_columnCharLength($db, 'tblSharedSetlists', 'ShareId') < 64,
     ],
+
+    'live-follow-quick-capable' => [
+        'script' => 'migrate-live-follow-quick-capable.php',
+        'card' => [
+            'title'  => 'Live Follow: capable Quick sessions (#1770)',
+            'body'   => 'Adds leader-idle auto-close columns to <code>tblLiveFollowSessions</code>, '
+                      . 'org idle-timeout override columns to <code>tblOrganisations</code>, and the '
+                      . '<code>tblServiceDriverKeys</code> table for ProPresenter-class external drivers. '
+                      . 'Additive, idempotent, DORMANT — nothing reads or writes any of it until the '
+                      . '#1770 server/client lands. Safe to re-run.',
+            'button' => 'Run Live Follow Capability Migration',
+        ],
+        /* Multi-object OR-probe: PENDING until the new table AND all four
+           columns exist. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblServiceDriverKeys')
+            || !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'LastLeaderSeenAt')
+            || !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'IdleTimeoutMins')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'LiveIdleTimeoutMins')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'EnforceIdleTimeout'),
+    ],
 ];

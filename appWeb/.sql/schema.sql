@@ -1201,6 +1201,8 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    LiveIdleTimeoutMins SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Org override for the Quick-session leader-idle timeout (minutes). NULL = no override — the app default applies (#1770 req 5)',
+    EnforceIdleTimeout TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = the org LOCKS LiveIdleTimeoutMins for its members (their personal value is ignored). Only meaningful when LiveIdleTimeoutMins is non-NULL (#1770 req 5)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -4094,6 +4096,8 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     StartedAt            DATETIME     NOT NULL,
     LastHeartbeatAt      DATETIME     NOT NULL,
     ExpiresAt            DATETIME     NULL DEFAULT NULL COMMENT 'Cleanup horizon for the prune job',
+    LastLeaderSeenAt DATETIME NULL DEFAULT NULL COMMENT 'UTC instant of the last GENUINE leader interaction (broadcast/create/console action, or a leaderActive heartbeat) — NOT bumped by the automated 30s keepalive alone. NULL = pre-#1770 row or not yet stamped; idle enforcement skips it (#1770)',
+    IdleTimeoutMins SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Resolved idle-timeout (minutes) stamped at session create from the app→org→user precedence chain (serviceMode_resolveIdleTimeoutMins). NULL = no idle enforcement (service sessions, legacy rows, un-migrated writers) (#1770)',
     CreatedAt            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -4102,6 +4106,7 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     INDEX      idx_Active (IsActive, LastHeartbeatAt),
     INDEX      idx_Service (VenueId, ScheduleId, OccurrenceDate, IsActive),
     INDEX      idx_OrgActive (OrgId, IsActive),
+    INDEX      idx_Idle (SessionKind, IsActive, LastLeaderSeenAt),
 
     CONSTRAINT fk_LiveFollow_Host
         FOREIGN KEY (HostUserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -4660,6 +4665,41 @@ CREATE TABLE IF NOT EXISTS tblOrgVenues (
     CONSTRAINT fk_OrgVenues_Place FOREIGN KEY (PlaceId) REFERENCES tblPlaces(Id)        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Org physical venues — Service Mode Phase 1 (#1325). lat/lng/radius = convenience geofence + map pin; presence gate is the venue rotating code.';
+
+-- ---------------------------------------------------------------------------
+-- tblServiceDriverKeys (#1770 req 4/7) — durable org-scoped credentials for
+-- external presentation-app drivers (ProPresenter/OpenLP shims) of Service-Mode
+-- sessions. Placed AFTER tblOrgVenues (its FK target) so a fresh sequential
+-- install satisfies the FK. Deliberately NO Channel column — the rule-#26 wall
+-- is enforced at session-resolution time, never on the durable credential.
+-- Dormant until C4.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblServiceDriverKeys (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    OrgId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrganisations — the org whose service sessions this key may drive. v1 mint path always sets it; app rule: exactly one of OrgId / OwnerUserId is non-NULL (#1770 req 4)',
+    OwnerUserId INT UNSIGNED NULL DEFAULT NULL COMMENT 'RESERVED-DORMANT (rule #20): a future personal driver key for Quick sessions. No v1 code writes it (#1770 §10 S4)',
+    VenueId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrgVenues — optional narrowing to one venue; NULL = any venue of the org',
+    KeyHash     CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the raw key — raw value never stored (tblSessionControlTokens / tblApiKeys discipline)',
+    KeyPrefix   VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'Non-secret leading chars for admin identification (mirrors tblApiKeys.KeyPrefix)',
+    Label       VARCHAR(120) NOT NULL COMMENT 'Operator-facing name, e.g. "Sanctuary ProPresenter"',
+    Scope       VARCHAR(40)  NOT NULL DEFAULT 'broadcast' COMMENT 'Granted capability — app-validated VARCHAR vocab, never ENUM (rule #20)',
+    Protocol    VARCHAR(30)  NOT NULL DEFAULT 'generic' COMMENT 'Which shim family minted/uses it: generic | propresenter | openlp | … — display + diagnostics vocab, app-validated VARCHAR',
+    IsActive    TINYINT(1)   NOT NULL DEFAULT 1,
+    ExpiresAt   DATETIME     NULL DEFAULT NULL COMMENT 'Optional expiry (UTC), NULL = never. DATETIME not TIMESTAMP (rule #20 TTL convention)',
+    RevokedAt   DATETIME     NULL DEFAULT NULL COMMENT 'Hard revocation instant (UTC); non-NULL = refused',
+    LastUsedAt  DATETIME     NULL DEFAULT NULL,
+    LastUsedIp  VARCHAR(45)  NULL DEFAULT NULL,
+    CreatedBy   INT UNSIGNED NULL DEFAULT NULL COMMENT 'tblUsers.Id of the minting org-admin',
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_KeyHash (KeyHash),
+    INDEX idx_Org (OrgId, IsActive),
+    CONSTRAINT fk_DriverKey_Org   FOREIGN KEY (OrgId)       REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_Venue FOREIGN KEY (VenueId)     REFERENCES tblOrgVenues(Id)     ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_User  FOREIGN KEY (OwnerUserId) REFERENCES tblUsers(Id)         ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_Creator FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Durable org-scoped credentials for external presentation-app drivers (ProPresenter/OpenLP shims) of Service-Mode sessions (#1770 req 4/7). Deliberately NO Channel column — the wall is enforced at session-resolution time (rule #26): every resolve filters the serving docroot''s channel.';
 
 -- ----------------------------------------------------------------------------
 -- tblOrgServiceSchedules (#1325) — recurring service times per venue. The
