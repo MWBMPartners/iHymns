@@ -4,6 +4,63 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-10 (later same day — #1785 status; the #1770 note below is unrelated and still current for that epic)
+
+**#1785 (musician registry-vs-registry duplicate detection + easier merge UX) — C1-C10 ALL BUILT,
+on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped for review per the build-pass
+brief).** Follow-up to #1784 (the invisible-byte reconcile), under epic #1787. Full design:
+`.claude/musicians-dedup-1785-plan.md` (now carries an as-built header). A prior session landed C1-C5
+(dormant schema, the shared NAME scorer, the merge core extracted then hardened); this pass built
+C6-C10:
+
+- **The scan (C6)** — `includes/musician_duplicates.php`. `musicianDuplicatesFindCandidates()` is
+  PURE (no `\mysqli`) — blocking via an exact fold (Bucket A) or a COMBINED first+last-token metaphone
+  dictionary (Bucket B — the shared key space is what catches a comma-reversed "Newton, John" vs
+  "John Newton"), plus a curated-alias signal (Bucket C). No silent caps (rule #35) — an over-cap
+  block is skipped and the skip reported in `stats.skippedBuckets`. `musicianDisambiguationPayloadBulk()`
+  is the ONE shared payload builder (id, lifespan, per-role use-counts, link/alias/identifier counts)
+  reused by every merge affordance built in C7/C8.
+- **The review page (C7)** — `/manage/musician-duplicates`, mirroring `/manage/duplicate-songs`
+  (#1215): byte-variant groups as cards, fuzzy pairs as a sortable table, one-click Merge (delegating
+  to `musicianMergeExecute()`, never re-implemented), Dismiss/Undismiss (`tblMusicianDuplicatesDismissed`),
+  a `force=1` + type-to-confirm guard on a lifespan-conflicting pair, keyboard nav (j/k/Enter/d/s, `?`
+  legend). CTAs from `/manage/musicians` (a cheap Bucket-A-only count badge) and
+  `/manage/musicians-bulk-promote` (cross-link).
+- **Disambiguation everywhere (C8)** — the merge-target typeahead, the `/manage/musicians` Merge
+  modal (now shows all SIX credit-role pills, not five — `total` already included artist credits from
+  C5's hardening, the visible pills just hadn't caught up), and bulk-promote's match labels all now
+  show WHY two similar names look alike (the variant badge) and WHICH registry row is which
+  (id/lifespan/credit-count) — closes "which is merging into which?" everywhere, not just the new page.
+- **Guards (C9), mutation-proven this session against the two NEW files C6/C7 added** — found and
+  fixed a genuine gap: G3 (`test-musician-credit-tables-single-list.php`)'s file scan was a hardcoded
+  4-file list written before C6/C7 existed, so a re-forked credit-table list in either new file would
+  have gone completely undetected; extended to six files, then mutation-proved (fake fork pasted into
+  each new file → red → reverted). G2/G4/G5 needed no code change (already tree-derived) but were each
+  mutation-proved against the new files too (a `levenshtein()` call, an over-cap-check defeat, a
+  Disambiguation-exclusion removal, and a fake inline merge-core copy — all → red → reverted).
+- **Docs (C10)** — this note, `CHANGELOG.md`, `DEV_NOTES.md` (Architecture Decisions — the shared
+  modules list, mirroring the #1741 pattern), `wiki/Architecture.md` + `Database-&-Migrations.md` +
+  `Security.md`, and an as-built header on the plan file itself.
+
+**Suites: 141 PHP (140 + this session's extension of the C6 guard file, net +1 from the 140
+baseline C1-C5 left) / 53 node (unchanged — no JS files touched this epic), all green.** Runtime-
+verified against the local scratch DB (a request simulator running the REAL page through its actual
+auth/CSRF/dispatch code, not a bypassed check) for the full merge/dismiss/undismiss/degrade/force-gate
+cycle, and separately for C8's additive payload fields — all rolled back or explicitly cleaned up,
+zero leftover fixture rows confirmed each time. GitHub issue updates (closing sub-items, filing the
+discovered `tblSongArtists`-gap follow-ups already noted in earlier commits, filing the
+`credit_search` third-fork follow-up G3's doc-block flags) were NOT performed in this pass — the
+owner handles all issue filing/updates, per this build's explicit instruction; see the session's final
+report for the exact list.
+
+One pre-existing, unrelated bug was discovered but NOT fixed (out of this epic's scope): `manage/
+musicians.php`'s list-render loop reads `$p['Id']` (should be `$p['registry_id']`) at the `<tr id=…>`
+line, producing a PHP "Undefined array key" warning (and an `id="mus-person-0"` HTML attribute) on
+every row — present in the base commit before this branch touched the file. Worth a small follow-up
+issue.
+
+---
+
 ## 📌 Continuation note — 2026-08-10 (supersedes the 08-03 note below for #1770 status)
 
 **#1770 (Live Follow UX rework, Option A) — C5-C8 BUILT, on branch `claude/issue-sweep-fixes-89`,

@@ -99,6 +99,7 @@ The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as 
 | `tblMusicianExternalLinks` | Per-musician external links (shared chip-list editor). Compat views: `tblCreditPersonExternalLinks` / `tblCreditPersonLinks` (+ `tblMusicianLinks`). |
 | `tblMusicianRelations` | Musician↔musician relations (e.g. a character *Portrayed by* a person, with start/end dates) |
 | `tblMusicianAliases` | Musician name variants (compat view: `tblCreditPersonAliases`) |
+| `tblMusicianDuplicatesDismissed` | (#1785) A curator's "these two registry rows are NOT the same person" memory for `/manage/musician-duplicates` — pair-normalised (`MusicianIdA < MusicianIdB`), FK-`CASCADE`d so a merge auto-cleans its own dismissal. Scores are deliberately NOT stored (the duplicate scan is live-computed, never precomputed — a stored score would only go stale). |
 | `tblWorks` | Works (the original piece). `ParentWorkId` self-FK (nesting), `Iswc`, `MusicBrainzWorkMBID`, `Disambiguation`, `Subtitle`. Page `/work/<slug>`. |
 | `tblWorkSongs` / `tblWorkExternalLinks` | Work↔song membership (`IsCanonical`); per-work external links |
 | `tblTunes` | Tunes, first-class. `Name`, `Slug`, `MeterCode`, `Subtitle`, `Disambiguation`, `MusicBrainzWorkMBID`, `HymnaryTuneId`. Page `/tune/<slug>`. `tblSongs.TuneId` FK links a song to its tune (written in lockstep with `TuneName`). |

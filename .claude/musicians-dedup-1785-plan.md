@@ -1,6 +1,27 @@
 # #1785 — Musicians: registry-vs-registry duplicate detection + easier merge UX
 
-> **PLAN ONLY — no code changes yet.** Written 2026-08-10 (deep-planning pass, Fable 5) from a
+> **AS-BUILT (2026-08-10).** Shipped on `claude/issue-sweep-fixes-89`, all ten commits (C1-C10),
+> not yet pushed. C1-C5 (schema, shared NAME scorer, merge-core extraction + hardening) landed in
+> an earlier session on this branch: `325c4446` (schema), `d4d537eb` (scorer + classifier),
+> `aaf474f9` (bulk-promote fork deleted), `b22772c1` (merge core extracted), `5db43165`
+> (hardening — six tables, alias/relation carry), `228c3b7a` (G5 guard fix). This session built
+> C6-C10: `2a32de8b` (C6 — the scan helper, `includes/musician_duplicates.php`, guard G4),
+> `85674bea` (C7 — the `/manage/musician-duplicates` review page), `0cf96ffe` (C8 —
+> disambiguation payload in every merge affordance), `f24d6dbb` (C9 — G2-G5 mutation-proven
+> against the two new C6/C7 files; found and fixed a genuine gap in G3's file scan, which
+> pre-dated those files and so never covered them), plus this doc pass (C10). Built exactly to
+> plan — no section below is stale. **Deferred / for consideration** (flagged in the build
+> report, not silently dropped): D1 was answered A (six tables everywhere) implicitly by C5's
+> hardening landing before this session started; the `tblSongArtists`-cascade-gap and
+> alias/relation-cascade-delete bugs this plan's §1/§5.2 identified are CLOSED (C5); the
+> `credit_search` third-fork in `manage/editor/api2.php` (discovered by G3's own doc-block) is
+> NOT fixed — flagged for a follow-up issue, out of this epic's registry-merge scope; a warn-at-
+> create-time duplicate check, and unifying this page with bulk-promote, both stay `for
+> consideration` per §11. One PRE-EXISTING, unrelated bug was found (not fixed): `manage/
+> musicians.php`'s list-render loop reads `$p['Id']` (should be `$p['registry_id']`) at the
+> `<tr id=…>` line — present before this branch touched the file.
+>
+> **Original plan below, unmodified.** Written 2026-08-10 (deep-planning pass, Fable 5) from a
 > full read of the live tree on `claude/issue-sweep-fixes-89`; every `file:line` cite verified
 > against the working copy this date, plus two live experiments run against the local MySQL
 > (documented §3.1/§3.2 — the uk_Name coexistence matrix and the scoring benchmark).

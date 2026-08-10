@@ -72,6 +72,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Songbook display label** (#1332) — an optional free-text `DisplayAbbr` gives a richer user-facing abbreviation (e.g. "Psalty") while the real `Abbreviation` stays the SongId prefix.
 - **Standard theme vocabulary** (#1152 / #1222) — the CCLI / SongSelect OpenLyrics theme taxonomy is seeded as a 2-level hierarchy; curator tags are canonicalised into standard themes from `/manage/tags`.
 - **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, unlinks, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
+- **Musician registry duplicate detection** (#1785) — a sibling live scan for the Musicians registry (`includes/musician_duplicates.php`, extending the same shared NAME-similarity scorer): fold-equal byte variants, fuzzy near-misses, and curated-alias matches surface at `/manage/musician-duplicates` for one-click merge or dismiss, with a lifespan-conflict guard on the risky class of merge. Every merge affordance across the app now shows why two similar names look alike and which registry row is which.
 
 ### Discovery
 
@@ -147,7 +148,7 @@ Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate r
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
 | **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) |
-| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Print templates · Credit People · Languages · Tags & Themes (`/manage/tags`) |
+| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
 | **Access** | Content Restrictions · Access Tiers · Feature Gating · Entitlements |
 | **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
 | **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Notifications · API Keys |

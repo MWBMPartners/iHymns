@@ -433,6 +433,39 @@ before adding catalogue code, reach for these:
 - **Shared external-links panel** — `includes/partials/external-links-panel.php` for the Work / Tune /
   Musician profile external-links editors (rule #12/#15).
 
+### Musician registry deduplication (#1785) — the shared modules you MUST reuse, not re-fork
+
+Follow-up to #1784 (the invisible-byte reconcile). Before adding anything to a musician merge/dedup
+surface, reach for these — never re-fork them per surface (rule #22):
+
+- **The scan** — `includes/musician_duplicates.php`. `musicianDuplicatesFindCandidates()` is PURE (no
+  `\mysqli` anywhere in its call graph) — it takes plain `{id, name, disambiguation}` arrays and
+  returns id-keyed groups/pairs/stats, so the blocking maths (an exact fold for Bucket A; a combined
+  first+last-token metaphone dictionary for Bucket B — the shared key space is what catches a
+  comma-reversed "Newton, John" vs "John Newton"; an alias-fold match for Bucket C) is unit-testable
+  without a database (`tests/php/test-musician-dup-scan.php`, guard G4). The DB-touching orchestrator
+  `musicianFindRegistryDuplicates()` reads the registry + aliases + dismissed pairs, calls the pure
+  function, and hydrates only the ids a candidate actually references.
+- **The disambiguation payload** — `musicianDisambiguationPayloadBulk()`, same file. ONE bulk hydrator
+  (id, slug, type, lifespan, per-role use-counts, link/identifier/alias counts, MBID presence) reused
+  verbatim by the review page, the `/manage/musicians` merge-target typeahead + Merge modal preview,
+  and `/manage/musicians-bulk-promote`'s match labels — never a second payload builder per surface.
+- **The variant classifier** — `musicianNameVariantClass()` / `musicianNameVariantDetail()`
+  (`includes/musician_helpers.php`). A pure 6-rung ladder (identical / unicode-normalisation /
+  whitespace / case / punctuation / null) that turns a confusing "Eddie James → Eddie James" merge
+  prompt into "these differ only by invisible spacing" — every surface that shows two similar-looking
+  names renders this SAME badge, never its own wording.
+- **The merge core** — `musicianMergeExecute()` (`includes/musician_helpers.php`). The ONE place a
+  musician merge happens: re-points all six credit tables (`MUSICIAN_CREDIT_ROLE_TABLES`, also the
+  ONE table-list — nine forked five-table copies were re-pointed onto it), migrates chosen links/IPI,
+  carries aliases + relations onto the target instead of losing them to the cascade-delete, preserves
+  the source name as a target alias, then deletes the source row — owns its own transaction (never
+  nest a caller's own transaction around it; a caller that seeds fixtures in a test transaction and
+  then calls this function will find the fixtures really committed, not rolled back).
+- **The review page** — `/manage/musician-duplicates` (mirrors `/manage/duplicate-songs`, #1215).
+  Never re-implement merge/dismiss logic inline here or anywhere else — delegate to the core above and
+  to `tblMusicianDuplicatesDismissed` directly (mirrors `tblSongLinkSuggestionsDismissed`'s shape).
+
 ---
 
 ## 🚀 Deployment Architecture

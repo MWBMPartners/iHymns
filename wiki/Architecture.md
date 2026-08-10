@@ -158,9 +158,12 @@ includes/media_identifiers.php     — RECORDING_EXTERNAL_ID_TYPES vocabulary + 
 includes/song_external_ids.php     — the tblSongs.Isrc -> tblSongExternalIds dual-write mirror (#1749)
 includes/tune_helpers.php          — tuneFindOrCreateByName() (the ONE tune lookup) + ihymns_meter_normalize()
 includes/partials/external-links-panel.php — shared Work/Tune/Musician external-links editor
+includes/musician_duplicates.php   — registry-vs-registry duplicate scan (#1785) — pure candidate generator + the shared disambiguation-payload builder
 ```
 
 In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the single place `tblSongs.TuneName`/`TuneId` are written — always together, so a tune edit (or a whole-song save, bulk import, or revision restore, all of which funnel through it) can never strand the registry link. See [[Database & Migrations]] for the entity tables and **DEV_NOTES.md → Architecture Decisions** for the reuse contract.
+
+**Musician-registry deduplication (#1785).** `/manage/musician-duplicates` finds registry rows that are probably the same person spelled two ways, live-computed per page load (no precompute table — the registry is two orders of magnitude lighter than the song corpus, so the staleness cost that justifies `tblSongLinkSuggestions` for songs isn't worth paying here). Blocking (an exact fold, or a metaphone of the first/last name token) keeps candidate pairs to the low thousands even at N≈5,000 registry rows — `includes/musician_duplicates.php`'s `musicianDuplicatesFindCandidates()` is a PURE function over plain name arrays (no `\mysqli` in its call graph), separated from the DB-touching orchestrator `musicianFindRegistryDuplicates()` so the blocking maths is unit-testable without a database. Every merge, from any of the three affordances that offer one (`/manage/musicians`'s Merge modal, `/manage/musicians-bulk-promote`, this review page), delegates to the ONE shared core `musicianMergeExecute()` (`includes/musician_helpers.php`, #1785 C4/C5) — never re-implemented per surface. Dismissals persist to `tblMusicianDuplicatesDismissed` (mirrors `tblSongLinkSuggestionsDismissed`'s pair-normalised shape). See `.claude/musicians-dedup-1785-plan.md` for the full design.
 
 ---
 
