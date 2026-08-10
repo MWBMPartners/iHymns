@@ -301,6 +301,123 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 header('Location: /manage/print-templates?deleted=1');
                 exit;
             }
+
+            /* #1767 Z — clone an existing template into a fresh independent row
+               (blocks + page options copied verbatim; the copy starts active,
+               never default). */
+            case 'clone': {
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id > 0) {
+                    $src = $db->prepare(
+                        "SELECT Name, BlocksJson, PageOptionsJson FROM tblPrintTemplates
+                          WHERE Id = ? AND Scope = 'song' LIMIT 1"
+                    );
+                    $src->bind_param('i', $id);
+                    $src->execute();
+                    $srcRow = $src->get_result()->fetch_assoc();
+                    $src->close();
+                    if ($srcRow) {
+                        $cloneName = mb_substr(trim((string)$srcRow['Name']) . ' (copy)', 0, 120);
+                        $sortRes   = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
+                        $sortRow   = $sortRes ? $sortRes->fetch_assoc() : null;
+                        if ($sortRes) { $sortRes->close(); }
+                        $sortOrder = (int)($sortRow['n'] ?? 0);
+                        $createdBy = (int)($currentUser['id'] ?? 0);
+                        $ins = $db->prepare(
+                            "INSERT INTO tblPrintTemplates
+                                (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
+                             VALUES (?, 'song', NULL, ?, ?, 1, 0, ?, ?)"
+                        );
+                        $ins->bind_param('sssii', $cloneName, $srcRow['BlocksJson'], $srcRow['PageOptionsJson'], $sortOrder, $createdBy);
+                        $ins->execute();
+                        $newId = (int)$db->insert_id;
+                        $ins->close();
+                        if (function_exists('logActivity')) {
+                            logActivity('print_template.clone', 'print_template', (string)$newId, ['source' => $id, 'name' => $cloneName]);
+                        }
+                    }
+                }
+                header('Location: /manage/print-templates?cloned=1');
+                exit;
+            }
+
+            /* #1767 J — make ONE template the system default. A single default is
+               the invariant, so this clears IsDefault on every other song
+               template first, in a transaction, and forces the chosen one active
+               (a hidden default would be pointless). */
+            case 'set_default': {
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id > 0) {
+                    $db->begin_transaction();
+                    try {
+                        $db->query("UPDATE tblPrintTemplates SET IsDefault = 0 WHERE Scope = 'song' AND IsDefault = 1");
+                        $s = $db->prepare("UPDATE tblPrintTemplates SET IsDefault = 1, IsActive = 1 WHERE Id = ? AND Scope = 'song'");
+                        $s->bind_param('i', $id);
+                        $s->execute();
+                        $s->close();
+                        $db->commit();
+                        if (function_exists('logActivity')) {
+                            logActivity('print_template.set_default', 'print_template', (string)$id, []);
+                        }
+                    } catch (\Throwable $e) {
+                        $db->rollback();
+                        throw $e;
+                    }
+                }
+                header('Location: /manage/print-templates?default_set=1');
+                exit;
+            }
+
+            /* #1767 Z — import a template from pasted JSON (the round-trip
+               partner of the ?export= download). The blocks/page-options go
+               through the SAME sanitiser the editor's save uses, so an imported
+               file can never introduce a block type or option the renderer
+               doesn't understand — a hostile or hand-edited JSON is reduced to
+               its recognised subset or rejected. */
+            case 'import': {
+                $raw = json_decode((string)($_POST['import_json'] ?? ''), true);
+                if (!is_array($raw)) {
+                    $error = 'Import failed: that is not valid template JSON.';
+                    break;
+                }
+                $name = mb_substr(trim((string)($raw['name'] ?? '')), 0, 120);
+                if ($name === '') { $name = 'Imported template'; }
+                $rawBlocks = $raw['blocks'] ?? null;
+                if (!is_array($rawBlocks) || $rawBlocks === []) {
+                    $error = 'Import failed: the JSON has no blocks.';
+                    break;
+                }
+                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA, $SHOWIF_CONDITIONS);
+                if ($blocks === []) {
+                    $error = 'Import failed: none of the blocks in the JSON were recognised.';
+                    break;
+                }
+                $blocksJson  = json_encode($blocks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $pageOpts    = ptSanitisePageOptions($raw['pageOptions'] ?? null, $PAGE_OPTION_SCHEMA);
+                $pageOptsJson = $pageOpts !== null
+                    ? json_encode($pageOpts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                    : null;
+
+                $sortRes   = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
+                $sortRow   = $sortRes ? $sortRes->fetch_assoc() : null;
+                if ($sortRes) { $sortRes->close(); }
+                $sortOrder = (int)($sortRow['n'] ?? 0);
+                $createdBy = (int)($currentUser['id'] ?? 0);
+                $ins = $db->prepare(
+                    "INSERT INTO tblPrintTemplates
+                        (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
+                     VALUES (?, 'song', NULL, ?, ?, 1, 0, ?, ?)"
+                );
+                $ins->bind_param('sssii', $name, $blocksJson, $pageOptsJson, $sortOrder, $createdBy);
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+                if (function_exists('logActivity')) {
+                    logActivity('print_template.import', 'print_template', (string)$newId, ['name' => $name, 'blocks' => count($blocks)]);
+                }
+                header('Location: /manage/print-templates?imported=1');
+                exit;
+            }
         }
     } catch (\Throwable $e) {
         /* Log the detail; show a generic message so raw SQL/table names never
@@ -311,8 +428,52 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 /* Flash from the PRG redirect. */
-if (isset($_GET['saved']))   { $success = 'Template saved.'; }
-if (isset($_GET['deleted'])) { $success = 'Template deleted.'; }
+if (isset($_GET['saved']))       { $success = 'Template saved.'; }
+if (isset($_GET['deleted']))     { $success = 'Template deleted.'; }
+if (isset($_GET['cloned']))      { $success = 'Template cloned.'; }
+if (isset($_GET['default_set'])) { $success = 'Default template set.'; }
+if (isset($_GET['imported']))    { $success = 'Template imported.'; }
+
+/* #1767 Z — export a template as a downloadable JSON file (the round-trip
+   partner of the `import` POST action). GET so a plain link works; streamed
+   before any HTML. The shape { name, blocks, pageOptions } is exactly what
+   `import` reads back. */
+if ($hasSchema && isset($_GET['export'])) {
+    $exportId = (int)$_GET['export'];
+    if ($exportId > 0) {
+        try {
+            $stmt = $db->prepare(
+                "SELECT Name, BlocksJson, PageOptionsJson FROM tblPrintTemplates
+                  WHERE Id = ? AND Scope = 'song' LIMIT 1"
+            );
+            $stmt->bind_param('i', $exportId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($row) {
+                $payload = [
+                    'name'        => (string)$row['Name'],
+                    'blocks'      => json_decode((string)$row['BlocksJson'], true) ?: [],
+                    'pageOptions' => $row['PageOptionsJson'] !== null
+                        ? (json_decode((string)$row['PageOptionsJson'], true) ?: null)
+                        : null,
+                    '_exportedFrom' => 'iHymns print template',
+                ];
+                $slug = preg_replace('/[^a-z0-9]+/', '-', strtolower((string)$row['Name'])) ?: 'template';
+                header('Content-Type: application/json; charset=UTF-8');
+                header('Content-Disposition: attachment; filename="print-template-' . trim($slug, '-') . '.json"');
+                header('X-Content-Type-Options: nosniff');
+                echo json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                exit;
+            }
+        } catch (\Throwable $e) {
+            error_log('[print-templates export] ' . $e->getMessage());
+        }
+    }
+    header('Location: /manage/print-templates?export_missing=1');
+    exit;
+}
+if (isset($_GET['export_missing'])) { $error = 'That template could not be exported.'; }
 
 /* ---- Read the scope='song' template list ---- */
 $templates  = [];   // for the table render
@@ -491,23 +652,70 @@ if ($hasSchema) {
                                         </span>
                                     </td>
                                     <td data-col-priority="primary" class="text-end">
-                                        <button type="button" class="btn btn-sm btn-outline-info pt-edit" data-id="<?= (int)$t['id'] ?>">
-                                            <i class="bi bi-pencil"></i> Edit
-                                        </button>
-                                        <form method="POST" class="d-inline" onsubmit="return confirm('Delete this template?');">
-                                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
-                                            <input type="hidden" name="action" value="delete">
-                                            <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger">
-                                                <i class="bi bi-trash"></i> Delete
+                                        <div class="btn-group btn-group-sm" role="group">
+                                            <button type="button" class="btn btn-outline-info pt-edit" data-id="<?= (int)$t['id'] ?>">
+                                                <i class="bi bi-pencil"></i> Edit
                                             </button>
-                                        </form>
+                                            <!-- #1767 J — make this the system default (single-default invariant enforced server-side). -->
+                                            <?php if (!$t['isDefault']): ?>
+                                            <form method="POST" class="d-inline">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="action" value="set_default">
+                                                <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
+                                                <button type="submit" class="btn btn-outline-secondary" title="Make this the default template">
+                                                    <i class="bi bi-star"></i> Set default
+                                                </button>
+                                            </form>
+                                            <?php endif; ?>
+                                            <!-- #1767 Z — clone this template into a fresh row. -->
+                                            <form method="POST" class="d-inline">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="action" value="clone">
+                                                <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
+                                                <button type="submit" class="btn btn-outline-secondary" title="Duplicate this template">
+                                                    <i class="bi bi-files"></i> Clone
+                                                </button>
+                                            </form>
+                                            <!-- #1767 Z — export this template as JSON (import partner below). -->
+                                            <a class="btn btn-outline-secondary" href="/manage/print-templates?export=<?= (int)$t['id'] ?>" title="Download as JSON">
+                                                <i class="bi bi-download"></i> Export
+                                            </a>
+                                            <form method="POST" class="d-inline" onsubmit="return confirm('Delete this template?');">
+                                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                                                <input type="hidden" name="action" value="delete">
+                                                <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
+                                                <button type="submit" class="btn btn-outline-danger">
+                                                    <i class="bi bi-trash"></i> Delete
+                                                </button>
+                                            </form>
+                                        </div>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
+            <?php endif; ?>
+
+            <!-- #1767 Z — import a template from pasted JSON (round-trip partner
+                 of the per-row Export). The paste goes through the SAME server
+                 sanitiser as a normal save, so an unrecognised block/option is
+                 dropped, never trusted. Collapsed by default to stay out of the
+                 way. -->
+            <?php if ($hasSchema): ?>
+            <details class="mt-3">
+                <summary class="text-info" style="cursor:pointer;"><i class="bi bi-upload me-1"></i>Import a template from JSON</summary>
+                <form method="POST" class="mt-2">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                    <input type="hidden" name="action" value="import">
+                    <label for="pt-import-json" class="form-label small">Paste a previously-exported template JSON:</label>
+                    <textarea name="import_json" id="pt-import-json" class="form-control font-monospace" rows="4"
+                              placeholder='{"name":"My template","blocks":[…],"pageOptions":{…}}'></textarea>
+                    <button type="submit" class="btn btn-sm btn-outline-info mt-2">
+                        <i class="bi bi-upload me-1"></i>Import template
+                    </button>
+                </form>
+            </details>
             <?php endif; ?>
         </div>
 
