@@ -4035,4 +4035,36 @@ return [
             }
         },
     ],
+
+    'setlist-share-scope' => [
+        'script' => 'migrate-setlist-share-scope.php',
+        'card' => [
+            'title'  => 'Set-list share links (#1791)',
+            'body'   => 'Extends <code>tblSharedSetlists</code> for collab-by-link'
+                      . ' set-list sharing — an EDIT-scope capability URL an owner can'
+                      . ' hand out with no email invite and no recipient account.'
+                      . ' Widens <code>ShareId</code> to VARCHAR(64) (legacy 8-hex view'
+                      . ' links stay valid forever; new links are base64url capability'
+                      . ' tokens) and adds <code>Scope</code> (view|edit, VARCHAR not'
+                      . ' ENUM), <code>Label</code>, <code>RevokedAt</code>,'
+                      . ' <code>ExpiresAt</code>, <code>LastUsedAt</code>,'
+                      . ' <code>EditCount</code> + <code>idx_Expiry</code>. Additive,'
+                      . ' idempotent, DORMANT — every existing view link resolves'
+                      . ' byte-identically until the token model (server C2, client'
+                      . ' C4/C5) lands. Safe to re-run.',
+            'button' => 'Run Set-list Share Links Migration',
+        ],
+        /* Multi-object OR-probe. PENDING until every capability column exists AND
+           ShareId has been widened to >= 64 chars (the MODIFY keeps DATA_TYPE
+           'varchar', so it's detected by WIDTH via _migProbe_columnCharLength,
+           not type). APPLIED once all are present. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSharedSetlists', 'Scope')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'Label')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'RevokedAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'ExpiresAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'LastUsedAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditCount')
+            || _migProbe_columnCharLength($db, 'tblSharedSetlists', 'ShareId') < 64,
+    ],
 ];

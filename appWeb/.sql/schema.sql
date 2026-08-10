@@ -1426,8 +1426,14 @@ CREATE TABLE IF NOT EXISTS tblUserSetlistTombstones (
 -- working when historical JSON files are imported by the migration.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSharedSetlists (
-    ShareId         VARCHAR(16)     NOT NULL PRIMARY KEY COMMENT '8 hex chars by default; column wider for forward-compat',
+    ShareId         VARCHAR(64)     NOT NULL PRIMARY KEY COMMENT '8 hex chars (legacy view links, 32-bit) or 22/43-char base64url capability token (128/256-bit). Widened #1791.',
     Data            JSON            NOT NULL COMMENT 'Full setlist payload as written by the share API',
+    Scope           VARCHAR(10)     NOT NULL DEFAULT 'view' COMMENT 'view | edit — app-validated VARCHAR vocab, never ENUM (rule #20). edit implies view.',
+    Label           VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Owner-facing name for this link ("worship team"). Display only.',
+    RevokedAt       DATETIME        NULL DEFAULT NULL COMMENT 'Hard revocation instant (UTC). Non-NULL = link refuses at every scope.',
+    ExpiresAt       DATETIME        NULL DEFAULT NULL COMMENT 'Optional expiry (UTC), NULL = never. DATETIME not TIMESTAMP (rule #20 TTL convention).',
+    LastUsedAt      DATETIME        NULL DEFAULT NULL COMMENT 'Last successful token READ or WRITE (edit links) — owner-facing "in use?" signal.',
+    EditCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Successful token WRITES through this link (mirrors ViewCount).',
     OwnerUserId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Live-share link: FK to tblUsers.Id of the authenticated owner. NULL = legacy/anonymous snapshot-only share (#1380).',
     SourceSetlistId VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Live-share link: the owner''s tblUserSetlists.SetlistId. (OwnerUserId, SourceSetlistId) resolves the CURRENT setlist at read time. NULL = snapshot-only (#1380).',
     CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for guest creates)',
@@ -1446,6 +1452,7 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     INDEX idx_CreatedBy (CreatedBy),
     INDEX idx_CreatedAt (CreatedAt),
     KEY idx_LiveSource (OwnerUserId, SourceSetlistId),
+    KEY idx_Expiry (ExpiresAt),
 
     CONSTRAINT fk_SharedSetlists_User FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE,

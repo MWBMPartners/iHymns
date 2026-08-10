@@ -950,6 +950,24 @@ function _migProbe_columnDataType(\mysqli $db, string $table, string $column): s
     return $row ? strtolower((string)$row['DATA_TYPE']) : '';
 }
 
+/** Returns $table.$column's CHARACTER_MAXIMUM_LENGTH (the declared VARCHAR/CHAR
+ *  width), or 0 when the column doesn't exist / isn't a character type. Used by
+ *  widening probes that must detect a MODIFY has landed by WIDTH, not just type
+ *  — a VARCHAR(16)->VARCHAR(64) widen keeps DATA_TYPE 'varchar', so
+ *  _migProbe_columnDataType can't see it (#1791 tblSharedSetlists.ShareId). */
+function _migProbe_columnCharLength(\mysqli $db, string $table, string $column): int
+{
+    $stmt = $db->prepare(
+        'SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row && $row['CHARACTER_MAXIMUM_LENGTH'] !== null ? (int)$row['CHARACTER_MAXIMUM_LENGTH'] : 0;
+}
+
 /** Returns true when an INFORMATION_SCHEMA TRIGGERS row exists for $trigger. */
 function _migProbe_triggerExists(\mysqli $db, string $trigger): bool
 {
