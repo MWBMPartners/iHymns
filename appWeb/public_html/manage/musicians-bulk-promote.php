@@ -36,6 +36,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    points every call site at the shared ihymns_sim_name_*() functions
    instead (#1785 C2 added the NAME-scoring section this page needs). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+/* #1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES (the six-role credit-table map,
+   rule #22/#35) + registerMusicianByName(). Hoisted here (was previously
+   require_once'd only inside the POST 'register' branch below) because
+   the GET candidate scan and the POST 'merge' branch both need the
+   shared constant now that this page's own private _CP_BULK_CREDIT_TABLES
+   five-table copy is retired in favour of it. require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -53,15 +60,6 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 $csrf    = csrfToken();
-
-/* Five song-credit tables — same set the parent page reads. */
-const _CP_BULK_CREDIT_TABLES = [
-    'writer'     => 'tblSongWriters',
-    'composer'   => 'tblSongComposers',
-    'arranger'   => 'tblSongArrangers',
-    'adaptor'    => 'tblSongAdaptors',
-    'translator' => 'tblSongTranslators',
-];
 
 /* ----- POST: bulk promote ----- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -124,8 +122,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     /* Route through the shared registry helper so the
                        new row carries a Slug — direct
                        `INSERT (Name)` would default Slug='' and
-                       collide on uk_Slug after the first such row. */
-                    require_once dirname(__DIR__) . '/includes/musician_helpers.php';
+                       collide on uk_Slug after the first such row.
+                       (musician_helpers.php is now require_once'd at the
+                       top of this file — #1785 C5 — so no per-branch
+                       require needed here any more.) */
                     $newId = registerMusicianByName($db, $name);
 
                     if (function_exists('logActivity')) {
@@ -151,17 +151,19 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $targetName = (string)$row['Name'];
 
                     /* Re-point every song-credit row from the candidate name to
-                       the registry target's EXACT spelling across the five join
-                       tables. #1784: match on the collation (`Name = ?`) so a
-                       stray-byte variant ("Eddie James " with a trailing space)
-                       IS caught — the old code trimmed the candidate, saw it now
-                       equalled the target, and skipped as "nothing to do", which
-                       is exactly why the "Eddie James → Eddie James" merge could
-                       never clear the counter. `BINARY Name <> BINARY ?` excludes
-                       rows already byte-correct so a genuine no-op merge still
-                       counts as "skipped" rather than "merged". */
+                       the registry target's EXACT spelling across the SIX join
+                       tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five,
+                       missing tblSongArtists). #1784: match on the collation
+                       (`Name = ?`) so a stray-byte variant ("Eddie James " with
+                       a trailing space) IS caught — the old code trimmed the
+                       candidate, saw it now equalled the target, and skipped as
+                       "nothing to do", which is exactly why the "Eddie James →
+                       Eddie James" merge could never clear the counter.
+                       `BINARY Name <> BINARY ?` excludes rows already
+                       byte-correct so a genuine no-op merge still counts as
+                       "skipped" rather than "merged". */
                     $rowsAffected = 0;
-                    foreach (_CP_BULK_CREDIT_TABLES as $tbl) {
+                    foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
                         $stmt = $db->prepare(
                             "UPDATE {$tbl} SET Name = ? WHERE Name = ? AND BINARY Name <> BINARY ?"
                         );
@@ -202,10 +204,17 @@ $threshold = max(0.5, min(1.0, (float)($_GET['threshold'] ?? 0.85)));
 $minUses   = max(1, (int)($_GET['min_uses'] ?? 1));
 $searchQ   = trim((string)($_GET['q'] ?? ''));
 
-/* Q1 — every distinct name across the five song-credit tables, with
+/* Q1 — every distinct name across the six song-credit tables (#1785 C5 —
+   MUSICIAN_CREDIT_ROLE_TABLES; was five, missing tblSongArtists), with
    per-role counts. Matches the parent page's usage SQL. */
 $candidates = [];
 try {
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $role, string $tbl): string =>
+            "SELECT Name, '{$role}' AS kindLabel, COUNT(*) AS cnt FROM {$tbl} GROUP BY Name",
+        array_keys(MUSICIAN_CREDIT_ROLE_TABLES),
+        array_values(MUSICIAN_CREDIT_ROLE_TABLES)
+    ));
     $usageSql = "
         SELECT Name,
                SUM(IF(kindLabel = 'writer',     cnt, 0)) AS WriterCount,
@@ -213,17 +222,10 @@ try {
                SUM(IF(kindLabel = 'arranger',   cnt, 0)) AS ArrangerCount,
                SUM(IF(kindLabel = 'adaptor',    cnt, 0)) AS AdaptorCount,
                SUM(IF(kindLabel = 'translator', cnt, 0)) AS TranslatorCount,
+               SUM(IF(kindLabel = 'artist',     cnt, 0)) AS ArtistCount,
                SUM(cnt) AS TotalUsage
           FROM (
-              SELECT Name, 'writer'     AS kindLabel, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, 'composer'   AS kindLabel, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'arranger'   AS kindLabel, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'adaptor'    AS kindLabel, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, 'translator' AS kindLabel, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          GROUP BY Name
     ";
@@ -250,6 +252,7 @@ try {
             'arrangers'   => (int)$u['ArrangerCount'],
             'adaptors'    => (int)$u['AdaptorCount'],
             'translators' => (int)$u['TranslatorCount'],
+            'artists'     => (int)$u['ArtistCount'], // #1785 C5
             'total'       => (int)$u['TotalUsage'],
             'matches'     => [],     /* fuzzy → existing registry rows */
             'twins'       => [],     /* fuzzy → other candidates */
@@ -439,6 +442,7 @@ if (!empty($registryByName)) {
                                     <?= $roleChip('Ar', $c['arrangers']) ?>
                                     <?= $roleChip('Ad', $c['adaptors']) ?>
                                     <?= $roleChip('T',  $c['translators']) ?>
+                                    <?= $roleChip('Art', $c['artists']) ?>
                                 </td>
                                 <td data-col-priority="tertiary" data-sort-value="<?= number_format($bestScore, 3, '.', '') ?>">
                                     <?php if ($hasMatch): ?>

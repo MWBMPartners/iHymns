@@ -205,16 +205,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 
         /* For each role table, fetch the songs that cite this name.
            Joining to tblSongs on SongId gives us the human-friendly
-           Title + SongbookAbbr + Number for the modal. */
-        $tables = [
-            'writer'     => 'tblSongWriters',
-            'composer'   => 'tblSongComposers',
-            'arranger'   => 'tblSongArrangers',
-            'adaptor'    => 'tblSongAdaptors',
-            'translator' => 'tblSongTranslators',
-        ];
+           Title + SongbookAbbr + Number for the modal. #1785 C5 —
+           MUSICIAN_CREDIT_ROLE_TABLES (was a hand-typed 5-role map
+           missing 'artist', so a person credited only as a performing
+           artist never showed any songs in this modal). */
         $byRole = [];
-        foreach ($tables as $role => $tbl) {
+        foreach (MUSICIAN_CREDIT_ROLE_TABLES as $role => $tbl) {
             /* #1694 — visible songs only, matching the public person page.
                (Person merges/renames rewrite tblSong* rows BY NAME, unfiltered,
                so hidden rows are still correctly rewritten either way.)
@@ -1260,8 +1256,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
             /* --------------------------------------------------------
              * rename — change the canonical name, cascading the UPDATE
-             *          across all five song-credit tables AND the
-             *          registry row inside one transaction.
+             *          across all six song-credit tables (#1785 C5 —
+             *          MUSICIAN_CREDIT_ROLE_TABLES) AND the registry
+             *          row inside one transaction.
              *
              * Refuses if the new name already belongs to a different
              * registry row (would clash with the UNIQUE Name index
@@ -1323,15 +1320,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
                 $db->begin_transaction();
                 try {
-                    /* Cascade the rename across the five song-credit
-                       tables. A song that cites the old spelling under
-                       multiple roles is updated in each table. */
-                    $tables = [
-                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                        'tblSongAdaptors', 'tblSongTranslators',
-                    ];
+                    /* Cascade the rename across the six song-credit
+                       tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES;
+                       was five, missing tblSongArtists). A song that
+                       cites the old spelling under multiple roles is
+                       updated in each table. */
                     $affected = [];
-                    foreach ($tables as $tbl) {
+                    foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
                         $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
                         $stmt->bind_param('ss', $newName, $oldName);
                         $stmt->execute();
@@ -1339,7 +1334,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                         $stmt->close();
                     }
 
-                    /* Update the registry row last — if any of the five
+                    /* Update the registry row last — if any of the
                        cascades fail, rollback restores everything. */
                     $stmt = $db->prepare('UPDATE tblMusicians SET Name = ? WHERE Id = ?');
                     $stmt->bind_param('si', $newName, $id);
@@ -1357,6 +1352,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                             'arrangers'   => $affected['tblSongArrangers'],
                             'adaptors'    => $affected['tblSongAdaptors'],
                             'translators' => $affected['tblSongTranslators'],
+                            'artists'     => $affected['tblSongArtists'],
                         ],
                     ]);
                     $totalRenamed = array_sum($affected);
@@ -1445,12 +1441,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                         'arrangers'   => $report['affected']['tblSongArrangers'],
                         'adaptors'    => $report['affected']['tblSongAdaptors'],
                         'translators' => $report['affected']['tblSongTranslators'],
+                        'artists'     => $report['affected']['tblSongArtists'], // #1785 C5
                     ],
                     'child_rows' => [
-                        'links_kept'    => $report['linksKept'],
-                        'links_dropped' => $report['linksDropped'],
-                        'ipi_kept'      => $report['ipiKept'],
-                        'ipi_dropped'   => $report['ipiDropped'],
+                        'links_kept'        => $report['linksKept'],
+                        'links_dropped'     => $report['linksDropped'],
+                        'ipi_kept'          => $report['ipiKept'],
+                        'ipi_dropped'       => $report['ipiDropped'],
+                        // #1785 C5 — alias/relation carry-over + source-name-preserved-as-alias.
+                        'aliases_moved'     => $report['aliasesMoved'],
+                        'relations_moved'   => $report['relationsMoved'],
+                        'source_name_aliased' => $report['sourceNameAliased'],
                     ],
                 ]);
                 $totalRenamed = array_sum($report['affected']);
@@ -1481,18 +1482,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 if ($name === '') { $error = 'Person not found.'; break; }
 
                 /* Count how many song-credit rows still cite this name
-                   across the five tables — a single UNION ALL keeps
-                   the round-trip count to one. */
-                $stmt = $db->prepare(
-                    "SELECT (
-                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
-                     ) AS total"
-                );
-                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                   across the six tables (#1785 C5 —
+                   MUSICIAN_CREDIT_ROLE_TABLES; was five, missing
+                   tblSongArtists — a person deletable-because-"unused"
+                   could actually still be cited as a performing artist) —
+                   a single query keeps the round-trip count to one. Table
+                   names come from the hardcoded PHP constant (rule #5's
+                   carve-out); the six repeated `?` placeholders all bind
+                   the same $name value. */
+                $countSql = implode(' + ', array_map(
+                    static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
+                    MUSICIAN_CREDIT_ROLE_TABLES
+                ));
+                $stmt = $db->prepare("SELECT ({$countSql}) AS total");
+                $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
+                $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
                 $stmt->execute();
                 $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
                 $stmt->close();
@@ -1556,7 +1560,17 @@ $countryOptions = [];
 try {
     $db = getDbMysqli();
 
-    /* Q1 — usage aggregate across the five song-credit tables. */
+    /* Q1 — usage aggregate across the six song-credit tables (#1785 C5 —
+       MUSICIAN_CREDIT_ROLE_TABLES; was five, missing tblSongArtists, so
+       an artist-only credited name silently undercounted as "0 uses"
+       and could never show up as "cited"). Table names + role labels
+       come from the hardcoded PHP constant (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $role, string $tbl): string =>
+            "SELECT Name, '{$role}' AS kindLabel, COUNT(*) AS cnt FROM {$tbl} GROUP BY Name",
+        array_keys(MUSICIAN_CREDIT_ROLE_TABLES),
+        array_values(MUSICIAN_CREDIT_ROLE_TABLES)
+    ));
     $usageSql = "
         SELECT Name,
                SUM(IF(kindLabel = 'writer',     cnt, 0)) AS WriterCount,
@@ -1564,17 +1578,10 @@ try {
                SUM(IF(kindLabel = 'arranger',   cnt, 0)) AS ArrangerCount,
                SUM(IF(kindLabel = 'adaptor',    cnt, 0)) AS AdaptorCount,
                SUM(IF(kindLabel = 'translator', cnt, 0)) AS TranslatorCount,
+               SUM(IF(kindLabel = 'artist',     cnt, 0)) AS ArtistCount,
                SUM(cnt) AS TotalUsage
           FROM (
-              SELECT Name, 'writer'     AS kindLabel, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, 'composer'   AS kindLabel, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'arranger'   AS kindLabel, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'adaptor'    AS kindLabel, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, 'translator' AS kindLabel, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          GROUP BY Name
     ";
@@ -1804,6 +1811,7 @@ try {
             'arrangers'   => (int)$u['ArrangerCount'],
             'adaptors'    => (int)$u['AdaptorCount'],
             'translators' => (int)$u['TranslatorCount'],
+            'artists'     => (int)$u['ArtistCount'], // #1785 C5
             'total'       => (int)$u['TotalUsage'],
             'registry_id' => null,
             'notes'       => null,
@@ -1842,6 +1850,7 @@ try {
                 'arrangers'   => 0,
                 'adaptors'    => 0,
                 'translators' => 0,
+                'artists'     => 0, // #1785 C5
                 'total'       => 0,
                 'registry_id' => null,
                 'notes'       => null,
@@ -2005,6 +2014,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         .role-pill.role-ar    { background-color: #fb950033; color: #ffab40; }
         .role-pill.role-ad    { background-color: #2ea04333; color: #56d364; }
         .role-pill.role-t     { background-color: #d73a4933; color: #ff7b72; }
+        .role-pill.role-ai    { background-color: #17a2b833; color: #5bc0de; } /* #1785 C5 — artist */
         .role-pill[data-zero] { opacity: 0.25; }
 
         /* Person-name column gets a slightly larger, slightly bolder
@@ -2130,6 +2140,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="arranger">Arrangers</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="adaptor">Adaptors</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="translator">Translators</button>
+                        <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="artist">Artists</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="registry-only">Registry-only</button>
                     </div>
                 </div>
@@ -2174,12 +2185,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             $arrangers   = $p['arrangers'];
                             $adaptors    = $p['adaptors'];
                             $translators = $p['translators'];
+                            $artists     = $p['artists']; // #1785 C5
                             $rolesCsv    = implode(',', array_filter([
                                 $writers     ? 'writer'     : '',
                                 $composers   ? 'composer'   : '',
                                 $arrangers   ? 'arranger'   : '',
                                 $adaptors    ? 'adaptor'    : '',
                                 $translators ? 'translator' : '',
+                                $artists     ? 'artist'     : '',
                             ]));
                             $isRegistryOnly = $p['total'] === 0;
                             $haystack = strtolower(implode(' ', array_filter([
@@ -2229,6 +2242,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'arrangers'   => $arrangers,
                                 'adaptors'    => $adaptors,
                                 'translators' => $translators,
+                                'artists'     => $artists, // #1785 C5 — not yet rendered by the Merge modal's preview widget (C8)
                                 'total'       => $p['total'],
                                 /* #1501 — optional Maiden Surname, so the Edit
                                    drawer can pre-fill it. NULL on registry-only-
@@ -2298,6 +2312,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                     <span class="badge role-pill role-ar" <?= $arrangers   ? '' : 'data-zero' ?>>Ar&middot;<?= $arrangers ?></span>
                                     <span class="badge role-pill role-ad" <?= $adaptors    ? '' : 'data-zero' ?>>Ad&middot;<?= $adaptors ?></span>
                                     <span class="badge role-pill role-t"  <?= $translators ? '' : 'data-zero' ?>>T&middot;<?= $translators ?></span>
+                                    <span class="badge role-pill role-ai" <?= $artists     ? '' : 'data-zero' ?>>Art&middot;<?= $artists ?></span>
                                 </td>
                                 <td data-col-priority="primary"   class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
                                 <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
@@ -4952,6 +4967,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 arranger:   'Arrangers',
                 adaptor:    'Adaptors',
                 translator: 'Translators',
+                artist:     'Artists', // #1785 C5
             };
 
             function renderRoleGroup(role, songs) {
@@ -5005,7 +5021,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             emptyEl.classList.remove('d-none');
                             return;
                         }
-                        const html = ['writer', 'composer', 'arranger', 'adaptor', 'translator']
+                        // #1785 C5 — 'artist' added (server's by_role now carries it too).
+                        const html = ['writer', 'composer', 'arranger', 'adaptor', 'translator', 'artist']
                             .map(role => renderRoleGroup(role, j.by_role[role] || []))
                             .join('');
                         bodyEl.innerHTML = html;

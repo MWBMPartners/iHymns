@@ -756,21 +756,20 @@ function searchMusicianMergeTargets(
     if ($remaining <= 0) return $out;
 
     /* In-use-only names — cited on a song, no registry row yet. Same
-       5-table union the page's own list-load query (Q1) already runs on
-       every page load; NOT EXISTS keeps registry rows (already returned
-       above) out of this bucket so nothing is duplicated. */
+       6-table union (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was a
+       hand-typed 5-table union missing tblSongArtists) the page's own
+       list-load query (Q1) already runs on every page load; NOT EXISTS
+       keeps registry rows (already returned above) out of this bucket so
+       nothing is duplicated. Table names come from the hardcoded PHP
+       constant — safe to interpolate (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $t): string => "SELECT Name, COUNT(*) AS cnt FROM {$t} GROUP BY Name",
+        MUSICIAN_CREDIT_ROLE_TABLES
+    ));
     $usageSql = "
         SELECT u.Name, SUM(u.cnt) AS TotalUsage
           FROM (
-              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
            AND u.Name <> ?"
@@ -1765,12 +1764,11 @@ function musicianNameVariantDetail(string $a, string $b): ?array
  */
 function musicianReconcileCreditNameBytes(\mysqli $db): array
 {
-    /* The five song-credit tables that carry a free-text person Name. Hardcoded
-       constants — safe to interpolate into the SQL below (rule #5). */
-    static $tables = [
-        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-        'tblSongAdaptors', 'tblSongTranslators',
-    ];
+    /* The six song-credit tables that carry a free-text person Name
+       (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five before, missing
+       tblSongArtists). Hardcoded constants — safe to interpolate into the
+       SQL below (rule #5). */
+    $tables = MUSICIAN_CREDIT_ROLE_TABLES;
 
     $report = ['scanned' => 0, 'rewritten' => 0, 'registered' => 0,
                'adopted' => 0, 'ambiguous' => 0, 'names' => []];
@@ -1916,7 +1914,7 @@ function musicianReconcileCreditNameBytes(\mysqli $db): array
  * @param int     $sourceId tblMusicians.Id — the row that will be DELETED.
  * @param int     $targetId tblMusicians.Id — the row that survives.
  * @param array{keepLinkIds?:list<int>,keepIpiIds?:list<int>} $opts
- * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int}
+ * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int,aliasesMoved:int,relationsMoved:int,sourceNameAliased:bool}
  * @throws \InvalidArgumentException on any refusal (missing side / same id / not found).
  */
 function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $opts = []): array
@@ -1948,18 +1946,16 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
     $db->begin_transaction();
     try {
         /* Re-point song-credit rows: source name → target name across
-           the credit tables. #1785 C4 keeps this the original FIVE
-           tables (behaviour-preserving extraction, proven by a
-           before/after fixture diff); C5 hardens it to
-           MUSICIAN_CREDIT_ROLE_TABLES's six tables in the very next
-           commit — see that commit's body for why this list changes
-           there and not here. */
-        $tables = [
-            'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-            'tblSongAdaptors', 'tblSongTranslators',
-        ];
+           the SIX credit tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES,
+           closing the discovered tblSongArtists gap: C4's extraction kept
+           the original five tables only, so a merge/rename still stranded
+           artist credits on the deleted spelling even though the editor's
+           credit_upsert already promotes artist names INTO this same
+           registry). Table names come from the hardcoded PHP constant —
+           safe to interpolate (rule #5's carve-out); every VALUE
+           alongside them stays bound. */
         $affected = [];
-        foreach ($tables as $tbl) {
+        foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
             $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
             $stmt->bind_param('ss', $targetName, $sourceName);
             $stmt->execute();
@@ -2024,11 +2020,163 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
         }
         $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
 
+        /* #1785 C5 — carry the source's ALIASES + RELATIONS onto the
+           target BEFORE the DELETE below, instead of letting the
+           ON DELETE CASCADE on tblMusicianAliases /
+           tblMusicianRelations silently destroy them (the second
+           #1796 defect: today a merge quietly erases a source's AKA
+           names and any band/member relations with no way to recover
+           them). Both are existence-gated (rule #9) — an install that
+           hasn't run the aliases/relations migrations yet just skips
+           straight to the DELETE, unchanged from before this hardening. */
+        $aliasesMoved     = 0;
+        $relationsMoved   = 0;
+        $sourceNameAliased = false;
+
+        if (musicianAliasesTableExists($db)) {
+            /* Existing target alias NAMES, for uq_musician_name
+               (MusicianId, Name) collision-checking — a source alias
+               whose Name the target already carries is left to
+               cascade-delete with the source row rather than throwing
+               under mysqli's STRICT reporting. */
+            $stmt = $db->prepare('SELECT Name FROM tblMusicianAliases WHERE MusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetAliasNames = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Name');
+            $stmt->close();
+            $targetAliasNameSet = array_flip($targetAliasNames);
+
+            $stmt = $db->prepare('SELECT Id, Name FROM tblMusicianAliases WHERE MusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceAliases = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            if ($sourceAliases) {
+                $moveAlias = $db->prepare('UPDATE tblMusicianAliases SET MusicianId = ? WHERE Id = ?');
+                foreach ($sourceAliases as $al) {
+                    $alName = (string)$al['Name'];
+                    if (isset($targetAliasNameSet[$alName])) {
+                        continue; // uq_musician_name collision on the target — skip, cascades away with the source
+                    }
+                    $alId = (int)$al['Id'];
+                    $moveAlias->bind_param('ii', $targetId, $alId);
+                    $moveAlias->execute();
+                    $aliasesMoved += $moveAlias->affected_rows;
+                    $targetAliasNameSet[$alName] = true; // source's own aliases are already unique (uq_musician_name), but stay defensive
+                }
+                $moveAlias->close();
+            }
+
+            /* Item 4 — preserve the SOURCE's canonical name as a target
+               alias, so a curator who remembers the pre-merge spelling
+               can still find this person by it (names outlive rows, the
+               same rule-#33 instinct applied to data). Type follows
+               musicianNameVariantClass(): a byte-variant of the SAME
+               spelling (whitespace/case/punctuation/…) is a
+               'misspelling'; a genuinely different spelling (the
+               fuzzy-match merge case) is a 'search-hint' — both already
+               in MUSICIAN_ALIAS_TYPES. Skipped on the same
+               uq_musician_name collision as above (e.g. the source's own
+               name was ALSO one of its aliases and already got carried
+               over in the loop above). */
+            $stmt = $db->prepare('SELECT 1 FROM tblMusicianAliases WHERE MusicianId = ? AND Name = ? LIMIT 1');
+            $stmt->bind_param('is', $targetId, $sourceName);
+            $stmt->execute();
+            $nameCollision = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+
+            if (!$nameCollision && $sourceName !== $targetName) {
+                $aliasType = musicianNameVariantClass($sourceName, $targetName) !== null ? 'misspelling' : 'search-hint';
+                $insAlias = $db->prepare('INSERT INTO tblMusicianAliases (MusicianId, Name, Type) VALUES (?, ?, ?)');
+                $insAlias->bind_param('iss', $targetId, $sourceName, $aliasType);
+                $insAlias->execute();
+                $sourceNameAliased = $insAlias->affected_rows > 0;
+                $insAlias->close();
+            }
+        }
+
+        if (musicianMembersTableExists($db)) {
+            /* Existing target SUBJECT-side relations, for
+               uq_subject_object_rel (SubjectMusicianId, ObjectMusicianId,
+               RelationType, DateFrom) collision-checking. A NULL DateFrom
+               is never a collision key — MySQL/MariaDB treat every NULL
+               as distinct inside a UNIQUE key (schema.sql's own comment
+               on this index), so an undated relation can always move. */
+            $stmt = $db->prepare('SELECT ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetSubjectKeys = [];
+            foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+                if ($r['DateFrom'] === null) { continue; }
+                $targetSubjectKeys[$r['ObjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom']] = true;
+            }
+            $stmt->close();
+
+            $stmt = $db->prepare('SELECT ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE ObjectMusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetObjectKeys = [];
+            foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+                if ($r['DateFrom'] === null) { continue; }
+                $targetObjectKeys[$r['SubjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom']] = true;
+            }
+            $stmt->close();
+
+            /* Subject-side: source is the Group/subject of a relation
+               (e.g. source IS a group whose members need to carry over
+               onto the target). */
+            $stmt = $db->prepare('SELECT Id, ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceSubjectRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            if ($sourceSubjectRows) {
+                $moveSubject = $db->prepare('UPDATE tblMusicianRelations SET SubjectMusicianId = ? WHERE Id = ?');
+                foreach ($sourceSubjectRows as $r) {
+                    // Re-pointing would create a self-relation (target <-> target) — skip, cascades away.
+                    if ((int)$r['ObjectMusicianId'] === $targetId) { continue; }
+                    if ($r['DateFrom'] !== null) {
+                        $key = $r['ObjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom'];
+                        if (isset($targetSubjectKeys[$key])) { continue; } // uq_subject_object_rel collision
+                    }
+                    $relId = (int)$r['Id'];
+                    $moveSubject->bind_param('ii', $targetId, $relId);
+                    $moveSubject->execute();
+                    $relationsMoved += $moveSubject->affected_rows;
+                }
+                $moveSubject->close();
+            }
+
+            /* Object-side: source is an individual MEMBER/OBJECT of some
+               other group (e.g. source is a member whose group
+               memberships need to carry over onto the target). */
+            $stmt = $db->prepare('SELECT Id, SubjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE ObjectMusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceObjectRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            if ($sourceObjectRows) {
+                $moveObject = $db->prepare('UPDATE tblMusicianRelations SET ObjectMusicianId = ? WHERE Id = ?');
+                foreach ($sourceObjectRows as $r) {
+                    if ((int)$r['SubjectMusicianId'] === $targetId) { continue; } // would self-relate — skip
+                    if ($r['DateFrom'] !== null) {
+                        $key = $r['SubjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom'];
+                        if (isset($targetObjectKeys[$key])) { continue; } // uq_subject_object_rel collision
+                    }
+                    $relId = (int)$r['Id'];
+                    $moveObject->bind_param('ii', $targetId, $relId);
+                    $moveObject->execute();
+                    $relationsMoved += $moveObject->affected_rows;
+                }
+                $moveObject->close();
+            }
+        }
+
         /* Drop the source registry row. Cascade removes any child rows
-           we chose not to migrate (and, today, silently eats the
-           source's aliases + relations too — that's the second #1796
-           defect; #1785 C5 fixes it by carrying them over BEFORE this
-           DELETE runs). */
+           we chose not to migrate (links/IPI not kept, plus any alias/
+           relation row that collided above and so was deliberately left
+           behind). */
         $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
         $stmt->bind_param('i', $sourceId);
         $stmt->execute();
@@ -2041,13 +2189,19 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
     }
 
     return [
-        'sourceName'   => $sourceName,
-        'targetName'   => $targetName,
-        'affected'     => $affected,
-        'linksKept'    => $linksKept,
-        'linksDropped' => $linksDropped,
-        'ipiKept'      => $ipiKept,
-        'ipiDropped'   => $ipiDropped,
+        'sourceName'        => $sourceName,
+        'targetName'        => $targetName,
+        'affected'          => $affected,
+        'linksKept'         => $linksKept,
+        'linksDropped'      => $linksDropped,
+        'ipiKept'           => $ipiKept,
+        'ipiDropped'        => $ipiDropped,
+        // #1785 C5 — additive report keys; 0/false on an un-migrated
+        // install (aliases/relations tables absent) rather than absent
+        // keys, so callers can display them unconditionally.
+        'aliasesMoved'      => $aliasesMoved,
+        'relationsMoved'    => $relationsMoved,
+        'sourceNameAliased' => $sourceNameAliased,
     ];
 }
 
@@ -3170,18 +3324,17 @@ function removeMusicianRelation(\mysqli $db, int $relationId): array
  */
 function musicianCitedUnregisteredNames(\mysqli $db): array
 {
+    /* #1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES (was a hand-typed 5-table
+       union missing tblSongArtists). Table names come from the hardcoded
+       PHP constant — safe to interpolate (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $t): string => "SELECT Name, COUNT(*) AS cnt FROM {$t} GROUP BY Name",
+        MUSICIAN_CREDIT_ROLE_TABLES
+    ));
     $sql = "
         SELECT u.Name, SUM(u.cnt) AS TotalUsage
           FROM (
-              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE BINARY p.Name = BINARY u.Name)
          GROUP BY BINARY u.Name

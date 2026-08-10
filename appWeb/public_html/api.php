@@ -15873,8 +15873,9 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
-         * Admin: rename a musician — cascades across the five
-         * song-credit tables AND the registry row inside one transaction.
+         * Admin: rename a musician — cascades across the six
+         * song-credit tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES)
+         * AND the registry row inside one transaction.
          * POST body: { id, new_name }
          * Refuses with 409 if the new name already belongs to a different
          * registry row (caller should use admin_musician_merge).
@@ -15925,12 +15926,10 @@ if ($action !== null) {
                 $db->begin_transaction();
                 $affected = [];
                 try {
-                    /* Cascade across the five song-credit tables. */
-                    $tables = [
-                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                        'tblSongAdaptors', 'tblSongTranslators',
-                    ];
-                    foreach ($tables as $tbl) {
+                    /* Cascade across the six song-credit tables (#1785
+                       C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five,
+                       missing tblSongArtists). */
+                    foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
                         $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
                         $stmt->bind_param('ss', $newName, $oldName);
                         $stmt->execute();
@@ -15957,6 +15956,7 @@ if ($action !== null) {
                         'arrangers'   => $affected['tblSongArrangers'],
                         'adaptors'    => $affected['tblSongAdaptors'],
                         'translators' => $affected['tblSongTranslators'],
+                        'artists'     => $affected['tblSongArtists'], // #1785 C5
                     ],
                 ]);
 
@@ -16036,13 +16036,16 @@ if ($action !== null) {
                     break;
                 }
 
-                $sourceName = $report['sourceName'];
-                $targetName = $report['targetName'];
-                $affected     = $report['affected'];
-                $linksKept    = $report['linksKept'];
-                $linksDropped = $report['linksDropped'];
-                $ipiKept      = $report['ipiKept'];
-                $ipiDropped   = $report['ipiDropped'];
+                $sourceName        = $report['sourceName'];
+                $targetName        = $report['targetName'];
+                $affected          = $report['affected'];
+                $linksKept         = $report['linksKept'];
+                $linksDropped      = $report['linksDropped'];
+                $ipiKept           = $report['ipiKept'];
+                $ipiDropped        = $report['ipiDropped'];
+                $aliasesMoved      = $report['aliasesMoved'];
+                $relationsMoved    = $report['relationsMoved'];
+                $sourceNameAliased = $report['sourceNameAliased'];
 
                 $totalRenamed = array_sum($affected);
                 logActivity('api.admin.musician.merge', 'musician', (string)$targetId, [
@@ -16054,26 +16057,35 @@ if ($action !== null) {
                         'arrangers'   => $affected['tblSongArrangers'],
                         'adaptors'    => $affected['tblSongAdaptors'],
                         'translators' => $affected['tblSongTranslators'],
+                        'artists'     => $affected['tblSongArtists'], // #1785 C5
                     ],
                     'child_rows' => [
-                        'links_kept'    => $linksKept,
-                        'links_dropped' => $linksDropped,
-                        'ipi_kept'      => $ipiKept,
-                        'ipi_dropped'   => $ipiDropped,
+                        'links_kept'          => $linksKept,
+                        'links_dropped'       => $linksDropped,
+                        'ipi_kept'            => $ipiKept,
+                        'ipi_dropped'         => $ipiDropped,
+                        // #1785 C5 — alias/relation carry-over + source-name-preserved-as-alias.
+                        'aliases_moved'       => $aliasesMoved,
+                        'relations_moved'     => $relationsMoved,
+                        'source_name_aliased' => $sourceNameAliased,
                     ],
                 ]);
 
                 sendJson([
-                    'ok'                  => true,
-                    'source_id'           => $sourceId,
-                    'target_id'           => $targetId,
-                    'source_name'         => $sourceName,
-                    'target_name'         => $targetName,
-                    'song_credit_renames' => $totalRenamed,
-                    'links_kept'          => $linksKept,
-                    'links_dropped'       => $linksDropped,
-                    'ipi_kept'            => $ipiKept,
-                    'ipi_dropped'         => $ipiDropped,
+                    'ok'                    => true,
+                    'source_id'             => $sourceId,
+                    'target_id'             => $targetId,
+                    'source_name'           => $sourceName,
+                    'target_name'           => $targetName,
+                    'song_credit_renames'   => $totalRenamed,
+                    'links_kept'            => $linksKept,
+                    'links_dropped'         => $linksDropped,
+                    'ipi_kept'              => $ipiKept,
+                    'ipi_dropped'           => $ipiDropped,
+                    // #1785 C5 — additive response fields.
+                    'aliases_moved'         => $aliasesMoved,
+                    'relations_moved'       => $relationsMoved,
+                    'source_name_aliased'   => $sourceNameAliased,
                 ]);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.musician.merge', 'musician', (string)$targetId, $e, [
@@ -16126,18 +16138,19 @@ if ($action !== null) {
                     break;
                 }
 
-                /* Single round-trip count across all five song-credit
-                   tables. */
-                $stmt = $db->prepare(
-                    "SELECT (
-                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
-                     ) AS total"
-                );
-                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                /* Single round-trip count across all six song-credit
+                   tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was
+                   five, missing tblSongArtists — an artist-only-credited
+                   person could be force-deleted with a wrongly-zero
+                   usage count). Table names come from the hardcoded PHP
+                   constant (rule #5's carve-out). */
+                $countSql = implode(' + ', array_map(
+                    static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
+                    MUSICIAN_CREDIT_ROLE_TABLES
+                ));
+                $stmt = $db->prepare("SELECT ({$countSql}) AS total");
+                $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
+                $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
                 $stmt->execute();
                 $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
                 $stmt->close();
