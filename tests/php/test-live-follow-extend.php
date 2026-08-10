@@ -60,9 +60,14 @@ declare(strict_types=1);
  *       outcome, via `serviceMode_liveFollowExtendAuthorize()` returning
  *       'org_admin', never by reading the session's own OrgId (which stays
  *       NULL throughout, per rule #26).
- *   B3. An unrelated authenticated user (no host, no shared org, no site
- *       role) is refused — `serviceMode_liveFollowExtendAuthorize()`
- *       returns 'denied'.
+ *   B3. An unrelated authenticated user is refused —
+ *       `serviceMode_liveFollowExtendAuthorize()` returns 'denied' for a
+ *       user with NO org membership at all (B3), for a genuine
+ *       admin-of-a-DIFFERENT-org whose org the HOST does NOT belong to
+ *       (B3c — the boundary case that actually exercises the SQL
+ *       `OrgId IN (...)` membership check, not just the "no orgs at all"
+ *       short-circuit B3 alone would hit), while a site admin/global_admin
+ *       is separately and correctly still allowed (B3b).
  *   B4. `live_follow_create`'s override formula (client value clamped to
  *       [5,240], then capped by an enforcing org's lock for the HOST) is
  *       exercised via the REAL resolver's #1798 out-param — an enforcing
@@ -82,12 +87,20 @@ declare(strict_types=1);
  * MUTATION PROOF (rule #34), run post-commit and reverted with
  * `git checkout --`:
  *   - Break the org-membership check inside
- *     `serviceMode_liveFollowExtendAuthorize()` (e.g. short-circuit it to
- *     always return 'org_admin') -> B3 goes red (an unrelated user would be
- *     wrongly allowed) — this is a REAL function call, not a parallel copy,
- *     so the mutation is caught behaviourally, not just textually.
+ *     `serviceMode_liveFollowExtendAuthorize()` (its final
+ *     `return $hit ? 'org_admin' : 'denied';` hardcoded to always
+ *     `'org_admin'`) -> **B3c** goes red (an admin of a DIFFERENT org than
+ *     the host's would be wrongly allowed to extend). NOTE: B3 alone does
+ *     NOT catch this mutation — its user has NO org membership at all, so
+ *     it short-circuits on the earlier `if (!$adminOrgs) return 'denied';`
+ *     line before ever reaching the mutated one; this was verified
+ *     empirically while writing this guard (the first version of B3 stayed
+ *     green under this exact mutation) and is exactly why B3c exists as a
+ *     separate, deliberately-non-empty-$adminOrgs case. This is a REAL
+ *     function call, not a parallel copy, so the mutation is caught
+ *     behaviourally, not just textually.
  *   - Remove the `LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES`/`_MAX_MINUTES` clamp
- *     from api.php's real `live_follow_extend` case body -> A2 goes red
+ *     from api.php's real `live_follow_extend` case body -> A2.4 goes red
  *     (the endpoint logic itself is inline in the dispatcher, not a
  *     standalone function, so the clamp's PRESENCE in the real source is
  *     what A2 verifies — the same "thin case, testable primitive" split
@@ -480,11 +493,37 @@ if ($dbName !== null && $sock === null) {
             $hostB3      = $mkUser('b3host');
             $unrelatedB3 = $mkUser('b3unrelated');
             $authB3 = serviceMode_liveFollowExtendAuthorize($db, $hostB3, $unrelatedB3, 'user');
-            lfe($authB3 === 'denied', "B3 an unrelated user with no host/org/site relationship is DENIED (got '{$authB3}') — MUTATE the org-membership check inside serviceMode_liveFollowExtendAuthorize() to see this go red");
+            lfe($authB3 === 'denied', "B3 an unrelated user with NO org membership at all is DENIED (got '{$authB3}')");
 
             /* A site admin/global_admin is a distinct, ALSO-allowed path. */
             $authB3site = serviceMode_liveFollowExtendAuthorize($db, $hostB3, $unrelatedB3, 'global_admin');
             lfe($authB3site === 'site_admin', "B3b a global_admin (unrelated by org) is still authorised via the site-admin path (got '{$authB3site}')");
+
+            /* B3c — THE load-bearing boundary case: an admin of a org the
+               HOST does NOT belong to (not "no org at all", like B3 above)
+               must still be denied. userIsOrgAdminOf($unrelatedAdminB3c)
+               returns a NON-EMPTY list here, so this is the ONLY B3
+               variant that actually reaches the SQL "OrgId IN (...)"
+               membership check inside serviceMode_liveFollowExtendAuthorize()
+               rather than short-circuiting on "no orgs at all" — B3 alone
+               would stay green even if that IN-clause were mutated to
+               always match, because $adminOrgs is empty for B3's user and
+               the function returns 'denied' before ever reaching the SQL.
+               MUTATE the SQL/return in serviceMode_liveFollowExtendAuthorize()
+               to see THIS assertion (not B3) go red. */
+            $hostB3c           = $mkUser('b3chost');
+            $unrelatedAdminB3c = $mkUser('b3cadmin');
+            $orgB3c            = $mkOrg('b3corg'); /* $unrelatedAdminB3c administers this... */
+            $otherOrgB3c       = $mkOrg('b3cother'); /* ...but the HOST belongs to a DIFFERENT org entirely. */
+            $join($unrelatedAdminB3c, $orgB3c, 'admin');
+            $join($hostB3c, $otherOrgB3c, 'member');
+            $adminOrgsB3c = userIsOrgAdminOf($unrelatedAdminB3c);
+            lfe($adminOrgsB3c === [$orgB3c], 'B3c.0 fixture sanity: the admin genuinely administers a (non-empty) org list');
+            $authB3c = serviceMode_liveFollowExtendAuthorize($db, $hostB3c, $unrelatedAdminB3c, 'user');
+            lfe(
+                $authB3c === 'denied',
+                "B3c an admin of a DIFFERENT org (the host is NOT a member of) is DENIED (got '{$authB3c}') — MUTATE the org-membership IN-clause/return to see THIS go red"
+            );
 
             if ($hasOrgCols) {
                 /* -----------------------------------------------------------
