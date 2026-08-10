@@ -22,11 +22,15 @@ contradicted each other. **Where they disagree, the schema-design version wins**
 Guard now covers: 14 block types + per-type option keys + 6 page options + 7 showIf conditions,
 all mutation-proven (break→red→restore byte-identical).
 
-**Buildable-now, still open (this branch, follow-up pass):** Z (clone + JSON import/export),
-J (system default via `IsDefault`), and the H-family multi-page/running-headers/page-numbering
-(U/T/AA/AG — high-risk, patchy `@page` browser support; may prefer server-PDF). Z/J add DB-backed
-admin POST actions + a public-API default-selection change that want live-DB behavioural
-verification (GIRFT) before shipping — deferred, not skipped.
+**Z + J SHIPPED (2026-08-10, `4025ac8c`, on `claude/issue-sweep-fixes-89`):** template clone +
+`?export=`/`import` JSON round-trip (import reuses the save sanitiser) + `set_default`
+(single-default invariant, transactional) on `/manage/print-templates`. Live-DB verified (11
+assertions: clone independence, one-default-per-scope, export/import round-trip). The CueRCode
+credential card (#1782) also landed earlier (`96028999`), closing that QR blocker.
+
+**Buildable-now, still open:** only the H-family multi-page/running-headers/page-numbering
+(U/T/AA/AG — high-risk, patchy `@page` browser support; may prefer server-PDF), deferred, not
+skipped.
 
 **Decision-gated (NOT this branch — batched on #1767, non-blocking):** the schema + server-PDF
 half (D/E/K/L/AK/AL/W/X/AC/AD/AJ + data-prereq Q/S/AH). See "Batched owner decisions" below.
