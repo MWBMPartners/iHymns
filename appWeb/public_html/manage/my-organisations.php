@@ -84,6 +84,15 @@ $error   = '';
 $success = '';
 /* #1770 §4.7 — memoised; cheap to call once here and re-check inline below. */
 $orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
+/* #1798 — declared here (not just before its query block below) because the
+   $orgs-query branch can `goto render;` on an early empty-org exit (see
+   below), which would otherwise skip straight past the declaration and
+   leave $liveSessions undefined for the render section. Session-level idle
+   columns are a DIFFERENT gate than $orgIdleColsExist above (that one is the
+   ORG layer of the precedence chain; this is "does the SESSION even carry
+   IdleTimeoutMins/LastLeaderSeenAt yet"). */
+$liveSessionColsExist = serviceMode_idleColumnsExist($db);
+$liveSessions = [];
 
 /* Member-role allowlist from the shared include (#719 PR 2c). Licence-type key
    list now from the ONE registry (#459 / #1769 P2) — was the hardcoded literal
@@ -434,6 +443,58 @@ foreach ($orgs as $o) {
     }
 }
 
+/* #1798 — "Members' live sessions": active Quick ("Go Live") sessions whose
+   HOST is a member of an org this viewer administers, each with an Extend
+   control (POSTs the SAME `live_follow_extend` action the leader's own host
+   bar uses — api.php's serviceMode_liveFollowExtendAuthorize() already
+   grants an org-admin/site-admin of the host's org that authority). Quick
+   sessions keep `OrgId = NULL` (rule #26), so this is resolved via the
+   HOST's `tblOrganisationMembers` rows, never a session column — the SAME
+   direction api.php's authorizer walks. System admins (who can act on any
+   org anyway) see every active Quick session on this channel; everyone else
+   sees only sessions whose host shares an org they administer. */
+if ($liveSessionColsExist && ($systemAdmin || !empty($ownedOrgIds))) {
+    try {
+        $channel = serviceMode_channel();
+        if ($systemAdmin) {
+            $stmt = $db->prepare(
+                'SELECT DISTINCT s.Id, s.SessionCode, s.HostUserId, u.DisplayName AS HostName,
+                        u.Username AS HostUsername, s.CurrentSongId, s.IdleTimeoutMins,
+                        s.LastLeaderSeenAt, s.StartedAt
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                  WHERE s.SessionKind = \'host\' AND s.IsActive = 1 AND s.Channel = ?
+                  ORDER BY s.StartedAt DESC'
+            );
+            $stmt->bind_param('s', $channel);
+        } else {
+            /* Placeholders built from a COUNT — a hardcoded construction,
+               never request data (rule #5). */
+            $orgPlaceholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
+            $stmt = $db->prepare(
+                "SELECT DISTINCT s.Id, s.SessionCode, s.HostUserId, u.DisplayName AS HostName,
+                        u.Username AS HostUsername, s.CurrentSongId, s.IdleTimeoutMins,
+                        s.LastLeaderSeenAt, s.StartedAt
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                   JOIN tblOrganisationMembers m ON m.UserId = s.HostUserId
+                  WHERE m.OrgId IN ({$orgPlaceholders})
+                    AND s.SessionKind = 'host' AND s.IsActive = 1 AND s.Channel = ?
+                  ORDER BY s.StartedAt DESC"
+            );
+            $types  = str_repeat('i', count($ownedOrgIds)) . 's';
+            $params = array_merge($ownedOrgIds, [$channel]);
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $liveSessions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[manage/my-organisations.php] live sessions load failed: ' . $e->getMessage());
+        $liveSessions = [];
+    }
+}
+
 render:
 $csrf = csrfToken();
 ?>
@@ -459,6 +520,65 @@ $csrf = csrfToken();
     <p class="text-muted small">
         Organisations where you hold an admin or owner role. You can add or remove members, change their org-role, and edit licence rows here. System administrators see every organisation because they can manage any of them.
     </p>
+
+    <?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
+        <!-- #1798 — Members' live sessions: Extend/keep-alive on behalf of a
+             leader whose phone died mid-service. POSTs the SAME
+             live_follow_extend action the leader's own host bar uses. -->
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h5 mb-2">
+                <i class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
+            </h2>
+            <p class="text-muted small">
+                Active &ldquo;Go Live&rdquo; sessions led by someone in one of your organisations.
+                Use Extend if a leader&rsquo;s device died mid-service and their session is about
+                to auto-close from inactivity.
+            </p>
+            <div class="table-responsive">
+                <table class="table table-sm table-dark mb-0 small align-middle">
+                    <thead>
+                        <tr>
+                            <th>Leader</th>
+                            <th>Code</th>
+                            <th>Idle timeout</th>
+                            <th>Last seen</th>
+                            <th>Started</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($liveSessions as $ls): ?>
+                            <tr data-live-session-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
+                                <td>
+                                    <?= htmlspecialchars((string)($ls['HostName'] ?: $ls['HostUsername'])) ?>
+                                </td>
+                                <td><code><?= htmlspecialchars((string)$ls['SessionCode']) ?></code></td>
+                                <td>
+                                    <?= $ls['IdleTimeoutMins'] !== null ? ((int)$ls['IdleTimeoutMins'] . ' min') : 'site default' ?>
+                                </td>
+                                <td><?= htmlspecialchars((string)($ls['LastLeaderSeenAt'] ?? '—')) ?></td>
+                                <td><?= htmlspecialchars((string)($ls['StartedAt'] ?? '—')) ?></td>
+                                <td class="text-end">
+                                    <div class="d-inline-flex gap-1 align-items-center">
+                                        <select class="form-select form-select-sm live-session-duration" style="width:auto;">
+                                            <option value="30">30 min</option>
+                                            <option value="60" selected>1 hour</option>
+                                            <option value="120">2 hours</option>
+                                            <option value="240">Until leader ends it</option>
+                                        </select>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary live-session-extend-btn"
+                                                data-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
+                                            <i class="bi bi-clock-history me-1"></i>Extend
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <?php if ($success): ?>
         <div class="alert alert-success py-2 small"><?= htmlspecialchars($success) ?></div>
@@ -754,6 +874,53 @@ $csrf = csrfToken();
     import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
     bootSortableTables();
 </script>
+
+<?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
+<!-- #1798 — "Members' live sessions" Extend wiring. Cookie-authed
+     (same-origin); X-Requested-With satisfies the CSRF guard — mirrors the
+     apiCall() helper already established on manage/service-projection.php.
+     A full page reload after a successful extend is the deliberately
+     lightweight refresh (this card's rows are server-rendered, not a live
+     JS view — a reload just re-runs the same query with the new values). -->
+<script type="module">
+    function apiCall(action, opts) {
+        opts = opts || {};
+        const init = { method: opts.method || 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', cache: 'no-store' };
+        if (opts.body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+        return fetch('/api?action=' + action + (opts.query || ''), init).then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, ok: r.ok, j: j }; });
+        });
+    }
+
+    document.querySelectorAll('.live-session-extend-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const code = btn.getAttribute('data-code');
+            const row = btn.closest('tr');
+            const sel = row ? row.querySelector('.live-session-duration') : null;
+            const mins = sel ? parseInt(sel.value, 10) : 60;
+            btn.disabled = true;
+            apiCall('live_follow_extend', { method: 'POST', body: { code: code, idleTimeoutMins: mins } })
+                .then(function (res) {
+                    if (res.status === 409) {
+                        window.alert('This install hasn’t been migrated for Live Follow session lengths yet.');
+                        btn.disabled = false;
+                        return;
+                    }
+                    if (!res.ok || !res.j || !res.j.ok) {
+                        window.alert((res.j && res.j.error) || 'Could not extend that session.');
+                        btn.disabled = false;
+                        return;
+                    }
+                    window.location.reload();
+                })
+                .catch(function () {
+                    window.alert('Could not extend that session (network error).');
+                    btn.disabled = false;
+                });
+        });
+    });
+</script>
+<?php endif; ?>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
