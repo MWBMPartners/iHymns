@@ -590,6 +590,17 @@ declare(strict_types=1);
                         a new code), ends the previous session.
                     </p>
                     <p class="small text-muted mb-0 mt-2">
+                        <strong>Leading a longer service &mdash; the sermon gap.</strong> When you
+                        tap <strong>Go Live</strong>, choose how long to keep it live: 30 minutes,
+                        1 hour, 2 hours, or until you end it &mdash; handy if a genuinely quiet
+                        sermon would otherwise trip the auto-close. Changed your mind mid-service,
+                        or your phone died? Tap <strong>Extend</strong> on the red LIVE bar to pick
+                        again &mdash; it resets the clock too, so the full new window starts from
+                        that moment. A church admin can also extend a leader's session on their
+                        behalf from My Organisations. Service Mode doesn't need any of this &mdash;
+                        it's bounded by the scheduled service's own end time, never an idle clock.
+                    </p>
+                    <p class="small text-muted mb-0 mt-2">
                         <strong>Everyone must be on the same iHymns web address.</strong> If you're
                         testing on two of your own devices, open the host page and the join page at
                         the <em>identical</em> address (both on the live site, or both on the same

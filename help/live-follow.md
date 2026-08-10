@@ -48,6 +48,17 @@ minutes, followers are disconnected until it wakes up again, on top of the idle 
 tapping **End**, or going live again (which makes a brand-new code) all end the previous session
 straight away.
 
+**Leading a longer service — the sermon gap.** When you tap **Go Live**, pick how long to keep it
+live: **30 minutes**, **1 hour**, **2 hours**, or **until I end it**. If you're covering a whole
+service including a sermon (a genuinely quiet stretch with nothing to drive), choose a longer
+option up front so the auto-close doesn't catch you mid-sermon. Changed your mind, or your phone
+died and you've only just got back to it? Tap **Extend** on the red LIVE bar and pick again — this
+resets the clock too, so the full window applies from that moment, not whatever was left of the old
+one. **A church admin can also extend a leader's session on their behalf** from
+[My Organisations](/manage/my-organisations) under "Members' live sessions" — handy for exactly the
+dead-phone-mid-sermon case, without needing the leader's own device. (Service Mode, below, doesn't
+need any of this — it's bounded by the scheduled service's own end time, never an idle clock.)
+
 ---
 
 ## 🙋 Joining a session
@@ -107,7 +118,8 @@ Codes rotate roughly every 30 seconds, so if one is refused, just read the **cur
 | *"That code belongs to a different iHymns environment…"* | You and the leader are on **different iHymns site addresses** (for example the live site vs a preview/test site). iHymns now recognises this case and tells you directly instead of just saying "not found" | Make sure **both** devices use exactly the same web address — both on `ihymns.app`, or both on the same test/preview site — then re-join |
 | *"Session not found or ended."* even though the leader's screen shows LIVE | You're on the same address, but the leader's screen fell asleep, the code was mistyped, or the 4-hour limit was reached | Ask the leader to wake their screen (it revives automatically), then read the current code and re-join |
 | *"The live session has ended."* / *"The service has ended."* mid-way through | The leader ended it, signed out, went live again, their screen slept, or time ran out | Get the new code and re-join |
-| *"Your live session ended (closed or timed out after inactivity)."* — seen by the **leader** | The session auto-closed because there was no genuine interaction for a while (having the app merely open doesn't count) | Tap **Go Live** again for a fresh code; adjust the idle timeout under Settings if it's closing sooner than you'd like |
+| *"Your live session ended (closed or timed out after inactivity)."* — seen by the **leader** | The session auto-closed because there was no genuine interaction for a while (having the app merely open doesn't count) | Tap **Go Live** again for a fresh code; pick a longer "keep live for" option, or use **Extend** next time |
+| Tapping **Extend** says *"This iHymns install hasn't been updated for session lengths yet…"* | Your site administrator hasn't run the one-off setup step for this feature yet | Ask them to run the Database Setup card for Live Follow idle timeouts |
 | *"iHymns is down for maintenance — try the code again in a minute. The leader's code is fine."* | The site is briefly in maintenance mode | Wait a minute and try again — nothing is wrong with the code |
 | *"Too many requests. Please try again later."* | You (or your network) tried too many times in a short spell | Wait a minute, then try again |
 | *"Leave the session you're following before hosting your own."* | One device can't follow a session **and** lead its own at the same time | Tap **Leave** (or **End**) first |

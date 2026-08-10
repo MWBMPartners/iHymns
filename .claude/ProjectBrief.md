@@ -4,6 +4,51 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-10 (later still — #1798 Live Follow session-length + extend, BUILD pass done, NOT YET PUSHED)
+
+**#1798 (follow-on to #1770/#1792) — declare a Quick session's length at "Go Live" + extend a
+running one mid-service — BUILT, on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped
+after build + guard + docs per the build-pass brief).** Service Mode is unaffected (bounded by the
+scheduled service end, not idle) — this is Quick-only.
+
+- **Server** — `live_follow_create` accepts an optional `idleTimeoutMins` (clamped [5,240], capped
+  at the host's own enforcing-org lock if any). `serviceMode_resolveIdleTimeoutMins()` grew an
+  additive by-reference out-param (`&$enforcedMinsOut`) exposing just the enforced layer it already
+  computes, so create/extend share ONE reader of `LiveIdleTimeoutMins`/`EnforceIdleTimeout` (the
+  `test-live-follow-idle.php` A3 single-reader guard stays green untouched). New endpoint
+  `live_follow_extend` widens a RUNNING session's window and resets the idle clock to now.
+  Authorisation (host, OR an admin/owner of an org the HOST belongs to, OR a site admin) is resolved
+  via the HOST's `tblOrganisationMembers` rows — **never the session's own `OrgId`**, which Quick
+  sessions keep `NULL` (rule #26, load-bearing for CCLI gating) — and extracted into a real,
+  independently-testable function `serviceMode_liveFollowExtendAuthorize()` rather than staying
+  inline in the dispatcher, mirroring #1792's `serviceMode_codeOnOtherChannel()` shape. 409 (not
+  404/400) on an un-migrated install (rule #35); channel-scoped resolve (rule #26);
+  `validateCsrfRequest()` (rule #29); rate-limited 60/hour/user (rule #1636).
+- **Client** — `live-follow.js`'s `goLive()` gained a lightweight duration picker (30 min / 1 hour /
+  2 hours / until I end it) shared with a new **Extend** button on the host bar; both use the
+  established direct `bootstrap.Modal` pattern (never `app.js`'s two-option-only `showChoice()`).
+  Branches on HTTP `409` for "not migrated yet" vs the generic failure toast (rule #35).
+- **Org-admin surface** — `/manage/my-organisations` gained a "Members' live sessions" card (active
+  Quick sessions hosted by someone in an org the viewer administers, each with an Extend control),
+  column-existence-gated on `serviceMode_idleColumnsExist()`.
+- **Guard** — `tests/php/test-live-follow-extend.php` (Part A static source-scan of the real
+  endpoint/client/org-admin-page wiring; Part B live-DB behavioural against the REAL
+  `serviceMode_liveFollowExtendAuthorize()` + the REAL resolver's out-param — host/org-admin/
+  unrelated-user authorization, create-override + enforced-cap, out-of-range clamping, and channel
+  scoping). Mutation-proven post-commit (org-membership check short-circuit → B3 red; clamp removed
+  from the real case body → A2 red), then reverted via `git checkout --`.
+- **Deviation flagged**: the task brief's "Commit 1 — server" / "Commit 2 — client" split was
+  collapsed into ONE commit. `tests/php/test-orphan-inventory.php` (tree-derived, excludes `tests/`
+  from its caller corpus by design) fails a newly-dispatched public action with no first-party
+  caller, and `tests/php/fixtures/orphan-allowlist.php`'s own header explicitly discourages a
+  temporary entry ("wire it… together, never one without the others") — so landing the server case
+  without its one JS caller in the same commit would have been the very anti-pattern that file's
+  philosophy exists to prevent, as well as a red intermediate commit (the brief's own "never commit
+  red" is the stronger, more explicit rule here). Server + client landed together; the org-admin UI
+  and the guard+docs remained their own commits as specified.
+- **Suites: 144 PHP (143 baseline + this session's new guard) / 53 node (unchanged), all green**
+  after every commit.
+
 ## 📌 Continuation note — 2026-08-10 (later still — #1786 admin sortable-headers sweep + #1799 fix, BUILD pass done, NOT YET PUSHED)
 
 **#1786 (admin adoption sweep of the shared multi-column sortable-table module) + #1799 (two broken
