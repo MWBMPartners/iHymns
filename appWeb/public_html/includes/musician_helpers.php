@@ -41,6 +41,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
+/* Shared duplicate/counterpart similarity scorer (#1216, rule #22) —
+   pulled in for the musician-registry NAME-similarity additions (#1785):
+   ihymns_sim_name_normalise() / ihymns_sim_name_score() (used by
+   musicianNameVariantClass() below and by the registry-duplicate scan)
+   and the fold primitives they're built on. require_once is idempotent —
+   safe even though some callers (manage/duplicate-songs.php,
+   manage/tags.php) may already have included this file in the same
+   request. Framework-free (no $_SERVER / session reads), so pulling it
+   in here doesn't change this file's own dormant-safety story. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_similarity.php';
+
 /**
  * iHymns — shared "read a form/JSON field as a trimmed string" helper (#trim).
  *
@@ -1482,6 +1493,235 @@ function musicianCanonicalNameBytes(string $name): string
     $name = preg_replace('/[\x{00A0}\x{200B}\x{FEFF}]/u', ' ', $name) ?? $name;
     $name = preg_replace('/\s+/u', ' ', $name) ?? $name;
     return trim($name);
+}
+
+/**
+ * iHymns — the SIX song-credit role tables, as one map (#1785, rule #22).
+ *
+ * ELI5: a song can credit a person as a writer, composer, arranger,
+ * adaptor, translator OR performing artist. This is the ONE list of
+ * "which database tables hold those credits" — every place in the app
+ * that needs to touch all of them (a rename, a merge, a usage count)
+ * reads this constant instead of typing its own copy of the same six
+ * table names.
+ *
+ * DETAILED / WHY this exists (discovered gap, #1785 / #1796): the editor's
+ * ED2_CREDIT_TABLES (manage/editor/api2.php:369-376) already treats SIX
+ * tables as "credit tables" — including tblSongArtists — and
+ * `credit_upsert` promotes an artist's name INTO the tblMusicians registry
+ * exactly the same way it does for a writer or composer. But every
+ * REGISTRY-side surface (merge, rename, delete-usage-count, the
+ * Musicians list's usage aggregate, the merge-target typeahead, the
+ * bulk-promote candidate scan, the byte-reconcile sweep) had its own
+ * hand-typed FIVE-table list that never learned about tblSongArtists —
+ * so a merge/rename would silently strand artist credits on the deleted
+ * spelling while use-counts undercounted by however many artist credits
+ * existed. That five-table list was independently forked in six-plus
+ * places (rule #35's cross-file-agreement problem) before this constant;
+ * #1785 C5 re-points every one of them here. `tests/php/
+ * test-musician-credit-tables-single-list.php` (G3) statically derives
+ * every ≥3-of-6 role-table site in the tree and asserts each one is
+ * either this constant, ED2_CREDIT_TABLES itself, or a consumer that
+ * references one of the two — so the two registries can never silently
+ * drift apart again (rule #35's "mechanism, not a comment").
+ *
+ * Keys use the SINGULAR role-name convention already established
+ * elsewhere in this file's own SQL (the `kindLabel` values in the
+ * Musicians list's usage query, musicians.php) — NOT ED2_CREDIT_TABLES's
+ * plural JSON-payload-shaped keys ('writers', 'composers', …). The two
+ * constants are asserted VALUE-set-equal (same six table names) by G3,
+ * never key-set-equal — the differing pluralisation is each file's own
+ * pre-existing, unrelated convention and forcing them to match key-for-
+ * key would be change for its own sake.
+ *
+ * Table names are hardcoded PHP constants — safe to interpolate directly
+ * into SQL (rule #5's carve-out); every VALUE that flows alongside them
+ * (a Name, an Id) stays bound via bind_param().
+ */
+const MUSICIAN_CREDIT_ROLE_TABLES = [
+    'writer'     => 'tblSongWriters',
+    'composer'   => 'tblSongComposers',
+    'arranger'   => 'tblSongArrangers',
+    'adaptor'    => 'tblSongAdaptors',
+    'translator' => 'tblSongTranslators',
+    'artist'     => 'tblSongArtists',
+];
+
+/**
+ * iHymns — human-readable label for each musicianNameVariantClass()
+ * outcome (#1785). ONE copy consumed by every surface that renders the
+ * variant badge (the future /manage/musician-duplicates review page, the
+ * Merge modal's credit-preview column, the bulk-promote match column) —
+ * never re-word this per call site.
+ *
+ * @var array<string,string>
+ */
+const MUSICIAN_NAME_VARIANT_LABELS = [
+    'identical'              => 'identical bytes',
+    'unicode-normalisation'  => 'differs only by Unicode form (combining vs. precomposed accent)',
+    'whitespace'             => 'differs only by invisible spacing',
+    'case'                   => 'differs only by letter case',
+    'punctuation'            => 'differs only by punctuation/accents',
+];
+
+/**
+ * iHymns — classify HOW two person names differ, on an identity-
+ * preserving ladder from "definitely the same spelling" to "genuinely
+ * different words" (#1785).
+ *
+ * ELI5: given two names that LOOK almost the same, say WHY — is it just
+ * an invisible extra space, a smart-quote vs a straight one, upper vs
+ * lower case, or are the actual words different? This is what turns a
+ * confusing "Eddie James → Eddie James" merge prompt into "these two
+ * differ only by invisible spacing" — problem 2 from #1785's issue body.
+ *
+ * DETAILED / the ladder (first match wins), and why each rung is placed
+ * where it is:
+ *   1. `$a === $b`                                        → 'identical'
+ *      Defensive only — a real caller only ever calls this on a genuine
+ *      candidate PAIR, which by definition differs in some byte.
+ *   2. NFC($a) === NFC($b)                                → 'unicode-normalisation'
+ *      Catches ONLY a combining-accent-vs-precomposed-accent difference
+ *      (e.g. "é" as one code point vs "e" + U+0301 COMBINING ACUTE
+ *      ACCENT) — checked before the whitespace rung because NFC alone
+ *      does not touch whitespace, so a pair that's PURELY a combining-
+ *      accent difference must not fall through to a later, broader rung
+ *      and get mis-labelled.
+ *   3. musicianCanonicalNameBytes($a) === …($b)           → 'whitespace'
+ *      Reuses the #1784 canonical-bytes fold UNCHANGED (never re-forked)
+ *      — NFC-compose + NBSP/ZWSP/BOM→space + whitespace-run-collapse +
+ *      trim. Catches trailing/leading/interior spacing variants.
+ *   4. mb_strtolower(canonical(a)) === mb_strtolower(canonical(b))
+ *                                                          → 'case'
+ *      Same canonical fold, lower-cased — catches a pure case difference
+ *      once whitespace is already ruled out by rung 3.
+ *   5. ihymns_sim_name_normalise($a) === …($b)            → 'punctuation'
+ *      The shared NAME fold (song_similarity.php, #1785) — accent-fold +
+ *      punctuation→space + collapse. Catches period/apostrophe-homoglyph/
+ *      dash/accent differences that survive rungs 2-4 (e.g. "O'Brien" vs
+ *      "O'Brien" with a curly apostrophe, or "J. Newton" vs "J Newton").
+ *   6. else                                                → null
+ *      The names are genuinely different WORDS — the fuzzy-score case,
+ *      not a byte-variant of the same spelling.
+ *
+ * §3.1 of the #1785 plan verified experimentally (against the live
+ * tblMusicians uk_Name UNIQUE KEY under utf8mb4_unicode_ci) that most of
+ * what rungs 2-4 test (pure Unicode form, case, most whitespace variants)
+ * collapse under that collation, so TWO coexisting registry rows can
+ * essentially never differ in those ways — except an interior run of 2+
+ * plain spaces, which the collation treats as distinct even though rung 3
+ * (whitespace) correctly still names it 'whitespace'. Rung 5
+ * (punctuation) is what the punctuation-homoglyph classes that DO
+ * coexist as distinct rows (curly vs straight apostrophe, period
+ * present/absent, hyphen vs en-dash) actually hit. This is not a
+ * database-uniqueness gate — it's a DISPLAY classifier only, called
+ * AFTER some other means (a fold-equal bucket, a fuzzy-score match, an
+ * alias hit) has already produced a candidate pair — and it serves BOTH
+ * registry-vs-registry pairs and registry-vs-cited-credit-name pairs
+ * (credit tables carry no unique constraint, so every rung is reachable
+ * there, which is why #1784's byte-reconcile sweep and this classifier
+ * are close cousins).
+ *
+ * @return string|null One of MUSICIAN_NAME_VARIANT_LABELS's keys, or null
+ *                      when the names are not a byte-variant of each other.
+ */
+function musicianNameVariantClass(string $a, string $b): ?string
+{
+    if ($a === $b) {
+        return 'identical';
+    }
+
+    $nfcA = $a;
+    $nfcB = $b;
+    if (class_exists('\Normalizer')) {
+        $normA = \Normalizer::normalize($a, \Normalizer::FORM_C);
+        $normB = \Normalizer::normalize($b, \Normalizer::FORM_C);
+        if (is_string($normA)) { $nfcA = $normA; }
+        if (is_string($normB)) { $nfcB = $normB; }
+    }
+    if ($nfcA === $nfcB) {
+        return 'unicode-normalisation';
+    }
+
+    $canonA = musicianCanonicalNameBytes($a);
+    $canonB = musicianCanonicalNameBytes($b);
+    if ($canonA === $canonB) {
+        return 'whitespace';
+    }
+
+    if (mb_strtolower($canonA, 'UTF-8') === mb_strtolower($canonB, 'UTF-8')) {
+        return 'case';
+    }
+
+    if (ihymns_sim_name_normalise($a) === ihymns_sim_name_normalise($b)) {
+        return 'punctuation';
+    }
+
+    return null;
+}
+
+/**
+ * iHymns — format one Unicode code point as "U+0027 (')" for a variant
+ * badge tooltip (#1785). NULL/empty input (used when one string ran out
+ * of characters before the other) renders as "∅ (none)".
+ *
+ * @see https://www.php.net/manual/en/function.mb-ord.php
+ */
+function musicianCodePointLabel(?string $char): string
+{
+    if ($char === null || $char === '') {
+        return '∅ (none)';
+    }
+    $codePoint = mb_ord($char, 'UTF-8');
+    if ($codePoint === false) {
+        return $char;
+    }
+    $hex = str_pad(strtoupper(dechex($codePoint)), 4, '0', STR_PAD_LEFT);
+    return "U+{$hex} ({$char})";
+}
+
+/**
+ * iHymns — the first differing Unicode code point between two names,
+ * formatted for a badge tooltip (#1785).
+ *
+ * ELI5: takes two names that look identical on screen and points at the
+ * EXACT invisible character that's different — e.g. "U+0027 (') vs
+ * U+2019 (’)" for a straight vs curly apostrophe. This is what makes
+ * musicianNameVariantClass()'s 'punctuation'/'unicode-normalisation'
+ * labels legible instead of just "these differ somehow".
+ *
+ * DETAILED: splits both strings into individual Unicode code points
+ * (`preg_split('//u', …)`, NOT bytes and NOT graphemes — a combining
+ * accent is its own code point here, which is exactly the granularity
+ * the 'unicode-normalisation' class needs to explain itself) and walks
+ * both arrays together, returning the FIRST index where they differ. A
+ * length mismatch with no earlier difference (one name is a byte-for-
+ * byte prefix of the other, e.g. a trailing-space-only difference caught
+ * upstream by canonical-bytes) reports the shorter side as "∅ (none)"
+ * at that position.
+ *
+ * @return array{a:string,b:string}|null null when $a === $b (nothing to report)
+ */
+function musicianNameVariantDetail(string $a, string $b): ?array
+{
+    if ($a === $b) {
+        return null;
+    }
+    $charsA = preg_split('//u', $a, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $charsB = preg_split('//u', $b, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $len = max(count($charsA), count($charsB));
+    for ($i = 0; $i < $len; $i++) {
+        $ca = $charsA[$i] ?? null;
+        $cb = $charsB[$i] ?? null;
+        if ($ca === $cb) {
+            continue;
+        }
+        return [
+            'a' => musicianCodePointLabel($ca),
+            'b' => musicianCodePointLabel($cb),
+        ];
+    }
+    return null; // Defensive — reachable only if $a !== $b yet every code point matched, which can't happen.
 }
 
 /**
