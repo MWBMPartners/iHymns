@@ -11849,6 +11849,22 @@ paths:
                   ok: { type: boolean, example: true }
                   code: { type: string, example: "7K3PXM" }
                   revision: { type: integer, example: 0 }
+                  sessionId:
+                    type: integer
+                    description: >-
+                      Numeric session id (#1429) — register a native-app Live
+                      Activity push token against it.
+                  idleTimeoutMins:
+                    type: integer
+                    nullable: true
+                    example: 15
+                    description: >-
+                      #1770 — the RESOLVED leader-idle auto-close timeout
+                      (minutes) stamped on this session at create time, from
+                      the app-default -> org-override -> user-preference
+                      precedence chain. `null` on an un-migrated install
+                      (additive; absent from every client before this field
+                      existed — safe to ignore).
         "400":
           description: Unknown songId
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -11929,6 +11945,13 @@ paths:
       description: |
         Keepalive only — refreshes `LastHeartbeatAt` + the 4-hour expiry
         but does NOT bump `StateRevision` (nothing changed for followers).
+        #1770 — when the session has gone leader-idle (no genuine
+        interaction within its resolved `idleTimeoutMins`), `ok` answers
+        `false` even though the row was touched — the client already treats
+        `ok: false` as "session ended" (back-compat: a pre-#1770 client
+        never sends `leaderActive` and is therefore never itself the reason
+        a session goes idle, but it IS still subject to another leader's
+        idle-close the same way it was already subject to a host-side end).
       security:
         - bearerAuth: []
       parameters:
@@ -11945,9 +11968,21 @@ paths:
               required: [code]
               properties:
                 code: { type: string, example: "7K3PXM" }
+                leaderActive:
+                  type: boolean
+                  default: false
+                  description: >-
+                    #1770 — an EXPLICIT "a human genuinely interacted with
+                    the app since the last beat" flag (pointerdown/keydown
+                    while hosting). The automated 30s beat ALONE must never
+                    set this — only a real interaction does, or an abandoned
+                    tab would never idle-close. Omitted/false on every
+                    client before #1770 (additive; the idle clock simply
+                    isn't fed by such a client, matching pre-#1770
+                    behaviour where nothing ever idle-closed a session).
       responses:
         "200":
-          description: '`ok` reflects whether the session is still active and owned by this user.'
+          description: '`ok` reflects whether the session is still active, owned by this user, and not idle-closed (#1770).'
           content:
             application/json:
               schema:
@@ -12012,7 +12047,9 @@ paths:
         CODE remains the real access control. Rate-limited to 120 / 60s
         per IP (generous — a whole congregation joins over a minute or
         two behind one church-wifi IP). Missing/expired/wrong code all
-        return the SAME 404 message (anti-probe).
+        return the SAME 404 message (anti-probe). Byte-identical for every
+        client — see the `post` operation on this SAME path for the #1770
+        additive presence-minting mode.
       parameters:
         - name: action
           in: query
@@ -12035,6 +12072,81 @@ paths:
                   followToken:
                     type: string
                     description: Stateless per-follower token — pass as `token` to `live_follow_poll`.
+                  hostDisplayName: { type: string }
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+        "400":
+          description: Invalid session code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+        "404":
+          description: Session not found, expired, or the code is wrong (identical message for all three)
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+    post:
+      operationId: liveFollowJoinPresence
+      tags: [Live Follow]
+      summary: Join a Live Follow session AND mint a CCLI-unlock presence token (#1770 req #3/#6)
+      description: |
+        Additive presence-minting mode — the session `code` is STILL read
+        from the query string (identical to the `get` operation above),
+        never the body; only the METHOD changes to POST and the body
+        supplies `presenceDeviceId`. On success mints (or re-activates, on
+        a re-join) a `tblServicePresence` row and returns `presenceToken`
+        in the response, exactly like `service_join` already does for a
+        Service-Mode congregant — the client then sets the SAME
+        `ihymns_sf_presence_token` cookie the Phase-3 content gate reads,
+        which is what lets a Quick host's followers read gated lyrics with
+        the CCL notice for the life of the session (bound as narrowly as
+        the mechanism allows — see `serviceMode_presenceCcliNumber()`'s
+        doc-block for the full licensing-flag reasoning). Table-existence-
+        gated: on an install without `tblServicePresence` this degrades to
+        the SAME response as the `get` operation, minus `presenceToken`
+        (always `null` then). Best-effort: a presence-mint failure never
+        fails an otherwise-valid join.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_join] }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, example: "7K3PXM" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [presenceDeviceId]
+              properties:
+                presenceDeviceId:
+                  type: string
+                  maxLength: 64
+                  description: >-
+                    A durable, client-minted anonymous device id (NOT a
+                    login) — the SAME id `service_join` accepts, so a
+                    device shares one identity across both follow paths.
+      responses:
+        "200":
+          description: Joined — same shape as the `get` response, plus `presenceToken`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string }
+                  followToken: { type: string }
+                  presenceToken:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The CCLI-unlock presence token (43 chars), or `null`
+                      when the presence table doesn't exist yet or minting
+                      failed — the join itself still succeeds either way.
                   hostDisplayName: { type: string }
                   currentSongId: { type: string, nullable: true }
                   componentIndex: { type: integer, nullable: true }

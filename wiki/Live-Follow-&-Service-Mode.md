@@ -28,7 +28,7 @@ Both features are built on the same schema (`tblLiveFollowSessions`, `tblLiveFol
 
 **Code format.** Drawn from the alphabet `ABCDEFGHJKMNPQRSTVWXYZ23456789` — no `I`, `L`, `O`, `U`, `0`, or `1`, so a misread character is never ambiguous with a real one. Entry is deliberately forgiving: the client uppercases and strips non-alphanumeric characters before validating, and the server repeats the same normalisation, so a code typed with spaces, dashes, or mixed case still matches.
 
-**Broadcast granularity.** The web host only ever broadcasts at the song level (`componentIndex` is always `0`) — there's no verse/section control in the web host UI today. A follower's client *will* scroll to a broadcast section if one is ever sent (the protocol supports it), but the current web host simply never sends one. Section-level follow is Service Mode's differentiator, not a Live Follow limitation waiting to be lifted — see the broadcaster note below.
+**Broadcast granularity.** The web host still auto-broadcasts at the song level on every navigation (`componentIndex` defaults to `0`) — but since #1770 (below), an OPTIONAL "Console" panel lets the host also pick a song and step between verse/chorus without leaving whatever page they're on, reusing the SAME `ServiceBroadcaster` module Service Mode's operator console uses, via a transport adapter (never a fork). Section-level follow was Service Mode's differentiator; #1770 brings the same capability to Live Follow as an opt-in, not a forced UI change to the default song-follow flow.
 
 **Prerequisite quirk.** Even though Live Follow needs no venue, its session-create INSERT stamps a `Channel` column, and join/poll both filter on it. That column only exists once the Service Mode schema (below) has been applied — so on an un-migrated install, **Go Live fails** with an "Unknown column 'Channel'" error even for someone who never touches Service Mode at all.
 
@@ -37,6 +37,83 @@ Both features are built on the same schema (`tblLiveFollowSessions`, `tblLiveFol
 - Heartbeat: host beats every 30s, plus an immediate beat on `visibilitychange`/`focus` (recovers a throttled/backgrounded tab).
 - Freshness: join/poll require a heartbeat within the last **180 seconds** (`LIVE_SESSION_FRESHNESS_SECONDS`, unified across both features by #1386 — it used to be split 180s/90s, which is why an older stale-comment reference to "90s" survived on `service-lead.php` until #1386's follow-up cleaned it up).
 - Session lifetime: hard-expires after **4 hours**. Also ends on an explicit **End**, a sign-out (the host's session can no longer authenticate), or starting a *new* Go Live session (which supersedes the old one and mints a brand-new code).
+
+---
+
+## #1770 — persistence, idle auto-close, host-CCLI unlock, external drive
+
+Issue [#1770](https://github.com/MWBMPartners/iHymns/issues/1770) reworked the Live Follow UX around
+seven owner-directed requirements. Server foundation (schema + resolution logic) and client/UI/docs
+landed together in one PR; see `.claude/live-follow-1770-plan.md` for the full design.
+
+**Persistent host bar (req #1).** A fixed red **LIVE** bar now stays pinned to the bottom of *every*
+page while a device is hosting — not just the song page the leader broadcast from. It carries
+**Show code** (a large code + QR — see "QR deep link" below), **Console** (the optional
+section-driving panel described above) and **End**. This makes the pre-existing cross-page
+persistence (the host code has always survived navigation in `sessionStorage`) actually *visible*;
+previously the only affordance was the inline badge on the one song page the leader happened to be
+on.
+
+**Leader-idle auto-close (req #2/#5).** A session now closes itself after a stretch with **no
+genuine leader interaction** — the automated 30s heartbeat keepalive does **not**, by itself, count;
+only a real `pointerdown`/`keydown` while hosting, a song/section broadcast, or session creation
+resets the clock. This fixes the "an abandoned-but-still-open tab hosts forever" gap. The timeout is
+resolved via a three-layer precedence chain, each layer optional, resolved and **stamped on the
+session at creation** (not re-resolved per request):
+
+1. **App default** — `tblAppSettings.live_follow_idle_timeout_minutes` (`/manage/configuration`,
+   "Live Follow" card), falling back to a hardcoded 15 minutes.
+2. **Organisation override** — `tblOrganisations.LiveIdleTimeoutMins` +
+   `EnforceIdleTimeout` (`/manage/organisations` for a site admin, `/manage/my-organisations` for an
+   org admin). `EnforceIdleTimeout=1` LOCKS the value for every member (their own preference is
+   ignored); across several enforcing orgs the *minimum* value wins. A non-enforcing org value is
+   only a *default*, beaten by a user's own preference.
+3. **User preference** — a `/settings` field (`liveIdleTimeoutMins` in the synced
+   `tblUsers.Settings` JSON blob), which beats a non-enforcing org default but loses to an enforcing
+   one.
+
+Resolution formula: `enforced ?? (user ?? (orgDefault ?? appDefault))`, clamped to **5–240 minutes**
+(240 = the pre-existing 4-hour hard session ceiling, so "never" needs no separate option). On
+idle-close: `IsActive=0`, any presence rows for the session are revoked (see below), and the next
+`live_follow_update`/`_heartbeat`/`_join`/`_poll` from that session answers exactly as if the
+session had been ended normally (409 / `ok:false` / 404 / `active:false`) — a follower or the host's
+own next action can't tell "ended" from "timed out," by design (anti-probe opacity).
+
+**Host-CCLI unlock (req #3/#6).** A Quick host's followers can now read gated (copyrighted) lyrics
+riding the HOST's own CCLI licence — personal `CcliNumber`, or a licence from any organisation they
+belong to — for the life of the session, the same way a Service Mode congregant rides their venue
+org's licence. Mechanically: joining now optionally mints a `tblServicePresence` row (an additive
+`POST` mode on `live_follow_join`, alongside the byte-identical legacy `GET`) and the client sets the
+SAME `ihymns_sf_presence_token` cookie Service Mode already uses. `serviceMode_presenceCcliNumber()`
+tries the org-anchored branch first (unchanged — Quick sessions have `OrgId` hardcoded `NULL` so it
+can never match one), then falls through to a host-licence branch. **Entirely dormant** behind
+`content_gating_enabled='0'` + needing `require_licence:ccli` restriction rows — a Quick session
+has no venue and therefore no physical proof-of-presence, so this trades a narrower binding
+(active + heartbeat-fresh + idle-fresh + a live-resolved licence, revoked instantly on
+leave/idle-close/host-restart) for the same licensing basis Service Mode already relies on; the
+owner accepted this basis explicitly (2026-08-05).
+
+**External presentation-app driver (req #4/#7).** A NEW `service_drive` API action lets an
+out-of-repo automation (a ProPresenter-class shim, a Companion webhook, a curl loop) drive a
+church's *Service Mode* session — advancing song and section — authenticated by a durable,
+org-scoped `tblServiceDriverKeys` credential instead of a login. An org-admin mints/lists/revokes
+keys from a **"Presentation-app control"** card on `/manage/service-projection` (Label + optional
+venue narrowing + protocol). The write path is the SAME `serviceMode_applyBroadcast()` core
+`service_broadcast` already uses — `service_drive` is simply its second caller, never a fork. A
+free-text section label ("Verse 2", "Chorus", a bare "2") resolves against the song's own
+render-order arrangement; an unresolvable one falls back to song-level broadcast, never a guess.
+`songRef` (free-text title resolution, for a shim that doesn't know iHymns SongIds) is deliberately
+**not yet supported** — the endpoint answers `422` so a shim fails loud; a ProPresenter-specific
+protocol shim is tracked as a separate spike, out of this issue's scope.
+
+**QR deep link (`?svc_code=`).** Both the Service-Projection join QR (#1339, live since before
+#1770) and the Quick host's own "Show code" view now point at `/?svc_code=<CODE>` — and, as of
+#1770, that param actually gets READ: `service-follow.js`'s boot sequence checks for it, validates
+the code with the same fold a typed one goes through, and opens a **one-tap confirm** prompt (never
+an automatic join — a link preview or accidental tap must not silently drop someone into a live
+session). Before #1770 the projection QR emitted a param nothing in the tree read — the classic
+"deep link with no destination" failure (rule #33), invisible because the page still opened and
+looked fine, it just never did the one useful thing.
 
 ---
 
@@ -95,4 +172,4 @@ Four App Shortcuts / Siri phrases are wired up (`IHymnsAppShortcuts.swift`):
 
 - [[Troubleshooting & FAQ]] — the condensed, user-facing symptom list
 - [[PWA Features]] — where this sits among the rest of the web app's features
-- Issues: [#1268](https://github.com/MWBMPartners/iHymns/issues/1268) (Live Follow), [#1323](https://github.com/MWBMPartners/iHymns/issues/1323) / [#1335](https://github.com/MWBMPartners/iHymns/issues/1335) (Service Mode), [#1576](https://github.com/MWBMPartners/iHymns/issues/1576) (known bug — an ad-hoc service started in the evening can be born already expired; not fixed as of this writing)
+- Issues: [#1268](https://github.com/MWBMPartners/iHymns/issues/1268) (Live Follow), [#1323](https://github.com/MWBMPartners/iHymns/issues/1323) / [#1335](https://github.com/MWBMPartners/iHymns/issues/1335) (Service Mode), [#1576](https://github.com/MWBMPartners/iHymns/issues/1576) (known bug — an ad-hoc service started in the evening can be born already expired; not fixed as of this writing), [#1770](https://github.com/MWBMPartners/iHymns/issues/1770) (persistent host bar, leader-idle auto-close, host-CCLI unlock, external presentation-app driver), [#1339](https://github.com/MWBMPartners/iHymns/issues/1339) / [#1792](https://github.com/MWBMPartners/iHymns/issues/1792) (the still-outstanding live two-device verify — needs two real devices on one channel, never yet executed)

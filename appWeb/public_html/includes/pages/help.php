@@ -560,24 +560,35 @@ declare(strict_types=1);
                         <li>Tap <strong>Go Live</strong> in the song's button row — you'll get a
                             six-character code (this one doesn't change).</li>
                         <li>Share it; then open songs as normal — everyone following switches with
-                            you.</li>
+                            you. A red <strong>LIVE</strong> bar now stays pinned to the bottom of
+                            every page while you're hosting — not just the song page — so you can
+                            browse the app freely without losing your session.</li>
+                        <li>The bar's <strong>Show code</strong> button displays a large code + QR
+                            for a phone to scan; <strong>Console</strong> opens an optional panel to
+                            pick a song and jump between verses/chorus without leaving the page
+                            you're on.</li>
                         <li>Tap <strong>End</strong> when done.</li>
                     </ol>
 
                     <h3 class="h6 mt-3">To follow</h3>
                     <ol class="mb-3">
                         <li>Tap <strong>Join Live</strong> on any song page (or <strong>Join a live
-                            service</strong> on the home page — it accepts either kind of code).</li>
+                            service</strong> on the home page — it accepts either kind of code), or
+                            scan the leader's QR — you'll be asked to confirm before joining.</li>
                         <li>Enter the code — capitals, spaces and dashes don't matter.</li>
                         <li>A blue <strong>Following &hellip; live</strong> bar appears; tap
                             <strong>Leave</strong> to stop.</li>
                     </ol>
 
                     <p class="small text-muted mb-0">
-                        Keep the leader's screen awake &mdash; if it sleeps for more than a few
-                        minutes the session pauses and followers may need to re-join. Everyone must
-                        be on the same iHymns site address. Signing out, or going live again (which
-                        makes a new code), ends the previous session.
+                        A session auto-closes after a stretch of genuine inactivity from the leader
+                        (having the app merely open doesn't count) — change how long under
+                        <a href="/settings">Settings</a>, or a church admin can set an organisation-wide
+                        value under Organisations. Keep the leader's screen awake all the same
+                        &mdash; if it sleeps for more than a few minutes the session pauses and
+                        followers may need to re-join. Everyone must be on the same iHymns site
+                        address. Signing out, or going live again (which makes a new code), ends the
+                        previous session.
                     </p>
                 </div>
             </div>

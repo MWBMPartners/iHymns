@@ -4,6 +4,53 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-10 (supersedes the 08-03 note below for #1770 status)
+
+**#1770 (Live Follow UX rework, Option A) — C5-C8 BUILT, on branch `claude/issue-sweep-fixes-89`,
+NOT YET PUSHED (stopped for review per the build-pass brief).** C1-C4 (dormant schema + server
+resolution/broadcast-core logic) had already landed on this branch; this pass added the client +
+the two deferred admin UI surfaces + six mutation-proven guards + docs, per
+`.claude/live-follow-1770-plan.md`:
+
+- **Client (C5)** — `js/utils/presence-identity.js` (device id + presence-cookie set/clear,
+  extracted from `service-follow.js`, now shared by both followers); `live-follow.js` gained a
+  fixed persistent HOST bar (rule #32 shape, wired from `router.js afterPageLoad()` on every
+  navigation), passive leader-activity tracking feeding the heartbeat's `leaderActive` flag, and
+  the presence-minting `_doJoin()` POST upgrade.
+- **Admin UI (C5-UI)** — idle-timeout fields on `/manage/configuration` (app default),
+  `/manage/organisations` + `/manage/my-organisations` (org override/lock, column-existence-gated),
+  and `/settings` (personal preference, an intentionally UNPREFIXED localStorage key —
+  `STORAGE_LIVE_IDLE_TIMEOUT_MINS` in `constants.js` — because it must equal the server's
+  `tblUsers.Settings` JSON root key verbatim); a "Presentation-app control" card on
+  `/manage/service-projection` (mint/list/revoke `tblServiceDriverKeys`).
+- **Optional client (C6)** — `js/modules/live-host-console.js` (reuses `ServiceBroadcaster` via a
+  transport adapter, never a fork); the "Show code" big-code+QR view (`/qr.php`-backed, rule #38);
+  `service-follow.js`'s `?svc_code=` deep-link reader (rule #33 — closes the standing emitter-with-
+  no-reader gap the projection QR had had since #1339).
+- **Guards (C7), all mutation-proven** (broke → red → restored → green, per rule #34):
+  `tests/php/test-live-session-channel.php` (G1, channel-wall presence across the 3 walled tables),
+  `tests/php/test-live-follow-idle.php` (G2, static + a live-DB resolver-precedence matrix),
+  `tests/php/test-live-follow-host-ccli.php` (G3, static + a live-DB dormancy check),
+  `tests/php/test-live-follow-broadcast-core.php` (G4, one-broadcaster-core), `tests/*.js` +
+  `tests/php/test-rate-limit-pairing.php` extended (G5, `service_drive`/`live_follow_poll` keying),
+  `tests/test-svc-code-contract.js` (G6, cross-language emitter/reader). Three now-genuinely-wired
+  `service_driver_key_*` actions were removed from `tests/php/fixtures/orphan-allowlist.php`
+  (self-cleaning, exactly as that file's own history documents).
+- **Docs (C8)** — `api-docs.yaml` (the `live_follow_join` POST/presence mode,
+  `idleTimeoutMins`/`leaderActive` fields), `help/live-follow.md` + the in-app help topic,
+  `wiki/Live-Follow-&-Service-Mode.md`, `CHANGELOG.md`, this note, and one-line pointers from
+  CLAUDE.md rule #26.
+
+**Suites: 135 PHP (131 + 4 new guard files) / 53 node (52 + 1 new guard file), all green.** Deferred/
+flagged, not silently skipped: the live two-device verify (#1339/#1792) is explicitly out of this
+build's scope per the brief (needs two real devices on one channel, never yet executed); the
+ProPresenter-specific protocol shim is its own tracked spike (plan §7/§10 S1), the generic
+`service_drive` contract ships instead. GitHub issue updates (closing sub-items, filing the S1 spike
+issue if not already filed) were NOT performed in this pass — flagged as a remaining standing-task
+item for whoever pushes/opens the PR.
+
+---
+
 ## 📌 Continuation note — 2026-08-03 (supersedes the 07-31 note below)
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)** (its
