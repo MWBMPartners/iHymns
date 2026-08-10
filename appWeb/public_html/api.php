@@ -18002,22 +18002,13 @@ if ($action !== null) {
                 }
             }
 
-            $upd = $db->prepare(
-                'UPDATE tblLiveFollowSessions
-                    SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
-                        StateRevision = StateRevision + 1, LastHeartbeatAt = UTC_TIMESTAMP()
-                  WHERE Id = ?'
-            );
-            $upd->bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId);
-            $upd->execute();
-            $upd->close();
-            $rev = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
-            $rev->bind_param('i', $sessionId);
-            $rev->execute();
-            $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
-            $rev->close();
-
-            liveActivitySessionPush($db, $sessionId, 'update');
+            /* #1770 C4 — the UPDATE + revision re-read + Live Activity push
+               is now the ONE shared core, serviceMode_applyBroadcast()
+               (includes/service_mode.php), so `service_drive` (below) writes
+               through the exact same path rather than a second copy (rule
+               #26 I4 / plan guard G4). Fixture-diffed byte-identical: same
+               SQL text, same statement order, same LastHeartbeatAt touch. */
+            $revision = serviceMode_applyBroadcast($db, $sessionId, $songId, $componentIndex, $stateJson);
 
             /* §3.2 — song-change only, never on a component-index-only nudge.
                'via' (#1408) is a fixed 'bearer'|'control_token' string —
@@ -18437,6 +18428,353 @@ if ($action !== null) {
             logActivity('service.control_token.revoke', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'channel' => $channel, 'revoked' => $revoked]);
 
             sendJson(['ok' => true, 'revoked' => $revoked]);
+            break;
+        }
+
+        /* =================================================================
+         * EXTERNAL PRESENTATION-APP DRIVER (#1770 C4, req #4/#7).
+         * `service_drive` is the stable internal contract any automation
+         * (ProPresenter-class shim, a Companion webhook, a curl loop) can
+         * drive a church's Service-Mode session through, authenticated by a
+         * durable org-scoped `tblServiceDriverKeys` credential rather than a
+         * login. `service_driver_key_{mint,revoke,list}` are the lifecycle
+         * endpoints an org-admin uses to provision/retire those credentials.
+         * All FOUR are table-existence-gated (503 un-migrated) — see
+         * includes/service_driver_keys.php's header for the full design.
+         * ================================================================= */
+        case 'service_drive': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+
+            /* 1. Pre-auth per-IP probe cap — mirrors service_broadcast_probe
+               (api.php, #1408): auth cannot be resolved until AFTER the raw
+               key is hashed and looked up, so an unauthenticated/probing
+               caller must still be capped before that lookup runs. Per-IP is
+               the correct class here (I2) — this is a machine/driver
+               endpoint, never a congregant path; a real driver posts once
+               per slide change, nowhere near 300/min. */
+            $driveProbeIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_drive_probe', $driveProbeIp, 300, 60, true, null);
+            recordRateLimitHit('service_drive_probe', $driveProbeIp);
+
+            $db = getDbMysqli();
+            if (!serviceDriverKeysTableExists($db)) {
+                sendJson(['error' => 'Driver keys are not available yet.'], 503); break;
+            }
+
+            /* 2. Auth — Authorization: Bearer <key> or X-API-Key: <key>
+               (apiKeyFromRequest() — the shared header parser, reused rather
+               than re-parsed). */
+            $rawKey = apiKeyFromRequest();
+            if ($rawKey === null) {
+                http_response_code(401);
+                header('WWW-Authenticate: Bearer realm="iHymns Service Drive"');
+                sendJson(['error' => 'Missing driver key. Send "Authorization: Bearer <key>" or "X-API-Key: <key>".'], 401);
+                break;
+            }
+            $driverKey = serviceDriverKeyVerify($db, $rawKey);
+            if ($driverKey === null) {
+                http_response_code(401);
+                header('WWW-Authenticate: Bearer realm="iHymns Service Drive"');
+                sendJson(['error' => 'Invalid or revoked driver key.'], 401);
+                break;
+            }
+
+            /* 3. Rate limit PER KEY (I2 — never per-IP for an authenticated
+               machine caller; #1492's "bucket on a HASH of the credential,
+               never the raw value" discipline). 600/min is generous for a
+               genuine slide-by-slide driver. */
+            $driveKeyBucket = 'drvkey:' . substr(hash('sha256', $rawKey), 0, 24);
+            checkRateLimit('service_drive', $driveKeyBucket, 600, 60, true, null);
+            recordRateLimitHit('service_drive', $driveKeyBucket);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* songRef (free-text title resolution) is EXPLICITLY DEFERRED to
+               the ProPresenter protocol spike (plan §7/§10 S1) — answer 422
+               so a shim fails LOUD, never silently. Checked before anything
+               else so a shim relying on it finds out immediately. */
+            if (isset($body['songRef']) && is_string($body['songRef']) && trim($body['songRef']) !== '') {
+                sendJson(['error' => 'songRef not supported yet', 'code' => 'song_ref_unsupported'], 422); break;
+            }
+
+            $channel = serviceMode_channel();
+            $sessionIdIn = (int)($body['sessionId'] ?? 0);
+            $venueIdIn   = (int)($body['venueId'] ?? 0);
+
+            /* 4. Session resolution — EVERY query below is channel-filtered
+               AND scoped to the KEY'S OWN organisation (rule #26): a driver
+               key can never resolve, let alone drive, a session belonging
+               to another org, even on the same channel. This is what makes
+               a shim config STATIC — it names a session or a venue, never
+               "any session anywhere". */
+            if ($sessionIdIn > 0) {
+                $sstmt = $db->prepare(
+                    "SELECT Id, CurrentSongId FROM tblLiveFollowSessions
+                      WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1
+                        AND OrgId = ?" . ($driverKey['VenueId'] !== null ? ' AND VenueId = ?' : '')
+                );
+                if ($driverKey['VenueId'] !== null) {
+                    $sstmt->bind_param('isii', $sessionIdIn, $channel, $driverKey['OrgId'], $driverKey['VenueId']);
+                } else {
+                    $sstmt->bind_param('isi', $sessionIdIn, $channel, $driverKey['OrgId']);
+                }
+            } else {
+                $targetVenueId = $venueIdIn > 0 ? $venueIdIn : $driverKey['VenueId'];
+                if (!$targetVenueId) {
+                    sendJson(['error' => 'No venue.'], 404); break;
+                }
+                /* "Freshest active" — a shim names a VENUE, never a session,
+                   so it must resolve to whichever service is CURRENTLY
+                   running there (the same heartbeat-freshness window every
+                   other live-session resolver in this file uses). */
+                $driveFreshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
+                $sstmt = $db->prepare(
+                    "SELECT Id, CurrentSongId FROM tblLiveFollowSessions
+                      WHERE SessionKind = 'service' AND Channel = ? AND IsActive = 1
+                        AND OrgId = ? AND VenueId = ?
+                        AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$driveFreshness} SECOND)
+                      ORDER BY LastHeartbeatAt DESC LIMIT 1"
+                );
+                $sstmt->bind_param('sii', $channel, $driverKey['OrgId'], $targetVenueId);
+            }
+            $sstmt->execute();
+            $driveSess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$driveSess) {
+                /* ONE opaque message for wrong-org/wrong-venue/no-session/
+                   ended (I6 — never a code-existence oracle, plan §11
+                   landmine 6). */
+                logActivity('service.broadcast.song', 'organisation', (string)$driverKey['OrgId'], ['reason' => 'unknown_or_ended', 'via' => 'driver_key'], 'failure');
+                sendJson(['error' => 'Unknown or ended session.'], 404); break;
+            }
+            $driveSessionId = (int)$driveSess['Id'];
+
+            /* 5. Payload. `songId` absent/omitted → keep the session's
+               CURRENT song (a driver adjusting only the section shouldn't
+               have to repeat songId on every call — deliberately more
+               forgiving than service_broadcast's console, which always
+               tracks + resends full context). A PRESENT-but-invalid songId
+               is still rejected the same way service_broadcast rejects one
+               (#1694/#1765 visibility + servability). */
+            $driveSongId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : '';
+            if ($driveSongId === '') {
+                $effectiveSongId = $driveSess['CurrentSongId'] !== null ? (string)$driveSess['CurrentSongId'] : null;
+            } else {
+                $chkDrive = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . ' LIMIT 1');
+                $chkDrive->bind_param('s', $driveSongId);
+                $chkDrive->execute();
+                $driveSongOk = $chkDrive->get_result()->fetch_row() !== null;
+                $chkDrive->close();
+                if (!$driveSongOk) {
+                    logActivity('service.broadcast.song', 'organisation', (string)$driverKey['OrgId'], ['session_id' => $driveSessionId, 'reason' => 'unknown_song', 'via' => 'driver_key'], 'failure');
+                    sendJson(['error' => 'Unknown song.'], 400); break;
+                }
+                $effectiveSongId = $driveSongId;
+            }
+
+            /* sectionIndex (explicit) wins outright over sectionRef (a label
+               to resolve) when both are somehow sent. Neither given → the
+               componentIndex is left null (song-level — matches
+               ServiceBroadcaster's own "broadcast section 0/song-level on a
+               plain song pick" default). */
+            $driveComponentIndex = null;
+            $sectionResolved = null;
+            if (isset($body['sectionIndex']) && $body['sectionIndex'] !== null && is_numeric($body['sectionIndex'])) {
+                $driveComponentIndex = min(9999, max(0, (int)$body['sectionIndex']));
+                $sectionResolved = true;
+            } elseif (isset($body['sectionRef']) && is_string($body['sectionRef']) && trim($body['sectionRef']) !== '') {
+                $resolvedSection = ($effectiveSongId !== null)
+                    ? serviceMode_resolveSectionIndex($db, $effectiveSongId, (string)$body['sectionRef'])
+                    : null;
+                if ($resolvedSection !== null) {
+                    $driveComponentIndex = $resolvedSection;
+                    $sectionResolved = true;
+                } else {
+                    /* Unresolvable → null → song-level only (owner req #7 —
+                       never a guess). */
+                    $sectionResolved = false;
+                }
+            }
+
+            $driveStateJson = serviceMode_cleanState($body['state'] ?? null);
+
+            /* 6. Write — the ONE core, the SAME one the operator console
+               writes through (rule #26 I4 / guard G4). */
+            $driveRevision = serviceMode_applyBroadcast($db, $driveSessionId, $effectiveSongId, $driveComponentIndex, $driveStateJson);
+
+            /* 7. Breadcrumb — mirrors service_broadcast's own "song-change
+               only" condition, extending the existing 'via' vocabulary
+               (#1408's 'bearer'|'control_token', now +'driver_key'). */
+            if ($driveSongId !== '' && (string)($driveSess['CurrentSongId'] ?? '') !== $driveSongId) {
+                logActivity('service.broadcast.song', 'organisation', (string)$driverKey['OrgId'], [
+                    'session_id' => $driveSessionId,
+                    'song_id'    => $driveSongId,
+                    'channel'    => $channel,
+                    'via'        => 'driver_key',
+                ]);
+            }
+
+            sendJson(['ok' => true, 'sessionId' => $driveSessionId, 'revision' => $driveRevision, 'sectionResolved' => $sectionResolved]);
+            break;
+        }
+
+        case 'service_driver_key_mint': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — belt-and-braces on this state-changing,
+               credential-minting endpoint, same as service_control_token_mint. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403); break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+
+            $db = getDbMysqli();
+            if (!serviceDriverKeysTableExists($db)) {
+                sendJson(['error' => 'Driver keys are not available yet.'], 503); break;
+            }
+
+            $mintIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_driver_key_mint', $mintIp, SERVICE_DRIVER_KEY_MINT_LIMIT_PER_HOUR, 3600, true, $userId);
+            recordRateLimitHit('service_driver_key_mint', rateLimitKey($mintIp, $userId));
+
+            $mintOrgId = (int)($body['orgId'] ?? 0);
+            $mintLabel = trim((string)($body['label'] ?? ''));
+            $mintProtocol = (string)($body['protocol'] ?? 'generic');
+            $mintVenueId = isset($body['venueId']) && (int)$body['venueId'] > 0 ? (int)$body['venueId'] : null;
+            if ($mintOrgId <= 0 || $mintLabel === '') { sendJson(['error' => 'Missing organisation or label.'], 400); break; }
+
+            /* Auth = admin/global_admin OR org-admin of the TARGET org — the
+               same gate shape as service_session_start (api.php:17438-17443). */
+            $mintCanOperate = ($role === 'global_admin' || $role === 'admin')
+                || in_array($mintOrgId, userIsOrgAdminOf($userId), true);
+            if (!$mintCanOperate) {
+                logActivity('service.driver_key.mint', 'organisation', (string)$mintOrgId, ['reason' => 'not_authorised'], 'failure');
+                sendJson(['error' => 'Not authorised for this organisation.'], 403); break;
+            }
+
+            /* Optional venue must belong to the same org (never let a key
+               claim a narrowing to another org's venue). */
+            if ($mintVenueId !== null) {
+                $vchk = $db->prepare('SELECT 1 FROM tblOrgVenues WHERE Id = ? AND OrgId = ? LIMIT 1');
+                $vchk->bind_param('ii', $mintVenueId, $mintOrgId);
+                $vchk->execute();
+                $vOk = $vchk->get_result()->fetch_row() !== null;
+                $vchk->close();
+                if (!$vOk) { sendJson(['error' => 'Unknown venue for this organisation.'], 400); break; }
+            }
+
+            $minted = serviceDriverKeyMint($db, $mintOrgId, $mintVenueId, $mintLabel, $mintProtocol, $userId);
+            if ($minted === null) {
+                sendJson(['error' => 'Could not mint a driver key, please retry.'], 503); break;
+            }
+
+            /* §3.2 breadcrumb — IDs + prefix only, NEVER the raw key. */
+            logActivity('service.driver_key.mint', 'organisation', (string)$mintOrgId, ['key_id' => $minted['id'], 'venue_id' => $mintVenueId]);
+
+            sendJson(['ok' => true, 'key' => $minted['raw'], 'id' => $minted['id'], 'prefix' => $minted['prefix']]);
+            break;
+        }
+
+        case 'service_driver_key_revoke': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403); break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+
+            $db = getDbMysqli();
+            if (!serviceDriverKeysTableExists($db)) {
+                sendJson(['error' => 'Driver keys are not available yet.'], 503); break;
+            }
+
+            $revokeIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_driver_key_revoke', $revokeIp, 60, 3600, true, $userId);
+            recordRateLimitHit('service_driver_key_revoke', rateLimitKey($revokeIp, $userId));
+
+            $revokeKeyId = (int)($body['id'] ?? 0);
+            $revokeOrgId = (int)($body['orgId'] ?? 0);
+            if ($revokeKeyId <= 0 || $revokeOrgId <= 0) { sendJson(['error' => 'Missing key or organisation.'], 400); break; }
+
+            $revokeCanOperate = ($role === 'global_admin' || $role === 'admin')
+                || in_array($revokeOrgId, userIsOrgAdminOf($userId), true);
+            if (!$revokeCanOperate) {
+                logActivity('service.driver_key.revoke', 'organisation', (string)$revokeOrgId, ['key_id' => $revokeKeyId, 'reason' => 'not_authorised'], 'failure');
+                sendJson(['error' => 'Not authorised for this organisation.'], 403); break;
+            }
+
+            $revokedOk = serviceDriverKeyRevoke($db, $revokeKeyId, $revokeOrgId);
+            logActivity('service.driver_key.revoke', 'organisation', (string)$revokeOrgId, ['key_id' => $revokeKeyId, 'revoked' => $revokedOk]);
+
+            sendJson(['ok' => true, 'revoked' => $revokedOk]);
+            break;
+        }
+
+        case 'service_driver_key_list': {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+
+            $db = getDbMysqli();
+            if (!serviceDriverKeysTableExists($db)) {
+                sendJson(['ok' => true, 'keys' => []]); break; /* dormant → empty list, not an error, for a read */
+            }
+
+            $listOrgId = (int)($_GET['orgId'] ?? 0);
+            if ($listOrgId <= 0) { sendJson(['error' => 'Missing organisation.'], 400); break; }
+
+            $listCanOperate = ($role === 'global_admin' || $role === 'admin')
+                || in_array($listOrgId, userIsOrgAdminOf($userId), true);
+            if (!$listCanOperate) { sendJson(['error' => 'Not authorised for this organisation.'], 403); break; }
+
+            $rows = serviceDriverKeyList($db, $listOrgId);
+            $keys = array_map(static function (array $r): array {
+                return [
+                    'id'         => (int)$r['Id'],
+                    'venueId'    => $r['VenueId'] !== null ? (int)$r['VenueId'] : null,
+                    'prefix'     => (string)$r['KeyPrefix'],
+                    'label'      => (string)$r['Label'],
+                    'scope'      => (string)$r['Scope'],
+                    'protocol'   => (string)$r['Protocol'],
+                    'active'     => (int)$r['IsActive'] === 1 && $r['RevokedAt'] === null,
+                    'expiresAt'  => $r['ExpiresAt'],
+                    'revokedAt'  => $r['RevokedAt'],
+                    'lastUsedAt' => $r['LastUsedAt'],
+                    'createdAt'  => $r['CreatedAt'],
+                ];
+            }, $rows);
+
+            sendJson(['ok' => true, 'keys' => $keys]);
             break;
         }
 

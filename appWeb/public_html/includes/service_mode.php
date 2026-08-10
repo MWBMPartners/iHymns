@@ -1500,3 +1500,281 @@ function serviceMode_pruneIdleQuickSessions(\mysqli $db, string $channel): int
         return 0;
     }
 }
+
+/* =============================================================================
+ * #1770 C4 — ONE broadcast core + server-side section resolution (req #4/#7).
+ * =============================================================================
+ * ELI5: whatever tells iHymns "show THIS song, at THIS point" — the
+ * Service-Projection console, a co-leader's phone, or now an external
+ * presentation-app driver hitting `service_drive` — needs to write the SAME
+ * three columns the SAME way every time, or two of those writers could
+ * quietly disagree about what "broadcasting" means. This section pulls that
+ * ONE write out of `service_broadcast` into a function so every future
+ * writer calls it instead of copying it (rule #26 I4 / CLAUDE.md modularity
+ * rule; plan guard G4 tree-derives every writer of these two columns and
+ * asserts the set never grows beyond this core + `live_follow_update`'s own,
+ * deliberately-separate, code-scoped writer).
+ *
+ * @see .claude/live-follow-1770-plan.md §4.4
+ * ============================================================================= */
+
+/**
+ * THE ONE broadcast write. Sets `CurrentSongId` / `CurrentComponentIndex` /
+ * `StateJson`, bumps `StateRevision`, touches `LastHeartbeatAt` (a broadcast
+ * IS the operator's heartbeat — no separate beat needed the same instant),
+ * pushes a Live Activity 'update', and returns the POST-write revision.
+ *
+ * Extracted verbatim from `service_broadcast` (api.php) — same SQL text,
+ * same statement order — so the extraction is a fixture-diffed no-op for
+ * every existing caller; `service_drive` (§4.5) is simply the SECOND caller.
+ *
+ * DELIBERATELY NOT the same function `live_follow_update` uses: that
+ * endpoint's WHERE is `SessionCode + HostUserId` (not a bare `Id`) and it
+ * ALSO rolls `ExpiresAt` — folding it in would change semantics for a
+ * different session KIND. Noted as a possible future convergence, not
+ * forced here (plan §4.4).
+ *
+ * @param \mysqli     $db
+ * @param int         $sessionId
+ * @param string|null $songId
+ * @param int|null    $componentIndex
+ * @param string|null $stateJson Pre-cleaned via serviceMode_cleanState() —
+ *                                this function does NOT re-validate it.
+ * @return int The StateRevision AFTER this write.
+ */
+function serviceMode_applyBroadcast(\mysqli $db, int $sessionId, ?string $songId, ?int $componentIndex, ?string $stateJson): int
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'live_activity_push.php';
+
+    $upd = $db->prepare(
+        'UPDATE tblLiveFollowSessions
+            SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                StateRevision = StateRevision + 1, LastHeartbeatAt = UTC_TIMESTAMP()
+          WHERE Id = ?'
+    );
+    $upd->bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId);
+    $upd->execute();
+    $upd->close();
+
+    $rev = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+    $rev->bind_param('i', $sessionId);
+    $rev->execute();
+    $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
+    $rev->close();
+
+    if (function_exists('liveActivitySessionPush')) {
+        liveActivitySessionPush($db, $sessionId, 'update');
+    }
+    return $revision;
+}
+
+/**
+ * #1770 — the closed section-label vocabulary `serviceMode_resolveSectionIndex()`
+ * folds a free-text driver label through. VARCHAR-style app vocab (rule #20 —
+ * a growable list, never an ENUM); every value here is a member of the SAME
+ * component-type vocabulary the editor/importers already use
+ * (`_BULK_IMPORT_IHYMNS_COMPONENT_TYPES`, includes/song_importers.php) so a
+ * type this map resolves to always matches a real stored component `type`.
+ * Single-letter aliases mirror the importers' own free-text parsers
+ * (includes/song_importers.php's `_bulkImport_componentTypeFor`-family
+ * helpers) rather than inventing a third shorthand convention.
+ */
+const SERVICE_MODE_SECTION_LABEL_MAP = [
+    'v' => 'verse',       'verse'     => 'verse',
+    'c' => 'chorus',      'chorus'    => 'chorus',
+    'r' => 'refrain',     'refrain'   => 'refrain',
+    'interlude'           => 'refrain',
+    'vamp'                => 'refrain',
+    'b' => 'bridge',      'bridge'    => 'bridge',
+    'i' => 'intro',       'intro'     => 'intro',
+    'o' => 'outro',       'outro'     => 'outro',
+    't' => 'outro',       'tag'       => 'outro',
+    'ending'              => 'outro', 'coda' => 'outro',
+    'p' => 'pre-chorus',  'prechorus' => 'pre-chorus', 'pre-chorus' => 'pre-chorus',
+];
+
+/**
+ * #1770 — memoised probe: does `tblSongs.ArrangementJson` (#892) exist on
+ * THIS install? Mirrors `SongData::_hasArrangementColumn()`'s pattern
+ * (private to that class — this is the standalone equivalent for
+ * `service_mode.php`, which has no SongData instance to hand).
+ */
+function serviceMode_songsArrangementColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongs'
+                AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Project a song's components into RENDER order — the SAME order
+ * `song.php` renders `.lyric-component` and `js/modules/service-broadcast.js`'s
+ * `_projectSections()` computes client-side (#160 arrangement-aware
+ * rendering): when `tblSongs.ArrangementJson` (#892) is present and
+ * non-empty, render order = `arrangement.map(i => components[i])`,
+ * dropping any out-of-range ordinal; otherwise the raw component order.
+ * Column-existence-gated + fully wrapped — any failure degrades to the raw
+ * (un-arranged) component order rather than throwing, since an
+ * unresolvable section reference is meant to fall back to song-level only
+ * (owner req #7), never to break the broadcast.
+ *
+ * @param array<int, array<string,mixed>> $components From
+ *        lyricLinesAssembleComponents() — raw component order.
+ * @return array<int, array<string,mixed>> Render-order-projected components.
+ */
+function serviceMode_projectArrangement(\mysqli $db, string $songId, array $components): array
+{
+    if (!$components || !serviceMode_songsArrangementColumnExists($db)) {
+        return $components;
+    }
+    try {
+        /* @disabled-visible: broadcaster gate-elsewhere exemption (#1765) —
+           this is a metadata lookup (the running order) for a SongId the
+           CALLER has already resolved + visibility/servability-checked via
+           songVisibleSql()/songServableSql() before it was ever accepted
+           into a broadcast (service_broadcast / service_drive both do this
+           up front). A disabled/hidden song can never reach this line in
+           the first place, so re-applying the predicate here would only add
+           a redundant query, not change any outcome.
+           @deleted-visible: same reasoning, one predicate over (#1694) — the
+           same up-front songVisibleSql()/songServableSql() check the
+           broadcaster gate already ran also excludes soft-deleted songs, so
+           a deleted SongId can no more reach this lookup than a
+           disabled-songbook one can. */
+        $stmt = $db->prepare('SELECT ArrangementJson FROM tblSongs WHERE SongId = ?');
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $raw = $row['ArrangementJson'] ?? null;
+        if ($raw === null || $raw === '') {
+            return $components;
+        }
+        $decoded = is_array($raw) ? $raw : json_decode((string)$raw, true);
+        if (!is_array($decoded) || !$decoded) {
+            return $components;
+        }
+        $projected = [];
+        foreach ($decoded as $ord) {
+            if (!is_int($ord) && !(is_string($ord) && ctype_digit($ord))) {
+                continue;
+            }
+            $idx = (int)$ord;
+            if (isset($components[$idx])) {
+                $projected[] = $components[$idx];
+            }
+        }
+        /* An arrangement that resolves to NOTHING (every ordinal out of
+           range — e.g. stale after a component delete) falls back to the
+           raw order rather than handing the caller an empty list. */
+        return $projected ?: $components;
+    } catch (\Throwable $_e) {
+        return $components;
+    }
+}
+
+/**
+ * #1770 §4.4 (req #7) — resolve an external driver's free-text section
+ * label ("Verse 2" / "V2" / "Chorus" / "C" / "Bridge" / a bare "2") to the
+ * 0-based RENDER-ORDER index the congregant client already scrolls to
+ * (`service-follow.js`'s `_scrollToComponent`, nth-child over
+ * `.lyric-component`) — i.e. exactly what `componentIndex` means everywhere
+ * else in this file.
+ *
+ * ELI5: a presentation-app operator says "Verse 2" out loud (or a shim
+ * sends that string) — this works out WHICH numbered slot on the
+ * congregant's screen that actually is, accounting for the song's own
+ * custom running order.
+ *
+ * PARSING (documented default, since the plan intentionally left this
+ * underspecified — see the caller's own doc-block for the flagged
+ * assumption): `/^([a-zA-Z\-]*)\s*(\d*)\s*$/` splits a leading word from a
+ * trailing number. A BARE number ("2", no word) defaults to type
+ * `'verse'` — the common case for a plain numbered slide deck and the same
+ * default the free-text bulk importer already uses
+ * (`song_importers.php`'s numbered-line parser, ~:3613). An unrecognised
+ * word (fails `SERVICE_MODE_SECTION_LABEL_MAP`) is UNRESOLVABLE → null, per
+ * owner req #7's "song-level stays the fallback" — never a guess.
+ *
+ * NUMBER MATCHING, in order: (1) an EXACT match against the component's own
+ * stored `number` field; (2) failing that, the Nth (1-based) occurrence of
+ * that TYPE in render order — because not every import populates `number`
+ * consistently (a song with one unnumbered chorus commonly stores
+ * `number = 0`), so a driver saying "Chorus 1" must still resolve against a
+ * song whose only chorus is stored as `number = 0`. No number at all →
+ * the FIRST occurrence of that type.
+ *
+ * @param \mysqli $db
+ * @param string  $songId
+ * @param string  $sectionRef Free-text label from the driver payload.
+ * @return int|null 0-based render-order index, or null when unresolvable
+ *                   (the caller applies song-level only — owner req #7).
+ */
+function serviceMode_resolveSectionIndex(\mysqli $db, string $songId, string $sectionRef): ?int
+{
+    $songId     = trim($songId);
+    $sectionRef = trim($sectionRef);
+    if ($songId === '' || $sectionRef === '') {
+        return null;
+    }
+    if (!preg_match('/^([a-zA-Z\-]*)\s*(\d*)\s*$/', $sectionRef, $m)) {
+        return null;
+    }
+    $word = strtolower(trim($m[1]));
+    $num  = ($m[2] !== '') ? (int)$m[2] : null;
+    if ($word === '') {
+        $word = 'verse'; /* documented default — see doc-block above */
+    }
+    $type = SERVICE_MODE_SECTION_LABEL_MAP[$word] ?? null;
+    if ($type === null) {
+        return null; /* unrecognised label — unresolvable, not a guess */
+    }
+
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    try {
+        $components = lyricLinesAssembleComponents($db, $songId);
+    } catch (\Throwable $_e) {
+        return null;
+    }
+    if (!$components) {
+        return null;
+    }
+    $ordered = serviceMode_projectArrangement($db, $songId, $components);
+
+    $ofType = [];
+    foreach ($ordered as $idx => $c) {
+        if ((string)($c['type'] ?? '') === $type) {
+            $ofType[] = ['idx' => (int)$idx, 'number' => (int)($c['number'] ?? 0)];
+        }
+    }
+    if (!$ofType) {
+        return null;
+    }
+    if ($num === null) {
+        return $ofType[0]['idx'];
+    }
+    foreach ($ofType as $entry) {
+        if ($entry['number'] === $num) {
+            return $entry['idx'];
+        }
+    }
+    if ($num >= 1 && $num <= count($ofType)) {
+        return $ofType[$num - 1]['idx'];
+    }
+    return null;
+}
