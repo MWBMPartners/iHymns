@@ -4,6 +4,51 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-10 (later still — #1786 admin sortable-headers sweep + #1799 fix, BUILD pass done, NOT YET PUSHED)
+
+**#1786 (admin adoption sweep of the shared multi-column sortable-table module) + #1799 (two broken
+pages) — BUILT, on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped after sweep + guard +
+docs per the build-pass brief; PR/issue bookkeeping is the orchestrator's job).** Module core already
+landed as #1786 core (`js/modules/admin-table-sort.js`, commit `3d2d772f`); this pass was the
+**admin-only** adoption sweep (the public app has no data `<table>`s, so it was out of scope by design).
+
+- **Tree-derived audit found more than #1799 described.** #1799 named two broken pages
+  (`musicians.php` / `musicians-bulk-promote.php`, tagged `mus-sortable` — a class the module's
+  default selector never matches). Deriving the real page list from `grep -rlE '<table'
+  manage/*.php` (rule #34) instead of trusting the existing `cp-sortable` tag turned up **twelve
+  more** pages (activity-log, ccli-report, data-health, languages, missing-numbers, notifications,
+  publishers, requests, revisions, tags, tunes, works) that were tagged `cp-sortable` correctly but
+  **never loaded `admin-table-sort.js` at all** — no `<script type="module">` import anywhere on the
+  page. Same silent-no-op shape as #1799, just not caught by name. All twelve now boot the module.
+- **Full column coverage.** Completed four partially-wired tables (feature-gating.php x2, groups.php,
+  licence-types.php, musician-duplicates.php) and fully wired five previously-bare pages (api-keys.php
+  — 3 tables, catalogues.php, entitlements.php, my-organisations.php — 2 tables, venues.php — 2
+  tables), plus two orphaned tables riding an existing page boot call (organisations.php's edit-view
+  Members list, tags.php's canonicalisation-suggestions list).
+- **#1799 fixed**: both tables retagged `mus-sortable` → `cp-sortable`, fully keyed, and
+  `musicians-bulk-promote.php` got its first-ever module import. Also fixed `musicians.php`'s row id
+  (`(int)$p['Id']` → `(int)($p['registry_id'] ?? 0)` — `'Id'` is never a key in that array; every row
+  silently collided on `id="mus-person-0"`).
+- **Two documented structural exceptions** rather than silent skips: my-organisations.php's Licences
+  table colspan-merges four columns into one inline-edit cell (only Type is positionally addressable);
+  songbooks.php's Order column holds a live `<input>` feeding the existing drag-to-reorder mechanism
+  (rule #6), not sortable text.
+- **New guard**: `tests/php/test-admin-tables-sortable.php` — tree-derived (glob minus a documented
+  `$PAGE_EXCLUSIONS` allow-list: index/diagnostics/schema-audit/setup-database/service-projection/
+  intapps-status/gating-noop-verify/analytics/duplicate-songs, each with a one-line reason), asserts
+  cp-sortable + module-boot + per-column `data-sort-key` coverage. Mutation-proven post-commit per rule
+  #34 (strip cp-sortable → red; drop a column key → red; add a brand-new unwired page → red; all
+  restored via `git checkout --`).
+- **Suites: 143 PHP (142 baseline + this session's new guard) / 53 node (unchanged — no JS touched),
+  all green** after every commit. Four atomic commits: the sweep (25 files), the #1799 fix (2 files),
+  the guard (1 new file), docs (this note + CHANGELOG.md).
+- **Flagged for the orchestrator, not guessed silently**: `service-projection.php`'s small connections
+  table (Label/Prefix/Venue/Protocol/Last used/Actions) looks like a genuine record list but was kept
+  on the pre-approved exclusion list as a live-operator-console widget — worth a second look if that
+  page grows more rows. GitHub issue updates for #1786/#1799 (closing, cross-linking the twelve extra
+  pages found) were **NOT** performed in this pass — that bookkeeping is the orchestrator's job per
+  the build-pass brief.
+
 ## 📌 Continuation note — 2026-08-10 (later same day — #1785 status; the #1770 note below is unrelated and still current for that epic)
 
 **#1785 (musician registry-vs-registry duplicate detection + easier merge UX) — C1-C10 ALL BUILT,
