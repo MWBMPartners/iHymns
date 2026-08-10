@@ -81,8 +81,15 @@ declare(strict_types=1);
  * public-page section builder. None of those are forks of the REGISTRY-
  * mutation concern this guard's sibling commits fixed; flagging them here
  * would be the guard-fires-on-correct-code failure rule #34 warns against.
- * This guard is deliberately scoped to the four files #1785 C4/C5 actually
- * rewrote — narrow, not blunt (rule #34's closing lesson).
+ * This guard is deliberately scoped to the SIX files that actually touch the
+ * registry-mutation concern — the original four #1785 C4/C5 rewrote, PLUS
+ * includes/musician_duplicates.php and manage/musician-duplicates.php,
+ * added by #1785 C6/C7 (the registry-duplicate scan + its review page) and
+ * folded into this guard's scan in C9 — narrow, not blunt (rule #34's
+ * closing lesson). C9 is also this guard's own mutation-proof AGAINST those
+ * two new files specifically (rule #34: a guard's first green run on a new
+ * surface is unproven until something is broken and shown red) — see the
+ * #1785 C9 commit body for the broken -> red -> restored record.
  *
  * ⚠️ DISCOVERED, NOT FIXED HERE: manage/editor/api2.php's `credit_search`
  * action ALSO carries a third, independent six-table map (`$kindToTable`,
@@ -170,15 +177,23 @@ echo "1 — no re-forked five/six-table list in the registry-mutation surface\n"
 $tableAlt = implode('|', MUS_CT_SL_TABLES);
 $subscriptOccurrence = "/\[\s*['\"](?:{$tableAlt})['\"]\s*\]/";
 
-/* Files #1785 C4/C5 actually rewrote onto MUSICIAN_CREDIT_ROLE_TABLES —
-   see the file doc-block's SCOPE NOTE for why this is deliberately not the
-   whole tree. Only musician_helpers.php is expected to carry a cluster —
-   its OWN declaration of the shared constant. */
+/* Files that touch the registry-mutation concern MUSICIAN_CREDIT_ROLE_
+   TABLES exists for — see the file doc-block's SCOPE NOTE for why this is
+   deliberately not the whole tree. Only musician_helpers.php is expected
+   to carry a cluster — its OWN declaration of the shared constant.
+   includes/musician_duplicates.php (#1785 C6) and manage/musician-
+   duplicates.php (#1785 C7) added in C9 — both legitimately reference the
+   six table names (a six-table union for use-counts; six activity-log
+   subscript reads mirroring musicians.php's own $logMusician payload
+   shape), so both must clear the SAME "no cluster" bar the original four
+   do. */
 $expectCluster = [
     'includes/musician_helpers.php'          => true,
     'api.php'                                => false,
     'manage/musicians.php'                   => false,
     'manage/musicians-bulk-promote.php'      => false,
+    'includes/musician_duplicates.php'       => false,
+    'manage/musician-duplicates.php'         => false,
 ];
 
 foreach ($expectCluster as $rel => $shouldCluster) {
