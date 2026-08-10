@@ -846,6 +846,37 @@ function serviceMode_orgLicencesTableExists(\mysqli $db): bool
 }
 
 /**
+ * #1770 C3 — memoised probe: does `tblServicePresence` exist on THIS install?
+ * Quick (host) live-follow already hard-depends on the SAME migration batch
+ * for `tblLiveFollowSessions.Channel` (the #1405 side-finding fix,
+ * api.php:17024) — this table shipped in that same #1335 Phase-2 batch (the
+ * plan's documented "prerequisite quirk") — but the presence-minting POST
+ * mode added here is new write traffic against it, so it gets its own
+ * explicit existence probe rather than assuming the prerequisite silently
+ * held. Mirrors serviceMode_orgLicencesTableExists() immediately above.
+ */
+function serviceMode_presenceTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblServicePresence' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * Phase 3 gate read (#1335): does this presence token entitle the holder to the
  * org's CCLI licence right now? Returns the org's CCLI LicenceNumber (a string;
  * may be '' if the org left it blank) when the token resolves to an ACTIVE,
@@ -896,6 +927,38 @@ function serviceMode_orgLicencesTableExists(\mysqli $db): bool
  * presence → session → organisation join. An un-Channel-filtered query here is
  * the cross-env leak class — a presence token minted on one docroot must never
  * unlock content on another.
+ *
+ * #1770 C3 (req #3/#6) — HOST-LICENCE BRANCH. When the org-anchored branch
+ * above finds no grant, a SECOND branch is tried: does the session's HOST
+ * (not the session's org — Quick sessions have `OrgId` hardcoded NULL at
+ * create, api.php:17019/17024, so the org branch's join can never match one
+ * in the first place) hold a qualifying CCLI licence of their OWN — a
+ * personal `CcliNumber`, or a licence from any organisation THEY belong to
+ * (ancestry-aware)? This is what lets a Quick "follow my song" leader's
+ * followers read gated lyrics with the CCL notice for the life of the
+ * session, exactly like a Service-Mode congregant rides their venue org's
+ * licence — reusing `getUserEffectiveLicences()` (includes/licences.php:228,
+ * already required at the top of this file) rather than growing a second
+ * licence resolver.
+ *
+ * ⚠️ LICENSING FLAG (recorded verbatim, owner-accepted 2026-08-05 per the
+ * #1770 analysis §444-459): a Quick session has NO venue and therefore no
+ * physical proof-of-presence — unlocking CCLI for anyone holding the join
+ * code may exceed the letter of some licences' terms. The owner accepted
+ * this basis; the mechanism binds as narrowly as the design allows: an
+ * ACTIVE, heartbeat-fresh, IDLE-FRESH host session, an actively-held
+ * (unexpired, un-revoked) presence token, live resolution of the host's
+ * licence set on EVERY call (no snapshot — a lapsed/removed licence stops
+ * unlocking mid-session), and revocation the instant the session ends
+ * (leave / idle-prune / create-supersede all revoke presence — #1770 C3,
+ * plan §11 landmine 4) or the follower leaves.
+ *
+ * ⚠️ Per plan §11 landmine 5: this HOST branch is deliberately SECOND and
+ * UNCHANGED-FIRST — the org branch above (and its `o.IsActive = 1` owner
+ * decision) is tried FIRST, exactly as before this commit, and the host
+ * branch runs ONLY when it finds nothing. Reordering these would risk a
+ * Quick host's OWN licence silently shadowing a legitimate Service-Mode org
+ * grant on some future shared code path.
  */
 function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
 {
@@ -983,20 +1046,77 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
-        if ($row === null) {
+        if ($row !== null) {
+            $number = (string)($row['LicenceNumber'] ?? '');
+            /* Apply the SAME format criterion as includes/licences.php
+               (#1668) — in PHP, via the shared helper, rather than as extra
+               SQL, so the CCLI format rule keeps living in exactly one place
+               (validateCcliNumber()). A blank number still grants (an
+               operator may legitimately leave the field empty and the row
+               itself is the declaration); a number that is PRESENT but
+               malformed does not. */
+            if (licenceCcliQualifies($number, false)) {
+                return $number;
+            }
+            /* Org row existed but failed the format check — fall through to
+               the #1770 C3 host branch below rather than returning null
+               immediately (a malformed org licence number should not hide a
+               perfectly good personal one). */
+        }
+
+        /* #1770 C3 — host-licence branch (req #3/#6). See this function's
+           doc-block for the full design + the licensing-flag note. Reached
+           when the org-anchored branch above found nothing (the common case
+           for a Quick session, whose OrgId is hardcoded NULL) or a
+           malformed org number. Resolves the session's HostUserId — same
+           presence-token validity window as the org branch, PLUS
+           SessionKind='host', PLUS the #1770 C2 idle-freshness predicate
+           (an idle-closed leader must stop unlocking content the same poll
+           cycle the session itself goes stale in). serviceMode_idleFreshSql()
+           is '' pre-#1770-C1-migration, so this predicate is a no-op on an
+           un-migrated install — never a false denial. */
+        $idleFreshSql = serviceMode_idleFreshSql($db, 's');
+        $hostStmt = $db->prepare(
+            "SELECT s.HostUserId
+               FROM tblServicePresence p
+               JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+              WHERE p.PresenceToken = ?
+                AND p.IsActive = 1
+                AND p.ExpiresAt > UTC_TIMESTAMP()
+                AND p.Channel = ?
+                AND s.SessionKind = 'host'
+                AND s.IsActive = 1
+                AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+                {$idleFreshSql}
+              LIMIT 1"
+        );
+        $hostStmt->bind_param('ss', $presenceToken, $channel);
+        $hostStmt->execute();
+        $hostRow = $hostStmt->get_result()->fetch_assoc();
+        $hostStmt->close();
+        if ($hostRow === null || $hostRow['HostUserId'] === null) {
             return null;
         }
-        $number = (string)($row['LicenceNumber'] ?? '');
-        /* Apply the SAME format criterion as includes/licences.php (#1668) —
-           in PHP, via the shared helper, rather than as extra SQL, so the CCLI
-           format rule keeps living in exactly one place (validateCcliNumber()).
-           A blank number still grants (an operator may legitimately leave the
-           field empty and the row itself is the declaration); a number that is
-           PRESENT but malformed does not. */
-        if (!licenceCcliQualifies($number, false)) {
-            return null;
+        $hostUserId = (int)$hostRow['HostUserId'];
+
+        /* getUserEffectiveLicences() unions personal + every org the host
+           belongs to (ancestry-aware) — includes/licences.php:228 already
+           implements the owner's "user account OR one of their
+           organisations" wording (analysis §444-459), so this is reuse, not
+           a second resolver. Every entry it returns has ALREADY passed
+           licenceCcliQualifies()/licenceOrgRowQualifies() internally; the
+           explicit re-check below is defence-in-depth, mirroring the
+           org-branch's own belt-and-braces re-check above. */
+        foreach (getUserEffectiveLicences($hostUserId) as $licence) {
+            if (($licence['type'] ?? '') !== 'ccli') {
+                continue;
+            }
+            $hostNumber = (string)($licence['key'] ?? '');
+            if (licenceCcliQualifies($hostNumber, false)) {
+                return $hostNumber;
+            }
         }
-        return $number;
+        return null;
     } catch (\Throwable $e) {
         /* Optional tables absent / probe failure → no grant (fail closed). */
         error_log('[service_mode/presenceCcli] ' . $e->getMessage());

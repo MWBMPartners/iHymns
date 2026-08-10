@@ -17083,7 +17083,25 @@ if ($action !== null) {
             $superseded = $deact->affected_rows > 0;
             $deact->close();
             if ($oldRow) {
-                liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+                $oldSessionId = (int)$oldRow['Id'];
+                /* #1770 C3 — a host restarting supersedes their own old
+                   session here; that old session's presence rows must be
+                   revoked too, or a follower who joined it keeps a live
+                   CCLI-unlock token until its own ExpiresAt (plan §11
+                   landmine 4 — the SAME instant-revocation shape as
+                   live_follow_leave and the idle prune, applied to the
+                   THIRD session-death path). Table-existence-gated + wrapped. */
+                if (serviceMode_presenceTableExists($db)) {
+                    try {
+                        $oldRevStmt = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+                        $oldRevStmt->bind_param('i', $oldSessionId);
+                        $oldRevStmt->execute();
+                        $oldRevStmt->close();
+                    } catch (\Throwable $_e) {
+                        error_log('[live_follow_create/supersede-presence] ' . $_e->getMessage());
+                    }
+                }
+                liveActivitySessionPush($db, $oldSessionId, 'end');
             }
 
             /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
@@ -17307,6 +17325,7 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
 
@@ -17331,8 +17350,27 @@ if ($action !== null) {
             $end->close();
 
             if ($endRow) {
-                logActivity('live.session.end', 'live_session', (string)$endRow['Id'], []);
-                liveActivitySessionPush($db, (int)$endRow['Id'], 'end');
+                $endSessionId = (int)$endRow['Id'];
+                /* #1770 C3 — instant gate revocation, the same shape as
+                   service_session_end's transaction (api.php:17608-17633)
+                   and the idle prune (service_mode.php). Every follower's
+                   presence dies the moment the HOST ends the session — this
+                   is the "session death" half of the leader-idle mitigation
+                   (plan §11 landmine 4: presence revocation on EVERY
+                   session-death path). Table-existence-gated + wrapped:
+                   never fails an otherwise-successful leave. */
+                if (serviceMode_presenceTableExists($db)) {
+                    try {
+                        $revStmt = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+                        $revStmt->bind_param('i', $endSessionId);
+                        $revStmt->execute();
+                        $revStmt->close();
+                    } catch (\Throwable $_e) {
+                        error_log('[live_follow_leave/presence] ' . $_e->getMessage());
+                    }
+                }
+                logActivity('live.session.end', 'live_session', (string)$endSessionId, []);
+                liveActivitySessionPush($db, $endSessionId, 'end');
             }
 
             sendJson(['ok' => true]);
@@ -17351,9 +17389,30 @@ if ($action !== null) {
                enumeration: the access control remains the session CODE, and a
                minted follow token only buckets the per-token poll rate limiter
                below (it is NOT an authorisation grant). NAT-safe model mirrors
-               service_join/service_poll (rule #26 / #1377). */
+               service_join/service_poll (rule #26 / #1377). Unchanged by
+               #1770 C3 — this is still the pre-token, correct rate-limit
+               class (I2). */
             checkRateLimit('live_follow_join', $liveIp, 120, 60, true);
             recordRateLimitHit('live_follow_join', $liveIp);
+
+            /* #1770 C3 — ADDITIVE POST mode (req #3/#6): a POST body carrying
+               a valid presenceDeviceId opts a follower into a
+               tblServicePresence row (below), which is what lets them ride
+               the session host's CCLI licence via
+               serviceMode_presenceCcliNumber()'s new host branch. Validated
+               EXACTLY like service_join's own presenceDeviceId handling
+               (api.php's `service_join` case). A GET request — every
+               existing client, forever, until the #1770 C5+ client ships —
+               never enters this branch, so the resolve query and response
+               below stay byte-identical for it. */
+            $isPresenceJoin = ($_SERVER['REQUEST_METHOD'] === 'POST');
+            $presenceDeviceId = '';
+            if ($isPresenceJoin) {
+                $joinBody = json_decode(file_get_contents('php://input'), true);
+                if (!is_array($joinBody)) { $joinBody = []; }
+                $presenceDeviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($joinBody['presenceDeviceId'] ?? ''));
+                $presenceDeviceId = mb_substr($presenceDeviceId, 0, 64);
+            }
 
             $db = getDbMysqli();
             /* #1405 side-finding fix (rule #26) — Channel filter added so an
@@ -17366,10 +17425,14 @@ if ($action !== null) {
             /* #1770 C2 — idle-expired sessions stop resolving here too (the
                same 404 anti-probe path below already covers "not found" and
                "expired", so an idle-closed host looks identical to an ended
-               one — I6). '' pre-migration, byte-identical SQL then. */
+               one — I6). '' pre-migration, byte-identical SQL then.
+               #1770 C3 — s.ExpiresAt added to the SELECT: it becomes the
+               minted presence row's own ExpiresAt below (mirrors
+               service_join's `$m['ExpiresAt']` read), unused by the
+               pre-existing response fields. */
             $idleFreshSql = serviceMode_idleFreshSql($db, 's');
             $stmt = $db->prepare(
-                'SELECT s.Id, s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
+                'SELECT s.Id, s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision, s.ExpiresAt,
                         u.DisplayName AS HostName
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
@@ -17397,12 +17460,63 @@ if ($action !== null) {
                of per shared NAT IP. The session CODE stays the access control. */
             $followToken = bin2hex(random_bytes(16));
 
-            logActivity('live.session.join', 'live_session', (string)$row['Id'], []);
+            /* #1770 C3 — mint (or re-activate, on a re-join) the presence
+               row ONLY when the caller opted in with a valid device id AND
+               the presence table exists (table-existence-gated — see
+               serviceMode_presenceTableExists()'s doc-block). Best-effort:
+               a presence-mint failure must never fail an otherwise-valid
+               join, so it is wrapped and simply leaves $presenceToken null
+               (the response then looks exactly like a pre-#1770-C3 GET
+               join). Upserts on the SAME `uq_DeviceSession (SessionId,
+               PresenceDeviceId)` shape service_join already uses, and
+               (like service_join) stamps `OrgId/VenueId/ScheduleId/
+               OccurrenceDate` as their column DEFAULT NULL — a Quick
+               session simply has none of those. */
+            $presenceToken = null;
+            if ($isPresenceJoin && $presenceDeviceId !== '' && serviceMode_presenceTableExists($db)) {
+                try {
+                    $sessionId    = (int)$row['Id'];
+                    $expiresAt    = (string)($row['ExpiresAt'] ?? '');
+                    $mintedToken  = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+                    if (serviceMode_presenceRoleColumnExists($db)) {
+                        $pIns = $db->prepare(
+                            "INSERT INTO tblServicePresence
+                                (SessionId, Channel, PresenceDeviceId, PresenceToken, Role, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                             VALUES (?, ?, ?, ?, 'congregant', UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                             ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken), Role = VALUES(Role),
+                                 LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                        );
+                    } else {
+                        $pIns = $db->prepare(
+                            "INSERT INTO tblServicePresence
+                                (SessionId, Channel, PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                             VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                             ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
+                                 LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                        );
+                    }
+                    $pIns->bind_param('issss', $sessionId, $channel, $presenceDeviceId, $mintedToken, $expiresAt);
+                    $pIns->execute();
+                    $pIns->close();
+                    $presenceToken = $mintedToken;
+                } catch (\Throwable $_e) {
+                    error_log('[live_follow_join/presence] ' . $_e->getMessage());
+                    $presenceToken = null;
+                }
+            }
+
+            logActivity('live.session.join', 'live_session', (string)$row['Id'], ['has_presence' => $presenceToken !== null]);
 
             sendJson([
                 'ok'              => true,
                 'code'            => $code,
                 'followToken'     => $followToken,
+                /* #1770 C3 — additive; null unless this was an opted-in POST
+                   join AND the presence table exists. A client that never
+                   reads this key (every client before #1770 C5) is
+                   unaffected — the `followToken` back-compat-by-absence
+                   precedent (live-follow.js:266-270). */
+                'presenceToken'   => $presenceToken,
                 'hostDisplayName' => (string)($row['HostName'] ?? ''),
                 'currentSongId'   => $row['CurrentSongId'],
                 'componentIndex'  => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
