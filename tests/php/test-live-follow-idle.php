@@ -162,9 +162,21 @@ lfi(
         . ($stray === [] ? '' : ' — found elsewhere at: ' . implode(', ', $stray))
 );
 
-/* A2 — every consumer calls the shared helper (prune exempted, per A1). */
-$consumers = ['live_follow_join', 'live_follow_poll', 'live_follow_update', 'live_follow_heartbeat'];
-foreach ($consumers as $action) {
+/* A2 — every consumer applies the idle predicate, but via the RIGHT helper.
+   #1792 — join/poll now gate on serviceMode_liveFollowAliveSql() (the "session
+   still alive?" wrapper: idle predicate on a migrated install, 180s heartbeat
+   fallback un-migrated) rather than the raw 180s window; update/heartbeat keep
+   calling serviceMode_idleFreshSql() directly (the host is demonstrably present
+   when it drives/beats, so they never had a heartbeat gate). The wrapper itself
+   is asserted to apply the idle predicate just below, so the idle rule is still
+   single-sourced through the indirection (rule #26). */
+$consumers = [
+    'live_follow_join'      => 'serviceMode_liveFollowAliveSql(',
+    'live_follow_poll'      => 'serviceMode_liveFollowAliveSql(',
+    'live_follow_update'    => 'serviceMode_idleFreshSql(',
+    'live_follow_heartbeat' => 'serviceMode_idleFreshSql(',
+];
+foreach ($consumers as $action => $expectedHelper) {
     if (!preg_match('/case\s+\'' . preg_quote($action, '/') . '\'\s*:/', $apiSrc, $m, PREG_OFFSET_CAPTURE)) {
         lfi(false, "A2 found a case '$action': block in api.php to inspect");
         continue;
@@ -178,10 +190,19 @@ foreach ($consumers as $action) {
     }
     $block = substr($apiSrc, $start, ($nextPos ?? strlen($apiSrc)) - $start);
     lfi(
-        strpos($block, 'serviceMode_idleFreshSql(') !== false,
-        "A2 case '$action' calls serviceMode_idleFreshSql() (rule #26 — the idle predicate is never re-typed)"
+        strpos($block, $expectedHelper) !== false,
+        "A2 case '$action' applies the idle predicate via {$expectedHelper}) (rule #26 — the idle predicate is never re-typed)"
     );
 }
+/* #1792 — the join/poll wrapper MUST itself route through serviceMode_idleFreshSql(),
+   so relaxing the heartbeat gate did not drop the idle predicate (rule #26 — one
+   idle predicate, applied through the wrapper). */
+$aliveRange = lfiFunctionBodyRange($smSrc, 'serviceMode_liveFollowAliveSql');
+lfi(
+    $aliveRange !== null
+        && strpos(substr($smSrc, $aliveRange[0], $aliveRange[1] - $aliveRange[0]), 'serviceMode_idleFreshSql(') !== false,
+    'A2 serviceMode_liveFollowAliveSql() applies the idle predicate via serviceMode_idleFreshSql() (#1792 indirection preserves rule #26)'
+);
 /* The gate's host branch (serviceMode_presenceCcliNumber) + the prune
    function must each reference the helper/negation too. */
 lfi(

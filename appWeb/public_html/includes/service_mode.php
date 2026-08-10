@@ -1410,6 +1410,60 @@ function serviceMode_idleFreshSql(\mysqli $db, string $alias = 's'): string
 }
 
 /**
+ * #1792 — the "is this Quick (Live Follow) session still JOINABLE?" predicate.
+ *
+ * ELI5: a Quick session's join code is FIXED (it never rotates), so — like
+ * Kahoot / Mentimeter — it should stay valid for **as long as the session is
+ * alive**, and anyone can join at any point. What ends a session is the leader
+ * ending it, signing out, or going idle past the configurable timeout — NOT a
+ * short heartbeat gap. The old join/poll gate required a heartbeat within the
+ * last 180 s, which quietly locked followers out whenever the leader's phone
+ * backgrounded the tab (mobile browsers pause timers), even though the service
+ * was still running. That was never a "code expiry" — only a crude host-alive
+ * proxy from before #1770 gave us a real one.
+ *
+ * DETAILED — two regimes, by whether #1770's idle machinery is migrated:
+ *  - **Migrated** (the norm): "alive" = the leader hasn't gone idle past
+ *    `IdleTimeoutMins` (serviceMode_idleFreshSql — the app→org→user resolved
+ *    value, default 15 min, an org can set it to hours for a long service). The
+ *    180 s heartbeat window is dropped entirely, so a backgrounded host phone no
+ *    longer blocks joins; the idle-auto-close (#1770 req 2/5) is the single,
+ *    human-meaningful, configurable "session over" boundary. Trade-off: a host
+ *    who CLOSES the tab leaves a joinable-but-frozen session until idle-close
+ *    reaps it — acceptable (self-healing, and the leader's screen is the source
+ *    of truth anyway).
+ *  - **Un-migrated**: there is NO idle-close to bound an abandoned session, so
+ *    the heartbeat-freshness window is retained as the liveness proxy (byte-
+ *    identical to the pre-#1792 gate). Such installs get the new behaviour only
+ *    after running the #1770 C1 migration card.
+ *
+ * The idle predicate is still applied through serviceMode_idleFreshSql() (rule
+ * #26 — one idle predicate), so this is a THIN regime-selector, not a second
+ * copy. Callers: `live_follow_join`, `live_follow_poll`. (`live_follow_update`
+ * and the heartbeat liveness re-check keep calling serviceMode_idleFreshSql()
+ * directly — they already had no 180 s gate, since the host is demonstrably
+ * present when it drives/beats.)
+ *
+ * @param string $alias Table alias in the caller's query ('s' or the bare
+ *                      table name).
+ * @return string A leading-" AND …" SQL fragment (never empty — a Quick session
+ *               always has at least the IsActive gate around this).
+ */
+function serviceMode_liveFollowAliveSql(\mysqli $db, string $alias = 's'): string
+{
+    if (serviceMode_idleColumnsExist($db)) {
+        /* Migrated: the idle window IS the "alive" boundary; no heartbeat gate. */
+        return serviceMode_idleFreshSql($db, $alias);
+    }
+    /* Un-migrated fallback: heartbeat-freshness proxy (pre-#1792 behaviour). */
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $alias)) {
+        throw new \RuntimeException('Invalid SQL alias literal: ' . var_export($alias, true));
+    }
+    return ' AND ' . $alias . '.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL '
+         . (int) LIVE_SESSION_FRESHNESS_SECONDS . ' SECOND)';
+}
+
+/**
  * #1770 §5 — THE idle-timeout precedence resolver: app default → org layer →
  * user layer → an org's ENFORCED override, in that priority. Called ONCE, at
  * `live_follow_create`, and the result is STAMPED onto the new row

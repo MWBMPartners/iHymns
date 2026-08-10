@@ -17366,26 +17366,30 @@ if ($action !== null) {
             /* #1405 side-finding fix (rule #26) — Channel filter added so an
                alpha/beta-created session is never joinable on production
                against the shared DB (a host session now stamps Channel at
-               live_follow_create). 180s = LIVE_SESSION_FRESHNESS_SECONDS
-               (service_mode.php) — the ONE unified live-session window shared
-               with Service Mode; keep this literal in sync. #1386 */
+               live_follow_create). #1386 */
             $channel = serviceMode_channel();
-            /* #1770 C2 — idle-expired sessions stop resolving here too (the
-               same 404 anti-probe path below already covers "not found" and
-               "expired", so an idle-closed host looks identical to an ended
-               one — I6). '' pre-migration, byte-identical SQL then.
-               #1770 C3 — s.ExpiresAt added to the SELECT: it becomes the
-               minted presence row's own ExpiresAt below (mirrors
-               service_join's `$m['ExpiresAt']` read), unused by the
-               pre-existing response fields. */
-            $idleFreshSql = serviceMode_idleFreshSql($db, 's');
+            /* #1792 — the JOIN gate is now "is the session still ALIVE?", NOT
+               "did the host beat within 180s". A Quick join code is FIXED, so
+               (Kahoot/Mentimeter) it stays joinable for as long as the session
+               lives; serviceMode_liveFollowAliveSql() returns the idle-window
+               predicate on a migrated install (the configurable idle-auto-close
+               is the "session over" boundary — a backgrounded host phone no
+               longer locks followers out) and falls back to the 180s
+               heartbeat window only when #1770's idle machinery isn't migrated.
+               #1770 C2 anti-probe: an idle-expired session stops resolving here
+               too — the same 404 path below covers "not found"/"expired"/idle,
+               so an idle-closed host is indistinguishable from an ended one (I6).
+               #1770 C3 — s.ExpiresAt added to the SELECT becomes the minted
+               presence row's own ExpiresAt below (service_join's `$m['ExpiresAt']`
+               read); unused by the pre-existing response fields. */
+            $aliveSql = serviceMode_liveFollowAliveSql($db, 's');
             $stmt = $db->prepare(
                 'SELECT s.Id, s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision, s.ExpiresAt,
                         u.DisplayName AS HostName
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
                   WHERE s.SessionCode = ? AND s.Channel = ? AND s.IsActive = 1
-                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)' . $idleFreshSql
+                    ' . $aliveSql
             );
             $stmt->bind_param('ss', $code, $channel);
             $stmt->execute();
@@ -17518,18 +17522,18 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* #1405 side-finding fix (rule #26) — Channel filter, mirrors join. */
             $channel = serviceMode_channel();
-            /* #1770 C2 — the Fresh expression gains the idle predicate,
-               NESTED inside its own parens (idleFreshSql's fragment opens
-               with " AND (" and closes its own paren, so appending it right
-               before Fresh's closing ")" nests cleanly: `(IsActive = 1 AND
-               ... AND (IdleTimeoutMins IS NULL OR ...))`). No table alias
-               here, so the trusted call-site constant IS the bare table
-               name — see serviceMode_idleFreshSql()'s doc-block. '' when
-               un-migrated → byte-identical SQL to pre-#1770. */
-            $idleFreshSql = serviceMode_idleFreshSql($db, 'tblLiveFollowSessions');
+            /* #1792 — Fresh follows the SAME "alive, not just recently-beaten"
+               rule as the join (serviceMode_liveFollowAliveSql): a follower
+               keeps polling successfully for as long as the session lives, so a
+               backgrounded host phone doesn't flip everyone to active:false.
+               The fragment opens with " AND (…" and nests inside Fresh's own
+               parens: `(IsActive = 1 AND (IdleTimeoutMins IS NULL OR …))` when
+               migrated, `(IsActive = 1 AND LastHeartbeatAt > 180s)` when not.
+               The bare table name IS the alias here (no alias in this query). */
+            $aliveSql = serviceMode_liveFollowAliveSql($db, 'tblLiveFollowSessions');
             $stmt = $db->prepare(
                 'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
-                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)' . $idleFreshSql . ') AS Fresh
+                        (IsActive = 1' . $aliveSql . ') AS Fresh
                    FROM tblLiveFollowSessions
                   WHERE SessionCode = ? AND Channel = ?'
             );
