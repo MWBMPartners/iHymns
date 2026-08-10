@@ -240,7 +240,7 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle cp-sortable">
+                <table class="table table-sm table-hover align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr>
                             <th scope="col" data-sort-key="song"      data-sort-type="text">Song</th>
@@ -278,6 +278,13 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
             </div>
         <?php endif; ?>
     </div>
+
+    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+         booted; every header click was a silent no-op until now). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

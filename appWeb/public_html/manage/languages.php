@@ -562,7 +562,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </p>
 
     <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover align-middle cp-sortable" id="languages-table">
+        <table class="table table-dark table-striped table-hover align-middle cp-sortable admin-table-responsive" id="languages-table">
             <thead>
                 <tr>
                     <th scope="col" data-sort-key="code" data-sort-type="text">Code</th>
@@ -756,6 +756,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
     </div>
 </div>
+
+<!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+     booted; every header click was a silent no-op until now). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 

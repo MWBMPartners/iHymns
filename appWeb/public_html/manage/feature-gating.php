@@ -613,9 +613,9 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                         <tr class="text-muted small">
                             <th data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
                             <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                            <th data-col-priority="secondary">Description</th>
-                            <th class="text-center" data-col-priority="tertiary">Storage</th>
-                            <th class="text-end" data-col-priority="primary">Source</th>
+                            <th data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
+                            <th class="text-center" data-col-priority="tertiary" data-sort-key="storage" data-sort-type="text">Storage</th>
+                            <th class="text-end" data-col-priority="primary" data-sort-key="source" data-sort-type="text">Source</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -650,9 +650,9 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                             <tr class="text-muted small">
                                 <th data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
                                 <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                                <th data-col-priority="secondary">Description</th>
-                                <th class="text-center" data-col-priority="tertiary">Default</th>
-                                <th class="text-center" data-col-priority="tertiary">Emit in API</th>
+                                <th data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
+                                <th class="text-center" data-col-priority="tertiary" data-sort-key="default" data-sort-type="text">Default</th>
+                                <th class="text-center" data-col-priority="tertiary" data-sort-key="emitapi" data-sort-type="text">Emit in API</th>
                                 <th class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
                                 <th class="text-end" data-col-priority="primary">Actions</th>
                             </tr>
@@ -786,13 +786,13 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                 <p class="text-muted small mb-0">No rules defined yet — add one below.</p>
             <?php else: ?>
                 <div class="table-responsive mb-3">
-                    <table class="table table-sm align-middle mb-0 admin-table-responsive">
+                    <table class="table table-sm align-middle mb-0 admin-table-responsive cp-sortable">
                         <thead>
                             <tr class="text-muted small">
-                                <th data-col-priority="primary">Capability</th>
-                                <th data-col-priority="primary">Behaviour</th>
-                                <th data-col-priority="secondary">Effect</th>
-                                <th class="text-center" data-col-priority="secondary">Enabled</th>
+                                <th data-col-priority="primary" data-sort-key="capability" data-sort-type="text">Capability</th>
+                                <th data-col-priority="primary" data-sort-key="behaviour" data-sort-type="text">Behaviour</th>
+                                <th data-col-priority="secondary" data-sort-key="effect" data-sort-type="text">Effect</th>
+                                <th class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
                                 <th class="text-end" data-col-priority="primary">Actions</th>
                             </tr>
                         </thead>

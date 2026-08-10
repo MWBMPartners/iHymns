@@ -319,7 +319,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All tiers</h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0 cp-sortable" data-default-sort-key="level" data-default-sort-dir="asc">
+                <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive" data-default-sort-key="level" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="name"    data-sort-type="text">Name</th>

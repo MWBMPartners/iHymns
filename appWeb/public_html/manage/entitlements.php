@@ -284,10 +284,10 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
             <div class="card-admin p-3 mb-3">
                 <h2 class="h6 mb-3"><?= htmlspecialchars($groupName) ?></h2>
                 <div class="table-responsive">
-                    <table class="table table-sm ent-grid mb-0">
+                    <table class="table table-sm ent-grid mb-0 cp-sortable">
                         <thead>
                             <tr class="text-muted small">
-                                <th>Capability</th>
+                                <th data-sort-key="capability" data-sort-type="text">Capability</th>
                                 <?php foreach ($ROLES as $r): ?>
                                     <th class="role-col"><?= htmlspecialchars(roleLabel($r)) ?></th>
                                 <?php endforeach; ?>
@@ -300,7 +300,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
                                 [$entLbl, $entDesc] = $entLabel($ent);
                             ?>
                             <tr>
-                                <td>
+                                <td data-sort-value="<?= htmlspecialchars($entLbl, ENT_QUOTES) ?>">
                                     <div class="fw-semibold"><?= htmlspecialchars($entLbl) ?></div>
                                     <?php if ($entDesc !== ''): ?>
                                         <div class="small text-muted"><?= htmlspecialchars($entDesc) ?></div>
@@ -351,6 +351,15 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
     </p>
 
 </div>
+
+<!-- Sortable table headers (#1786 sweep). Only the Capability column is
+     orderable — the role columns are a checkbox matrix, not per-row data,
+     the same shape already established on tiers.php's per-capability
+     columns (#1786). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

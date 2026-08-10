@@ -301,7 +301,7 @@ $csrf = csrfToken();
         <!-- MySQL table counts -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-3"><i class="bi bi-database me-2"></i>MySQL table counts</h2>
-            <table class="table table-sm mb-0 align-middle cp-sortable">
+            <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
                         <th data-sort-key="table" data-sort-type="text">Table</th>
@@ -466,6 +466,13 @@ $csrf = csrfToken();
         </div>
 
     </div>
+
+    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+         booted; every header click was a silent no-op until now). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

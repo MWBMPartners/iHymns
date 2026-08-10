@@ -619,7 +619,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <th data-col-priority="primary" data-sort-key="score" data-sort-type="number">Score</th>
                         <th data-col-priority="primary" data-sort-key="a" data-sort-type="text">Name A</th>
                         <th data-col-priority="primary" data-sort-key="b" data-sort-type="text">Name B</th>
-                        <th data-col-priority="tertiary">Signal</th>
+                        <th data-col-priority="tertiary" data-sort-key="signal" data-sort-type="text">Signal</th>
                         <th data-col-priority="primary" style="min-width:16rem;">Actions</th>
                     </tr>
                 </thead>

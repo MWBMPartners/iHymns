@@ -559,7 +559,7 @@ $csrf = csrfToken();
 
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All organisations</h2>
-                <table class="table table-sm mb-0 align-middle cp-sortable">
+                <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="name"    data-sort-type="text">Name</th>
@@ -851,23 +851,23 @@ $csrf = csrfToken();
                         <?php if (!$editMembers): ?>
                             <p class="text-muted small mb-0">No members yet.</p>
                         <?php else: ?>
-                            <table class="table table-sm align-middle mb-0">
+                            <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th>User</th>
-                                        <th>Role</th>
-                                        <th>Joined</th>
+                                        <th data-sort-key="user" data-sort-type="text">User</th>
+                                        <th data-sort-key="role" data-sort-type="text">Role</th>
+                                        <th data-sort-key="joined" data-sort-type="text">Joined</th>
                                         <th class="text-end"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($editMembers as $m): ?>
                                         <tr>
-                                            <td>
+                                            <td data-sort-value="<?= htmlspecialchars($m['Username'], ENT_QUOTES) ?>">
                                                 <code><?= htmlspecialchars($m['Username']) ?></code>
                                                 <small class="text-muted ms-1"><?= htmlspecialchars($m['DisplayName']) ?></small>
                                             </td>
-                                            <td>
+                                            <td data-sort-value="<?= htmlspecialchars((string)$m['OrgRole'], ENT_QUOTES) ?>">
                                                 <form method="POST" class="d-flex gap-1">
                                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                                     <input type="hidden" name="action" value="update_member_role">
@@ -880,7 +880,7 @@ $csrf = csrfToken();
                                                     </select>
                                                 </form>
                                             </td>
-                                            <td class="text-muted small"><?= htmlspecialchars(substr((string)$m['JoinedAt'], 0, 10)) ?></td>
+                                            <td class="text-muted small" data-sort-value="<?= htmlspecialchars((string)$m['JoinedAt'], ENT_QUOTES) ?>"><?= htmlspecialchars(substr((string)$m['JoinedAt'], 0, 10)) ?></td>
                                             <td class="text-end">
                                                 <form method="POST" class="d-inline" onsubmit="return confirm('Remove <?= htmlspecialchars($m['Username'], ENT_QUOTES) ?> from this organisation?')">
                                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">

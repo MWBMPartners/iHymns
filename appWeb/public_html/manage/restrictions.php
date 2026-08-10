@@ -386,7 +386,7 @@ $csrf = csrfToken();
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">Rules <span class="text-muted small">(<?= count($rows) ?> shown, newest first within priority)</span></h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0 cp-sortable">
+                <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="entity"      data-sort-type="text">Entity</th>

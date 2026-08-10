@@ -1145,6 +1145,13 @@ if ($hasSchema) {
     });
     </script>
 
+    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+         booted; every header click was a silent no-op until now). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
+
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

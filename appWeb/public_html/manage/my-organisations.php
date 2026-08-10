@@ -512,10 +512,12 @@ $csrf = csrfToken();
                     <p class="text-muted small">No members yet — use the Add member form below.</p>
                 <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table table-sm table-dark mb-2 small align-middle">
+                        <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th>Username</th><th>Display Name</th>
-                                <th>System role</th><th>Org role</th>
+                                <th data-sort-key="username" data-sort-type="text">Username</th>
+                                <th data-sort-key="displayname" data-sort-type="text">Display Name</th>
+                                <th data-sort-key="sysrole" data-sort-type="text">System role</th>
+                                <th data-sort-key="orgrole" data-sort-type="text">Org role</th>
                                 <th class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
@@ -524,7 +526,7 @@ $csrf = csrfToken();
                                     <td><?= htmlspecialchars((string)$m['Username']) ?></td>
                                     <td><?= htmlspecialchars((string)($m['DisplayName'] ?? '')) ?></td>
                                     <td><code><?= htmlspecialchars((string)($m['SystemRole'] ?? 'user')) ?></code></td>
-                                    <td>
+                                    <td data-sort-value="<?= htmlspecialchars((string)$m['OrgRole'], ENT_QUOTES) ?>">
                                         <form method="POST" class="d-inline-flex align-items-center gap-1">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="member_role_change">
@@ -591,9 +593,14 @@ $csrf = csrfToken();
                     <p class="text-muted small">No licences attached. Use the Add licence form below.</p>
                 <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table table-sm table-dark mb-2 small align-middle">
+                        <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th>Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
+                                <!-- Only Type is sortable: Number, Expires, Active and Notes below
+                                     collapse into a single colspan-merged inline-edit form cell at
+                                     render time (four data cells serve six header cells), so the
+                                     module's positional cell-index lookup cannot address them
+                                     individually (#1786 sweep). -->
+                                <th data-sort-key="type" data-sort-type="text">Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
                                 <th class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
@@ -741,6 +748,12 @@ $csrf = csrfToken();
         <?php endforeach; ?>
     <?php endif; ?>
 </div>
+
+<!-- Sortable table headers (#1786 sweep). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

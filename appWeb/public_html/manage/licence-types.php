@@ -181,7 +181,7 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
                             <th data-col-priority="primary"   data-sort-key="key">Key</th>
                             <th data-col-priority="primary"   data-sort-key="label">Label</th>
                             <th data-col-priority="secondary" data-sort-key="confers">Confers tier</th>
-                            <th data-col-priority="secondary">Covers</th>
+                            <th data-col-priority="secondary" data-sort-key="covers" data-sort-type="text">Covers</th>
                             <th data-col-priority="tertiary"  data-sort-key="number">Needs number</th>
                             <th data-col-priority="tertiary"  data-sort-key="source">Source</th>
                             <th data-col-priority="primary"   data-sort-key="enabled">Enabled</th>

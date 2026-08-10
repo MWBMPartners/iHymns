@@ -615,10 +615,13 @@ if ($hasSchema && !empty($catalogues)) {
         <?php else: ?>
             <div class="card-admin p-0 mb-3">
                 <div class="table-responsive">
-                    <table class="table table-sm table-dark mb-0 small align-middle">
+                    <table class="table table-sm table-dark mb-0 small align-middle cp-sortable admin-table-responsive">
                         <thead><tr>
-                            <th>Title</th><th>Slug</th><th>Visibility</th>
-                            <th class="text-end">Songs</th><th>Description</th>
+                            <th data-sort-key="title" data-sort-type="text">Title</th>
+                            <th data-sort-key="slug" data-sort-type="text">Slug</th>
+                            <th data-sort-key="visibility" data-sort-type="text">Visibility</th>
+                            <th class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
+                            <th data-sort-key="description" data-sort-type="text">Description</th>
                             <th class="text-end">Actions</th>
                         </tr></thead>
                         <tbody>
@@ -626,7 +629,7 @@ if ($hasSchema && !empty($catalogues)) {
                             <tr>
                                 <td><strong><?= htmlspecialchars($c['Title']) ?></strong></td>
                                 <td><code class="small"><?= htmlspecialchars($c['Slug']) ?></code></td>
-                                <td>
+                                <td data-sort-value="<?= htmlspecialchars($c['Visibility'], ENT_QUOTES) ?>">
                                     <span class="badge bg-body-secondary text-body-emphasis">
                                         <?= htmlspecialchars($c['Visibility']) ?>
                                     </span>
@@ -798,6 +801,12 @@ if ($hasSchema && !empty($catalogues)) {
     <?php endif; /* hasSchema */ ?>
 
 </main>
+
+<!-- Sortable table headers (#1786 sweep). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

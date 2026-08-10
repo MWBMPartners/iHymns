@@ -383,17 +383,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php if ($canManage): ?>
     <h2 class="h5 mb-2">Issued keys</h2>
     <div class="table-responsive">
-        <table class="table table-sm align-middle admin-table-responsive">
+        <table class="table table-sm align-middle admin-table-responsive cp-sortable">
             <thead>
                 <tr>
-                    <th data-col-priority="primary">Label</th>
-                    <th data-col-priority="secondary">Prefix</th>
-                    <th data-col-priority="secondary">Scope</th>
-                    <th data-col-priority="primary">Status</th>
-                    <th data-col-priority="secondary">Usage today</th>
-                    <th data-col-priority="secondary">Limits (min&nbsp;&middot;&nbsp;day)</th>
-                    <th data-col-priority="tertiary">Last used</th>
-                    <th data-col-priority="tertiary">Created</th>
+                    <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
+                    <th data-col-priority="secondary" data-sort-key="prefix" data-sort-type="text">Prefix</th>
+                    <th data-col-priority="secondary" data-sort-key="scope" data-sort-type="text">Scope</th>
+                    <th data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
+                    <th data-col-priority="secondary" data-sort-key="usage" data-sort-type="number">Usage today</th>
+                    <th data-col-priority="secondary" data-sort-key="limits" data-sort-type="number">Limits (min&nbsp;&middot;&nbsp;day)</th>
+                    <th data-col-priority="tertiary" data-sort-key="lastused" data-sort-type="date">Last used</th>
+                    <th data-col-priority="tertiary" data-sort-key="created" data-sort-type="date">Created</th>
                     <th data-col-priority="primary" class="text-end">Actions</th>
                 </tr>
             </thead>
@@ -405,20 +405,20 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <td data-col-priority="primary"><?= htmlspecialchars((string)$k['Label'], ENT_QUOTES) ?></td>
                     <td data-col-priority="secondary"><code><?= htmlspecialchars((string)$k['KeyPrefix'], ENT_QUOTES) ?>…</code></td>
                     <td data-col-priority="secondary"><code class="small"><?= htmlspecialchars((string)$k['Scope'], ENT_QUOTES) ?></code></td>
-                    <td data-col-priority="primary">
+                    <td data-col-priority="primary" data-sort-value="<?= (int)$k['Active'] === 1 ? 'active' : 'revoked' ?>">
                         <?php if ((int)$k['Active'] === 1): ?>
                             <span class="badge bg-success">active</span>
                         <?php else: ?>
                             <span class="badge bg-secondary">revoked</span>
                         <?php endif; ?>
                     </td>
-                    <td data-col-priority="secondary">
+                    <td data-col-priority="secondary" data-sort-value="<?= (int)($usageToday[(int)$k['Id']] ?? 0) ?>">
                         <?php $ut = $usageToday[(int)$k['Id']] ?? null; ?>
                         <?= $ut === null
                             ? '<span class="text-secondary small">&mdash;</span>'
                             : '<span class="badge bg-light text-dark" title="Requests so far today (UTC)">' . number_format($ut) . '</span>' ?>
                     </td>
-                    <td data-col-priority="secondary" class="small font-monospace">
+                    <td data-col-priority="secondary" class="small font-monospace" data-sort-value="<?= $k['RateLimitPerMin'] === null ? -1 : (int)$k['RateLimitPerMin'] ?>">
                         <?php
                             $pm = $k['RateLimitPerMin']; $pd = $k['RateLimitPerDay'];
                             echo ($pm === null ? '<span class="text-secondary" title="no limit">&infin;</span>' : (int)$pm)
@@ -426,7 +426,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                . ($pd === null ? '<span class="text-secondary" title="no limit">&infin;</span>' : (int)$pd);
                         ?>
                     </td>
-                    <td data-col-priority="tertiary"><?= $k['LastUsedAt'] ? htmlspecialchars((string)$k['LastUsedAt'], ENT_QUOTES) : '<span class="text-secondary">never</span>' ?></td>
+                    <td data-col-priority="tertiary" data-sort-value="<?= htmlspecialchars((string)($k['LastUsedAt'] ?? ''), ENT_QUOTES) ?>"><?= $k['LastUsedAt'] ? htmlspecialchars((string)$k['LastUsedAt'], ENT_QUOTES) : '<span class="text-secondary">never</span>' ?></td>
                     <td data-col-priority="tertiary"><?= htmlspecialchars((string)$k['CreatedAt'], ENT_QUOTES) ?></td>
                     <td data-col-priority="primary" class="text-end">
                         <button type="button" class="btn btn-sm btn-outline-primary" data-edit-limits
@@ -449,8 +449,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <section class="mt-4">
         <h2 class="h5 mb-2"><i class="bi bi-inbox me-2"></i>Pending key requests <span class="badge bg-warning text-dark"><?= count($pendingRequests) ?></span></h2>
         <div class="table-responsive">
-            <table class="table table-sm align-middle">
-                <thead><tr><th>Requester</th><th>Label</th><th>Scope</th><th>Justification</th><th>Requested</th><th class="text-end">Review</th></tr></thead>
+            <table class="table table-sm align-middle cp-sortable admin-table-responsive">
+                <thead><tr>
+                    <th data-sort-key="requester" data-sort-type="text">Requester</th>
+                    <th data-sort-key="label" data-sort-type="text">Label</th>
+                    <th data-sort-key="scope" data-sort-type="text">Scope</th>
+                    <th data-sort-key="justification" data-sort-type="text">Justification</th>
+                    <th data-sort-key="requested" data-sort-type="date">Requested</th>
+                    <th class="text-end">Review</th>
+                </tr></thead>
                 <tbody>
                 <?php foreach ($pendingRequests as $rq): ?>
                     <tr data-req-id="<?= (int)$rq['Id'] ?>">
@@ -483,8 +490,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <p class="text-secondary small">You haven't requested any keys. Use <em>Request a key</em> above.</p>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm align-middle">
-                    <thead><tr><th>Label</th><th>Scope</th><th>Status</th><th>Note</th><th>Requested</th></tr></thead>
+                <table class="table table-sm align-middle cp-sortable admin-table-responsive">
+                    <thead><tr>
+                        <th data-sort-key="label" data-sort-type="text">Label</th>
+                        <th data-sort-key="scope" data-sort-type="text">Scope</th>
+                        <th data-sort-key="status" data-sort-type="text">Status</th>
+                        <th data-sort-key="note" data-sort-type="text">Note</th>
+                        <th data-sort-key="requested" data-sort-type="date">Requested</th>
+                    </tr></thead>
                     <tbody>
                     <?php foreach ($myRequests as $rq):
                         $st    = (string)$rq['Status'];
@@ -493,7 +506,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <tr>
                             <td><?= htmlspecialchars((string)$rq['Label'], ENT_QUOTES) ?></td>
                             <td><code class="small"><?= htmlspecialchars((string)$rq['Scope'], ENT_QUOTES) ?></code></td>
-                            <td><span class="badge <?= $badge ?>"><?= htmlspecialchars($st, ENT_QUOTES) ?></span></td>
+                            <td data-sort-value="<?= htmlspecialchars($st, ENT_QUOTES) ?>"><span class="badge <?= $badge ?>"><?= htmlspecialchars($st, ENT_QUOTES) ?></span></td>
                             <td class="small"><?= htmlspecialchars((string)($rq['ReviewNote'] ?? ''), ENT_QUOTES) ?></td>
                             <td class="small text-secondary"><?= htmlspecialchars((string)$rq['CreatedAt'], ENT_QUOTES) ?></td>
                         </tr>
@@ -773,6 +786,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         });
     });
 })();
+</script>
+
+<!-- Sortable table headers (#1786 sweep). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
 </script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
