@@ -910,6 +910,31 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_cuercode] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_live_follow_idle') {
+            /* #1770 §4.7 — the APP layer of the leader-idle precedence chain
+               (includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
+               A freeform tblAppSettings key (the SERVICE_MODE_POLL_MS_* / #1406
+               precedent) — no migration needed to add or read it. Clamped to the
+               SAME [5, 240] band the resolver itself clamps to (mirrors the
+               maintenance_refresh_seconds pattern immediately above): a
+               hand-edited or out-of-range POST can never store a value the
+               resolver would have to re-defend against on every read. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            try {
+                $idleIn  = filter_var((string)($_POST['live_follow_idle_timeout_minutes'] ?? ''), FILTER_VALIDATE_INT);
+                $idleVal = $idleIn === false
+                    ? LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES
+                    : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleIn));
+                $saveSetting($db, LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)$idleVal);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY,
+                        ['keys' => [LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY], 'value' => $idleVal], 'success');
+                }
+                $saveSuccess = 'Live Follow idle-timeout default saved (' . $idleVal . ' minutes).';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_live_follow_idle] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -1007,6 +1032,15 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 $cuercodeBaseUrlVal = (string)(getAppSetting(CUERCODE_SETTING_BASE_URL, CUERCODE_DEFAULT_BASE_URL) ?? CUERCODE_DEFAULT_BASE_URL);
 $cuercodeApiKeySet  = ((string)(getAppSetting(CUERCODE_SETTING_API_KEY, '') ?? '')) !== '';
 $cuercodeConfigured = cuercodeConfigured();
+
+/* #1770 §4.7 — the APP-DEFAULT layer of the leader-idle precedence chain;
+   read via the SAME resolver-adjacent constants service_mode.php declares
+   (rule #35 — one source of truth for the key name + the min/max/default
+   literals) so this admin field can never disagree with what
+   serviceMode_resolveIdleTimeoutMins() actually falls back to. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+$liveFollowIdleTimeoutVal = (int)(getAppSetting(LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES) ?? LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES);
+if ($liveFollowIdleTimeoutVal <= 0) { $liveFollowIdleTimeoutVal = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES; }
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -1375,6 +1409,50 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>Save CueRCode settings
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         LIVE FOLLOW SECTION (#1770 §4.7 — app-default idle timeout)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-broadcast-pin me-2"></i>Live Follow
+            </h2>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                A worship leader's "Go Live" session auto-closes after this many minutes with no
+                genuine leader interaction (opening the app doesn't count — reading, navigating,
+                or driving a section does). This is the site-wide DEFAULT — a leader's own
+                <a href="/settings" class="link-light">Settings</a> can shorten or lengthen it,
+                and an organisation can override or lock it on
+                <a href="/manage/organisations" class="link-light">Organisations</a>
+                (site admin) or <a href="/manage/my-organisations" class="link-light">My organisations</a>
+                (org admin).
+            </p>
+            <form method="post" class="row g-3 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_live_follow_idle">
+                <div class="col-auto">
+                    <label for="live_follow_idle_timeout_minutes" class="form-label">Idle-timeout default (minutes)</label>
+                    <input type="number" name="live_follow_idle_timeout_minutes" id="live_follow_idle_timeout_minutes"
+                           class="form-control" style="max-width: 10rem;"
+                           min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                           value="<?= (int)$liveFollowIdleTimeoutVal ?>">
+                    <div class="form-text">
+                        <?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>&ndash;<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?> minutes; default
+                        <?= LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES ?>. Only affects sessions started AFTER this is saved —
+                        already-running sessions keep the value they were started with.
+                    </div>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save
                     </button>
                 </div>
             </form>

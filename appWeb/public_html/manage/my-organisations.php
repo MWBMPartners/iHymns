@@ -33,6 +33,11 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 /* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary; replaces
    the hardcoded key list below (fallback == today's literal exactly). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
+   Live Follow leader-idle precedence chain (LiveIdleTimeoutMins /
+   EnforceIdleTimeout) so this org-admin surface degrades cleanly on an
+   un-migrated install (rule #19), same posture as /manage/organisations.php. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -77,6 +82,8 @@ $activePage = 'my-organisations';
 $db = getDbMysqli();
 $error   = '';
 $success = '';
+/* #1770 §4.7 — memoised; cheap to call once here and re-check inline below. */
+$orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
 
 /* Member-role allowlist from the shared include (#719 PR 2c). Licence-type key
    list now from the ONE registry (#459 / #1769 P2) — was the hardcoded literal
@@ -303,6 +310,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'idle_timeout_update': {
+                /* #1770 §4.7 — the ORG layer of the Live Follow leader-idle
+                   precedence chain, editable by the org's OWN admin (not just
+                   a system admin — this is the "my organisation" surface).
+                   Column-existence-gated (rule #19); same clamp/NULL
+                   semantics as the system-admin form on /manage/organisations
+                   (empty minutes = "no override"). */
+                if (!$orgIdleColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $idleMinsRaw = trim((string)($_POST['live_idle_timeout_mins'] ?? ''));
+                $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                    ? null
+                    : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                $idleEnforceVal = !empty($_POST['enforce_idle_timeout']) ? 1 : 0;
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $orgId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org_admin.idle_timeout_update', 'organisation', (string)$orgId, [
+                    'live_idle_timeout_mins' => $idleMinsVal,
+                    'enforce_idle_timeout'   => (bool)$idleEnforceVal,
+                ]);
+                $success = 'Live Follow idle-timeout setting saved.';
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -317,12 +355,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* #1770 §4.7 — additive column list, appended only when the columns exist
+   (rule #19); the hardcoded-source-constant interpolation is safe per rule
+   #5 ($orgIdleColsExist is a bool, not request input). */
+$orgIdleSelectCols = $orgIdleColsExist ? ', LiveIdleTimeoutMins, EnforceIdleTimeout' : '';
 try {
     if ($systemAdmin) {
         $stmt = $db->prepare(
-            'SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}
                FROM tblOrganisations
-              ORDER BY Name ASC'
+              ORDER BY Name ASC"
         );
         $stmt->execute();
     } else {
@@ -332,7 +374,7 @@ try {
         }
         $placeholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}
                FROM tblOrganisations
               WHERE Id IN ({$placeholders})
               ORDER BY Name ASC"
@@ -660,6 +702,41 @@ $csrf = csrfToken();
                         </button>
                     </div>
                 </form>
+
+                <!-- #1770 §4.7 — Live Follow leader-idle ORG override. -->
+                <?php if ($orgIdleColsExist): ?>
+                <h3 class="h6 mt-3 mb-2">Live Follow idle timeout</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="idle_timeout_update">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-0">Minutes <span class="text-muted">(blank = site default)</span></label>
+                        <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                               min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                               placeholder="site default"
+                               value="<?= isset($o['LiveIdleTimeoutMins']) && $o['LiveIdleTimeoutMins'] !== null ? (int)$o['LiveIdleTimeoutMins'] : '' ?>">
+                    </div>
+                    <div class="col-md-6 form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="enforce_idle_timeout" id="enforce-idle-<?= $orgId ?>" value="1"
+                               <?= !empty($o['EnforceIdleTimeout']) ? 'checked' : '' ?>>
+                        <label class="form-check-label" for="enforce-idle-<?= $orgId ?>">
+                            Lock this value for members (their own Settings preference is ignored)
+                        </label>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="col-12">
+                        <p class="text-muted small mb-0">
+                            A worship leader's "Go Live" session in this organisation auto-closes after this many
+                            minutes of no genuine leader interaction.
+                        </p>
+                    </div>
+                </form>
+                <?php endif; ?>
             </div>
         <?php endforeach; ?>
     <?php endif; ?>

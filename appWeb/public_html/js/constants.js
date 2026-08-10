@@ -113,6 +113,22 @@ export const STORAGE_OFFLINE_INCLUDE_AUDIO_LEGACY = 'ihymns_includeAudioOffline'
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
 
+/* #1770 §4.7 — Live Follow leader-idle timeout, the USER layer of the
+   three-layer precedence chain (app default → org override → user
+   preference; includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
+   Deliberately UNPREFIXED — breaks the `ihymns_` convention on purpose, the
+   SAME odd-value shape as STORAGE_LANGUAGE_FILTER above. Reason: the
+   whole-blob `user_settings` sync (settings.js's _collectSyncableSettings())
+   mirrors a syncable localStorage key's OWN NAME verbatim into the pushed
+   `tblUsers.Settings` JSON blob's key — and the server-side resolver reads
+   a FIXED root key literally spelled `liveIdleTimeoutMins`
+   (LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY, service_mode.php). Prefixing
+   this key would sync it under `ihymns_liveIdleTimeoutMins`, which the
+   resolver would never read — a rule-#35 silent-drift class, avoided here
+   by making the two spellings the SAME constant string rather than two
+   things a comment promises to keep in sync. */
+export const STORAGE_LIVE_IDLE_TIMEOUT_MINS = 'liveIdleTimeoutMins';
+
 /* ── Service-worker cache bucket names (#1597) ────────────────────────────
    ELI5: the names of the boxes the offline downloads live in, written down
    once so the app and the service worker can never disagree about them.

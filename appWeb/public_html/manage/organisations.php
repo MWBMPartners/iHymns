@@ -24,6 +24,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    vocabulary. Replaces the hardcoded $LICENCE_TYPES literal below; degrades to
    LICENCE_TYPES_FALLBACK on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
+   leader-idle precedence chain (LiveIdleTimeoutMins / EnforceIdleTimeout);
+   same column-existence-tolerant posture as placeColumnExists() above. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -230,6 +234,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                           WHERE Id = ?'
                     );
                     $stmt->bind_param('sii', $physicalCity, $physicalCityId, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
+                /* #1770 §4.7 — leader-idle ORG layer, schema-tolerant separate
+                   UPDATE (same pattern as the place columns immediately above).
+                   An EMPTY minutes field means "no override" (NULL — the
+                   resolver then falls through to the user/app layers); a
+                   value is clamped to the SAME [5,240] band the resolver
+                   clamps to. `EnforceIdleTimeout` is only meaningful
+                   alongside a non-NULL minutes value, but is stored as
+                   submitted regardless — serviceMode_resolveIdleTimeoutMins()
+                   already ignores Enforce on a NULL-minutes row (its query
+                   filters `LiveIdleTimeoutMins IS NOT NULL`), so a stray
+                   enforce-with-no-value can never do anything. */
+                if (serviceMode_orgIdleColumnsExist($db)) {
+                    $idleMinsRaw = trim((string)($_POST['live_idle_timeout_mins'] ?? ''));
+                    $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                    $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                        ? null
+                        : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                    $idleEnforceVal = !empty($_POST['enforce_idle_timeout']) ? 1 : 0;
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $id);
                     $stmt->execute();
                     $stmt->close();
                 }
@@ -773,6 +805,40 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <?php endif; ?>
+
+                <!-- #1770 §4.7 — Live Follow leader-idle ORG override. Column-
+                     existence-gated so an un-migrated install renders the form
+                     without it (rule #19). NULL minutes = "no override", the
+                     resolver falls through to the user's own preference, then
+                     this org's default, then the site-wide default. -->
+                <?php if (serviceMode_orgIdleColumnsExist($db)): ?>
+                <div class="mb-2">
+                    <label class="form-label small mb-1">Live Follow idle-timeout override <small class="text-muted">(optional)</small></label>
+                    <div class="row g-2 align-items-center">
+                        <div class="col-sm-4">
+                            <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                                   min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                                   placeholder="site default"
+                                   value="<?= isset($editOrg['LiveIdleTimeoutMins']) && $editOrg['LiveIdleTimeoutMins'] !== null ? (int)$editOrg['LiveIdleTimeoutMins'] : '' ?>">
+                        </div>
+                        <div class="col-sm-8">
+                            <div class="form-check small mb-0">
+                                <input class="form-check-input" type="checkbox" name="enforce_idle_timeout" id="edit-enforce-idle" value="1"
+                                       <?= !empty($editOrg['EnforceIdleTimeout']) ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="edit-enforce-idle">
+                                    Lock this value — members' own Settings preference is ignored
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text small">
+                        A worship leader's "Go Live" session auto-closes after this many minutes
+                        of no genuine leader interaction. Leave blank to use the site default
+                        (<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>&ndash;<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?> minutes).
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>
