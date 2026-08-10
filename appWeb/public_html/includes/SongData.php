@@ -4197,6 +4197,44 @@ class SongData
      * @param string $songId Song ID
      * @return string[] Array of writer names
      */
+    /* =====================================================================
+     * CREDIT ACCESSORS (#1158 annotation backfill) — the per-role name lists
+     * ---------------------------------------------------------------------
+     * ELI5: six little lists of who did what on a song — who wrote the words,
+     * who wrote the tune, who arranged it, and so on — read straight off the
+     * song's credit tables in the order the curator entered them.
+     *
+     * WHY the shape is what it is (the shared rationale, documented ONCE here
+     * rather than repeated on each near-identical method):
+     *
+     *  - Each role has its OWN table (tblSongWriters / tblSongComposers /
+     *    tblSongArrangers / tblSongAdaptors / tblSongTranslators, plus
+     *    tblSongArtists for performers) — a per-role table, not one table with
+     *    a Role column, because that is the legacy shape every writer/importer
+     *    already targets. Each row is just a denormalised NAME STRING, not an
+     *    FK to tblMusicians; linking those names to the musician registry is a
+     *    SEPARATE concern (#1741 identity, #1784 byte-reconciliation) that must
+     *    never be conflated with simply listing a song's credits.
+     *  - `ORDER BY Id` is deliberate and load-bearing: Id is insertion order,
+     *    so it preserves the CURATOR'S intended credit order (lead writer
+     *    first, …). Sorting alphabetically here would silently reorder credits
+     *    on every public render.
+     *  - Each accessor has a SINGLE-song form (`_getX`) AND a bulk map form
+     *    (`_getXMap`, keyed SongId → name[]). The map forms exist purely to
+     *    kill the N+1 that `getSongs()` (a whole songbook, ~hundreds of rows)
+     *    would otherwise hit — one `WHERE SongId IN (…)` query per role instead
+     *    of one query per song per role. `getSongById()` uses the single form;
+     *    `getSongs()` uses the maps. They MUST stay behaviourally identical
+     *    (same table, same order) or a song's credits would differ between the
+     *    list view and the detail view.
+     * ===================================================================== */
+
+    /**
+     * Writer (lyricist) names for one song, in curator-entered order.
+     *
+     * @param  string   $songId
+     * @return string[] Writer names (may be empty).
+     */
     private function _getWriters(string $songId): array
     {
         $stmt = $this->db->prepare(
@@ -4481,6 +4519,15 @@ class SongData
      *
      * @param string[] $songIds List of song IDs to fetch writers for
      * @return array<string,string[]> SongId → array of writer names
+     */
+    /**
+     * Bulk-load writers keyed by SongId — the N+1-avoiding form of
+     * `_getWriters()` for `getSongs()`. `ORDER BY SongId, Id` keeps each song's
+     * writers in curator order within the grouped result. The exemplar the
+     * other five `_get*Map()` accessors follow (see the section note above).
+     *
+     * @param  string[] $songIds
+     * @return array<string,string[]> SongId → writer names.
      */
     private function _getWritersMap(array $songIds): array
     {
