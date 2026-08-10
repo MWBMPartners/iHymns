@@ -701,6 +701,17 @@ export class Router {
            Must run before the early `return`s in the song branch below. */
         this.app.setList?.renderSongNavigation();
 
+        /* #1770 C5 (rule #32) — the Quick "Go Live" HOST bar is likewise
+           `position:fixed` on `<body>`, so it survives an SPA content swap on
+           its own; call it unconditionally on EVERY navigation (not only
+           song ones) so leaving a song page — or navigating between two
+           non-song pages while hosting — never strands it, and so it stays
+           visible across the WHOLE app while hosting (req #1), not just the
+           one song page `initSongPage()` already re-renders it from. Same
+           idempotent remove-then-conditionally-add shape as
+           `renderSongNavigation()` immediately above. */
+        this.app.liveFollow?.renderHostBar();
+
         /* #1741 P4a-3 — a legacy /writer/<name-slug> (or a name-slug /musician/
            credit link, or a /person|/people alias path) whose fragment resolved to
            a registry musician carries the canonical path on .page-musician.

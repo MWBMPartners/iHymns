@@ -27,6 +27,12 @@
    out of sync with what user-auth.js actually dispatches. */
 import { EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+/* #1770 C5 — shared anonymous-follower identity (device id + the same-origin
+   presence cookie the Phase-3 gate reads). Extracted from service-follow.js
+   so a Quick "Go Live" follower unlocks the host's CCLI licence the SAME way
+   a Service-Mode congregant does (CLAUDE.md modularity rule — see
+   presence-identity.js's doc-comment for the full "why"). */
+import { deviceId, setPresenceCookie, clearPresenceCookie } from '../utils/presence-identity.js';
 
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
@@ -42,11 +48,26 @@ export class LiveFollow {
         this.followToken = null;   // per-follower poll-bucket token (#1377); NOT auth — the code is
         this.followRev   = 0;      // last revision seen as a follower
         this.followHost  = '';     // host display name (follower banner)
+        /* #1770 C5 — the presence-minting join's CCLI-unlock token (req #3/#6).
+           null on an older server (no presenceToken key in the join response)
+           or when the follow was never a presence-minting join — back-compat
+           by absence, the SAME posture followToken already established. */
+        this.presenceToken = null;
         this._hbTimer    = null;
         this._pollTimer  = null;
         this._lastBroadcast = '';  // "songId|idx" de-dupe so re-mounts don't re-POST
         this._pendingScroll = null;// componentIndex to scroll to once the followed song renders
         this._polling    = false;  // re-entrancy guard for the async poll tick
+        /* #1770 C5 — leader-activity tracking (req #2/#5). _lastInteractionAt is
+           bumped ONLY by a genuine pointerdown/keydown while hosting; _lastBeatAt
+           is the boundary of the last heartbeat window. The automated 30s beat
+           alone must NEVER count as activity (plan §11 landmine 3 — that would
+           recreate the immortal-abandoned-tab bug this feature exists to fix).
+           _activityBound holds the bound listener so it can be removed on end. */
+        this._lastInteractionAt = 0;
+        this._lastBeatAt        = 0;
+        this._activityBound     = null;
+        this._hostConsole       = null; // lazily-created LiveHostConsole instance (#1770 C6)
     }
 
     init() {
@@ -60,8 +81,9 @@ export class LiveFollow {
                value written by an earlier client (token then absent → poll falls
                back to per-IP server-side; back-compat). */
             const fp = this._readFollowState();
-            this.followCode  = fp.code  || null;
-            this.followToken = fp.token || null;
+            this.followCode     = fp.code          || null;
+            this.followToken    = fp.token         || null;
+            this.presenceToken  = fp.presenceToken || null;
         } catch (_e) { /* storage blocked — feature still works in-memory */ }
         this.followRev = 0;
 
@@ -71,11 +93,19 @@ export class LiveFollow {
         if (this.hostCode && this.followCode) {
             this.followCode = null;
             this.followToken = null;
+            this.presenceToken = null;
             try { sessionStorage.removeItem(LF_FOLLOW_KEY); } catch (_e) {}
         }
 
-        if (this.hostCode)   { this._startHeartbeat(); }
-        if (this.followCode) { this._showFollowBanner(); this._startPolling(); }
+        if (this.hostCode)   { this._startHeartbeat(); this.renderHostBar(); }
+        if (this.followCode) {
+            this._showFollowBanner();
+            this._startPolling();
+            /* #1770 C5 — re-assert the presence cookie for the Phase-3 gate
+               after a full reload (mirrors service-follow.js's own resume
+               branch). Absent on a pre-#1770-C3 follow state — no-op. */
+            if (this.presenceToken) { setPresenceCookie(this.presenceToken); }
+        }
 
         /* If the host signs out, their session can't be authenticated any more — end it. */
         document.addEventListener(EVT_AUTH_CHANGED, () => {
@@ -93,6 +123,11 @@ export class LiveFollow {
         const songId = (page.dataset.songId || '').trim();
 
         this._mountControls(page, songId);
+        /* #1770 C5 (req #1) — the fixed host bar is a SEPARATE affordance from
+           the inline song-page badge above: it is what makes hosting VISIBLE
+           on every page, not just the one the leader happened to broadcast
+           from. Idempotent (rule #32 shape) — safe to call on every render. */
+        this.renderHostBar();
 
         if (this.hostCode && songId) {
             this._broadcast(songId, 0);
@@ -154,6 +189,7 @@ export class LiveFollow {
             this._startHeartbeat();
             const page = document.querySelector('.page-song');
             if (page) { this._mountControls(page, (page.dataset.songId || '').trim()); }
+            this.renderHostBar();
             this.app.showToast('You’re live — share code ' + this.hostCode, 'success', 6000);
         } catch (_e) {
             this.app.showToast('Could not start the session (network error).', 'danger');
@@ -168,6 +204,12 @@ export class LiveFollow {
         try { sessionStorage.removeItem(LF_HOST_KEY); } catch (_e) {}
         const page = document.querySelector('.page-song');
         if (page) { this._mountControls(page, (page.dataset.songId || '').trim()); }
+        /* #1770 C5/C6 — tear down every host-only surface. renderHostBar()
+           removes the bar unconditionally then no-ops the re-add since
+           hostCode is already null (rule #32 shape). */
+        this.renderHostBar();
+        this._removeCodeView();
+        if (this._hostConsole) { this._hostConsole.close(); }
         if (code) {
             try { await this._api('live_follow_leave', { method: 'POST', auth: true, body: { code } }); } catch (_e) {}
         }
@@ -184,8 +226,12 @@ export class LiveFollow {
                 body: { code: this.hostCode, songId, componentIndex },
             });
             if (r.status === 409 || (!r.httpOk && r.status !== 0)) {
-                /* Session was superseded / ended / expired server-side. */
-                this.app.showToast('Live session ended (it was closed or expired).', 'warning');
+                /* Session was superseded / ended / expired server-side — OR,
+                   since #1770 C2, idle-closed. ONE message covers all three
+                   (I6 anti-probe opacity — a host cannot distinguish "someone
+                   else closed it" from "it timed out" from this alone, and
+                   isn't meant to). */
+                this.app.showToast('Your live session ended (closed or timed out after inactivity).', 'warning');
                 this.endHost(true);
                 return;
             }
@@ -206,12 +252,21 @@ export class LiveFollow {
             document.addEventListener('visibilitychange', this._hbVisBound);
             window.addEventListener('focus', this._hbVisBound);
         }
+        this._startActivityTracking();
     }
     async _beatNow() {
         if (!this.hostCode) { this._stopHeartbeat(); return; }
         try {
-            const r = await this._api('live_follow_heartbeat', { method: 'POST', auth: true, body: { code: this.hostCode } });
-            if (r.data && r.data.ok === false) { this.endHost(true); }
+            const r = await this._api('live_follow_heartbeat', {
+                method: 'POST', auth: true,
+                body: { code: this.hostCode, leaderActive: this._consumeLeaderActive() },
+            });
+            if (r.data && r.data.ok === false) {
+                /* #1770 C2 idle-close (or the session was ended/superseded
+                   elsewhere) — same unified copy as the update-409 path above. */
+                this.app.showToast('Your live session ended (closed or timed out after inactivity).', 'warning');
+                this.endHost(true);
+            }
         } catch (_e) { /* transient */ }
     }
     _stopHeartbeat() {
@@ -221,6 +276,39 @@ export class LiveFollow {
             window.removeEventListener('focus', this._hbVisBound);
             this._hbVisBound = null;
         }
+        this._stopActivityTracking();
+    }
+
+    /* #1770 C5 (req #2/#5) — passive leader-activity tracking. Installed only
+       while hosting (bracketed by _startHeartbeat/_stopHeartbeat, which are
+       themselves the "am I currently hosting" bracket), removed on end.
+       `{ passive: true }` on pointerdown — this listener only ever READS the
+       event, never calls preventDefault(), so the browser can keep scrolling
+       off the main thread. keydown has no passive-eligible default to give up
+       here, so it is added without the option (matches MDN's own guidance —
+       passive is only meaningful for a handler that could otherwise block
+       scrolling/zooming). https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener#using_passive_listeners */
+    _startActivityTracking() {
+        if (this._activityBound) { return; } /* already installed */
+        this._lastBeatAt = Date.now();
+        this._activityBound = () => { this._lastInteractionAt = Date.now(); };
+        document.addEventListener('pointerdown', this._activityBound, { passive: true });
+        document.addEventListener('keydown', this._activityBound);
+    }
+    _stopActivityTracking() {
+        if (!this._activityBound) { return; }
+        document.removeEventListener('pointerdown', this._activityBound);
+        document.removeEventListener('keydown', this._activityBound);
+        this._activityBound = null;
+        this._lastInteractionAt = 0;
+        this._lastBeatAt = 0;
+    }
+    /** Has there been a GENUINE interaction since the last heartbeat window began?
+        Consumes (resets) the window boundary — call exactly once per beat. */
+    _consumeLeaderActive() {
+        const active = this._lastInteractionAt > this._lastBeatAt;
+        this._lastBeatAt = Date.now();
+        return active;
     }
 
     /* ------------------------------------------------------------- FOLLOWER -- */
@@ -248,7 +336,20 @@ export class LiveFollow {
 
     async _doJoin(code) {
         try {
-            const r = await this._api('live_follow_join', { method: 'GET', query: '&code=' + encodeURIComponent(code) });
+            /* #1770 C3/C5 (req #3/#6) — POST with a presenceDeviceId opts this
+               join into presence-minting server-side (live_follow_join's
+               additive POST mode); the code itself still travels on the query
+               string (the server reads it from $_GET regardless of method —
+               see api.php's live_follow_join, which never changed that). A
+               server without the #1770 C3 build simply ignores the body and
+               answers exactly as the old GET join did — presenceToken is then
+               absent from the response and the cookie below is never set
+               (back-compat by absence, the followToken precedent below). */
+            const r = await this._api('live_follow_join', {
+                method: 'POST',
+                query: '&code=' + encodeURIComponent(code),
+                body: { presenceDeviceId: deviceId() },
+            });
             /* An env in maintenance answers 503 ({maintenance:true} from the gate).
                The follower is anonymous and does NOT bypass maintenance, so without
                this branch they'd see the leader's perfectly-good code blamed as wrong.
@@ -268,9 +369,13 @@ export class LiveFollow {
                congregation isn't throttled as one IP. May be absent if the server
                is an older build; the poll then falls back to per-IP (back-compat). */
             this.followToken = (typeof r.data.followToken === 'string' && r.data.followToken) ? r.data.followToken : null;
+            /* #1770 C3/C5 — the CCLI-unlock presence token; absent unless the
+               presence table exists AND the server actually minted one. */
+            this.presenceToken = (typeof r.data.presenceToken === 'string' && r.data.presenceToken) ? r.data.presenceToken : null;
             this.followRev  = (typeof r.data.revision === 'number') ? r.data.revision : 0;
             this.followHost = r.data.hostDisplayName || '';
             this._writeFollowState();
+            if (this.presenceToken) { setPresenceCookie(this.presenceToken); }
             this._showFollowBanner();
             this._startPolling();
             this.app.showToast('Following ' + (this.followHost ? ('“' + this.followHost + '”') : 'the leader') + '.', 'success');
@@ -283,11 +388,13 @@ export class LiveFollow {
     leaveFollow(silent = false) {
         this.followCode = null;
         this.followToken = null;
+        this.presenceToken = null;
         this.followRev = 0;
         this.followHost = '';
         this._pendingScroll = null;
         this._stopPolling();
         try { sessionStorage.removeItem(LF_FOLLOW_KEY); } catch (_e) {}
+        clearPresenceCookie();
         this._removeFollowBanner();
         const page = document.querySelector('.page-song');
         if (page) { this._mountControls(page, (page.dataset.songId || '').trim()); }
@@ -453,6 +560,148 @@ export class LiveFollow {
         if (bar && bar.parentNode) { bar.parentNode.removeChild(bar); }
     }
 
+    /* ------------------------------------------------------------- host bar -- */
+
+    /**
+     * #1770 C5 (req #1) — the fixed HOST bar, visible on every page while
+     * hosting (not just the song page the leader broadcast from — that is
+     * the whole point of this delta: persistence was already real,
+     * `_showFollowBanner`'s sibling on the follower side just never had a
+     * host-side equivalent making it VISIBLE off the one song page).
+     *
+     * Rule #32 shape (CLAUDE.md — the setlist bar's own pattern,
+     * `setlist.js`'s `renderSongNavigation()`): removes any existing
+     * instance UNCONDITIONALLY, as the very FIRST statement, before any
+     * early return — a `position:fixed` element on `<body>` survives an SPA
+     * content swap on its own, so skipping the teardown-before-any-return
+     * ordering strands the bar over whatever page the leader navigates to
+     * next. Called from `init()`, every `initSongPage()`, `goLive()`,
+     * `endHost()`, AND unconditionally from `router.js`'s `afterPageLoad()`
+     * on EVERY navigation (mirroring `setList.renderSongNavigation()`'s own
+     * wiring) — that last call site is what makes the "every page" half of
+     * req #1 true for navigations that never touch a song page at all.
+     */
+    renderHostBar() {
+        document.getElementById('live-host-bar')?.remove();
+        if (!this.hostCode) { return; }
+
+        const bar = document.createElement('div');
+        bar.id = 'live-host-bar';
+        bar.setAttribute('role', 'status');
+        bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:1080;'
+            + 'background:#dc3545;color:#fff;text-align:center;padding:0.4rem 1rem;'
+            + 'font-size:0.85rem;line-height:1.3;box-shadow:0 -2px 8px rgba(0,0,0,.2);'
+            + 'padding-bottom:calc(0.4rem + env(safe-area-inset-bottom, 0px));'
+            + 'display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;justify-content:center;';
+
+        const label = document.createElement('span');
+        label.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>LIVE · <strong>' + this._esc(this.hostCode) + '</strong>';
+
+        const codeBtn = this._hostBarButton('Show code', () => this._toggleCodeView());
+        const consoleBtn = this._hostBarButton('Console', () => this._openConsole());
+        const endBtn = this._hostBarButton('End', () => this.endHost(false));
+
+        bar.appendChild(label);
+        bar.appendChild(codeBtn);
+        bar.appendChild(consoleBtn);
+        bar.appendChild(endBtn);
+        document.body.appendChild(bar);
+    }
+
+    _hostBarButton(label, onClick) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-light';
+        btn.style.cssText = 'padding:0.05rem 0.5rem;font-size:0.78rem;';
+        btn.textContent = label;
+        btn.addEventListener('click', onClick);
+        return btn;
+    }
+
+    /* -------------------------------------------------------- big code + QR -- */
+
+    /**
+     * #1770 C6 (req #6) — a large code + QR overlay, toggled from the host
+     * bar's "Show code" button. QR ONLY via the same-origin `/qr.php`
+     * endpoint (rule #38 — never a client-side QR library); the join URL is
+     * `/?svc_code=<CODE>`, the SAME param the Service-Projection QR already
+     * emits (service-projection.php's `joinUrlFor()`) and that
+     * `service-follow.js`'s `_readSvcCodeParam()` now reads (rule #33 —
+     * closes the standing emitter-with-no-reader gap). A `/qr.php` 503
+     * (CueRCode not configured) simply fails the `<img>` load and the big
+     * typed code alongside it keeps working — never a blank box.
+     */
+    _toggleCodeView() {
+        if (document.getElementById('live-host-code-overlay')) { this._removeCodeView(); return; }
+        this._showCodeView();
+    }
+
+    _showCodeView() {
+        this._removeCodeView();
+        if (!this.hostCode) { return; }
+
+        const overlay = document.createElement('div');
+        overlay.id = 'live-host-code-overlay';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-label', 'Live session code');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:1090;background:#0b1020;color:#fff;'
+            + 'display:flex;flex-direction:column;align-items:center;justify-content:center;'
+            + 'text-align:center;padding:4vmin;gap:3vmin;';
+
+        const codeEl = document.createElement('div');
+        codeEl.style.cssText = 'font-size:min(22vw,14vh,7rem);font-weight:800;letter-spacing:.08em;'
+            + 'font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;';
+        codeEl.textContent = this.hostCode;
+
+        /* aria-hidden — a purely visual accelerator for a phone camera; the
+           typed code above already conveys everything a screen reader needs
+           (mirrors service-projection.php's own QR treatment, #1339). */
+        const qrWrap = document.createElement('div');
+        qrWrap.setAttribute('aria-hidden', 'true');
+        qrWrap.style.cssText = 'width:min(50vw,40vh,320px);height:min(50vw,40vh,320px);background:#fff;'
+            + 'border-radius:1rem;padding:1rem;display:flex;align-items:center;justify-content:center;';
+        const img = document.createElement('img');
+        img.alt = '';
+        img.style.cssText = 'width:100%;height:100%;display:block;';
+        img.addEventListener('error', () => { qrWrap.style.display = 'none'; });
+        const joinUrl = location.origin + '/?svc_code=' + encodeURIComponent(this.hostCode);
+        img.src = '/qr.php?data=' + encodeURIComponent(joinUrl) + '&format=svg&size=512';
+        qrWrap.appendChild(img);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn btn-outline-light';
+        closeBtn.textContent = 'Close';
+        closeBtn.addEventListener('click', () => this._removeCodeView());
+
+        overlay.appendChild(codeEl);
+        overlay.appendChild(qrWrap);
+        overlay.appendChild(closeBtn);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) { this._removeCodeView(); } });
+        document.body.appendChild(overlay);
+    }
+
+    _removeCodeView() {
+        document.getElementById('live-host-code-overlay')?.remove();
+    }
+
+    /* -------------------------------------------------------------- console -- */
+
+    /**
+     * #1770 C6 (req #6, optional) — open the lazily-loaded drive-sections
+     * console. Real ES module, dynamically imported (rule #30 — this file is
+     * itself a real module in the app.js graph, never an injected fragment
+     * script, so a dynamic `import()` here carries none of the nonce/CSP
+     * problem that pattern exists to avoid).
+     */
+    _openConsole() {
+        if (!this.hostCode) { return; }
+        import('./live-host-console.js').then((m) => {
+            if (!this._hostConsole) { this._hostConsole = new m.LiveHostConsole(this); }
+            this._hostConsole.open();
+        }).catch((err) => { console.error('[LiveFollow] console load failed:', err); });
+    }
+
     _esc(s) {
         return String(s).replace(/[&<>"']/g, (c) => (
             { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -461,36 +710,45 @@ export class LiveFollow {
 
     /* ---------------------------------------------------- follow persistence -- */
 
-    /* Read the persisted follow state (#1377). New shape is JSON {code, token};
-       a LEGACY value is the bare code string (token absent → per-IP poll). Returns
-       {code, token} with safe defaults, never throws. */
+    /* Read the persisted follow state (#1377, +presenceToken #1770 C5). New
+       shape is JSON {code, token, presenceToken}; a LEGACY value is the bare
+       code string (token/presenceToken absent → per-IP poll, no CCLI unlock
+       re-assertion). Returns {code, token, presenceToken} with safe
+       defaults, never throws. */
     _readFollowState() {
+        const empty = { code: null, token: null, presenceToken: null };
         let raw = null;
-        try { raw = sessionStorage.getItem(LF_FOLLOW_KEY); } catch (_e) { return { code: null, token: null }; }
-        if (!raw) { return { code: null, token: null }; }
+        try { raw = sessionStorage.getItem(LF_FOLLOW_KEY); } catch (_e) { return empty; }
+        if (!raw) { return empty; }
         /* JSON object form. */
         if (raw.charAt(0) === '{') {
             try {
                 const o = JSON.parse(raw);
                 if (o && typeof o === 'object') {
-                    const code  = (typeof o.code === 'string')  ? o.code  : null;
-                    const token = (typeof o.token === 'string') ? o.token : null;
-                    return { code: code, token: token };
+                    const code          = (typeof o.code === 'string')          ? o.code          : null;
+                    const token         = (typeof o.token === 'string')         ? o.token         : null;
+                    const presenceToken = (typeof o.presenceToken === 'string') ? o.presenceToken : null;
+                    return { code: code, token: token, presenceToken: presenceToken };
                 }
             } catch (_e) { /* fall through to legacy string handling */ }
         }
         /* Legacy bare-code string. */
-        return { code: raw, token: null };
+        return { code: raw, token: null, presenceToken: null };
     }
 
-    /* Persist the active follow state as {code, token} (#1377) so a full reload
-       keeps the per-follower poll-bucket token. No-op when not following. */
+    /* Persist the active follow state as {code, token, presenceToken} (#1377,
+       +#1770 C5) so a full reload keeps the per-follower poll-bucket token AND
+       re-asserts the CCLI-unlock presence cookie. No-op when not following. */
     _writeFollowState() {
         if (!this.followCode) { return; }
         try {
             sessionStorage.setItem(
                 LF_FOLLOW_KEY,
-                JSON.stringify({ code: this.followCode, token: this.followToken || null })
+                JSON.stringify({
+                    code: this.followCode,
+                    token: this.followToken || null,
+                    presenceToken: this.presenceToken || null,
+                })
             );
         } catch (_e) { /* storage blocked — in-memory follow still works */ }
     }
