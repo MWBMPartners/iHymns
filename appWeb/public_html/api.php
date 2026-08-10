@@ -16979,9 +16979,24 @@ if ($action !== null) {
                migrated install the resolved value is stamped on THIS row
                (see includes/service_mode.php's "stamp-at-create" doc-block)
                so every later gate/prune reads a pure column, never re-runs
-               the app→org→user precedence chain per request. */
+               the app→org→user precedence chain per request.
+               #1798 — the host may DECLARE a session length at "Go Live"
+               ("keep live for 30 min / 1 hour / 2 hours / until I end it").
+               $enforcedMins (by-ref out-param) is the host's OWN org-enforced
+               cap, if any — the org lock wins for the host even when they
+               explicitly asked for longer, mirroring live_follow_extend's
+               identical host-side cap. A client that sends nothing keeps
+               today's resolved-default behaviour byte-for-byte. */
             $idleColsExist   = serviceMode_idleColumnsExist($db);
-            $idleTimeoutMins = $idleColsExist ? serviceMode_resolveIdleTimeoutMins($db, $userId) : null;
+            $enforcedMins    = null;
+            $idleTimeoutMins = $idleColsExist ? serviceMode_resolveIdleTimeoutMins($db, $userId, $enforcedMins) : null;
+            if ($idleColsExist && isset($body['idleTimeoutMins']) && is_numeric($body['idleTimeoutMins'])) {
+                $chosenIdle = max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$body['idleTimeoutMins']));
+                if ($enforcedMins !== null) {
+                    $chosenIdle = min($chosenIdle, $enforcedMins);
+                }
+                $idleTimeoutMins = $chosenIdle;
+            }
 
             /* #1770 C2 — opportunistic idle-session prune, piggy-backed on
                this hot path (mirrors serviceMode_retireExpiredCodes()'s own
@@ -17322,6 +17337,151 @@ if ($action !== null) {
             }
 
             sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * #1798 (follow-on to #1770/#1792) — extend/keep a running Quick
+         * ("Go Live") session alive mid-service. ELI5: the leader's phone
+         * died during the sermon and the idle clock is about to close their
+         * session — this resets the clock and (optionally) widens the
+         * window, and lets a church admin do the same on the leader's
+         * behalf. DETAILED — authorisation is resolved via the HOST's OWN
+         * `tblOrganisationMembers` rows, never the session's `OrgId` column:
+         * Quick sessions keep `OrgId = NULL` (rule #26, load-bearing for the
+         * CCLI gate), so "is the caller an org-admin who may act here?" is
+         * answered by walking from the HOST to their orgs, not from the
+         * session. Existence-gated on `serviceMode_idleColumnsExist()` — the
+         * whole idle machinery (and therefore "extend" as a concept) simply
+         * doesn't exist pre-#1770 migration.
+         * ----------------------------------------------------------------- */
+        case 'live_follow_extend': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            /* validateCsrfRequest() lives in manage/includes/auth.php — the
+               SAME belt-and-braces pattern as auth_provider_unlink/
+               account_delete (rule #29): the global X-Requested-With gate
+               (api.php top-of-file) already blocks a cross-site POST; this
+               is a second, independent check on THIS state-changing write. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            $userId        = (int)$authUser['Id'];
+            $requesterRole = (string)($authUser['Role'] ?? '');
+            $liveIp        = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            /* 60 extends / hour / user — generous for the occasional
+               dead-phone-mid-sermon case, paired with recordRateLimitHit
+               below (the two-call contract, rule #1636 /
+               test-rate-limit-pairing.php). */
+            checkRateLimit('live_follow_extend', $liveIp, 60, 3600, true, $userId);
+            recordRateLimitHit('live_follow_extend', rateLimitKey($liveIp, $userId));
+
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            $requestedIdle = $body['idleTimeoutMins'] ?? null;
+            if ($requestedIdle === null || !is_numeric($requestedIdle)) {
+                sendJson(['error' => 'idleTimeoutMins is required.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            /* Gate FIRST, before anything below touches the IdleTimeoutMins/
+               LastLeaderSeenAt columns — mysqli runs STRICT (rule #9), so an
+               un-migrated install would throw, not silently no-op. 409 (not
+               404/400) so the client can tell "not applicable on this
+               install yet" apart from "wrong code" (rule #35). */
+            if (!serviceMode_idleColumnsExist($db)) {
+                sendJson(['error' => 'This install has not been migrated for Live Follow session lengths yet.'], 409);
+                break;
+            }
+
+            /* Resolve the session — channel-scoped (rule #26): a code on a
+               DIFFERENT docroot's session must never be touched, even though
+               all three docroots share one MySQL. Every write below keys off
+               this row's numeric Id, so the channel scoping happens HERE,
+               once, rather than being repeated on the UPDATE. */
+            $channel = serviceMode_channel();
+            $selSess = $db->prepare(
+                'SELECT Id, HostUserId FROM tblLiveFollowSessions
+                  WHERE SessionCode = ? AND Channel = ? AND IsActive = 1'
+            );
+            $selSess->bind_param('ss', $code, $channel);
+            $selSess->execute();
+            $sessRow = $selSess->get_result()->fetch_assoc();
+            $selSess->close();
+            if (!$sessRow) { sendJson(['error' => 'Session not found or ended.'], 404); break; }
+            $sessionId  = (int)$sessRow['Id'];
+            $hostUserId = (int)$sessRow['HostUserId'];
+
+            /* Authorisation — the HOST, OR an admin/owner of an org the HOST
+               belongs to, OR a site admin/global_admin (mirrors
+               userCanActOnOrg()'s own role check). Resolved via the HOST's
+               tblOrganisationMembers rows, never the session's own OrgId —
+               Quick sessions keep OrgId = NULL (rule #26). Extracted into
+               serviceMode_liveFollowExtendAuthorize() so the DECISION is
+               independently unit-testable (tests/php/test-live-follow-extend.php)
+               without an HTTP harness around this dispatcher. */
+            $authKind = serviceMode_liveFollowExtendAuthorize($db, $hostUserId, $userId, $requesterRole);
+            if ($authKind === 'denied') {
+                sendJson(['error' => 'Not authorised to extend this session.'], 403);
+                break;
+            }
+            $isHost = ($authKind === 'host');
+
+            $chosenIdle = max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$requestedIdle));
+            if ($isHost) {
+                /* The HOST's own org-enforced cap binds them here exactly as
+                   it did at create (live_follow_create above) — asking for
+                   more time through the "Extend" control doesn't lift the
+                   org's lock. */
+                $enforcedMins = null;
+                serviceMode_resolveIdleTimeoutMins($db, $hostUserId, $enforcedMins);
+                if ($enforcedMins !== null) {
+                    $chosenIdle = min($chosenIdle, $enforcedMins);
+                }
+            }
+            /* else: an org-admin or site-admin extending on the host's
+               behalf holds the authority to override that lock — capped
+               only at the global [5,240] band already applied above. */
+            $appliedIdle = $chosenIdle;
+
+            /* Set the new window AND reset the idle clock to now, so the
+               FULL window applies from the moment of extending — the whole
+               point of the feature (a dead phone mid-sermon shouldn't leave
+               the leader with whatever fraction of the old window remained). */
+            $upd = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET IdleTimeoutMins = ?, LastLeaderSeenAt = UTC_TIMESTAMP(),
+                        ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR)
+                  WHERE Id = ? AND IsActive = 1'
+            );
+            $upd->bind_param('ii', $appliedIdle, $sessionId);
+            $upd->execute();
+            $changed = $upd->affected_rows;
+            $upd->close();
+            if ($changed === 0) {
+                sendJson(['ok' => false, 'error' => 'Session not found, not yours, or ended.'], 409);
+                break;
+            }
+
+            logActivity('live.session.extend', 'live_session', (string)$sessionId, [
+                'by'   => $isHost ? 'host' : 'org_admin',
+                'mins' => $appliedIdle,
+            ]);
+
+            sendJson(['ok' => true, 'idleTimeoutMins' => $appliedIdle]);
             break;
         }
 

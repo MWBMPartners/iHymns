@@ -1500,12 +1500,30 @@ function serviceMode_liveFollowAliveSql(\mysqli $db, string $alias = 's'): strin
  * wrapped: a resolver failure must never break session creation, so any
  * \Throwable degrades that ONE layer to "not set" rather than propagating.
  *
- * @param \mysqli $db
- * @param int     $userId The host creating the session (>0 — Quick sessions
- *                         always have an authenticated HostUserId).
+ * #1798 — `$enforcedMinsOut` is an ADDITIVE by-reference out-param (default
+ * null, so every pre-#1798 call site is untouched) that exposes JUST the
+ * enforced-layer value the resolver already computed internally, clamped the
+ * same way the return value is. It exists so `live_follow_create`'s
+ * client-chosen "Go Live" duration and `live_follow_extend`'s host-initiated
+ * extension can each be capped at the HOST's own org lock ("the org lock
+ * wins for the host") without a second reader of `LiveIdleTimeoutMins` /
+ * `EnforceIdleTimeout` — the A3 guard in `tests/php/test-live-follow-idle.php`
+ * asserts those two columns are read ONLY inside this resolver (or their own
+ * `const`/column-probe declarations), so a standalone
+ * "just get me the enforced value" helper would itself be the violation this
+ * out-param avoids. `null` means "no org enforces a value for this user" —
+ * the caller then applies no additional cap beyond the global [5, 240] band.
+ *
+ * @param \mysqli   $db
+ * @param int       $userId          The host creating/extending the session
+ *                                   (>0 — Quick sessions always have an
+ *                                   authenticated HostUserId).
+ * @param int|null &$enforcedMinsOut #1798 OUT: the enforced-org value (already
+ *                                   clamped to [5, 240]), or null when no org
+ *                                   the user belongs to enforces one.
  * @return int Resolved minutes, clamped to the app-wide [5, 240] band.
  */
-function serviceMode_resolveIdleTimeoutMins(\mysqli $db, int $userId): int
+function serviceMode_resolveIdleTimeoutMins(\mysqli $db, int $userId, ?int &$enforcedMinsOut = null): int
 {
     /* --- 1. App default ---------------------------------------------- */
     $appDefault = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES;
@@ -1571,6 +1589,12 @@ function serviceMode_resolveIdleTimeoutMins(\mysqli $db, int $userId): int
     }
 
     /* --- 4. Resolve + clamp --------------------------------------------- */
+    /* #1798 — expose the enforced layer alone (clamped, same as the return
+       value) so a create/extend caller can cap a CLIENT-CHOSEN value at it,
+       independently of whichever layer ends up winning $resolved below. */
+    $enforcedMinsOut = $enforced !== null
+        ? max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, $enforced))
+        : null;
     $resolved = $enforced ?? ($userVal ?? ($orgDefault ?? $appDefault));
     return max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, $resolved));
 }
@@ -1661,6 +1685,70 @@ function serviceMode_pruneIdleQuickSessions(\mysqli $db, string $channel): int
         error_log('[service_mode/pruneIdleQuickSessions] ' . $e->getMessage());
         return 0;
     }
+}
+
+/**
+ * #1798 (follow-on to #1770/#1792) — resolve WHO may extend/keep-alive a
+ * RUNNING Quick (host) session: the session's own HOST, an admin/owner of an
+ * organisation the HOST belongs to, or a site admin/global_admin.
+ *
+ * ELI5: "is this person allowed to add more time to that leader's session?"
+ * — yes if it's their OWN session, yes if they run a church the leader
+ * belongs to, yes if they're a whole-site administrator, no otherwise.
+ *
+ * DETAILED — resolved via the HOST's OWN `tblOrganisationMembers` rows,
+ * NEVER the session's own `OrgId` column: Quick sessions keep `OrgId = NULL`
+ * (rule #26, load-bearing for the CCLI gate — a Quick session must never be
+ * treated as belonging to an organisation for gating purposes), so
+ * org-admin authority here is entirely about who the HOST is, not a session
+ * column. Extracted out of `api.php`'s `live_follow_extend` case body (as a
+ * pure decision, no response-writing) so the AUTHORIZATION outcome is
+ * independently unit-testable against a live DB
+ * (`tests/php/test-live-follow-extend.php`) without needing an HTTP harness
+ * around the dispatcher — the same "testable primitive behind a thin case"
+ * shape `serviceMode_codeOnOtherChannel()` already established for #1792.
+ *
+ * @param \mysqli $db
+ * @param int     $hostUserId      The session's HostUserId.
+ * @param int     $requesterUserId The authenticated caller attempting to extend.
+ * @param string  $requesterRole   The caller's tblUsers.Role.
+ * @return string One of 'host' | 'org_admin' | 'site_admin' | 'denied'. The
+ *                caller treats 'host' specially (the org-enforced cap
+ *                applies); 'org_admin' and 'site_admin' both mean "extend
+ *                allowed, capped only at the global band"; 'denied' means
+ *                403.
+ */
+function serviceMode_liveFollowExtendAuthorize(\mysqli $db, int $hostUserId, int $requesterUserId, string $requesterRole): string
+{
+    if ($hostUserId > 0 && $hostUserId === $requesterUserId) {
+        return 'host';
+    }
+    if (in_array($requesterRole, ['admin', 'global_admin'], true)) {
+        return 'site_admin';
+    }
+    if ($requesterUserId <= 0 || !function_exists('userIsOrgAdminOf')) {
+        /* userIsOrgAdminOf() lives in includes/entitlements.php — best-effort
+           against a caller that hasn't loaded it (mirrors userCanActOnOrg()'s
+           own fail-closed posture in organisation_validation.php). */
+        return 'denied';
+    }
+    $adminOrgs = userIsOrgAdminOf($requesterUserId);
+    if (!$adminOrgs) {
+        return 'denied';
+    }
+    /* Placeholders built from a COUNT — a hardcoded construction, never
+       request data (rule #5). */
+    $placeholders = implode(',', array_fill(0, count($adminOrgs), '?'));
+    $stmt = $db->prepare(
+        "SELECT 1 FROM tblOrganisationMembers WHERE UserId = ? AND OrgId IN ({$placeholders}) LIMIT 1"
+    );
+    $types  = 'i' . str_repeat('i', count($adminOrgs));
+    $params = array_merge([$hostUserId], $adminOrgs);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit ? 'org_admin' : 'denied';
 }
 
 /* =============================================================================

@@ -11838,6 +11838,23 @@ paths:
                   maximum: 9999
                 state:
                   $ref: "#/components/schemas/LiveSessionState"
+                idleTimeoutMins:
+                  type: integer
+                  nullable: true
+                  minimum: 5
+                  maximum: 240
+                  example: 60
+                  description: >-
+                    #1798 — declare THIS session's leader-idle auto-close
+                    window at "Go Live" time (clamped to [5, 240]; 240 =
+                    "until I end it" — the existing 4-hour hard ceiling).
+                    Overrides the app->org->user resolved default for this
+                    one session only. If the host is subject to an
+                    ENFORCING org idle-timeout lock, the chosen value is
+                    further capped at that lock — the org's lock always
+                    wins for the host, even when they ask for longer.
+                    Omit to keep today's resolved-default behaviour.
+                    No-op (ignored) on an un-migrated install.
       responses:
         "200":
           description: Session started
@@ -11859,9 +11876,11 @@ paths:
                     nullable: true
                     example: 15
                     description: >-
-                      #1770 — the RESOLVED leader-idle auto-close timeout
-                      (minutes) stamped on this session at create time, from
-                      the app-default -> org-override -> user-preference
+                      #1770/#1798 — the leader-idle auto-close timeout
+                      (minutes) actually STAMPED on this session at create
+                      time — the request body's `idleTimeoutMins` when the
+                      caller chose one (subject to any enforcing org cap),
+                      else the app-default -> org-override -> user-preference
                       precedence chain. `null` on an un-migrated install
                       (additive; absent from every client before this field
                       existed — safe to ignore).
@@ -12033,6 +12052,100 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "405":
           description: POST method required
+
+  /api.php?action=live_follow_extend:
+    post:
+      operationId: liveFollowExtend
+      tags: [Live Follow]
+      summary: Extend/keep a running Quick session alive mid-service (#1798)
+      description: |
+        Widens the leader-idle auto-close window on an ALREADY-RUNNING
+        session AND resets the idle clock to now, so the full chosen
+        window applies from the moment of extending (not whatever fraction
+        of the old window remained) — the fix for "the leader's phone died
+        during the sermon".
+
+        Authorised for EITHER:
+          - the session's own HOST, or
+          - an admin/owner of an organisation the HOST belongs to
+            (resolved via the host's `tblOrganisationMembers` rows — Quick
+            sessions keep `OrgId = NULL`, so this is never read from the
+            session itself), or
+          - a site admin/global_admin.
+
+        A HOST extending is capped at their own enforcing-org idle-timeout
+        lock, exactly as at `live_follow_create`. An org-admin/site-admin
+        extending on the host's behalf is capped only at the global
+        [5, 240] band — they hold the authority to override that lock.
+
+        Existence-gated on the #1770 idle-timeout migration: returns `409`
+        (not `404`/`400`) on an un-migrated install so a client can tell
+        "not available here yet" apart from "wrong code" (rule #35).
+        Rate-limited to 60 extends / hour / user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_extend] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, idleTimeoutMins]
+              properties:
+                code:
+                  type: string
+                  description: The session code from `live_follow_create` (4-12 alphanumeric).
+                  example: "7K3PXM"
+                idleTimeoutMins:
+                  type: integer
+                  minimum: 5
+                  maximum: 240
+                  example: 120
+                  description: >-
+                    Requested new window in minutes; clamped to [5, 240]
+                    (240 = "until I end it"), then further capped per the
+                    host-vs-org-admin rule described above. The response's
+                    `idleTimeoutMins` is the value actually APPLIED.
+      responses:
+        "200":
+          description: Window extended and the idle clock reset to now
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  idleTimeoutMins:
+                    type: integer
+                    example: 120
+                    description: The idle-timeout window actually applied (after clamping/capping).
+        "400":
+          description: Invalid session code, or idleTimeoutMins missing/non-numeric
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Neither the host, an admin/owner of an org the host belongs to, nor a site admin
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Session not found or ended
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "409":
+          description: >-
+            EITHER this install has not run the #1770 idle-timeout migration
+            yet, OR the session ended between the resolve and the update
+            (race) — the two are distinguished only by the error message,
+            never by status (rule #35 applies to the CLIENT's branching,
+            not to every message this endpoint can return).
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=live_follow_join:
     get:

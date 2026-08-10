@@ -68,6 +68,12 @@ export class LiveFollow {
         this._lastBeatAt        = 0;
         this._activityBound     = null;
         this._hostConsole       = null; // lazily-created LiveHostConsole instance (#1770 C6)
+        /* #1798 — the session length the host declared at "Go Live" (or the
+           server-resolved default when they didn't pick one), and later
+           whatever the "Extend" control most recently applied. Purely
+           informational client-side (the server is the source of truth for
+           enforcement) — used only to format the "Kept live for …" toast. */
+        this.idleTimeoutMins    = null;
     }
 
     init() {
@@ -174,16 +180,33 @@ export class LiveFollow {
             this.app.showToast('Leave the session you’re following before hosting your own.', 'warning');
             return;
         }
+        /* #1798 — declare the session length up front ("the sermon gap"): a
+           leader who knows they're covering a full service can pick a
+           longer idle-close window than the site/org default at the moment
+           they go live, rather than discovering mid-sermon that the default
+           was too short. Cancelling the picker is NOT cancelling Go Live —
+           it just means "use the server-resolved default", exactly as if
+           this control didn't exist (the picker is a lightweight ADDITION,
+           never a blocking step). */
+        const chosenMins = await this._pickIdleDuration('Keep live for…');
         try {
+            const body = { songId: songId || null, componentIndex: 0 };
+            if (chosenMins !== null) { body.idleTimeoutMins = chosenMins; }
             const r = await this._api('live_follow_create', {
                 method: 'POST', auth: true,
-                body: { songId: songId || null, componentIndex: 0 },
+                body,
             });
             if (!r.httpOk || !r.data.ok || !r.data.code) {
                 this.app.showToast('Could not start the session: ' + (r.data.error || ('HTTP ' + r.status)), 'danger');
                 return;
             }
             this.hostCode = r.data.code;
+            /* #1798 — the server may have capped the choice (an enforcing
+               org's lock always wins for the host, see api.php's
+               live_follow_create), so track what it actually applied, not
+               what was requested. null on a pre-#1770 / un-migrated server
+               (additive key, back-compat by absence). */
+            this.idleTimeoutMins = (typeof r.data.idleTimeoutMins === 'number') ? r.data.idleTimeoutMins : null;
             this._lastBroadcast = (songId || '') + '|0';
             try { sessionStorage.setItem(LF_HOST_KEY, this.hostCode); } catch (_e) {}
             this._startHeartbeat();
@@ -599,11 +622,16 @@ export class LiveFollow {
 
         const codeBtn = this._hostBarButton('Show code', () => this._toggleCodeView());
         const consoleBtn = this._hostBarButton('Console', () => this._openConsole());
+        /* #1798 — keep a running session alive mid-service (the leader's
+           phone died during the sermon, or they simply want more time than
+           they originally picked at "Go Live"). */
+        const extendBtn = this._hostBarButton('Extend', () => this._extendSession());
         const endBtn = this._hostBarButton('End', () => this.endHost(false));
 
         bar.appendChild(label);
         bar.appendChild(codeBtn);
         bar.appendChild(consoleBtn);
+        bar.appendChild(extendBtn);
         bar.appendChild(endBtn);
         document.body.appendChild(bar);
     }
@@ -616,6 +644,112 @@ export class LiveFollow {
         btn.textContent = label;
         btn.addEventListener('click', onClick);
         return btn;
+    }
+
+    /* ---------------------------------------------------- session length -- */
+
+    /**
+     * #1798 — keep a RUNNING session alive mid-service. Re-uses the same
+     * duration picker as `goLive()` (30 min / 1 hour / 2 hours / until I end
+     * it) then POSTs `live_follow_extend`, which both widens the window AND
+     * resets the idle clock to now (server-side — see api.php) so the FULL
+     * chosen window applies from this moment, not whatever fraction of the
+     * old one remained.
+     */
+    async _extendSession() {
+        if (!this.hostCode) { return; }
+        const mins = await this._pickIdleDuration('Keep live for…');
+        if (mins === null) { return; } /* dismissed — no-op, same posture as goLive()'s picker */
+        try {
+            const r = await this._api('live_follow_extend', {
+                method: 'POST', auth: true,
+                body: { code: this.hostCode, idleTimeoutMins: mins },
+            });
+            /* #1798/rule #35 — branch on HTTP status, never the error prose.
+               409 means specifically "this install hasn't run the #1770
+               idle-timeout migration yet", distinct from every other
+               failure (400/403/404), which fall through to the generic
+               server-message toast below. */
+            if (r.status === 409) {
+                this.app.showToast('This iHymns install hasn’t been updated for session lengths yet — ask your site administrator.', 'warning', 6000);
+                return;
+            }
+            if (!r.httpOk || !r.data.ok) {
+                this.app.showToast(r.data.error || 'Could not extend the session.', 'danger');
+                return;
+            }
+            const applied = (typeof r.data.idleTimeoutMins === 'number') ? r.data.idleTimeoutMins : mins;
+            this.idleTimeoutMins = applied;
+            this.app.showToast('Kept live for ' + this._formatMins(applied) + '.', 'success');
+        } catch (_e) {
+            this.app.showToast('Could not extend the session (network error).', 'danger');
+        }
+    }
+
+    /**
+     * #1798 — a small lightweight choice dialog (mirrors the existing
+     * `bootstrap.Modal` pattern already used directly by several other
+     * modules — setlist.js, request.js, etc. — rather than app.js's
+     * `showChoice()`, which only ever offers exactly two options). Shared by
+     * `goLive()` (session length at start) and `_extendSession()` (mid-
+     * service), so the "30 min / 1 hour / 2 hours / until I end it" set
+     * lives in exactly one place.
+     *
+     * @param {string} title Modal heading.
+     * @returns {Promise<number|null>} The chosen minutes, or null if the
+     *          dialog was dismissed without a choice (caller decides what
+     *          "no choice" means — goLive() treats it as "use the server
+     *          default"; _extendSession() treats it as "do nothing").
+     */
+    _pickIdleDuration(title) {
+        return new Promise((resolve) => {
+            const options = [
+                { label: '30 minutes', value: 30 },
+                { label: '1 hour', value: 60 },
+                { label: '2 hours', value: 120 },
+                { label: 'Until I end it', value: 240 },
+            ];
+            const id = 'live-follow-duration-' + Date.now();
+            const modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = id;
+            modal.setAttribute('tabindex', '-1');
+            modal.setAttribute('aria-labelledby', id + '-label');
+            modal.innerHTML = '<div class="modal-dialog modal-dialog-centered modal-sm">'
+                + '<div class="modal-content">'
+                + '<div class="modal-header">'
+                + '<h5 class="modal-title" id="' + id + '-label">' + this._esc(title) + '</h5>'
+                + '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>'
+                + '</div>'
+                + '<div class="modal-body d-grid gap-2" id="' + id + '-body"></div>'
+                + '</div></div>';
+            document.body.appendChild(modal);
+
+            const body = modal.querySelector('#' + id + '-body');
+            let chosen = null;
+            options.forEach((opt) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-outline-primary';
+                btn.textContent = opt.label;
+                btn.addEventListener('click', () => { chosen = opt.value; bsModal.hide(); });
+                body.appendChild(btn);
+            });
+
+            const bsModal = new bootstrap.Modal(modal);
+            modal.addEventListener('hidden.bs.modal', () => { modal.remove(); resolve(chosen); });
+            bsModal.show();
+        });
+    }
+
+    /** #1798 — human-readable minutes for the "Kept live for …" toast. */
+    _formatMins(mins) {
+        if (mins >= 240) { return '4 hours (until you end it)'; }
+        if (mins >= 60 && mins % 60 === 0) {
+            const hrs = mins / 60;
+            return hrs + (hrs === 1 ? ' hour' : ' hours');
+        }
+        return mins + ' minutes';
     }
 
     /* -------------------------------------------------------- big code + QR -- */
