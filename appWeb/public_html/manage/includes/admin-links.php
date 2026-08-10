@@ -78,6 +78,11 @@ $_adminLinks = [
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
 
     /* Access — gating + permission surfaces (#819) */
+    /* Gating Hub (#1769 P6 / #1778) — the family overview + activation-readiness
+       checklist + master-switch STATE (the flip itself stays on Configuration —
+       one write path, no duplicate control). manage_configuration, same as the
+       switch + the no-op verifier it links to. */
+    ['gating',               '/manage/gating',                 'bi-shield-shaded',   'Gating Hub',            'manage_configuration',        'Access'     ],
     ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
     ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
     /* Licence Types (#459 / #1769 P4) — the licence vocabulary (CCLI, MRL, …),
