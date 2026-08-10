@@ -191,29 +191,44 @@ function sharedSetlistInsert(
     array $data,
     ?int $ownerUserId = null,
     ?string $sourceSetlistId = null,
-    ?int $createdBy = null
+    ?int $createdBy = null,
+    string $scope = 'view',
+    ?string $label = null,
+    ?string $expiresAt = null
 ): ?bool {
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     /* MySQL atomic insert — duplicate-key collision is the signal so
        the caller can pick another ID. PDO surfaced this as SQLSTATE
        23000 (string); mysqli_sql_exception::getCode() returns the
-       MySQL error number 1062 (ER_DUP_ENTRY) for the same condition. */
+       MySQL error number 1062 (ER_DUP_ENTRY) for the same condition.
+
+       The column list is composed from HARDCODED fragments (rule #5 — never
+       user input) gated on the two migration probes, so a legacy install
+       (neither gate) writes exactly `(ShareId, Data)` as before, a #1380
+       install adds the live-link columns, and a #1791 install adds
+       Scope/Label/ExpiresAt. A view link (scope='view', label/expiresAt NULL)
+       writes the same values the column DEFAULTs would — byte-identical. */
     try {
         $db = getDbMysqli();
+        $cols  = ['ShareId', 'Data'];
+        $types = 'ss';
+        $vals  = [$shareId, $json];
         if (_sharedSetlistLiveLinkColumns()) {
-            $stmt = $db->prepare(
-                'INSERT INTO tblSharedSetlists (ShareId, Data, OwnerUserId, SourceSetlistId, CreatedBy)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            /* Types: ShareId=s, Data=s, OwnerUserId=i, SourceSetlistId=s, CreatedBy=i.
-               mysqli sends SQL NULL when a bound PHP null is paired with any type, so
-               an anonymous/legacy share (all three null) writes clean NULLs. */
-            $stmt->bind_param('ssisi', $shareId, $json, $ownerUserId, $sourceSetlistId, $createdBy);
-        } else {
-            $stmt = $db->prepare('INSERT INTO tblSharedSetlists (ShareId, Data) VALUES (?, ?)');
-            $stmt->bind_param('ss', $shareId, $json);
+            $cols[] = 'OwnerUserId'; $cols[] = 'SourceSetlistId'; $cols[] = 'CreatedBy';
+            $types .= 'isi';
+            $vals[] = $ownerUserId; $vals[] = $sourceSetlistId; $vals[] = $createdBy;
         }
+        if (_sharedSetlistTokenColumns()) {
+            $cols[] = 'Scope'; $cols[] = 'Label'; $cols[] = 'ExpiresAt';
+            $types .= 'sss';
+            $vals[] = ($scope === 'edit' ? 'edit' : 'view'); $vals[] = $label; $vals[] = $expiresAt;
+        }
+        $ph = implode(', ', array_fill(0, count($cols), '?'));
+        $stmt = $db->prepare('INSERT INTO tblSharedSetlists (' . implode(', ', $cols) . ") VALUES ($ph)");
+        /* mysqli sends SQL NULL when a bound PHP null is paired with any type, so
+           null owner / label / expiry write clean NULLs. */
+        $stmt->bind_param($types, ...$vals);
         $stmt->execute();
         $stmt->close();
         return true;

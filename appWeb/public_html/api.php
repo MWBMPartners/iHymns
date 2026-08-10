@@ -2213,6 +2213,21 @@ if ($action !== null) {
             $liveOwnerUserId  = null;   /* set only when ownership is proven */
             $liveSourceSetlist = null;
 
+            /* #1791 — capability fields. scope='edit' mints a collab-by-link
+               edit token (gated below on a proven live link + the migration);
+               anything else is a plain view link. label/expiresAt are optional
+               (G1 default: never expire — an omitted/blank/past expiresAt = NULL
+               = never). */
+            $shareScope = (isset($body['scope']) && $body['scope'] === 'edit') ? 'edit' : 'view';
+            $shareLabel = isset($body['label']) ? (mb_substr(trim((string)$body['label']), 0, 100) ?: null) : null;
+            $shareExpiresAt = null;
+            if (!empty($body['expiresAt'])) {
+                $expTs = strtotime((string)$body['expiresAt']);
+                if ($expTs !== false && $expTs > time()) {
+                    $shareExpiresAt = gmdate('Y-m-d H:i:s', $expTs);
+                }
+            }
+
             if ($setlistName === '' || $ownerId === '') {
                 sendJson(['error' => 'Invalid name or owner ID.'], 400);
                 break;
@@ -2228,6 +2243,17 @@ if ($action !== null) {
                 sendJson(['error' => 'Set list cannot exceed 200 songs.'], 400);
                 break;
             }
+
+            /* #1791 — mint rate limit (the gap #1b of the plan): 30 share links
+               per hour per user/IP. Fail-open + table-gated like every other
+               checkRateLimit caller, so it is a clean no-op until the migration
+               runs and can never block a legitimate share. */
+            $mintIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            if (!checkRateLimit('setlist_share', rateLimitKey($mintIp, $authUserId), 30, 3600, true, $authUserId)) {
+                sendJson(['error' => 'Too many share links created recently. Please wait a little and try again.'], 429);
+                break;
+            }
+            recordRateLimitHit('setlist_share', rateLimitKey($mintIp, $authUserId));
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
@@ -2256,11 +2282,31 @@ if ($action !== null) {
                 }
             }
 
+            /* #1791 — EDIT-scope gate. An edit link is a capability to write the
+               owner's LIVE setlist, so it is meaningful ONLY on a proven live
+               link ($liveOwnerUserId set above = authenticated owner of the named
+               setlist). Refuse 403 for a snapshot/anonymous share, 409 when the
+               capability columns aren't migrated yet (status-code contract, rule
+               #35). A view link needs none of this. */
+            if ($shareScope === 'edit') {
+                if (!_sharedSetlistTokenColumns()) {
+                    sendJson(['error' => 'Edit links are not available on this server yet.'], 409);
+                    break;
+                }
+                if ($liveOwnerUserId === null) {
+                    sendJson(['error' => 'Sign in and share one of your own saved set lists to create an edit link.'], 403);
+                    break;
+                }
+            }
+
             /* Determine ID: use existing if updating, generate new otherwise */
             $shareId  = null;
             $existing = null;
             if (!empty($body['id'])) {
-                $candidateId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($body['id'])));
+                /* #1791 — the ONE share-id fold (accepts legacy 8-hex AND
+                   base64url tokens), so re-sharing/updating a long-token view
+                   link doesn't get its id mangled by an `[a-f0-9]` strip. */
+                $candidateId = sharedSetlistSafeShareId((string)$body['id']);
                 if ($candidateId !== '') {
                     $existing = sharedSetlistGet($candidateId);
                     if ($existing === null) {
@@ -2357,12 +2403,24 @@ if ($action !== null) {
                     break;
                 }
             } else {
-                /* Generate a fresh 8-char hex ID with retry on collision */
+                /* Generate a fresh ID with retry on collision. #1791 — an EDIT
+                   link gets a 256-bit base64url capability token (43 chars — the
+                   presence-token shape; entropy IS the security of an anonymous
+                   write grant). A VIEW link keeps the legacy 8-hex id (G2 — long
+                   view tokens — is deferred: it would change every new view URL
+                   shape for a marginal enumeration gain the #1648 throttle already
+                   bounds; trivially flipped here later). */
                 $created = false;
                 for ($i = 0; $i < 10; $i++) {
-                    $shareId         = bin2hex(random_bytes(4));
+                    $shareId = ($shareScope === 'edit')
+                        ? rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=')
+                        : bin2hex(random_bytes(4));
                     $shareData['id'] = $shareId;
-                    $result = sharedSetlistInsert($shareId, $shareData, $persistOwnerUserId, $persistSourceSetlist, $persistOwnerUserId);
+                    $result = sharedSetlistInsert(
+                        $shareId, $shareData,
+                        $persistOwnerUserId, $persistSourceSetlist, $persistOwnerUserId,
+                        $shareScope, $shareLabel, $shareExpiresAt
+                    );
                     if ($result === true)  { $created = true;  break; }
                     if ($result === null)  { /* hard failure */ break; }
                     /* false = collision; try a new ID */
@@ -2384,12 +2442,14 @@ if ($action !== null) {
                     'name'        => $setlistName,
                     'song_count'  => count($setlistSongs),
                     'has_arrangements' => !empty($arrangements),
+                    'scope'       => $shareScope,
                 ]
             );
 
             sendJson([
-                'id'  => $shareId,
-                'url' => '/setlist/shared/' . $shareId,
+                'id'    => $shareId,
+                'url'   => '/setlist/shared/' . $shareId,
+                'scope' => $shareScope,
             ]);
             break;
 
@@ -11416,6 +11476,257 @@ if ($action !== null) {
                 error_log('[setlist_collab_update] ' . $e->getMessage());
                 logActivityError('setlist.collab_update', 'setlist', $setlistId, $e);
                 sendJson(['error' => 'Could not save the shared set list.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #1791 — collab-by-link EDIT: anonymous write through an edit token.
+         *
+         * POST { shareId, songs[], name? }. NO account required (the owner's
+         * #1791 ask, "like cloud storage") — the 256-bit edit token IS the
+         * authorisation. Gate order (plan §3c): body-size cap → per-TOKEN rate
+         * limit (never per-IP, rule #26 NAT argument) → same-origin discipline
+         * (rule #29) → resolve an edit-scope, non-revoked, non-expired, live
+         * token → owner-account lock (#1698) → sanitise → the ONE write core →
+         * audit + usage bump. The write core can only UPDATE the owner's one
+         * live row (never INSERT/DELETE), so the worst a leaked link does is
+         * rewrite that one list — recoverable from the mint-time snapshot + the
+         * audit log. ENTIRELY dormant pre-migration (409).
+         * ----------------------------------------------------------------- */
+        case 'setlist_token_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+            if (!_sharedSetlistTokenColumns()) {
+                sendJson(['error' => 'Edit links are not available on this server yet.'], 409);
+                break;
+            }
+
+            /* (1) body-size cap (256 KiB) BEFORE json_decode — a hostile body is
+               rejected before it is parsed. */
+            $tokRaw = file_get_contents('php://input');
+            if (strlen((string)$tokRaw) > 262144) {
+                sendJson(['error' => 'Request too large.'], 413);
+                break;
+            }
+            $tokBody = json_decode((string)$tokRaw, true);
+            if (!is_array($tokBody)) { sendJson(['error' => 'Invalid request body.'], 400); break; }
+            $tokShareId = sharedSetlistSafeShareId((string)($tokBody['shareId'] ?? ''));
+            if ($tokShareId === '') { sendJson(['error' => 'Invalid or missing share id.'], 400); break; }
+            if (!is_array($tokBody['songs'] ?? null)) { sendJson(['error' => 'songs (array) required.'], 400); break; }
+
+            /* (2) per-TOKEN rate limit — a NAT-shared congregation is one IP, so
+               keying on the IP would throttle a whole room; the token is the
+               unit of trust. The key is a hash prefix so the raw token never
+               lands in the rate-limit table. 30 writes/min. */
+            $tokRlKey = 'tok:' . substr(hash('sha256', $tokShareId), 0, 24);
+            if (!checkRateLimit('setlist_token_update', $tokRlKey, 30, 60, true)) {
+                sendJson(['error' => 'Too many edits, too fast. Please wait a moment.'], 429);
+                break;
+            }
+            recordRateLimitHit('setlist_token_update', $tokRlKey);
+
+            /* (3) same-origin discipline (rule #29 logic, mirrored — the public
+               api cannot call the manage-side validateCsrfRequest()). The custom
+               header a browser cannot set cross-origin without a CORS preflight
+               this server never grants, plus a host match on any present
+               Origin/Referer. The token in the BODY (not an ambient cookie) is
+               itself the primary CSRF defence; this is defence in depth. */
+            $tokXrw = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
+            if (strcasecmp((string)$tokXrw, 'XMLHttpRequest') !== 0) {
+                sendJson(['error' => 'This request must be a same-origin AJAX call.'], 403);
+                break;
+            }
+            $tokHost = (string)($_SERVER['HTTP_HOST'] ?? '');
+            foreach (['HTTP_ORIGIN' => true, 'HTTP_REFERER' => false] as $hdr => $isOrigin) {
+                $val = (string)($_SERVER[$hdr] ?? '');
+                if ($val === '') { continue; }
+                $h = parse_url($val, PHP_URL_HOST);
+                if ($h !== null && $tokHost !== '' && strcasecmp((string)$h, $tokHost) !== 0) {
+                    sendJson(['error' => 'Cross-origin request refused.'], 403);
+                    break 2;
+                }
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* (4) resolve the token: must be an edit-scope, non-revoked,
+                   non-expired, LIVE link. sharedSetlistGet() returns the private
+                   capability keys; a revoked/expired one is refused with a
+                   status-code contract (rule #35). */
+                $tokData = sharedSetlistGet($tokShareId);
+                if ($tokData === null) { sendJson(['error' => 'This edit link is not valid.'], 404); break; }
+                if (($tokData['_scope'] ?? 'view') !== 'edit') {
+                    sendJson(['error' => 'This link is view-only.'], 403);
+                    break;
+                }
+                if (($tokData['_revokedAt'] ?? null) !== null) {
+                    sendJson(['error' => 'This edit link has been revoked.'], 410);
+                    break;
+                }
+                $tokExp = $tokData['_expiresAt'] ?? null;
+                if ($tokExp !== null && strtotime($tokExp . ' UTC') !== false && strtotime($tokExp . ' UTC') <= time()) {
+                    sendJson(['error' => 'This edit link has expired.'], 410);
+                    break;
+                }
+                $tokOwnerUserId = $tokData['_ownerUserId'] ?? null;
+                $tokSetlistId   = $tokData['_sourceSetlistId'] ?? null;
+                if ($tokOwnerUserId === null || $tokSetlistId === null || $tokSetlistId === '') {
+                    /* An edit link is meaningless without a live target. */
+                    sendJson(['error' => 'This edit link is no longer connected to a set list.'], 409);
+                    break;
+                }
+
+                /* (5) owner-account lock (#1698) — a closed/lost owner account
+                   freezes writes while leaving reads intact. */
+                if (userContentLocked(userOwnerState($db, (int)$tokOwnerUserId))) {
+                    sendJson(['error' => 'The owner of this set list has locked editing.'], 403);
+                    break;
+                }
+
+                /* (6) sanitise + (7) the ONE write core (shared with
+                   setlist_collab_update — rule #35). */
+                $tokClean = setlistCollabSanitiseSongs($tokBody['songs']);
+                $tokName  = array_key_exists('name', $tokBody)
+                    ? mb_substr(trim((string)$tokBody['name']), 0, 200)
+                    : '';
+                try {
+                    $tokResult = setlistCollabPerformUpdate($db, (int)$tokOwnerUserId, (string)$tokSetlistId, $tokClean, $tokName);
+                } catch (\SetlistCollabEncodeException $enc) {
+                    sendJson(['error' => $enc->getMessage()], 400);
+                    break;
+                }
+
+                /* (8) usage bump + audit. Anonymous edits are attributed to the
+                   token; a signed-in editor is additionally named (the issue's
+                   "sign-in optional to claim authorship"). */
+                $tokBump = $db->prepare(
+                    'UPDATE tblSharedSetlists SET EditCount = EditCount + 1, LastUsedAt = UTC_TIMESTAMP() WHERE ShareId = ?'
+                );
+                $tokBump->bind_param('s', $tokShareId);
+                $tokBump->execute();
+                $tokBump->close();
+
+                $tokEditor = getAuthenticatedUser();
+                logActivity('setlist.token_update', 'setlist', (string)$tokSetlistId, [
+                    'share_id'   => $tokShareId,
+                    'owner_id'   => (int)$tokOwnerUserId,
+                    'editor_id'  => $tokEditor ? (int)$tokEditor['Id'] : null,
+                    'song_count' => count($tokClean),
+                    'renamed'    => $tokName !== '',
+                ]);
+
+                sendJson(['ok' => true, 'changed' => (int)$tokResult['changed'], 'songs' => $tokResult['songs']]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_token_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save the shared set list.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #1791 — list an owner's share links for one of their set lists.
+         * GET ?setlistId=… (owner-auth'd). Returns the FULL ShareId of each
+         * link (the owner may re-copy it) plus scope/label/usage so the share
+         * dialog can show + manage them. Bearer auth is the CSRF defence.
+         * ----------------------------------------------------------------- */
+        case 'setlist_share_list':
+            $slUser = getAuthenticatedUser();
+            if (!$slUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+            if (!_sharedSetlistTokenColumns()) { sendJson(['links' => []]); break; }
+            $slSetlistId = isset($_GET['setlistId'])
+                ? preg_replace('/[^a-zA-Z0-9_\-]/', '', (string)$_GET['setlistId'])
+                : '';
+            if ($slSetlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
+            try {
+                $db = getDbMysqli();
+                $slUid = (int)$slUser['Id'];
+                /* Ownership probe — the same (UserId, SetlistId) existence check
+                   the mint path uses; a link list for a setlist you don't own is
+                   simply empty, never someone else's links. */
+                $slOwn = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                $slOwn->bind_param('is', $slUid, $slSetlistId);
+                $slOwn->execute();
+                $slOwns = $slOwn->get_result()->fetch_row() !== null;
+                $slOwn->close();
+                if (!$slOwns) { sendJson(['links' => []]); break; }
+
+                $slStmt = $db->prepare(
+                    'SELECT ShareId, Scope, Label, CreatedAt, LastUsedAt, ViewCount, EditCount, RevokedAt, ExpiresAt
+                       FROM tblSharedSetlists
+                      WHERE OwnerUserId = ? AND SourceSetlistId = ?
+                      ORDER BY CreatedAt DESC'
+                );
+                $slStmt->bind_param('is', $slUid, $slSetlistId);
+                $slStmt->execute();
+                $slRows = $slStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $slStmt->close();
+
+                $slLinks = [];
+                foreach ($slRows as $r) {
+                    $slLinks[] = [
+                        'shareId'   => (string)$r['ShareId'],
+                        'scope'     => (($r['Scope'] ?? 'view') === 'edit') ? 'edit' : 'view',
+                        'label'     => $r['Label'] !== null ? (string)$r['Label'] : null,
+                        'url'       => '/setlist/shared/' . $r['ShareId'],
+                        'created'   => $r['CreatedAt'] ?? null,
+                        'lastUsed'  => $r['LastUsedAt'] ?? null,
+                        'viewCount' => (int)($r['ViewCount'] ?? 0),
+                        'editCount' => (int)($r['EditCount'] ?? 0),
+                        'revoked'   => ($r['RevokedAt'] ?? null) !== null,
+                        'expiresAt' => $r['ExpiresAt'] ?? null,
+                    ];
+                }
+                sendJson(['links' => $slLinks]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_share_list] ' . $e->getMessage());
+                sendJson(['error' => 'Could not list share links.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * #1791 — revoke a share link (owner-only, HARD). POST { shareId }.
+         * Sets RevokedAt; the read path then refuses before any live resolution.
+         * Bearer auth is the CSRF defence.
+         * ----------------------------------------------------------------- */
+        case 'setlist_share_revoke':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $rvUser = getAuthenticatedUser();
+            if (!$rvUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+            if (!_sharedSetlistTokenColumns()) { sendJson(['error' => 'Not available yet.'], 409); break; }
+            $rvBody = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $rvShareId = sharedSetlistSafeShareId((string)($rvBody['shareId'] ?? ''));
+            if ($rvShareId === '') { sendJson(['error' => 'Invalid or missing share id.'], 400); break; }
+            try {
+                $db = getDbMysqli();
+                $rvUid = (int)$rvUser['Id'];
+                /* Only the link's OWNER may revoke it. */
+                $rvSel = $db->prepare('SELECT OwnerUserId FROM tblSharedSetlists WHERE ShareId = ? LIMIT 1');
+                $rvSel->bind_param('s', $rvShareId);
+                $rvSel->execute();
+                $rvRow = $rvSel->get_result()->fetch_assoc();
+                $rvSel->close();
+                if ($rvRow === null) { sendJson(['error' => 'Share link not found.'], 404); break; }
+                if (($rvRow['OwnerUserId'] ?? null) === null || (int)$rvRow['OwnerUserId'] !== $rvUid) {
+                    sendJson(['error' => 'You do not own this share link.'], 403);
+                    break;
+                }
+                $rvUpd = $db->prepare('UPDATE tblSharedSetlists SET RevokedAt = UTC_TIMESTAMP() WHERE ShareId = ? AND RevokedAt IS NULL');
+                $rvUpd->bind_param('s', $rvShareId);
+                $rvUpd->execute();
+                $rvUpd->close();
+                logActivity('setlist.share_revoke', 'setlist', $rvShareId, ['owner_id' => $rvUid]);
+                sendJson(['ok' => true, 'revoked' => true]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_share_revoke] ' . $e->getMessage());
+                sendJson(['error' => 'Could not revoke the share link.'], 500);
             }
             break;
 

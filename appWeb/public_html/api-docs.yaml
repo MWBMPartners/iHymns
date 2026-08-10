@@ -6266,6 +6266,138 @@ paths:
         "404":
           description: Setlist not owned by caller, or no user with that email
 
+  /api.php?action=setlist_token_update:
+    post:
+      operationId: setlistTokenUpdate
+      tags: [Setlists — Collaboration]
+      summary: Edit a shared set list through an edit-scope capability link (#1791)
+      description: >
+        Collab-by-link write. NO account required — the 256-bit edit token in the
+        body is the authorisation (the owner's "share an edit link, like cloud
+        storage" model). Same-origin only: requires `X-Requested-With:
+        XMLHttpRequest` and, if present, an `Origin`/`Referer` host matching the
+        server. Rate-limited PER TOKEN (30/min), not per IP (a NAT-shared
+        congregation is one IP). Refuses a view-only (403), revoked/expired (410),
+        or owner-account-locked (403) link. Writes only the owner's one live set
+        list — never inserts or deletes a row. Dormant (409) until the
+        `Set-list share links` migration has run.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_token_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shareId, songs]
+              properties:
+                shareId: { type: string, description: The edit-scope capability token }
+                songs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:       { type: string }
+                      title:    { type: string }
+                      songbook: { type: string }
+                      number:   { type: integer }
+                      arrangement: { type: array, items: { type: integer } }
+                name: { type: string, description: Optional rename; omit to leave the title }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  changed: { type: integer }
+                  songs:   { type: array, items: { type: object } }
+        "403": { description: View-only link, cross-origin, or owner locked }
+        "409": { description: Edit links not migrated on this server }
+        "410": { description: Link revoked or expired }
+        "413": { description: Request body too large }
+        "429": { description: Per-token rate limit exceeded }
+
+  /api.php?action=setlist_share_list:
+    get:
+      operationId: setlistShareList
+      tags: [Setlists — Collaboration]
+      summary: List the caller's share links for one of their set lists (#1791)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_share_list] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The owner's share links (empty until the migration has run)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        shareId:   { type: string }
+                        scope:     { type: string, enum: [view, edit] }
+                        label:     { type: string, nullable: true }
+                        url:       { type: string }
+                        created:   { type: string, format: date-time, nullable: true }
+                        lastUsed:  { type: string, format: date-time, nullable: true }
+                        viewCount: { type: integer }
+                        editCount: { type: integer }
+                        revoked:   { type: boolean }
+                        expiresAt: { type: string, format: date-time, nullable: true }
+
+  /api.php?action=setlist_share_revoke:
+    post:
+      operationId: setlistShareRevoke
+      tags: [Setlists — Collaboration]
+      summary: Hard-revoke one of the caller's share links (#1791)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_share_revoke] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shareId]
+              properties:
+                shareId: { type: string }
+      responses:
+        "200":
+          description: Revoked (the read path then refuses the link at every scope)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  revoked: { type: boolean }
+        "403": { description: Caller does not own this link }
+        "404": { description: No such link }
+        "409": { description: Edit links not migrated on this server }
+
   /api.php?action=setlist_collab_list:
     get:
       operationId: setlistCollabList
