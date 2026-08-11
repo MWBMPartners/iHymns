@@ -1,0 +1,28 @@
+{
+    "metadata": {
+        "identifier": "ia-fixture-hymnal",
+        "title": "Old Time Hymns (synthetic fixture)",
+        "language": "eng"
+    },
+    "files": [
+        {
+            "name": "ia-fixture-hymnal.pdf",
+            "format": "Text PDF",
+            "size": "1234567"
+        },
+        {
+            "name": "ia-fixture-hymnal_djvu.txt",
+            "format": "DjVuTXT",
+            "size": "1295"
+        },
+        {
+            "name": "ia-fixture-hymnal_meta.xml",
+            "format": "Metadata",
+            "size": "512"
+        }
+    ],
+    "server": "ia601409.us.archive.org",
+    "d1": "ia601409.us.archive.org",
+    "d2": "ia801409.us.archive.org",
+    "dir": "/12/items/ia-fixture-hymnal"
+}
