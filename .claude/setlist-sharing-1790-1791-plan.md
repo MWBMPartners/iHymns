@@ -42,6 +42,75 @@ SCOPE (`view` = #1790, `edit` = #1791). The rule-#26 presence-token discipline i
 
 ---
 
+## §0.5 OWNER DECISIONS — RESOLVED 2026-08-11 (authoritative; overrides §5 recommendations)
+
+The owner answered all four §5 gates. **These bind the build. Where they change §3b/§3c, this block wins.**
+
+- **G1 (edit-link expiry) → A+C:** edit links **never expire by default**; owner may set a per-link
+  optional expiry in the dialog; when the set list ITSELF has an `ExpiresAt`, the link auto-caps to
+  it. (`ExpiresAt` column already in §3b — mint logic: `min(requestedExpiry ?? NULL, listExpiry ?? ∞)`.)
+- **G2 (new view-link tokens) → A:** NEW view links mint as **22-char / 128-bit** base64url tokens
+  (`rtrim(strtr(base64_encode(random_bytes(16)),'+/','-_'),'=')`); legacy 8-hex links stay valid
+  forever (rule #33). Edit links stay 43-char / 256-bit.
+- **G3 (show who shared it) → B (opt-in per link):** a mint-time **"include my name"** toggle. When
+  ON, the shared page shows a "Shared by <display name>" byline; when OFF (default), the page stays
+  anonymous exactly as today. Requires a new per-link column (below) + the owner's display name
+  echoed by `setlist_get` **only when the flag is set** (the strict allow-list at api.php:2481-2497
+  gains ONE conditional key — never unconditionally).
+- **G4 (anonymous edit) → COMPROMISE (owner picks per link):** at edit-link creation the owner
+  chooses the link's **edit audience** — "anyone with the link can edit (no account)" **or** "must
+  be signed in to edit" — mirroring the G3 toggle. This becomes a per-link VARCHAR column (below),
+  NOT an app-wide policy. Both branches ship in C4.
+
+### Schema delta forced by G3 + G4 (fold into the §3b one-pass batch — rule #20, do NOT dribble a 2nd ALTER)
+
+Add these TWO columns to the same `migrate-setlist-share-scope.php` ALTER batch (each `columnExists`-gated,
+each with a `@migration-adds` doctag, byte-identical schema.sql mirror, folded into the ONE registry
+OR-probe):
+
+```sql
+    ADD COLUMN ShowSharerName TINYINT(1)  NOT NULL DEFAULT 0  COMMENT 'G3 #1791: 1 = shared page shows "Shared by <owner display name>"; 0 (default) = anonymous, current posture. Owner-set per link at mint.',
+    ADD COLUMN EditAudience   VARCHAR(20)  NOT NULL DEFAULT 'anyone' COMMENT 'G4 #1791: who may edit via an edit-scope link — anyone | authenticated. App-validated VARCHAR vocab, never ENUM (rule #20). Ignored for view-scope links.',
+```
+
+`EditAudience` is VARCHAR (not a bool) deliberately: the audience concept is growable (`anyone` →
+later `authenticated` → plausibly `org-members`/`domain`), so a new value is an app-map line, never
+an ALTER (rule #20). Central map: add `SETLIST_EDIT_AUDIENCES = ['anyone','authenticated']` beside
+the scope vocab, fail-closed normaliser to `'anyone'` on unknown (the safest? — NO: unknown must
+fail-**closed to the MORE restrictive** `'authenticated'`? See note). **Fail-closed decision:** an
+unknown/absent `EditAudience` on a resolvable EDIT token normalises to **`'authenticated'`** (the
+safer grant — never silently widen an anonymous-write door on data drift); `'anyone'` is only ever
+honoured when explicitly stored. The OR-probe includes `!columnExists(ShowSharerName) || !columnExists(EditAudience)`.
+
+### Server delta forced by G3 + G4
+
+- **Mint (`setlist_share`)**: accept optional `showSharerName` (bool) and, for `scope='edit'`,
+  `editAudience` (validated against the map → `'anyone'|'authenticated'`, default `'anyone'`). Persist
+  both. `showSharerName` is accepted for BOTH scopes (a view link can carry a byline too).
+- **Read (`setlist_get`)**: (a) when the resolved row has `ShowSharerName=1`, add `sharedByName`
+  (owner display name via a bound lookup) to the wire — the ONE conditional allow-list key; never
+  echo it otherwise, never echo the user id/email (gate G3 privacy invariant holds). (b) `canWrite`
+  now also requires: if `EditAudience='authenticated'` (or normalised so), the requester MUST be a
+  signed-in user (bearer resolves to a real account) — else `canWrite=false` +
+  `lockReason='signin_required'` so the client shows "Sign in to edit this list" rather than the
+  editor. `EditAudience='anyone'` keeps the fully-anonymous branch.
+- **Write (`setlist_token_update`)**: add a gate **between §3c steps (4) and (5)** — resolve
+  `EditAudience`; if `'authenticated'` and no valid signed-in user on the request → **401**
+  `signin_required` (distinct status, rule #35: the client branches on 401 to prompt sign-in, not a
+  generic toast). `'anyone'` proceeds anonymously as designed. The audit-log entry records
+  `editAudience` + whether the writer was authenticated.
+
+### Client delta forced by G3 + G4 (C4 share dialog)
+
+The owner share modal (§3g.1) gains, on the **edit-link** row: a "Who can edit" choice
+(radio/segmented: *Anyone with the link* | *People signed in to iHymns*) and a "Show my name on the
+shared page" checkbox (the checkbox also offered on the view-link row). The shared edit surface
+(§3g.2), when `setlist_get` returns `lockReason='signin_required'`, renders a sign-in prompt instead
+of the editor (reusing the existing auth entry points) — a clean, non-anonymous branch of the same
+page.
+
+---
+
 ## §1 Current state (everything cited)
 
 ### 1a. The five tables and what each is authoritative for
