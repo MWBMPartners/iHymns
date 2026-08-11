@@ -86,8 +86,15 @@ $credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARAT
 if (!file_exists($credFile)) { _migDeriveRights_out("ERROR: MySQL credentials not found. Run install.php first."); return; }
 require_once $credFile;
 
-/* The ONE mapping fold + registry reader — never re-derived here (rule #22). */
-require_once dirname(__DIR__) . '/public_html/includes/licence_registry.php';
+/* The ONE mapping fold + registry reader — never re-derived here (rule #22).
+   Resolve includes/ via the runner's real docroot: the deployed docroot is
+   renamed per channel (public_html_dev/_beta), so a literal
+   '/public_html/includes/…' is WRONG off main (the #1196 deploy-path trap).
+   Repo fallback for a standalone/CLI or test run. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+require_once $_incDir . '/licence_registry.php';
 
 _migDeriveRights_out("");
 _migDeriveRights_out("=== iHymns — #1769 P4 DM-2: derive per-song rights facts from require_licence restrictions ===");

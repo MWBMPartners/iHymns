@@ -66,10 +66,22 @@ declare(strict_types=1);
  * @see .claude/plan-1695-stage3.md                   §3
  */
 
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public_html'
-    . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public_html'
-    . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* Resolve includes/ via the runner-provided real docroot (#1695 deploy-path
+ * hotfix). The deployed docroot is RENAMED per channel (public_html_dev on
+ * alpha, public_html_beta on beta; only main keeps public_html), so a literal
+ * `dirname(__DIR__) . '/public_html/includes/…'` points at a directory that
+ * does NOT exist off main — it fails to open → fatal → the runner reports a
+ * bare "HTTP error" and the whole "Apply all" batch stops (the #1196
+ * deploy-path trap; this is why THIS migration failed on alpha while the ones
+ * before it — which guard their db_mysql require, or reach deps via '/.auth/' —
+ * did not). The setup-database runner defines IHYMNS_INCLUDES_DIR to its real
+ * <docroot>/includes; a standalone/CLI or test run (repo layout) falls back to
+ * the literal path, which is correct there. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+require_once $_incDir . '/db_mysql.php';
+require_once $_incDir . '/entitlements.php';
 
 /** The exact value #1692 stage 1 shipped. Only this is ours to remove. */
 const MIG_REWIDEN_INTERIM_VALUE = ['admin', 'global_admin'];

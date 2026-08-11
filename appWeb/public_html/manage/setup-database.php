@@ -1215,6 +1215,28 @@ if ($action !== '') {
      * still fine — only the header propagates via buffered output). */
     define('IHYMNS_SETUP_DASHBOARD', true);
 
+    /* Real includes/ directory, for any migration that needs a shared helper
+       (musician_helpers.php, licence_registry.php, …) — #1695/#1784/#1769
+       deploy-path hotfix.
+
+       The deployed docroot is RENAMED per channel (public_html_dev on alpha,
+       public_html_beta on beta; only main keeps public_html), while the
+       migration scripts live in the un-renamed sibling .sql/. A migration that
+       hardcodes `dirname(__DIR__) . '/public_html/includes/…'` therefore points
+       at a directory that does NOT exist off main — the #1196 deploy-path trap,
+       which surfaced as a bare "HTTP error" (Apply-all) / "Failed opening
+       required" (single-run) the moment these were web-run on alpha.
+
+       THIS runner physically lives inside the real docroot
+       (<docroot>/manage/setup-database.php), so `dirname(__DIR__)` IS that
+       docroot whatever it is named. Expose its includes/ so migrations resolve
+       shared deps deploy-agnostically; a standalone/CLI or test run (repo
+       layout, where public_html is real) leaves this undefined and the
+       migrations fall back to the literal path. */
+    if (!defined('IHYMNS_INCLUDES_DIR')) {
+        define('IHYMNS_INCLUDES_DIR', dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes');
+    }
+
     /* #862 — lift the execution-time cap for any setup-database action.
        Shared hosts default to max_execution_time = 30s, which the bulk
        Apply-All run blows through with ~30 migrations + real backfills.

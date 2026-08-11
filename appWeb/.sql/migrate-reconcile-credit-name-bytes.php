@@ -68,8 +68,15 @@ if (PHP_SAPI === 'cli') {
 
 /* The shared reconciliation core (musicianReconcileCreditNameBytes /
    musicianCanonicalNameBytes / registerMusicianByName) — never re-forked
-   here (rule #22 / #37). */
-require_once dirname(__DIR__) . '/public_html/includes/musician_helpers.php';
+   here (rule #22 / #37). Resolve includes/ via the runner's real docroot: the
+   deployed docroot is renamed per channel (public_html_dev/_beta), so a literal
+   '/public_html/includes/…' is WRONG off main (the #1196 deploy-path trap —
+   this is the require that failed on alpha as "Failed opening required
+   musician_helpers.php"). Repo fallback for a standalone/CLI or test run. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+require_once $_incDir . '/musician_helpers.php';
 
 function _migCreditBytes_out(string $line): void
 {

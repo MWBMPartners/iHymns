@@ -74,13 +74,19 @@ if ($isCli) {
 }
 $dryRun = !$confirm;
 
-/* Load standalone DB credentials (the migration cannot assume the app bootstrap ran). */
-require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
-require_once dirname(__DIR__) . '/public_html/includes/song_importers.php';
+/* Load standalone DB credentials (the migration cannot assume the app bootstrap ran).
+   Resolve includes/ via the runner's real docroot: the deployed docroot is renamed
+   per channel (public_html_dev/_beta), so a literal '/public_html/includes/…' is
+   WRONG off main — the #1196 deploy-path trap. Repo fallback for standalone/CLI. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+require_once $_incDir . '/db_mysql.php';
+require_once $_incDir . '/song_importers.php';
 /* #1679 A9 — songRelocateIdTaken(): the ONE definition of "this SongId is
    already claimed" (tblSongs OR a live tblSongRedirects.OldSongId). This
    migration mints ids too, and its own probe asked tblSongs only. */
-require_once dirname(__DIR__) . '/public_html/includes/song_relocate.php';
+require_once $_incDir . '/song_relocate.php';
 
 _migBCS_out("");
 _migBCS_out("=== iHymns — Backfill canonical SongIds for draft ids (#1380) ===");
