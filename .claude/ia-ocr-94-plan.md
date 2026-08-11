@@ -14,6 +14,12 @@ further design decisions except the DECISIONS FOR OWNER immediately below.
 
 ## DECISIONS FOR OWNER
 
+> **RESOLVED 2026-08-11 (owner):** **D1 = A (Persist — the one-pass two-table batch:
+> `tblIaFetchCache` + `tblIaImportCandidates`).** **D2 = `edit_songs` (curator+).** Both match the
+> recommendations below. Build accordingly: the D1-option-A migration/persistence paths are IN
+> scope; the page + nav gate is `edit_songs`. The "defensible defaults" in the following subsection
+> stand unless noted.
+
 ### D1 — Persist audit results now (one-pass schema batch) or keep Phase 1 fully ephemeral?
 
 1. **The decision:** whether Phase 1 ships the two IA tables (`tblIaFetchCache` +
