@@ -359,7 +359,7 @@ export function renderTemplateBodyHtml(song, template) {
 /* The print CSS, parameterised by the template's page options (#1767 G/V/AB/AM/F).
    Every option's ABSENCE reproduces the prior output: A4 + normal line-height +
    normal contrast + no accent + colour on. */
-function printCss(pageOptions) {
+export function printCss(pageOptions) {
     const po = pageOptions || {};
     const fontPt = parseInt(po.fontPt, 10) || 12;
     /* G — paper size → @page size keyword (CSS accepts a4/letter/legal). */
@@ -430,7 +430,7 @@ function printDoc(html) {
     return true;
 }
 
-async function fetchSong(app, songId) {
+export async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
         /* #1767 N/O — opt-in enrichment so the Scripture-reference and Tune+metre
@@ -453,7 +453,7 @@ async function fetchSong(app, songId) {
 
 /* Fetch curated custom templates (scope=song); merge after the built-ins. Failure or
    an un-migrated install yields just the built-ins (graceful). */
-async function loadTemplates(app) {
+export async function loadTemplates(app) {
     let custom = [];
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
@@ -471,80 +471,91 @@ async function loadTemplates(app) {
     return PRINT_BUILTIN_TEMPLATES.concat(custom);
 }
 
-/* The template-picker overlay — self-built, focus-trapped, ESC/backdrop to cancel. */
-function showPicker(app, songId, templates) {
-    const overlay = document.createElement('div');
-    overlay.className = 'print-picker-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;'
-        + 'justify-content:center;background:rgba(0,0,0,.55);padding:1rem;';
-    overlay.setAttribute('role', 'dialog');
-    overlay.setAttribute('aria-modal', 'true');
-    overlay.setAttribute('aria-labelledby', 'print-picker-title');
+/* Show the template picker; resolve to the chosen template object, or null if
+   cancelled (Esc / backdrop / Cancel). Shared by the single-song Print and the
+   set-list Print (rule #22 — one picker, one look). */
+export function pickPrintTemplate(app, templates) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'print-picker-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;'
+            + 'justify-content:center;background:rgba(0,0,0,.55);padding:1rem;';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'print-picker-title');
 
-    const opts = templates.map((t, i) => `
-        <label class="list-group-item d-flex gap-2 align-items-center">
-            <input class="form-check-input flex-shrink-0" type="radio" name="print-template"
-                   value="${i}" ${i === 0 ? 'checked' : ''}>
-            <span><strong>${esc(t.name)}</strong>${t.builtin ? '' : ' <span class="badge bg-secondary-subtle text-secondary-emphasis">custom</span>'}</span>
-        </label>`).join('');
+        const opts = templates.map((t, i) => `
+            <label class="list-group-item d-flex gap-2 align-items-center">
+                <input class="form-check-input flex-shrink-0" type="radio" name="print-template"
+                       value="${i}" ${i === 0 ? 'checked' : ''}>
+                <span><strong>${esc(t.name)}</strong>${t.builtin ? '' : ' <span class="badge bg-secondary-subtle text-secondary-emphasis">custom</span>'}</span>
+            </label>`).join('');
 
-    const dialog = document.createElement('div');
-    dialog.className = 'card shadow-lg';
-    dialog.style.cssText = 'max-width:30rem;width:100%;';
-    dialog.innerHTML = `
-        <div class="card-body">
-            <h2 class="h5 card-title d-flex align-items-center gap-2" id="print-picker-title">
-                <i class="fa-solid fa-print" aria-hidden="true"></i>Print song</h2>
-            <p class="card-text small text-muted">Choose a layout — a clean, printer-friendly page (no app buttons).</p>
-            <div class="list-group mb-3" style="max-height:18rem;overflow:auto">${opts}</div>
-            <div class="d-flex justify-content-end gap-2">
-                <button type="button" class="btn btn-outline-secondary btn-sm print-picker-cancel">Cancel</button>
-                <button type="button" class="btn btn-primary btn-sm print-picker-go">
-                    Print <i class="fa-solid fa-arrow-right ms-1" aria-hidden="true"></i></button>
-            </div>
-        </div>`;
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
+        const dialog = document.createElement('div');
+        dialog.className = 'card shadow-lg';
+        dialog.style.cssText = 'max-width:30rem;width:100%;';
+        dialog.innerHTML = `
+            <div class="card-body">
+                <h2 class="h5 card-title d-flex align-items-center gap-2" id="print-picker-title">
+                    <i class="fa-solid fa-print" aria-hidden="true"></i>Print song</h2>
+                <p class="card-text small text-muted">Choose a layout — a clean, printer-friendly page (no app buttons).</p>
+                <div class="list-group mb-3" style="max-height:18rem;overflow:auto">${opts}</div>
+                <div class="d-flex justify-content-end gap-2">
+                    <button type="button" class="btn btn-outline-secondary btn-sm print-picker-cancel">Cancel</button>
+                    <button type="button" class="btn btn-primary btn-sm print-picker-go">
+                        Print <i class="fa-solid fa-arrow-right ms-1" aria-hidden="true"></i></button>
+                </div>
+            </div>`;
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
 
-    const goEl     = dialog.querySelector('.print-picker-go');
-    const cancelEl = dialog.querySelector('.print-picker-cancel');
-    const lastFocus = document.activeElement;
-    function close() { overlay.remove(); if (lastFocus && lastFocus.focus) { lastFocus.focus(); } }
-    goEl.focus();
-
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); } });
-    overlay.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { close(); return; }
-        if (e.key === 'Tab') {
-            if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); goEl.focus(); }
-            else if (!e.shiftKey && document.activeElement === goEl) { e.preventDefault(); cancelEl.focus(); }
+        const goEl     = dialog.querySelector('.print-picker-go');
+        const cancelEl = dialog.querySelector('.print-picker-cancel');
+        const lastFocus = document.activeElement;
+        let resolved = false;
+        function close(result) {
+            overlay.remove();
+            if (lastFocus && lastFocus.focus) { lastFocus.focus(); }
+            if (!resolved) { resolved = true; resolve(result); }
         }
-    });
-    cancelEl.addEventListener('click', close);
-    goEl.addEventListener('click', async () => {
-        const sel = overlay.querySelector('input[name="print-template"]:checked');
-        const tpl = templates[sel ? parseInt(sel.value, 10) : 0] || templates[0];
-        close();
-        app.showToast?.('Preparing print…', 'info', 1500);
-        const song = await fetchSong(app, songId);
-        if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
-        /* #1767 R — a `qr` block renders as an <img> to the same-origin /qr.php
-           (CueRCode-backed) endpoint; no pre-pass needed. */
-        if (!printDoc(buildPrintDoc(song, tpl))) {
-            app.showToast?.('Pop-up blocked — allow pop-ups to print.', 'warning', 4000);
-        }
+        goEl.focus();
+
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(null); } });
+        overlay.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { close(null); return; }
+            if (e.key === 'Tab') {
+                if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); goEl.focus(); }
+                else if (!e.shiftKey && document.activeElement === goEl) { e.preventDefault(); cancelEl.focus(); }
+            }
+        });
+        cancelEl.addEventListener('click', () => close(null));
+        goEl.addEventListener('click', () => {
+            const sel = overlay.querySelector('input[name="print-template"]:checked');
+            const tpl = templates[sel ? parseInt(sel.value, 10) : 0] || templates[0];
+            close(tpl);
+        });
     });
 }
 
 /**
  * openSongPrintDialog(app) — entry point for the song page's Print action. Loads the
- * available templates (built-in + curated) then shows the picker for the current
- * song. Falls back to window.print() if we can't identify a song.
+ * available templates (built-in + curated), shows the shared picker, then fetches
+ * and prints the current song in the chosen template. Falls back to window.print()
+ * if we can't identify a song.
  */
 export async function openSongPrintDialog(app) {
     const page = document.querySelector('.page-song');
     const songId = page && page.dataset ? page.dataset.songId : '';
     if (!songId) { window.print(); return; }
     const templates = await loadTemplates(app);
-    showPicker(app, songId, templates);
+    const tpl = await pickPrintTemplate(app, templates);
+    if (!tpl) { return; }
+    app.showToast?.('Preparing print…', 'info', 1500);
+    const song = await fetchSong(app, songId);
+    if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
+    /* #1767 R — a `qr` block renders as an <img> to the same-origin /qr.php
+       (CueRCode-backed) endpoint; no pre-pass needed. */
+    if (!printDoc(buildPrintDoc(song, tpl))) {
+        app.showToast?.('Pop-up blocked — allow pop-ups to print.', 'warning', 4000);
+    }
 }

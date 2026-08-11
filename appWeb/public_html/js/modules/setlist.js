@@ -23,6 +23,7 @@ import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/componen
 import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss } from './print.js';
 
 /**
  * May the viewer WRITE to this shared set list? (#1638 / #1698)
@@ -3409,7 +3410,10 @@ export class SetList {
 
     /**
      * Print a set list with full lyrics for all songs.
-     * Fetches each song's page content, builds a print document, and prints.
+     * Offers the SAME template picker as the single-song Print (#1789 — rule
+     * #22, consume the shared #1767 print-template engine rather than
+     * re-forking it) and renders every song through it. Only the cover page
+     * and running order stay set-list-specific.
      * @param {object} list The set list { id, name, createdAt, songs }
      */
     async printSetList(list) {
@@ -3418,22 +3422,22 @@ export class SetList {
             return;
         }
 
+        /* Same picker as the single-song Print — gives the set list a
+           template choice it never had before (#1789). Cancel (Esc / backdrop
+           / Cancel button) resolves null and we simply don't print. */
+        const templates = await loadTemplates(this.app);
+        const tpl = await pickPrintTemplate(this.app, templates);
+        if (!tpl) { return; }
+
         this.app.showToast('Preparing print layout...', 'info', 2000);
 
-        /* Fetch all song pages in parallel */
-        const songPages = await Promise.all(
-            list.songs.map(async (song) => {
-                try {
-                    const url = `${this.app.config.apiUrl}?page=song&id=${encodeURIComponent(song.id)}`;
-                    const response = await apiFetch(url, {
-                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-                    });
-                    if (!response.ok) return null;
-                    return { song, html: await response.text() };
-                } catch {
-                    return null;
-                }
-            })
+        /* Fetch each song's STRUCTURED data (?action=song_data via the shared
+           fetchSong()) — not the screen-chromed `?page=song` fragment the old
+           code injected raw. A failed fetch yields null and is skipped below;
+           the running order (built from list.songs meta, not this array)
+           still lists it. */
+        const songs = await Promise.all(
+            list.songs.map((s) => fetchSong(this.app, s.id))
         );
 
         /* Build print document */
@@ -3447,23 +3451,27 @@ export class SetList {
             weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
         });
 
-        /* Build running order summary */
+        /* Build running order summary — from list.songs meta (NOT the fetched
+           `songs` array), so a song whose structured-data fetch failed still
+           appears in the order. */
         const orderSummary = list.songs.map((song, i) =>
             `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)}${song.number != null ? ' #' + song.number : ''}</td></tr>`
         ).join('');
 
-        /* Build individual song pages */
+        /* Build individual song pages — each rendered through the SAME
+           renderTemplateBodyHtml() the single-song Print uses, in the
+           template the user just picked. The template's own `title` block
+           already prints the song title, so the wrapper here only adds a
+           small numbered badge for the set-list position (skip nulls from a
+           failed fetch; the badge index still reflects the ORIGINAL list
+           position). */
         let songPagesHtml = '';
-        songPages.forEach((page, index) => {
-            if (!page) return;
+        songs.forEach((song, index) => {
+            if (!song) { return; }
             songPagesHtml += `
                 <div class="print-song-page">
-                    <div class="print-song-header">
-                        <span class="print-song-order">${index + 1}</span>
-                        <h2>${escapeHtml(toTitleCase(page.song.title))}</h2>
-                        <p class="print-song-meta">${escapeHtml(SONGBOOK_NAMES[page.song.songbook] || page.song.songbook)}${page.song.number != null ? ' #' + page.song.number : ''}</p>
-                    </div>
-                    <div class="print-song-content">${page.html}</div>
+                    <div class="print-song-order-badge">${index + 1}</div>
+                    ${renderTemplateBodyHtml(song, tpl)}
                 </div>`;
         });
 
@@ -3472,10 +3480,12 @@ export class SetList {
 <head>
     <meta charset="UTF-8">
     <title>${escapeHtml(list.name)} — iHymns Set List</title>
-    <style>
-        @page { margin: 2cm; size: A4; }
-        * { box-sizing: border-box; }
-        body { font-family: Georgia, 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; color: #000; margin: 0; padding: 0; }
+    <style>${printCss(tpl.pageOptions)}
+        /* NOTE: no @page size override here — printCss() above already set
+           @page { size: ... } from the chosen template's pageOptions (#1767 G);
+           re-declaring size here would silently force it back to A4 and
+           defeat the whole point of applying the template (rule #22). */
+        @page { margin: 2cm; }
 
         /* Cover page */
         .print-cover { text-align: center; page-break-after: always; padding-top: 30vh; }
@@ -3489,35 +3499,12 @@ export class SetList {
         .print-order table { width: 100%; border-collapse: collapse; }
         .print-order td { padding: 0.3em 0.5em; border-bottom: 1px solid #eee; font-size: 11pt; }
 
-        /* Individual songs */
-        .print-song-page { page-break-before: always; }
-        .print-song-header { margin-bottom: 1.5em; border-bottom: 2px solid #333; padding-bottom: 0.5em; }
-        .print-song-order { display: inline-block; width: 2em; height: 2em; line-height: 2em; text-align: center; background: #333; color: #fff; border-radius: 50%; font-weight: bold; float: left; margin-right: 0.75em; margin-top: 0.2em; }
-        .print-song-header h2 { font-size: 18pt; margin: 0 0 0.2em; }
-        .print-song-meta { color: #666; font-size: 10pt; margin: 0; }
-
-        /* Song content overrides. #1788 — the injected fragment is the FULL
-           song page, which carries screen-only chrome (the "Report a missing
-           song" / "Suggest a correction" block + its form, the media player,
-           external links) that must never appear on a printed set list. This
-           print window has no Bootstrap loaded, so Bootstrap's own
-           `.d-print-none` utility does nothing here — we re-declare it, plus the
-           feedback block's stable class/id, so anything the app already marks
-           screen-only is honoured in the set-list print too. (The proper fix —
-           rendering each song through the #1767 print-template engine instead of
-           injecting the live page — is tracked as the full remedy.) */
-        .print-song-content .d-print-none,
-        .print-song-content .song-page-feedback,
-        .print-song-content #song-correction-form,
-        .print-song-content .breadcrumb,
-        .print-song-content .song-navigation,
-        .print-song-content .d-flex.flex-wrap.gap-2,
-        .print-song-content .card-song-header { display: none !important; }
-        .print-song-content .song-lyrics { margin: 0; }
-        .print-song-content .lyric-component { margin-bottom: 1em; }
-        .print-song-content .lyric-label { font-weight: bold; font-size: 10pt; color: #666; margin-bottom: 0.3em; }
-        .print-song-content .lyric-line { margin: 0.1em 0; }
-        .print-song-content .song-copyright { font-size: 9pt; color: #999; margin-top: 1em; }
+        /* Individual songs — each a fresh page rendered by the shared
+           print-template engine (renderTemplateBodyHtml). The badge is a
+           small circled position number that floats clear of the template's
+           own title block rather than replacing it. */
+        .print-song-page { page-break-before: always; position: relative; }
+        .print-song-order-badge { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: #333; color: #fff; border-radius: 50%; font-weight: bold; font-size: 10pt; float: left; margin-right: 0.6em; margin-top: 0.1em; }
 
         @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
     </style>
