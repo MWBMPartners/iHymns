@@ -4,6 +4,53 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-11 (#1786 Option B — public multi-level list-sort, BUILD pass done, NOT YET PUSHED)
+
+**#1786 Option B (the PUBLIC-app half of "every table/list should be user-sortable, multi-level") —
+fully built + guarded on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED. The admin `<table>`
+half shipped in an earlier session (`js/modules/admin-table-sort.js`); this pass is everything else
+the issue asked for — card/list surfaces, which have no column headers to click.**
+
+- **C1 `f20b3af8`** — extracted `makeCompare()`/`multiKeyCompare()` out of `admin-table-sort.js`
+  VERBATIM into a new pure `js/utils/sort-compare.js` (rule #22 — never re-fork), plus new
+  `multiKeyCompareMissingLast()` (a level with no value sorts after every present value, in BOTH
+  directions), `titleSortKey()`/`SORT_ARTICLES` (JS mirror of `ihymns_title_sort_key()`), and
+  `normalizeSortSpec()` (validate/cap-3/dedupe). `tests/test-admin-table-sort.js` unmodified, still
+  green.
+- **C2 `b418bc9c`** — the shared "Sort ▾" control: `includes/partials/list-sort-control.php`
+  (server-emitted, shared-cache-safe per rule #6/#30) + `js/modules/list-sort.js` (two adoption
+  modes: DOM-reorder via `data-list-sort-list`/`data-sort-<key>`, and array/server mode via
+  `wireListSortControl()`), booted unconditionally from `router.js afterPageLoad()`.
+- **C3-C5 `efe42259`/`4c8e64f6`/`776f755e`** — DOM-mode adoption: `/songbooks`, `/songbook/<abbr>`
+  (absorbing `songbook-index.js`'s old single-level unpersisted toggle — new `EVT_LIST_SORT_CHANGED`
+  constant lets the alphabet strip rebuild after a re-sort), `/tag`, `/musician`, `/tune`,
+  `/publisher`, `/work` (Default = "Work order", not "Number" — a work's curated member order IS
+  meaningful), the identifier pages.
+- **C6-C7 `89f8ba99`/`5cf20230`** — `/favorites` (array mode, sorts a copy of the localStorage array)
+  and `/search` (server-sort mode — pagination makes client DOM-reorder dishonest; new `sort=` param,
+  `SongData::_searchOrderBy()` maps to HARDCODED `ORDER BY` fragments only, rule #5; `api-docs.yaml`
+  updated same commit, rule #33).
+- **C8 `c1386f2e`** — account sync rides the EXISTING namespaced `user_settings` endpoint (#1671 F5),
+  namespace `list_sorts` — **no new endpoint, no schema, no migration**. `validateCsrfRequest()` added
+  to the namespaced POST branch (the `live_follow_extend` precedent, rule #29).
+- **C9 `91bb3034`** — `tests/php/test-public-list-sort.php` (10 candidates, 8 fully DOM-checked, 2
+  array/server-mode partial, 26 option keys) + `tests/test-list-sort.js` (50 assertions). Both
+  mutation-proven — 12 distinct mutations run red→restored→green, recorded in the commit body.
+- **Suite counts**: node 55→56, PHP 152→153. Both full suites green after every commit.
+- **Home page songbook grid deliberately excluded** (⚑ N6 — duplicates `/songbooks` one tap away) —
+  filed as owner-decision issue #1808, recommendation is to leave excluded.
+- **Follow-ups filed**: #1806 (settings.js's legacy whole-blob push still clobbers `list_sorts`/
+  `cardLayouts` until next touched — pre-existing exposure, not new here), #1807 (a generated
+  `TitleSortKey` column so `/search`'s SQL `ORDER BY` becomes article-aware like every other surface).
+- **#1786 closed** (comment posted linking all 9 commits + the 3 follow-up issues) — both the admin
+  and public halves named in the issue's original scope are now shipped.
+- **NOT DONE this pass**: push to remote (stopped per instruction — build-pass only); a live-browser
+  click-through verify (guards are static-source-analysis + jsdom-free pure-logic, per their own
+  documented SCOPE/LIMITS — they prove the markup/wiring is present, not that a click sorts a
+  visually-rendered page).
+
+Full design: `.claude/public-list-sort-1786-plan.md`.
+
 ## 📌 Continuation note — 2026-08-11 (#1800 musician merge/dedup follow-ups, BUILD pass done, NOT YET PUSHED)
 
 **#1800 (musician merge/dedup follow-ups to #1785/#1796) — three of four items BUILT, on branch

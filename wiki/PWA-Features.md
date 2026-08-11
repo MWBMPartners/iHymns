@@ -8,7 +8,7 @@
 
 ### Song Browsing
 - **Songbook grid** — visual cards for each songbook with song count badges
-- **Song list** — sortable by title (default), number, or songbook
+- **Song list** — sorted by number by default; a **Sort ▾** control (#1786 Option B) lets you build up to 3 sort levels (e.g. "Title, then Number") on every catalogue list — songbooks, a songbook's songs, themes, musicians, tunes, publishers, works, identifier lookups, favourites, and search results. Your choice is remembered on this device and, when signed in, synced across your devices.
 - **Song detail** — formatted lyrics with verse/chorus/bridge labels
 - **Writer/composer pages** — all songs by a given writer, grouped by songbook
 
