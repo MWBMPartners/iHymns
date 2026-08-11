@@ -102,10 +102,15 @@ if (!file_exists($credFile)) { _migReconcileIsrc_output("ERROR: MySQL credential
 require_once $credFile;
 
 /* The ONE write core + the ONE projection builder — never re-derived here
-   (rule #22; precedent for a migration require_once'ing a public_html
-   include: migrate-backfill-canonical-songids.php:78-83). */
-require_once dirname(__DIR__) . '/public_html/includes/song_external_ids.php';
-require_once dirname(__DIR__) . '/public_html/includes/identifier_normalize.php';
+   (rule #22). Resolve includes/ via the runner's real docroot: the deployed
+   docroot is renamed per channel (public_html_dev/_beta), so a literal
+   '/public_html/includes/…' is WRONG off main (the #1196 deploy-path trap).
+   Repo fallback for a standalone/CLI or test run. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+require_once $_incDir . '/song_external_ids.php';
+require_once $_incDir . '/identifier_normalize.php';
 
 _migReconcileIsrc_output("");
 _migReconcileIsrc_output("=== iHymns — #1749 full unification: reconcile ISRC denorm <-> external-ID store ===");

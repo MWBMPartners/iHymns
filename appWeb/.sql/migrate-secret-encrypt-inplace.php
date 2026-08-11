@@ -64,10 +64,17 @@ declare(strict_types=1);
  */
 
 $isCli = (PHP_SAPI === 'cli');
+/* Resolve includes/ via the runner's real docroot: the deployed docroot is
+   renamed per channel (public_html_dev/_beta), so a literal
+   '/public_html/includes/…' is WRONG off main (the #1196 deploy-path trap).
+   Repo fallback for a standalone/CLI run. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
 if (!defined('IHYMNS_SETUP_DASHBOARD') && !function_exists('getDbMysqli')) {
-    require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+    require_once $_incDir . '/db_mysql.php';
 }
-require_once dirname(__DIR__) . '/public_html/includes/secret_crypto_admin.php';
+require_once $_incDir . '/secret_crypto_admin.php';
 
 /** Echo helper — mirrors migrate-retire-component-lines-json.php's _migRetire_out(). */
 function _migSecEnc_out(string $msg): void
