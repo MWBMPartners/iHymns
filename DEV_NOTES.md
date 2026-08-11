@@ -466,6 +466,56 @@ surface, reach for these — never re-fork them per surface (rule #22):
   Never re-implement merge/dismiss logic inline here or anywhere else — delegate to the core above and
   to `tblMusicianDuplicatesDismissed` directly (mirrors `tblSongLinkSuggestionsDismissed`'s shape).
 
+### Print pipeline (#1767 remainder) — the shared modules you MUST reuse, not re-fork
+
+Full design: `.claude/print-templates-1767-remainder-plan.md`. Before touching any print/PDF surface:
+
+- **The schema** — `includes/print_template_schema.php` is the ONE block/page-option registry
+  (mirrored client-side; agreement CI-guarded by `test-print-block-registry.php`). Add a block *type*
+  in both mirrors, never inline.
+- **The renderer** — one body renderer serves browser Print, the server PDF (`manage/print-pdf.php` →
+  `includes/pdf_renderer.php`, the ONE engine seam — mPDF vendored under `appWeb/private_html/lib/pdf/`
+  outside every docroot), the batch set-list PDF, and the admin live preview. Never add a second
+  renderer — `test-print-one-renderer.php` bans it.
+- **The sanitiser** — `includes/html_sanitizer.php`: every HTML that reaches the renderer (incl.
+  uploaded custom layouts, `tblPrintTemplateCustomLayout`) passes its allowlist profiles on save AND
+  at render. Never render user HTML unsanitised.
+- **The usage writer** — `includes/print_usage.php` is the ONE CCLI print-usage writer; it re-resolves
+  the licence server-side (never trust the client's copies claim).
+
+### Gating Model-2 (#1769 P2) — the shared modules you MUST reuse, not re-fork
+
+Full design: `.claude/gating-model-review-1769-plan.md`. `includes/access_context.php` resolves the
+viewer ONCE per request; `includes/access_resolver.php` makes every field/media decision;
+`includes/licence_registry.php` is the ONE `tblLicenceTypes` reader. `contentGatingApply()` /
+`contentGatingMediaAllowed()` (`includes/content_gating.php`) are thin delegates. Entirely dormant
+behind `content_gating_enabled='0'` — any change here must be a verified byte-identical no-op in the
+off state.
+
+### Publisher cores (#93) — the shared modules you MUST reuse, not re-fork
+
+`includes/publisher_admin.php` (validate / uniqueness / persist / rename-cascade / aliases / merge /
+delete) + `includes/publisher_helpers.php` (`IHYMNS_PUBLISHER_KINDS` / `IHYMNS_PUBLISHER_ROLES` VARCHAR
+vocabs, slug fold, `publisherFindOrCreateByName()`). `/manage/publishers` and the future
+`admin_publisher_*` API both delegate. Full contract in CLAUDE.md rule #37.
+
+### IA reconcile (#94) — the shared modules you MUST reuse, not re-fork
+
+`includes/ia_client.php` — the SSRF-hardened, host-bound archive.org fetcher (same house pattern as
+`intapps_client.php` / `cuercode_client.php`) — plus `includes/ia_reconcile.php`, a pure
+segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-reconcile-guards.php`.
+
+### Public list sort (#1786) & set-list share cores — reuse, not re-fork
+
+- **List sort** — `js/utils/sort-compare.js` (pure comparators, shared with
+  `js/modules/admin-table-sort.js`) + `js/modules/list-sort.js` + `includes/partials/list-sort-control.php`.
+  Persistence rides the existing `user_settings` namespace `list_sorts` — never a new per-user endpoint.
+- **Set-list share** — `includes/SharedSetlist.php` holds the ONE share-id fold
+  (`sharedSetlistSafeShareId()`), the scope-aware resolver (`sharedSetlistResolveWire()`), and the write
+  core (`sharedSetlistUpdate()`); `setlist_share` / `setlist_token_update` / `_share_list` /
+  `_share_revoke` all funnel through these. The edit audience resolves per-write; the mint response is
+  the truth, not the request (CLAUDE.md rule #40).
+
 ---
 
 ## 🚀 Deployment Architecture

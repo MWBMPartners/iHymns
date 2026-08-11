@@ -43,12 +43,14 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Default songbook** — pre-selects in number search, keyboard quick-jump, and shuffle.
 - **Formatted lyrics** — verse, chorus, refrain, bridge with optional numbering and chorus highlighting.
 - **Multi-language medleys** (#858) — per-component language overrides apply correct screen-reader pronunciation, browser hyphenation, and JSON-LD `inLanguage` indexing.
+- **Multi-level list sorting** (#1786) — a **Sort ▾** control on every catalogue list (songbooks, a songbook's songs, favourites, search results, theme / musician / tune / publisher / work / identifier pages) builds up to 3 sort levels; remembered per surface on the device and synced to the account when signed in.
 
 ### Worship tools
 
 - **Favourites** — save songs with custom tags for quick access.
 - **Setlists** — create, arrange, and share worship setlists with custom component arrangements. **Playback mode** (#1533) — tap any song in an own or shared setlist to arm a floating prev/next nav bar with keyboard navigation, working identically for shared lists.
 - **Setlist scheduling & collaboration** — schedule setlists for a date / time with an "Up next" overview; invite collaborators by email with enforced view / edit permissions, who are notified and see the setlist under "Shared with me" (#398, #1638).
+- **Set-list share-by-link** (#1790 / #1791) — a playlist-first read-only **view link** (no account) and a revocable **edit link** whose per-link audience (anyone with the link / signed-in only) an organisation can clamp; the server re-resolves the audience on every write.
 - **Presentation mode** — fullscreen lyrics display with configurable auto-scroll.
 - **Practice / memorisation mode** — Full / Dimmed / Hidden cycle with tap-to-reveal (#402).
 - **Shuffle** — random song from any songbook; highlights your default.
@@ -57,7 +59,8 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Transpose** — shift song key up / down (persisted per song); where a curator has recorded a song's original key, tempo and time signature (#298), the song page shows it and Transpose names the key you've transposed *into*.
 - **Setlist templates & service plans** (#301) — save a setlist's running order as a reusable template and apply it to start a new setlist with labelled rows (song and non-song) ready to fill in; templates are owner-editable only.
 - **Export & Present** (#1565–#1570) — the Export ▾ menu on every song and songbook page downloads the song in 8 worship-software formats (OpenSong, OpenLyrics / OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, ChordPro); Present opens a full-screen one-stanza view.
-- **Live Follow** (#1268) — any signed-in user taps **Go Live** on a song and shares a six-character code; others follow along on their own devices, no account needed. Distinct from Service Mode (below), which is venue / organisation-based.
+- **Print templates & PDF** (#1767) — print a song or set list through a curator-designed template; signed-in users also get **Download PDF** (server-rendered — a whole set list becomes one file) and, where the org holds a CCLI licence, a copies-count prompt logged to the CCLI report with an enforced footer notice.
+- **Live Follow** (#1268 / #1798) — any signed-in user taps **Go Live** on a song and shares a six-character code; others follow along on their own devices, no account needed. A host declares a session length (30 min / 1 h / 2 h / until ended) and can **Extend** it live; an org admin can extend a member's session on their behalf. Distinct from Service Mode (below), which is venue / organisation-based.
 - **Service Mode — congregation Live-Follow** (#1323 / #1335) — congregants join a live service via a venue-displayed rotating code and follow songs in sync (org venues + recurring schedules, anonymous presence tokens, two broadcaster UIs at `/manage/service-projection` and `/manage/service-lead`). Ships dormant behind `content_gating_enabled` with a CCLI-licence content gate.
 
 ### Catalogue
@@ -69,6 +72,8 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **IETF BCP 47** (#681 → #738) — all language tags through the IANA registry + CLDR native-name overlay; an in-app picker composes language / script / region / variant.
 - **Parent songbooks** (#782) — express series and family relationships between songbooks ("Mission Praise" → "MP Combined" → "MP Combined Music Edition").
 - **Official / unofficial songbooks + Collections** (#1223) — official and unofficial songbooks surface together as one "Songbooks" family (presentation only); unofficial books carry the shared "Unofficial" badge. Curated cross-songbook groupings are user-labelled **Collections** (internally `tblCatalogues`); managed at `/manage/catalogues`.
+- **Publishers registry** (#93, epic #1765) — the songbook publisher promoted from free text to a first-class registry of persons and companies (`tblPublishers`, with imprint grouping, aliases, and a public `/publisher/<slug>` page); managed at `/manage/publishers`.
+- **Songbook publication metadata + MARCXML** (#1765) — songbooks/series/collections carry a disable flag, a public-domain flag, and ARK / OpenLibrary / ISBN / ISSN identifiers (Google Books as an external-link provider); MARCXML import and export via the pure `includes/marcxml.php`.
 - **Songbook display label** (#1332) — an optional free-text `DisplayAbbr` gives a richer user-facing abbreviation (e.g. "Psalty") while the real `Abbreviation` stays the SongId prefix.
 - **Standard theme vocabulary** (#1152 / #1222) — the CCLI / SongSelect OpenLyrics theme taxonomy is seeded as a 2-level hierarchy; curator tags are canonicalised into standard themes from `/manage/tags`.
 - **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, unlinks, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
@@ -142,14 +147,14 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 38 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 46 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
 | **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) |
-| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
-| **Access** | Content Restrictions · Access Tiers · Feature Gating · Entitlements |
+| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · Publishers (`/manage/publishers`) · IA Reconcile (`/manage/ia-reconcile`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
+| **Access** | Content Restrictions · Access Tiers · Licence Types (`/manage/licence-types`) · Feature Gating · Gating Hub (`/manage/gating`) · Entitlements |
 | **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
 | **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Notifications · API Keys |
 | **Help** | Help / Guides · API Docs (Swagger UI) |
@@ -215,7 +220,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning 142 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 152 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 

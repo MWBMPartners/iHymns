@@ -70,8 +70,31 @@ These are enforced conventions; new code must follow them (see
   session token; the rejection is logged (method + URI) rather than silent.
   Because it does not rely on a token that can go stale in
   a long-lived tab, it closes the intermittent-failure gap while keeping the
-  cross-origin door shut. It gates duplicate-songs merge/delete, places-api, and
-  a single top-level POST guard over all legacy `/manage/editor/api.php` writes.
+  cross-origin door shut. It gates duplicate-songs merge/delete, places-api,
+  musician-duplicates merge/dismiss (#1785), publishers CRUD (#93), licence-types
+  CRUD and the tiers/restrictions/entitlements gating pages (#1769), the set-list
+  share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), and a
+  single top-level POST guard over all legacy `/manage/editor/api.php` writes.
+- **Custom print layouts are sanitised** (#1767) — uploaded full-page HTML
+  layouts (`tblPrintTemplateCustomLayout`) pass through the allowlist HTML/CSS
+  sanitiser (`includes/html_sanitizer.php`) on save AND on the server-PDF render
+  path: no `<script>`, no event handlers, no `<iframe>`/forms, no external fetch
+  (remote images/stylesheets/fonts) survives.
+- **The server-PDF endpoint** (`manage/print-pdf.php`, #1767) requires an
+  authenticated session and answers **401 JSON** (not a redirect) when absent;
+  it sanitises the POSTed document server-side, re-resolves the CCLI copies count
+  server-side, and the GPL rendering engine (mPDF) is vendored **outside every
+  web docroot** (`appWeb/private_html/lib/pdf/vendor/`).
+- **Set-list edit links are 256-bit capability URLs** (#1791) — a link's power
+  lives in the `tblSharedSetlists` row (scope, edit audience, revoked flag), not
+  in who holds the URL. Each link is revocable per-link, an org can clamp
+  "anyone with the link" to "signed-in required", and the server **re-resolves
+  the audience on every write** (a `401 {reason:'signin_required'}` contract),
+  never trusting the client's claimed audience.
+- **The IA fetch client is SSRF-hardened** (#94) — `includes/ia_client.php` is
+  host-bound to archive.org, size-capped with an aborting write-callback, follows
+  no redirects, and keeps SSL verification on (the same house pattern as
+  `intapps_client.php` / `cuercode_client.php`).
 - **Content access** — gated centrally via
   `includes/content_access.php::checkContentAccess()` against
   `tblContentRestrictions` + access tiers + organisation licences (never queried

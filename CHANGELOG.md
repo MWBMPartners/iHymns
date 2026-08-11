@@ -1,4 +1,66 @@
-## [unreleased] — alpha
+## [1.5000.0] — 2026-08-11 (alpha)
+
+The consolidated `claude/issue-sweep-fixes-89` batch — 214 commits, one PR — landing the #89
+issue-sweep alongside several feature epics: the **#1765** songbook/catalogue enhancements (+ **#93**
+Publishers registry), the **#1769/#1778** content-gating program, the **#1767** print-templates /
+server-PDF remainder, **#94** IA-reconcile Phase 1, **#1770/#1792/#1798** Live-Follow work, **#1791**
+set-list share-by-link, **#1786** public multi-level list sort, and the **#1785** musicians dedup
+family. Owner-directed **major version bump** (0.4100.0 → 1.5000.0). All new schema ships additive,
+dormant, and forward-looking (rule #20); content gating stays entirely dormant behind
+`content_gating_enabled='0'`.
+
+- chore(version): **bump 0.4100.0 → 1.5000.0** (#91, owner-directed major bump). Lockstep across
+  `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `PROJECT_STATUS.md` and
+  `appWeb/CHANGELOG.md`; the stale "v1.x = local-JSON phase" comment is retired (DB-direct since epic
+  #1010). `service-worker.js.php` auto-derives its cache key, so the bump rolls the PWA cache with no
+  manual edit.
+
+- feat(songbooks): **songbook/catalogue enhancements epic core — disable flag, public-domain flag,
+  ARK/OpenLibrary identifiers, Google Books provider, and MARCXML import/export** (epic #1765; docs
+  deferred here to #91). Pure foundations (`b0cdbd27`); the additive publication-metadata migration
+  batch — `tblSongbooks.IsDisabled`/`IsPublicDomain`/`OpenLibrary*`, `tblSongbookSeries` +
+  identifier columns, `tblCatalogues.ArkId`/`OpenLibrary*` (`d64dd1a7`); a public read sweep hiding
+  disabled songbooks behind the shared `includes/songbook_visibility.php` (`songVisibleSql` AND
+  `songServableSql`, `ca6d8120`); the admin Add/Edit surfaces + a shared form-fields partial with a
+  parity guard (`05026c92`); a Google Books external-link provider (`7992e541`); and MARCXML
+  export (`99390d91`) + import (`cbeeeba0`) on songbooks / series / collections via the pure,
+  DB-free `includes/marcxml.php`. Adversarial-review fixes (`0ca1a480`, `4b736005`).
+
+- feat(print): **print-templates remainder — schema, HTML/CSS sanitiser, vendored mPDF, server-PDF
+  pipeline, Download-PDF affordance, CCLI print-usage, uploadable custom layouts, and batch set-list
+  PDF** (#1767 remainder, plan `.claude/print-templates-1767-remainder-plan.md`). P1 schema —
+  `tblPrintTemplateCustomLayout` + `tblPrintTemplates.OrgId` (`2ce2daa0`); P2 allowlist HTML/CSS
+  sanitiser (`e0b357bd`); mPDF ~8.3 vendored **outside every docroot** (`29ca8a75`) + the block/page
+  registry extracted to `includes/print_template_schema.php` (`a99ee6dc`); P3 server-PDF pipeline +
+  `manage/print-pdf.php` + the mutation-proven one-renderer / not-public guards (`4a080160`,
+  `5402e910`); P4 Download-PDF affordance + serverOnly H-family page options (`e2c884e9`); P5 CCLI
+  print-usage — copies prompt + `print_usage_context`/`_log` + enforced footer, licence re-resolved
+  server-side (`abd22d79`); P7 uploadable full-page custom HTML layouts (`4bd00097`); P6 batch
+  set-list single-PDF — cover page + running order + each song (`ffada413`).
+
+- feat(ia-reconcile): **IA-reconcile Phase 1 — a read-only archive.org OCR audit tool** (#94, plan
+  `.claude/ia-ocr-94-plan.md`). Pick a songbook + an archive.org scan, get a report — exact/strong
+  matches, the **gap** list (hymns in the scan missing from the book), and songbook songs never found
+  in the scan. **Never writes song content** (owner decision D1); gated by `edit_songs` (owner
+  decision D2). SSRF-hardened, host-bound `includes/ia_client.php` (`e33f09fd`); the audit-bookkeeping
+  migration `tblIaFetchCache` + `tblIaImportCandidates` (`9ce5be66`); the pure OCR segmenter/scorer +
+  persistence (`7fdaab53`); the admin page + nav entry (`0aff2d15`); a mutation-proven CI guard
+  (`2418eac7`).
+
+- feat(setlist): **set-list share-by-link — the SERVER half of #1791** (client half is the separate
+  entry below). Dormant capability columns on `tblSharedSetlists` (`Scope`/`EditAudience`/
+  `ShowSharerName`/`RevokedAt`/…, `7679d33d`); the share-id fold + scope-aware resolver + write core
+  (`dc3ea408`); the edit-link mint + `setlist_token_update`/`_share_list`/`_share_revoke` endpoints
+  (`c5070055`); and the audience-resolution wiring incl. the org-policy clamp
+  (`e1f4fb8f`/`341bb4be`/`4f7f2522`/`0a9fbb19`). An edit link's power lives in the row, not the URL;
+  the server re-resolves the edit audience on every write (see CLAUDE.md rule #40).
+
+- feat(gating): **#1769 P0/P1 — the dormant foundation the P2–P5 refactor builds on** (branch
+  `claude/gating-model-review`). P0 hardened the existing restriction engine (content-restriction
+  deny beats allow at equal priority, `2e9aa850`, among others); P1 landed the additive, dormant
+  schema batch — the `tblLicenceTypes` registry + per-song/songbook rights-fact columns +
+  `tblGatingCapabilities.EnforceJson` (`70739838`). Everything stays a verified no-op until the P6
+  master switch (`content_gating_enabled='1'`).
 
 - feat(public-sort): **user-controllable multi-level sort across every public card/list surface, synced to the account** (#1786 Option B — the public half; the admin `<table>` half shipped separately). Ten commits, one PR:
   - **The shared core, extracted not forked** (rule #22) — `js/utils/sort-compare.js` is a new pure, DOM-free module holding `makeCompare()`/`multiKeyCompare()` moved VERBATIM out of `admin-table-sort.js` (behaviour-neutral; `tests/test-admin-table-sort.js` stays green unmodified), plus the new `multiKeyCompareMissingLast()` (a level with no value sorts after every present value, in BOTH directions — the "unnumbered Misc tail stays a tail under any sort" requirement), `titleSortKey()`/`SORT_ARTICLES` (the JS mirror of `ihymns_title_sort_key()`, kept in lockstep with the PHP article vocabulary by a parity guard, not a comment), and `normalizeSortSpec()` (validate/cap-at-3/dedupe a persisted spec against the keys a control currently offers — "a saved layout is a wish, not a contract").
