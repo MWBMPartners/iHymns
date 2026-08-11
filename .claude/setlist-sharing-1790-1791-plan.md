@@ -57,30 +57,97 @@ The owner answered all four §5 gates. **These bind the build. Where they change
   anonymous exactly as today. Requires a new per-link column (below) + the owner's display name
   echoed by `setlist_get` **only when the flag is set** (the strict allow-list at api.php:2481-2497
   gains ONE conditional key — never unconditionally).
-- **G4 (anonymous edit) → COMPROMISE (owner picks per link):** at edit-link creation the owner
-  chooses the link's **edit audience** — "anyone with the link can edit (no account)" **or** "must
-  be signed in to edit" — mirroring the G3 toggle. This becomes a per-link VARCHAR column (below),
-  NOT an app-wide policy. Both branches ship in C4.
+- **G4 (anonymous edit) → COMPROMISE (owner picks per link), DEFAULT = anyone (owner refinement
+  2026-08-11):** the **default** for a new edit link is **"anyone with the link can edit — no
+  account needed"** (`EditAudience='anyone'`, the column DEFAULT + the mint default). The owner may
+  tighten a specific link to "must be signed in to edit" (`'authenticated'`) via the G4 toggle.
+  Both branches ship in C4. (The fail-closed-to-`'authenticated'` rule below is a **forward-compat
+  safety net for an UNRECOGNISED stored value only** — it is NOT the normal default, which is the
+  permissive `'anyone'`.)
+- **G4-org (owner refinement 2026-08-11): an organisation may set preferences/limitations for its
+  members' edit links**, layered exactly like the #1770 idle-timeout resolver
+  (`serviceMode_resolveIdleTimeoutMins()`, service_mode.php:1526): **app default → org layer → user
+  default → per-link owner choice**. The org layer REUSES the #1770 mechanism verbatim (two dormant
+  columns on `tblOrganisations` + the `tblOrganisationMembers` join, most-restrictive-wins across a
+  user's active orgs) — NOT a new store. An org that **enforces** `'authenticated'` caps every edit
+  link its members mint (the owner can no longer pick `'anyone'`); an org that merely **defaults**
+  `'authenticated'` pre-selects it but the owner may still loosen it. This is why the resolver
+  matters even though the default is `'anyone'`: a church can require sign-in for all its members'
+  shared editing without touching each member's links.
 
-### Schema delta forced by G3 + G4 (fold into the §3b one-pass batch — rule #20, do NOT dribble a 2nd ALTER)
+### Schema delta forced by G3 + G4 + G4-org (fold ALL into the §3b one-pass batch — rule #20, do NOT dribble a 2nd ALTER)
 
-Add these TWO columns to the same `migrate-setlist-share-scope.php` ALTER batch (each `columnExists`-gated,
-each with a `@migration-adds` doctag, byte-identical schema.sql mirror, folded into the ONE registry
-OR-probe):
+The single `migrate-setlist-share-scope.php` now ALTERs **two tables** (multi-object migration,
+rule #19: multi-object OR-probe, `@migration-adds` doctag per column, byte-identical schema.sql
+mirror for each).
+
+**(a) `tblSharedSetlists`** — the per-link columns (each `columnExists`-gated):
 
 ```sql
     ADD COLUMN ShowSharerName TINYINT(1)  NOT NULL DEFAULT 0  COMMENT 'G3 #1791: 1 = shared page shows "Shared by <owner display name>"; 0 (default) = anonymous, current posture. Owner-set per link at mint.',
-    ADD COLUMN EditAudience   VARCHAR(20)  NOT NULL DEFAULT 'anyone' COMMENT 'G4 #1791: who may edit via an edit-scope link — anyone | authenticated. App-validated VARCHAR vocab, never ENUM (rule #20). Ignored for view-scope links.',
+    ADD COLUMN EditAudience   VARCHAR(20)  NOT NULL DEFAULT 'anyone' COMMENT 'G4 #1791: who may edit via an edit-scope link — anyone | authenticated. Owner-set per link; DEFAULT anyone (no account needed). App-validated VARCHAR vocab, never ENUM (rule #20). Ignored for view-scope links.',
 ```
 
-`EditAudience` is VARCHAR (not a bool) deliberately: the audience concept is growable (`anyone` →
-later `authenticated` → plausibly `org-members`/`domain`), so a new value is an app-map line, never
-an ALTER (rule #20). Central map: add `SETLIST_EDIT_AUDIENCES = ['anyone','authenticated']` beside
-the scope vocab, fail-closed normaliser to `'anyone'` on unknown (the safest? — NO: unknown must
-fail-**closed to the MORE restrictive** `'authenticated'`? See note). **Fail-closed decision:** an
-unknown/absent `EditAudience` on a resolvable EDIT token normalises to **`'authenticated'`** (the
-safer grant — never silently widen an anonymous-write door on data drift); `'anyone'` is only ever
-honoured when explicitly stored. The OR-probe includes `!columnExists(ShowSharerName) || !columnExists(EditAudience)`.
+**(b) `tblOrganisations`** — the org-policy layer, mirroring the #1770 idle-timeout columns
+(`LiveIdleTimeoutMins`/`EnforceIdleTimeout`) verbatim so the resolver is a copy, not a new pattern:
+
+```sql
+    ADD COLUMN SetlistEditAudience        VARCHAR(20) NULL COMMENT 'G4-org #1791: this org''s preference for members'' set-list EDIT links — anyone | authenticated | NULL (no org opinion). App-validated VARCHAR vocab.',
+    ADD COLUMN EnforceSetlistEditAudience TINYINT(1)  NOT NULL DEFAULT 0 COMMENT 'G4-org #1791: 0 = SetlistEditAudience is an advisory default a member may loosen; 1 = mandatory cap (a member''s edit links can never be more open than SetlistEditAudience). Mirrors EnforceIdleTimeout (#1770).',
+```
+
+`EditAudience`/`SetlistEditAudience` are VARCHAR (not bool) deliberately: the audience concept is
+growable (`anyone` → `authenticated` → plausibly `org-members`/`domain`), so a new value is an
+app-map line, never an ALTER (rule #20). Central map beside the scope vocab:
+`SETLIST_EDIT_AUDIENCES = ['anyone','authenticated']` with an **ordered restrictiveness**
+(`anyone` < `authenticated`) so "most-restrictive-wins" across a user's orgs is a simple max().
+**Fail-closed rule (forward-compat ONLY):** an UNRECOGNISED stored `EditAudience` on a resolvable
+EDIT token normalises to **`'authenticated'`** (never silently widen an anonymous-write door on data
+drift). This is NOT the default — a normal link stores the explicit `'anyone'` default and is
+honoured as anonymous. The OR-probe includes
+`!columnExists(tblSharedSetlists.ShowSharerName) || !columnExists(tblSharedSetlists.EditAudience) || !columnExists(tblOrganisations.SetlistEditAudience) || !columnExists(tblOrganisations.EnforceSetlistEditAudience)`.
+
+### The audience resolver (reuses the #1770 shape — do NOT re-fork)
+
+`setlistResolveEditAudienceDefault(\mysqli $db, int $ownerUserId, ?string &$enforcedOut = null): string`
+in includes/setlist_collab.php, structured line-for-line like `serviceMode_resolveIdleTimeoutMins()`:
+1. **App default** = `getAppSetting('setlist_edit_audience_default', 'anyone')` (no schema — tblAppSettings key).
+2. **Org layer** = across `tblOrganisationMembers m JOIN tblOrganisations o` for this user (o.IsActive=1,
+   o.SetlistEditAudience IS NOT NULL), **most-restrictive-wins**: `$enforced` = max restrictiveness of
+   rows with `EnforceSetlistEditAudience=1`; `$orgDefault` = max restrictiveness of the advisory rows.
+   Column-existence-gated + try/catch fail-OPEN (a missing org layer never breaks minting).
+3. **User default** = `tblUsers.Settings` JSON key `setlist_edit_audience_default` (no schema).
+4. **Resolve**: the pre-selected default = user ?? orgDefault ?? appDefault; then **clamp to
+   `$enforced`** if any org enforces (the mint CANNOT store anything more open than `$enforced`).
+   `$enforcedOut` is exposed (like #1798's `$enforcedMinsOut`) so `setlist_share` caps a
+   client-chosen audience at the org's mandate and 403s an attempt to exceed it.
+
+### Server delta forced by G3 + G4 + G4-org
+
+- **Mint (`setlist_share`)**: accept optional `showSharerName` (bool) and, for `scope='edit'`,
+  `editAudience` (validated against the map). The stored value = the owner's choice **clamped by the
+  resolver's `$enforcedOut`** (an org mandate wins); absent choice = the resolver's pre-selected
+  default (app→org→user, default `'anyone'`). `showSharerName` accepted for both scopes.
+- **Read (`setlist_get`)**: (a) `sharedByName` added ONLY when `ShowSharerName=1` (the one conditional
+  allow-list key; never echo user id/email — G3 privacy invariant holds). (b) `canWrite` requires, if
+  the resolved `EditAudience='authenticated'`, a signed-in requester — else `canWrite=false` +
+  `lockReason='signin_required'`. `'anyone'` keeps the fully-anonymous branch.
+- **Write (`setlist_token_update`)**: gate between §3c steps (4) and (5) — if the token's
+  `EditAudience='authenticated'` (or normalised so) and no signed-in user → **401** `signin_required`
+  (distinct status, rule #35). `'anyone'` proceeds anonymously.
+
+### Client + admin delta forced by G3 + G4 + G4-org
+
+- **Owner share modal** (§3g.1): the edit-link row's "Who can edit" control **pre-selects the
+  resolver's default** and **disables/removes the "Anyone" option when an org enforces
+  `'authenticated'`** (with a short "your organisation requires sign-in to edit shared lists" note),
+  plus the "Show my name on the shared page" checkbox.
+- **Org admin**: a "Set-list edit links" preference on the SAME org settings surface that already
+  hosts the #1770 idle-timeout enforce control (a select: *No preference* | *Default to signed-in* |
+  *Require signed-in*) — org-admin-gated, writing `SetlistEditAudience` + `EnforceSetlistEditAudience`.
+  Reuse that page; do not add a new admin page.
+- **Shared edit surface** (§3g.2): on `lockReason='signin_required'`, render a sign-in prompt
+  (existing auth entry points) instead of the editor.
 
 ### Server delta forced by G3 + G4
 
