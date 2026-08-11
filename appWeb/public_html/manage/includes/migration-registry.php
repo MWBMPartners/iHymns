@@ -4048,16 +4048,25 @@ return [
                       . ' tokens) and adds <code>Scope</code> (view|edit, VARCHAR not'
                       . ' ENUM), <code>Label</code>, <code>RevokedAt</code>,'
                       . ' <code>ExpiresAt</code>, <code>LastUsedAt</code>,'
-                      . ' <code>EditCount</code> + <code>idx_Expiry</code>. Additive,'
-                      . ' idempotent, DORMANT — every existing view link resolves'
-                      . ' byte-identically until the token model (server C2, client'
-                      . ' C4/C5) lands. Safe to re-run.',
+                      . ' <code>EditCount</code> + <code>idx_Expiry</code>. Also adds the'
+                      . ' G3/G4 owner-decision columns: <code>ShowSharerName</code>'
+                      . ' (opt-in "Shared by …" byline) and <code>EditAudience</code>'
+                      . ' (anyone|authenticated, DEFAULT anyone) on'
+                      . ' <code>tblSharedSetlists</code>, plus the G4-org policy layer'
+                      . ' on <code>tblOrganisations</code>: <code>SetlistEditAudience</code>'
+                      . ' + <code>EnforceSetlistEditAudience</code> (mirrors the #1770'
+                      . ' idle-timeout org columns). Additive, idempotent, DORMANT —'
+                      . ' every existing view link resolves byte-identically until the'
+                      . ' token model (server C2/C3, client C4/C5) lands. Safe to re-run.',
             'button' => 'Run Set-list Share Links Migration',
         ],
         /* Multi-object OR-probe. PENDING until every capability column exists AND
            ShareId has been widened to >= 64 chars (the MODIFY keeps DATA_TYPE
            'varchar', so it's detected by WIDTH via _migProbe_columnCharLength,
-           not type). APPLIED once all are present. */
+           not type). The G3/G4/G4-org columns (ShowSharerName/EditAudience on
+           tblSharedSetlists, SetlistEditAudience/EnforceSetlistEditAudience on
+           tblOrganisations) re-pend an install that already ran the pre-G3/G4
+           version of this card. APPLIED once all are present. */
         'probe' => static fn(\mysqli $db) =>
                !_migProbe_columnExists($db, 'tblSharedSetlists', 'Scope')
             || !_migProbe_columnExists($db, 'tblSharedSetlists', 'Label')
@@ -4065,7 +4074,11 @@ return [
             || !_migProbe_columnExists($db, 'tblSharedSetlists', 'ExpiresAt')
             || !_migProbe_columnExists($db, 'tblSharedSetlists', 'LastUsedAt')
             || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditCount')
-            || _migProbe_columnCharLength($db, 'tblSharedSetlists', 'ShareId') < 64,
+            || _migProbe_columnCharLength($db, 'tblSharedSetlists', 'ShareId') < 64
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'ShowSharerName')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditAudience')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'SetlistEditAudience')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'EnforceSetlistEditAudience'),
     ],
 
     'live-follow-quick-capable' => [

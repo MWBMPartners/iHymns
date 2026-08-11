@@ -1203,6 +1203,8 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     LiveIdleTimeoutMins SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Org override for the Quick-session leader-idle timeout (minutes). NULL = no override — the app default applies (#1770 req 5)',
     EnforceIdleTimeout TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = the org LOCKS LiveIdleTimeoutMins for its members (their personal value is ignored). Only meaningful when LiveIdleTimeoutMins is non-NULL (#1770 req 5)',
+    SetlistEditAudience VARCHAR(20) NULL DEFAULT NULL COMMENT 'G4-org #1791: this org''s preference for members'' set-list EDIT links — anyone | authenticated | NULL (no org opinion). App-validated VARCHAR vocab.',
+    EnforceSetlistEditAudience TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'G4-org #1791: 0 = SetlistEditAudience is an advisory default a member may loosen; 1 = mandatory cap (a member''s edit links can never be more open than SetlistEditAudience). Mirrors EnforceIdleTimeout (#1770).',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -1436,6 +1438,8 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     ExpiresAt       DATETIME        NULL DEFAULT NULL COMMENT 'Optional expiry (UTC), NULL = never. DATETIME not TIMESTAMP (rule #20 TTL convention).',
     LastUsedAt      DATETIME        NULL DEFAULT NULL COMMENT 'Last successful token READ or WRITE (edit links) — owner-facing "in use?" signal.',
     EditCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Successful token WRITES through this link (mirrors ViewCount).',
+    ShowSharerName  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'G3 #1791: 1 = shared page shows "Shared by <owner display name>"; 0 (default) = anonymous, current posture. Owner-set per link at mint.',
+    EditAudience    VARCHAR(20)     NOT NULL DEFAULT 'anyone' COMMENT 'G4 #1791: who may edit via an edit-scope link — anyone | authenticated. Owner-set per link; DEFAULT anyone (no account needed). App-validated VARCHAR vocab, never ENUM (rule #20). Ignored for view-scope links.',
     OwnerUserId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Live-share link: FK to tblUsers.Id of the authenticated owner. NULL = legacy/anonymous snapshot-only share (#1380).',
     SourceSetlistId VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Live-share link: the owner''s tblUserSetlists.SetlistId. (OwnerUserId, SourceSetlistId) resolves the CURRENT setlist at read time. NULL = snapshot-only (#1380).',
     CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for guest creates)',
