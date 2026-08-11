@@ -420,6 +420,69 @@ function ihymns_canonical_openlibrary(string $raw, string $kind): ?string
     return preg_match($pattern, $candidate) === 1 ? $candidate : null;
 }
 
+/**
+ * Canonicalise an Internet Archive (archive.org) item identifier (#94 Phase 1).
+ *
+ * ELI5: turn a bare identifier ("commonpraise00unse"), or any of the common
+ * archive.org URL shapes a curator might paste (details/download/metadata/
+ * stream page, with or without scheme/www, with or without a trailing path),
+ * into the ONE bare identifier string — or `null` when nothing shape-valid
+ * could be found.
+ *
+ * DETAILED / WHY: `tblSongbooks.InternetArchiveUrl` (#672) may hold either a
+ * full details-page URL or a bare identifier — see that column's own
+ * COMMENT. The #94 Phase 1 admin page (`manage/ia-reconcile.php`) prefills
+ * its identifier field from this column and also accepts a free-typed
+ * value, so both shapes must fold to the same string the IA client can use.
+ *
+ * ALGORITHM: percent-decode first (mirrors `ihymns_canonical_ark()`, so a
+ * URL-encoded fragment resolves identically to its decoded twin); if the
+ * decoded string contains an `archive.org/<details|download|metadata|stream>
+ * /<id>` path segment (case-insensitive, scheme/www optional, an optional
+ * trailing `/...` ignored), extract just `<id>`; otherwise treat the whole
+ * trimmed input as a bare identifier already. Validate against EXACTLY
+ * archive.org's own identifier rule.
+ *
+ * The validation regex is DUPLICATED here, as a literal, from
+ * `iaIdentifierValid()` (`includes/ia_client.php`) — this module is
+ * deliberately dependency-free (the same posture `ihymns_canonical_isni()`
+ * breaks only to delegate to an existing single source of truth; here there
+ * is no existing fold to delegate to, so the shape check is small enough to
+ * duplicate rather than pull in a whole outbound-HTTP-client file just for
+ * one regex). The two literals are mechanically held in lockstep by
+ * `tests/php/test-ia-reconcile-guards.php` (rule #35 — "a comment saying
+ * keep these in sync is the failure, not the fix").
+ *
+ * @param string $raw Curator/importer/URL-pasted input, bare id or a
+ *                     details/download/metadata/stream URL.
+ * @return string|null '' for an empty input, `null` when non-empty but no
+ *                      shape-valid identifier could be found, else the bare
+ *                      canonical identifier string (case preserved — IA
+ *                      identifiers ARE case-sensitive).
+ * @link https://archive.org/developers/metadata-schema/  archive.org identifier + metadata reference
+ * @see appWeb/public_html/includes/ia_client.php  iaIdentifierValid() — the duplicated regex's other half
+ */
+function ihymns_canonical_ia_identifier(string $raw): ?string
+{
+    $raw = trim($raw);
+    if ($raw === '') return '';
+
+    $decoded = rawurldecode($raw);
+
+    $candidate = $decoded;
+    if (preg_match('~archive\.org/(?:details|download|metadata|stream)/([^/?#]+)~i', $decoded, $m) === 1) {
+        $candidate = $m[1];
+    }
+    $candidate = trim($candidate);
+
+    /* Duplicated literal — see doc-block above. Keep byte-identical to
+       iaIdentifierValid()'s regex. */
+    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/', $candidate) !== 1) {
+        return null;
+    }
+    return $candidate;
+}
+
 /* NOTE — deliberately NOT registered in IHYMNS_ID_SCHEMES / NOT wired into
    ihymns_normalize_identifier() (Songbook/Catalogue Enhancements epic §Feature
    6, commit 1 of 7).
