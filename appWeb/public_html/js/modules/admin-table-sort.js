@@ -39,6 +39,19 @@
  * https://www.w3.org/WAI/ARIA/apg/patterns/table/
  */
 
+/* #1786 (rev 2 / public-sort build) — makeCompare()/multiKeyCompare() used to
+   be defined HERE. They are now the shared core in
+   js/utils/sort-compare.js, imported below, so the public card/list
+   "Sort ▾" panel (js/modules/list-sort.js) can reuse the exact same
+   comparator instead of re-forking it (rule #22 — the duplicate/counterpart
+   scorer's old `_bsls_*` copies are the shape this avoids repeating).
+   `multiKeyCompare` is RE-EXPORTED unchanged so
+   tests/test-admin-table-sort.js's existing `import { multiKeyCompare, … }
+   from '.../admin-table-sort.js'` keeps working with zero behaviour
+   change — this file's own logic did not move, only its HOME did. */
+import { makeCompare, multiKeyCompare } from '../utils/sort-compare.js';
+export { multiKeyCompare };
+
 /* Single-column click cycle. Shift-click uses the same asc→desc→remove ladder
    per level. */
 const CYCLE_NEXT = { 'none': 'asc', 'asc': 'desc', 'desc': 'none' };
@@ -55,57 +68,6 @@ function cellValue(row, colIndex) {
     if (!cell) return '';
     const explicit = cell.getAttribute('data-sort-value');
     return explicit !== null ? explicit : cell.textContent.trim();
-}
-
-/**
- * Build a typed comparator for ONE level. text / number / date are the
- * supported `data-sort-type` values.
- *
- * @param {string} type 'text' | 'number' | 'date'
- * @param {string} direction 'asc' | 'desc'
- * @returns {(a: string, b: string) => number}
- */
-function makeCompare(type, direction) {
-    const dir = direction === 'desc' ? -1 : 1;
-    if (type === 'number') {
-        return (a, b) => {
-            const x = parseFloat(a) || 0;
-            const y = parseFloat(b) || 0;
-            return (x - y) * dir;
-        };
-    }
-    if (type === 'date') {
-        return (a, b) => {
-            const x = Date.parse(a) || 0;
-            const y = Date.parse(b) || 0;
-            return (x - y) * dir;
-        };
-    }
-    /* text — locale + numeric so "Item 2" sorts before "Item 10". */
-    return (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }) * dir;
-}
-
-/**
- * Compare two rows across an ORDERED stack of sort levels — the multi-column
- * core (#1786). Walks the levels in priority order and returns the first
- * non-zero comparison; 0 only when every level ties (the caller then falls back
- * to original position for stability).
- *
- * PURE + exported so `tests/test-admin-table-sort.js` can exercise the
- * multi-level ordering without a DOM (rule #34 — the behaviour is proven, not
- * assumed): pass `valsA`/`valsB` as `{ [columnIndex]: string }` maps.
- *
- * @param {Array<{index:number,type:string,direction:string}>} keys Ordered levels.
- * @param {Object<number,string>} valsA Column-index → cell value for row A.
- * @param {Object<number,string>} valsB Column-index → cell value for row B.
- * @returns {number} <0, 0, >0
- */
-export function multiKeyCompare(keys, valsA, valsB) {
-    for (const k of keys) {
-        const cmp = makeCompare(k.type, k.direction)(valsA[k.index] ?? '', valsB[k.index] ?? '');
-        if (cmp !== 0) return cmp;
-    }
-    return 0;
 }
 
 /**
