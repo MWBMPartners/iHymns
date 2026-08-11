@@ -4897,6 +4897,7 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
     Name            VARCHAR(120)    NOT NULL COMMENT 'Curator-visible template name',
     Scope           VARCHAR(20)     NOT NULL DEFAULT 'song' COMMENT 'song | setlist | … (VARCHAR not ENUM, rule #20 — new scopes need no ALTER)',
     OwnerId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — NULL = global/curated template (reserves per-user templates without a second migration)',
+    OrgId           INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblOrganisations.Id — NULL = global/curated; set = visible only to that org''s members (K, #1767; UI may lag the column)',
     BlocksJson      JSON            NOT NULL COMMENT 'Ordered block list: [{type, …options}] — title/subtitle/credits/lyrics/copyright/identifiers/spacer/pagebreak/text. Adding a block type needs no ALTER.',
     PageOptionsJson JSON            NULL DEFAULT NULL COMMENT 'Page-level options (base font pt, columns, …)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = hidden from the picker without deleting',
@@ -4908,9 +4909,44 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
 
     INDEX idx_ScopeActive (Scope, IsActive, SortOrder),
     INDEX idx_Owner (OwnerId),
+    INDEX idx_Org (OrgId),
 
     CONSTRAINT fk_PrintTemplate_Owner
-        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PrintTemplate_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- Print template custom layouts (#1767 remainder P1) — uploadable full-page
+-- HTML "skins" a curator sanitises + saves per template/slot. Only
+-- HtmlSanitised (ihymnsSanitizeHtml() output, includes/html_sanitizer.php) is
+-- ever render-served; HtmlOriginal is dormant, kept only so a future
+-- allow-list widening can re-sanitise from source (render paths must never
+-- read it). Slot is reserved (rule #20) — v1 only ever writes 'page'.
+-- Mirrors appWeb/.sql/migrate-print-template-layouts.php (rule #19).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tblPrintTemplateCustomLayout (
+    Id               INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    TemplateId       INT UNSIGNED    NOT NULL COMMENT 'FK tblPrintTemplates.Id — the template this full-page layout skins',
+    Slot             VARCHAR(20)     NOT NULL DEFAULT 'page' COMMENT 'page | cover | continuation | … (VARCHAR not ENUM, rule #20; reserved multiplicity — v1 writes only ''page'')',
+    HtmlSanitised    MEDIUMTEXT      NOT NULL COMMENT 'The ONLY render-served payload — output of ihymnsSanitizeHtml(layout). Render paths must never read HtmlOriginal.',
+    HtmlOriginal     MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'Upload as received (dormant) — sole source for re-sanitising after an allow-list change; guard-banned from render paths',
+    SanitiserVersion INT UNSIGNED    NOT NULL DEFAULT 1 COMMENT 'IHYMNS_HTML_SANITISER_VERSION that produced HtmlSanitised; a bump flags rows for re-sanitise',
+    SizeBytes        INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'LENGTH(HtmlSanitised) at save — cheap cap/audit read without pulling the blob',
+    IsActive         TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = template falls back to the standard document shell without deleting the upload',
+    CreatedBy        INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — who uploaded it',
+    CreatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_TemplateSlot (TemplateId, Slot),
+    INDEX idx_CreatedBy (CreatedBy),
+
+    CONSTRAINT fk_PtLayout_Template
+        FOREIGN KEY (TemplateId) REFERENCES tblPrintTemplates(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PtLayout_User
+        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

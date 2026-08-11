@@ -4132,4 +4132,25 @@ return [
                !_migProbe_tableExists($db, 'tblIaFetchCache')
             || !_migProbe_tableExists($db, 'tblIaImportCandidates'),
     ],
+
+    'print-template-layouts' => [
+        'script' => 'migrate-print-template-layouts.php',
+        'card' => [
+            'title'  => 'Print template custom layouts (#1767 remainder P1)',
+            'body'   => 'Creates <code>tblPrintTemplateCustomLayout</code> (uploadable full-page'
+                      . ' HTML "skins" a curator sanitises + saves per template/slot — only the'
+                      . ' sanitised output is ever render-served) and adds the RESERVED DORMANT'
+                      . ' <code>tblPrintTemplates.OrgId</code> column (org-default templates,'
+                      . ' feature K). Schema-only — nothing in the live tree reads either object'
+                      . ' yet; the sanitiser and upload UI land in later commits. Depends on the'
+                      . ' <code>print-templates</code> (#1350) card. Additive + idempotent.',
+            'button' => 'Run Print Template Layouts Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. Either object landing
+           independently (e.g. a partial re-run) correctly keeps the card pending
+           until BOTH are present. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblPrintTemplateCustomLayout')
+            || !_migProbe_columnExists($db, 'tblPrintTemplates', 'OrgId'),
+    ],
 ];
