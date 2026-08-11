@@ -9,14 +9,14 @@
 _Last updated: 2026-08-11 (#91 final docs sweep + version bump)._
 
 ## Where things stand
-- **Version:** `1.5000.0` (alpha) — authoritative source is `includes/infoAppVer.php`
+- **Version:** `0.5050.0` (alpha) — authoritative source is `includes/infoAppVer.php`
   (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
   hardcode a version rot within days — point at the file. The old "v1.x = local-JSON phase" comment
   was retired (DB-direct since epic #1010; the major digit no longer encodes a phase).
   ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. **Two worked
   examples now:** the 98-commit consolidation bumped by hand (`bad5ca4f`, PR #1592), and the
-  214-commit `claude/issue-sweep-fixes-89` batch bumped by hand `0.4100.0 → 1.5000.0` (owner-directed
-  major, #91). **Expect to repeat this after any large alpha batch.**
+  214-commit `claude/issue-sweep-fixes-89` batch bumped by hand `0.4100.0 → 0.5050.0` (owner-directed
+  significant minor, #91). **Expect to repeat this after any large alpha batch.**
 - **Current batch — `claude/issue-sweep-fixes-89` (PUSHED; single PR pending the owner):** 214 commits
   landing the #89 issue-sweep + several epics. One line per family: **#1765**+**#93** songbook/
   catalogue enhancements + Publishers registry; **#1769/#1778** content-gating program + `/manage/gating`

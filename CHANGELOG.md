@@ -1,15 +1,15 @@
-## [1.5000.0] — 2026-08-11 (alpha)
+## [0.5050.0] — 2026-08-11 (alpha)
 
 The consolidated `claude/issue-sweep-fixes-89` batch — 214 commits, one PR — landing the #89
 issue-sweep alongside several feature epics: the **#1765** songbook/catalogue enhancements (+ **#93**
 Publishers registry), the **#1769/#1778** content-gating program, the **#1767** print-templates /
 server-PDF remainder, **#94** IA-reconcile Phase 1, **#1770/#1792/#1798** Live-Follow work, **#1791**
 set-list share-by-link, **#1786** public multi-level list sort, and the **#1785** musicians dedup
-family. Owner-directed **major version bump** (0.4100.0 → 1.5000.0). All new schema ships additive,
+family. Owner-directed **significant minor version bump** (0.4100.0 → 0.5050.0). All new schema ships additive,
 dormant, and forward-looking (rule #20); content gating stays entirely dormant behind
 `content_gating_enabled='0'`.
 
-- chore(version): **bump 0.4100.0 → 1.5000.0** (#91, owner-directed major bump). Lockstep across
+- chore(version): **bump 0.4100.0 → 0.5050.0** (#91, owner-directed significant minor bump). Lockstep across
   `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `PROJECT_STATUS.md` and
   `appWeb/CHANGELOG.md`; the stale "v1.x = local-JSON phase" comment is retired (DB-direct since epic
   #1010). `service-worker.js.php` auto-derives its cache key, so the bump rolls the PWA cache with no

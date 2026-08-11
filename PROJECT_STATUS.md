@@ -81,9 +81,9 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Accessibility + security sweep** (#1643–#1648, #1665) — high-contrast/CVD modes restored across the whole `/manage` admin surface (they had never been styled there at all); Present mode is a real focus-trapping dialog; Service Mode announces section changes and no longer races the page render; sortable table headers keep their `columnheader` role; SPA navigation stopped reading whole pages aloud on every route change; the setlist Arrangement editor works by keyboard and touch; the SortableJS and Bootstrap CDN loads gained SRI + vendored fallbacks; eight admin pages' access gates now match what the nav actually advertises.
 - **iHymns interchange JSON importer** (#1633) — a new additive/merge-only importer writes iHymns's own JSON export format straight to the database, following the same never-truncate contract as the ZIP importer.
 
-### 2026-08 highlights ✅ — the `claude/issue-sweep-fixes-89` batch (v1.5000.0)
+### 2026-08 highlights ✅ — the `claude/issue-sweep-fixes-89` batch (v0.5050.0)
 
-The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.4100.0 → 1.5000.0**
+The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.4100.0 → 0.5050.0**
 (owner-directed). All new schema is additive/dormant; content gating stays off by default.
 
 - **Musician registry-vs-registry duplicate detection + easier merge UX** (#1785, follow-up to #1784, epic #1787) — a new live-computed scan (`includes/musician_duplicates.php`) finds registry rows that are probably the same person, blocked (not naive all-pairs) so it stays sub-second at thousands of rows; a new `/manage/musician-duplicates` review page (mirroring `/manage/duplicate-songs`, #1215) offers one-click merge, dismiss/undismiss, and a lifespan-conflict guard on the dangerous class of merge; every merge affordance across the app (the Merge modal, bulk-promote, the new page) now shows WHY two similar names look alike and WHICH registry row is which — closing the "which is merging into which?" confusion the #1784 fix surfaced. The merge core is now one shared function (`musicianMergeExecute()`), closing two data-loss bugs found during its extraction (a stranded sixth credit table; silently cascade-deleted aliases/relations on merge). Plus **#1800/#1799** merge/dedup follow-ups and the admin sortable-headers adoption sweep.
@@ -136,7 +136,7 @@ runtime surprise there invalidates assumptions the rest build on.
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
 - **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 1.5000.0 Alpha (authoritative: `includes/infoAppVer.php`)
+- **Version**: 0.5050.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
 
 ---

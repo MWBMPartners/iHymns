@@ -24,10 +24,10 @@ wiki, OpenAPI, the top-level markdown, and these `.claude/` docs with what actua
 - **C2 `docs(wiki)`** — 7 wiki pages (Database, API-Reference, Setlists, Live-Follow, PWA-Features,
   Architecture, Security).
 - **C3 `docs(api)+chore(version)`** — added `?page=publisher` to `api-docs.yaml`; **version bump
-  0.4100.0 → 1.5000.0** (owner-directed major) in lockstep across `infoAppVer.php`, `api-docs.yaml`,
+  0.4100.0 → 0.5050.0** (owner-directed significant minor) in lockstep across `infoAppVer.php`, `api-docs.yaml`,
   `manifest.json`, `README.md`, `PROJECT_STATUS.md`, `appWeb/CHANGELOG.md`. The dead "v1.x =
   local-JSON phase" comment was retired.
-- **C4 `docs(changelog,md)`** — a consolidated `[1.5000.0]` CHANGELOG header + the 3 deferred family
+- **C4 `docs(changelog,md)`** — a consolidated `[0.5050.0]` CHANGELOG header + the 3 deferred family
   entries (#1767 remainder, #94, #1765 core) + #1791 server-half + gating P0/P1; README /
   PROJECT_STATUS / DEV_NOTES / SECURITY updated.
 - **C5 `docs(claude)`** — this note; MEMORY.md; CLAUDE.md rules #39/#40 + the #28 patch;
@@ -60,7 +60,7 @@ spec: `.claude/final-docs-sweep-91-plan.md`.
 
 **Suites at sweep close: 153 PHP / 56 node, all green** (docs don't move the counts).
 
-**Version is now `1.5000.0`** (owner-directed major bump; supersedes the `0.4001.0` claims still
+**Version is now `0.5050.0`** (owner-directed significant minor bump; supersedes the `0.4001.0` claims still
 written at the historical §"What Is iHymns?" and the 07-30 consolidation note below — read
 `includes/infoAppVer.php` as the authority, per the fact-refresh precedent).
 

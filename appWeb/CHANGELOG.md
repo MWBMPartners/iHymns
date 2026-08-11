@@ -2,9 +2,9 @@
 
 ## [unreleased] — alpha
 
-Outline of the web/PWA-relevant work landed since 0.880.0 (through 1.5000.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
+Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.5050.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
 
-- **Version bump 0.4100.0 → 1.5000.0** (#91, owner-directed major) — the consolidated `claude/issue-sweep-fixes-89` batch (214 commits, one PR).
+- **Version bump 0.4100.0 → 0.5050.0** (#91, owner-directed significant minor) — the consolidated `claude/issue-sweep-fixes-89` batch (214 commits, one PR).
 - **Songbook/catalogue enhancements + Publishers registry** (#1765 / #93) — songbook disable + public-domain flags, ARK/OpenLibrary/ISBN/ISSN identifiers, a Google Books external-link provider, MARCXML import/export, and the free-text publisher promoted to a first-class `tblPublishers` registry (persons + companies, imprint grouping, aliases, public `/publisher/<slug>` page at `/manage/publishers`).
 - **Content-gating program + hub** (#1769 / #1778) — one viewer resolver + one enforcement pipeline (`access_context.php`/`access_resolver.php`/`licence_registry.php`), a `tblLicenceTypes` registry with `/manage/licence-types` CRUD, and a `/manage/gating` readiness hub. Entirely dormant behind `content_gating_enabled='0'`.
 - **Print templates & server-PDF remainder** (#1767) — one print-template engine across browser Print / server PDF / whole-set-list PDF / admin preview, an allowlist HTML sanitiser, vendored mPDF (outside every docroot), signed-in Download PDF, uploadable custom layouts, and CCLI print-usage logging.

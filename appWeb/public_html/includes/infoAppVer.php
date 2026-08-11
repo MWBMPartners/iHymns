@@ -78,18 +78,19 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
 /* Auto-bumped by the version-bump GitHub Action on push to alpha/beta.
-   Manually jumped 0.4100.0 -> 1.5000.0 for the #89/#91 consolidated batch
+   Manually jumped 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch
    (the 214-commit `claude/issue-sweep-fixes-89` branch: the #1765 songbook/
    catalogue epic + #93 Publishers, the #1769/#1778 gating program, the #1767
    print/PDF remainder, #94 IA-reconcile, #1770/#1792/#1798 Live-Follow, #1791
    set-list sharing, #1786 public list-sort, #1785 musicians dedup, et al.) —
-   an owner-directed MAJOR bump reflecting the scope of the batch, rather than
-   the +1 the auto-bumper applies per merge. The alpha auto-bumper will still
-   apply its standard +1 minor on merge. */
+   an owner-directed significant minor bump reflecting the scope of the batch
+   (a large jump within the 0.x line, not the +1 the auto-bumper applies per
+   merge). The alpha auto-bumper will still apply its standard +1 minor on
+   merge. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "1.5000.0";
+$app["Application"]["Version"]["Number"] = "0.5050.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
