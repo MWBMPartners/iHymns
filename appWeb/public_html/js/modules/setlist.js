@@ -53,6 +53,103 @@ function sharedCanWrite(shared) {
     return shared.permission === 'edit';
 }
 
+/**
+ * Row markup for a STAGED-COPY set-list editor (#1791).
+ *
+ * ELI5: draws the list of songs, with move-up/move-down/remove buttons when
+ * the viewer is allowed to change the order.
+ *
+ * EXTRACTED so the email-collaborator detail view (`renderSharedSetListDetail()`)
+ * and the public token-edit surface (`initSharedSetListPage()`'s edit branch)
+ * share ONE row template instead of two forks (modularity rule — a third copy
+ * of this markup, one per write-grant model, is exactly the drift #1216/#1638
+ * already learned to extract away).
+ *
+ * @param {Array<{id:string,title?:string,songbook?:string,number?:number}>} songs
+ * @param {boolean} canEdit Render the move/remove controls at all.
+ * @returns {string} HTML for the list-group rows (caller supplies the
+ *          surrounding `<div id="…">` / `list-group` wrapper).
+ */
+function sharedSetlistRowsHtml(songs, canEdit) {
+    if (songs.length === 0) {
+        return `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`;
+    }
+    return songs.map((song, index) => `
+        <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
+             data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
+            <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+            <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
+            <div class="flex-grow-1">
+                <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
+                   class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
+                <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
+            </div>
+            ${canEdit ? `
+            <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
+                    data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
+                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
+                    data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
+                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
+                    data-index="${index}" aria-label="Remove from set list">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>` : ''}
+        </div>
+    `).join('');
+}
+
+/**
+ * Wire the move-up/move-down/remove buttons `sharedSetlistRowsHtml()` just
+ * rendered INTO `container` — the other half of the extraction above.
+ *
+ * Mutates `songs` IN PLACE (splice), then calls `opts.onMutate()` so the
+ * CALLER decides what "after a change" means: `renderSharedSetListDetail()`
+ * re-renders the whole detail view and pushes to `setlist_collab_update`;
+ * the token-edit surface re-renders just the rows and pushes to
+ * `setlist_token_update`. Two different write endpoints, one row-interaction
+ * contract (rule #35 — the SHAPE is shared, the endpoint is the caller's).
+ *
+ * @param {?HTMLElement} container Element `sharedSetlistRowsHtml()` was
+ *        rendered into (its `.btn-shared-*` buttons are bound here).
+ * @param {Array<object>} songs MUTABLE staged-copy array.
+ * @param {{canEdit:boolean, onMutate:() => void}} opts
+ */
+function bindSharedSetlistRowControls(container, songs, opts) {
+    if (!container || !opts || !opts.canEdit) return;
+    const move = (from, to) => {
+        if (to < 0 || to >= songs.length) return;
+        const [moved] = songs.splice(from, 1);
+        songs.splice(to, 0, moved);
+        opts.onMutate();
+    };
+    container.querySelectorAll('.btn-shared-up').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            move(i, i - 1);
+        });
+    });
+    container.querySelectorAll('.btn-shared-down').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            move(i, i + 1);
+        });
+    });
+    container.querySelectorAll('.btn-shared-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            if (Number.isNaN(i)) return;
+            songs.splice(i, 1);
+            opts.onMutate();
+        });
+    });
+}
+
 export class SetList {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -790,35 +887,14 @@ export class SetList {
         const canEdit = sharedCanWrite(shared);
         const locked = shared.locked === true;
 
+        /* #1791 — row markup EXTRACTED to sharedSetlistRowsHtml() (module-scope,
+           near sharedCanWrite() above), shared with the public token-edit
+           surface in initSharedSetListPage() (modularity rule — one row
+           template, not two forks). The wrapper div/id are kept here since the
+           arm-on-tap listener below still queries `#shared-setlist-songs`. */
         const rowsHtml = songs.length === 0
-            ? `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`
-            : `<div class="list-group" id="shared-setlist-songs">
-                ${songs.map((song, index) => `
-                    <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
-                         data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
-                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                        <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
-                        <div class="flex-grow-1">
-                            <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
-                               class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
-                            <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
-                        </div>
-                        ${canEdit ? `
-                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
-                                data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
-                            <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
-                                data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
-                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
-                                data-index="${index}" aria-label="Remove from set list">
-                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>` : ''}
-                    </div>
-                `).join('')}
-               </div>`;
+            ? sharedSetlistRowsHtml(songs, canEdit)
+            : `<div class="list-group" id="shared-setlist-songs">${sharedSetlistRowsHtml(songs, canEdit)}</div>`;
 
         container.innerHTML = `
             <div class="mb-3">
@@ -956,39 +1032,17 @@ export class SetList {
                 });
         };
 
-        const move = (from, to) => {
-            if (to < 0 || to >= songs.length) return;
-            const [moved] = songs.splice(from, 1);
-            songs.splice(to, 0, moved);
-            shared.songs = songs;
-            this.renderSharedSetListDetail(shared);
-            push();
-        };
-
-        container.querySelectorAll('.btn-shared-up').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                move(i, i - 1);
-            });
-        });
-        container.querySelectorAll('.btn-shared-down').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                move(i, i + 1);
-            });
-        });
-        container.querySelectorAll('.btn-shared-remove').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                if (Number.isNaN(i)) return;
-                songs.splice(i, 1);
+        /* #1791 — move/remove wiring EXTRACTED to bindSharedSetlistRowControls()
+           (module-scope, near sharedSetlistRowsHtml() above), the other half of
+           the row-template extraction. onMutate re-renders the whole detail view
+           (so the header's song count + badge stay in step) then pushes. */
+        bindSharedSetlistRowControls(container.querySelector('#shared-setlist-songs'), songs, {
+            canEdit,
+            onMutate: () => {
                 shared.songs = songs;
                 this.renderSharedSetListDetail(shared);
                 push();
-            });
+            },
         });
     }
 
@@ -3027,6 +3081,24 @@ export class SetList {
                 /* #1535 — true when the signed-in viewer IS this share's owner, so
                    the page hides the "shared with you" banner + Import buttons. */
                 isOwner: data.isOwner === true,
+                /* #1791 — the server-stated capability trio (rule #35: the client
+                   never re-derives write access from anything but this). shareId
+                   is the server-CONFIRMED id — closes the pre-#1791 gap where the
+                   playlist context's sourceId was read from a key this function
+                   never actually returned. */
+                shareId: typeof data.shareId === 'string' ? data.shareId : '',
+                scope: data.scope === 'edit' ? 'edit' : 'view',
+                canWrite: data.canWrite === true,
+                /* 'signin_required' → render a sign-in prompt; any OTHER value
+                   (the pre-existing #1698 owner-lock reasons) → an owner-lock
+                   note. Present only when canWrite is false. */
+                lockReason: typeof data.lockReason === 'string' ? data.lockReason : null,
+                /* #1791 G3 — opt-in byline; '' when the owner didn't opt in. */
+                sharedByName: typeof data.sharedByName === 'string' ? data.sharedByName : '',
+                /* #1791 — the OBJECT shape (id/title/songbook/number/arrangement),
+                   present only when canWrite — lets the edit surface render
+                   without N per-song fetches. */
+                songsDetailed: Array.isArray(data.songsDetailed) ? data.songsDetailed : null,
             };
         } catch {
             return null;
@@ -3168,29 +3240,94 @@ export class SetList {
         if (countEl) countEl.textContent = sharedData.songIds.length;
         if (pluralEl) pluralEl.textContent = sharedData.songIds.length !== 1 ? 's' : '';
 
-        /* Render song list (initially with just IDs, then enrich with metadata) */
+        /* #1791 G3 — opt-in "Shared by <name>" byline. textContent, not
+           innerHTML — the browser's own text escaping is the whole job here,
+           so there is nothing an explicit escapeHtml() call would add. */
+        const bylineEl = document.getElementById('shared-setlist-byline');
+        if (bylineEl) {
+            if (sharedData.sharedByName) {
+                bylineEl.textContent = `Shared by ${sharedData.sharedByName}`;
+                bylineEl.classList.remove('d-none');
+            } else {
+                bylineEl.textContent = '';
+                bylineEl.classList.add('d-none');
+            }
+        }
+
+        /* #1791 — server-stated write capability (rule #35: never re-derived
+           here). `needsSignIn` / `otherLock` are mutually exclusive readings
+           of the SAME `lockReason` the server sends only when canWrite is
+           false: 'signin_required' is this link's EditAudience; any other
+           value is a pre-existing #1698 owner-account-lock reason. Neither
+           touches the READ-ONLY listing below — viewing + tap-to-play stay
+           the unchanged #1790 behaviour; only the edit affordance is gated. */
+        const isEditable  = sharedData.canWrite === true;
+        const needsSignIn = sharedData.lockReason === 'signin_required';
+        const otherLock   = !!sharedData.lockReason && !needsSignIn;
+
+        const signinPromptEl = document.getElementById('shared-setlist-signin-prompt');
+        const lockedNoteEl   = document.getElementById('shared-setlist-locked-note');
+        signinPromptEl?.classList.toggle('d-none', !needsSignIn);
+        lockedNoteEl?.classList.toggle('d-none', !otherLock);
+        document.getElementById('shared-setlist-signin-btn')?.addEventListener('click', () => {
+            this.app.userAuth?.showAuthModal('login');
+        });
+        if (needsSignIn) {
+            /* Re-run this whole init once, after a successful sign-in, so a
+               visitor who signs in mid-visit gets the edit surface without a
+               manual reload. {once:true} — spends itself; a page that never
+               signs in never accumulates a second listener on the next
+               navigation because there is no next navigation for THIS
+               instance to leak into (initSharedSetListPage runs fresh per
+               page load, and the listener target is `document`, not this
+               function's closure — but {once:true} still bounds it to
+               exactly one firing, which is all a single page visit needs). */
+            document.addEventListener(EVT_AUTH_CHANGED, () => {
+                this.initSharedSetListPage(shareData);
+            }, { once: true });
+        }
+
+        /* Render song list. `#shared-setlist-songs` renders ONE of two row
+           shapes: the #1790 read-only playlist rows (progressively enriched
+           below) for everyone else, or — when the server says canWrite —
+           #1791's editable rows via `sharedSetlistRowsHtml()`, the SAME
+           helper `renderSharedSetListDetail()` uses (modularity rule — one
+           row template, not two forks). The editable branch is seeded from
+           `songsDetailed`, which already carries full metadata, so it skips
+           the per-song enrichment fetches entirely. */
         const songsContainer = document.getElementById('shared-setlist-songs');
+        const editStatusEl   = document.getElementById('shared-setlist-edit-status');
+        /** @type {?Array<object>} Staged copy — non-null only while the edit surface is mounted. */
+        let editableSongs = null;
+
         if (songsContainer) {
-            songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
-                <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
-                     data-song-id="${escapeHtml(songId)}">
-                    <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                    <span class="song-number-badge" data-songbook="">...</span>
-                    <div class="flex-grow-1">
-                        <a href="/song/${escapeHtml(songId)}" data-navigate="song"
-                           class="text-decoration-none shared-song-title">${escapeHtml(songId)}</a>
-                        <small class="text-muted d-block shared-song-meta">Loading...</small>
+            if (isEditable && Array.isArray(sharedData.songsDetailed)) {
+                editableSongs = sharedData.songsDetailed.map(s => ({ ...s }));
+            } else {
+                songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
+                    <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
+                         data-song-id="${escapeHtml(songId)}">
+                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+                        <span class="song-number-badge" data-songbook="">...</span>
+                        <div class="flex-grow-1">
+                            <a href="/song/${escapeHtml(songId)}" data-navigate="song"
+                               class="text-decoration-none shared-song-title">${escapeHtml(songId)}</a>
+                            <small class="text-muted d-block shared-song-meta">Loading...</small>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `).join('');
+            }
         }
 
         /* Show content, hide loading */
         loadingEl.classList.add('d-none');
         contentEl.classList.remove('d-none');
 
-        /* Enrich song items with metadata from the API */
-        this.enrichSharedSongItems(sharedData.songIds);
+        /* Enrich song items with metadata from the API — skipped for the edit
+           surface, which already has full metadata from `songsDetailed`. */
+        if (!editableSongs) {
+            this.enrichSharedSongItems(sharedData.songIds);
+        }
 
         /* #1533 — ARM ON TAP for a SHARED list. This is the case that could
            not work at all before: a shared list has no local record, so
@@ -3200,7 +3337,16 @@ export class SetList {
            Titles start empty and are filled by enrichSharedSongItems() above,
            which resolves them asynchronously. We re-read them at click time
            rather than at render time so "Next: <title>" is populated if
-           enrichment has landed, and degrades to a plain "Next" if not. */
+           enrichment has landed, and degrades to a plain "Next" if not.
+
+           #1791 — the selector is now generic (`[data-song-id]` /
+           `a[data-navigate="song"]`, not the read-only `.shared-song-item` /
+           `.shared-song-title` classes) so this ONE delegated listener, bound
+           once to the stable `songsContainer` element, keeps working when the
+           edit surface below swaps its innerHTML for the editable row markup —
+           re-binding per render (the collab-detail pattern) is unnecessary
+           here because the container itself is never replaced, only its
+           contents. */
         /* #1790 — extracted so the explicit "Start set list" button arms the
            Prev/Next context the SAME way a tap does (no second copy of the
            title-harvest + setPlaylistContext call — modularity rule). Titles are
@@ -3209,9 +3355,9 @@ export class SetList {
            before then. */
         const armSharedContext = () => {
             const titles = {};
-            songsContainer?.querySelectorAll('.shared-song-item').forEach((item) => {
+            songsContainer?.querySelectorAll('[data-song-id]').forEach((item) => {
                 const id = item.dataset.songId;
-                const t  = item.querySelector('.shared-song-title')?.textContent?.trim();
+                const t  = item.querySelector('a[data-navigate="song"]')?.textContent?.trim();
                 /* Pre-enrichment the anchor still shows the raw id — storing
                    that would render "Next: CP-1008", which is worse than the
                    plain word. */
@@ -3222,13 +3368,13 @@ export class SetList {
                 titles,
                 name:     sharedData.name,
                 source:   'shared',
-                sourceId: String(sharedData.shareId || sharedData.id || ''),
+                sourceId: String(sharedData.shareId || shareData || ''),
             });
         };
 
         songsContainer?.addEventListener('click', (e) => {
             const link = e.target instanceof HTMLElement
-                ? e.target.closest('.shared-song-item a[data-navigate="song"]')
+                ? e.target.closest('a[data-navigate="song"]')
                 : null;
             if (!link) return;
             /* The router's own delegated handler performs the navigation; we only
@@ -3263,6 +3409,100 @@ export class SetList {
             /* #1790 — only the single bottom "Save a copy" button remains
                (the top button is now "Start set list"). */
             document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
+        }
+
+        /* #1791 — the ANONYMOUS/TOKEN edit surface: reorder/remove on the
+           public shared page itself, the SAME staged-copy pattern as
+           `renderSharedSetListDetail()` (optimistic local mutation, explicit
+           push, re-render from the server's answer on refusal, aria-live
+           status) — pushing to `setlist_token_update` instead of
+           `setlist_collab_update`. */
+        if (editableSongs && songsContainer) {
+            editStatusEl?.classList.remove('d-none');
+
+            /* Flips false the moment a write comes back 401 signin_required
+               (the audience tightened mid-session, e.g. an org policy change
+               or a token whose canWrite the client's earlier read had stale)
+               — renderEditRows() then draws the SAME rows read-only instead
+               of discarding sharedSetlistRowsHtml() for a second template. */
+            let writeAllowed = true;
+            let lastGoodSongs = editableSongs.map(s => ({ ...s }));
+
+            /* Keeps the header count/plural AND the tap-to-play/Start order
+               (sharedData.songIds) in step with every reorder/remove — those
+               were fixed at page-load time and would otherwise go stale the
+               moment the first edit landed. */
+            const syncHeaderFromSongs = () => {
+                sharedData.songIds = editableSongs.map(s => String(s.id));
+                if (countEl) countEl.textContent = editableSongs.length;
+                if (pluralEl) pluralEl.textContent = editableSongs.length !== 1 ? 's' : '';
+            };
+
+            const renderEditRows = () => {
+                songsContainer.innerHTML = sharedSetlistRowsHtml(editableSongs, writeAllowed);
+                if (writeAllowed) {
+                    bindSharedSetlistRowControls(songsContainer, editableSongs, {
+                        canEdit: true,
+                        onMutate: () => {
+                            syncHeaderFromSongs();
+                            renderEditRows();
+                            pushTokenEdit();
+                        },
+                    });
+                }
+            };
+
+            const pushTokenEdit = () => {
+                if (editStatusEl) editStatusEl.innerHTML = '<span class="text-muted">Saving…</span>';
+                return apiFetch(`${this.app.config.apiUrl}?action=setlist_token_update`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ shareId: sharedData.shareId, songs: editableSongs }),
+                })
+                    .then(r => r.json().then(j => ({ status: r.status, ok: r.ok, data: j })))
+                    .then(res => {
+                        if (!res.ok) {
+                            if (res.status === 401 && res.data && res.data.reason === 'signin_required') {
+                                /* Distinct status/reason (rule #35, not prose) —
+                                   downgrade to the sign-in prompt rather than
+                                   keep offering controls the server will keep
+                                   refusing. */
+                                writeAllowed = false;
+                                editableSongs.splice(0, editableSongs.length, ...lastGoodSongs.map(s => ({ ...s })));
+                                syncHeaderFromSongs();
+                                renderEditRows();
+                                editStatusEl?.classList.add('d-none');
+                                signinPromptEl?.classList.remove('d-none');
+                                return false;
+                            }
+                            /* Any other refusal (revoked / expired / rate-limited /
+                               owner-locked) — REVERT the optimistic edit to the
+                               last server-confirmed state and re-render, so the
+                               UI never keeps showing a change the server refused. */
+                            editableSongs.splice(0, editableSongs.length, ...lastGoodSongs.map(s => ({ ...s })));
+                            syncHeaderFromSongs();
+                            renderEditRows();
+                            if (editStatusEl) {
+                                editStatusEl.innerHTML = `<span class="text-danger">${escapeHtml((res.data && res.data.error) || 'Save failed.')}</span>`;
+                            }
+                            return false;
+                        }
+                        lastGoodSongs = editableSongs.map(s => ({ ...s }));
+                        if (editStatusEl) editStatusEl.innerHTML = '<span class="text-success">Saved.</span>';
+                        return true;
+                    })
+                    .catch(() => {
+                        if (editStatusEl) editStatusEl.innerHTML = '<span class="text-danger">Save failed — check your connection.</span>';
+                        return false;
+                    });
+            };
+
+            renderEditRows();
         }
     }
 

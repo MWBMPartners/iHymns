@@ -116,10 +116,40 @@ declare(strict_types=1);
             <span id="shared-setlist-count">0</span> song<span id="shared-setlist-plural">s</span>
         </p>
 
+        <!-- #1791 G3 — "Shared by <name>" byline. Hidden by default; shown by
+             JS only when the owner opted in for THIS link AND a live owner
+             is known (shared-page privacy invariant, #1535/#1791). -->
+        <small id="shared-setlist-byline" class="d-none d-block text-muted mb-2"></small>
+
+        <!-- #1791 — sign-in prompt for an EDIT link whose EditAudience
+             requires sign-in and the viewer isn't signed in. Read-only
+             browsing (the song list + tap-to-play) is UNCHANGED — only the
+             edit affordance is withheld until sign-in. -->
+        <div id="shared-setlist-signin-prompt" class="alert alert-primary d-flex align-items-center justify-content-between gap-2 mb-3 d-none" role="status">
+            <div>
+                <strong>Sign in to edit this set list</strong>
+                <small class="d-block">This link&rsquo;s owner requires sign-in to make changes. You can still view it and follow along.</small>
+            </div>
+            <button type="button" class="btn btn-sm btn-primary" id="shared-setlist-signin-btn">Sign in</button>
+        </div>
+
+        <!-- #1698/#1791 — owner-account-lock note: the edit link's OWNER
+             account is disabled/deleted, so editing is frozen (viewing is
+             not). Distinct from the sign-in prompt above — this one no
+             sign-in can fix. -->
+        <div id="shared-setlist-locked-note" class="alert alert-warning d-flex align-items-center gap-2 mb-3 d-none" role="status">
+            <i class="fa-solid fa-lock" aria-hidden="true"></i>
+            <span>Editing is currently unavailable for this set list. You can still view it and follow along.</span>
+        </div>
+
         <!-- Song list (populated by JS) -->
         <div id="shared-setlist-songs" class="list-group" role="list" aria-label="Songs in shared set list">
             <!-- Songs rendered by JS -->
         </div>
+
+        <!-- #1791 — aria-live save status for the token-edit surface (shown
+             only when the server grants canWrite on this link). -->
+        <div id="shared-setlist-edit-status" class="small mt-2 d-none" aria-live="polite"></div>
 
         <!-- #1790 — Import demoted to ONE secondary "Save a copy" button (was two
              primary "Import" buttons that steered every recipient into the wrong
