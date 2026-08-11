@@ -17,6 +17,10 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
 /* #1328 — hide the abbreviation badge when it just repeats the title. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+/* #1786 — ihymns_title_sort_key() for the tile grid's Name sort key. Not
+   already loaded by getSongbooks() (SongData.php requires it internally,
+   but that's a private detail this page must not depend on). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 $songbooks = $songData->getSongbooks();
 $stats = $songData->getStats();
@@ -44,8 +48,23 @@ $stats = $songData->getStats();
          spans only one language. -->
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
 
+    <!-- Sort control (#1786) — Name / Abbreviation / Song count. Server
+         markup is identical for every viewer (shared-cache fragment, rule
+         #6); the viewer's saved order is applied client-side by
+         js/modules/list-sort.js, wired unconditionally from router.js. -->
+    <?php
+        $listSortSurface = 'songbooks';
+        $listSortDefault = 'Name (A–Z)';
+        $listSortOptions = [
+            'name'  => ['label' => 'Name',          'type' => 'text',   'dir' => 'asc'],
+            'abbr'  => ['label' => 'Abbreviation',   'type' => 'text',   'dir' => 'asc'],
+            'songs' => ['label' => 'Song count',     'type' => 'number', 'dir' => 'desc'],
+        ];
+        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+    ?>
+
     <!-- Songbook Grid -->
-    <div class="row g-3">
+    <div class="row g-3" data-list-sort-list="songbooks">
         <?php foreach ($songbooks as $index => $book): ?>
             <?php if (($book['songCount'] ?? 0) > 0): ?>
                 <?php
@@ -78,8 +97,20 @@ $stats = $songData->getStats();
                        clause folded into the card's accessible name, mirroring
                        the language-badge a11y pattern (#680 / #856). */
                     $isUnofficial = empty($book['isOfficial']);
+                    /* #1786 — computed here (rather than at its original
+                       spot inside the card body below) so the sort-key
+                       attributes on the TILE wrapper can use the same
+                       visible abbreviation label a viewer actually sees
+                       ("users sort what they see", rule #27 identity is
+                       untouched — this is display-only, like the badge
+                       itself). $sbAbbr is reused unchanged further down. */
+                    $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null);
                 ?>
-                <div class="col-12 col-sm-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
+                <div class="col-12 col-sm-6 col-md-4 col-lg-3"
+                     id="songbook-<?= htmlspecialchars($book['id']) ?>"
+                     data-sort-name="<?= htmlspecialchars(ihymns_title_sort_key((string)($book['name'] ?? ''))) ?>"
+                     data-sort-abbr="<?= htmlspecialchars(mb_strtolower($sbAbbr, 'UTF-8')) ?>"
+                     data-sort-songs="<?= (int)($book['songCount'] ?? 0) ?>">
                     <div class="card card-songbook h-100 position-relative"
                          data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                          data-songbook-songs="<?= (int)$book['songCount'] ?>"
@@ -112,7 +143,7 @@ $stats = $songData->getStats();
                                     <h2 class="h6 card-title mb-1">
                                         <?= htmlspecialchars($book['name']) ?>
                                     </h2>
-                                    <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                                    <?php /* $sbAbbr computed above, before the tile wrapper opens (#1786) */ ?>
                                     <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
                                     <span class="badge bg-body-secondary me-1">
                                         <?= htmlspecialchars($sbAbbr) ?>
