@@ -11644,6 +11644,21 @@ paths:
         ⚠ A namespace-less POST still replaces the WHOLE blob, so it clears
         every namespace. Isolation between products holds once all writers
         name a namespace.
+
+        Known iHymns-owned namespaces (not an exhaustive/enforced list — any
+        name matching the grammar is accepted): `ihymns.push` (notification
+        preferences), `list_sorts` (#1786 Option B — the public "Sort ▾"
+        control's per-surface spec, `{ "<surface>": [{key,dir},…] }`,
+        account-synced across a signed-in user's devices; a device that
+        never signs in keeps its own copy in localStorage only).
+
+        A NAMESPACED write additionally requires the request be genuinely
+        same-origin (`validateCsrfRequest()`, rule #29): either a valid
+        `csrf_token` in the body, or the `X-Requested-With` header with no
+        cross-origin `Origin`/`Referer` — which every same-origin
+        `apiFetch()` call already sends by default, so this is not an extra
+        step for a normal browser client. The legacy whole-blob POST is
+        unaffected.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -11690,6 +11705,12 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: |
+            NAMESPACED write only — validateCsrfRequest() rejected the
+            request as not genuinely same-origin (rule #29). Never returned
+            for the legacy whole-blob POST.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "413":
           description: |

@@ -4100,6 +4100,29 @@ if ($action !== null) {
                 $authUserId = (int)$authUser['Id'];
 
                 if ($nsPost !== '') {
+                    /* #1786 Option B — belt-and-braces validateCsrfRequest()
+                       on the NAMESPACED branch only (⚑ N2; the exact
+                       live_follow_extend precedent, this file's
+                       'live_follow_extend' case): the global X-Requested-With
+                       gate at the top of api.php already blocks a genuine
+                       cross-site POST, so this is a second, independent
+                       check on a state-changing write (rule #29). A
+                       same-origin `apiFetch()` caller (rule #31) already
+                       sends X-Requested-With with no cross Origin/Referer,
+                       so `validateCsrfRequest(null)` passes it without any
+                       token — this is NOT a new requirement for
+                       list-sort.js's writes, it's the same-origin check
+                       every apiFetch() call already satisfies for free.
+                       The LEGACY whole-blob branch below is untouched,
+                       byte-for-byte — settings.js and the shipped native
+                       apps must keep working exactly as they do today. */
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                    $nsCsrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+                    if (!validateCsrfRequest($nsCsrfToken)) {
+                        sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                        break;
+                    }
+
                     /* Read-modify-write of ONE subtree. Not a transaction: the
                        blob is per-user and a user's own devices racing each
                        other is last-write-wins by design (identical to the

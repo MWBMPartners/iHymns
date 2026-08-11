@@ -39,15 +39,21 @@
  * list-sort-control.php`, emitted server-side so it works on a
  * shared-cache fragment — rule #6) and the same wiring core below.
  *
- * PERSISTENCE (device-only in THIS commit)
- * ------------------------------------------
+ * PERSISTENCE — device localStorage + account sync (§7 of the plan)
+ * ----------------------------------------------------------------------
  * `STORAGE_LIST_SORT` (`js/constants.js`) holds ONE JSON map,
  * `{ "<surface>": [{key,dir},…] }`, keyed by surface id so each catalogue
- * page remembers its own choice independently. Account-sync (read the
- * signed-in user's saved spec across devices, write through on change) is
- * layered on top of `getListSort()`/`_saveSpec()` in a later commit — see
- * `primeAccountListSorts()`'s doc-block once it lands; nothing here assumes
- * it exists yet, so this module is fully functional standalone.
+ * page remembers its own choice independently — this is the FULL answer for
+ * an anonymous device. Signed-in accounts additionally sync the same shape
+ * through the EXISTING namespaced `user_settings` endpoint (#1671 F5),
+ * namespace `list_sorts` — no new endpoint, no schema, no migration
+ * (`primeAccountListSorts()` below). Precedence: localStorage applies
+ * immediately at first paint (offline-safe); the account fetch, once it
+ * resolves, WINS for any surface it has an opinion on and re-applies if
+ * different (with an announce); a surface present only in localStorage
+ * stays device-local — nothing is ever silently uploaded just by reading
+ * it. A write goes to both, synchronously to localStorage then a
+ * write-through POST of the FULL map to the account.
  *
  * WHY THE CONTROL MARKUP IS SERVER-EMITTED, NOT BUILT BY THIS MODULE
  * ----------------------------------------------------------------------
@@ -69,7 +75,14 @@
 
 import { announce } from '../utils/announce.js';
 import { multiKeyCompareMissingLast, normalizeSortSpec } from '../utils/sort-compare.js';
-import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED } from '../constants.js';
+import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED, EVT_AUTH_CHANGED } from '../constants.js';
+/* #1786 Option B §7 — account sync rides the EXISTING namespaced
+   `user_settings` endpoint (#1671 F5), namespace `list_sorts`. No new
+   endpoint, no schema, no migration — `tblUsers.Settings` already exists
+   and the namespace write contract already does exactly what this needs
+   ("name a namespace and only that subtree is replaced"). `apiFetch` (rule
+   #31) attaches auth + X-Requested-With by structure. */
+import { apiFetch } from '../utils/api-client.js';
 
 /** ⚑ N1 — a card-friendly panel tops out at 3 levels. */
 const MAX_LEVELS = 3;
@@ -80,8 +93,23 @@ const MAX_LEVELS = 3;
 const _wiredControls = new Map();
 
 /* =========================================================================
- * PERSISTENCE — device localStorage, ONE JSON map keyed by surface
+ * PERSISTENCE — device localStorage + (§7) account sync
  * ========================================================================= */
+
+/**
+ * Module-level memo of the signed-in account's `list_sorts` subtree —
+ * `{ "<surface>": [{key,dir},…] }` (raw, NOT yet shape-validated — that
+ * happens per-read in getListSort() against that call's own allowedKeys).
+ * `null` = not primed yet, or priming failed/the caller is signed out; an
+ * empty object `{}` is a valid "signed in, nothing saved yet" result and
+ * is deliberately distinct from `null` (only `null` falls through to
+ * localStorage in getListSort() below).
+ */
+let _accountMap = null;
+
+/** The in-flight/most-recent primeAccountListSorts() promise — memoised so
+ *  a fetch runs at most once per session until EVT_AUTH_CHANGED resets it. */
+let _accountPrimePromise = null;
 
 /** @returns {Object<string,unknown>} the raw stored map, or {} if absent/corrupt. */
 function _readLocalMap() {
@@ -109,9 +137,11 @@ function _writeLocalMap(map) {
 }
 
 /**
- * Persist ONE surface's spec into the local map. Deletes the key entirely
- * when the spec is empty (Default) rather than storing `[]`, so an absent
- * key and an explicit "no override" read identically on the next visit.
+ * Persist ONE surface's spec — localStorage SYNCHRONOUSLY, then (§7.3)
+ * write-through the FULL map to the account store when signed in. Deletes
+ * the key entirely when the spec is empty (Default) rather than storing
+ * `[]`, so an absent key and an explicit "no override" read identically on
+ * the next visit.
  *
  * @param {string} surface
  * @param {Array<{key:string,dir:string}>} spec
@@ -124,10 +154,26 @@ function _saveSpec(surface, spec) {
         delete local[surface];
     }
     _writeLocalMap(local);
+
+    /* Keep the in-memory account cache consistent with what was JUST
+       written, so a getListSort() call for this surface a moment later
+       (before the POST below round-trips) reflects the change immediately
+       rather than the stale value primeAccountListSorts() last fetched. */
+    if (_accountMap) {
+        if (spec.length) {
+            _accountMap[surface] = spec;
+        } else {
+            delete _accountMap[surface];
+        }
+    }
+
+    _pushAccountListSorts(local);
 }
 
 /**
- * Read back the validated, capped spec for one surface.
+ * Read back the validated, capped spec for one surface. Account wins over
+ * localStorage once primed (§7.3) — a surface the account store has never
+ * heard of stays device-local, never silently uploaded just by reading it.
  *
  * ELI5: "what did this viewer last choose for this list, if anything (and is
  * it still something the control can actually offer today)?"
@@ -141,7 +187,128 @@ function _saveSpec(surface, spec) {
  */
 export function getListSort(surface, allowedKeys) {
     const local = _readLocalMap();
-    return normalizeSortSpec(local[surface], allowedKeys ?? null, MAX_LEVELS);
+    const fromAccount = _accountMap && Object.prototype.hasOwnProperty.call(_accountMap, surface);
+    const raw = fromAccount ? _accountMap[surface] : local[surface];
+    return normalizeSortSpec(raw, allowedKeys ?? null, MAX_LEVELS);
+}
+
+/**
+ * Write-through POST of the FULL `list_sorts` map to the account (§7.2).
+ * The namespaced write REPLACES the whole subtree, so sending the complete
+ * map (account-merged-plus-this-change, since `_saveSpec` already folded
+ * the change into a copy of what priming last mirrored) is what makes
+ * "what you POST is what you GET" safe — a partial post would delete every
+ * surface it omitted.
+ *
+ * Fails soft, always (§7.5 / rule #9): anonymous → 401 → console-only, never
+ * a user-facing error; the localStorage write above has already happened
+ * regardless, so device-local behaviour is never blocked on this.
+ *
+ * @param {Object<string,unknown>} map
+ */
+async function _pushAccountListSorts(map) {
+    try {
+        const res = await apiFetch('/api?action=user_settings', {
+            method: 'POST',
+            auth: true,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ namespace: 'list_sorts', settings: map }),
+        });
+        if (!res.ok) {
+            console.warn('[list-sort] account sync save failed:', res.status);
+        }
+    } catch (err) {
+        console.error('[list-sort] account sync save failed:', err);
+    }
+}
+
+/**
+ * Mirror the account's subtree into localStorage — "account wins on read"
+ * (§7.3): for every surface the account has an opinion on, that becomes
+ * the local copy too, so a later offline/anonymous read (or a DIFFERENT
+ * device that hasn't synced yet) sees the same value. Surfaces present ONLY
+ * in localStorage are left alone — reading the account never uploads a
+ * device-local-only surface on its own (no silent auto-upload on read).
+ *
+ * @param {Object<string,unknown>} accountSettings
+ */
+function _mirrorAccountIntoLocal(accountSettings) {
+    const local = _readLocalMap();
+    let changed = false;
+    for (const [surface, rawSpec] of Object.entries(accountSettings)) {
+        const spec = normalizeSortSpec(rawSpec, null, MAX_LEVELS);
+        const already = JSON.stringify(local[surface] ?? []);
+        const incoming = JSON.stringify(spec);
+        if (already === incoming) continue;
+        if (spec.length) {
+            local[surface] = spec;
+        } else {
+            delete local[surface];
+        }
+        changed = true;
+    }
+    if (changed) _writeLocalMap(local);
+}
+
+/**
+ * For every surface the account has an opinion on AND that has a control
+ * wired on the CURRENT page, re-apply it — with an announce, since the
+ * visible order may genuinely change out from under whatever the local
+ * copy already showed (§7.3: "if the visible surface's applied spec
+ * differs, re-applied").
+ *
+ * @param {Object<string,unknown>} accountSettings
+ */
+function _reapplyWiredFromAccount(accountSettings) {
+    for (const [surface, rawSpec] of Object.entries(accountSettings)) {
+        const wired = _wiredControls.get(surface);
+        if (wired) wired.reapplyExternal(rawSpec);
+    }
+}
+
+/**
+ * Fetch the signed-in account's `list_sorts` subtree ONCE per app session
+ * (memoised; re-primed on `EVT_AUTH_CHANGED` — a login/logout changes WHOSE
+ * data this should reflect). Safe to call from anywhere, any number of
+ * times — every caller after the first gets the SAME in-flight/settled
+ * promise. Anonymous / offline / any failure → resolves to `null` and
+ * `getListSort()` simply falls back to localStorage, exactly as before this
+ * layer existed (rule #9 — a verified no-op when this never succeeds).
+ *
+ * @returns {Promise<?Object<string,unknown>>}
+ */
+export function primeAccountListSorts() {
+    if (_accountPrimePromise) return _accountPrimePromise;
+    _accountPrimePromise = (async () => {
+        try {
+            const res = await apiFetch('/api?action=user_settings&namespace=list_sorts', { auth: true });
+            if (!res.ok) return null; /* 401 (anonymous) / network-adjacent failure — device-local only */
+            const data = await res.json();
+            const settings = (data && typeof data.settings === 'object' && data.settings) || {};
+            _accountMap = settings;
+            _mirrorAccountIntoLocal(settings);
+            _reapplyWiredFromAccount(settings);
+            return settings;
+        } catch (err) {
+            console.error('[list-sort] account sync fetch failed:', err);
+            return null;
+        }
+    })();
+    return _accountPrimePromise;
+}
+
+/* Re-prime on sign-in/sign-out — a stale cross-account cache would either
+   leak the PREVIOUS account's sort choices onto a new session or fail to
+   pick up the NEWLY signed-in account's saved choices without a full page
+   reload. Guarded for non-DOM environments (e.g. this module imported
+   directly by a Node test with no `document`) — the same posture
+   admin-table-sort.js's own auto-wire side effect already takes. */
+if (typeof document !== 'undefined') {
+    document.addEventListener(EVT_AUTH_CHANGED, () => {
+        _accountPrimePromise = null;
+        _accountMap = null;
+        primeAccountListSorts();
+    });
 }
 
 /* =========================================================================
@@ -294,9 +461,9 @@ function _wireControlCommon(controlEl, surface, options, defaultLabel, onApply) 
      *
      * @param {Array} candidate
      * @param {{fromUser:boolean}} opts fromUser=false is the account-sync
-     *   reapply path (added in a later commit): the visible order still
-     *   changes and is still announced, but is NOT re-saved (it already
-     *   came FROM the store) and NOT treated as "the user just did this".
+     *   reapply path (§7.3): the visible order still changes and is still
+     *   announced, but is NOT re-saved (it already came FROM the store) and
+     *   NOT treated as "the user just did this".
      */
     function apply(candidate, { fromUser }) {
         const next = normalizeSortSpec(candidate, allowedKeys, MAX_LEVELS);
@@ -337,11 +504,20 @@ function _wireControlCommon(controlEl, surface, options, defaultLabel, onApply) 
 
     _wiredControls.set(surface, {
         /** Re-apply a spec that arrived from somewhere OTHER than this
-         *  control (the account-sync layer, added in a later commit). */
+         *  control — the account-sync layer (§7.3), when the fetched
+         *  account subtree differs from what localStorage/priming already
+         *  applied. */
         reapplyExternal(candidate) {
             apply(candidate, { fromUser: false });
         },
     });
+
+    /* §7.3 — kick off (or piggy-back on an already in-flight) account
+       fetch. Memoised, so this costs nothing extra when more than one
+       control is wired on the same page; a resolved fetch re-applies THIS
+       control too if the account's saved spec differs from what was just
+       applied from localStorage above. */
+    primeAccountListSorts();
 }
 
 /* =========================================================================
