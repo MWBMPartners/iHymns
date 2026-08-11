@@ -397,6 +397,56 @@ if (is_readable($joinFile)) {
     rlp(false, '4.2 api.php is readable for the service_join key inspection');
 }
 
+/* #1770 G5 — the SAME per-token/per-key discipline extended to the two new
+   machine/congregant-scale endpoints §9 names explicitly: `service_drive`
+   (an external driver — key-authed, so its bucket must derive from the KEY,
+   never the caller's IP: several presentation-app clients on one church LAN
+   would otherwise throttle each other) and `live_follow_poll` (the #1268
+   sibling of `service_poll`, extended #1770 C2). Per plan §9, extending
+   THIS existing paired-writer scanner rather than writing a new one. */
+
+/* service_drive: MACHINE-authenticated (a driver key, never a person), so
+   its checkRateLimit key must be POSITIVELY derived from a HASH of the raw
+   key ('drvkey:' prefix over hash(...)) — never per-IP (rule #26 I2) and
+   never the raw key itself (which would persist the SECRET into
+   tblLoginAttempts.IpAddress — the #1492 lesson service_poll's 'tok:' bucket
+   already follows for a presence token). */
+if (isset($keyExpr['service_drive'])) {
+    $driveKeys = $keyExpr['service_drive'];
+    $driveKeyed = true;
+    foreach ($driveKeys as $k) {
+        if (strpos($k, "'drvkey:'") === false || strpos($k, 'hash(') === false) { $driveKeyed = false; }
+        if (strpos($k, 'REMOTE_ADDR') !== false || preg_match('/\$\w*[Ii]p\b/', $k)) { $driveKeyed = false; }
+    }
+    rlp($driveKeyed, '4.3 service_drive is keyed per driver-key hash, not per IP (rule #26 I2) — key: '
+        . implode(' | ', $driveKeys));
+} else {
+    rlp(false, '4.3 a checkRateLimit(\'service_drive\', …) call site exists to inspect');
+}
+
+/* live_follow_poll: unlike service_poll this ALSO keeps a documented per-IP
+   FALLBACK branch for a follower whose client predates the #1377 poll
+   token (back-compat, not a regression — api.php's own comment on this
+   branch says so) — so "never mentions an IP" would be the WRONG
+   assertion here. What must hold is that the PREFERRED path (a follower
+   who has a token) is genuinely token-keyed. */
+if (isset($keyExpr['live_follow_poll'])) {
+    $lfPollKeys = $keyExpr['live_follow_poll'];
+    /* Positive 'tok:' marker only — unlike service_poll's own variable
+       (named $token), live-follow.js's sibling names its variable $liveTok,
+       so requiring the literal substring "token" too (service_poll's belt-
+       and-braces) would reject THIS correct code over a naming difference,
+       not a real absence of token-keying. */
+    $hasTokenKeyed = false;
+    foreach ($lfPollKeys as $k) {
+        if (strpos($k, "'tok:'") !== false) { $hasTokenKeyed = true; }
+    }
+    rlp($hasTokenKeyed, '4.4 live_follow_poll has a per-token ("tok:") bucket among its '
+        . 'checkRateLimit() key(s) (rule #26) — keys: ' . implode(' | ', $lfPollKeys));
+} else {
+    rlp(false, '4.4 a checkRateLimit(\'live_follow_poll\', …) call site exists to inspect');
+}
+
 /* ======================================================================== */
 
 echo "\n{$passed} passed, {$failures} failed\n";

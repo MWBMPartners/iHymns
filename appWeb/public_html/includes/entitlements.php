@@ -201,6 +201,11 @@ const ENTITLEMENTS = [
        ELI5: same "who can edit the catalogue" people as Works/Musicians.
        @see #1748 */
     'manage_tunes'         => ['admin', 'global_admin'],
+    /* Publishers (#93) — tblPublishers registry CRUD (persons + companies,
+       imprint/catalogue grouping, multi-publisher copyright). Mirrors
+       manage_tunes/manage_works exactly — same "who curates the catalogue"
+       people. @see #93 */
+    'manage_publishers'    => ['admin', 'global_admin'],
     /* External-link types + URL patterns (#845) — controlled-vocabulary
        registry that drives every "Find this … elsewhere" panel and
        the URL auto-detect module. Curator-managed; same gate as the
@@ -231,6 +236,16 @@ const ENTITLEMENTS = [
     'manage_content_restrictions' => ['admin', 'global_admin'],
     'manage_access_tiers'         => ['admin', 'global_admin'],
     'assign_user_tier'            => ['admin', 'global_admin'],
+
+    /* Licence-type vocabulary (#459 / #1769 P4) — CRUD over tblLicenceTypes:
+       what licence types exist (CCLI, MRL, …), what each legally covers, and any
+       access tier it confers. Kept DISTINCT from manage_access_tiers because
+       Plans (tiers) and Licences are different Model-2 nouns with their own admin
+       tabs; defaults match the sibling gating surfaces so no admittance changes.
+       ⚠ Editing a licence's ConfersTier/Enabled acts on live tier resolution
+       immediately (resolveEffectiveTier's conferral overlay reads the live table
+       regardless of the content-gating master switch) — the page surfaces this. */
+    'manage_licence_types'        => ['admin', 'global_admin'],
 
     /* Admin-configurable feature gating (#1481 P1) — DEFINING new gateable
        capabilities (tblGatingCapabilities) + enforcement rules

@@ -211,7 +211,7 @@ $seedTypes = [
     ['hymnary-org',          'Hymnary.org',          'information', 'song,songbook,person', 0, 'bi-music-note-list', 22],
     ['hymnal-plus',          'Hymnal Plus',          'information', 'song,songbook',        0, 'bi-music-note-list', 23],
     ['cyber-hymnal',         'The Cyber Hymnal',     'information', 'song,person',          0, 'bi-music-note-beamed', 24],
-    ['internet-archive',     'Internet Archive',     'read',        'songbook',             1, 'bi-archive',         30],
+    ['internet-archive',     'Internet Archive',     'read',        'song,songbook',        1, 'bi-archive',         30],
     ['open-library',         'Open Library',         'read',        'songbook',             1, 'bi-book-half',       31],
     ['archive-misc',         'Other archive',        'read',        'song,songbook,person', 1, 'bi-archive',         39],
     ['oclc-worldcat',        'WorldCat / OCLC',      'authority',   'song,songbook,person,work', 1, 'bi-card-list',       40],

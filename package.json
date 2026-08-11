@@ -11,6 +11,7 @@
     "build:web:beta": "node tools/build-web.js --target beta",
     "build:web:dev": "node tools/build-web.js --target dev",
     "build:proto": "node tools/build-proto-bundle.js",
+    "build:proto-static": "node tools/build-proto-static.js",
     "dev": "php -S localhost:8000 -t appWeb/public_html",
     "preview": "php -S localhost:8080 -t dist/web",
     "lint:js": "eslint appWeb/public_html/js/",

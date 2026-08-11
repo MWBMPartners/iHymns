@@ -490,21 +490,24 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 variant (the existing Merge — irreversible). Review each before folding.
             </p>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
+                <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr>
-                            <th>Variant tag</th><th class="text-end">Songs</th><th></th>
-                            <th>Standard theme</th><th>Match</th><th class="text-end">Action</th>
+                            <th data-sort-key="variant" data-sort-type="text">Variant tag</th>
+                            <th class="text-end" data-sort-key="uses" data-sort-type="number">Songs</th><th></th>
+                            <th data-sort-key="standard" data-sort-type="text">Standard theme</th>
+                            <th data-sort-key="match" data-sort-type="number">Match</th>
+                            <th class="text-end">Action</th>
                         </tr>
                     </thead>
                     <tbody>
                     <?php foreach ($canonSuggestions as $s): ?>
                         <tr>
-                            <td><strong><?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?></strong></td>
+                            <td data-sort-value="<?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?>"><strong><?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?></strong></td>
                             <td class="text-end"><?= number_format($s['uses']) ?></td>
                             <td class="text-secondary">→</td>
-                            <td><?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><span class="badge bg-secondary"><?= (int)round($s['score'] * 100) ?>%</span></td>
+                            <td data-sort-value="<?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td data-sort-value="<?= (int)round($s['score'] * 100) ?>"><span class="badge bg-secondary"><?= (int)round($s['score'] * 100) ?>%</span></td>
                             <td class="text-end">
                                 <button class="btn btn-sm btn-outline-warning tag-canon-btn"
                                         data-source="<?= (int)$s['curId'] ?>"
@@ -524,7 +527,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php endif; ?>
 
     <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover align-middle cp-sortable">
+        <table class="table table-dark table-striped table-hover align-middle cp-sortable admin-table-responsive">
             <thead>
                 <tr>
                     <th data-sort-key="name" data-sort-type="text">Name</th>
@@ -672,6 +675,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </form>
     </div></div>
 </div>
+
+<!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+     booted; every header click was a silent no-op until now). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 

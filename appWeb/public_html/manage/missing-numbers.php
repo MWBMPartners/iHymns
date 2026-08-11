@@ -41,7 +41,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
  * Build the report — one row per songbook with its gap list
  * ======================================================================== */
 try {
-    $songData     = new SongData();
+    /* #1765 Feature 1 — admin surface: a disabled songbook's missing-number
+       gaps must stay visible/actionable in /manage/*, so this instance opts
+       out of the public visibility filter via SongData::forAdmin(). */
+    $songData     = SongData::forAdmin();
     $allSongbooks = $songData->getSongbooks();
     $reports      = [];
 
@@ -252,6 +255,13 @@ foreach ($reports as $r) {
             </div>
         <?php endif; ?>
     </div>
+
+    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+         booted; every header click was a silent no-op until now). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <!-- Bootstrap JS loaded by admin-footer.php -->
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

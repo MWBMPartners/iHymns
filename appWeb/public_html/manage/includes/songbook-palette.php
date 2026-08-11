@@ -72,6 +72,10 @@ function pickAutoSongbookColour(\mysqli $db, string $abbr): string
        one site to change. */
     $used = [];
     try {
+        /* @disabled-visible: collision-avoidance scan (#1765) — a disabled
+           book's colour is still "in use"; excluding it would let a new (or
+           re-enabled) book collide with it the moment either becomes visible
+           again. Admin-only helper (songbook/series create+auto-colour). */
         $stmt = $db->prepare(
             "SELECT Colour FROM tblSongbooks
               WHERE Colour LIKE '#%' AND LENGTH(Colour) = 7"

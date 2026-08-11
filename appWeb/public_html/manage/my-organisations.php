@@ -30,6 +30,20 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    shape; the API layer uses userCanActOnOrg() with the bearer-token
    user shape. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary; replaces
+   the hardcoded key list below (fallback == today's literal exactly). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
+   Live Follow leader-idle precedence chain (LiveIdleTimeoutMins /
+   EnforceIdleTimeout) so this org-admin surface degrades cleanly on an
+   un-migrated install (rule #19), same posture as /manage/organisations.php. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+/* #1791 G4-org — setlistOrgAudienceColumnsExist() gates the ORG layer of the
+   set-list edit-link audience precedence chain (SetlistEditAudience /
+   EnforceSetlistEditAudience). Column-existence-tolerant posture mirrors
+   $orgIdleColsExist above verbatim (rule #19 / CLAUDE.md rule: reuse a
+   shape, don't re-fork it). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -74,12 +88,26 @@ $activePage = 'my-organisations';
 $db = getDbMysqli();
 $error   = '';
 $success = '';
+/* #1770 §4.7 — memoised; cheap to call once here and re-check inline below. */
+$orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
+/* #1791 G4-org — same posture, the set-list edit-audience org columns. */
+$setlistAudienceColsExist = setlistOrgAudienceColumnsExist($db);
+/* #1798 — declared here (not just before its query block below) because the
+   $orgs-query branch can `goto render;` on an early empty-org exit (see
+   below), which would otherwise skip straight past the declaration and
+   leave $liveSessions undefined for the render section. Session-level idle
+   columns are a DIFFERENT gate than $orgIdleColsExist above (that one is the
+   ORG layer of the precedence chain; this is "does the SESSION even carry
+   IdleTimeoutMins/LastLeaderSeenAt yet"). */
+$liveSessionColsExist = serviceMode_idleColumnsExist($db);
+$liveSessions = [];
 
-/* Member-role allowlist now from the shared include (#719 PR 2c).
-   Licence-type list stays page-local — this surface accepts a
-   different set than organisations.php (per-row vs primary-type). */
+/* Member-role allowlist from the shared include (#719 PR 2c). Licence-type key
+   list now from the ONE registry (#459 / #1769 P2) — was the hardcoded literal
+   ['ccli','mrl','ihymns_basic','ihymns_pro','custom']; licenceTypeKeys() returns
+   exactly that on the fallback, and the live registry keeps them in SortOrder. */
 $MEMBER_ROLES  = ORG_MEMBER_ROLES;
-$LICENCE_TYPES = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
+$LICENCE_TYPES = licenceTypeKeys($db);
 
 /* Resolve which org IDs to show.
    - system-admin / global_admin → every org.
@@ -299,6 +327,83 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'idle_timeout_update': {
+                /* #1770 §4.7 — the ORG layer of the Live Follow leader-idle
+                   precedence chain, editable by the org's OWN admin (not just
+                   a system admin — this is the "my organisation" surface).
+                   Column-existence-gated (rule #19); same clamp/NULL
+                   semantics as the system-admin form on /manage/organisations
+                   (empty minutes = "no override"). */
+                if (!$orgIdleColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $idleMinsRaw = trim((string)($_POST['live_idle_timeout_mins'] ?? ''));
+                $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                    ? null
+                    : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                $idleEnforceVal = !empty($_POST['enforce_idle_timeout']) ? 1 : 0;
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $orgId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org_admin.idle_timeout_update', 'organisation', (string)$orgId, [
+                    'live_idle_timeout_mins' => $idleMinsVal,
+                    'enforce_idle_timeout'   => (bool)$idleEnforceVal,
+                ]);
+                $success = 'Live Follow idle-timeout setting saved.';
+                break;
+            }
+
+            case 'setlist_edit_audience_update': {
+                /* #1791 G4-org — the ORG layer of the set-list edit-link
+                   audience precedence chain, editable by the org's OWN admin.
+                   Column-existence-gated (rule #19); modelled line-for-line
+                   on idle_timeout_update above (CLAUDE.md rule: reuse a
+                   shape, don't re-fork it). The <select> only ever offers
+                   three choices, so they are read as ONE combined field
+                   rather than a separate audience + enforce pair — 'anyone'
+                   is never a meaningful ORG preference (it is already the
+                   app-wide default), so the only two audience values worth
+                   an org opinion on are "advisory authenticated" and
+                   "enforced authenticated". */
+                if (!$setlistAudienceColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $audienceChoice = (string)($_POST['setlist_edit_audience_choice'] ?? 'none');
+                switch ($audienceChoice) {
+                    case 'require':
+                        $audienceVal = 'authenticated';
+                        $enforceVal  = 1;
+                        break;
+                    case 'default':
+                        $audienceVal = 'authenticated';
+                        $enforceVal  = 0;
+                        break;
+                    case 'none':
+                    default:
+                        $audienceVal = null;
+                        $enforceVal  = 0;
+                        break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET SetlistEditAudience = ?, EnforceSetlistEditAudience = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sii', $audienceVal, $enforceVal, $orgId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org_admin.setlist_edit_audience_update', 'organisation', (string)$orgId, [
+                    'setlist_edit_audience'         => $audienceVal,
+                    'enforce_setlist_edit_audience' => (bool)$enforceVal,
+                ]);
+                $success = 'Set-list edit-link preference saved.';
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -313,12 +418,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* #1770 §4.7 — additive column list, appended only when the columns exist
+   (rule #19); the hardcoded-source-constant interpolation is safe per rule
+   #5 ($orgIdleColsExist is a bool, not request input). */
+$orgIdleSelectCols = $orgIdleColsExist ? ', LiveIdleTimeoutMins, EnforceIdleTimeout' : '';
+/* #1791 G4-org — same posture, the set-list edit-audience org columns. */
+$setlistAudienceSelectCols = $setlistAudienceColsExist ? ', SetlistEditAudience, EnforceSetlistEditAudience' : '';
 try {
     if ($systemAdmin) {
         $stmt = $db->prepare(
-            'SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
                FROM tblOrganisations
-              ORDER BY Name ASC'
+              ORDER BY Name ASC"
         );
         $stmt->execute();
     } else {
@@ -328,7 +439,7 @@ try {
         }
         $placeholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
                FROM tblOrganisations
               WHERE Id IN ({$placeholders})
               ORDER BY Name ASC"
@@ -388,6 +499,58 @@ foreach ($orgs as $o) {
     }
 }
 
+/* #1798 — "Members' live sessions": active Quick ("Go Live") sessions whose
+   HOST is a member of an org this viewer administers, each with an Extend
+   control (POSTs the SAME `live_follow_extend` action the leader's own host
+   bar uses — api.php's serviceMode_liveFollowExtendAuthorize() already
+   grants an org-admin/site-admin of the host's org that authority). Quick
+   sessions keep `OrgId = NULL` (rule #26), so this is resolved via the
+   HOST's `tblOrganisationMembers` rows, never a session column — the SAME
+   direction api.php's authorizer walks. System admins (who can act on any
+   org anyway) see every active Quick session on this channel; everyone else
+   sees only sessions whose host shares an org they administer. */
+if ($liveSessionColsExist && ($systemAdmin || !empty($ownedOrgIds))) {
+    try {
+        $channel = serviceMode_channel();
+        if ($systemAdmin) {
+            $stmt = $db->prepare(
+                'SELECT DISTINCT s.Id, s.SessionCode, s.HostUserId, u.DisplayName AS HostName,
+                        u.Username AS HostUsername, s.CurrentSongId, s.IdleTimeoutMins,
+                        s.LastLeaderSeenAt, s.StartedAt
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                  WHERE s.SessionKind = \'host\' AND s.IsActive = 1 AND s.Channel = ?
+                  ORDER BY s.StartedAt DESC'
+            );
+            $stmt->bind_param('s', $channel);
+        } else {
+            /* Placeholders built from a COUNT — a hardcoded construction,
+               never request data (rule #5). */
+            $orgPlaceholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
+            $stmt = $db->prepare(
+                "SELECT DISTINCT s.Id, s.SessionCode, s.HostUserId, u.DisplayName AS HostName,
+                        u.Username AS HostUsername, s.CurrentSongId, s.IdleTimeoutMins,
+                        s.LastLeaderSeenAt, s.StartedAt
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                   JOIN tblOrganisationMembers m ON m.UserId = s.HostUserId
+                  WHERE m.OrgId IN ({$orgPlaceholders})
+                    AND s.SessionKind = 'host' AND s.IsActive = 1 AND s.Channel = ?
+                  ORDER BY s.StartedAt DESC"
+            );
+            $types  = str_repeat('i', count($ownedOrgIds)) . 's';
+            $params = array_merge($ownedOrgIds, [$channel]);
+            $stmt->bind_param($types, ...$params);
+        }
+        $stmt->execute();
+        $liveSessions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[manage/my-organisations.php] live sessions load failed: ' . $e->getMessage());
+        $liveSessions = [];
+    }
+}
+
 render:
 $csrf = csrfToken();
 ?>
@@ -413,6 +576,65 @@ $csrf = csrfToken();
     <p class="text-muted small">
         Organisations where you hold an admin or owner role. You can add or remove members, change their org-role, and edit licence rows here. System administrators see every organisation because they can manage any of them.
     </p>
+
+    <?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
+        <!-- #1798 — Members' live sessions: Extend/keep-alive on behalf of a
+             leader whose phone died mid-service. POSTs the SAME
+             live_follow_extend action the leader's own host bar uses. -->
+        <div class="card-admin p-3 mb-3">
+            <h2 class="h5 mb-2">
+                <i class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
+            </h2>
+            <p class="text-muted small">
+                Active &ldquo;Go Live&rdquo; sessions led by someone in one of your organisations.
+                Use Extend if a leader&rsquo;s device died mid-service and their session is about
+                to auto-close from inactivity.
+            </p>
+            <div class="table-responsive">
+                <table class="table table-sm table-dark mb-0 small align-middle">
+                    <thead>
+                        <tr>
+                            <th>Leader</th>
+                            <th>Code</th>
+                            <th>Idle timeout</th>
+                            <th>Last seen</th>
+                            <th>Started</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($liveSessions as $ls): ?>
+                            <tr data-live-session-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
+                                <td>
+                                    <?= htmlspecialchars((string)($ls['HostName'] ?: $ls['HostUsername'])) ?>
+                                </td>
+                                <td><code><?= htmlspecialchars((string)$ls['SessionCode']) ?></code></td>
+                                <td>
+                                    <?= $ls['IdleTimeoutMins'] !== null ? ((int)$ls['IdleTimeoutMins'] . ' min') : 'site default' ?>
+                                </td>
+                                <td><?= htmlspecialchars((string)($ls['LastLeaderSeenAt'] ?? '—')) ?></td>
+                                <td><?= htmlspecialchars((string)($ls['StartedAt'] ?? '—')) ?></td>
+                                <td class="text-end">
+                                    <div class="d-inline-flex gap-1 align-items-center">
+                                        <select class="form-select form-select-sm live-session-duration" style="width:auto;">
+                                            <option value="30">30 min</option>
+                                            <option value="60" selected>1 hour</option>
+                                            <option value="120">2 hours</option>
+                                            <option value="240">Until leader ends it</option>
+                                        </select>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary live-session-extend-btn"
+                                                data-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
+                                            <i class="bi bi-clock-history me-1"></i>Extend
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <?php if ($success): ?>
         <div class="alert alert-success py-2 small"><?= htmlspecialchars($success) ?></div>
@@ -466,10 +688,12 @@ $csrf = csrfToken();
                     <p class="text-muted small">No members yet — use the Add member form below.</p>
                 <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table table-sm table-dark mb-2 small align-middle">
+                        <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th>Username</th><th>Display Name</th>
-                                <th>System role</th><th>Org role</th>
+                                <th data-sort-key="username" data-sort-type="text">Username</th>
+                                <th data-sort-key="displayname" data-sort-type="text">Display Name</th>
+                                <th data-sort-key="sysrole" data-sort-type="text">System role</th>
+                                <th data-sort-key="orgrole" data-sort-type="text">Org role</th>
                                 <th class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
@@ -478,7 +702,7 @@ $csrf = csrfToken();
                                     <td><?= htmlspecialchars((string)$m['Username']) ?></td>
                                     <td><?= htmlspecialchars((string)($m['DisplayName'] ?? '')) ?></td>
                                     <td><code><?= htmlspecialchars((string)($m['SystemRole'] ?? 'user')) ?></code></td>
-                                    <td>
+                                    <td data-sort-value="<?= htmlspecialchars((string)$m['OrgRole'], ENT_QUOTES) ?>">
                                         <form method="POST" class="d-inline-flex align-items-center gap-1">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="member_role_change">
@@ -545,9 +769,14 @@ $csrf = csrfToken();
                     <p class="text-muted small">No licences attached. Use the Add licence form below.</p>
                 <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table table-sm table-dark mb-2 small align-middle">
+                        <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th>Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
+                                <!-- Only Type is sortable: Number, Expires, Active and Notes below
+                                     collapse into a single colspan-merged inline-edit form cell at
+                                     render time (four data cells serve six header cells), so the
+                                     module's positional cell-index lookup cannot address them
+                                     individually (#1786 sweep). -->
+                                <th data-sort-key="type" data-sort-type="text">Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
                                 <th class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
@@ -656,10 +885,139 @@ $csrf = csrfToken();
                         </button>
                     </div>
                 </form>
+
+                <!-- #1770 §4.7 — Live Follow leader-idle ORG override. -->
+                <?php if ($orgIdleColsExist): ?>
+                <h3 class="h6 mt-3 mb-2">Live Follow idle timeout</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="idle_timeout_update">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-0">Minutes <span class="text-muted">(blank = site default)</span></label>
+                        <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                               min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                               placeholder="site default"
+                               value="<?= isset($o['LiveIdleTimeoutMins']) && $o['LiveIdleTimeoutMins'] !== null ? (int)$o['LiveIdleTimeoutMins'] : '' ?>">
+                    </div>
+                    <div class="col-md-6 form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="enforce_idle_timeout" id="enforce-idle-<?= $orgId ?>" value="1"
+                               <?= !empty($o['EnforceIdleTimeout']) ? 'checked' : '' ?>>
+                        <label class="form-check-label" for="enforce-idle-<?= $orgId ?>">
+                            Lock this value for members (their own Settings preference is ignored)
+                        </label>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="col-12">
+                        <p class="text-muted small mb-0">
+                            A worship leader's "Go Live" session in this organisation auto-closes after this many
+                            minutes of no genuine leader interaction.
+                        </p>
+                    </div>
+                </form>
+                <?php endif; ?>
+
+                <!-- #1791 G4-org — set-list EDIT-LINK audience org preference. -->
+                <?php if ($setlistAudienceColsExist):
+                    $setlistAudienceChoice = 'none';
+                    if (!empty($o['EnforceSetlistEditAudience'])) {
+                        $setlistAudienceChoice = 'require';
+                    } elseif (($o['SetlistEditAudience'] ?? null) === 'authenticated') {
+                        $setlistAudienceChoice = 'default';
+                    }
+                ?>
+                <h3 class="h6 mt-3 mb-2">Set-list edit links</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="setlist_edit_audience_update">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-5">
+                        <label class="form-label small mb-0" for="setlist-edit-audience-<?= $orgId ?>">
+                            Who may edit a shared set-list link
+                        </label>
+                        <select name="setlist_edit_audience_choice" id="setlist-edit-audience-<?= $orgId ?>"
+                                class="form-select form-select-sm">
+                            <option value="none" <?= $setlistAudienceChoice === 'none' ? 'selected' : '' ?>>No preference</option>
+                            <option value="default" <?= $setlistAudienceChoice === 'default' ? 'selected' : '' ?>>Default to signed-in (members may still loosen it)</option>
+                            <option value="require" <?= $setlistAudienceChoice === 'require' ? 'selected' : '' ?>>Require signed-in (locked for members)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="col-12">
+                        <p class="text-muted small mb-0">
+                            Controls who can edit a set list via an anonymous "anyone with the link can edit" link
+                            created by this organisation's members. "No preference" leaves the app default (anyone
+                            with the link, no account needed). "Require signed-in" caps every member's edit links
+                            so an account is always needed to make a change, even if a member asks for "anyone".
+                        </p>
+                    </div>
+                </form>
+                <?php endif; ?>
             </div>
         <?php endforeach; ?>
     <?php endif; ?>
 </div>
+
+<!-- Sortable table headers (#1786 sweep). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
+
+<?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
+<!-- #1798 — "Members' live sessions" Extend wiring. Cookie-authed
+     (same-origin); X-Requested-With satisfies the CSRF guard — mirrors the
+     apiCall() helper already established on manage/service-projection.php.
+     A full page reload after a successful extend is the deliberately
+     lightweight refresh (this card's rows are server-rendered, not a live
+     JS view — a reload just re-runs the same query with the new values). -->
+<script type="module">
+    function apiCall(action, opts) {
+        opts = opts || {};
+        const init = { method: opts.method || 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', cache: 'no-store' };
+        if (opts.body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+        return fetch('/api?action=' + action + (opts.query || ''), init).then(function (r) {
+            return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, ok: r.ok, j: j }; });
+        });
+    }
+
+    document.querySelectorAll('.live-session-extend-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const code = btn.getAttribute('data-code');
+            const row = btn.closest('tr');
+            const sel = row ? row.querySelector('.live-session-duration') : null;
+            const mins = sel ? parseInt(sel.value, 10) : 60;
+            btn.disabled = true;
+            apiCall('live_follow_extend', { method: 'POST', body: { code: code, idleTimeoutMins: mins } })
+                .then(function (res) {
+                    if (res.status === 409) {
+                        window.alert('This install hasn’t been migrated for Live Follow session lengths yet.');
+                        btn.disabled = false;
+                        return;
+                    }
+                    if (!res.ok || !res.j || !res.j.ok) {
+                        window.alert((res.j && res.j.error) || 'Could not extend that session.');
+                        btn.disabled = false;
+                        return;
+                    }
+                    window.location.reload();
+                })
+                .catch(function () {
+                    window.alert('Could not extend that session (network error).');
+                    btn.disabled = false;
+                });
+        });
+    });
+</script>
+<?php endif; ?>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

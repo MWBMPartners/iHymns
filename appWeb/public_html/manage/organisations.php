@@ -20,6 +20,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    legacy PhysicalCity display string only when the
    places-adoption migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* Licence-type registry (#459, built #1769 P2) — the ONE source of the licence
+   vocabulary. Replaces the hardcoded $LICENCE_TYPES literal below; degrades to
+   LICENCE_TYPES_FALLBACK on an un-migrated install. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
+   leader-idle precedence chain (LiveIdleTimeoutMins / EnforceIdleTimeout);
+   same column-existence-tolerant posture as placeColumnExists() above. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -52,16 +60,14 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Machine key → human label + short description. The key is what the
-   DB / evaluator reference; the label is what every UI surface renders
-   so admins never see raw tokens like `ihymns_pro`. An admin-managed
-   catalogue (new schema) is the follow-up, tracked on #459. */
-$LICENCE_TYPES  = [
-    'none'         => ['label' => 'None',          'description' => 'No licence on file'],
-    'ihymns_basic' => ['label' => 'iHymns Basic',  'description' => 'Free — public-domain songs only'],
-    'ihymns_pro'   => ['label' => 'iHymns Pro',    'description' => 'Paid — full catalogue access'],
-    'ccli'         => ['label' => 'CCLI',          'description' => 'Christian Copyright Licensing International licence'],
-];
+/* Machine key → human label + short description, sourced from the ONE licence
+   registry (#459 delivered by #1769 P2 — was a hardcoded literal here). The key
+   is what the DB / evaluator reference; the label is what every UI surface
+   renders so admins never see raw tokens like `ihymns_pro`. includeNone:true
+   prepends the "None" empty-state (tblOrganisations.LicenceType DEFAULT 'none').
+   The picker now also offers `mrl` + `custom` (registry rows the old literal
+   omitted); it degrades to LICENCE_TYPES_FALLBACK on an un-migrated install. */
+$LICENCE_TYPES  = licenceTypesForPicker($db, true);
 $LICENCE_TYPE_KEYS = array_keys($LICENCE_TYPES);
 /* Member roles + slugify lifted into includes/organisation_validation.php
    (#719 PR 2c). Closure kept as a thin wrapper so existing call sites
@@ -228,6 +234,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                           WHERE Id = ?'
                     );
                     $stmt->bind_param('sii', $physicalCity, $physicalCityId, $id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+
+                /* #1770 §4.7 — leader-idle ORG layer, schema-tolerant separate
+                   UPDATE (same pattern as the place columns immediately above).
+                   An EMPTY minutes field means "no override" (NULL — the
+                   resolver then falls through to the user/app layers); a
+                   value is clamped to the SAME [5,240] band the resolver
+                   clamps to. `EnforceIdleTimeout` is only meaningful
+                   alongside a non-NULL minutes value, but is stored as
+                   submitted regardless — serviceMode_resolveIdleTimeoutMins()
+                   already ignores Enforce on a NULL-minutes row (its query
+                   filters `LiveIdleTimeoutMins IS NOT NULL`), so a stray
+                   enforce-with-no-value can never do anything. */
+                if (serviceMode_orgIdleColumnsExist($db)) {
+                    $idleMinsRaw = trim((string)($_POST['live_idle_timeout_mins'] ?? ''));
+                    $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                    $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                        ? null
+                        : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                    $idleEnforceVal = !empty($_POST['enforce_idle_timeout']) ? 1 : 0;
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $id);
                     $stmt->execute();
                     $stmt->close();
                 }
@@ -525,7 +559,7 @@ $csrf = csrfToken();
 
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All organisations</h2>
-                <table class="table table-sm mb-0 align-middle cp-sortable">
+                <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="name"    data-sort-type="text">Name</th>
@@ -771,6 +805,40 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <?php endif; ?>
+
+                <!-- #1770 §4.7 — Live Follow leader-idle ORG override. Column-
+                     existence-gated so an un-migrated install renders the form
+                     without it (rule #19). NULL minutes = "no override", the
+                     resolver falls through to the user's own preference, then
+                     this org's default, then the site-wide default. -->
+                <?php if (serviceMode_orgIdleColumnsExist($db)): ?>
+                <div class="mb-2">
+                    <label class="form-label small mb-1">Live Follow idle-timeout override <small class="text-muted">(optional)</small></label>
+                    <div class="row g-2 align-items-center">
+                        <div class="col-sm-4">
+                            <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                                   min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                                   placeholder="site default"
+                                   value="<?= isset($editOrg['LiveIdleTimeoutMins']) && $editOrg['LiveIdleTimeoutMins'] !== null ? (int)$editOrg['LiveIdleTimeoutMins'] : '' ?>">
+                        </div>
+                        <div class="col-sm-8">
+                            <div class="form-check small mb-0">
+                                <input class="form-check-input" type="checkbox" name="enforce_idle_timeout" id="edit-enforce-idle" value="1"
+                                       <?= !empty($editOrg['EnforceIdleTimeout']) ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="edit-enforce-idle">
+                                    Lock this value — members' own Settings preference is ignored
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-text small">
+                        A worship leader's "Go Live" session auto-closes after this many minutes
+                        of no genuine leader interaction. Leave blank to use the site default
+                        (<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>&ndash;<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?> minutes).
+                    </div>
+                </div>
+                <?php endif; ?>
+
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>
@@ -783,23 +851,23 @@ $csrf = csrfToken();
                         <?php if (!$editMembers): ?>
                             <p class="text-muted small mb-0">No members yet.</p>
                         <?php else: ?>
-                            <table class="table table-sm align-middle mb-0">
+                            <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th>User</th>
-                                        <th>Role</th>
-                                        <th>Joined</th>
+                                        <th data-sort-key="user" data-sort-type="text">User</th>
+                                        <th data-sort-key="role" data-sort-type="text">Role</th>
+                                        <th data-sort-key="joined" data-sort-type="text">Joined</th>
                                         <th class="text-end"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <?php foreach ($editMembers as $m): ?>
                                         <tr>
-                                            <td>
+                                            <td data-sort-value="<?= htmlspecialchars($m['Username'], ENT_QUOTES) ?>">
                                                 <code><?= htmlspecialchars($m['Username']) ?></code>
                                                 <small class="text-muted ms-1"><?= htmlspecialchars($m['DisplayName']) ?></small>
                                             </td>
-                                            <td>
+                                            <td data-sort-value="<?= htmlspecialchars((string)$m['OrgRole'], ENT_QUOTES) ?>">
                                                 <form method="POST" class="d-flex gap-1">
                                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                                     <input type="hidden" name="action" value="update_member_role">
@@ -812,7 +880,7 @@ $csrf = csrfToken();
                                                     </select>
                                                 </form>
                                             </td>
-                                            <td class="text-muted small"><?= htmlspecialchars(substr((string)$m['JoinedAt'], 0, 10)) ?></td>
+                                            <td class="text-muted small" data-sort-value="<?= htmlspecialchars((string)$m['JoinedAt'], ENT_QUOTES) ?>"><?= htmlspecialchars(substr((string)$m['JoinedAt'], 0, 10)) ?></td>
                                             <td class="text-end">
                                                 <form method="POST" class="d-inline" onsubmit="return confirm('Remove <?= htmlspecialchars($m['Username'], ENT_QUOTES) ?> from this organisation?')">
                                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">

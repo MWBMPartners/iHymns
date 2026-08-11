@@ -17,6 +17,8 @@ declare(strict_types=1);
 
 /* #1328 — hide the abbreviation badge when it just repeats the title. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+/* #1786 — ihymns_title_sort_key() for the song list's Title sort key. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 /* Fetch songbook. */
 $book = $songData->getSongbook($bookId);
@@ -88,7 +90,15 @@ if (!empty($songs)) {
        deliberately: test-songbook-render-parity.php renders this REAL template
        against a stub getDbMysqli(), and loading the predicate helper here
        would drag the real db_mysql.php into that stubbed world (redeclare
-       fatal) for zero behavioural gain. */
+       fatal) for zero behavioural gain.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a
+       disabled book's songs are ALREADY absent from $songs (getSongsSlimIndex()
+       delegates to SongData::_visible(), which now composes songServableSql()
+       too), so this decoration query's own rows for that book are minted but
+       never consumed either. Moot in practice: $book itself would already be
+       null (404, above) for a disabled book's OWN page — this only matters
+       for the theoretical case of a song's SongbookAbbr disagreeing with the
+       page's $bookAbbr, which getSongsSlimIndex($bookAbbr) already scopes out. */
     $creditsStmt = $creditsDb->prepare(
         'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
            FROM tblSongs s
@@ -155,6 +165,21 @@ if (!empty($songs)) {
                 <?php endif; ?>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
+            <?php
+                /* Feature 2 (#1765) — informational Public Domain line for
+                   the songbook itself (as a published work). Gated on the
+                   key actually being present — SongData::_songbookFlagsSelect()
+                   only emits `isPublicDomain` once the migration has landed,
+                   so `array_key_exists` (not `!empty`) is the pre-migration
+                   safety check; NEVER a content gate, matching the plan's
+                   "ONE IsPublicDomain flag … never a gate" decision. */
+                if (array_key_exists('isPublicDomain', $book) && !empty($book['isPublicDomain'])):
+            ?>
+                <p class="text-muted small mb-0 mt-1" data-credit-kind="public-domain">
+                    <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
+                    Public Domain
+                </p>
+            <?php endif; ?>
             <?php
                 /* #831 — "Compiled by …" line. Each compiler links to
                    their /musician/<slug> page when one exists; falls back
@@ -314,14 +339,44 @@ if (!empty($songs)) {
         </div>
     <?php endif; ?>
 
+    <!-- Sort control (#1786) — Number / Title / Writer. `number` is an
+         explicit option (only an explicit level can be direction-flipped;
+         the server default is ALSO number-first, so Default and "Number ↑"
+         happen to render identically — the control still needs it as a
+         pickable level for "Number ↓" and for combining with a second
+         level). -->
+    <?php
+        $listSortSurface = 'songbook-songs';
+        $listSortDefault = 'Number';
+        $listSortOptions = [
+            'number'  => ['label' => 'Number', 'type' => 'number', 'dir' => 'asc'],
+            'title'   => ['label' => 'Title',  'type' => 'text',   'dir' => 'asc'],
+            'writers' => ['label' => 'Writer', 'type' => 'text',   'dir' => 'asc'],
+        ];
+        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+    ?>
+
     <!-- Song list -->
-    <div class="list-group song-list" role="list">
+    <div class="list-group song-list" role="list" data-list-sort-list="songbook-songs">
         <?php foreach ($songs as $song): ?>
+            <?php
+                /* #1786 sort-key attributes. A missing data-sort-number
+                   (unnumbered Misc/unofficial song) sorts AFTER every
+                   numbered song in both directions (list-sort.js's
+                   multiKeyCompareMissingLast) — matching the un-numbered
+                   tail this page's server default already produces. */
+                $songSortWriters = !empty($writersMap[$song['id']])
+                    ? mb_strtolower(implode('; ', $writersMap[$song['id']]), 'UTF-8')
+                    : '';
+            ?>
             <a href="/song/<?= htmlspecialchars($song['id']) ?>"
                class="list-group-item list-group-item-action song-list-item"
                data-navigate="song"
                data-song-id="<?= htmlspecialchars($song['id']) ?>"
                role="listitem"
+               <?php if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0): ?>data-sort-number="<?= (int)$song['number'] ?>"<?php endif; ?>
+               data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>"
+               <?php if ($songSortWriters !== ''): ?>data-sort-writers="<?= htmlspecialchars($songSortWriters) ?>"<?php endif; ?>
                aria-label="<?= isset($song['number']) && $song['number'] !== null ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase($song['title'])) ?>">
                 <!-- Song number badge — left empty when the song has no
                      songbook position (Number IS NULL, e.g. Misc or

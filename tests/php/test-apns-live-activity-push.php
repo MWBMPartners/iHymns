@@ -186,10 +186,25 @@ _talapAssert(apnsConfigured() === false, 'apnsConfigured() is false with no getA
 
 $apiFile = dirname(__DIR__, 2) . '/appWeb/public_html/api.php';
 $apiSrc = (string)file_get_contents($apiFile);
+$serviceModeFile = dirname(__DIR__, 2) . '/appWeb/public_html/includes/service_mode.php';
+$serviceModeSrc = (string)file_get_contents($serviceModeFile);
 
+/* #1770 C4 — service_broadcast's own push moved OUT of api.php and into the
+   shared serviceMode_applyBroadcast() core (includes/service_mode.php), so
+   `service_drive` (the new external-driver endpoint) can write through the
+   SAME core instead of a second copy (rule #26 I4 "one broadcaster core" /
+   plan guard G4). The direct-in-api.php count therefore drops from 6 to 5;
+   the 6th (service_broadcast's) is reached one documented level of
+   indirection away — asserted explicitly here, and again below via the
+   case body itself calling serviceMode_applyBroadcast(), so this guard
+   still catches either half of that chain breaking. */
 _talapAssert(
-    substr_count($apiSrc, 'liveActivitySessionPush(') >= 6,
-    'api.php calls liveActivitySessionPush(...) at least 6 times (the 6 broadcast/end/supersede sites) — found ' . substr_count($apiSrc, 'liveActivitySessionPush(')
+    substr_count($apiSrc, 'liveActivitySessionPush(') >= 5,
+    'api.php calls liveActivitySessionPush(...) at least 5 times directly (the 5 broadcast/end/supersede sites NOT routed through serviceMode_applyBroadcast()) — found ' . substr_count($apiSrc, 'liveActivitySessionPush(')
+);
+_talapAssert(
+    str_contains($serviceModeSrc, 'liveActivitySessionPush('),
+    "includes/service_mode.php calls liveActivitySessionPush(...) — the #1770 C4 serviceMode_applyBroadcast() core, service_broadcast's 6th site"
 );
 _talapAssert(
     str_contains($apiSrc, "'live_activity_push.php'"),
@@ -222,11 +237,18 @@ _talapAssert($createBody !== null, "case 'live_follow_create' found in api.php")
 _talapAssert($createBody !== null && str_contains($createBody, "'sessionId'"), "case 'live_follow_create's JSON response now exposes 'sessionId' (so the native app can register a Live Activity token against it)");
 _talapAssert($createBody !== null && str_contains($createBody, 'liveActivitySessionPush('), "case 'live_follow_create' pushes an 'end' to any session it supersedes");
 
-foreach (['live_follow_update', 'live_follow_leave', 'service_session_start', 'service_broadcast'] as $action) {
+foreach (['live_follow_update', 'live_follow_leave', 'service_session_start'] as $action) {
     $body = _talapCaseBody($apiSrc, $action);
     _talapAssert($body !== null, "case '{$action}' found in api.php");
     _talapAssert($body !== null && str_contains($body, 'liveActivitySessionPush('), "case '{$action}' calls liveActivitySessionPush(...)");
 }
+
+/* #1770 C4 — service_broadcast reaches the push via the shared
+   serviceMode_applyBroadcast() core (asserted above to itself call
+   liveActivitySessionPush()) rather than a direct call. */
+$broadcastBody = _talapCaseBody($apiSrc, 'service_broadcast');
+_talapAssert($broadcastBody !== null, "case 'service_broadcast' found in api.php");
+_talapAssert($broadcastBody !== null && str_contains($broadcastBody, 'serviceMode_applyBroadcast('), "case 'service_broadcast' calls the shared serviceMode_applyBroadcast() core (#1770 C4), which itself pushes to Live Activity");
 
 /* service_session_end is folded into the shared service_code_rotate/
    _current/_session_end case block (one combined `case 'a': case 'b':

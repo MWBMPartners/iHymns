@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Credit People Bulk Promote (#846)
+ * iHymns — Admin: Add Musicians in Bulk (formerly "Bulk Promote Credit People", #846; display renamed #1784)
  *
  * Companion surface to /manage/musicians. Lists every distinct
  * name used on a song-credit row that doesn't yet have a matching
@@ -28,6 +28,27 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared duplicate/counterpart similarity scorer (#1216, rule #22) — this
+   page used to carry its own private _musBulkNormalise()/_musBulkTokens()/
+   _musBulkSimilarity() fork of the same maths (its own doc-comment even
+   said "mirrors the scoring shape from build-song-link-suggestions.php" —
+   i.e. it already knew it was a fork). #1785 C3 deletes that fork and
+   points every call site at the shared ihymns_sim_name_*() functions
+   instead (#1785 C2 added the NAME-scoring section this page needs). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+/* #1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES (the six-role credit-table map,
+   rule #22/#35) + registerMusicianByName(). Hoisted here (was previously
+   require_once'd only inside the POST 'register' branch below) because
+   the GET candidate scan and the POST 'merge' branch both need the
+   shared constant now that this page's own private _CP_BULK_CREDIT_TABLES
+   five-table copy is retired in favour of it. require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1785 C8 — musicianDisambiguationPayloadBulk(), the ONE shared
+   disambiguation-payload builder every #1785 merge affordance consumes
+   (rule #22 — never re-forked per surface); this page's fuzzy-match
+   option labels use it to show #id/lifespan/use-count (plan §8.3).
+   require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -46,77 +67,16 @@ $success = '';
 $db      = getDbMysqli();
 $csrf    = csrfToken();
 
-/* Five song-credit tables — same set the parent page reads. */
-const _CP_BULK_CREDIT_TABLES = [
-    'writer'     => 'tblSongWriters',
-    'composer'   => 'tblSongComposers',
-    'arranger'   => 'tblSongArrangers',
-    'adaptor'    => 'tblSongAdaptors',
-    'translator' => 'tblSongTranslators',
-];
-
-/**
- * Cheap normalised-name similarity in [0, 1]. Mirrors the scoring
- * shape from includes/tools/build-song-link-suggestions.php (#808 / #937): lowercase,
- * strip punctuation, collapse whitespace, then 1 - (edit-distance /
- * max-length). Token-set bonus boosts "John Newton" vs "Newton, John".
- *
- * Pure-PHP — no external libraries. Runs O(n²) over candidate × registry
- * pairs but the row counts are typically a few hundred each, so the
- * full scan is sub-second on a modern host.
- */
-function _musBulkNormalise(string $s): string
-{
-    $s = mb_strtolower($s, 'UTF-8');
-    $s = (string)preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s);
-    $s = (string)preg_replace('/\s+/u', ' ', $s);
-    return trim($s);
-}
-function _musBulkTokens(string $s): array
-{
-    $n = _musBulkNormalise($s);
-    if ($n === '') return [];
-    return array_filter(explode(' ', $n), static fn($t) => $t !== '');
-}
-function _musBulkSimilarity(string $a, string $b): float
-{
-    $na = _musBulkNormalise($a);
-    $nb = _musBulkNormalise($b);
-    if ($na === '' || $nb === '') return 0.0;
-    if ($na === $nb) return 1.0;
-
-    /* PHP's levenshtein is byte-based and capped at 255 chars per
-       string — fine for personal-name lengths. Fall back to
-       similar_text for anything longer (covers organisation-style
-       group names that occasionally appear). */
-    if (strlen($na) <= 255 && strlen($nb) <= 255) {
-        $dist = levenshtein($na, $nb);
-        $max  = max(strlen($na), strlen($nb));
-        $editScore = $max > 0 ? 1.0 - ($dist / $max) : 0.0;
-    } else {
-        similar_text($na, $nb, $pct);
-        $editScore = $pct / 100.0;
-    }
-
-    /* Token-set bonus — names that are anagrams of word-tokens
-       ("Newton, John" vs "John Newton") get a high overlap score
-       even when raw edit distance penalises the comma + spacing. */
-    $ta = _musBulkTokens($a);
-    $tb = _musBulkTokens($b);
-    if (!$ta || !$tb) return $editScore;
-    $inter = count(array_intersect($ta, $tb));
-    $union = count(array_unique(array_merge($ta, $tb)));
-    $tokenScore = $union > 0 ? $inter / $union : 0.0;
-
-    /* Blend — favour token overlap when one input is short, edit when
-       both are long. The 0.6 / 0.4 weights are tuned to score
-       "J. Newton" vs "John Newton" at ≈ 0.85 (the default threshold). */
-    return 0.6 * $tokenScore + 0.4 * $editScore;
-}
-
 /* ----- POST: bulk promote ----- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1785 C3 — validateCsrfRequest() (rule #29) replaces the baked-
+       token-only validateCsrf(). Strict widening: this form still posts
+       csrf_token on every submit (unchanged below), so the existing
+       session-token path keeps working byte-for-byte; the same-origin
+       X-Requested-With path is additive should a future fetch()-based
+       submit ever replace the plain <form method="POST"> this page uses
+       today. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -136,8 +96,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         $db->begin_transaction();
         try {
-            foreach ($rowAction as $name => $act) {
-                $name = trim((string)$name);
+            foreach ($rowAction as $rawName => $act) {
+                /* #1784 — keep the EXACT bytes the form posted ($origName) as
+                   well as the trimmed identity ($name). The candidate may carry
+                   stray whitespace ("Eddie James " with a trailing space); the
+                   merge branch below needs the original bytes to re-point the
+                   real credit rows, while register/skip use the tidy form. */
+                $origName = (string)$rawName;
+                $name = trim($origName);
                 $act  = (string)$act;
                 if ($name === '' || $name === 'skip' && $act === 'skip') {
                     $skipped++;
@@ -162,8 +128,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     /* Route through the shared registry helper so the
                        new row carries a Slug — direct
                        `INSERT (Name)` would default Slug='' and
-                       collide on uk_Slug after the first such row. */
-                    require_once dirname(__DIR__) . '/includes/musician_helpers.php';
+                       collide on uk_Slug after the first such row.
+                       (musician_helpers.php is now require_once'd at the
+                       top of this file — #1785 C5 — so no per-branch
+                       require needed here any more.) */
                     $newId = registerMusicianByName($db, $name);
 
                     if (function_exists('logActivity')) {
@@ -174,7 +142,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     }
                     $registered++;
                 } elseif ($act === 'merge') {
-                    $targetId = (int)($mergeTo[$name] ?? 0);
+                    /* Tolerate either key form for the target lookup — the
+                       browser may or may not have preserved stray whitespace in
+                       the merge_to[] field name (#1784). */
+                    $targetId = (int)($mergeTo[$origName] ?? $mergeTo[$name] ?? 0);
                     if ($targetId <= 0) { $failed++; continue; }
 
                     $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
@@ -184,20 +155,30 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                     if (!$row) { $failed++; continue; }
                     $targetName = (string)$row['Name'];
-                    if ($targetName === $name) { $skipped++; continue; }
 
-                    /* Re-point every song-credit row from the typed
-                       source name to the registry target name across
-                       the five join tables. Mirrors the single-row
-                       `merge` action's cascade in /manage/musicians. */
+                    /* Re-point every song-credit row from the candidate name to
+                       the registry target's EXACT spelling across the SIX join
+                       tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five,
+                       missing tblSongArtists). #1784: match on the collation
+                       (`Name = ?`) so a stray-byte variant ("Eddie James " with
+                       a trailing space) IS caught — the old code trimmed the
+                       candidate, saw it now equalled the target, and skipped as
+                       "nothing to do", which is exactly why the "Eddie James →
+                       Eddie James" merge could never clear the counter.
+                       `BINARY Name <> BINARY ?` excludes rows already
+                       byte-correct so a genuine no-op merge still counts as
+                       "skipped" rather than "merged". */
                     $rowsAffected = 0;
-                    foreach (_CP_BULK_CREDIT_TABLES as $tbl) {
-                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
-                        $stmt->bind_param('ss', $targetName, $name);
+                    foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
+                        $stmt = $db->prepare(
+                            "UPDATE {$tbl} SET Name = ? WHERE Name = ? AND BINARY Name <> BINARY ?"
+                        );
+                        $stmt->bind_param('sss', $targetName, $origName, $targetName);
                         $stmt->execute();
                         $rowsAffected += $stmt->affected_rows;
                         $stmt->close();
                     }
+                    if ($rowsAffected === 0) { $skipped++; continue; }
 
                     if (function_exists('logActivity')) {
                         logActivity('musician.bulk_merge', 'musician', (string)$targetId, [
@@ -229,10 +210,17 @@ $threshold = max(0.5, min(1.0, (float)($_GET['threshold'] ?? 0.85)));
 $minUses   = max(1, (int)($_GET['min_uses'] ?? 1));
 $searchQ   = trim((string)($_GET['q'] ?? ''));
 
-/* Q1 — every distinct name across the five song-credit tables, with
+/* Q1 — every distinct name across the six song-credit tables (#1785 C5 —
+   MUSICIAN_CREDIT_ROLE_TABLES; was five, missing tblSongArtists), with
    per-role counts. Matches the parent page's usage SQL. */
 $candidates = [];
 try {
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $role, string $tbl): string =>
+            "SELECT Name, '{$role}' AS kindLabel, COUNT(*) AS cnt FROM {$tbl} GROUP BY Name",
+        array_keys(MUSICIAN_CREDIT_ROLE_TABLES),
+        array_values(MUSICIAN_CREDIT_ROLE_TABLES)
+    ));
     $usageSql = "
         SELECT Name,
                SUM(IF(kindLabel = 'writer',     cnt, 0)) AS WriterCount,
@@ -240,17 +228,10 @@ try {
                SUM(IF(kindLabel = 'arranger',   cnt, 0)) AS ArrangerCount,
                SUM(IF(kindLabel = 'adaptor',    cnt, 0)) AS AdaptorCount,
                SUM(IF(kindLabel = 'translator', cnt, 0)) AS TranslatorCount,
+               SUM(IF(kindLabel = 'artist',     cnt, 0)) AS ArtistCount,
                SUM(cnt) AS TotalUsage
           FROM (
-              SELECT Name, 'writer'     AS kindLabel, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, 'composer'   AS kindLabel, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'arranger'   AS kindLabel, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'adaptor'    AS kindLabel, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, 'translator' AS kindLabel, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          GROUP BY Name
     ";
@@ -277,6 +258,7 @@ try {
             'arrangers'   => (int)$u['ArrangerCount'],
             'adaptors'    => (int)$u['AdaptorCount'],
             'translators' => (int)$u['TranslatorCount'],
+            'artists'     => (int)$u['ArtistCount'], // #1785 C5
             'total'       => (int)$u['TotalUsage'],
             'matches'     => [],     /* fuzzy → existing registry rows */
             'twins'       => [],     /* fuzzy → other candidates */
@@ -289,7 +271,7 @@ try {
     /* Compute fuzzy matches against the registry. */
     foreach ($candidates as &$c) {
         foreach ($registryRows as $r) {
-            $score = _musBulkSimilarity($c['name'], (string)$r['Name']);
+            $score = ihymns_sim_name_score($c['name'], (string)$r['Name']);
             if ($score >= $threshold) {
                 $c['matches'][] = [
                     'id'    => (int)$r['Id'],
@@ -302,6 +284,32 @@ try {
     }
     unset($c);
 
+    /* #1785 C8 (plan §8.3) — disambiguate every fuzzy-match option so a
+       curator can tell "which registry row is this?" instead of a bare
+       name: #id, born/died, use-count (the SAME shared payload builder
+       every other #1785 disambiguation surface uses, rule #22 — never
+       re-forked), plus the byte-variant classification of the match
+       AGAINST THIS CANDIDATE's own name (musicianNameVariantClass()) so
+       the option can also say WHY the two look alike. ONE bulk round-trip
+       for every matched registry id across the whole page, not per-row. */
+    $matchedIds = [];
+    foreach ($candidates as $c) {
+        foreach ($c['matches'] as $m) { $matchedIds[$m['id']] = true; }
+    }
+    $matchPayloads = $matchedIds ? musicianDisambiguationPayloadBulk($db, array_keys($matchedIds)) : [];
+    foreach ($candidates as &$c) {
+        foreach ($c['matches'] as &$m) {
+            $p = $matchPayloads[$m['id']] ?? null;
+            $m['born']           = $p['born']           ?? null;
+            $m['died']           = $p['died']            ?? null;
+            $m['disambiguation'] = $p['disambiguation']  ?? '';
+            $m['useCount']       = $p['useCount']         ?? 0;
+            $m['variant']        = musicianNameVariantClass($c['name'], $m['name']);
+        }
+        unset($m);
+    }
+    unset($c);
+
     /* Compute candidate-vs-candidate twin matches (sub-quadratic on the
        row count we expect in practice; cheap to skip if huge — guarded
        below for catastrophic cases). */
@@ -309,7 +317,7 @@ try {
     if ($candCount <= 2000) {
         for ($i = 0; $i < $candCount; $i++) {
             for ($j = $i + 1; $j < $candCount; $j++) {
-                $score = _musBulkSimilarity($candidates[$i]['name'], $candidates[$j]['name']);
+                $score = ihymns_sim_name_score($candidates[$i]['name'], $candidates[$j]['name']);
                 if ($score >= $threshold) {
                     $candidates[$i]['twins'][] = ['name' => $candidates[$j]['name'], 'score' => round($score, 3)];
                     $candidates[$j]['twins'][] = ['name' => $candidates[$i]['name'], 'score' => round($score, 3)];
@@ -337,7 +345,7 @@ if (!empty($registryByName)) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf) ?>">
-    <title>Bulk Promote Credit People — iHymns Admin</title>
+    <title>Add Musicians in Bulk — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -347,13 +355,19 @@ if (!empty($registryByName)) {
 
     <div class="container-admin py-4">
         <h1 class="h4 mb-1">
-            <i class="bi bi-people me-2"></i>Bulk Promote Credit People
+            <i class="bi bi-people me-2"></i>Add Musicians in Bulk
         </h1>
         <p class="text-secondary small mb-3">
-            Names that appear on a song-credit row but don't yet have a <code>tblMusicians</code> registry entry.
-            Bulk-promote in one submit. Fuzzy matches against existing registry rows are flagged so you can
-            <em>merge</em> typos / spelling-variants into the canonical row instead of registering duplicates.
+            Names that appear on a song credit but aren't in your Musicians list yet.
+            Add them all in one submit. Where a name closely matches one you already have, it's flagged so you can
+            <em>merge</em> typos / spelling-variants into the existing musician instead of creating a duplicate.
             <a href="/manage/musicians" class="link-secondary">← back to Musicians</a>
+            <!-- #1785 §7 — cross-link to the registry-duplicate review page. A
+                 DIFFERENT job: this page finds cited-but-UNREGISTERED names;
+                 /manage/musician-duplicates finds registry rows that are
+                 probably the same person spelled two ways. -->
+            &middot; Looking for duplicates <em>already in</em> the registry (not cited names waiting to be added)?
+            <a href="/manage/musician-duplicates" class="link-secondary">Review musician duplicates →</a>
         </p>
 
         <?php if ($success): ?>
@@ -427,12 +441,12 @@ if (!empty($registryByName)) {
             </div>
 
             <div class="card-admin p-0">
-                <table class="table table-sm table-hover align-middle mb-0 mus-sortable admin-table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Candidate name</th>
                             <th data-col-priority="primary"   class="text-center" data-sort-key="total" data-sort-type="number">Uses</th>
-                            <th data-col-priority="secondary" class="text-center">Roles</th>
+                            <th data-col-priority="secondary" class="text-center" data-sort-key="roles" data-sort-type="number">Roles</th>
                             <th data-col-priority="tertiary"  data-sort-key="best" data-sort-type="number">Best match</th>
                             <th data-col-priority="primary"   style="min-width:18rem;">Action</th>
                         </tr>
@@ -456,7 +470,7 @@ if (!empty($registryByName)) {
                                 <td data-col-priority="primary"   class="text-center" data-sort-value="<?= (int)$c['total'] ?>">
                                     <strong><?= number_format($c['total']) ?></strong>
                                 </td>
-                                <td data-col-priority="secondary" class="text-center small">
+                                <td data-col-priority="secondary" class="text-center small" data-sort-value="<?= (int)($c['writers'] + $c['composers'] + $c['arrangers'] + $c['adaptors'] + $c['translators'] + $c['artists']) ?>">
                                     <?php $roleChip = static function (string $label, int $n): string {
                                         if ($n <= 0) return '';
                                         return '<span class="badge bg-secondary-subtle text-secondary-emphasis me-1">' . htmlspecialchars($label) . '·' . $n . '</span>';
@@ -466,6 +480,7 @@ if (!empty($registryByName)) {
                                     <?= $roleChip('Ar', $c['arrangers']) ?>
                                     <?= $roleChip('Ad', $c['adaptors']) ?>
                                     <?= $roleChip('T',  $c['translators']) ?>
+                                    <?= $roleChip('Art', $c['artists']) ?>
                                 </td>
                                 <td data-col-priority="tertiary" data-sort-value="<?= number_format($bestScore, 3, '.', '') ?>">
                                     <?php if ($hasMatch): ?>
@@ -532,11 +547,25 @@ if (!empty($registryByName)) {
                                             </option>
                                             <?php foreach ($c['matches'] as $m):
                                                 $optVal = 'merge:' . (int)$m['id'];
+                                                /* #1785 C8 (plan §8.3) — "#id · b. 1961 · 12 credits" so a curator
+                                                   can tell WHICH registry row this is, not just its bare name —
+                                                   the same class of fix as the parent page's typeahead labels. An
+                                                   <option> can't hold markup, so the byte-variant classification
+                                                   (musicianNameVariantClass()) rides a data-variant attribute the
+                                                   JS below surfaces as a small text hint under the select once
+                                                   this option is chosen, rather than inline in the label itself. */
+                                                $matchBits = ['#' . (int)$m['id']];
+                                                if (!empty($m['born'])) { $matchBits[] = 'b. ' . $m['born']; }
+                                                if (!empty($m['died'])) { $matchBits[] = 'd. ' . $m['died']; }
+                                                if (!empty($m['useCount'])) { $matchBits[] = $m['useCount'] . ' credit' . ($m['useCount'] === 1 ? '' : 's'); }
+                                                if (!empty($m['disambiguation'])) { $matchBits[] = $m['disambiguation']; }
                                             ?>
                                                 <option value="<?= htmlspecialchars($optVal, ENT_QUOTES, 'UTF-8') ?>"
                                                         data-score="<?= number_format($m['score'], 3, '.', '') ?>"
+                                                        data-variant="<?= htmlspecialchars((string)($m['variant'] ?? ''), ENT_QUOTES, 'UTF-8') ?>"
                                                         <?= $optVal === $defaultVal ? 'selected' : '' ?>>
                                                     Merge into <?= htmlspecialchars($m['name']) ?>
+                                                    — <?= htmlspecialchars(implode(' · ', $matchBits), ENT_QUOTES, 'UTF-8') ?>
                                                     (<?= round($m['score'] * 100) ?>%)
                                                 </option>
                                             <?php endforeach; ?>
@@ -545,6 +574,11 @@ if (!empty($registryByName)) {
                                             <?php endif; ?>
                                             <option value="skip">Skip</option>
                                         </select>
+
+                                        <!-- #1785 C8 (plan §8.3) — variant hint for the currently-chosen
+                                             merge-target option, populated from its data-variant attribute
+                                             (an <option> can't hold markup, so the badge lives here instead). -->
+                                        <div class="small text-info row-variant-hint d-none"></div>
 
                                         <!-- Secondary registry picker. Only shown after the curator
                                              picks "Merge into other registry person…" in the main
@@ -617,6 +651,19 @@ if (!empty($registryByName)) {
         const isFuzzyMatchOption = (opt) =>
             opt && opt.value && opt.value.startsWith('merge:') && opt.hasAttribute('data-score');
 
+        /* #1785 C8 (plan §8.3) — human-readable label for a
+           musicianNameVariantClass() key, mirroring MUSICIAN_NAME_
+           VARIANT_LABELS (includes/musician_helpers.php) so the wording
+           matches every other #1785 surface that renders this badge —
+           never re-worded per call site. */
+        const VARIANT_LABELS = {
+            'identical': 'identical bytes',
+            'unicode-normalisation': 'differs only by Unicode form (combining vs. precomposed accent)',
+            'whitespace': 'differs only by invisible spacing',
+            'case': 'differs only by letter case',
+            'punctuation': 'differs only by punctuation/accents',
+        };
+
         function rowParts(rowOrSel) {
             const row = rowOrSel.closest ? rowOrSel.closest('tr') : rowOrSel;
             return {
@@ -625,7 +672,22 @@ if (!empty($registryByName)) {
                 other:  row.querySelector('.row-other-select'),
                 hAct:   row.querySelector('.row-action-hidden'),
                 hMerge: row.querySelector('.row-merge-hidden'),
+                hint:   row.querySelector('.row-variant-hint'),
             };
+        }
+
+        /* #1785 C8 — show/hide the variant hint for whichever merge-target
+           option is currently selected. A "different words" fuzzy match
+           (no variant) or a non-merge action (register/skip/other) both
+           hide the hint — it only makes sense next to an actual byte-
+           variant merge candidate. */
+        function syncVariantHint(p) {
+            if (!p.hint) return;
+            const opt = p.main.selectedOptions && p.main.selectedOptions[0];
+            const variant = opt ? opt.getAttribute('data-variant') : '';
+            if (!variant) { p.hint.classList.add('d-none'); p.hint.textContent = ''; return; }
+            p.hint.textContent = variant + ' — ' + (VARIANT_LABELS[variant] || variant);
+            p.hint.classList.remove('d-none');
         }
 
         /* Sync hidden POST fields to whatever the visible selects
@@ -633,6 +695,7 @@ if (!empty($registryByName)) {
            on initial page load so the first form-submit always reflects
            the curator's actual choice. */
         function syncRow(p) {
+            syncVariantHint(p);
             const val = p.main.value;
             if (val === 'register' || val === 'skip') {
                 p.hAct.value = val;
@@ -719,6 +782,15 @@ if (!empty($registryByName)) {
             }
         });
     })();
+    </script>
+
+    <!-- Sortable table headers (#1786 sweep / #1799 fix — this table was
+         tagged `mus-sortable`, which the module never matches (default
+         selector is `table.cp-sortable`), AND the page never booted the
+         module at all, so header clicks were a silent no-op either way. -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

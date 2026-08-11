@@ -20,9 +20,10 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
 
 /**
  * May the viewer WRITE to this shared set list? (#1638 / #1698)
@@ -50,6 +51,103 @@ function sharedCanWrite(shared) {
     if (!shared) return false;
     if (typeof shared.canWrite === 'boolean') return shared.canWrite;
     return shared.permission === 'edit';
+}
+
+/**
+ * Row markup for a STAGED-COPY set-list editor (#1791).
+ *
+ * ELI5: draws the list of songs, with move-up/move-down/remove buttons when
+ * the viewer is allowed to change the order.
+ *
+ * EXTRACTED so the email-collaborator detail view (`renderSharedSetListDetail()`)
+ * and the public token-edit surface (`initSharedSetListPage()`'s edit branch)
+ * share ONE row template instead of two forks (modularity rule — a third copy
+ * of this markup, one per write-grant model, is exactly the drift #1216/#1638
+ * already learned to extract away).
+ *
+ * @param {Array<{id:string,title?:string,songbook?:string,number?:number}>} songs
+ * @param {boolean} canEdit Render the move/remove controls at all.
+ * @returns {string} HTML for the list-group rows (caller supplies the
+ *          surrounding `<div id="…">` / `list-group` wrapper).
+ */
+function sharedSetlistRowsHtml(songs, canEdit) {
+    if (songs.length === 0) {
+        return `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`;
+    }
+    return songs.map((song, index) => `
+        <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
+             data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
+            <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+            <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
+            <div class="flex-grow-1">
+                <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
+                   class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
+                <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
+            </div>
+            ${canEdit ? `
+            <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
+                    data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
+                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
+                    data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
+                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
+                    data-index="${index}" aria-label="Remove from set list">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>` : ''}
+        </div>
+    `).join('');
+}
+
+/**
+ * Wire the move-up/move-down/remove buttons `sharedSetlistRowsHtml()` just
+ * rendered INTO `container` — the other half of the extraction above.
+ *
+ * Mutates `songs` IN PLACE (splice), then calls `opts.onMutate()` so the
+ * CALLER decides what "after a change" means: `renderSharedSetListDetail()`
+ * re-renders the whole detail view and pushes to `setlist_collab_update`;
+ * the token-edit surface re-renders just the rows and pushes to
+ * `setlist_token_update`. Two different write endpoints, one row-interaction
+ * contract (rule #35 — the SHAPE is shared, the endpoint is the caller's).
+ *
+ * @param {?HTMLElement} container Element `sharedSetlistRowsHtml()` was
+ *        rendered into (its `.btn-shared-*` buttons are bound here).
+ * @param {Array<object>} songs MUTABLE staged-copy array.
+ * @param {{canEdit:boolean, onMutate:() => void}} opts
+ */
+function bindSharedSetlistRowControls(container, songs, opts) {
+    if (!container || !opts || !opts.canEdit) return;
+    const move = (from, to) => {
+        if (to < 0 || to >= songs.length) return;
+        const [moved] = songs.splice(from, 1);
+        songs.splice(to, 0, moved);
+        opts.onMutate();
+    };
+    container.querySelectorAll('.btn-shared-up').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            move(i, i - 1);
+        });
+    });
+    container.querySelectorAll('.btn-shared-down').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            move(i, i + 1);
+        });
+    });
+    container.querySelectorAll('.btn-shared-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = parseInt(btn.dataset.index, 10);
+            if (Number.isNaN(i)) return;
+            songs.splice(i, 1);
+            opts.onMutate();
+        });
+    });
 }
 
 export class SetList {
@@ -789,35 +887,14 @@ export class SetList {
         const canEdit = sharedCanWrite(shared);
         const locked = shared.locked === true;
 
+        /* #1791 — row markup EXTRACTED to sharedSetlistRowsHtml() (module-scope,
+           near sharedCanWrite() above), shared with the public token-edit
+           surface in initSharedSetListPage() (modularity rule — one row
+           template, not two forks). The wrapper div/id are kept here since the
+           arm-on-tap listener below still queries `#shared-setlist-songs`. */
         const rowsHtml = songs.length === 0
-            ? `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`
-            : `<div class="list-group" id="shared-setlist-songs">
-                ${songs.map((song, index) => `
-                    <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
-                         data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
-                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                        <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
-                        <div class="flex-grow-1">
-                            <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
-                               class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
-                            <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
-                        </div>
-                        ${canEdit ? `
-                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
-                                data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
-                            <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
-                                data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
-                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-                        </button>
-                        <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
-                                data-index="${index}" aria-label="Remove from set list">
-                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-                        </button>` : ''}
-                    </div>
-                `).join('')}
-               </div>`;
+            ? sharedSetlistRowsHtml(songs, canEdit)
+            : `<div class="list-group" id="shared-setlist-songs">${sharedSetlistRowsHtml(songs, canEdit)}</div>`;
 
         container.innerHTML = `
             <div class="mb-3">
@@ -955,39 +1032,17 @@ export class SetList {
                 });
         };
 
-        const move = (from, to) => {
-            if (to < 0 || to >= songs.length) return;
-            const [moved] = songs.splice(from, 1);
-            songs.splice(to, 0, moved);
-            shared.songs = songs;
-            this.renderSharedSetListDetail(shared);
-            push();
-        };
-
-        container.querySelectorAll('.btn-shared-up').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                move(i, i - 1);
-            });
-        });
-        container.querySelectorAll('.btn-shared-down').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                move(i, i + 1);
-            });
-        });
-        container.querySelectorAll('.btn-shared-remove').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const i = parseInt(btn.dataset.index, 10);
-                if (Number.isNaN(i)) return;
-                songs.splice(i, 1);
+        /* #1791 — move/remove wiring EXTRACTED to bindSharedSetlistRowControls()
+           (module-scope, near sharedSetlistRowsHtml() above), the other half of
+           the row-template extraction. onMutate re-renders the whole detail view
+           (so the header's song count + badge stay in step) then pushes. */
+        bindSharedSetlistRowControls(container.querySelector('#shared-setlist-songs'), songs, {
+            canEdit,
+            onMutate: () => {
                 shared.songs = songs;
                 this.renderSharedSetListDetail(shared);
                 push();
-            });
+            },
         });
     }
 
@@ -1083,6 +1138,10 @@ export class SetList {
                             aria-label="Print set list" title="Print">
                         <i class="fa-solid fa-print" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-pdf-btn"
+                            aria-label="Save set list as PDF" title="Save as PDF">
+                        <i class="fa-solid fa-file-pdf" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-template-btn"
                             aria-label="Save this set list as a reusable template" title="Save as template">
                         <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
@@ -1121,9 +1180,9 @@ export class SetList {
             this.renderSetListOverview();
         });
 
-        /* Share (#147) */
+        /* Share (#147, dialog #1791) */
         container.querySelector('#setlist-share-btn')?.addEventListener('click', () => {
-            this.shareSetlist(listId);
+            this.renderShareDialog(listId);
         });
 
         /* Rename */
@@ -1155,6 +1214,18 @@ export class SetList {
 
         /* Print set list (#113) */
         container.querySelector('#setlist-print-btn')?.addEventListener('click', () => {
+            this.printSetList(list);
+        });
+
+        /* #302 — "Save as PDF" is the same clean, well-titled document as Print
+           (cover + running order + full lyrics); the browser's print dialog is
+           where "Save as PDF" lives, and the doc <title> ("<name> — iHymns Set
+           List") becomes the default PDF filename. This is the house-style,
+           dependency-free PDF path (identical to the song print, print.js) —
+           no server or client PDF library, shared-hosting friendly. A discrete,
+           clearly-labelled entry point makes the capability discoverable (many
+           users don't know Print → Save as PDF). */
+        container.querySelector('#setlist-pdf-btn')?.addEventListener('click', () => {
             this.printSetList(list);
         });
 
@@ -2410,6 +2481,378 @@ export class SetList {
     }
 
     /**
+     * Mint (or re-mint) a server-side share link, supporting the #1791
+     * capability fields `generateShareLink()` predates: `scope` ('view' |
+     * 'edit'), `showSharerName`, and — for an edit link — `editAudience`.
+     *
+     * Returns the RESPONSE's ACTUAL stored values (rule #35) — an org
+     * mandate may clamp `editAudience` stricter than what was requested, so
+     * the caller must read what was stored rather than assume its own
+     * request was honoured verbatim.
+     *
+     * Deliberately a SEPARATE method from `generateShareLink()` rather than
+     * an extra parameter on it: that method returns a bare URL STRING and
+     * always reuses `list.shareId` for updates, a contract `shareSetlist()`
+     * (whose exact body `tests/test-user-sync-client.js` pins) still depends
+     * on. An edit link is a DIFFERENT identity under the #1791 multi-link
+     * model — minting a second edit link must never silently overwrite a
+     * first one (e.g. one team's link replacing another's) — so it always
+     * mints fresh rather than reusing any stored id.
+     *
+     * @param {string} listId
+     * @param {{scope?:'view'|'edit', showSharerName?:boolean, editAudience?:'anyone'|'authenticated', label?:string}} [opts]
+     * @returns {Promise<{ok:true,id:string,url:string,scope:string,showSharerName:boolean,editAudience:?string}|{ok:false,error:string}>}
+     */
+    async mintShareLink(listId, opts = {}) {
+        const list = this.getById(listId);
+        if (!list) return { ok: false, error: 'Set list not found.' };
+
+        const scope = opts.scope === 'edit' ? 'edit' : 'view';
+
+        const arrangements = {};
+        list.songs.forEach(s => {
+            if (s.arrangement && Array.isArray(s.arrangement) && s.arrangement.length > 0) {
+                arrangements[s.id] = s.arrangement;
+            }
+        });
+
+        const payload = {
+            name: list.name,
+            songs: list.songs.map(s => s.id),
+            owner: this.getOwnerId(),
+            setlistId: listId,
+            scope,
+        };
+        if (Object.keys(arrangements).length > 0) payload.arrangements = arrangements;
+        if (opts.showSharerName) payload.showSharerName = true;
+        if (scope === 'edit' && opts.editAudience) payload.editAudience = opts.editAudience;
+        if (opts.label) payload.label = opts.label;
+        /* View links reuse the stored shareId (update-in-place — matches
+           generateShareLink()'s existing behaviour); edit links ALWAYS mint
+           fresh (see the doc comment above — the multi-link model). */
+        if (scope !== 'edit' && list.shareId) payload.id = list.shareId;
+
+        try {
+            const response = await apiFetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(this.app?.userAuth?.authHeaders?.() || {}),
+                },
+                body: JSON.stringify(payload),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                return { ok: false, error: result.error || response.statusText || 'Could not create the link.' };
+            }
+            if (scope !== 'edit' && result.id) {
+                const allLists = this.getAll();
+                const target = allLists.find(l => l.id === listId);
+                if (target) { target.shareId = result.id; this.saveAll(allLists); }
+            }
+            return {
+                ok: true,
+                id: result.id,
+                url: window.location.origin + result.url,
+                scope: result.scope === 'edit' ? 'edit' : 'view',
+                showSharerName: result.showSharerName === true,
+                editAudience: typeof result.editAudience === 'string' ? result.editAudience : null,
+            };
+        } catch (_e) {
+            return { ok: false, error: 'Network error — please try again.' };
+        }
+    }
+
+    /**
+     * Copy plain text to the clipboard, falling back to the classic
+     * execCommand path for older browsers. Returns whether it worked so the
+     * caller can choose its own success/failure copy.
+     *
+     * A small, deliberate duplicate of the fallback already inlined in
+     * `shareSetlist()` (Web-Share/clipboard flow) rather than a shared
+     * extraction of THAT method's tail — `shareSetlist()`'s body is pinned
+     * verbatim by `tests/test-user-sync-client.js` (the `_syncReady` sync
+     * gating it checks for), so reshaping any part of it risks that guard
+     * for a few lines of copy-paste saved.
+     *
+     * @param {string} text
+     * @returns {Promise<boolean>}
+     */
+    async _copyPlainText(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                textarea.remove();
+                return true;
+            } catch {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * The owner's Share dialog (#1791) — replaces the old bare
+     * `shareSetlist()` toast flow with a modal offering a VIEW link, an EDIT
+     * link (with a "who can edit" choice + a "show my name" opt-in), and
+     * this set list's Active links with per-link Revoke. Built the same way
+     * as this file's other modals (`showAddToSetListDetail()`, the
+     * arrangement editor further down) — `document.createElement` +
+     * `bootstrap.Modal`, torn down on `hidden.bs.modal`.
+     *
+     * @param {string} listId
+     */
+    renderShareDialog(listId) {
+        const list = this.getById(listId);
+        if (!list) return;
+
+        document.getElementById('setlist-share-modal')?.remove();
+
+        const loggedIn = this.app?.userAuth?.isLoggedIn?.() === true;
+
+        const modal = document.createElement('div');
+        modal.id = 'setlist-share-modal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-labelledby', 'setlist-share-modal-label');
+        modal.setAttribute('aria-hidden', 'true');
+
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="setlist-share-modal-label">
+                            <i class="fa-solid fa-share-nodes me-2" aria-hidden="true"></i>
+                            Share &ldquo;${escapeHtml(list.name)}&rdquo;
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="border rounded p-3 mb-3">
+                            <h6 class="mb-1">Anyone with the link can view</h6>
+                            <p class="text-muted small mb-2">
+                                They can look through the songs and use Prev/Next to follow along. No account, no changes.
+                            </p>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="share-view-showname">
+                                <label class="form-check-label small" for="share-view-showname">Show my name on the shared page</label>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm" id="share-view-copy-btn">
+                                <i class="fa-solid fa-copy me-1" aria-hidden="true"></i>Copy link
+                            </button>
+                            <div class="small mt-2" id="share-view-status" aria-live="polite"></div>
+                        </div>
+
+                        <div class="border rounded p-3 mb-3">
+                            <h6 class="mb-1">Anyone with the link can edit</h6>
+                            <p class="text-muted small mb-2">
+                                They can reorder and remove songs — no account needed, unless you require sign-in below.
+                            </p>
+                            ${loggedIn ? `
+                            <div class="mb-2">
+                                <span class="small fw-semibold d-block mb-1" id="share-edit-audience-label">Who can edit</span>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="share-edit-audience" id="share-edit-audience-anyone" value="anyone" checked>
+                                    <label class="form-check-label small" for="share-edit-audience-anyone">Anyone with the link</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="share-edit-audience" id="share-edit-audience-auth" value="authenticated">
+                                    <label class="form-check-label small" for="share-edit-audience-auth">People signed in to iHymns</label>
+                                </div>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="share-edit-showname">
+                                <label class="form-check-label small" for="share-edit-showname">Show my name on the shared page</label>
+                            </div>
+                            <div class="small text-warning-emphasis d-none mb-2" id="share-edit-org-note"></div>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="share-edit-create-btn">
+                                <i class="fa-solid fa-user-pen me-1" aria-hidden="true"></i>Create &amp; copy
+                            </button>
+                            <div class="small mt-2" id="share-edit-status" aria-live="polite"></div>
+                            ` : `
+                            <p class="text-muted small mb-0">
+                                <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+                                Sign in to create an edit link — it always writes back to YOUR saved set list, so it needs an account to attach to.
+                            </p>
+                            `}
+                        </div>
+
+                        <div>
+                            <h6 class="mb-2">Active links</h6>
+                            <div id="share-links-list"><p class="text-muted small mb-0">Loading&hellip;</p></div>
+                        </div>
+                        <p class="text-muted small mb-0 mt-3">
+                            Want to invite one specific person instead? Use the Collaborators card below — they will need an iHymns account.
+                        </p>
+                    </div>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        modal.addEventListener('hidden.bs.modal', () => modal.remove());
+        bsModal.show();
+
+        /* -------------------------------------------------------------
+         * Active links — setlist_share_list (owner-auth'd, cookie session).
+         * ----------------------------------------------------------- */
+        const linksListEl = modal.querySelector('#share-links-list');
+        const refreshLinks = () => {
+            if (!linksListEl) return;
+            if (!loggedIn) {
+                linksListEl.innerHTML = '<p class="text-muted small mb-0">Sign in to see and manage links you’ve created for this set list.</p>';
+                return;
+            }
+            apiFetch(`/api?action=setlist_share_list&setlistId=${encodeURIComponent(listId)}`, {
+                credentials: 'same-origin',
+            })
+                .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+                .then(data => {
+                    const links = Array.isArray(data.links) ? data.links : [];
+                    if (links.length === 0) {
+                        linksListEl.innerHTML = '<p class="text-muted small mb-0">No links yet.</p>';
+                        return;
+                    }
+                    linksListEl.innerHTML = `<div class="list-group list-group-flush">
+                        ${links.map(l => this._shareLinkRowHtml(l)).join('')}
+                    </div>`;
+                    linksListEl.querySelectorAll('.btn-share-revoke').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            btn.disabled = true;
+                            apiFetch('/api?action=setlist_share_revoke', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                                credentials: 'same-origin',
+                                body: JSON.stringify({ shareId: btn.dataset.shareId }),
+                            })
+                                .then(r => (r.ok ? r.json() : Promise.reject(r)))
+                                .then(() => refreshLinks())
+                                .catch(() => {
+                                    btn.disabled = false;
+                                    this.app.showToast('Could not revoke that link.', 'danger', 3000);
+                                });
+                        });
+                    });
+                })
+                .catch(() => {
+                    linksListEl.innerHTML = '<p class="text-danger small mb-0">Could not load active links.</p>';
+                });
+        };
+        refreshLinks();
+
+        /* -------------------------------------------------------------
+         * View row — Copy link.
+         * ----------------------------------------------------------- */
+        modal.querySelector('#share-view-copy-btn')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const status = modal.querySelector('#share-view-status');
+            const showName = modal.querySelector('#share-view-showname')?.checked === true;
+            btn.disabled = true;
+            if (status) status.innerHTML = '<span class="text-muted">Creating link…</span>';
+            const result = await this.mintShareLink(listId, { scope: 'view', showSharerName: showName });
+            btn.disabled = false;
+            if (!result.ok) {
+                if (status) status.innerHTML = `<span class="text-danger">${escapeHtml(result.error)}</span>`;
+                return;
+            }
+            const copied = await this._copyPlainText(result.url);
+            if (status) {
+                status.innerHTML = copied
+                    ? '<span class="text-success">Link copied to clipboard.</span>'
+                    : `<span class="text-muted">Link: <code>${escapeHtml(result.url)}</code></span>`;
+            }
+            refreshLinks();
+        });
+
+        /* -------------------------------------------------------------
+         * Edit row — "Who can edit" + "Create & copy".
+         * ----------------------------------------------------------- */
+        modal.querySelector('#share-edit-create-btn')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const status = modal.querySelector('#share-edit-status');
+            const orgNote = modal.querySelector('#share-edit-org-note');
+            const showName = modal.querySelector('#share-edit-showname')?.checked === true;
+            const requested = modal.querySelector('input[name="share-edit-audience"]:checked')?.value === 'authenticated'
+                ? 'authenticated' : 'anyone';
+            btn.disabled = true;
+            if (status) status.innerHTML = '<span class="text-muted">Creating link…</span>';
+            orgNote?.classList.add('d-none');
+            const result = await this.mintShareLink(listId, {
+                scope: 'edit',
+                showSharerName: showName,
+                editAudience: requested,
+            });
+            btn.disabled = false;
+            if (!result.ok) {
+                if (status) status.innerHTML = `<span class="text-danger">${escapeHtml(result.error)}</span>`;
+                return;
+            }
+            /* #1791 G4-org — read the RESPONSE, never assume the request was
+               honoured verbatim (rule #35): the server may have CLAMPED
+               editAudience stricter than requested because an org mandates
+               sign-in. Reflect the actual stored value and explain why. */
+            if (requested === 'anyone' && result.editAudience === 'authenticated') {
+                const anyoneRadio = modal.querySelector('#share-edit-audience-anyone');
+                if (anyoneRadio) anyoneRadio.disabled = true;
+                const authRadio = modal.querySelector('#share-edit-audience-auth');
+                if (authRadio) authRadio.checked = true;
+                if (orgNote) {
+                    orgNote.textContent = 'Your organisation requires people to sign in to edit shared set lists.';
+                    orgNote.classList.remove('d-none');
+                }
+            }
+            const copied = await this._copyPlainText(result.url);
+            if (status) {
+                status.innerHTML = copied
+                    ? '<span class="text-success">Link copied to clipboard.</span>'
+                    : `<span class="text-muted">Link: <code>${escapeHtml(result.url)}</code></span>`;
+            }
+            refreshLinks();
+        });
+    }
+
+    /**
+     * One row of the Share dialog's "Active links" list.
+     *
+     * @param {{shareId:string,scope:string,label:?string,created:?string,lastUsed:?string,viewCount:number,editCount:number,revoked:boolean}} l
+     *        Entry from `setlist_share_list`.
+     * @returns {string} HTML
+     * @private
+     */
+    _shareLinkRowHtml(l) {
+        const scopeLabel = l.scope === 'edit' ? 'Edit' : 'View';
+        const badgeCls = l.scope === 'edit' ? 'text-bg-warning' : 'text-bg-secondary';
+        const revoked = l.revoked === true;
+        const usage = l.scope === 'edit'
+            ? `${Number(l.editCount) || 0} edit${Number(l.editCount) === 1 ? '' : 's'}`
+            : `${Number(l.viewCount) || 0} view${Number(l.viewCount) === 1 ? '' : 's'}`;
+        return `
+            <div class="list-group-item d-flex align-items-center justify-content-between gap-2 small">
+                <div class="flex-grow-1">
+                    <span class="badge ${badgeCls}" style="font-size:0.65rem">${escapeHtml(scopeLabel)}</span>
+                    ${l.label ? ` <strong>${escapeHtml(l.label)}</strong>` : ''}
+                    ${revoked ? ' <span class="badge text-bg-danger" style="font-size:0.65rem">Revoked</span>' : ''}
+                    <span class="text-muted d-block">
+                        ${escapeHtml(usage)}
+                        ${l.created ? ` &middot; created ${escapeHtml(this.formatDate(l.created))}` : ''}
+                        ${l.lastUsed ? ` &middot; last used ${escapeHtml(this.formatDate(l.lastUsed))}` : ''}
+                    </span>
+                </div>
+                ${revoked ? '' : `
+                <button type="button" class="btn btn-sm btn-outline-danger btn-share-revoke" data-share-id="${escapeHtml(String(l.shareId))}">
+                    Revoke
+                </button>`}
+            </div>`;
+    }
+
+    /**
      * Generate a shareable URL by saving the setlist to the server.
      * Returns a short, clean URL like /setlist/shared/a1b2c3d4.
      *
@@ -2638,6 +3081,24 @@ export class SetList {
                 /* #1535 — true when the signed-in viewer IS this share's owner, so
                    the page hides the "shared with you" banner + Import buttons. */
                 isOwner: data.isOwner === true,
+                /* #1791 — the server-stated capability trio (rule #35: the client
+                   never re-derives write access from anything but this). shareId
+                   is the server-CONFIRMED id — closes the pre-#1791 gap where the
+                   playlist context's sourceId was read from a key this function
+                   never actually returned. */
+                shareId: typeof data.shareId === 'string' ? data.shareId : '',
+                scope: data.scope === 'edit' ? 'edit' : 'view',
+                canWrite: data.canWrite === true,
+                /* 'signin_required' → render a sign-in prompt; any OTHER value
+                   (the pre-existing #1698 owner-lock reasons) → an owner-lock
+                   note. Present only when canWrite is false. */
+                lockReason: typeof data.lockReason === 'string' ? data.lockReason : null,
+                /* #1791 G3 — opt-in byline; '' when the owner didn't opt in. */
+                sharedByName: typeof data.sharedByName === 'string' ? data.sharedByName : '',
+                /* #1791 — the OBJECT shape (id/title/songbook/number/arrangement),
+                   present only when canWrite — lets the edit surface render
+                   without N per-song fetches. */
+                songsDetailed: Array.isArray(data.songsDetailed) ? data.songsDetailed : null,
             };
         } catch {
             return null;
@@ -2712,11 +3173,14 @@ export class SetList {
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
-        /* Determine if this is a server-side short ID or legacy base64 data.
-         * Short IDs are 8 hex characters; legacy base64 strings are longer
-         * and contain characters outside the hex range. */
+        /* Determine if this is a server-side share ID or legacy inline base64
+         * data. A server id is the shared-fold grammar (#1791): legacy 8-hex OR
+         * a base64url capability token, 6–64 chars, no base64 padding. A legacy
+         * inline blob carries `+`/`/`/`=` and runs far longer, so it correctly
+         * falls to parseLegacySharedSetlist(). SHARE_ID_RE is the client mirror
+         * of PHP sharedSetlistSafeShareId(). */
         let sharedData = null;
-        const isShortId = /^[a-f0-9]{6,16}$/.test(shareData);
+        const isShortId = SHARE_ID_RE.test(shareData);
 
         if (isShortId) {
             /* Fetch from server-side storage (#155) */
@@ -2767,36 +3231,103 @@ export class SetList {
         const viewerIsOwner = sharedData.isOwner === true;
         document.getElementById('shared-setlist-banner')?.classList.toggle('d-none', viewerIsOwner);
         document.getElementById('shared-setlist-owner-note')?.classList.toggle('d-none', !viewerIsOwner);
-        document.getElementById('shared-setlist-import-btn')?.classList.toggle('d-none', viewerIsOwner);
+        /* #1790 — the top "Import" button became the "Start set list" button (shown
+           to everyone, owner included); only the single bottom "Save a copy" button
+           is hidden for the owner now (nothing to import into itself, #1535). */
         document.getElementById('shared-setlist-import-btn-bottom')?.classList.toggle('d-none', viewerIsOwner);
 
         if (titleEl) titleEl.textContent = sharedData.name;
         if (countEl) countEl.textContent = sharedData.songIds.length;
         if (pluralEl) pluralEl.textContent = sharedData.songIds.length !== 1 ? 's' : '';
 
-        /* Render song list (initially with just IDs, then enrich with metadata) */
+        /* #1791 G3 — opt-in "Shared by <name>" byline. textContent, not
+           innerHTML — the browser's own text escaping is the whole job here,
+           so there is nothing an explicit escapeHtml() call would add. */
+        const bylineEl = document.getElementById('shared-setlist-byline');
+        if (bylineEl) {
+            if (sharedData.sharedByName) {
+                bylineEl.textContent = `Shared by ${sharedData.sharedByName}`;
+                bylineEl.classList.remove('d-none');
+            } else {
+                bylineEl.textContent = '';
+                bylineEl.classList.add('d-none');
+            }
+        }
+
+        /* #1791 — server-stated write capability (rule #35: never re-derived
+           here). `needsSignIn` / `otherLock` are mutually exclusive readings
+           of the SAME `lockReason` the server sends only when canWrite is
+           false: 'signin_required' is this link's EditAudience; any other
+           value is a pre-existing #1698 owner-account-lock reason. Neither
+           touches the READ-ONLY listing below — viewing + tap-to-play stay
+           the unchanged #1790 behaviour; only the edit affordance is gated. */
+        const isEditable  = sharedData.canWrite === true;
+        const needsSignIn = sharedData.lockReason === 'signin_required';
+        const otherLock   = !!sharedData.lockReason && !needsSignIn;
+
+        const signinPromptEl = document.getElementById('shared-setlist-signin-prompt');
+        const lockedNoteEl   = document.getElementById('shared-setlist-locked-note');
+        signinPromptEl?.classList.toggle('d-none', !needsSignIn);
+        lockedNoteEl?.classList.toggle('d-none', !otherLock);
+        document.getElementById('shared-setlist-signin-btn')?.addEventListener('click', () => {
+            this.app.userAuth?.showAuthModal('login');
+        });
+        if (needsSignIn) {
+            /* Re-run this whole init once, after a successful sign-in, so a
+               visitor who signs in mid-visit gets the edit surface without a
+               manual reload. {once:true} — spends itself; a page that never
+               signs in never accumulates a second listener on the next
+               navigation because there is no next navigation for THIS
+               instance to leak into (initSharedSetListPage runs fresh per
+               page load, and the listener target is `document`, not this
+               function's closure — but {once:true} still bounds it to
+               exactly one firing, which is all a single page visit needs). */
+            document.addEventListener(EVT_AUTH_CHANGED, () => {
+                this.initSharedSetListPage(shareData);
+            }, { once: true });
+        }
+
+        /* Render song list. `#shared-setlist-songs` renders ONE of two row
+           shapes: the #1790 read-only playlist rows (progressively enriched
+           below) for everyone else, or — when the server says canWrite —
+           #1791's editable rows via `sharedSetlistRowsHtml()`, the SAME
+           helper `renderSharedSetListDetail()` uses (modularity rule — one
+           row template, not two forks). The editable branch is seeded from
+           `songsDetailed`, which already carries full metadata, so it skips
+           the per-song enrichment fetches entirely. */
         const songsContainer = document.getElementById('shared-setlist-songs');
+        const editStatusEl   = document.getElementById('shared-setlist-edit-status');
+        /** @type {?Array<object>} Staged copy — non-null only while the edit surface is mounted. */
+        let editableSongs = null;
+
         if (songsContainer) {
-            songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
-                <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
-                     data-song-id="${escapeHtml(songId)}">
-                    <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
-                    <span class="song-number-badge" data-songbook="">...</span>
-                    <div class="flex-grow-1">
-                        <a href="/song/${escapeHtml(songId)}" data-navigate="song"
-                           class="text-decoration-none shared-song-title">${escapeHtml(songId)}</a>
-                        <small class="text-muted d-block shared-song-meta">Loading...</small>
+            if (isEditable && Array.isArray(sharedData.songsDetailed)) {
+                editableSongs = sharedData.songsDetailed.map(s => ({ ...s }));
+            } else {
+                songsContainer.innerHTML = sharedData.songIds.map((songId, index) => `
+                    <div class="list-group-item d-flex align-items-center gap-2 shared-song-item"
+                         data-song-id="${escapeHtml(songId)}">
+                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+                        <span class="song-number-badge" data-songbook="">...</span>
+                        <div class="flex-grow-1">
+                            <a href="/song/${escapeHtml(songId)}" data-navigate="song"
+                               class="text-decoration-none shared-song-title">${escapeHtml(songId)}</a>
+                            <small class="text-muted d-block shared-song-meta">Loading...</small>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `).join('');
+            }
         }
 
         /* Show content, hide loading */
         loadingEl.classList.add('d-none');
         contentEl.classList.remove('d-none');
 
-        /* Enrich song items with metadata from the API */
-        this.enrichSharedSongItems(sharedData.songIds);
+        /* Enrich song items with metadata from the API — skipped for the edit
+           surface, which already has full metadata from `songsDetailed`. */
+        if (!editableSongs) {
+            this.enrichSharedSongItems(sharedData.songIds);
+        }
 
         /* #1533 — ARM ON TAP for a SHARED list. This is the case that could
            not work at all before: a shared list has no local record, so
@@ -2806,30 +3337,60 @@ export class SetList {
            Titles start empty and are filled by enrichSharedSongItems() above,
            which resolves them asynchronously. We re-read them at click time
            rather than at render time so "Next: <title>" is populated if
-           enrichment has landed, and degrades to a plain "Next" if not. */
-        songsContainer?.addEventListener('click', (e) => {
-            const link = e.target instanceof HTMLElement
-                ? e.target.closest('.shared-song-item a[data-navigate="song"]')
-                : null;
-            if (!link) return;
+           enrichment has landed, and degrades to a plain "Next" if not.
 
+           #1791 — the selector is now generic (`[data-song-id]` /
+           `a[data-navigate="song"]`, not the read-only `.shared-song-item` /
+           `.shared-song-title` classes) so this ONE delegated listener, bound
+           once to the stable `songsContainer` element, keeps working when the
+           edit surface below swaps its innerHTML for the editable row markup —
+           re-binding per render (the collab-detail pattern) is unnecessary
+           here because the container itself is never replaced, only its
+           contents. */
+        /* #1790 — extracted so the explicit "Start set list" button arms the
+           Prev/Next context the SAME way a tap does (no second copy of the
+           title-harvest + setPlaylistContext call — modularity rule). Titles are
+           re-read from the DOM at arm time so "Next: <title>" is populated once
+           enrichSharedSongItems() has landed, and degrades to a plain "Next"
+           before then. */
+        const armSharedContext = () => {
             const titles = {};
-            songsContainer.querySelectorAll('.shared-song-item').forEach((item) => {
+            songsContainer?.querySelectorAll('[data-song-id]').forEach((item) => {
                 const id = item.dataset.songId;
-                const t  = item.querySelector('.shared-song-title')?.textContent?.trim();
+                const t  = item.querySelector('a[data-navigate="song"]')?.textContent?.trim();
                 /* Pre-enrichment the anchor still shows the raw id — storing
                    that would render "Next: CP-1008", which is worse than the
                    plain word. */
                 if (id && t && t !== id) titles[id] = t;
             });
-
             this.setPlaylistContext({
                 songIds:  sharedData.songIds,
                 titles,
                 name:     sharedData.name,
                 source:   'shared',
-                sourceId: String(sharedData.shareId || sharedData.id || ''),
+                sourceId: String(sharedData.shareId || shareData || ''),
             });
+        };
+
+        songsContainer?.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('a[data-navigate="song"]')
+                : null;
+            if (!link) return;
+            /* The router's own delegated handler performs the navigation; we only
+               arm the context first so the bar is correct on arrival. */
+            armSharedContext();
+        });
+
+        /* #1790 — explicit "Start set list" button: arm the context, then jump to
+           song 1 — for users who don't discover tap-to-play. Shown to everyone
+           (owner included; you can play your own shared list). No-op on an empty
+           list. */
+        document.getElementById('shared-setlist-start-btn')?.addEventListener('click', () => {
+            const firstId = sharedData.songIds && sharedData.songIds[0];
+            if (!firstId) return;
+            armSharedContext();
+            this.app.router.navigate('/song/' + encodeURIComponent(firstId));
         });
 
         /* Bind import buttons — skipped entirely for the owner (#1535); their
@@ -2845,8 +3406,103 @@ export class SetList {
                 }
             };
 
-            document.getElementById('shared-setlist-import-btn')?.addEventListener('click', importHandler);
+            /* #1790 — only the single bottom "Save a copy" button remains
+               (the top button is now "Start set list"). */
             document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
+        }
+
+        /* #1791 — the ANONYMOUS/TOKEN edit surface: reorder/remove on the
+           public shared page itself, the SAME staged-copy pattern as
+           `renderSharedSetListDetail()` (optimistic local mutation, explicit
+           push, re-render from the server's answer on refusal, aria-live
+           status) — pushing to `setlist_token_update` instead of
+           `setlist_collab_update`. */
+        if (editableSongs && songsContainer) {
+            editStatusEl?.classList.remove('d-none');
+
+            /* Flips false the moment a write comes back 401 signin_required
+               (the audience tightened mid-session, e.g. an org policy change
+               or a token whose canWrite the client's earlier read had stale)
+               — renderEditRows() then draws the SAME rows read-only instead
+               of discarding sharedSetlistRowsHtml() for a second template. */
+            let writeAllowed = true;
+            let lastGoodSongs = editableSongs.map(s => ({ ...s }));
+
+            /* Keeps the header count/plural AND the tap-to-play/Start order
+               (sharedData.songIds) in step with every reorder/remove — those
+               were fixed at page-load time and would otherwise go stale the
+               moment the first edit landed. */
+            const syncHeaderFromSongs = () => {
+                sharedData.songIds = editableSongs.map(s => String(s.id));
+                if (countEl) countEl.textContent = editableSongs.length;
+                if (pluralEl) pluralEl.textContent = editableSongs.length !== 1 ? 's' : '';
+            };
+
+            const renderEditRows = () => {
+                songsContainer.innerHTML = sharedSetlistRowsHtml(editableSongs, writeAllowed);
+                if (writeAllowed) {
+                    bindSharedSetlistRowControls(songsContainer, editableSongs, {
+                        canEdit: true,
+                        onMutate: () => {
+                            syncHeaderFromSongs();
+                            renderEditRows();
+                            pushTokenEdit();
+                        },
+                    });
+                }
+            };
+
+            const pushTokenEdit = () => {
+                if (editStatusEl) editStatusEl.innerHTML = '<span class="text-muted">Saving…</span>';
+                return apiFetch(`${this.app.config.apiUrl}?action=setlist_token_update`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ shareId: sharedData.shareId, songs: editableSongs }),
+                })
+                    .then(r => r.json().then(j => ({ status: r.status, ok: r.ok, data: j })))
+                    .then(res => {
+                        if (!res.ok) {
+                            if (res.status === 401 && res.data && res.data.reason === 'signin_required') {
+                                /* Distinct status/reason (rule #35, not prose) —
+                                   downgrade to the sign-in prompt rather than
+                                   keep offering controls the server will keep
+                                   refusing. */
+                                writeAllowed = false;
+                                editableSongs.splice(0, editableSongs.length, ...lastGoodSongs.map(s => ({ ...s })));
+                                syncHeaderFromSongs();
+                                renderEditRows();
+                                editStatusEl?.classList.add('d-none');
+                                signinPromptEl?.classList.remove('d-none');
+                                return false;
+                            }
+                            /* Any other refusal (revoked / expired / rate-limited /
+                               owner-locked) — REVERT the optimistic edit to the
+                               last server-confirmed state and re-render, so the
+                               UI never keeps showing a change the server refused. */
+                            editableSongs.splice(0, editableSongs.length, ...lastGoodSongs.map(s => ({ ...s })));
+                            syncHeaderFromSongs();
+                            renderEditRows();
+                            if (editStatusEl) {
+                                editStatusEl.innerHTML = `<span class="text-danger">${escapeHtml((res.data && res.data.error) || 'Save failed.')}</span>`;
+                            }
+                            return false;
+                        }
+                        lastGoodSongs = editableSongs.map(s => ({ ...s }));
+                        if (editStatusEl) editStatusEl.innerHTML = '<span class="text-success">Saved.</span>';
+                        return true;
+                    })
+                    .catch(() => {
+                        if (editStatusEl) editStatusEl.innerHTML = '<span class="text-danger">Save failed — check your connection.</span>';
+                        return false;
+                    });
+            };
+
+            renderEditRows();
         }
     }
 
@@ -3366,7 +4022,10 @@ export class SetList {
 
     /**
      * Print a set list with full lyrics for all songs.
-     * Fetches each song's page content, builds a print document, and prints.
+     * Offers the SAME template picker as the single-song Print (#1789 — rule
+     * #22, consume the shared #1767 print-template engine rather than
+     * re-forking it) and renders every song through it. Only the cover page
+     * and running order stay set-list-specific.
      * @param {object} list The set list { id, name, createdAt, songs }
      */
     async printSetList(list) {
@@ -3375,22 +4034,37 @@ export class SetList {
             return;
         }
 
+        /* Same picker as the single-song Print — gives the set list a
+           template choice it never had before (#1789). Cancel (Esc / backdrop
+           / Cancel button) resolves null and we simply don't print.
+           #1767 remainder P4/P6 — `pickPrintTemplate()` now resolves
+           `{ tpl, action }`; `offerPdf: true` shows the Download-PDF button
+           whenever the SAME `?ping=1` auth/engine probe the single-song path
+           uses says the server-PDF endpoint is reachable (print.js's own
+           memoised check — never a second probe here). */
+        const templates = await loadTemplates(this.app);
+        const picked = await pickPrintTemplate(this.app, templates, { offerPdf: true });
+        if (!picked) { return; }
+        const { tpl, action } = picked;
+
+        /* #1767 remainder P6 (plan §4.4) — batch server-PDF: render EVERY
+           song via the ONE renderer and POST them as a single `mode:'batch'`
+           request. Delegated to its own method (below) — the browser-Print
+           path underneath is UNCHANGED. */
+        if (action === 'pdf') {
+            await this._downloadSetListPdf(list, tpl);
+            return;
+        }
+
         this.app.showToast('Preparing print layout...', 'info', 2000);
 
-        /* Fetch all song pages in parallel */
-        const songPages = await Promise.all(
-            list.songs.map(async (song) => {
-                try {
-                    const url = `${this.app.config.apiUrl}?page=song&id=${encodeURIComponent(song.id)}`;
-                    const response = await apiFetch(url, {
-                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-                    });
-                    if (!response.ok) return null;
-                    return { song, html: await response.text() };
-                } catch {
-                    return null;
-                }
-            })
+        /* Fetch each song's STRUCTURED data (?action=song_data via the shared
+           fetchSong()) — not the screen-chromed `?page=song` fragment the old
+           code injected raw. A failed fetch yields null and is skipped below;
+           the running order (built from list.songs meta, not this array)
+           still lists it. */
+        const songs = await Promise.all(
+            list.songs.map((s) => fetchSong(this.app, s.id))
         );
 
         /* Build print document */
@@ -3404,23 +4078,27 @@ export class SetList {
             weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
         });
 
-        /* Build running order summary */
+        /* Build running order summary — from list.songs meta (NOT the fetched
+           `songs` array), so a song whose structured-data fetch failed still
+           appears in the order. */
         const orderSummary = list.songs.map((song, i) =>
             `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)}${song.number != null ? ' #' + song.number : ''}</td></tr>`
         ).join('');
 
-        /* Build individual song pages */
+        /* Build individual song pages — each rendered through the SAME
+           renderTemplateBodyHtml() the single-song Print uses, in the
+           template the user just picked. The template's own `title` block
+           already prints the song title, so the wrapper here only adds a
+           small numbered badge for the set-list position (skip nulls from a
+           failed fetch; the badge index still reflects the ORIGINAL list
+           position). */
         let songPagesHtml = '';
-        songPages.forEach((page, index) => {
-            if (!page) return;
+        songs.forEach((song, index) => {
+            if (!song) { return; }
             songPagesHtml += `
                 <div class="print-song-page">
-                    <div class="print-song-header">
-                        <span class="print-song-order">${index + 1}</span>
-                        <h2>${escapeHtml(toTitleCase(page.song.title))}</h2>
-                        <p class="print-song-meta">${escapeHtml(SONGBOOK_NAMES[page.song.songbook] || page.song.songbook)}${page.song.number != null ? ' #' + page.song.number : ''}</p>
-                    </div>
-                    <div class="print-song-content">${page.html}</div>
+                    <div class="print-song-order-badge">${index + 1}</div>
+                    ${renderTemplateBodyHtml(song, tpl)}
                 </div>`;
         });
 
@@ -3429,10 +4107,12 @@ export class SetList {
 <head>
     <meta charset="UTF-8">
     <title>${escapeHtml(list.name)} — iHymns Set List</title>
-    <style>
-        @page { margin: 2cm; size: A4; }
-        * { box-sizing: border-box; }
-        body { font-family: Georgia, 'Times New Roman', serif; font-size: 12pt; line-height: 1.6; color: #000; margin: 0; padding: 0; }
+    <style>${printCss(tpl.pageOptions)}
+        /* NOTE: no @page size override here — printCss() above already set
+           @page { size: ... } from the chosen template's pageOptions (#1767 G);
+           re-declaring size here would silently force it back to A4 and
+           defeat the whole point of applying the template (rule #22). */
+        @page { margin: 2cm; }
 
         /* Cover page */
         .print-cover { text-align: center; page-break-after: always; padding-top: 30vh; }
@@ -3446,23 +4126,12 @@ export class SetList {
         .print-order table { width: 100%; border-collapse: collapse; }
         .print-order td { padding: 0.3em 0.5em; border-bottom: 1px solid #eee; font-size: 11pt; }
 
-        /* Individual songs */
-        .print-song-page { page-break-before: always; }
-        .print-song-header { margin-bottom: 1.5em; border-bottom: 2px solid #333; padding-bottom: 0.5em; }
-        .print-song-order { display: inline-block; width: 2em; height: 2em; line-height: 2em; text-align: center; background: #333; color: #fff; border-radius: 50%; font-weight: bold; float: left; margin-right: 0.75em; margin-top: 0.2em; }
-        .print-song-header h2 { font-size: 18pt; margin: 0 0 0.2em; }
-        .print-song-meta { color: #666; font-size: 10pt; margin: 0; }
-
-        /* Song content overrides */
-        .print-song-content .breadcrumb,
-        .print-song-content .song-navigation,
-        .print-song-content .d-flex.flex-wrap.gap-2,
-        .print-song-content .card-song-header { display: none !important; }
-        .print-song-content .song-lyrics { margin: 0; }
-        .print-song-content .lyric-component { margin-bottom: 1em; }
-        .print-song-content .lyric-label { font-weight: bold; font-size: 10pt; color: #666; margin-bottom: 0.3em; }
-        .print-song-content .lyric-line { margin: 0.1em 0; }
-        .print-song-content .song-copyright { font-size: 9pt; color: #999; margin-top: 1em; }
+        /* Individual songs — each a fresh page rendered by the shared
+           print-template engine (renderTemplateBodyHtml). The badge is a
+           small circled position number that floats clear of the template's
+           own title block rather than replacing it. */
+        .print-song-page { page-break-before: always; position: relative; }
+        .print-song-order-badge { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: #333; color: #fff; border-radius: 50%; font-weight: bold; font-size: 10pt; float: left; margin-right: 0.6em; margin-top: 0.1em; }
 
         @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
     </style>
@@ -3492,6 +4161,95 @@ export class SetList {
         printWindow.onload = () => {
             printWindow.print();
         };
+    }
+
+    /**
+     * #1767 remainder P6 (plan §4.4) — set-list "Download PDF": renders
+     * EVERY song via the SAME renderTemplateBodyHtml()/applyCustomLayout()
+     * the browser-print path above and the single-song downloadSongPdf()
+     * (print.js) both use — the one-renderer invariant holds for the batch
+     * path exactly as it does for the single-song one, because this calls
+     * the identical client function once per song, never a second renderer.
+     * Assembles `documents: [...]` for the WHOLE (possibly capped) list and
+     * POSTs `mode: 'batch'` via the shared downloadPrintPdf() (print.js) —
+     * never a second POST/status-branch/download implementation.
+     *
+     * CCLI copies prompt fires ONCE for the whole set (plan §6.3's
+     * multi-song design), reusing the SAME printUsageContextFor()/
+     * promptForCopies() the single-song path uses — checked against the
+     * FIRST song in the (server-fetched) set that actually carries a CCLI
+     * number, because the underlying question — "does THIS signed-in
+     * account hold a qualifying CCLI licence" — is licence-scoped, not
+     * song-scoped, so any CCLI-bearing song answers it for the whole batch.
+     * A set with no CCLI-numbered song at all has nothing to report and
+     * skips the prompt entirely. The SERVER re-resolves the licence AND
+     * each song's own CCLI number again from scratch
+     * (manage/print-pdf.php) — this client-side check only decides whether
+     * to SHOW the prompt, never what gets logged.
+     *
+     * @param {object} list The set list { id, name, songs }.
+     * @param {object} tpl  The picked print template.
+     */
+    async _downloadSetListPdf(list, tpl) {
+        this.app.showToast('Preparing PDF…', 'info', 2000);
+
+        /* v1 batch cap (plan §4.4) mirrors the server's PDF_MAX_DOCUMENTS —
+           sliced HONESTLY (never silently) so a very large set list's PDF
+           names the songs it actually included. Only THIS (PDF) path caps —
+           the browser-Print path above has no such limit (window.print()
+           paginates whatever HTML it's given). */
+        const PDF_BATCH_SONG_CAP = 50;
+        const overCap = list.songs.length > PDF_BATCH_SONG_CAP;
+        const songsMeta = overCap ? list.songs.slice(0, PDF_BATCH_SONG_CAP) : list.songs;
+
+        const songs = (await Promise.all(
+            songsMeta.map((s) => fetchSong(this.app, s.id))
+        )).filter(Boolean);
+        if (!songs.length) {
+            this.app.showToast('Could not load any songs to build the PDF.', 'danger', 3500);
+            return;
+        }
+        if (overCap) {
+            this.app.showToast(`PDF includes the first ${PDF_BATCH_SONG_CAP} of ${list.songs.length} songs.`, 'info', 5000);
+        }
+
+        const ccliSong = songs.find((s) => String((s && s.ccli) || '').trim() !== '');
+        let copies = null;
+        if (ccliSong) {
+            const usageCtx = await printUsageContextFor(this.app, ccliSong.publicId || ccliSong.id);
+            if (usageCtx.promptCopies) {
+                copies = await promptForCopies(this.app);
+                if (copies === null) { return; }
+            }
+        }
+
+        const documents = songs.map((song) => {
+            const contentHtml = renderTemplateBodyHtml(song, tpl);
+            const bodyHtml = (tpl && tpl.layoutHtml)
+                ? applyCustomLayout(tpl.layoutHtml, song, contentHtml)
+                : contentHtml;
+            return {
+                bodyHtml,
+                meta: {
+                    songId: song.publicId || song.id || '',
+                    title:  song.title || 'Untitled',
+                    lang:   song.language || 'en',
+                    dir:    'ltr',
+                    book:   song.songbookName || song.songbook || '',
+                },
+            };
+        });
+
+        const payload = {
+            mode: 'batch',
+            documents,
+            css: printCss(tpl.pageOptions),
+            pageOptions: tpl.pageOptions || {},
+            filename: pdfFilenameFor({ title: list.name }),
+        };
+        if (copies != null) { payload.copies = copies; }
+
+        await downloadPrintPdf(this.app, payload);
     }
 
     /**

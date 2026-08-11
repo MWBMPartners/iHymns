@@ -100,6 +100,16 @@ return [
         'admin_group_member_remove'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_group_update'                    => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_groups'                          => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1769 P4 — licence-type vocabulary CRUD API. Same D1-default-A posture
+           as admin_tune / admin_tier: deliberate API-first surface, documented in
+           api-docs.yaml, reachable from the Swagger try-it-out console;
+           manage/licence-types.php does its own direct DB work via the SAME shared
+           includes/licence_type_admin.php cores (never a fork), so nothing
+           first-party calls the JSON twins yet. */
+        'admin_licence_type_create'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_delete'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_toggle'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
+        'admin_licence_type_update'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_migrations_status'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_delete'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_add'         => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
@@ -187,6 +197,13 @@ return [
         'auth_device_code_poll'       => '#1511 live-dormant; consumer = tvOS client, approve side already live',
         'service_control_token_mint'  => '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
         'service_control_token_revoke'=> '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
+        /* #1791 collab-by-link — setlist_token_update / setlist_share_list /
+           setlist_share_revoke WERE allowlisted here while the server (C2b)
+           was ahead of the client. The share dialog (setlist.js
+           renderShareDialog()) and the shared-page token-edit surface
+           (initSharedSetListPage()) now call all three, so the entries were
+           removed per the allowlist's own self-cleaning rule — see git log
+           on this file for the commit that wired them. */
 
         /* ---------------------------------------------------------------
          * 1d. Misc public API, API-parity spillover — 8 (§2.5 six + 2 the
@@ -268,6 +285,28 @@ return [
          * entries died in the same commit — the guard's stale-entry check
          * is what forces that pairing.
          * --------------------------------------------------------------- */
+
+        /* ---------------------------------------------------------------
+         * 1g. #1770 C4/C5 — the external presentation-app driver family.
+         * `service_drive` is the stable internal contract any OUT-OF-REPO
+         * automation (a ProPresenter-class shim, a Companion webhook, a curl
+         * loop) can drive a church's Service-Mode session through,
+         * authenticated by a `tblServiceDriverKeys` credential (#1770 C1,
+         * dormant schema) rather than a login — that consumer is, by
+         * construction, invisible to an in-repo scan (same posture as the
+         * admin/org JSON API-parity family above) and may stay allowlisted
+         * indefinitely, unless a future in-repo test harness starts
+         * exercising it directly.
+         *
+         * The self-cleaning worked as designed here too: the credential's
+         * lifecycle trio (`service_driver_key_mint`/`_revoke`/`_list`) went
+         * from server-only (C4) to caller'd the moment #1770 C5's
+         * "Presentation-app control" admin card landed on
+         * /manage/service-projection (plan §4.6) — their three entries were
+         * removed in that same commit, exactly the F5/F6 pattern this
+         * file's history already proves out.
+         * --------------------------------------------------------------- */
+        'service_drive'                         => 'deliberate API-first surface #1770 C4; out-of-repo driver-shim consumer (curl/Companion/ProPresenter-class automation), invisible to an in-repo scan by construction — same posture as the admin/org API-parity family',
     ],
 
     /* =====================================================================
@@ -277,7 +316,10 @@ return [
      * empty result — "API-reachable, user-invisible, data-impossible".
      * ===================================================================== */
     'tables_reader_no_writer' => [
-        'tblSongAlternativeTitles' => '#1669 — SongData.php:955/966/2946 reads it; the creating migration has zero INSERTs. Writer is remediation X8',
+        /* tblSongAlternativeTitles graduated OUT of this list in #1783: the
+           duplicate_song endpoint (manage/editor/api2.php) now writes it via
+           INSERT...SELECT when copying a song's alt titles, so it is no longer
+           reader-with-no-writer. Removing the entry keeps the count exact. */
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
@@ -303,6 +345,12 @@ return [
            scanner is concerned, and needs its OWN entry, below, rather than
            inheriting the retired one. */
         'tblMusicianLinks' => 'deliberate legacy fallback — index.php:541 / includes/pages/musician.php:288 read it only `if (empty($linksUnified))`, i.e. on a pre-backfill install. Dead on migrated installs BY DESIGN; #1741 P2-B renamed from tblCreditPersonLinks (originally allowlisted, then retired #1741 P2-A when the table became a view — see the note above)',
+        /* tblMusicianDuplicatesDismissed's #1785 C6 entry RETIRED in C7:
+           manage/musician-duplicates.php now writes it too (dismiss INSERT
+           / undismiss DELETE), so it is no longer reader-with-no-writer.
+           Removing the entry keeps the count exact (the same self-cleaning
+           shape as the tblSongAlternativeTitles / tblTuneAliases notes
+           above). */
     ],
 
     /* =====================================================================

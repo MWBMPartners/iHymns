@@ -121,8 +121,28 @@
         options = options || {};
 
         initPromise = (async function () {
-            var protobuf = getProtobuf(options);
+            /* #1788 — PREFER the precompiled STATIC schema. The reflection path
+               below (protobuf.Root.fromJSON → lazy `new Function` codegen on
+               first encode) is refused by the enforcing nonce CSP (#117), which
+               killed every PP7 export in the browser. pp7-proto-static.js is a
+               `pbjs -t static` build that writes the encoder out longhand (no
+               eval) and exposes the schema tree as window.iHymnsPP7Proto. The
+               three browser surfaces (v1 editor index.php, v2 editor
+               editor2.php, public export-ui.js) all load it before this module,
+               so the static branch is what runs in production. */
+            var staticRoot = options.protoStatic
+                || (typeof global !== 'undefined' && global.iHymnsPP7Proto)
+                || null;
+            if (staticRoot && staticRoot.rv && staticRoot.rv.data && staticRoot.rv.data.Presentation) {
+                protoRoot = staticRoot;
+                return protoRoot;
+            }
 
+            /* Fallback: REFLECTION descriptor. Reached only when no static tree
+               is present — i.e. Node tests that inject { bundle } (eval is
+               allowed there), never the browser. This path codegens via
+               `new Function` and WOULD hit the CSP if it ever ran in-page. */
+            var protobuf = getProtobuf(options);
             var bundle;
             if (options.bundle) {
                 /* Tests inject the descriptor directly. */
@@ -155,6 +175,23 @@
     function ensureReady() {
         if (!protoRoot) throw new Error('iHymnsProPresenter: call init() first');
         return protoRoot;
+    }
+
+    /* #1788 — resolve the Presentation message type from whichever schema
+       shape init() loaded: the STATIC tree is a plain namespace
+       (`root.rv.data.Presentation`), while a REFLECTION Root exposes
+       `.lookupType()`. Both message objects carry the same static
+       `.create()`/`.encode()` API downstream, so nothing else changes. */
+    function getPresentationType() {
+        var root = ensureReady();
+        if (typeof root.lookupType === 'function') {
+            return root.lookupType('rv.data.Presentation');
+        }
+        var T = root.rv && root.rv.data && root.rv.data.Presentation;
+        if (!T) {
+            throw new Error('iHymnsProPresenter: rv.data.Presentation missing from static schema');
+        }
+        return T;
     }
 
     /* ==================================================================
@@ -530,18 +567,14 @@
 
     async function buildPresentation(song, options) {
         if (!protoRoot) await init();
-        var Presentation = protoRoot.lookupType('rv.data.Presentation');
+        var Presentation = getPresentationType();
         var payload = buildPresentationPayload(song, options);
 
-        /* `verify()` returns a string describing the first invalid
-           field, or null if everything matches the schema. We surface
-           verify failures up-front so the curator doesn't end up with
-           a silently-malformed `.pro` file. */
-        var problem = Presentation.verify(payload);
-        if (problem) {
-            throw new Error('Presentation schema verification failed: ' + problem);
-        }
-
+        /* #1788 — the static (CSP-safe) build drops `.verify()` to save ~500 KB
+           (`pbjs --no-verify`); the payload is built entirely by
+           buildPresentationPayload() from our own schema-shaped code, never from
+           user input, so the pre-encode guard was low value. A genuinely
+           malformed field still throws inside encode() below. */
         var message = Presentation.create(payload);
         var buffer = Presentation.encode(message).finish();
 

@@ -31,6 +31,8 @@ if (!isset($songData) || !is_object($songData)) {
     require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'SongData.php';
     $songData = new SongData();
 }
+/* #1786 — ihymns_title_sort_key() for the song list's Title sort key. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 $tagSlug = isset($tagSlug) ? trim((string)$tagSlug) : '';
 
@@ -61,14 +63,16 @@ if ($tagSlug !== '') {
                book below, the same cross-songbook shape writer.php uses
                for the same reason (one theme spans many hymnals). */
             require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
             $stmt = $tdb->prepare(
                 'SELECT s.SongId AS id, s.Title AS title,
                         s.SongbookAbbr AS songbook, s.Number AS number
                    FROM tblSongTagMap tm
                    JOIN tblSongs s ON s.SongId = tm.SongId
                   WHERE tm.TagId = ? AND ' . songVisibleSql($tdb, 's') . '
+                    AND ' . songServableSql($tdb, 's') . '
                   ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC'
-            );   /* #1694 — visible songs only */
+            );   /* #1694/#1765 — visible songs only, in a non-disabled songbook */
             $stmt->bind_param('i', $tagInfo['id']);
             $stmt->execute();
             $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -169,6 +173,19 @@ $tagTotalSongs = count($tagSongs);
              (mirrors work.php's "This work has no member songs yet."). -->
         <p class="text-muted" role="status">No songs are currently tagged with this theme.</p>
     <?php else: ?>
+        <!-- Sort control (#1786) — Number / Title. One control governs
+             EVERY per-songbook group below (multi-container: each group's
+             own .song-list is sorted independently; the grouping itself is
+             the page's information architecture and is never flattened). -->
+        <?php
+            $listSortSurface = 'tag-songs';
+            $listSortDefault = 'Number';
+            $listSortOptions = [
+                'number' => ['label' => 'Number', 'type' => 'number', 'dir' => 'asc'],
+                'title'  => ['label' => 'Title',  'type' => 'text',   'dir' => 'asc'],
+            ];
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+        ?>
         <!-- Songs grouped by songbook -->
         <?php foreach ($tagSongsByBook as $abbr => $book): ?>
             <div class="mb-4">
@@ -177,13 +194,15 @@ $tagTotalSongs = count($tagSongs);
                     <?= htmlspecialchars($book['name']) ?>
                     <small class="text-muted">(<?= count($book['rows']) ?>)</small>
                 </h2>
-                <div class="list-group song-list" role="list">
+                <div class="list-group song-list" role="list" data-list-sort-list="tag-songs">
                     <?php foreach ($book['rows'] as $song): ?>
                         <a href="/song/<?= htmlspecialchars($song['id']) ?>"
                            class="list-group-item list-group-item-action song-list-item"
                            data-navigate="song"
                            data-song-id="<?= htmlspecialchars($song['id']) ?>"
                            role="listitem"
+                           <?php if ((int)$song['number'] > 0): ?>data-sort-number="<?= (int)$song['number'] ?>"<?php endif; ?>
+                           data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>"
                            aria-label="<?= (int)$song['number'] > 0 ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase((string)$song['title'])) ?>">
                             <!-- Song number badge — left empty when the song
                                  has no songbook position; `.song-number-badge:

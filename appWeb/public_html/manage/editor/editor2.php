@@ -41,6 +41,12 @@ $csrf   = csrfToken();
    same invisible way — which means v2 needs it too, or the flip re-breaks
    exactly the links the alias was created to rescue. */
 $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? $_GET['open'] ?? ''));
+/* #1783 — ?duplicate=<sourceId>: cold-load entry to duplicate a song (a handled
+   param; no in-tree emitter beyond the editor's own button yet — safe under
+   rule #33, the reverse is the bug). Same sanitiser as ?song=. The confirm in
+   runDuplicate() converts a forced top-level navigation into intent, so this
+   GET-triggered write can't silently mint rows in a signed-in curator's name. */
+$duplicateSource = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['duplicate'] ?? ''));
 
 /**
  * Missing-Numbers prefill: `?songbook=<ABBR>` + `?number=N` or `#number=N` (#1680).
@@ -139,6 +145,16 @@ $recordingIdTypesForJs = array_map(
     static fn(array $t): array => ['label' => $t['label'], 'scope' => $t['scope']],
     mediaIdentifierRecordingTypes()
 );
+
+/* #1769 P4 — the licence vocabulary for the Metadata tab's rights-panel.js,
+   shipped the SAME way the two registries above are (rule #35's "server-derive
+   the vocab, no second list"): the panel builds its two rights pickers from
+   THIS map (key => {label, description}), never a hand-typed licence list, so
+   it can never offer a key api2.php's rights branch would then 422 on. On an
+   un-migrated install licenceTypesForPicker() falls back to the byte-exact P1
+   seeds (licence_registry.php), so the pickers still populate. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+$licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -182,6 +198,9 @@ $recordingIdTypesForJs = array_map(
                 <h1 class="h5 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
                 <div class="ms-auto d-flex gap-2 flex-wrap">
                     <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>New</button>
+                    <!-- #1783 — Duplicate the open song as a starting point for a new
+                         songbook. Hidden until a song is loaded (shown in loadSong). -->
+                    <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i class="bi bi-files me-1"></i>Duplicate</button>
                     <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i class="bi bi-upload me-1"></i>Import</a>
                     <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-text-paragraph me-1"></i>Reflow</button>
                     <div class="dropdown">
@@ -272,6 +291,11 @@ $recordingIdTypesForJs = array_map(
          shipped to a classic global"). -->
     <script>window._iHymnsRecordingIdTypes = <?= json_encode($recordingIdTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
+    <!-- #1769 P4 — licence vocabulary (key -> {label,description}) for the Metadata tab's
+         rights-panel.js pickers. Same emit shape + flags + "classic global registry map"
+         convention as the two above. -->
+    <script>window._iHymnsLicenceTypes = <?= json_encode($licenceTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
          (editor/index.php, organisations.php, songbooks.php, musicians.php, venues.php,
@@ -294,8 +318,12 @@ $recordingIdTypesForJs = array_map(
          helper (mirrors the v1 editor's index.php load order, #887); v2's export.js
          (ITEMS registry, mounted below via mountExportMenu) calls into the same
          window.iHymnsProPresenter this pair exposes, so without it PP7 export
-         throws "protobufjs runtime not found" the first time it's invoked. -->
+         throws "protobufjs runtime not found" the first time it's invoked.
+         #1788 — pp7-proto-static.js (CSP-safe `pbjs -t static` schema) loads
+         between the runtime and the exporter; the exporter prefers it over the
+         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses. -->
     <script src="vendor/protobuf.min.js"></script>
+    <script src="protos/pp7-proto-static.js"></script>
     <script src="propresenter-export.js"></script>
     <script src="format-export.js"></script>
 
@@ -318,6 +346,7 @@ $recordingIdTypesForJs = array_map(
 
         const byId = (id) => document.getElementById(id);
         const initialSongId = <?= json_encode($songId) ?>;
+        const duplicateSource = <?= json_encode($duplicateSource) ?>;   // #1783 — ?duplicate=<sourceId>
 
         /* ?tab= deep-link (#1628 item 1). Consumed ONCE, after the first song
            finishes loading — the tab panes exist from page load, but their
@@ -350,7 +379,7 @@ $recordingIdTypesForJs = array_map(
            is separate from the song scalars. structure-tab.js's per-component
            enrichment panel (enrichment-panel.js) reads + writes these two
            slices directly. */
-        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [] });
+        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], songbookRightsDefaults: null, pendingDuplicate: false });
         let teardowns = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
@@ -446,11 +475,25 @@ $recordingIdTypesForJs = array_map(
                    tab's per-line enrichment panel from having anything to show. */
                 store.set('lineTranslations', data.lineTranslations || []);
                 store.set('lineAnnotations', data.lineAnnotations || []);
+                /* #1769 P4 — the songbook's default rights keys, a prefill HINT
+                   for the Metadata tab's rights panel (D4). null on an
+                   un-migrated install, so the panel simply shows no hint. */
+                store.set('songbookRightsDefaults', data.songbookRightsDefaults || null);
+                /* #1783 — a not-yet-assigned duplicate lives in the hidden staging
+                   book; the Metadata tab reads this to render the Songbook + Number
+                   fields EMPTY (the "Assign to songbook" panel). */
+                store.set('pendingDuplicate', !!data.isPendingDuplicate);
                 currentSongId = id;
                 mountTabs(id);
                 try { history.replaceState(null, '', '?song=' + encodeURIComponent(id)); } catch (_e) {}
                 sidebar.setActive(id);
+                /* #1783 — the Duplicate button acts on the open song, so reveal it now. */
+                { const dupBtn = byId('v2-duplicate-btn'); if (dupBtn) { dupBtn.classList.remove('d-none'); } }
+                if (data.isPendingDuplicate) {
+                    status('Duplicated song — assign it a songbook and number (both are empty) on the Metadata tab, then it becomes a new song. Edit anything first.', 'success');
+                } else {
                 status('Editing "' + ((data.song && data.song.Title) || id) + '" — edits save instantly + atomically.', 'success');
+                }
                 consumeInitialTab();   /* #1628 — after mountTabs(), so the pane has content */
             } catch (e) {
                 if (seq !== loadSeq) { return; }   // don't surface a stale error after a newer switch
@@ -577,6 +620,26 @@ $recordingIdTypesForJs = array_map(
             }
         });
 
+        /* ---- Duplicate current song (#1783) ----
+           Copies the open song into the hidden staging book and re-opens the
+           duplicate, which the Metadata tab shows with empty Songbook + Number.
+           A confirm converts a navigation (or a click) into intent — the
+           `?duplicate=` deep-link below routes through the SAME function, so a
+           forced top-level navigation can't silently mint rows. */
+        async function runDuplicate(sourceId) {
+            if (!sourceId) { return; }
+            if (!window.confirm('Duplicate this song as a starting point for a new songbook?\n\nThe copy opens with an empty Songbook and Song number for you to set, and you can change anything before saving it as a new song.')) { return; }
+            status('Duplicating…');
+            try {
+                const res = await editorApi.duplicateSong(sourceId);
+                try { sidebar.refresh(); } catch (_e) {}
+                loadSong(res.songId);
+            } catch (e) {
+                status('Could not duplicate: ' + e.message, 'danger');
+            }
+        }
+        byId('v2-duplicate-btn').addEventListener('click', () => { runDuplicate(currentSongId); });
+
         /* ---- Delete current song ---- */
         byId('v2-delete-btn').addEventListener('click', async () => {
             if (!currentSongId) { status('No song open to delete.', 'danger'); return; }
@@ -664,7 +727,11 @@ $recordingIdTypesForJs = array_map(
         }
 
         /* ---- initial ---- */
-        if (initialSongId) {
+        if (duplicateSource) {
+            /* #1783 — cold ?duplicate= entry. runDuplicate() confirms first, then
+               mints the copy and opens it (empty Songbook + Number on Metadata). */
+            runDuplicate(duplicateSource);
+        } else if (initialSongId) {
             loadSong(initialSongId);
         } else if (prefillBook && prefillNumber()) {
             /* Wait for the index: findByBookAndNumber and getSongbooks both need

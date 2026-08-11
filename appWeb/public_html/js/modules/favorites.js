@@ -11,6 +11,18 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, songbookLabel } from '../constants.js';
+/* #1786 Option B — favourites is an ARRAY-mode list-sort surface: it is
+   JS-rendered from an in-memory array (localStorage), not server-rendered
+   DOM, so there is nothing for list-sort.js's DOM-reorder mode to grab hold
+   of. wireListSortControl() + getListSort() are the array-mode contract;
+   the actual comparator is the SAME shared core admin tables use (C1). */
+import { wireListSortControl, getListSort } from './list-sort.js';
+import { multiKeyCompareMissingLast, titleSortKey } from '../utils/sort-compare.js';
+
+/** Allowed list-sort keys for the `favorites` surface — matches
+ *  favorites.php's $listSortOptions exactly (types, not labels, matter
+ *  here: sort_compare.js reads the TYPE below, not the server option). */
+const FAVORITES_SORT_TYPES = { added: 'date', title: 'text', book: 'text' };
 
 export class Favorites {
     constructor(app) {
@@ -467,6 +479,7 @@ export class Favorites {
         const clearAllBtn = document.getElementById('clear-all-favorites');
         const selectToggle = document.getElementById('favorites-select-toggle');
         const batchToolbar = document.getElementById('favorites-batch-toolbar');
+        const sortControl = document.querySelector('[data-list-sort-surface="favorites"]');
 
         /* Reset select mode on reload */
         this.selectMode = false;
@@ -475,20 +488,47 @@ export class Favorites {
         const favorites = this.getAll();
 
         if (favorites.length === 0) {
-            /* Show empty state */
+            /* Show empty state — nothing to sort either. */
             if (listEl) listEl.innerHTML = '';
             if (emptyEl) emptyEl.classList.remove('d-none');
             if (countBadge) countBadge.classList.add('d-none');
             if (clearAllBtn) clearAllBtn.classList.add('d-none');
             if (selectToggle) selectToggle.classList.add('d-none');
             if (batchToolbar) batchToolbar.classList.add('d-none');
+            if (sortControl) sortControl.classList.add('d-none');
             return;
         }
 
         /* Hide empty state, show list */
         if (emptyEl) emptyEl.classList.add('d-none');
         if (countBadge) countBadge.classList.remove('d-none');
+        if (sortControl) sortControl.classList.remove('d-none');
         if (countEl) countEl.textContent = `${favorites.length} song${favorites.length !== 1 ? 's' : ''}`;
+
+        /* #1786 — apply the viewer's saved sort (array mode: sort a COPY,
+           never the stored array itself — this is a display order only,
+           never persisted back into the favourites list). Default (no
+           saved spec) leaves insertion order — date-added ASC — exactly as
+           it always rendered. */
+        const sortSpec = getListSort('favorites', Object.keys(FAVORITES_SORT_TYPES));
+        if (sortSpec.length) {
+            const levels = sortSpec.map((s) => ({ key: s.key, type: FAVORITES_SORT_TYPES[s.key] || 'text', direction: s.dir }));
+            const decorated = favorites.map((fav, i) => ({
+                fav,
+                i,
+                vals: {
+                    added: fav.addedAt ?? null,
+                    title: titleSortKey(fav.title),
+                    book: `${(fav.songbook || '').toLowerCase()} ${String(fav.number ?? 0).padStart(6, '0')}`,
+                },
+            }));
+            decorated.sort((a, b) => {
+                const cmp = multiKeyCompareMissingLast(levels, a.vals, b.vals);
+                return cmp !== 0 ? cmp : a.i - b.i; /* stable */
+            });
+            favorites.length = 0;
+            favorites.push(...decorated.map((d) => d.fav));
+        }
 
         /* Show select toggle button (#119) */
         if (selectToggle) {
@@ -573,6 +613,13 @@ export class Favorites {
 
         /* Bind batch toolbar actions (#119) */
         this.initBatchToolbar();
+
+        /* #1786 — wire the Sort ▾ control. Idempotent (wireListSortControl
+           no-ops once the control's own data-list-sort-wired flag is set),
+           so calling it on every reload — including the tag-edit and
+           clear-all reloads above — is safe; onChange just re-runs this
+           same method, which already resets select-mode at the top. */
+        wireListSortControl('favorites', () => this.loadFavoritesList());
     }
 
     /* =====================================================================

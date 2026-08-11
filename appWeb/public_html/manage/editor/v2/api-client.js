@@ -161,6 +161,9 @@ export const editorApi = {
 
     /* Song lifecycle */
     createSong:        (songbook, title)         => postJson('create_song', { songbook: songbook, title: title }),
+    /* #1783 — copy an existing song into the hidden staging book as a starting
+       point for a new songbook; the duplicate opens with empty Songbook + Number. */
+    duplicateSong:     (sourceId)                => postJson('duplicate_song', { sourceId: sourceId }),
     deleteSong:        (songId)                  => postJson('delete_song', { songId: songId }),
 
     /* Metadata — one scalar field at a time */

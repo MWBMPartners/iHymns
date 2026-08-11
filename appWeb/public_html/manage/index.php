@@ -74,13 +74,24 @@ $totalSetlists = $tryInt('SELECT COUNT(*) FROM tblUserSetlists');
 /* #1694 D1 — the dashboard's headline count means VISIBLE songs, matching the
    public tiles; the Deleted-songs screen (commit 5) reports the hidden ones.
    songVisibleSql() is composed OUTSIDE $tryInt's try, so its (rare) probe
-   failure gets the same degrade-not-blank treatment every stat here enjoys. */
+   failure gets the same degrade-not-blank treatment every stat here enjoys.
+   #1765 — "matching the public tiles" now also means excluding songs whose
+   songbook has been disabled, so songServableSql() rides alongside; both
+   fail-degrade to '1=1' identically, so the try/catch's contract is unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
 try {
-    $totalSongs = $tryInt('SELECT COUNT(*) FROM tblSongs WHERE ' . songVisibleSql($db, ''));
+    $totalSongs = $tryInt(
+        'SELECT COUNT(*) FROM tblSongs WHERE ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '')
+    );
 } catch (\Throwable $_e) {
     $totalSongs = 0;   /* the $tryInt convention: a failed stat reads 0, never a white screen */
 }
-$totalSongbooks= $tryInt('SELECT COUNT(*) FROM tblSongbooks WHERE SongCount > 0');
+/* #1765 — same "matches the public tiles" contract: a disabled songbook's
+   SongCount does NOT shrink (rule: disabling hides the book, it does not
+   change the number on the tile) but the book itself must not be counted
+   among the dashboard's "N Songbooks" any more than it is on the public
+   home tiles. */
+$totalSongbooks= $tryInt('SELECT COUNT(*) FROM tblSongbooks WHERE SongCount > 0 AND ' . songbookVisibleSql($db, ''));
 $pendingReqs   = $tryInt("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'");
 $logins24h     = $tryInt('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= (NOW() - INTERVAL 1 DAY)');
 $views24h      = $tryInt('SELECT COUNT(*) FROM tblSongHistory WHERE ViewedAt >= (NOW() - INTERVAL 1 DAY)');

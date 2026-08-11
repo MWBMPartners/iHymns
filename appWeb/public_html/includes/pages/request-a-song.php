@@ -53,8 +53,15 @@ if ($_prefillSongbook !== '') {
         }
         $_resolveDb = getDbMysqli();
         if ($_resolveDb) {
+            /* #1765 — a disabled songbook's real name must not leak into this
+               public prefill either; falls through to the raw abbreviation,
+               same as today's "no row matches" path (a deep link from the
+               admin missing-numbers panel can legitimately point at a
+               disabled book, since that admin page still sees it). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
             $_lookup = $_resolveDb->prepare(
-                'SELECT Name FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+                'SELECT Name FROM tblSongbooks WHERE Abbreviation = ? AND ' . songbookVisibleSql($_resolveDb, '')
+                . ' LIMIT 1'
             );
             if ($_lookup) {
                 $_lookup->bind_param('s', $_prefillSongbook);

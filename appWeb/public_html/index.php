@@ -307,9 +307,12 @@ try {
                     $_seen[strtolower($_lang)] = true;
                 }
             }
+            /* #85 — a song with no number must NOT read "#0" in the share title:
+               (int)null === 0, so only append "#N" when there is a real number. */
+            $_ogNum  = (int)($ogSong['number'] ?? 0);
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
-                     . ' #' . (int)$ogSong['number'];
+                     . ($_ogNum > 0 ? ' #' . $_ogNum : '');
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
                            . ' on ' . $app["Application"]["Name"];
@@ -442,7 +445,8 @@ try {
                 ['name' => 'Home',      'url' => getCanonicalUrl('/')],
                 ['name' => 'Songbooks', 'url' => getCanonicalUrl('/songbooks')],
                 ['name' => $ogSong['songbookName'], 'url' => getCanonicalUrl('/songbook/' . $songbookId)],
-                ['name' => '#' . (int)$ogSong['number'], 'url' => $canonicalUrl],
+                /* #85 — leaf crumb: the song number, or its title when it has none (never "#0"). */
+                ['name' => ((int)($ogSong['number'] ?? 0) > 0 ? '#' . (int)$ogSong['number'] : (string)($ogSong['title'] ?? '')), 'url' => $canonicalUrl],
             ];
         }
     }
@@ -710,8 +714,11 @@ try {
             }
         } catch (\Throwable $_e) { /* schema missing — no JSON-LD */ }
     }
-    /* Shared setlist page: /setlist/shared/abc123 */
-    elseif (preg_match('#^/setlist/shared/([a-f0-9]+)$#', $requestPath, $matches)) {
+    /* Shared setlist page: /setlist/shared/abc123 — #1791 widened the id class
+       from `[a-f0-9]+` to the shared-fold grammar `[A-Za-z0-9_-]{6,64}` (legacy
+       8-hex AND base64url capability tokens; the authoritative fold is
+       sharedSetlistSafeShareId(), which resolveWire re-validates below). */
+    elseif (preg_match('#^/setlist/shared/([A-Za-z0-9_-]{6,64})$#', $requestPath, $matches)) {
         $pageType = 'other';
         $shareId = $matches[1];
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';

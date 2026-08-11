@@ -1433,6 +1433,31 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     margin-bottom: 0.15rem;
 }
 
+/* Inline chord charts (#299). The chord row sits above its lyric line and is
+   HIDDEN by default — the #btn-toggle-chords button (wired in transpose.js)
+   adds `.chords-visible` to `.page-song` to reveal it. Monospace + `pre` so the
+   spacing the server preserved keeps each chord roughly over its word; the
+   per-chord <span data-chord> tokens are what transpose.js rewrites. */
+.lyric-chords {
+    display: none;
+    font-family: var(--bs-font-monospace, "Courier New", monospace);
+    font-weight: 700;
+    font-size: 0.85em;
+    line-height: 1.1;
+    color: var(--accent-solid, var(--bs-primary));
+    white-space: pre;
+    overflow-x: auto;
+    margin: 0.2rem 0 0;
+}
+.page-song.chords-visible .lyric-chords {
+    display: block;
+}
+/* Each transposable chord token. Kept inline so the surrounding whitespace
+   runs (plain text nodes) preserve horizontal position. */
+.lyric-chords [data-chord] {
+    display: inline;
+}
+
 /* Verse styling — neutral border so it reads as the "default" block. */
 .lyric-verse {
     border-left-color: var(--card-border);
@@ -3193,45 +3218,12 @@ body.reduce-motion .related-songs-chevron {
     }
 }
 
-/* ==========================================================================
- * SEARCH AUTOCOMPLETE (#307) — Dropdown suggestions below search input
- * ========================================================================= */
-
-.search-autocomplete {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bs-body-bg);
-    border: 1px solid var(--bs-border-color);
-    border-top: none;
-    border-radius: 0 0 0.5rem 0.5rem;
-    max-height: 300px;
-    overflow-y: auto;
-    z-index: 1050;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.search-autocomplete-item {
-    padding: 0.5rem 1rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    text-decoration: none;
-    color: inherit;
-}
-
-.search-autocomplete-item:hover,
-.search-autocomplete-item.active {
-    background: var(--bs-tertiary-bg);
-}
-
-.search-autocomplete-item .song-num {
-    color: var(--bs-secondary-color);
-    font-size: 0.85em;
-    min-width: 3rem;
-}
+/* SEARCH AUTOCOMPLETE (#307) — removed. The header-search typeahead dropdown
+ * (.search-autocomplete*) shipped with zero JS callers (the `_initAutocomplete`
+ * cluster in search.js was never wired to any input); the live search page
+ * (initSearchPage → ?action=search) is the real, reachable search. The dead
+ * client cluster, its CSS, the ?action=suggest endpoint and suggestSongs() were
+ * all removed together. Re-add cleanly if a real typeahead is ever built. */
 
 /* ==========================================================================
  * PRIVACY SETTINGS SECTION — Analytics consent toggle on Settings page

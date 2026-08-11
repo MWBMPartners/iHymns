@@ -104,9 +104,12 @@ try {
         $bookInfo = $songData->getSongbook($songbookId);
         if ($bookInfo !== null) $mode = 'songbook';
     } elseif ($setlistId !== null) {
-        $cleanId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($setlistId)));
-        if ($cleanId !== '' && strlen($cleanId) <= 16) {
-            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
+        /* #1791 — the ONE share-id fold (accepts legacy 8-hex AND base64url
+           capability tokens), replacing the old `[a-f0-9]` strip so a long-token
+           share's social card resolves instead of silently 404-ing. */
+        $cleanId = sharedSetlistSafeShareId((string)$setlistId);
+        if ($cleanId !== '') {
             /* #1380 / FIX 5 — resolve through the SHARED live-vs-snapshot resolver so
                the social card reflects the owner's CURRENT setlist (name + count),
                not the frozen share-time snapshot. Returns the same XSS-safe id shape
@@ -297,9 +300,12 @@ if ($mode === 'song') {
     $abbrW = abs($abbrBbox[4] - $abbrBbox[0]);
     imagettftext($img, 11, 0, $badgeX + (int)((80 - $abbrW) / 2), $badgeY + 25, $white, $fontBold, $abbr);
 
-    /* Song number next to badge */
-    $numText = '#' . (int)$songInfo['number'];
-    imagettftext($img, 13, 0, $badgeX + 92, $badgeY + 25, $grey, $fontRegular, $numText);
+    /* Song number next to badge (#85 — a numberless song must not draw "#0";
+       (int)null === 0, so only render the number when there is a real one). */
+    $_songNum = (int)($songInfo['number'] ?? 0);
+    if ($_songNum > 0) {
+        imagettftext($img, 13, 0, $badgeX + 92, $badgeY + 25, $grey, $fontRegular, '#' . $_songNum);
+    }
 
     /* --- Song title (large, centred in safe zone) --- */
     $title = $songInfo['title'] ?? 'Untitled';

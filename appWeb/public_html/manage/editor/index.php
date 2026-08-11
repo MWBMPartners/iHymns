@@ -1726,8 +1726,12 @@ try {
     <!-- ProPresenter 7+ exporter (#887). protobufjs is vendored locally
          (vendor/protobuf.min.js, BSD-3-Clause) so the editor works on shared
          hosts + offline; propresenter-export.js exposes window.iHymnsProPresenter.
-         Loaded AFTER editor.js so the inline wiring can read its globals. -->
+         Loaded AFTER editor.js so the inline wiring can read its globals.
+         #1788 — pp7-proto-static.js (CSP-safe `pbjs -t static` schema) loads
+         between the runtime and the exporter; the exporter prefers it over the
+         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses. -->
     <script src="vendor/protobuf.min.js"></script>
+    <script src="protos/pp7-proto-static.js"></script>
     <script src="propresenter-export.js"></script>
     <script>
     /* #887 — wire the ProPresenter dropdown to the exporter. Self-contained:

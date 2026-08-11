@@ -28,21 +28,59 @@ All you need is a free iHymns account — no venue, no church setup, nothing to 
 
 1. Sign in, then open any song.
 2. Tap **Go Live** in the song's button row.
-3. You'll get a six-character code — share it however's easiest (voice, text, chat).
-4. Carry on opening songs as normal — everyone following switches with you automatically.
+3. You'll get a six-character code — share it however's easiest (voice, text, chat), or tap
+   **Show code** for a big code + QR a phone can scan.
+4. Carry on opening songs as normal — everyone following switches with you automatically. A red
+   **LIVE** bar now stays pinned to the bottom of *every* page while you're hosting — not just the
+   song page — with **Show code**, **Console** and **End** buttons, so you can browse the rest of
+   the app without losing your session.
+5. **Console** (optional) opens a panel to pick a song and step between verses/chorus without
+   leaving whatever page you're on — handy if you'd rather drive from a setlist or search screen.
 
 When you're done, tap **End**.
 
-Keep your screen awake while you're leading — if it sleeps for more than about three minutes, followers are disconnected until it wakes up again. Signing out, tapping **End**, or going live again (which makes a brand-new code) all end the previous session straight away.
+**A session auto-closes on its own** after a stretch with no genuine interaction from the leader —
+merely having the app open in the background doesn't count; opening songs, driving sections, or
+touching the screen does. The default is a church-configurable number of minutes; change your own
+preference under [Settings](/settings), or ask your church admin to set (and optionally lock) an
+organisation-wide value. Keep your screen awake too — if it sleeps for more than about three
+minutes, followers are disconnected until it wakes up again, on top of the idle timer. Signing out,
+tapping **End**, or going live again (which makes a brand-new code) all end the previous session
+straight away.
+
+**Leading a longer service — the sermon gap.** When you tap **Go Live**, pick how long to keep it
+live: **30 minutes**, **1 hour**, **2 hours**, or **until I end it**. If you're covering a whole
+service including a sermon (a genuinely quiet stretch with nothing to drive), choose a longer
+option up front so the auto-close doesn't catch you mid-sermon. Changed your mind, or your phone
+died and you've only just got back to it? Tap **Extend** on the red LIVE bar and pick again — this
+resets the clock too, so the full window applies from that moment, not whatever was left of the old
+one. **A church admin can also extend a leader's session on their behalf** from
+[My Organisations](/manage/my-organisations) under "Members' live sessions" — handy for exactly the
+dead-phone-mid-sermon case, without needing the leader's own device. (Service Mode, below, doesn't
+need any of this — it's bounded by the scheduled service's own end time, never an idle clock.)
 
 ---
 
 ## 🙋 Joining a session
 
+> ### 📱💻 Testing it on two of your own devices?
+> **Use the same web address on both.** iHymns runs at more than one address (the live
+> site and one or more preview/test sites), and — on purpose, so a rehearsal on a test site
+> can never be joined by a real congregation on the live site — a session started at one
+> address can **only** be joined from that same address. The instinctive test (start it on
+> your laptop's preview URL, join on your phone's live app) will always be refused. So: open
+> the **host** page and the **join** page at the **identical** web address — both on
+> `ihymns.app`, or both on the same test site — and it works. If you get *"That code belongs
+> to a different iHymns environment…"*, that mismatch is exactly what's happening.
+
 You can join either kind of session from two places:
 
 - **Join Live** on any song page
 - **Join a live service** on the home page — this one button accepts either kind of code
+
+Or scan a QR code shown by the leader/venue screen — you'll land on iHymns with a **one-tap
+confirm** prompt showing the code, so nothing joins automatically just from opening a link (a link
+preview or an accidental tap can never drop you into someone else's session).
 
 Codes aren't case-sensitive, and spaces or dashes don't matter — type it however's comfortable. A real code never contains the letters **0, 1, O, I, L or U**, so if one of those turns up while you're typing, you've probably misread the screen.
 
@@ -77,9 +115,11 @@ Codes rotate roughly every 30 seconds, so if one is refused, just read the **cur
 | No **Go Live** button at all | You're signed out — it only appears when you're signed in | Sign in, then reload the page |
 | *"That doesn't look like a valid session code."* | The code isn't 4–12 letters/digits once spaces and dashes are stripped out | Re-type the code. Remember it never contains 0, 1, O, I, L or U |
 | *"That code isn't active. Check the screen and try again."* | The code has moved on, or you're on the wrong site | Read the **current** code straight off the screen |
-| *"Session not found or ended."* even though the leader's screen shows LIVE | You're probably on a **different iHymns site address** to the leader | Make sure you're both on exactly the same address (e.g. both on `ihymns.app`, or both on the test site) |
-| Same message, but you're genuinely on the same address | The leader's screen fell asleep, the code was mistyped, or the 4-hour limit was reached | Ask the leader to wake their screen (it revives automatically), then re-join |
+| *"That code belongs to a different iHymns environment…"* | You and the leader are on **different iHymns site addresses** (for example the live site vs a preview/test site). iHymns now recognises this case and tells you directly instead of just saying "not found" | Make sure **both** devices use exactly the same web address — both on `ihymns.app`, or both on the same test/preview site — then re-join |
+| *"Session not found or ended."* even though the leader's screen shows LIVE | You're on the same address, but the leader's screen fell asleep, the code was mistyped, or the 4-hour limit was reached | Ask the leader to wake their screen (it revives automatically), then read the current code and re-join |
 | *"The live session has ended."* / *"The service has ended."* mid-way through | The leader ended it, signed out, went live again, their screen slept, or time ran out | Get the new code and re-join |
+| *"Your live session ended (closed or timed out after inactivity)."* — seen by the **leader** | The session auto-closed because there was no genuine interaction for a while (having the app merely open doesn't count) | Tap **Go Live** again for a fresh code; pick a longer "keep live for" option, or use **Extend** next time |
+| Tapping **Extend** says *"This iHymns install hasn't been updated for session lengths yet…"* | Your site administrator hasn't run the one-off setup step for this feature yet | Ask them to run the Database Setup card for Live Follow idle timeouts |
 | *"iHymns is down for maintenance — try the code again in a minute. The leader's code is fine."* | The site is briefly in maintenance mode | Wait a minute and try again — nothing is wrong with the code |
 | *"Too many requests. Please try again later."* | You (or your network) tried too many times in a short spell | Wait a minute, then try again |
 | *"Leave the session you're following before hosting your own."* | One device can't follow a session **and** lead its own at the same time | Tap **Leave** (or **End**) first |

@@ -144,16 +144,29 @@ export class OfflineIndicator {
     }
 
     /**
-     * Get the count of cached song pages from the service worker RECENT_CACHE.
+     * Count cached song pages across BOTH service-worker song buckets, de-duped
+     * by URL.
+     *
+     * #112 fix: this used to open only RECENT_CACHE ('ihymns-recent-songs') — the
+     * auto-cache of recently-viewed songs. But #1597 routes DELIBERATELY-downloaded
+     * songs into a separate SAVED_CACHE ('ihymns-saved-songs',
+     * service-worker.js.php's SAVED_CACHE), so a user who downloaded a whole
+     * songbook for offline use saw the indicator report "0 cached". Both buckets
+     * must be counted. (Bucket names mirror service-worker.js.php's RECENT_CACHE /
+     * SAVED_CACHE constants — the SW is a separate global scope, so they are
+     * duplicated by necessity, not choice.)
      * @returns {Promise<number>}
      */
     async getCachedSongCount() {
         try {
             if (!('caches' in window)) return 0;
-            const cache = await caches.open('ihymns-recent-songs');
-            const keys = await cache.keys();
-            /* Count only song API requests */
-            return keys.filter(req => req.url.includes('page=song')).length;
+            const urls = new Set();
+            for (const bucket of ['ihymns-recent-songs', 'ihymns-saved-songs']) {
+                const cache = await caches.open(bucket);
+                const keys = await cache.keys();
+                keys.forEach(req => { if (req.url.includes('page=song')) urls.add(req.url); });
+            }
+            return urls.size;   // de-duped: a song can be in both buckets
         } catch {
             return 0;
         }

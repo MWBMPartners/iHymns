@@ -20,10 +20,10 @@ declare(strict_types=1);
  * Reuses the shared admin chrome for the SETUP view; projection mode is a
  * full-bleed, high-contrast overlay. Beside the large rotating join code it
  * now also renders a scannable QR of the join URL (#1339, the "buildable
- * half" — see renderQr() below), via the vendored `qrcode-generator`
- * library (kazuhikoarase, MIT; pinned + SRI-recorded per rule #1587 —
- * APP_CONFIG['libraries']['qrcodegen'] in includes/config.php). The QR is
- * an ACCELERATOR, not a replacement: the typed code stays the primary,
+ * half" — see renderQr() below), served by the same-origin /qr.php endpoint
+ * which generates it via our CueRCode service server-side (owner directive
+ * 2026-08-05 — QR via CueRCode; the secret key never reaches this page). The QR
+ * is an ACCELERATOR, not a replacement: the typed code stays the primary,
  * always-visible fallback for a congregant without a working camera (or a
  * screen reader — the QR carries no information the code text doesn't
  * already, so it's marked aria-hidden), and any QR generation failure
@@ -123,6 +123,33 @@ if ($schemaReady) {
 $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://')
           . preg_replace('/[^a-zA-Z0-9.\-:]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'ihymns.app'));
 $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 7 => 'Sun'];
+
+/* #1770 §4.6 — "Presentation-app control" card: mint/list/revoke durable
+   driver keys for an external presentation app (ProPresenter-class shim,
+   a Stream Deck script, a Companion webhook) to drive THIS org's Service
+   Mode sessions via the api.php `service_drive` action. Own probe — the
+   #1770 C1 batch is a SEPARATE migration from the #1335 Phase-2 tables
+   $schemaReady already gates on, so a $schemaReady install can still be
+   pre-#1770 (the page's existing pattern: probe-gate, don't assume). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+$driverKeysReady = _svcProjTableExists($db, 'tblServiceDriverKeys');
+/* Orgs to offer in the picker: every org that has at least one venue THIS
+   operator can already see above (never a superset of what they can drive —
+   the server-side org-admin gate on the mint/revoke/list endpoints is the
+   real authority, this is just what the picker offers). */
+$driverKeyOrgs = [];
+if ($driverKeysReady && $venues) {
+    $orgIdsForKeys = array_values(array_unique(array_map(static fn(array $v): int => (int)$v['OrgId'], $venues)));
+    if ($orgIdsForKeys) {
+        $ph = implode(',', array_fill(0, count($orgIdsForKeys), '?'));
+        $types = str_repeat('i', count($orgIdsForKeys));
+        $stmt = $db->prepare("SELECT Id, Name FROM tblOrganisations WHERE Id IN ($ph) ORDER BY Name ASC");
+        $stmt->bind_param($types, ...$orgIdsForKeys);
+        $stmt->execute();
+        $driverKeyOrgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -215,6 +242,88 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                 </div>
             </div>
         <?php endif; ?>
+
+        <!-- ===========================
+             PRESENTATION-APP CONTROL (#1770 §4.6) — durable driver keys for
+             an external presentation app (ProPresenter-class shim, a Stream
+             Deck script, a Companion webhook) to drive Service Mode sessions
+             without a human clicking here. Own probe from $schemaReady above
+             — #1770 C1 is a separate migration.
+             =========================== -->
+        <?php if ($schemaReady): ?>
+        <div class="card mt-4" style="max-width: 720px;">
+            <div class="card-body">
+                <h2 class="h6 mb-2"><i class="bi bi-key me-2"></i>Presentation-app control</h2>
+                <p class="small text-secondary mb-3">
+                    Mint a durable key so an external presentation app can drive this organisation's
+                    live session — advance the song and section — without a person clicking here.
+                    The key is shown once; paste it straight into the shim's config.
+                </p>
+                <?php if (!$driverKeysReady): ?>
+                    <div class="alert alert-warning small mb-0">
+                        <i class="bi bi-database-exclamation me-1"></i>Not migrated yet on this environment.
+                        <a href="/manage/setup-database">Run “Live Follow: capable Quick sessions” in Database Setup</a>.
+                    </div>
+                <?php elseif (!$driverKeyOrgs): ?>
+                    <div class="alert alert-info small mb-0">
+                        Add a venue under <a href="/manage/venues">Venues</a> first — a driver key belongs to the
+                        organisation that owns a venue.
+                    </div>
+                <?php else: ?>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold" for="dk-org">Organisation</label>
+                        <select id="dk-org" class="form-select form-select-sm" style="max-width: 320px;">
+                            <?php foreach ($driverKeyOrgs as $o): ?>
+                                <option value="<?= (int)$o['Id'] ?>"><?= htmlspecialchars((string)$o['Name'], ENT_QUOTES, 'UTF-8') ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div id="dk-list-wrap" class="mb-3">
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr class="text-secondary small">
+                                        <th>Label</th><th>Prefix</th><th>Venue</th><th>Protocol</th>
+                                        <th>Last used</th><th class="text-end">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dk-list-body">
+                                    <tr><td colspan="6" class="text-secondary small">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <form id="dk-mint-form" class="row g-2 align-items-end">
+                        <div class="col-sm-4">
+                            <label class="form-label small" for="dk-label">Label</label>
+                            <input type="text" id="dk-label" class="form-control form-control-sm"
+                                   placeholder="e.g. Sanctuary ProPresenter" maxlength="120" required>
+                        </div>
+                        <div class="col-sm-3">
+                            <label class="form-label small" for="dk-venue">Venue <span class="text-secondary">(optional)</span></label>
+                            <select id="dk-venue" class="form-select form-select-sm">
+                                <option value="">Any venue of this org</option>
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
+                            <label class="form-label small" for="dk-protocol">Protocol</label>
+                            <select id="dk-protocol" class="form-select form-select-sm">
+                                <?php foreach (SERVICE_DRIVER_KEY_PROTOCOLS as $proto): ?>
+                                    <option value="<?= htmlspecialchars($proto, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars(ucfirst($proto), ENT_QUOTES, 'UTF-8') ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="col-sm-2">
+                            <button type="submit" class="btn btn-sm btn-amber-solid w-100"><i class="bi bi-key me-1"></i>Mint</button>
+                        </div>
+                    </form>
+                    <div id="dk-mint-result" class="small mt-2"></div>
+                <?php endif; ?>
+            </div>
+        </div>
+        <?php endif; ?>
     </div>
 
     <!-- Full-bleed projection overlay -->
@@ -268,10 +377,9 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
-        /* Pinned CDN URL + SRI (reference-only, see includes/config.php) + local
-           vendored fallback path for the QR renderer (#1339, rule #1587). Same
-           registry index.php/api-docs.php read for Bootstrap/jQuery/Swagger UI. */
-        const QR_LIB = <?= json_encode(APP_CONFIG['libraries']['qrcodegen'] ?? null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        /* QR is now served by the same-origin /qr.php endpoint (CueRCode-backed,
+           owner directive 2026-08-05) — no client-side QR library is loaded here
+           any more; renderQr() below just points an <img> at it. */
         const ROTATE_MS = 30000;
         let session = null, rotateTimer = null, broadcaster = null;
 
@@ -333,86 +441,63 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
            typed code is the authoritative, always-visible, screen-reader
            fallback whether or not the QR ever renders.
 
-           Library: the vendored `qrcode-generator` (kazuhikoarase, MIT — see
-           includes/config.php's QR_LIB entry for the full pinning rationale),
-           loaded via dynamic import() from the pinned CDN URL with a fallback
-           to the local vendored copy — the SAME pattern sheet-music.js
-           already uses for PDF.js, because browsers don't support the
-           `integrity` attribute on dynamic import() the way they do for
-           `<script src>`. qrModulePromise memoises a SUCCESSFUL load; a
-           failure clears it so the next code rotation (30s later) retries
-           rather than staying broken for the rest of the service. */
+           QR source: the same-origin /qr.php endpoint, which generates the code
+           via our CueRCode service server-side (owner directive 2026-08-05 — QR
+           via CueRCode across iHymns; the secret key never reaches this page).
+           This replaced the old client-side vendored `qrcode-generator` dynamic
+           import. /qr.php answers 503 when CueRCode isn't configured/reachable,
+           so the <img> simply fails to load and the typed-code fallback shows —
+           and a new code rotation (30s later) issues a fresh <img> that retries. */
         const qrWrap = document.getElementById('svc-proj-qr-wrap');
         const qrBox = document.getElementById('svc-proj-qr');
         const qrFallback = document.getElementById('svc-proj-qr-fallback');
-        let qrModulePromise = null;
-
-        function loadQrModule() {
-            if (qrModulePromise) return qrModulePromise;
-            const attempt = (async function () {
-                if (!QR_LIB || !QR_LIB.js_cdn || !QR_LIB.js_local) {
-                    throw new Error('QR library not registered in APP_CONFIG.');
-                }
-                let mod;
-                try {
-                    mod = await import(/* webpackIgnore: true */ QR_LIB.js_cdn);
-                } catch (cdnErr) {
-                    console.warn('[service-projection] QR CDN import failed, trying local vendor copy:', cdnErr);
-                    mod = await import('/' + QR_LIB.js_local);
-                }
-                const factory = mod && (mod.default || mod.qrcode);
-                if (typeof factory !== 'function') { throw new Error('Unexpected QR module shape.'); }
-                return factory;
-            })();
-            attempt.catch(function () { qrModulePromise = null; });
-            qrModulePromise = attempt;
-            return attempt;
-        }
 
         /* The real join route (js/modules/service-follow.js's joinService() +
-           the anonymous POST-only `service_join` action in api.php) has no
-           URL-based auto-join today — a congregant always lands on the home
-           page and types the code into the "Join a live service" prompt.
-           Scanning this URL still saves the trip to find the site + the
-           button: it opens straight to the app (same origin this session is
-           bound to, so the #1268/rule-#26 Channel wall is automatic), where
-           the code is displayed prominently either way. The `svc_code` query
-           param is otherwise inert today (the home route ignores unknown
-           query strings) but forward-compatible with a future auto-fill —
-           see the doc-comment on serviceMode_resolveJoin()'s "QR deep-link"
-           remark in includes/service_mode.php. */
+           the anonymous POST-only `service_join` action in api.php) never
+           auto-joins from a URL — a congregant types the code into the
+           "Join a live service" prompt. Scanning this URL saves the trip to
+           find the site + the button: it opens straight to the app (same
+           origin this session is bound to, so the #1268/rule-#26 Channel
+           wall is automatic). #1770 C6 — `service-follow.js`'s init() now
+           READS this `svc_code` param (it didn't for the QR's first ~5
+           weeks live, #1339→#1770 — the standing rule-#33 gap the #1770
+           plan's analysis flagged): it strips the param, validates it with
+           the same fold a typed code goes through, and opens a one-tap
+           CONFIRM prompt pre-filled with the code — never an auto-join
+           (anti-probe + no join-on-prefetch/link-preview). */
         function joinUrlFor(code) {
             return JOIN_BASE + '/?svc_code=' + encodeURIComponent(code);
         }
 
-        async function renderQr(code) {
+        function renderQr(code) {
             if (!qrBox || !qrWrap || !qrFallback || !code) return;
-            try {
-                const qrcodeFactory = await loadQrModule();
-                /* 0 = auto-pick the smallest version that fits the URL; 'M'
-                   (~15% recovery) trades some error-correction headroom for
-                   larger, more camera-friendly modules at a fixed box size —
-                   this is a short static URL, not a noisy environment, so 'H'
-                   would only shrink modules for no real robustness gain. */
-                const qr = qrcodeFactory(0, 'M');
-                qr.addData(joinUrlFor(code), 'Byte');
-                qr.make();
-                qrBox.innerHTML = qr.createSvgTag({ scalable: true, alt: 'QR code to join the service' });
+            /* SVG scales, so a fixed 512 canvas is crisp at any projector size. */
+            const src = '/qr.php?data=' + encodeURIComponent(joinUrlFor(code)) + '&format=svg&size=512';
+            const img = document.createElement('img');
+            img.alt = 'QR code to join the service';
+            img.className = 'img-fluid';
+            /* Listeners attached BEFORE src is set (below) so a cached instant
+               load can't fire before we're listening. */
+            img.addEventListener('load', function () {
                 qrWrap.classList.remove('d-none');
                 qrFallback.classList.add('d-none');
                 qrFallback.textContent = '';
-            } catch (e) {
-                /* Never a blank box — hide the (possibly half-drawn) QR card
-                   and say so in plain text next to the still-working typed
-                   code. console.error so /manage/*'s error monitor (#1599)
-                   can surface this in the activity log even though nobody's
-                   watching the projector's console. */
-                console.error('[service-projection] QR generation failed:', e);
+            });
+            img.addEventListener('error', function () {
+                /* Never a blank box — hide the QR card and point at the still-
+                   working typed code. /qr.php answers 503 when CueRCode isn't
+                   configured/reachable. console.error so /manage/*'s error
+                   monitor (#1599) surfaces it even though nobody watches the
+                   projector's console. */
+                console.error('[service-projection] QR image failed to load from /qr.php');
                 qrBox.innerHTML = '';
                 qrWrap.classList.add('d-none');
                 qrFallback.classList.remove('d-none');
                 qrFallback.textContent = 'QR code unavailable right now — use the code above.';
-            }
+            });
+            qrBox.innerHTML = '';
+            qrBox.appendChild(img);
+            img.src = src;
         }
 
         function showCode(code) {
@@ -483,6 +568,118 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                     .then(function (d) { if (d && d.ok && d.code) showCode(d.code); }).catch(function () {});
             }
         });
+
+        /* ---- Presentation-app control (#1770 §4.6) ------------------------
+           Only present in the DOM when $driverKeysReady && $driverKeyOrgs
+           (PHP-gated above), so this whole block is a no-op elsewhere.
+           Same-origin AJAX via the SAME apiCall() helper above — the
+           X-Requested-With header alone satisfies validateCsrfRequest()
+           (rule #29) for the two writers (mint/revoke). */
+        const dkOrgSel = document.getElementById('dk-org');
+        if (dkOrgSel) {
+            const dkVenueSel   = document.getElementById('dk-venue');
+            const dkListBody   = document.getElementById('dk-list-body');
+            const dkMintForm   = document.getElementById('dk-mint-form');
+            const dkMintResult = document.getElementById('dk-mint-result');
+
+            const dkEsc = function (s) {
+                return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+                    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                });
+            };
+            const dkFmtDate = function (s) {
+                if (!s) return '—';
+                try { return new Date(String(s).replace(' ', 'T') + 'Z').toLocaleString(); } catch (_e) { return dkEsc(s); }
+            };
+
+            function dkFillVenues() {
+                const orgId = dkOrgSel.value;
+                dkVenueSel.innerHTML = '<option value="">Any venue of this org</option>';
+                VENUES.filter(function (v) { return String(v.OrgId) === orgId; }).forEach(function (v) {
+                    const o = document.createElement('option');
+                    o.value = String(v.Id); o.textContent = v.Name;
+                    dkVenueSel.appendChild(o);
+                });
+            }
+
+            function dkRenderList(keys) {
+                dkListBody.innerHTML = '';
+                if (!keys.length) {
+                    dkListBody.innerHTML = '<tr><td colspan="6" class="text-secondary small">No driver keys yet.</td></tr>';
+                    return;
+                }
+                keys.forEach(function (k) {
+                    const venue = k.venueId ? (VENUES.find(function (v) { return v.Id === k.venueId; }) || {}).Name || ('#' + k.venueId) : 'Any';
+                    const tr = document.createElement('tr');
+                    if (!k.active) { tr.classList.add('text-secondary'); }
+                    tr.innerHTML = '<td>' + dkEsc(k.label) + '</td>'
+                        + '<td><code>' + dkEsc(k.prefix) + '…</code></td>'
+                        + '<td>' + dkEsc(venue) + '</td>'
+                        + '<td>' + dkEsc(k.protocol) + '</td>'
+                        + '<td>' + dkFmtDate(k.lastUsedAt) + '</td>'
+                        + '<td class="text-end"></td>';
+                    if (k.active) {
+                        const revokeBtn = document.createElement('button');
+                        revokeBtn.type = 'button';
+                        revokeBtn.className = 'btn btn-sm btn-outline-danger';
+                        revokeBtn.textContent = 'Revoke';
+                        revokeBtn.addEventListener('click', function () { dkRevoke(k.id); });
+                        tr.lastElementChild.appendChild(revokeBtn);
+                    } else {
+                        tr.lastElementChild.textContent = 'revoked';
+                    }
+                    dkListBody.appendChild(tr);
+                });
+            }
+
+            function dkLoadList() {
+                dkListBody.innerHTML = '<tr><td colspan="6" class="text-secondary small">Loading…</td></tr>';
+                apiCall('service_driver_key_list', { method: 'GET', query: '&orgId=' + encodeURIComponent(dkOrgSel.value) })
+                    .then(function (d) { dkRenderList((d && d.keys) || []); })
+                    .catch(function () { dkListBody.innerHTML = '<tr><td colspan="6" class="text-danger small">Could not load keys.</td></tr>'; });
+            }
+
+            function dkRevoke(id) {
+                if (!window.confirm('Revoke this driver key? Anything using it stops working immediately.')) { return; }
+                apiCall('service_driver_key_revoke', { method: 'POST', body: { id: id, orgId: parseInt(dkOrgSel.value, 10) } })
+                    .then(function () { dkLoadList(); });
+            }
+
+            dkOrgSel.addEventListener('change', function () { dkFillVenues(); dkLoadList(); });
+            dkFillVenues();
+            dkLoadList();
+
+            dkMintForm.addEventListener('submit', function (e) {
+                e.preventDefault();
+                dkMintResult.innerHTML = '';
+                const label = document.getElementById('dk-label').value.trim();
+                if (!label) { return; }
+                const body = {
+                    orgId: parseInt(dkOrgSel.value, 10),
+                    label: label,
+                    protocol: document.getElementById('dk-protocol').value,
+                };
+                const venueVal = dkVenueSel.value;
+                if (venueVal) { body.venueId = parseInt(venueVal, 10); }
+                apiCall('service_driver_key_mint', { method: 'POST', body: body }).then(function (d) {
+                    if (!d || !d.ok) {
+                        dkMintResult.innerHTML = '<span class="text-danger">' + dkEsc((d && d.error) || 'Could not mint the key.') + '</span>';
+                        return;
+                    }
+                    /* The RAW key is shown here ONCE — the server never stores
+                       it (only its SHA-256 hash), so this is the only chance
+                       to copy it. user-select:all makes triple-click select
+                       the whole thing. */
+                    dkMintResult.innerHTML = '<div class="alert alert-warning py-2 px-3 mb-0">'
+                        + '<strong>Copy this key now — it will not be shown again:</strong><br>'
+                        + '<code style="user-select:all;">' + dkEsc(d.key) + '</code></div>';
+                    document.getElementById('dk-label').value = '';
+                    dkLoadList();
+                }).catch(function () {
+                    dkMintResult.innerHTML = '<span class="text-danger">Network error.</span>';
+                });
+            });
+        }
     </script>
     <?php endif; ?>
 

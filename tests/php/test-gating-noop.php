@@ -132,6 +132,53 @@ check('(8) public tier is DENIED download_pdf (flips $hasSheet false)',
 check('(9) free tier is ALLOWED view_copyrighted (sanity)',
     !empty(checkTierAccess('free', 'view_copyrighted', false)['allowed']));
 
+/* ----------------------------------------------------------------------- *
+ * (11)-(13) #1769 P2 Commit E — the ONE pipeline. The delegate off no-op
+ * above (1/2) is now backed by accessApplySong()/accessMediaAllowed(); prove
+ * the pipeline itself no-ops off, that the viewer struct is exactly
+ * ACCESS_VIEWER_KEYS, and that the master switch is checked BEFORE the viewer
+ * is built (so an off request does zero pipeline work). DB-free by
+ * construction (assemble takes literals; no getDbMysqli).
+ * ----------------------------------------------------------------------- */
+require_once $root . '/access_context.php';
+require_once $root . '/access_resolver.php';
+
+/* (11) The pipeline no-ops when the viewer says gating is off — for a rich
+   payload AND for one missing every optional key (key-absent robustness). */
+$offViewer = accessViewerAssemble(false, null, 'PWA', 'public', false, [], null, false, false);
+$richSong  = [
+    'id' => 'CP-1', 'lyricsPublicDomain' => false, 'components' => [['x' => 1]],
+    'hasAudio' => true, 'media' => [['kind' => 'audio', 'streamUrl' => '/song-media/1']],
+];
+check('(11) accessApplySong() is byte-identical when the viewer is off (rich payload)',
+    accessApplySong($richSong, $offViewer) === $richSong);
+$bareSong = ['id' => 'MP-2', 'title' => 'Bare'];
+check('(11) accessApplySong() is byte-identical when off (no optional keys present)',
+    accessApplySong($bareSong, $offViewer) === $bareSong);
+check('(11) accessMediaAllowed() returns true when the viewer is off',
+    accessMediaAllowed('audio', [], $offViewer) === true);
+
+/* (12) The viewer struct carries exactly ACCESS_VIEWER_KEYS, in order — a
+   stray/renamed key is caught here (the struct is the cross-file contract). */
+$sampleViewer = accessViewerAssemble(true, 3, 'PWA', 'free', false, [], null, false, false);
+check('(12) accessViewerAssemble() emits exactly ACCESS_VIEWER_KEYS in order',
+    array_keys($sampleViewer) === ACCESS_VIEWER_KEYS);
+
+/* (13) SOURCE-ORDER guard: contentGatingApply() must check the master switch
+   BEFORE it builds a viewer, so an off request does no pipeline work at all.
+   Derived from the real source, window generous enough to span the function
+   head (rule #34: a too-narrow window under-reports). */
+$cgSrc   = (string)file_get_contents($root . '/content_gating.php');
+$fnStart = strpos($cgSrc, 'function contentGatingApply(');
+check('(13) contentGatingApply() is defined', $fnStart !== false);
+if ($fnStart !== false) {
+    $window   = substr($cgSrc, $fnStart, 1400);
+    $posGate  = strpos($window, 'contentGatingEnabled(');
+    $posBuild = strpos($window, 'accessViewerContext(');
+    check('(13) contentGatingApply() checks the master switch before building the viewer',
+        $posGate !== false && $posBuild !== false && $posGate < $posBuild);
+}
+
 if ($failures === 0) {
     echo "\nAll gating no-op + signing-dormancy assertions passed.\n";
     exit(0);

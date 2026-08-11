@@ -81,6 +81,21 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Accessibility + security sweep** (#1643–#1648, #1665) — high-contrast/CVD modes restored across the whole `/manage` admin surface (they had never been styled there at all); Present mode is a real focus-trapping dialog; Service Mode announces section changes and no longer races the page render; sortable table headers keep their `columnheader` role; SPA navigation stopped reading whole pages aloud on every route change; the setlist Arrangement editor works by keyboard and touch; the SortableJS and Bootstrap CDN loads gained SRI + vendored fallbacks; eight admin pages' access gates now match what the nav actually advertises.
 - **iHymns interchange JSON importer** (#1633) — a new additive/merge-only importer writes iHymns's own JSON export format straight to the database, following the same never-truncate contract as the ZIP importer.
 
+### 2026-08 highlights ✅ — the `claude/issue-sweep-fixes-89` batch (v0.5050.0)
+
+The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.4100.0 → 0.5050.0**
+(owner-directed). All new schema is additive/dormant; content gating stays off by default.
+
+- **Musician registry-vs-registry duplicate detection + easier merge UX** (#1785, follow-up to #1784, epic #1787) — a new live-computed scan (`includes/musician_duplicates.php`) finds registry rows that are probably the same person, blocked (not naive all-pairs) so it stays sub-second at thousands of rows; a new `/manage/musician-duplicates` review page (mirroring `/manage/duplicate-songs`, #1215) offers one-click merge, dismiss/undismiss, and a lifespan-conflict guard on the dangerous class of merge; every merge affordance across the app (the Merge modal, bulk-promote, the new page) now shows WHY two similar names look alike and WHICH registry row is which — closing the "which is merging into which?" confusion the #1784 fix surfaced. The merge core is now one shared function (`musicianMergeExecute()`), closing two data-loss bugs found during its extraction (a stranded sixth credit table; silently cascade-deleted aliases/relations on merge). Plus **#1800/#1799** merge/dedup follow-ups and the admin sortable-headers adoption sweep.
+- **Songbook/catalogue enhancements epic + Publishers registry** (#1765 / #93) — songbook disable + public-domain flags, ARK/OpenLibrary/ISBN/ISSN identifiers, a Google Books external-link provider, MARCXML import/export, and the free-text publisher promoted to a first-class `tblPublishers` registry (persons + companies, imprint grouping, aliases, public `/publisher/<slug>` page).
+- **Content-gating program (P0–P6) + hub** (#1769 / #1778) — facts × grants × one viewer resolver × one enforcement pipeline (`access_context.php` / `access_resolver.php` / `licence_registry.php`), a `tblLicenceTypes` vocabulary registry with `/manage/licence-types` CRUD, and a `/manage/gating` readiness hub. **Entirely dormant** behind `content_gating_enabled='0'`, proven byte-identical no-op.
+- **Print templates / server-PDF remainder** (#1767) — a shared print-template engine (browser Print, server PDF, whole-set-list PDF, admin preview all one renderer), an allowlist HTML sanitiser, vendored mPDF (outside every docroot), a signed-in Download PDF affordance, uploadable custom layouts, and CCLI print-usage logging.
+- **IA-reconcile Phase 1** (#94) — a read-only archive.org OCR audit tool (SSRF-hardened fetcher + pure segmenter/scorer) that scores a scan against a songbook and reports the gap list; never writes song content.
+- **Live Follow work** (#1770 / #1792 / #1798) — a persistent host bar, leader-idle auto-close, host-CCLI unlock, an external presentation-app driver (`service_drive` + driver keys), a cross-channel error message, and declared session length + live/on-behalf **Extend**.
+- **Set-list share-by-link** (#1790 / #1791 / #1789) — a playlist-first view link and a revocable, org-clampable edit-capability link; shared set lists print through the one template engine.
+- **Public multi-level list sort** (#1786) — a Sort ▾ control on every catalogue list, up to 3 levels, per-surface device memory + account sync via the `user_settings` `list_sorts` namespace.
+- **Editor duplicate-song** (#1783), **ProPresenter CSP-safe export** (#1788), **QR → CueRCode** (`/qr.php`, owner directive), and the **#89 sweep** items (#288 song-page tags, #150 article-blind sort, #299 inline chords, #302 set-list Save-as-PDF, #112 offline count, et al.).
+
 ---
 
 ## 📌 Next Milestones
@@ -121,7 +136,7 @@ runtime surprise there invalidates assumptions the rest build on.
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
 - **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.4001.0 Alpha (authoritative: `includes/infoAppVer.php`)
+- **Version**: 0.5050.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
 
 ---

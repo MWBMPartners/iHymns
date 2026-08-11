@@ -266,11 +266,13 @@ for (const [label, hit] of [['`/`', slashCase], ['Ctrl/Cmd+K', ctrlK]]) {
    exist. They cannot prove the method does the right thing when run, and the
    bug this file exists for was precisely a method that read fine and did
    nothing. So run it, in a real DOM, both ways round.
-   The neighbouring tests/test-search-autocomplete-aria.js shows why this
-   matters: it drives `_showAutocomplete()` directly against an
-   `<input id="search-input">` it builds itself, so it passed for the entire
-   period during which no page anywhere emitted that id. Exercising a function
-   in isolation says nothing about whether the product can reach it. */
+   The now-removed search autocomplete (#307) showed why this matters: its
+   ARIA test drove `_showAutocomplete()` directly against an
+   `<input id="search-input">` it built itself, so it passed for the entire
+   period during which no page anywhere emitted that id and no code ever called
+   `_initAutocomplete` — the feature was unreachable the whole time. Exercising
+   a function in isolation says nothing about whether the product can reach it;
+   that dead cluster was deleted wholesale in #307. */
 console.log('\nAssertion 4 — openSearch() navigates and focuses when actually run:\n');
 
 const { JSDOM } = await import('jsdom');

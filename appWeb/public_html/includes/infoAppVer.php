@@ -78,13 +78,19 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
 /* Auto-bumped by the version-bump GitHub Action on push to alpha/beta.
-   Manually jumped 0.4001.0 -> 0.4100.0 for the wave3-fixes batch (the #1741
-   catalogue-expansion epic follow-ups + the #1201/#1761 API-envelope +
-   OpenAPI redesign) — a deliberately significant minor bump reflecting the
-   scope of the batch, rather than the +1 the auto-bumper applies per merge.
-   The alpha auto-bumper will still apply its standard +1 minor on merge. */
-/* v1.x.x = Phase 1 (local JSON data), v2.x.x = Phase 2 (iLyrics dB) */
-$app["Application"]["Version"]["Number"] = "0.4100.0";
+   Manually jumped 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch
+   (the 214-commit `claude/issue-sweep-fixes-89` branch: the #1765 songbook/
+   catalogue epic + #93 Publishers, the #1769/#1778 gating program, the #1767
+   print/PDF remainder, #94 IA-reconcile, #1770/#1792/#1798 Live-Follow, #1791
+   set-list sharing, #1786 public list-sort, #1785 musicians dedup, et al.) —
+   an owner-directed significant minor bump reflecting the scope of the batch
+   (a large jump within the 0.x line, not the +1 the auto-bumper applies per
+   merge). The alpha auto-bumper will still apply its standard +1 minor on
+   merge. */
+/* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
+   dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
+   be in), so the major digit no longer encodes a data-source phase. */
+$app["Application"]["Version"]["Number"] = "0.5050.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

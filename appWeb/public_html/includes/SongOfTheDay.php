@@ -191,7 +191,11 @@ final class SongOfTheDay
            must be deterministic over the VISIBLE pool, or a hidden song would
            be picked and then 404 on hydrate.) */
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
-        $where  = songVisibleSql($this->db, '') . $extraWhere . $langWhere;
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
+        /* #1765 — the deterministic pool also excludes songs whose songbook
+           has been disabled, for the same "pool must equal the visible set,
+           or a hidden pick 404s on hydrate" reason #1694 gives above. */
+        $where  = songVisibleSql($this->db, '') . ' AND ' . songServableSql($this->db, '') . $extraWhere . $langWhere;
         $types  = $extraTypes . $langTypes;
         $params = array_merge($extraParams, $langParams);
 
@@ -251,12 +255,14 @@ final class SongOfTheDay
         /* #1694 — belt-and-braces: pickId() already excludes hidden songs, but
            a stale cached id must not hydrate one either. */
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Verified AS verified
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                WHERE s.SongId = ? AND " . songVisibleSql($this->db, 's');
+                WHERE s.SongId = ? AND " . songVisibleSql($this->db, 's') . "
+                  AND " . songServableSql($this->db, 's');
         $stmt = $this->db->prepare($sql);
         $stmt->bind_param('s', $songId);
         $stmt->execute();

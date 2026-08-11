@@ -349,6 +349,11 @@ export class Router {
                    separated). Empty / unknown slug renders the page's
                    own friendly empty state. */
                 return { page: 'tune', params: { slug: segments[1] || '' } };
+            case 'publisher':
+                /* #93 — /publisher/<slug>: who a publisher is + the
+                   songbooks they published. Empty / unknown slug renders
+                   the page's own friendly empty state. */
+                return { page: 'publisher', params: { slug: segments[1] || '' } };
             case 'iswc':
                 /* #940 — /iswc/<code> lists every song that shares the
                    ISWC. The code is the standard T-NNN.NNN.NNN-N format
@@ -679,6 +684,17 @@ export class Router {
            that already have handlers. */
         import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
 
+        /* #1786 Option B — the public "Sort ▾" control. ONE unconditional
+           boot for every page, never a per-page branch (a hand-typed page
+           list rots — rule #34): initListSort() finds every
+           [data-list-sort-surface] control in the fresh fragment and wires
+           any that has a matching [data-list-sort-list] container. A
+           surface with no container (favourites/search, array/server mode)
+           is skipped by construction — those modules wire themselves via
+           wireListSortControl(). */
+        import('./list-sort.js').then(m => m.initListSort())
+            .catch(err => console.error('[Router] list-sort init failed:', err));
+
         /* Reading-progress bar on every scrollable page (#751). Was
            song-only originally (#109); the module's short-page
            short-circuit handles non-scrollable pages cleanly so
@@ -695,6 +711,17 @@ export class Router {
            .page-song, which is what stops it stranding over the home screen.
            Must run before the early `return`s in the song branch below. */
         this.app.setList?.renderSongNavigation();
+
+        /* #1770 C5 (rule #32) — the Quick "Go Live" HOST bar is likewise
+           `position:fixed` on `<body>`, so it survives an SPA content swap on
+           its own; call it unconditionally on EVERY navigation (not only
+           song ones) so leaving a song page — or navigating between two
+           non-song pages while hosting — never strands it, and so it stays
+           visible across the WHOLE app while hosting (req #1), not just the
+           one song page `initSongPage()` already re-renders it from. Same
+           idempotent remove-then-conditionally-add shape as
+           `renderSongNavigation()` immediately above. */
+        this.app.liveFollow?.renderHostBar();
 
         /* #1741 P4a-3 — a legacy /writer/<name-slug> (or a name-slug /musician/
            credit link, or a /person|/people alias path) whose fragment resolved to

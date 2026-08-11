@@ -282,7 +282,10 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
 
     /* Song must exist (FK would reject anyway, but a clear error is nicer).
        @deleted-visible: write-path FK pre-check (#1694) — ingesting lyrics
-       into a hidden row is harmless and restore-preserving. */
+       into a hidden row is harmless and restore-preserving.
+       @disabled-visible: same reasoning, one predicate over (#1765) —
+       ingesting lyrics into a song whose songbook has been disabled is
+       equally harmless (writes are disable-invariant). */
     $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $chk->bind_param('s', $songId);
     $chk->execute();
@@ -447,7 +450,11 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
        @deleted-visible: ingest identity RESOLVER (#1694, this and the ISRC /
        title matches below) — matching the hidden row preserves single
        identity: the ingest attaches to it and everything reconciles on
-       restore, instead of minting a duplicate that collides then. */
+       restore, instead of minting a duplicate that collides then.
+       @disabled-visible: same reasoning, one predicate over (#1765) —
+       matching a song in a disabled songbook preserves single identity the
+       same way; the ingest must not mint a duplicate just because the
+       book's visibility was toggled off. */
     $songId = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
     if ($songId !== '') {
         $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -630,7 +637,11 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         for ($try = 0; $try < 5; $try++) {
             /* @deleted-visible: id MINT SEED (#1694) — a hidden song keeps
                its id reserved; songRelocateIdTaken() below shares the same
-               contract. */
+               contract.
+               @disabled-visible: same reasoning, one predicate over (#1765) —
+               a song's id stays reserved regardless of whether its songbook
+               has been disabled; this is a number-slot-occupancy question,
+               not a visibility one. */
             $st = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId LIKE ? ORDER BY LENGTH(SongId) DESC, SongId DESC LIMIT 1");
             $like = $abbr . '-%';
             $st->bind_param('s', $like);
@@ -779,7 +790,8 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
                column back to learn what to mirror is harmless and
                restore-preserving (mirrors save_song_core.php's identical
                "read the row I just targeted" pattern), never a general
-               visibility-filtered listing. */
+               visibility-filtered listing.
+               @disabled-visible: same reasoning, one predicate over (#1765). */
             $rb = $db->prepare('SELECT Isrc FROM tblSongs WHERE SongId = ? LIMIT 1');
             $rb->bind_param('s', $songId);
             $rb->execute();

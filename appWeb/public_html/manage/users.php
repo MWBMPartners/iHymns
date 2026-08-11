@@ -441,7 +441,7 @@ function canManage(array $target, array $actor): bool {
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All Users <span class="badge bg-secondary ms-1"><?= count($users) ?></span></h2>
             <div class="table-responsive">
-                <table class="table table-sm table-borderless mb-0 cp-sortable">
+                <table class="table table-sm table-borderless mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="username"     data-sort-type="text">Username</th>

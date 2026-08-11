@@ -83,6 +83,10 @@ export const ENTITLEMENTS = {
     manage_content_restrictions: ['admin', 'global_admin'],
     manage_access_tiers:         ['admin', 'global_admin'],
     assign_user_tier:            ['admin', 'global_admin'],
+    /* Licence-type vocabulary CRUD (#459 / #1769 P4) — tblLicenceTypes. Mirror of
+       the PHP map (includes/entitlements.php); held in lockstep by
+       tests/php/test-entitlement-parity.php. */
+    manage_licence_types:        ['admin', 'global_admin'],
     /* Admin-configurable feature gating (#1481 P1) — defining capabilities/
        rules is Global-Admin-only; per-tier values stay manage_access_tiers. */
     manage_feature_gating:       ['global_admin'],
@@ -125,6 +129,9 @@ export const ENTITLEMENTS = {
     /* Tunes (#1748) — mirrors includes/entitlements.php's manage_tunes
        line exactly; see that file's comment for the "why". */
     manage_tunes:                ['admin', 'global_admin'],
+    /* Publishers (#93) — mirrors includes/entitlements.php's manage_publishers
+       line exactly; see that file's comment for the "why". */
+    manage_publishers:           ['admin', 'global_admin'],
     manage_languages:           ['admin', 'global_admin'],
     manage_external_link_types: ['admin', 'global_admin'],
     manage_duplicate_songs:     ['admin', 'global_admin'],

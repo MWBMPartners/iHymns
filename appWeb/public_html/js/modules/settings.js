@@ -21,6 +21,7 @@ import {
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_CVD_MODE,
     STORAGE_OFFLINE_INCLUDE_AUDIO,
+    STORAGE_LIVE_IDLE_TIMEOUT_MINS,
     CACHE_SONGS_SAVED,
     CACHE_SONGS_RECENT,
     EVT_AUTH_CHANGED,
@@ -60,6 +61,9 @@ const SYNC_PREF_KEYS = Object.freeze([
     'ihymns_display',
     STORAGE_CVD_MODE,
     'ihymns_keyboardShortcuts',
+    /* #1770 §4.7 — unprefixed on purpose; see the constant's own doc-comment
+       in constants.js for why it must NOT gain the ihymns_ prefix. */
+    STORAGE_LIVE_IDLE_TIMEOUT_MINS,
 ]);
 
 /** localStorage key for the user's opt-in toggle. Default = on. */
@@ -787,6 +791,33 @@ export class Settings {
                 localStorage.setItem(STORAGE_NUMPAD_LIVE_SEARCH, String(enabled));
                 this.app.syncStorage(STORAGE_NUMPAD_LIVE_SEARCH);
                 this._maybePushSync(STORAGE_NUMPAD_LIVE_SEARCH);
+            });
+        }
+
+        /* Live Follow leader-idle timeout (#1770 §4.7) — the USER layer of
+           the three-layer precedence chain. Empty = no personal preference
+           (the server resolver falls through to the org/app layers).
+           Deliberately NOT routed through this.get()/set() — those derive
+           `this.storagePrefix + key`, which would write
+           `ihymns_liveIdleTimeoutMins` and desync from the UNPREFIXED
+           STORAGE_LIVE_IDLE_TIMEOUT_MINS constant the sync push/pull (and
+           the server-side resolver) both key on verbatim — see that
+           constant's doc-comment in constants.js. */
+        const liveIdleInput = document.getElementById('setting-live-idle-timeout-mins');
+        if (liveIdleInput) {
+            liveIdleInput.value = localStorage.getItem(STORAGE_LIVE_IDLE_TIMEOUT_MINS) || '';
+            liveIdleInput.addEventListener('change', () => {
+                const raw = liveIdleInput.value.trim();
+                if (raw === '') {
+                    localStorage.removeItem(STORAGE_LIVE_IDLE_TIMEOUT_MINS);
+                } else {
+                    const parsed = parseInt(raw, 10);
+                    const clamped = Math.max(5, Math.min(240, Number.isFinite(parsed) ? parsed : 15));
+                    liveIdleInput.value = String(clamped);
+                    localStorage.setItem(STORAGE_LIVE_IDLE_TIMEOUT_MINS, String(clamped));
+                }
+                this.app.syncStorage(STORAGE_LIVE_IDLE_TIMEOUT_MINS);
+                this._maybePushSync(STORAGE_LIVE_IDLE_TIMEOUT_MINS);
             });
         }
 

@@ -49,7 +49,11 @@ $validName = fn(string $n): ?string => validateTierName($n);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1769 P0, rule #29: same-origin-aware CSRF. Still accepts the baked
+       session token (unchanged for a normal form POST) but ALSO the never-stale
+       X-Requested-With + host-match route, so a long-lived tiers page whose
+       token has rotated/GC'd no longer throws a spurious CSRF error on save. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -111,7 +115,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
+                $newTierId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1769 P4 — every gating action is logged (owner directive). */
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.create', 'access_tier', (string)$newTierId, [
+                        'name' => $name, 'displayName' => $displayName, 'level' => $level,
+                    ]);
+                }
                 $success = "Tier '{$name}' created.";
                 break;
             }
@@ -175,6 +186,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->bind_param($types, ...$args);
                 $stmt->execute();
                 $stmt->close();
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.update', 'access_tier', (string)$id, [
+                        'displayName' => $displayName, 'level' => $level,
+                    ]);
+                }
                 $success = 'Tier updated.';
                 break;
             }
@@ -204,6 +220,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $stmt->close();
+                if (function_exists('logActivity')) {
+                    logActivity('admin.tiers.delete', 'access_tier', (string)$id, ['name' => $name]);
+                }
                 $success = "Tier '{$name}' deleted.";
                 break;
             }
@@ -300,7 +319,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
         <div class="card-admin p-3 mb-4">
             <h2 class="h6 mb-3">All tiers</h2>
             <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0 cp-sortable" data-default-sort-key="level" data-default-sort-dir="asc">
+                <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive" data-default-sort-key="level" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="name"    data-sort-type="text">Name</th>

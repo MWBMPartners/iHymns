@@ -48,6 +48,15 @@ export const STORAGE_LANGUAGE_FILTER    = 'songbook-language-filter';
    context between tabs where someone is comparing two lists. */
 export const STORAGE_PLAYLIST_CONTEXT   = 'ihymns_playlist_context';
 
+/* Shared set-list id grammar (#1791) — the CLIENT mirror of PHP
+   sharedSetlistSafeShareId()'s `^[A-Za-z0-9_-]{6,64}$`. Matches a server
+   share-id (legacy 8-hex OR a base64url capability token) and, crucially,
+   does NOT match a legacy base64 blob (those carry `+`/`/`/`=` and run far
+   longer than 64 chars) — so the shared page still routes an old inline-payload
+   link to parseLegacySharedSetlist(). Kept in sync with the PHP fold by the C6
+   guard (tests/php/test-setlist-share-tokens.php), not by this comment. */
+export const SHARE_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+
 /* Status & consent */
 export const STORAGE_ANALYTICS_CONSENT  = 'ihymns_analytics_consent';
 export const STORAGE_ANALYTICS_DEBUG    = 'ihymns_analytics_debug';
@@ -55,6 +64,13 @@ export const STORAGE_DISCLAIMER_ACCEPTED = 'ihymns_disclaimer_accepted';
 export const STORAGE_PWA_BANNER_DISMISSED = 'ihymns_pwa_banner_dismissed';
 
 export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
+
+/* #1786 Option B — the public card/list "Sort ▾" control's saved spec, one
+   JSON blob keyed by surface id: `{ "<surface>": [{key,dir},…] }`. Device
+   copy for anonymous users / first-paint; signed-in users additionally sync
+   this SAME shape through the `list_sorts` namespace of the existing
+   `user_settings` endpoint (#1671 F5) — see js/modules/list-sort.js. */
+export const STORAGE_LIST_SORT = 'ihymns_list_sorts';
 
 /* Auth (cross-subdomain SPA session token + cached user object) */
 export const STORAGE_AUTH_TOKEN         = 'ihymns_auth_token';
@@ -104,6 +120,22 @@ export const STORAGE_OFFLINE_INCLUDE_AUDIO_LEGACY = 'ihymns_includeAudioOffline'
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
 
+/* #1770 §4.7 — Live Follow leader-idle timeout, the USER layer of the
+   three-layer precedence chain (app default → org override → user
+   preference; includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
+   Deliberately UNPREFIXED — breaks the `ihymns_` convention on purpose, the
+   SAME odd-value shape as STORAGE_LANGUAGE_FILTER above. Reason: the
+   whole-blob `user_settings` sync (settings.js's _collectSyncableSettings())
+   mirrors a syncable localStorage key's OWN NAME verbatim into the pushed
+   `tblUsers.Settings` JSON blob's key — and the server-side resolver reads
+   a FIXED root key literally spelled `liveIdleTimeoutMins`
+   (LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY, service_mode.php). Prefixing
+   this key would sync it under `ihymns_liveIdleTimeoutMins`, which the
+   resolver would never read — a rule-#35 silent-drift class, avoided here
+   by making the two spellings the SAME constant string rather than two
+   things a comment promises to keep in sync. */
+export const STORAGE_LIVE_IDLE_TIMEOUT_MINS = 'liveIdleTimeoutMins';
+
 /* ── Service-worker cache bucket names (#1597) ────────────────────────────
    ELI5: the names of the boxes the offline downloads live in, written down
    once so the app and the service worker can never disagree about them.
@@ -141,6 +173,15 @@ export const EVT_FETCH_FAILED             = 'ihymns:fetch-failed';
 export const EVT_FETCH_SUCCEEDED          = 'ihymns:fetch-succeeded';
 export const EVT_LANGUAGE_FILTER_CHANGED  = 'ihymns:language-filter-changed';
 export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
+/* #1786 Option B — fired on `document` by list-sort.js every time a
+   surface's applied sort spec changes (including a reset back to Default),
+   `detail: { surface, spec }`. Dispatcher: list-sort.js's DOM-mode apply
+   path. Listener: songbook-index.js, which rebuilds its alphabet-strip
+   letter map after the song list is re-ordered — the pre-existing #111
+   toggle this absorbs had no such event because it WAS the only sorter on
+   the page; now that list-sort.js owns sorting, the strip has to learn
+   about a re-order it didn't itself perform. */
+export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

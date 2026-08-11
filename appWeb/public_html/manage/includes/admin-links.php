@@ -57,6 +57,11 @@ $_adminLinks = [
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
+    /* IA Reconcile (#94 Phase 1) — read-only archive.org OCR audit, a
+       per-songbook tool, so it sits directly after Songbooks. Gate MUST
+       equal manage/ia-reconcile.php's own check (rule #1587;
+       test-admin-gate-parity.php derives this pairing from the tree). */
+    ['ia-reconcile',         '/manage/ia-reconcile',           'bi-archive',         'IA Reconcile',          'edit_songs',                  'Catalogue'  ],
     ['songbook-series',      '/manage/songbook-series',        'bi-collection',      'Songbook Series',       'manage_songbooks',            'Catalogue'  ],
     /* User-facing label is "Collections" (#1223); the route + table + entitlement
        stay 'catalogue(s)' internally (owner decision — keep tblCatalogues). */
@@ -65,6 +70,9 @@ $_adminLinks = [
     /* Tunes (#1748) — tblTunes registry CRUD; directly under Works, the
        page it shares the tuneFindOrCreateByName() funnel with. */
     ['tunes',                '/manage/tunes',                  'bi-music-note-beamed', 'Tunes',               'manage_tunes',                'Catalogue'  ],
+    /* Publishers (#93) — tblPublishers registry CRUD; a catalogue entity like
+       Tunes/Works. Gate MUST equal manage/publishers.php's own gate (rule #1587). */
+    ['publishers',           '/manage/publishers',             'bi-building',        'Publishers',            'manage_publishers',           'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
     /* Print templates (#1350 Phase 2) — curator-authored block-based song-print
        layouts (tblPrintTemplates). Curator-level, same entitlement as the other
@@ -75,8 +83,16 @@ $_adminLinks = [
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
 
     /* Access — gating + permission surfaces (#819) */
+    /* Gating Hub (#1769 P6 / #1778) — the family overview + activation-readiness
+       checklist + master-switch STATE (the flip itself stays on Configuration —
+       one write path, no duplicate control). manage_configuration, same as the
+       switch + the no-op verifier it links to. */
+    ['gating',               '/manage/gating',                 'bi-shield-shaded',   'Gating Hub',            'manage_configuration',        'Access'     ],
     ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
     ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
+    /* Licence Types (#459 / #1769 P4) — the licence vocabulary (CCLI, MRL, …),
+       what each covers + any tier it confers (tblLicenceTypes). */
+    ['licence-types',        '/manage/licence-types',          'bi-patch-check',     'Licence Types',         'manage_licence_types',        'Access'     ],
     /* Feature Gating (#1481 P1) — defines ADDITIONAL admin-configurable
        capabilities (tblGatingCapabilities), which then auto-grow a column
        on the Access Tiers matrix above. Deliberately Global-Admin-only
@@ -119,6 +135,10 @@ $_adminLinks = [
        the credentials card above (manage_configuration) — rule: a page's
        own gate and its nav entry must agree (#1587). */
     ['intapps-status',       '/manage/intapps-status',          'bi-broadcast-pin',   'IntApps Gateway',       'manage_configuration',        'Operations' ],
+    /* Gating no-op verify (#1769) — the OFF-baseline / equivalence harness for the
+       content-gating refactor. Gated on manage_configuration, the SAME check the
+       page itself uses (#1587 — page gate and nav entry must agree). */
+    ['gating-noop-verify',   '/manage/gating-noop-verify',      'bi-shield-check',    'Gating No-op Verify',   'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
     ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 

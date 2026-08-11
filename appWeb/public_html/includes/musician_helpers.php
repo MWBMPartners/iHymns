@@ -41,6 +41,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
+/* Shared duplicate/counterpart similarity scorer (#1216, rule #22) —
+   pulled in for the musician-registry NAME-similarity additions (#1785):
+   ihymns_sim_name_normalise() / ihymns_sim_name_score() (used by
+   musicianNameVariantClass() below and by the registry-duplicate scan)
+   and the fold primitives they're built on. require_once is idempotent —
+   safe even though some callers (manage/duplicate-songs.php,
+   manage/tags.php) may already have included this file in the same
+   request. Framework-free (no $_SERVER / session reads), so pulling it
+   in here doesn't change this file's own dormant-safety story. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_similarity.php';
+
 /**
  * iHymns — shared "read a form/JSON field as a trimmed string" helper (#trim).
  *
@@ -690,6 +701,44 @@ function musicianSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSu
 }
 
 /**
+ * Cached check for the MusicBrainzArtistMBID column (#1090 P6,
+ * migrate-identifier-media-hardening.php — added by ALTER, pre-dating the
+ * #1741 P2-A registry rename to tblMusicians; NOT part of the table's
+ * original definition). Mirrors
+ * musicianMaidenSurnameColumnExists()'s pattern exactly — a partly-migrated
+ * install may still lack it, so any caller that reads/writes it individually
+ * (rather than through a query some OTHER already-gated caller controls)
+ * must probe first or risk an "Unknown column" throw under mysqli STRICT
+ * (rule #9). Used by musicianMergeExecute()'s COALESCE-fill below (#1800 C2)
+ * so a merge on an un-migrated install simply skips filling this one field.
+ *
+ * includes/pages/musician.php runs its own equivalent ad-hoc
+ * INFORMATION_SCHEMA probe inline (predates this helper, #1348) — left
+ * unchanged here to keep this commit's blast radius to the merge path;
+ * pointing it at this shared probe instead is a candidate future cleanup,
+ * not required by #1800.
+ */
+function musicianMbidColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblMusicians'
+                AND COLUMN_NAME  = 'MusicBrainzArtistMBID' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * #1500 — merge-target candidate search. Replaces the old client-side
  * "every registry + in-use-only name in one giant <select>" Merge-modal
  * Target picker (unusable once the registry passed a few hundred rows)
@@ -745,21 +794,20 @@ function searchMusicianMergeTargets(
     if ($remaining <= 0) return $out;
 
     /* In-use-only names — cited on a song, no registry row yet. Same
-       5-table union the page's own list-load query (Q1) already runs on
-       every page load; NOT EXISTS keeps registry rows (already returned
-       above) out of this bucket so nothing is duplicated. */
+       6-table union (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was a
+       hand-typed 5-table union missing tblSongArtists) the page's own
+       list-load query (Q1) already runs on every page load; NOT EXISTS
+       keeps registry rows (already returned above) out of this bucket so
+       nothing is duplicated. Table names come from the hardcoded PHP
+       constant — safe to interpolate (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $t): string => "SELECT Name, COUNT(*) AS cnt FROM {$t} GROUP BY Name",
+        MUSICIAN_CREDIT_ROLE_TABLES
+    ));
     $usageSql = "
         SELECT u.Name, SUM(u.cnt) AS TotalUsage
           FROM (
-              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
            AND u.Name <> ?"
@@ -778,6 +826,73 @@ function searchMusicianMergeTargets(
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
         $name = (string)$r['Name'];
         $out[] = ['key' => 'name:' . $name, 'id' => null, 'name' => $name, 'total' => (int)$r['TotalUsage']];
+    }
+    return $out;
+}
+
+/**
+ * iHymns — create-time fold-match probe (#1800 C3).
+ *
+ * ELI5: the curator is about to type a BRAND NEW name into the registry —
+ * this checks "does an existing person already have EXACTLY this spelling,
+ * once you ignore an extra space / curly-vs-straight apostrophe / accent
+ * mark?" and hands back who, so a soft "possible duplicate — view?" hint can
+ * show BEFORE the insert happens, rather than the curator finding out later
+ * on the /manage/musician-duplicates review page (rule #33 — surface it at
+ * the point of entry, don't just leave it for a later scan).
+ *
+ * DETAILED / WHY REUSE, NOT RE-SCORE: this is Bucket A's exact-fold-equal
+ * test from includes/musician_duplicates.php (musicianDuplicatesFindCandidates()),
+ * applied to ONE not-yet-inserted candidate name against the live registry,
+ * rather than an all-pairs scan of the whole table — same
+ * `ihymns_sim_name_normalise()` fold (includes/song_similarity.php, rule
+ * #22), never a re-forked comparison. Deliberately EXACT-FOLD only (not the
+ * fuzzy Bucket B/C scorer) — a create-time hint needs to be cheap enough to
+ * run on every keystroke (debounced client-side) and confident enough not
+ * to nag on merely-similar-but-different names; the fuzzy pass stays the
+ * review page's job.
+ *
+ * NEVER BLOCKS: this only REPORTS matches — the caller decides whether/how
+ * to render a hint and the curator can always proceed with the insert
+ * regardless (a hard block belongs to a uniqueness constraint, not a
+ * dedup hint; tblMusicians' own uk_Name UNIQUE KEY already refuses a
+ * byte-IDENTICAL name, which this catches earlier and with better wording).
+ *
+ * @param string $candidateName The name the curator is about to save —
+ *        NOT YET a registry row.
+ * @param int    $excludeId     Optional tblMusicians.Id to exclude from the
+ *        scan (defensive — e.g. a future "check on rename" caller editing
+ *        an existing row shouldn't match against itself). 0 = no exclusion.
+ * @return list<array{id:int,name:string,slug:?string}> Every existing
+ *         registry row whose fold exactly equals the candidate's fold.
+ *         Empty when the candidate folds to '' (blank/punctuation-only
+ *         input) or nothing matches.
+ */
+function musicianFindFoldMatches(\mysqli $db, string $candidateName, int $excludeId = 0): array
+{
+    $fold = ihymns_sim_name_normalise($candidateName);
+    if ($fold === '') { return []; }
+
+    $hasSlug = musicianSlugColumnExists($db);
+    $slugCol = $hasSlug ? 'Slug' : 'NULL';
+    $sql = "SELECT Id, Name, {$slugCol} AS Slug FROM tblMusicians" . ($excludeId > 0 ? ' WHERE Id <> ?' : '');
+    $stmt = $db->prepare($sql);
+    if ($excludeId > 0) {
+        $stmt->bind_param('i', $excludeId);
+    }
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $out = [];
+    foreach ($rows as $r) {
+        if (ihymns_sim_name_normalise((string)$r['Name']) === $fold) {
+            $out[] = [
+                'id'   => (int)$r['Id'],
+                'name' => (string)$r['Name'],
+                'slug' => $r['Slug'] !== null ? (string)$r['Slug'] : null,
+            ];
+        }
     }
     return $out;
 }
@@ -1447,6 +1562,870 @@ function musicianPromote(\mysqli $db, string $name, array $parts = []): int
     }
 
     return $personId;
+}
+
+/**
+ * iHymns — canonical BYTES for a person name (invisible-junk fold).
+ *
+ * ELI5: two names that LOOK identical on screen can be stored as different
+ * bytes — one has a stray trailing space, a non-breaking space instead of a
+ * normal one, or an accented letter encoded two different ways. This tidies a
+ * name down to one canonical byte-string WITHOUT ever changing which person it
+ * is: it only removes/normalises the invisible stuff.
+ *
+ * DETAILED / WHY: this is identity-PRESERVING on purpose — it must never fold
+ * two genuinely different people together (that is what the fuzzy merge UX is
+ * for). It only: (a) NFC-composes Unicode so "é" as one code point equals "é"
+ * as e + combining-accent (https://unicode.org/reports/tr15/ Form C — the
+ * composed form, NOT the KD decomposition used by the search-fold at line ~903,
+ * which would strip accents and IS lossy); (b) turns NBSP / zero-width space /
+ * BOM into an ordinary space; (c) collapses any run of whitespace to one ASCII
+ * space; (d) trims. Used only as the fallback canonical when NO registry row
+ * exists to adopt a spelling from (see musicianReconcileCreditNameBytes()).
+ *
+ * @param string $name Raw stored name (may carry invisible byte variants).
+ * @return string      Canonical bytes ('' if the name was blank/whitespace-only).
+ */
+function musicianCanonicalNameBytes(string $name): string
+{
+    if (class_exists('\Normalizer')) {
+        $n = \Normalizer::normalize($name, \Normalizer::FORM_C);
+        if (is_string($n)) { $name = $n; }
+    }
+    /* NBSP (U+00A0), zero-width space (U+200B), BOM / ZWNBSP (U+FEFF) → space,
+       then any whitespace run → one ASCII space, then trim. */
+    $name = preg_replace('/[\x{00A0}\x{200B}\x{FEFF}]/u', ' ', $name) ?? $name;
+    $name = preg_replace('/\s+/u', ' ', $name) ?? $name;
+    return trim($name);
+}
+
+/**
+ * iHymns — the SIX song-credit role tables, as one map (#1785, rule #22).
+ *
+ * ELI5: a song can credit a person as a writer, composer, arranger,
+ * adaptor, translator OR performing artist. This is the ONE list of
+ * "which database tables hold those credits" — every place in the app
+ * that needs to touch all of them (a rename, a merge, a usage count)
+ * reads this constant instead of typing its own copy of the same six
+ * table names.
+ *
+ * DETAILED / WHY this exists (discovered gap, #1785 / #1796): the editor's
+ * ED2_CREDIT_TABLES (manage/editor/api2.php:369-376) already treats SIX
+ * tables as "credit tables" — including tblSongArtists — and
+ * `credit_upsert` promotes an artist's name INTO the tblMusicians registry
+ * exactly the same way it does for a writer or composer. But every
+ * REGISTRY-side surface (merge, rename, delete-usage-count, the
+ * Musicians list's usage aggregate, the merge-target typeahead, the
+ * bulk-promote candidate scan, the byte-reconcile sweep) had its own
+ * hand-typed FIVE-table list that never learned about tblSongArtists —
+ * so a merge/rename would silently strand artist credits on the deleted
+ * spelling while use-counts undercounted by however many artist credits
+ * existed. That five-table list was independently forked in six-plus
+ * places (rule #35's cross-file-agreement problem) before this constant;
+ * #1785 C5 re-points every one of them here. `tests/php/
+ * test-musician-credit-tables-single-list.php` (G3) statically derives
+ * every ≥3-of-6 role-table site in the tree and asserts each one is
+ * either this constant, ED2_CREDIT_TABLES itself, or a consumer that
+ * references one of the two — so the two registries can never silently
+ * drift apart again (rule #35's "mechanism, not a comment").
+ *
+ * Keys use the SINGULAR role-name convention already established
+ * elsewhere in this file's own SQL (the `kindLabel` values in the
+ * Musicians list's usage query, musicians.php) — NOT ED2_CREDIT_TABLES's
+ * plural JSON-payload-shaped keys ('writers', 'composers', …). The two
+ * constants are asserted VALUE-set-equal (same six table names) by G3,
+ * never key-set-equal — the differing pluralisation is each file's own
+ * pre-existing, unrelated convention and forcing them to match key-for-
+ * key would be change for its own sake.
+ *
+ * Table names are hardcoded PHP constants — safe to interpolate directly
+ * into SQL (rule #5's carve-out); every VALUE that flows alongside them
+ * (a Name, an Id) stays bound via bind_param().
+ */
+const MUSICIAN_CREDIT_ROLE_TABLES = [
+    'writer'     => 'tblSongWriters',
+    'composer'   => 'tblSongComposers',
+    'arranger'   => 'tblSongArrangers',
+    'adaptor'    => 'tblSongAdaptors',
+    'translator' => 'tblSongTranslators',
+    'artist'     => 'tblSongArtists',
+];
+
+/**
+ * iHymns — human-readable label for each musicianNameVariantClass()
+ * outcome (#1785). ONE copy consumed by every surface that renders the
+ * variant badge (the future /manage/musician-duplicates review page, the
+ * Merge modal's credit-preview column, the bulk-promote match column) —
+ * never re-word this per call site.
+ *
+ * @var array<string,string>
+ */
+const MUSICIAN_NAME_VARIANT_LABELS = [
+    'identical'              => 'identical bytes',
+    'unicode-normalisation'  => 'differs only by Unicode form (combining vs. precomposed accent)',
+    'whitespace'             => 'differs only by invisible spacing',
+    'case'                   => 'differs only by letter case',
+    'punctuation'            => 'differs only by punctuation/accents',
+];
+
+/**
+ * iHymns — classify HOW two person names differ, on an identity-
+ * preserving ladder from "definitely the same spelling" to "genuinely
+ * different words" (#1785).
+ *
+ * ELI5: given two names that LOOK almost the same, say WHY — is it just
+ * an invisible extra space, a smart-quote vs a straight one, upper vs
+ * lower case, or are the actual words different? This is what turns a
+ * confusing "Eddie James → Eddie James" merge prompt into "these two
+ * differ only by invisible spacing" — problem 2 from #1785's issue body.
+ *
+ * DETAILED / the ladder (first match wins), and why each rung is placed
+ * where it is:
+ *   1. `$a === $b`                                        → 'identical'
+ *      Defensive only — a real caller only ever calls this on a genuine
+ *      candidate PAIR, which by definition differs in some byte.
+ *   2. NFC($a) === NFC($b)                                → 'unicode-normalisation'
+ *      Catches ONLY a combining-accent-vs-precomposed-accent difference
+ *      (e.g. "é" as one code point vs "e" + U+0301 COMBINING ACUTE
+ *      ACCENT) — checked before the whitespace rung because NFC alone
+ *      does not touch whitespace, so a pair that's PURELY a combining-
+ *      accent difference must not fall through to a later, broader rung
+ *      and get mis-labelled.
+ *   3. musicianCanonicalNameBytes($a) === …($b)           → 'whitespace'
+ *      Reuses the #1784 canonical-bytes fold UNCHANGED (never re-forked)
+ *      — NFC-compose + NBSP/ZWSP/BOM→space + whitespace-run-collapse +
+ *      trim. Catches trailing/leading/interior spacing variants.
+ *   4. mb_strtolower(canonical(a)) === mb_strtolower(canonical(b))
+ *                                                          → 'case'
+ *      Same canonical fold, lower-cased — catches a pure case difference
+ *      once whitespace is already ruled out by rung 3.
+ *   5. ihymns_sim_name_normalise($a) === …($b)            → 'punctuation'
+ *      The shared NAME fold (song_similarity.php, #1785) — accent-fold +
+ *      punctuation→space + collapse. Catches period/apostrophe-homoglyph/
+ *      dash/accent differences that survive rungs 2-4 (e.g. "O'Brien" vs
+ *      "O'Brien" with a curly apostrophe, or "J. Newton" vs "J Newton").
+ *   6. else                                                → null
+ *      The names are genuinely different WORDS — the fuzzy-score case,
+ *      not a byte-variant of the same spelling.
+ *
+ * §3.1 of the #1785 plan verified experimentally (against the live
+ * tblMusicians uk_Name UNIQUE KEY under utf8mb4_unicode_ci) that most of
+ * what rungs 2-4 test (pure Unicode form, case, most whitespace variants)
+ * collapse under that collation, so TWO coexisting registry rows can
+ * essentially never differ in those ways — except an interior run of 2+
+ * plain spaces, which the collation treats as distinct even though rung 3
+ * (whitespace) correctly still names it 'whitespace'. Rung 5
+ * (punctuation) is what the punctuation-homoglyph classes that DO
+ * coexist as distinct rows (curly vs straight apostrophe, period
+ * present/absent, hyphen vs en-dash) actually hit. This is not a
+ * database-uniqueness gate — it's a DISPLAY classifier only, called
+ * AFTER some other means (a fold-equal bucket, a fuzzy-score match, an
+ * alias hit) has already produced a candidate pair — and it serves BOTH
+ * registry-vs-registry pairs and registry-vs-cited-credit-name pairs
+ * (credit tables carry no unique constraint, so every rung is reachable
+ * there, which is why #1784's byte-reconcile sweep and this classifier
+ * are close cousins).
+ *
+ * @return string|null One of MUSICIAN_NAME_VARIANT_LABELS's keys, or null
+ *                      when the names are not a byte-variant of each other.
+ */
+function musicianNameVariantClass(string $a, string $b): ?string
+{
+    if ($a === $b) {
+        return 'identical';
+    }
+
+    $nfcA = $a;
+    $nfcB = $b;
+    if (class_exists('\Normalizer')) {
+        $normA = \Normalizer::normalize($a, \Normalizer::FORM_C);
+        $normB = \Normalizer::normalize($b, \Normalizer::FORM_C);
+        if (is_string($normA)) { $nfcA = $normA; }
+        if (is_string($normB)) { $nfcB = $normB; }
+    }
+    if ($nfcA === $nfcB) {
+        return 'unicode-normalisation';
+    }
+
+    $canonA = musicianCanonicalNameBytes($a);
+    $canonB = musicianCanonicalNameBytes($b);
+    if ($canonA === $canonB) {
+        return 'whitespace';
+    }
+
+    if (mb_strtolower($canonA, 'UTF-8') === mb_strtolower($canonB, 'UTF-8')) {
+        return 'case';
+    }
+
+    if (ihymns_sim_name_normalise($a) === ihymns_sim_name_normalise($b)) {
+        return 'punctuation';
+    }
+
+    return null;
+}
+
+/**
+ * iHymns — format one Unicode code point as "U+0027 (')" for a variant
+ * badge tooltip (#1785). NULL/empty input (used when one string ran out
+ * of characters before the other) renders as "∅ (none)".
+ *
+ * @see https://www.php.net/manual/en/function.mb-ord.php
+ */
+function musicianCodePointLabel(?string $char): string
+{
+    if ($char === null || $char === '') {
+        return '∅ (none)';
+    }
+    $codePoint = mb_ord($char, 'UTF-8');
+    if ($codePoint === false) {
+        return $char;
+    }
+    $hex = str_pad(strtoupper(dechex($codePoint)), 4, '0', STR_PAD_LEFT);
+    return "U+{$hex} ({$char})";
+}
+
+/**
+ * iHymns — the first differing Unicode code point between two names,
+ * formatted for a badge tooltip (#1785).
+ *
+ * ELI5: takes two names that look identical on screen and points at the
+ * EXACT invisible character that's different — e.g. "U+0027 (') vs
+ * U+2019 (’)" for a straight vs curly apostrophe. This is what makes
+ * musicianNameVariantClass()'s 'punctuation'/'unicode-normalisation'
+ * labels legible instead of just "these differ somehow".
+ *
+ * DETAILED: splits both strings into individual Unicode code points
+ * (`preg_split('//u', …)`, NOT bytes and NOT graphemes — a combining
+ * accent is its own code point here, which is exactly the granularity
+ * the 'unicode-normalisation' class needs to explain itself) and walks
+ * both arrays together, returning the FIRST index where they differ. A
+ * length mismatch with no earlier difference (one name is a byte-for-
+ * byte prefix of the other, e.g. a trailing-space-only difference caught
+ * upstream by canonical-bytes) reports the shorter side as "∅ (none)"
+ * at that position.
+ *
+ * @return array{a:string,b:string}|null null when $a === $b (nothing to report)
+ */
+function musicianNameVariantDetail(string $a, string $b): ?array
+{
+    if ($a === $b) {
+        return null;
+    }
+    $charsA = preg_split('//u', $a, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $charsB = preg_split('//u', $b, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    $len = max(count($charsA), count($charsB));
+    for ($i = 0; $i < $len; $i++) {
+        $ca = $charsA[$i] ?? null;
+        $cb = $charsB[$i] ?? null;
+        if ($ca === $cb) {
+            continue;
+        }
+        return [
+            'a' => musicianCodePointLabel($ca),
+            'b' => musicianCodePointLabel($cb),
+        ];
+    }
+    return null; // Defensive — reachable only if $a !== $b yet every code point matched, which can't happen.
+}
+
+/**
+ * iHymns — reconcile legacy credit-name BYTES against the registry (#1784).
+ *
+ * ELI5: fixes the "1 person is credited but isn't saved to the registry yet"
+ * counter that would never reach zero (the weeks-old "Eddie James" bug). The
+ * cause: a song-credit row and its registry row hold the SAME name spelled with
+ * slightly different invisible bytes (a stray space, an NBSP). The list page
+ * matches the two by EXACT bytes, so it never links them and the counter sticks
+ * on 1 forever — and the "Merge into Eddie James" button couldn't fix it
+ * either (it trimmed the candidate, saw it now equalled the target, and skipped
+ * as "nothing to do"). This walks every cited name that has no byte-exact
+ * registry row and repairs it.
+ *
+ * DETAILED / WHY: for each distinct cited Name (across the five role tables)
+ * that has NO byte-exact tblMusicians row:
+ *   (a) exactly one registry row COLLATION-matches → adopt that row's exact
+ *       spelling into the credit tables (the Eddie James case — the canonical
+ *       lives in the registry; this is what "Merge into X" was meant to do);
+ *   (b) NO registry row matches → normalise the bytes via
+ *       musicianCanonicalNameBytes() and auto-register the result
+ *       (registerMusicianByName(), the ONE registry insert path);
+ *   (c) TWO+ registry rows collation-match → the registry itself has a
+ *       duplicate, unsafe to auto-pick; left for the registry-dedup UX (#1785)
+ *       and reported as 'ambiguous'.
+ * Every operation is identity-preserving (collation-equal / whitespace / NFC
+ * are all "the same person"), so this can never silently merge two DISTINCT
+ * people. Idempotent: a second run finds nothing (every cited name now
+ * byte-matches a registry row). Blank / whitespace-only cited names are junk,
+ * not real people — they are skipped, matching the migration probe's
+ * `TRIM(Name) <> ''` (rule #35: the probe and this helper share one definition).
+ *
+ * Transaction-agnostic: opens NO transaction of its own so callers that already
+ * run inside one (bulk_register_unregistered, the migration) can wrap it. Every
+ * value is bound; the only interpolated tokens are the hardcoded table names
+ * (rule #5).
+ *
+ * @param \mysqli $db Live connection (includes/db_mysql.php::getDbMysqli()).
+ * @return array{scanned:int,rewritten:int,registered:int,adopted:int,ambiguous:int,names:array<int,array<string,mixed>>}
+ */
+function musicianReconcileCreditNameBytes(\mysqli $db): array
+{
+    /* The six song-credit tables that carry a free-text person Name
+       (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five before, missing
+       tblSongArtists). Hardcoded constants — safe to interpolate into the
+       SQL below (rule #5). */
+    $tables = MUSICIAN_CREDIT_ROLE_TABLES;
+
+    $report = ['scanned' => 0, 'rewritten' => 0, 'registered' => 0,
+               'adopted' => 0, 'ambiguous' => 0, 'names' => []];
+
+    /* (1) Every distinct cited name, deduped by EXACT bytes (PHP array keys are
+           byte-exact — unlike a SQL UNION, which folds under the collation and
+           would lose the very byte-variant we are hunting). */
+    $citedSql = implode("\n            UNION ALL\n            ", array_map(
+        static fn(string $t): string => "SELECT Name FROM {$t}",
+        $tables
+    ));
+    $citedBytes = [];
+    foreach ($db->query($citedSql)->fetch_all(MYSQLI_ASSOC) as $r) {
+        $citedBytes[(string)$r['Name']] = true;
+    }
+
+    /* (2) Registry names, deduped by EXACT bytes. */
+    $regBytes = [];
+    foreach ($db->query('SELECT Name FROM tblMusicians')->fetch_all(MYSQLI_ASSOC) as $r) {
+        $regBytes[(string)$r['Name']] = true;
+    }
+
+    /* (3) The stuck set: cited, real (not blank/whitespace-only), and with no
+           byte-exact registry row. */
+    foreach (array_keys($citedBytes) as $bad) {
+        if (trim($bad) === '') { continue; }        // junk row, not a person
+        if (isset($regBytes[$bad])) { continue; }   // already byte-matched
+        $report['scanned']++;
+
+        /* Collation-matching registry rows (case- + trailing-space-insensitive),
+           deduped by exact bytes so a genuine registry duplicate is detectable. */
+        $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Name = ?');
+        $stmt->bind_param('s', $bad);
+        $stmt->execute();
+        $collationMatches = [];
+        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $m) {
+            $collationMatches[(string)$m['Name']] = true;
+        }
+        $stmt->close();
+
+        $registerAfter = false;
+        if (count($collationMatches) === 1) {
+            $canonical = (string) array_key_first($collationMatches);  // adopt registry spelling
+        } elseif (count($collationMatches) > 1) {
+            $report['ambiguous']++;
+            $report['names'][] = ['name' => $bad, 'action' => 'ambiguous',
+                                  'candidates' => array_keys($collationMatches)];
+            continue;
+        } else {
+            $canonical = musicianCanonicalNameBytes($bad);
+            if ($canonical === '') { continue; }     // normalised to nothing → junk
+            $registerAfter = true;
+        }
+
+        /* (4) Rewrite the credit rows from the bad bytes to the canonical bytes.
+               BINARY in the WHERE touches ONLY the exact bad-byte rows, never a
+               collation-equal sibling that is already correct. */
+        if ($canonical !== $bad) {
+            foreach ($tables as $t) {
+                $up = $db->prepare("UPDATE {$t} SET Name = ? WHERE BINARY Name = ?");
+                $up->bind_param('ss', $canonical, $bad);
+                $up->execute();
+                $report['rewritten'] += $up->affected_rows;
+                $up->close();
+            }
+        }
+
+        /* (5) Ensure a registry row exists for the canonical bytes. */
+        if ($registerAfter) {
+            $newId = registerMusicianByName($db, $canonical);
+            if ($newId > 0) { $report['registered']++; }
+            $report['names'][] = ['name' => $bad, 'action' => 'registered', 'canonical' => $canonical];
+        } else {
+            $report['adopted']++;
+            $report['names'][] = ['name' => $bad, 'action' => 'adopted', 'canonical' => $canonical];
+        }
+    }
+
+    return $report;
+}
+
+/* =========================================================================
+ * MERGE CORE (#1785 C4/C5)
+ *
+ * ELI5: this is the ONE function that actually merges two registry people
+ * into one. Both places in the app that offer a "Merge" button — the
+ * /manage/musicians page and the admin API — used to each carry their own
+ * near-identical copy of this logic; this extracts it once so a future fix
+ * (or the #1785 registry-duplicates review page) only has to land in one
+ * place.
+ *
+ * DETAILED / WHY extracted as its own function rather than left inline
+ * twice (rule #22's modularity argument applied to a MUTATION path, not
+ * just a scoring one): manage/musicians.php's `case 'merge'` and api.php's
+ * `admin_musician_merge` were two byte-similar inline forks (#1785 plan
+ * §1) — same five-table UPDATE loop, same link/IPI kept-vs-dropped
+ * bookkeeping, same DELETE + FK-cascade tail. A bug fixed in one (e.g. the
+ * discovered tblSongArtists gap, or the alias/relation cascade-delete data
+ * loss, both closed by #1785 C5) had to be independently re-applied to the
+ * other or it would silently reappear the next time someone touched only
+ * one surface. C4 extracts this function BEHAVIOUR-PRESERVING (still the
+ * five original tables — verified via a before/after fixture diff on a
+ * scratch DB through BOTH call sites); C5 hardens it in a separate,
+ * separately-reviewable commit (six tables via MUSICIAN_CREDIT_ROLE_TABLES,
+ * alias/relation carry-over instead of silent cascade-delete, source name
+ * preserved as a target alias).
+ * ========================================================================= */
+
+/**
+ * iHymns — execute a musician-registry merge: re-point every song-credit
+ * row from source → target, migrate the chosen link/IPI child rows, then
+ * delete the source registry row (#1785 C4/C5).
+ *
+ * ELI5: "fold person A into person B" — every song that currently credits
+ * A's exact spelling gets updated to credit B's spelling instead, then A's
+ * now-empty registry entry is removed. The admin picks which of A's
+ * external links / IPI numbers should survive on B; anything not picked
+ * is dropped when A's row is deleted (the database's own ON DELETE CASCADE
+ * does that part).
+ *
+ * DETAILED: owns its OWN transaction (both original call sites did, and
+ * neither ever nested this inside another transaction, so there is no
+ * caller today that needs to wrap it in a larger unit of work). On any
+ * failure it rolls back and RE-THROWS — the caller's own outer handler
+ * (musicians.php's page-level try/catch, api.php's endpoint-level
+ * try/catch) is what turns that into a user-facing error, exactly as it
+ * did before extraction.
+ *
+ * Validation failures (missing id, same id, row not found) throw a typed
+ * `\InvalidArgumentException` rather than returning a sentinel — this
+ * lets each caller map the SAME failure onto its OWN error shape (a page
+ * banner + $error string for musicians.php; a `sendJson([...], 400|404)`
+ * for api.php) without this function knowing anything about either
+ * surface (rule #35 — the CALL SITE decides the status/shape, not this
+ * function inspecting who's calling). Both current callers pre-validate
+ * "missing id" / "same id" themselves BEFORE calling this (keeping their
+ * own, surface-appropriate wording), so in practice only the "not found"
+ * exceptions are ever reachable through them; the "missing/same id"
+ * checks here exist as defence-in-depth for a FUTURE caller (e.g. the
+ * #1785 registry-duplicates review page) that might not pre-validate.
+ *
+ * #1800 C2 — before the source row is deleted, this ALSO COALESCE-fills a
+ * short list of safe, single-value, BIOGRAPHICAL/descriptive fields on the
+ * TARGET from the source: Biography, MusicBrainzArtistMBID, Disambiguation,
+ * and BirthDate/DeathDate (+ their precision flags, existence-gated). A
+ * field is filled ONLY when the target's own value is empty/NULL AND the
+ * source's is not — the survivor's own data ALWAYS wins, never overwritten.
+ * Deliberately excludes identity-shaped columns (FirstNames/Surname/Suffix/
+ * MaidenSurname) — those are risky to silently fill and weren't asked for —
+ * and ISNI/IPI, which aren't single-value columns on this table at all: they
+ * live as multi-row children in tblMusicianIdentifiers, already covered by
+ * the caller-selected `keepIpiIds` carry-over below. Every optional column
+ * is existence-gated (rule #9). See the "COALESCE-fill" block near the
+ * DELETE below for why that fill happens AFTER the source row is gone (the
+ * MusicBrainzArtistMBID column carries a UNIQUE key).
+ *
+ * @param \mysqli $db       Live connection.
+ * @param int     $sourceId tblMusicians.Id — the row that will be DELETED.
+ * @param int     $targetId tblMusicians.Id — the row that survives.
+ * @param array{keepLinkIds?:list<int>,keepIpiIds?:list<int>} $opts
+ * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int,aliasesMoved:int,relationsMoved:int,sourceNameAliased:bool,fieldsFilled:list<string>}
+ * @throws \InvalidArgumentException on any refusal (missing side / same id / not found).
+ */
+function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $opts = []): array
+{
+    if ($sourceId <= 0 || $targetId <= 0) {
+        throw new \InvalidArgumentException('Both source and target person ids are required.');
+    }
+    if ($sourceId === $targetId) {
+        throw new \InvalidArgumentException('Source and target must be different people.');
+    }
+
+    $keepLinkIds = array_map('intval', $opts['keepLinkIds'] ?? []);
+    $keepIpiIds  = array_map('intval', $opts['keepIpiIds']  ?? []);
+
+    /* #1800 C2 — which COALESCE-fill candidate columns actually exist on
+       this install. BirthDate/DeathDate are part of tblMusicians' original
+       definition (no gate needed); everything else was added later by
+       ALTER and may be absent on a partly-migrated install (rule #9). */
+    $profileCols        = musicianProfileColumnsExist($db); // Type/Biography/Disambiguation
+    $hasBiography       = $profileCols['Biography'];
+    $hasDisambiguation  = $profileCols['Disambiguation'];
+    $hasMbid            = musicianMbidColumnExists($db);
+    $hasDatePrecision   = musicianDatePrecisionColumnsExist($db);
+
+    $fillCols = ['BirthDate', 'DeathDate'];
+    if ($hasBiography)      { $fillCols[] = 'Biography'; }
+    if ($hasMbid)            { $fillCols[] = 'MusicBrainzArtistMBID'; }
+    if ($hasDisambiguation)  { $fillCols[] = 'Disambiguation'; }
+    if ($hasDatePrecision)  { $fillCols[] = 'BirthDatePrecision'; $fillCols[] = 'DeathDatePrecision'; }
+
+    /* Look up both rows in ONE round-trip: Name (needed for the song-credit
+       re-point below) PLUS every COALESCE-fill candidate column above — read
+       BEFORE the source row is deleted so its values are still available in
+       PHP once the row is gone. $fillCols is built exclusively from the
+       hardcoded literals above (never user input) — safe to interpolate
+       (rule #5's carve-out). */
+    $fillSelectList = implode(', ', $fillCols);
+    $stmt = $db->prepare("SELECT Id, Name, {$fillSelectList} FROM tblMusicians WHERE Id IN (?, ?)");
+    $stmt->bind_param('ii', $sourceId, $targetId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $byId     = [];
+    $fillById = [];
+    foreach ($rows as $r) {
+        $id = (int)$r['Id'];
+        $byId[$id]     = (string)$r['Name'];
+        $fillById[$id] = $r;
+    }
+    if (!isset($byId[$sourceId])) { throw new \InvalidArgumentException('Source person not found.'); }
+    if (!isset($byId[$targetId])) { throw new \InvalidArgumentException('Target person not found.'); }
+    $sourceName = $byId[$sourceId];
+    $targetName = $byId[$targetId];
+
+    $db->begin_transaction();
+    try {
+        /* Re-point song-credit rows: source name → target name across
+           the SIX credit tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES,
+           closing the discovered tblSongArtists gap: C4's extraction kept
+           the original five tables only, so a merge/rename still stranded
+           artist credits on the deleted spelling even though the editor's
+           credit_upsert already promotes artist names INTO this same
+           registry). Table names come from the hardcoded PHP constant —
+           safe to interpolate (rule #5's carve-out); every VALUE
+           alongside them stays bound. */
+        $affected = [];
+        foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
+            $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
+            $stmt->bind_param('ss', $targetName, $sourceName);
+            $stmt->execute();
+            $affected[$tbl] = $stmt->affected_rows;
+            $stmt->close();
+        }
+
+        /* Migrate the chosen child rows from source → target. Anything
+           not in keepLinkIds / keepIpiIds gets dropped via the cascade
+           when the source registry row is deleted below. */
+        $linksKept    = 0;
+        $linksDropped = 0;
+        $ipiKept      = 0;
+        $ipiDropped   = 0;
+
+        /* Count links currently on the source so we can report
+           kept-vs-dropped accurately. */
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+        $stmt->close();
+
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
+        $stmt->close();
+
+        /* Re-point each kept child row. Anything from keepLinkIds that
+           isn't actually on the source is silently ignored — the form
+           might be stale. */
+        if ($keepLinkIds && $sourceLinkIds) {
+            $toMove = array_intersect($keepLinkIds, array_map('intval', $sourceLinkIds));
+            if ($toMove) {
+                $upd = $db->prepare(
+                    'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
+                );
+                foreach ($toMove as $lid) {
+                    $upd->bind_param('iii', $targetId, $lid, $sourceId);
+                    $upd->execute();
+                    $linksKept += $upd->affected_rows;
+                }
+                $upd->close();
+            }
+        }
+        $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
+
+        if ($keepIpiIds && $sourceIpiIds) {
+            $toMove = array_intersect($keepIpiIds, array_map('intval', $sourceIpiIds));
+            if ($toMove) {
+                $upd = $db->prepare(
+                    'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
+                );
+                foreach ($toMove as $iid) {
+                    $upd->bind_param('iii', $targetId, $iid, $sourceId);
+                    $upd->execute();
+                    $ipiKept += $upd->affected_rows;
+                }
+                $upd->close();
+            }
+        }
+        $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
+
+        /* #1785 C5 — carry the source's ALIASES + RELATIONS onto the
+           target BEFORE the DELETE below, instead of letting the
+           ON DELETE CASCADE on tblMusicianAliases /
+           tblMusicianRelations silently destroy them (the second
+           #1796 defect: today a merge quietly erases a source's AKA
+           names and any band/member relations with no way to recover
+           them). Both are existence-gated (rule #9) — an install that
+           hasn't run the aliases/relations migrations yet just skips
+           straight to the DELETE, unchanged from before this hardening. */
+        $aliasesMoved     = 0;
+        $relationsMoved   = 0;
+        $sourceNameAliased = false;
+
+        if (musicianAliasesTableExists($db)) {
+            /* Existing target alias NAMES, for uq_musician_name
+               (MusicianId, Name) collision-checking — a source alias
+               whose Name the target already carries is left to
+               cascade-delete with the source row rather than throwing
+               under mysqli's STRICT reporting. */
+            $stmt = $db->prepare('SELECT Name FROM tblMusicianAliases WHERE MusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetAliasNames = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Name');
+            $stmt->close();
+            $targetAliasNameSet = array_flip($targetAliasNames);
+
+            $stmt = $db->prepare('SELECT Id, Name FROM tblMusicianAliases WHERE MusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceAliases = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            if ($sourceAliases) {
+                $moveAlias = $db->prepare('UPDATE tblMusicianAliases SET MusicianId = ? WHERE Id = ?');
+                foreach ($sourceAliases as $al) {
+                    $alName = (string)$al['Name'];
+                    if (isset($targetAliasNameSet[$alName])) {
+                        continue; // uq_musician_name collision on the target — skip, cascades away with the source
+                    }
+                    $alId = (int)$al['Id'];
+                    $moveAlias->bind_param('ii', $targetId, $alId);
+                    $moveAlias->execute();
+                    $aliasesMoved += $moveAlias->affected_rows;
+                    $targetAliasNameSet[$alName] = true; // source's own aliases are already unique (uq_musician_name), but stay defensive
+                }
+                $moveAlias->close();
+            }
+
+            /* Item 4 — preserve the SOURCE's canonical name as a target
+               alias, so a curator who remembers the pre-merge spelling
+               can still find this person by it (names outlive rows, the
+               same rule-#33 instinct applied to data). Type follows
+               musicianNameVariantClass(): a byte-variant of the SAME
+               spelling (whitespace/case/punctuation/…) is a
+               'misspelling'; a genuinely different spelling (the
+               fuzzy-match merge case) is a 'search-hint' — both already
+               in MUSICIAN_ALIAS_TYPES. Skipped on the same
+               uq_musician_name collision as above (e.g. the source's own
+               name was ALSO one of its aliases and already got carried
+               over in the loop above). */
+            $stmt = $db->prepare('SELECT 1 FROM tblMusicianAliases WHERE MusicianId = ? AND Name = ? LIMIT 1');
+            $stmt->bind_param('is', $targetId, $sourceName);
+            $stmt->execute();
+            $nameCollision = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+
+            if (!$nameCollision && $sourceName !== $targetName) {
+                $aliasType = musicianNameVariantClass($sourceName, $targetName) !== null ? 'misspelling' : 'search-hint';
+                $insAlias = $db->prepare('INSERT INTO tblMusicianAliases (MusicianId, Name, Type) VALUES (?, ?, ?)');
+                $insAlias->bind_param('iss', $targetId, $sourceName, $aliasType);
+                $insAlias->execute();
+                $sourceNameAliased = $insAlias->affected_rows > 0;
+                $insAlias->close();
+            }
+        }
+
+        if (musicianMembersTableExists($db)) {
+            /* Existing target SUBJECT-side relations, for
+               uq_subject_object_rel (SubjectMusicianId, ObjectMusicianId,
+               RelationType, DateFrom) collision-checking. A NULL DateFrom
+               is never a collision key — MySQL/MariaDB treat every NULL
+               as distinct inside a UNIQUE key (schema.sql's own comment
+               on this index), so an undated relation can always move. */
+            $stmt = $db->prepare('SELECT ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetSubjectKeys = [];
+            foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+                if ($r['DateFrom'] === null) { continue; }
+                $targetSubjectKeys[$r['ObjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom']] = true;
+            }
+            $stmt->close();
+
+            $stmt = $db->prepare('SELECT ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE ObjectMusicianId = ?');
+            $stmt->bind_param('i', $targetId);
+            $stmt->execute();
+            $targetObjectKeys = [];
+            foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+                if ($r['DateFrom'] === null) { continue; }
+                $targetObjectKeys[$r['SubjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom']] = true;
+            }
+            $stmt->close();
+
+            /* Subject-side: source is the Group/subject of a relation
+               (e.g. source IS a group whose members need to carry over
+               onto the target). */
+            $stmt = $db->prepare('SELECT Id, ObjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceSubjectRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            if ($sourceSubjectRows) {
+                $moveSubject = $db->prepare('UPDATE tblMusicianRelations SET SubjectMusicianId = ? WHERE Id = ?');
+                foreach ($sourceSubjectRows as $r) {
+                    // Re-pointing would create a self-relation (target <-> target) — skip, cascades away.
+                    if ((int)$r['ObjectMusicianId'] === $targetId) { continue; }
+                    if ($r['DateFrom'] !== null) {
+                        $key = $r['ObjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom'];
+                        if (isset($targetSubjectKeys[$key])) { continue; } // uq_subject_object_rel collision
+                    }
+                    $relId = (int)$r['Id'];
+                    $moveSubject->bind_param('ii', $targetId, $relId);
+                    $moveSubject->execute();
+                    $relationsMoved += $moveSubject->affected_rows;
+                }
+                $moveSubject->close();
+            }
+
+            /* Object-side: source is an individual MEMBER/OBJECT of some
+               other group (e.g. source is a member whose group
+               memberships need to carry over onto the target). */
+            $stmt = $db->prepare('SELECT Id, SubjectMusicianId, RelationType, DateFrom FROM tblMusicianRelations WHERE ObjectMusicianId = ?');
+            $stmt->bind_param('i', $sourceId);
+            $stmt->execute();
+            $sourceObjectRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            if ($sourceObjectRows) {
+                $moveObject = $db->prepare('UPDATE tblMusicianRelations SET ObjectMusicianId = ? WHERE Id = ?');
+                foreach ($sourceObjectRows as $r) {
+                    if ((int)$r['SubjectMusicianId'] === $targetId) { continue; } // would self-relate — skip
+                    if ($r['DateFrom'] !== null) {
+                        $key = $r['SubjectMusicianId'] . "\x1f" . $r['RelationType'] . "\x1f" . $r['DateFrom'];
+                        if (isset($targetObjectKeys[$key])) { continue; } // uq_subject_object_rel collision
+                    }
+                    $relId = (int)$r['Id'];
+                    $moveObject->bind_param('ii', $targetId, $relId);
+                    $moveObject->execute();
+                    $relationsMoved += $moveObject->affected_rows;
+                }
+                $moveObject->close();
+            }
+        }
+
+        /* Drop the source registry row. Cascade removes any child rows
+           we chose not to migrate (links/IPI not kept, plus any alias/
+           relation row that collided above and so was deliberately left
+           behind). */
+        $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
+        $stmt->bind_param('i', $sourceId);
+        $stmt->execute();
+        $stmt->close();
+
+        /* #1800 C2 — COALESCE-fill the survivor's EMPTY biographical fields
+           from the source, now that the source row is GONE. Order matters:
+           MusicBrainzArtistMBID carries a UNIQUE key (uq_MbArtist), so
+           filling the target's copy BEFORE deleting the source would
+           collide with the source row's own still-live value — doing it
+           here, post-DELETE/pre-commit, inside the SAME transaction, is
+           what makes it safe. Never overwrites a non-empty TARGET value —
+           the survivor's own data always wins; a field only fills when the
+           target's value is blank AND the source's is not. */
+        $srcFill = $fillById[$sourceId] ?? [];
+        $tgtFill = $fillById[$targetId] ?? [];
+        $isBlank = static fn($v): bool => $v === null || (is_string($v) && trim($v) === '');
+
+        $fillSet      = [];
+        $fillValues   = [];
+        $fillTypes    = '';
+        $fieldsFilled = [];
+
+        if ($hasBiography && $isBlank($tgtFill['Biography'] ?? null) && !$isBlank($srcFill['Biography'] ?? null)) {
+            $fillSet[]      = 'Biography = ?';
+            $fillValues[]   = $srcFill['Biography'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'Biography';
+        }
+        if ($hasMbid && $isBlank($tgtFill['MusicBrainzArtistMBID'] ?? null) && !$isBlank($srcFill['MusicBrainzArtistMBID'] ?? null)) {
+            $fillSet[]      = 'MusicBrainzArtistMBID = ?';
+            $fillValues[]   = $srcFill['MusicBrainzArtistMBID'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'MusicBrainzArtistMBID';
+        }
+        if ($hasDisambiguation && $isBlank($tgtFill['Disambiguation'] ?? null) && !$isBlank($srcFill['Disambiguation'] ?? null)) {
+            $fillSet[]      = 'Disambiguation = ?';
+            $fillValues[]   = $srcFill['Disambiguation'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'Disambiguation';
+        }
+        /* Birth/death date + precision fill as a PAIR — a date with no
+           recorded precision is meaningless, so precision only ever moves
+           alongside a date that is ALSO being filled. */
+        if ($isBlank($tgtFill['BirthDate'] ?? null) && !$isBlank($srcFill['BirthDate'] ?? null)) {
+            $fillSet[]      = 'BirthDate = ?';
+            $fillValues[]   = $srcFill['BirthDate'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'BirthDate';
+            if ($hasDatePrecision) {
+                $fillSet[]      = 'BirthDatePrecision = ?';
+                $fillValues[]   = $srcFill['BirthDatePrecision'] ?? null;
+                $fillTypes     .= 's';
+                $fieldsFilled[] = 'BirthDatePrecision';
+            }
+        }
+        if ($isBlank($tgtFill['DeathDate'] ?? null) && !$isBlank($srcFill['DeathDate'] ?? null)) {
+            $fillSet[]      = 'DeathDate = ?';
+            $fillValues[]   = $srcFill['DeathDate'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'DeathDate';
+            if ($hasDatePrecision) {
+                $fillSet[]      = 'DeathDatePrecision = ?';
+                $fillValues[]   = $srcFill['DeathDatePrecision'] ?? null;
+                $fillTypes     .= 's';
+                $fieldsFilled[] = 'DeathDatePrecision';
+            }
+        }
+
+        if ($fillSet) {
+            $fillValues[] = $targetId;
+            $fillTypes   .= 'i';
+            $fillStmt = $db->prepare('UPDATE tblMusicians SET ' . implode(', ', $fillSet) . ' WHERE Id = ?');
+            $fillStmt->bind_param($fillTypes, ...$fillValues);
+            $fillStmt->execute();
+            $fillStmt->close();
+        }
+
+        $db->commit();
+    } catch (\Throwable $e) {
+        $db->rollback();
+        throw $e;
+    }
+
+    return [
+        'sourceName'        => $sourceName,
+        'targetName'        => $targetName,
+        'affected'          => $affected,
+        'linksKept'         => $linksKept,
+        'linksDropped'      => $linksDropped,
+        'ipiKept'           => $ipiKept,
+        'ipiDropped'        => $ipiDropped,
+        // #1785 C5 — additive report keys; 0/false on an un-migrated
+        // install (aliases/relations tables absent) rather than absent
+        // keys, so callers can display them unconditionally.
+        'aliasesMoved'      => $aliasesMoved,
+        'relationsMoved'    => $relationsMoved,
+        'sourceNameAliased' => $sourceNameAliased,
+        // #1800 C2 — additive; [] when nothing needed filling (every
+        // target field was already non-empty, or the source's own values
+        // were all empty too).
+        'fieldsFilled'      => $fieldsFilled,
+    ];
 }
 
 /**
@@ -2568,21 +3547,20 @@ function removeMusicianRelation(\mysqli $db, int $relationId): array
  */
 function musicianCitedUnregisteredNames(\mysqli $db): array
 {
+    /* #1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES (was a hand-typed 5-table
+       union missing tblSongArtists). Table names come from the hardcoded
+       PHP constant — safe to interpolate (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $t): string => "SELECT Name, COUNT(*) AS cnt FROM {$t} GROUP BY Name",
+        MUSICIAN_CREDIT_ROLE_TABLES
+    ));
     $sql = "
         SELECT u.Name, SUM(u.cnt) AS TotalUsage
           FROM (
-              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
-         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
-         GROUP BY u.Name
+         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE BINARY p.Name = BINARY u.Name)
+         GROUP BY BINARY u.Name
          ORDER BY TotalUsage DESC, u.Name ASC
     ";
     /* mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT

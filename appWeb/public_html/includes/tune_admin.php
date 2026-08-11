@@ -561,7 +561,12 @@ function tuneAdminUsageCounts(\mysqli $db, int $id, array $gates): array
         /* #1694 — songVisibleSql() matches the public tune.php song-list
            query's own visibility predicate; a soft-deleted song shouldn't
            inflate the "N songs still cite this tune" count a curator sees
-           before merging/deleting. */
+           before merging/deleting.
+           @disabled-visible: admin surface (#1765) — this is a /manage/*
+           tune-admin usage count; a song in a disabled songbook still
+           counts toward "N songs still cite this tune" so the curator sees
+           the true impact of a merge/delete, matching every other admin
+           raw site's contract of seeing everything. */
         $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE TuneId = ? AND ' . songVisibleSql($db, ''));
         $stmt->bind_param('i', $id);
         $stmt->execute();

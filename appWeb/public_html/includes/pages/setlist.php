@@ -57,9 +57,13 @@ declare(strict_types=1);
                     <li><span class="dropdown-item-text text-muted small">Loading templates...</span></li>
                 </ul>
             </div>
-            <button class="btn btn-sm btn-outline-secondary" id="btn-export-pdf" title="Download as PDF" style="display:none">
-                <i class="fa-solid fa-file-pdf me-1"></i>PDF
-            </button>
+            <!-- #302 — the page-level "PDF" button was a dead orphan: hidden
+                 (`display:none`), no JS, and ambiguous (this page lists MANY set
+                 lists, so a top-level "PDF" has no single subject). PDF export
+                 now lives on each set list's DETAIL view as the "Save as PDF"
+                 button (setlist.js `#setlist-pdf-btn`), next to Print — an
+                 unambiguous per-set-list action. Removed to avoid a second dead
+                 control (the orphan-guard's whole concern). -->
         </div>
     </div>
 

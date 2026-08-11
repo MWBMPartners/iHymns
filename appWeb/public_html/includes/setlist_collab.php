@@ -382,3 +382,353 @@ function setlistCollabSanitiseSongs($songs, int $max = 200): array
     }
     return $clean;
 }
+
+/**
+ * Thrown by setlistCollabPerformUpdate() when the clean songs array cannot be
+ * JSON-encoded (malformed UTF-8). A dedicated type so every caller maps it to
+ * the SAME 400 "invalid characters" response the inline original produced —
+ * distinguished by TYPE, not by regex-matching a message (rule #35). Extends
+ * RuntimeException so an existing broad `catch (\Throwable)` still turns it into
+ * a clean 500 rather than a white-screen if a new caller forgets the 400 branch.
+ */
+class SetlistCollabEncodeException extends \RuntimeException {}
+
+/**
+ * The ONE write core for a collaborative set-list edit (#1791).
+ *
+ * ELI5: takes an already-cleaned song list and writes it onto the OWNER's one
+ * set-list row — it can only ever UPDATE that single existing row, never insert
+ * or delete one.
+ *
+ * Extracted verbatim (byte-for-byte behaviour) from the `setlist_collab_update`
+ * case so the token-edit path (`setlist_token_update`, #1791) writes through the
+ * EXACT same encode-refuse-on-false → targeted-UPDATE sequence. Two write paths
+ * to tblUserSetlists.SongsJson would drift, and the drift would be invisible
+ * until a token edit produced a row the owner's client couldn't render — the
+ * same argument setlistCollabSanitiseSongs() was extracted under (#1638).
+ *
+ * The structural safety argument is INHERITED, not re-made: this is an UPDATE of
+ * one already-existing (UserId, SetlistId) row with LIMIT 1 — it can neither
+ * INSERT a row into the owner's namespace nor DELETE one, so the worst a
+ * compromised edit link can do is rewrite the songs of the one list it names.
+ *
+ * The CALLER is responsible for authorisation (owner resolution / token gate)
+ * and for sanitising via setlistCollabSanitiseSongs() before calling — this core
+ * assumes $cleanSongs is already the stored shape and $ownerUserId is the
+ * resolved, trusted owner.
+ *
+ * @param \mysqli $db          Live connection.
+ * @param int     $ownerUserId The RESOLVED owner (never the client's claim).
+ * @param string  $setlistId   tblUserSetlists.SetlistId.
+ * @param array   $cleanSongs  Output of setlistCollabSanitiseSongs().
+ * @param string  $newName     Optional rename; '' leaves the owner's title alone.
+ * @return array{changed:int,songs:array}
+ * @throws SetlistCollabEncodeException on malformed-UTF-8 encode failure.
+ */
+function setlistCollabPerformUpdate(
+    \mysqli $db,
+    int $ownerUserId,
+    string $setlistId,
+    array $cleanSongs,
+    string $newName = ''
+): array {
+    $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* json_encode returns FALSE on malformed UTF-8, and binding false writes an
+       empty string — which would silently blank somebody else's setlist. Refuse
+       instead: a rejected save the user can see beats a successful one that ate
+       the list. */
+    if ($songsJson === false) {
+        throw new SetlistCollabEncodeException('Song list could not be encoded (invalid characters).');
+    }
+
+    if ($newName !== '') {
+        $upd = $db->prepare(
+            'UPDATE tblUserSetlists
+                SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+              WHERE UserId = ? AND SetlistId = ?
+              LIMIT 1'
+        );
+        $upd->bind_param('ssis', $newName, $songsJson, $ownerUserId, $setlistId);
+    } else {
+        $upd = $db->prepare(
+            'UPDATE tblUserSetlists
+                SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+              WHERE UserId = ? AND SetlistId = ?
+              LIMIT 1'
+        );
+        $upd->bind_param('sis', $songsJson, $ownerUserId, $setlistId);
+    }
+    $upd->execute();
+    /* affected_rows is 0 both when the row vanished AND when the payload was
+       byte-identical to what is already stored, so it is NOT a failure — only
+       information the caller may report. */
+    $changed = $upd->affected_rows;
+    $upd->close();
+
+    return ['changed' => $changed, 'songs' => $cleanSongs];
+}
+
+/* ============================================================================
+ * #1791 G4 / G4-org — the EDIT-AUDIENCE vocabulary + precedence resolver
+ * ============================================================================
+ *
+ * ELI5: an edit LINK (not a collaborator invite) can be handed to "anyone
+ * with the link, no account needed" (the owner's full ask) or tightened to
+ * "only people signed in to iHymns". This section is the ONE place that
+ * vocabulary and its app→org→user→per-link precedence chain live, so a
+ * future third value (say 'org-members') is a one-line map change picked up
+ * everywhere, instead of a grep-and-hope across api.php (the same argument
+ * SETLIST_COLLAB_PERMISSIONS above already makes for view|edit).
+ *
+ * This is DELIBERATELY separate from SETLIST_COLLAB_PERMISSIONS: that
+ * vocabulary answers "may THIS person touch the setlist" for an
+ * account-based collaborator row; EditAudience answers "does touching this
+ * ANONYMOUS capability link require an account at all". A view-scope link
+ * never consults it (setlist_get only asks for scope='edit').
+ * ========================================================================= */
+
+/**
+ * The complete edit-audience vocabulary, in ASCENDING RESTRICTIVENESS order
+ * (index 0 = least restrictive). 'anyone' < 'authenticated' because
+ * requiring sign-in is strictly the more restrictive of the two. Kept as an
+ * ordered array (not just an unordered set) so
+ * `setlistMoreRestrictiveEditAudience()` can compare two values by their
+ * position rather than a second hand-maintained rank map.
+ */
+const SETLIST_EDIT_AUDIENCES = ['anyone', 'authenticated'];
+
+/** `tblAppSettings` key for the site-wide default (the #1406
+ *  `SERVICE_MODE_POLL_MS_*` / #1770 `LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY`
+ *  precedent — a freeform tblAppSettings key needs no migration to add or
+ *  read). Absent → the column DEFAULT, 'anyone' (G4's "no account needed"
+ *  full ask), NOT the fail-closed normaliser value below — an unset app
+ *  setting is not the same thing as an unrecognised STORED value. */
+const SETLIST_EDIT_AUDIENCE_APP_SETTING_KEY = 'setlist_edit_audience_default';
+const SETLIST_EDIT_AUDIENCE_APP_DEFAULT     = 'anyone';
+
+/** `tblUsers.Settings` JSON root key (rule #28 "new prefs are JSON" posture —
+ *  a personal preference gets a key, never a new tblUsers column). Mirrors
+ *  LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY's shape. */
+const SETLIST_EDIT_AUDIENCE_USER_SETTING_KEY = 'setlist_edit_audience_default';
+
+/**
+ * Normalise a raw, untrusted edit-audience value to the canonical vocabulary
+ * — FAIL CLOSED to the MORE RESTRICTIVE value.
+ *
+ * ELI5: if we don't recognise what's stored, assume the safer answer
+ * ("sign in required") rather than guessing the friendlier one — the same
+ * "unknown is a refusal, never a silent widen" rule setlistCollabCanWrite()
+ * already applies to view|edit.
+ *
+ * THIS IS FOR READING A STORED VALUE (a DB column, an org preference, a
+ * `tblUsers.Settings` entry) — NOT for what a fresh edit link mints with no
+ * owner input. The mint DEFAULT when the owner specifies nothing is the
+ * PERMISSIVE `'anyone'` (the column DEFAULT / SETLIST_EDIT_AUDIENCE_APP_DEFAULT),
+ * resolved via setlistResolveEditAudienceDefault() — never this normaliser,
+ * which would turn "owner said nothing" into an unwanted account wall.
+ *
+ * @param  mixed $raw Untrusted value — a DB column, a JSON setting, a
+ *                     request field. Accepts mixed for the same reason
+ *                     setlistCollabNormalisePermission() does: it may be an
+ *                     int, an array, or null, and all of those are "unknown"
+ *                     rather than a crash.
+ * @return string 'anyone' | 'authenticated' — never anything else.
+ */
+function setlistNormaliseEditAudience($raw): string
+{
+    if (!is_string($raw)) {
+        return 'authenticated';
+    }
+    $a = mb_strtolower(trim($raw));
+    return in_array($a, SETLIST_EDIT_AUDIENCES, true) ? $a : 'authenticated';
+}
+
+/**
+ * The more restrictive of two ALREADY-NORMALISED audience values.
+ *
+ * ELI5: "which of these two rules is stricter?" — compares their position in
+ * SETLIST_EDIT_AUDIENCES rather than a second hand-written rank table, so
+ * the two can never drift apart.
+ *
+ * PRIVATE to this file (not exported in the doc-comment as a public API)
+ * because callers should go through setlistResolveEditAudienceDefault() —
+ * this is the one primitive it's built from.
+ *
+ * @param string $a One of SETLIST_EDIT_AUDIENCES.
+ * @param string $b One of SETLIST_EDIT_AUDIENCES.
+ * @return string Whichever of $a/$b sits later in SETLIST_EDIT_AUDIENCES.
+ */
+function setlistMoreRestrictiveEditAudience(string $a, string $b): string
+{
+    $rankA = array_search($a, SETLIST_EDIT_AUDIENCES, true);
+    $rankB = array_search($b, SETLIST_EDIT_AUDIENCES, true);
+    /* array_search returning false (an already-normalised caller should
+       never hit this) is treated as "least restrictive" so a coding error
+       here fails toward "compare again", not toward silently widening
+       access — the surrounding resolver still clamps to the OTHER value. */
+    $rankA = $rankA === false ? 0 : $rankA;
+    $rankB = $rankB === false ? 0 : $rankB;
+    return $rankA >= $rankB ? $a : $b;
+}
+
+/**
+ * #1791 G4-org — memoised probe: do BOTH org-layer audience columns exist on
+ * `tblOrganisations` yet? Lockstep on purpose, mirroring
+ * `serviceMode_orgIdleColumnsExist()` (service_mode.php) — the resolver
+ * needs `SetlistEditAudience` and `EnforceSetlistEditAudience` together, and
+ * a half-applied ALTER must not be treated as "ready".
+ *
+ * WHY: mysqli runs under MYSQLI_REPORT_STRICT (db_mysql.php), so selecting a
+ * missing column THROWS rather than returning nothing — the #1228 lesson.
+ * Every org-layer read below goes through this probe rather than assuming
+ * migrate-setlist-share-scope.php has been RUN (schema.sql having the
+ * columns is not the same as an install having applied them — migrations
+ * are web-run, never auto-applied, rule #19).
+ */
+function setlistOrgAudienceColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblOrganisations'
+                AND COLUMN_NAME IN ('SetlistEditAudience', 'EnforceSetlistEditAudience')"
+        );
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        $cached = ($count === 2);
+    } catch (\Throwable $_e) {
+        /* Probe failure — degrade as "not migrated yet" (fail closed on the
+           columns, fail OPEN on caller behaviour: no org layer, resolver
+           falls straight through to user/app defaults). */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1791 G4/G4-org — THE edit-audience precedence resolver: app default →
+ * org layer (most-restrictive-wins across the owner's active orgs) → user
+ * layer → clamp to any org's ENFORCED mandate.
+ *
+ * Structured LINE-FOR-LINE like `serviceMode_resolveIdleTimeoutMins()`
+ * (service_mode.php, #1770 §5) so the two app→org→user resolvers stay one
+ * shape, not two independent forks of the same idea (CLAUDE.md rule: "reuse
+ * a shape, don't re-fork it").
+ *
+ * ELI5: "who's allowed to edit this link with no extra checks, by default?"
+ * — start from the site-wide default, let the owner's church loosen or
+ * tighten it (a church that LOCKS its answer always wins, and if the owner
+ * belongs to several churches the strictest locked answer wins), then let
+ * the owner's OWN saved preference override that — but never end up looser
+ * than whatever the church mandated.
+ *
+ * PRECEDENCE: `resolved = user ?? orgDefault ?? appDefault`, then CLAMPED so
+ * it is never LESS restrictive than `$enforced`. This is a FLOOR on
+ * restrictiveness (CLAUDE.md's "a member's edit links can never be more
+ * open than SetlistEditAudience"), not a full override the way #1770's
+ * single-number `IdleTimeoutMins` enforcement is — because unlike a numeric
+ * ceiling, this is a two-value vocabulary and a member should always be
+ * FREE to choose MORE restrictive than the church's floor, never forced
+ * down to exactly it.
+ *
+ * @param \mysqli     $db          Live connection from getDbMysqli().
+ * @param int         $ownerUserId The set-list owner (tblUsers.Id) whose
+ *                                 default is being resolved — NOT the
+ *                                 anonymous edit-link holder (an anonymous
+ *                                 visitor has no org/user layer to consult).
+ * @param string|null &$enforcedOut OUT param — the most-restrictive
+ *                                 ENFORCED org value across the owner's
+ *                                 active orgs, or null when no org enforces
+ *                                 one. Exposed (like #1798's
+ *                                 `$enforcedMinsOut`) so `setlist_share` can
+ *                                 clamp a CLIENT-CHOSEN audience to it
+ *                                 independently of which layer produced the
+ *                                 pre-selected default below.
+ * @return string 'anyone' | 'authenticated'.
+ */
+function setlistResolveEditAudienceDefault(
+    \mysqli $db,
+    int $ownerUserId,
+    ?string &$enforcedOut = null
+): string {
+    /* --- 1. App default --------------------------------------------------- */
+    $appDefault = SETLIST_EDIT_AUDIENCE_APP_DEFAULT;
+    if (function_exists('getAppSetting')) {
+        $raw = getAppSetting(SETLIST_EDIT_AUDIENCE_APP_SETTING_KEY, $appDefault);
+        /* An UNSET app setting resolves to $appDefault ('anyone') above —
+           getAppSetting()'s own $default parameter, not this normaliser. A
+           value that WAS explicitly stored but is garbled still fails
+           closed via the normaliser, same as every other layer. */
+        $appDefault = setlistNormaliseEditAudience($raw);
+    }
+
+    /* --- 2. Org layer (enforced + default), MOST-RESTRICTIVE wins --------- */
+    $enforced   = null;
+    $orgDefault = null;
+    if ($ownerUserId > 0 && setlistOrgAudienceColumnsExist($db)) {
+        try {
+            $stmt = $db->prepare(
+                'SELECT o.SetlistEditAudience AS Audience, o.EnforceSetlistEditAudience AS Enforce
+                   FROM tblOrganisationMembers m
+                   JOIN tblOrganisations o ON o.Id = m.OrgId
+                  WHERE m.UserId = ? AND o.IsActive = 1 AND o.SetlistEditAudience IS NOT NULL'
+            );
+            $stmt->bind_param('i', $ownerUserId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            foreach ($rows as $r) {
+                $audience = setlistNormaliseEditAudience($r['Audience'] ?? null);
+                if ((int)($r['Enforce'] ?? 0) === 1) {
+                    $enforced = ($enforced === null)
+                        ? $audience
+                        : setlistMoreRestrictiveEditAudience($enforced, $audience);
+                } else {
+                    $orgDefault = ($orgDefault === null)
+                        ? $audience
+                        : setlistMoreRestrictiveEditAudience($orgDefault, $audience);
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no org layer" — never break minting. */
+        }
+    }
+
+    /* --- 3. User layer ------------------------------------------------------ */
+    $userVal = null;
+    if ($ownerUserId > 0) {
+        try {
+            $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+            $stmt->bind_param('i', $ownerUserId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $rawSettings = $row['Settings'] ?? null;
+            $arr = (is_string($rawSettings) && $rawSettings !== '') ? json_decode($rawSettings, true) : null;
+            if (is_array($arr) && isset($arr[SETLIST_EDIT_AUDIENCE_USER_SETTING_KEY])
+                && is_string($arr[SETLIST_EDIT_AUDIENCE_USER_SETTING_KEY])) {
+                $userVal = setlistNormaliseEditAudience($arr[SETLIST_EDIT_AUDIENCE_USER_SETTING_KEY]);
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no user preference set". */
+        }
+    }
+
+    /* --- 4. Resolve + clamp -------------------------------------------------- */
+    /* Expose the enforced layer alone (like #1798's $enforcedMinsOut) so a
+       mint caller can cap a CLIENT-CHOSEN value at it independently of
+       whichever layer ends up winning $preSelected below. */
+    $enforcedOut = $enforced;
+
+    $preSelected = $userVal ?? ($orgDefault ?? $appDefault);
+
+    return $enforced !== null
+        ? setlistMoreRestrictiveEditAudience($preSelected, $enforced)
+        : $preSelected;
+}

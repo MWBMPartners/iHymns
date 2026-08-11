@@ -76,7 +76,10 @@ try {
     $stmt = $db->prepare(
         /* @deleted-visible: AUDIT surface (#1694) — a soft-deleted song's
            revision history must keep displaying its title; hiding it would
-           make the audit trail lie about what was edited. */
+           make the audit trail lie about what was edited.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in a disabled songbook still needs its revision history to
+           display accurately in this admin audit trail. */
         'SELECT r.Id, r.SongId, r.Action, r.CreatedAt, r.UserId, u.Username,
                 s.Title AS SongTitle, s.SongbookAbbr, s.Number
            FROM tblSongRevisions r
@@ -159,7 +162,7 @@ try {
             <p class="text-muted p-4 mb-0">No revisions match these filters.</p>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-dark table-hover mb-0 align-middle small cp-sortable">
+                <table class="table table-dark table-hover mb-0 align-middle small cp-sortable admin-table-responsive">
                     <thead>
                         <tr>
                             <th scope="col" data-sort-key="when"     data-sort-type="text">When</th>
@@ -217,6 +220,13 @@ try {
     </p>
 
 </div>
+
+<!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+     booted; every header click was a silent no-op until now). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 

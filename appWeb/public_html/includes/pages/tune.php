@@ -84,6 +84,8 @@ if (!isset($songData) || !is_object($songData)) {
 }
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 — songServableSql() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';   /* #1786 — ihymns_title_sort_key() */
 if (!function_exists('tuneTunesTableExists')) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'tune_helpers.php';
 }
@@ -289,8 +291,10 @@ if ($tuneSlug !== '') {
                 "SELECT DISTINCT TuneName
                    FROM tblSongs
                   WHERE TuneName IS NOT NULL AND TuneName <> ''
-                    AND " . songVisibleSql($tdb, '')
-            );   /* #1694 — a tune carried only by hidden songs does not resolve */
+                    AND " . songVisibleSql($tdb, '') . "
+                    AND " . songServableSql($tdb, '')
+            );   /* #1694/#1765 — a tune carried only by hidden songs, or only
+                    by songs in a disabled songbook, does not resolve */
             $stmt->execute();
             $allTunes = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'TuneName');
             $stmt->close();
@@ -322,8 +326,9 @@ if ($tuneSlug !== '') {
                        FROM tblSongs s
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE (s.TuneId = ? OR s.TuneName = ?) AND " . songVisibleSql($tdb, 's') . "
+                        AND " . songServableSql($tdb, 's') . "
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
-                );   /* #1694 visible songs only */
+                );   /* #1694/#1765 visible songs only, in a non-disabled songbook */
                 $tuneId = (int)$tune['Id'];
                 $stmt->bind_param('is', $tuneId, $canonicalTune);
             } else {
@@ -332,8 +337,9 @@ if ($tuneSlug !== '') {
                        FROM tblSongs s
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE s.TuneName = ? AND " . songVisibleSql($tdb, 's') . "
+                        AND " . songServableSql($tdb, 's') . "
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
-                );   /* #1694 visible songs only */
+                );   /* #1694/#1765 visible songs only, in a non-disabled songbook */
                 $stmt->bind_param('s', $canonicalTune);
             }
             $stmt->execute();
@@ -618,19 +624,34 @@ if ($tuneSlug !== '') {
     <?php if (empty($tuneRowsByBook)): ?>
         <p class="text-muted small mb-0">No catalogued songs use this tune yet.</p>
     <?php else: ?>
+        <!-- Sort control (#1786) — Number / Title / Songbook. One control
+             governs EVERY per-songbook group below (multi-container). -->
+        <?php
+            $listSortSurface = 'tune-songs';
+            $listSortDefault = 'Songbook & number';
+            $listSortOptions = [
+                'number' => ['label' => 'Number',   'type' => 'number', 'dir' => 'asc'],
+                'title'  => ['label' => 'Title',    'type' => 'text',   'dir' => 'asc'],
+                'book'   => ['label' => 'Songbook', 'type' => 'text',   'dir' => 'asc'],
+            ];
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+        ?>
         <?php foreach ($tuneRowsByBook as $abbr => $book): ?>
             <section class="mb-4">
                 <h2 class="h6 text-muted">
                     <span class="badge bg-body-secondary text-body-emphasis me-2"><?= htmlspecialchars($abbr) ?></span>
                     <?= htmlspecialchars($book['name']) ?>
                 </h2>
-                <div class="list-group list-group-flush" role="list">
+                <div class="list-group list-group-flush song-list" role="list" data-list-sort-list="tune-songs">
                     <?php foreach ($book['rows'] as $r): ?>
                         <a class="list-group-item list-group-item-action song-list-item"
                            href="/song/<?= htmlspecialchars($r['SongId']) ?>"
                            data-navigate="song"
                            data-song-id="<?= htmlspecialchars($r['SongId']) ?>"
-                           role="listitem">
+                           role="listitem"
+                           <?php if ((int)$r['Number'] > 0): ?>data-sort-number="<?= (int)$r['Number'] ?>"<?php endif; ?>
+                           data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$r['Title'])) ?>"
+                           data-sort-book="<?= htmlspecialchars(mb_strtolower((string)$abbr, 'UTF-8')) ?>">
                             <span class="song-number-badge"><?= (int)$r['Number'] ?: '?' ?></span>
                             <div class="song-info flex-grow-1">
                                 <span class="song-title"><?= htmlspecialchars($r['Title']) ?></span>

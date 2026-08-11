@@ -260,15 +260,15 @@ $csrf = csrfToken();
             <!-- List of groups -->
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All groups</h2>
-                <table class="table table-sm mb-0 align-middle cp-sortable">
+                <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
                             <th data-sort-key="name"        data-sort-type="text">Name</th>
                             <th data-sort-key="description" data-sort-type="text">Description</th>
-                            <th class="text-center" title="Alpha">α</th>
-                            <th class="text-center" title="Beta">β</th>
-                            <th class="text-center" title="Release Candidate">RC</th>
-                            <th class="text-center" title="Release to Web">RTW</th>
+                            <th class="text-center" title="Alpha" data-sort-key="alpha" data-sort-type="number">α</th>
+                            <th class="text-center" title="Beta" data-sort-key="beta" data-sort-type="number">β</th>
+                            <th class="text-center" title="Release Candidate" data-sort-key="rc" data-sort-type="number">RC</th>
+                            <th class="text-center" title="Release to Web" data-sort-key="rtw" data-sort-type="number">RTW</th>
                             <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
                             <th class="text-end">Actions</th>
                         </tr>
@@ -279,7 +279,7 @@ $csrf = csrfToken();
                                 <td><strong><?= htmlspecialchars($g['Name']) ?></strong></td>
                                 <td class="text-muted small"><?= htmlspecialchars(mb_substr((string)$g['Description'], 0, 120)) ?></td>
                                 <?php foreach (['AccessAlpha', 'AccessBeta', 'AccessRc', 'AccessRtw'] as $k): ?>
-                                    <td class="text-center">
+                                    <td class="text-center" data-sort-value="<?= (int)$g[$k] ?>">
                                         <?= (int)$g[$k] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-dash text-muted"></i>' ?>
                                     </td>
                                 <?php endforeach; ?>

@@ -4,6 +4,400 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-11 (#91 FINAL docs-consistency sweep + version bump — supersedes all "NOT YET PUSHED" claims below)
+
+**The `claude/issue-sweep-fixes-89` branch is PUSHED and up-to-date with origin.** Every earlier
+2026-08-xx continuation note below that says "BUILD pass done, NOT YET PUSHED" (the #1786, #1800,
+#1798, #1786-admin-sweep, #1785, #1770 notes) is **superseded on that point** — the branch has since
+been pushed; the code descriptions in those notes remain accurate. A single PR for the whole branch is
+pending the owner (the one-PR rule).
+
+**#91 was the final documentation-consistency sweep — DONE.** Five atomic commits reconciled help,
+wiki, OpenAPI, the top-level markdown, and these `.claude/` docs with what actually shipped on the
+214-commit branch:
+
+- **C1 `docs(help)`** — public `help.php` (Printing & PDF #1767, Sorting Lists #1786, theme chips
+  #288, set-list print cross-link), `help/exporting.md` (fixed the false "no separate download" line;
+  Download PDF now exists), `help/searching-songs.md`, and admin `manage/help.php` (IA Reconcile #94,
+  Publishers #93, Licence Types + Gating Hub #1769, extended Print Templates / My Organisations /
+  Service Mode).
+- **C2 `docs(wiki)`** — 7 wiki pages (Database, API-Reference, Setlists, Live-Follow, PWA-Features,
+  Architecture, Security).
+- **C3 `docs(api)+chore(version)`** — added `?page=publisher` to `api-docs.yaml`; **version bump
+  0.4100.0 → 0.5050.0** (owner-directed significant minor) in lockstep across `infoAppVer.php`, `api-docs.yaml`,
+  `manifest.json`, `README.md`, `PROJECT_STATUS.md`, `appWeb/CHANGELOG.md`. The dead "v1.x =
+  local-JSON phase" comment was retired.
+- **C4 `docs(changelog,md)`** — a consolidated `[0.5050.0]` CHANGELOG header + the 3 deferred family
+  entries (#1767 remainder, #94, #1765 core) + #1791 server-half + gating P0/P1; README /
+  PROJECT_STATUS / DEV_NOTES / SECURITY updated.
+- **C5 `docs(claude)`** — this note; MEMORY.md; CLAUDE.md rules #39/#40 + the #28 patch;
+  project-rules.md notes; a fresh HANDOFF.
+
+**The batch (§0 families, with the design doc to cite — do NOT re-derive design):** #1765 songbook/
+catalogue epic + #93 Publishers (`.claude/songbook-catalogue-enhancements-plan.md`); #1769/#1778
+gating program (`.claude/gating-model-review-1769-plan.md`); #1767 print/PDF remainder
+(`.claude/print-templates-1767-remainder-plan.md`); #94 IA-reconcile Phase 1 (`.claude/ia-ocr-94-plan.md`);
+#1770/#1792/#1798 Live-Follow (`.claude/live-follow-1770-plan.md`); #1791/#1790/#1789 set-list sharing
+(`.claude/setlist-sharing-1790-1791-plan.md`); #1786 public list-sort (`.claude/public-list-sort-1786-plan.md`);
+#1785 musicians dedup (`.claude/musicians-dedup-1785-plan.md`); #1783 duplicate-song; #1788
+ProPresenter CSP-safe export; QR → CueRCode (`.claude/qr-cuercode-integration-plan.md`). Full sweep
+spec: `.claude/final-docs-sweep-91-plan.md`.
+
+**Header-fact refresh (2026-06-21 "fact-refresh" precedent — counted from live source this date):**
+- `schema.sql` now has **152** `CREATE TABLE` statements (was "~131"/"142") — 150 distinct `tbl*` names.
+- API surface: **~294 dispatched actions / 275 documented OpenAPI paths** across the 4 dispatchers
+  (was "70+"/"195"). The 19-path gap is exactly the 20 legacy `manage/editor/api.php` actions,
+  undocumented since merge-base — a pre-existing hole, not a branch regression (filed for
+  consideration under #91: "document or retire the legacy editor API surface").
+- **11 new migration cards** pending on each environment; the operator runs them via
+  `/manage/setup-database`: `migrate-publication-metadata`, `migrate-publishers-entity`,
+  `migrate-reconcile-credit-name-bytes`, `migrate-musician-duplicates-dismissed`,
+  `migrate-add-gating-facts-and-licence-types`, `migrate-derive-rights-facts`,
+  `migrate-consolidate-org-licences`, `migrate-live-follow-quick-capable`,
+  `migrate-setlist-share-scope`, `migrate-print-template-layouts`, `migrate-ia-reconcile`.
+- **Deploy-time blocker (non-blocking to build):** QR is dormant until an iHymns→CueRCode API key is
+  pasted on `/manage/configuration` (rule #38). `content_gating_enabled` stays `'0'`.
+
+**Suites at sweep close: 153 PHP / 56 node, all green** (docs don't move the counts).
+
+**Version is now `0.5050.0`** (owner-directed significant minor bump; supersedes the `0.4001.0` claims still
+written at the historical §"What Is iHymns?" and the 07-30 consolidation note below — read
+`includes/infoAppVer.php` as the authority, per the fact-refresh precedent).
+
+---
+
+## 📌 Continuation note — 2026-08-11 (#1786 Option B — public multi-level list-sort, BUILD pass done, NOT YET PUSHED)
+
+**#1786 Option B (the PUBLIC-app half of "every table/list should be user-sortable, multi-level") —
+fully built + guarded on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED. The admin `<table>`
+half shipped in an earlier session (`js/modules/admin-table-sort.js`); this pass is everything else
+the issue asked for — card/list surfaces, which have no column headers to click.**
+
+- **C1 `f20b3af8`** — extracted `makeCompare()`/`multiKeyCompare()` out of `admin-table-sort.js`
+  VERBATIM into a new pure `js/utils/sort-compare.js` (rule #22 — never re-fork), plus new
+  `multiKeyCompareMissingLast()` (a level with no value sorts after every present value, in BOTH
+  directions), `titleSortKey()`/`SORT_ARTICLES` (JS mirror of `ihymns_title_sort_key()`), and
+  `normalizeSortSpec()` (validate/cap-3/dedupe). `tests/test-admin-table-sort.js` unmodified, still
+  green.
+- **C2 `b418bc9c`** — the shared "Sort ▾" control: `includes/partials/list-sort-control.php`
+  (server-emitted, shared-cache-safe per rule #6/#30) + `js/modules/list-sort.js` (two adoption
+  modes: DOM-reorder via `data-list-sort-list`/`data-sort-<key>`, and array/server mode via
+  `wireListSortControl()`), booted unconditionally from `router.js afterPageLoad()`.
+- **C3-C5 `efe42259`/`4c8e64f6`/`776f755e`** — DOM-mode adoption: `/songbooks`, `/songbook/<abbr>`
+  (absorbing `songbook-index.js`'s old single-level unpersisted toggle — new `EVT_LIST_SORT_CHANGED`
+  constant lets the alphabet strip rebuild after a re-sort), `/tag`, `/musician`, `/tune`,
+  `/publisher`, `/work` (Default = "Work order", not "Number" — a work's curated member order IS
+  meaningful), the identifier pages.
+- **C6-C7 `89f8ba99`/`5cf20230`** — `/favorites` (array mode, sorts a copy of the localStorage array)
+  and `/search` (server-sort mode — pagination makes client DOM-reorder dishonest; new `sort=` param,
+  `SongData::_searchOrderBy()` maps to HARDCODED `ORDER BY` fragments only, rule #5; `api-docs.yaml`
+  updated same commit, rule #33).
+- **C8 `c1386f2e`** — account sync rides the EXISTING namespaced `user_settings` endpoint (#1671 F5),
+  namespace `list_sorts` — **no new endpoint, no schema, no migration**. `validateCsrfRequest()` added
+  to the namespaced POST branch (the `live_follow_extend` precedent, rule #29).
+- **C9 `91bb3034`** — `tests/php/test-public-list-sort.php` (10 candidates, 8 fully DOM-checked, 2
+  array/server-mode partial, 26 option keys) + `tests/test-list-sort.js` (50 assertions). Both
+  mutation-proven — 12 distinct mutations run red→restored→green, recorded in the commit body.
+- **Suite counts**: node 55→56, PHP 152→153. Both full suites green after every commit.
+- **Home page songbook grid deliberately excluded** (⚑ N6 — duplicates `/songbooks` one tap away) —
+  filed as owner-decision issue #1808, recommendation is to leave excluded.
+- **Follow-ups filed**: #1806 (settings.js's legacy whole-blob push still clobbers `list_sorts`/
+  `cardLayouts` until next touched — pre-existing exposure, not new here), #1807 (a generated
+  `TitleSortKey` column so `/search`'s SQL `ORDER BY` becomes article-aware like every other surface).
+- **#1786 closed** (comment posted linking all 9 commits + the 3 follow-up issues) — both the admin
+  and public halves named in the issue's original scope are now shipped.
+- **NOT DONE this pass**: push to remote (stopped per instruction — build-pass only); a live-browser
+  click-through verify (guards are static-source-analysis + jsdom-free pure-logic, per their own
+  documented SCOPE/LIMITS — they prove the markup/wiring is present, not that a click sorts a
+  visually-rendered page).
+
+Full design: `.claude/public-list-sort-1786-plan.md`.
+
+## 📌 Continuation note — 2026-08-11 (#1800 musician merge/dedup follow-ups, BUILD pass done, NOT YET PUSHED)
+
+**#1800 (musician merge/dedup follow-ups to #1785/#1796) — three of four items BUILT, on branch
+`claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped after build + guards + docs per the build-pass
+brief). Fourth item assessed and deliberately DEFERRED — see below.**
+
+- **C1 — `credit_search`'s third table list, collapsed.** `manage/editor/api2.php`'s `credit_search`
+  autocomplete carried its own hand-typed six-table `$kindToTable` map — a THIRD copy of the same
+  fact alongside `ED2_CREDIT_TABLES` (same file) and `MUSICIAN_CREDIT_ROLE_TABLES`
+  (`includes/musician_helpers.php`), flagged as "discovered, not fixed here" in
+  `tests/php/test-musician-credit-tables-single-list.php`'s own doc-block since #1785. Now reads
+  `MUSICIAN_CREDIT_ROLE_TABLES` directly — its singular keys already match this endpoint's `kind=`
+  query convention byte-for-byte, so no transform was needed (unlike `ED2_CREDIT_TABLES`'s plural
+  keys, which would have). The guard gained a PART C that isolates the `credit_search` case block by
+  source position (next `case '...'` at the same indentation — brace-balancing would over-match the
+  block's own internal `foreach` loops) and asserts no bare six-table-name literal remains AND the
+  shared constant IS referenced. Mutation-proven both directions (literal list restored → red;
+  restored → green).
+- **C2 — COALESCE-fill on merge.** `musicianMergeExecute()` used to silently drop every biographical
+  fact recorded ONLY on the losing side of a merge — a source's `Biography`/`MusicBrainzArtistMBID`/
+  `Disambiguation`/birth-death dates vanished the moment its row was deleted, even when the target had
+  nothing there at all. Now backfills the survivor's EMPTY `Biography` / `MusicBrainzArtistMBID` /
+  `Disambiguation` / `BirthDate`+`BirthDatePrecision` / `DeathDate`+`DeathDatePrecision` from the
+  source — **never** overwrites a non-empty target value (the survivor's own data always wins). New
+  `musicianMbidColumnExists()` gate (mirrors `musicianMaidenSurnameColumnExists()`'s pattern) joins the
+  existing `musicianProfileColumnsExist()`/`musicianDatePrecisionColumnsExist()` probes (rule #9) —
+  `MusicBrainzArtistMBID` was added by ALTER (`migrate-identifier-media-hardening.php`), not part of
+  the table's original definition. **Ordering is load-bearing**: the fill runs AFTER the source row's
+  `DELETE`, inside the SAME transaction the function already owns — `MusicBrainzArtistMBID` carries a
+  UNIQUE key (`uq_MbArtist`), so filling the target's copy BEFORE the source row is gone would collide
+  with the source's own still-live value. Identity-shaped columns (`FirstNames`/`Surname`/`Suffix`/
+  `MaidenSurname`) are deliberately excluded (not asked for, riskier to silently fill); ISNI/IPI are
+  NOT single-value columns on `tblMusicians` at all — they're multi-row children in
+  `tblMusicianIdentifiers`, already covered by the existing `keepIpiIds` carry-over. The report gains
+  an additive `fieldsFilled` key, surfaced in all three call sites' activity-log payloads
+  (`manage/musicians.php`, `manage/musician-duplicates.php`, `api.php`'s `admin_musician_merge`) plus
+  `musicians.php`'s success banner and `api.php`'s JSON response. **Runtime-verified** against the live
+  `ihymns_live` scratch DB — 17 checks across three disposable-row scenarios (empty target fills from a
+  populated source; non-empty target keeps its own values untouched; a partially-empty target fills
+  only its own empty fields), all passed, cleanup left zero residual rows.
+  `musicianMergeExecute()` owns its own transaction (asserted by the brief NOT to nest one around it —
+  `mysqli`'s `START TRANSACTION` implicitly commits any already-open one, so an outer wrap would not
+  actually achieve a rollback), so verification used explicit `DELETE`s of the disposable rows instead
+  of a literal SQL `ROLLBACK`.
+- **C3 — create-time fold-match hint.** The `/manage/musicians` "Add person" drawer's Name field now
+  debounce-checks a new `musicianFindFoldMatches()` helper — reusing the SAME
+  `ihymns_sim_name_normalise()` exact-fold test the duplicate-review page's Bucket A already uses
+  (rule #22, `includes/musician_duplicates.php`) — via a new read-only GET `?action=name_fold_check`
+  endpoint on `manage/musicians.php` (mirrors the existing `merge_target_search` endpoint's shape). A
+  soft, non-blocking "possible duplicate of X (view)" hint appears below the field — linking to the
+  matched person's public `/musician/<slug>` page in a new tab — and NEVER disables Save. The check
+  only ever fires while the Name field is editable: Edit mode locks it (renames go through the
+  separate Rename action instead), so there's nothing to debounce there — no extra readOnly guard was
+  even needed, since a locked `<input>` never fires user-driven `input` events. New guard
+  `tests/php/test-musician-name-fold-check.php`: Part A (source scan, always runs) asserts the route
+  is wired and the drawer renders the hint element; Part B (behavioural, runs against a reachable DB
+  inside a rolled-back transaction — `musicianFindFoldMatches()` is READ-ONLY, so unlike C2's merge
+  core this WAS safe to wrap in an outer transaction) asserts an exact whitespace/case/apostrophe-style
+  variant IS found, a genuinely different name is NOT (no false positives), `exclude_id` is honoured,
+  and blank/punctuation-only input never throws. Mutation-proven in three ways (fold comparison
+  short-circuited → red; `exclude_id`'s SQL operator inverted → red; the route's action string renamed
+  → red on Part A specifically), each restored before committing.
+- **C4 (assessed, DEFERRED) — unifying `/manage/musician-duplicates` with
+  `/manage/musicians-bulk-promote`.** Weighed against the `#1215` precedent
+  (`duplicate-songs` absorbing `song-link-suggestions`) and judged NOT a clean, contained merge —
+  reported as a scoped follow-up rather than forced. The two pages' own in-repo comments already draw
+  the line explicitly (`manage/musicians.php` around the two CTA banners): bulk-promote's candidate
+  universe is song-credit NAMES with no registry row yet (per-NAME `register`/`merge`/`skip` actions);
+  musician-duplicates' candidate universe is PAIRS of EXISTING registry rows that look like the same
+  person (per-ID-PAIR `merge`/`dismiss` actions). Unlike `song-link-suggestions`, which was the SAME
+  "compare two songs" concern as `duplicate-songs` with a different data source (precomputed batch
+  table vs. adhoc), there is no natural absorption here — the two pages don't share a candidate shape
+  to unify around. A real merge would need a design pass reconciling the two action vocabularies
+  across ~1,650 combined lines of actively-used, independently-tested bulk POST logic FIRST, before
+  any code moves — real regression risk to two currently-working surfaces for a "balloons" outcome the
+  build brief explicitly said not to force. Left as a follow-up recommendation (not filed as a GitHub
+  issue per this session's instructions — the calling agent owns issue-tracker actions).
+- **Suites: 145 PHP (144 baseline + this session's two new guard files, `test-musician-name-fold-
+  check.php` new + `test-musician-credit-tables-single-list.php` extended with Part C) / 54 node**
+  (the +1 over the 53 baseline is unrelated concurrent `#1789` work landed mid-session by a sibling
+  session sharing this container — see the "concurrent session" note below), all green after every
+  commit.
+- **Concurrent session note**: this branch was being worked simultaneously, in the SAME container, by
+  a sibling session on unrelated `#1789`/`#1791` set-list print/share work (commits `83d45a68`,
+  `2eff4be1`, `50a9e6bd` landed interleaved with this session's three). Only this session's own
+  explicit file paths were ever `git add`ed — never `-A` — so the two bodies of work stayed cleanly
+  separated in the history despite sharing one working tree. One accidental collision surfaced and was
+  fixed: a doc-comment for the new `musicianMbidColumnExists()` gate initially wrote out the pre-#1741
+  table name literally, tripping `test-musician-rename-guard.php`'s count-exact old-name-token
+  allowlist — reworded to avoid the banned token rather than widening the allowlist.
+
+## 📌 Continuation note — 2026-08-10 (later still — #1798 Live Follow session-length + extend, BUILD pass done, NOT YET PUSHED)
+
+**#1798 (follow-on to #1770/#1792) — declare a Quick session's length at "Go Live" + extend a
+running one mid-service — BUILT, on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped
+after build + guard + docs per the build-pass brief).** Service Mode is unaffected (bounded by the
+scheduled service end, not idle) — this is Quick-only.
+
+- **Server** — `live_follow_create` accepts an optional `idleTimeoutMins` (clamped [5,240], capped
+  at the host's own enforcing-org lock if any). `serviceMode_resolveIdleTimeoutMins()` grew an
+  additive by-reference out-param (`&$enforcedMinsOut`) exposing just the enforced layer it already
+  computes, so create/extend share ONE reader of `LiveIdleTimeoutMins`/`EnforceIdleTimeout` (the
+  `test-live-follow-idle.php` A3 single-reader guard stays green untouched). New endpoint
+  `live_follow_extend` widens a RUNNING session's window and resets the idle clock to now.
+  Authorisation (host, OR an admin/owner of an org the HOST belongs to, OR a site admin) is resolved
+  via the HOST's `tblOrganisationMembers` rows — **never the session's own `OrgId`**, which Quick
+  sessions keep `NULL` (rule #26, load-bearing for CCLI gating) — and extracted into a real,
+  independently-testable function `serviceMode_liveFollowExtendAuthorize()` rather than staying
+  inline in the dispatcher, mirroring #1792's `serviceMode_codeOnOtherChannel()` shape. 409 (not
+  404/400) on an un-migrated install (rule #35); channel-scoped resolve (rule #26);
+  `validateCsrfRequest()` (rule #29); rate-limited 60/hour/user (rule #1636).
+- **Client** — `live-follow.js`'s `goLive()` gained a lightweight duration picker (30 min / 1 hour /
+  2 hours / until I end it) shared with a new **Extend** button on the host bar; both use the
+  established direct `bootstrap.Modal` pattern (never `app.js`'s two-option-only `showChoice()`).
+  Branches on HTTP `409` for "not migrated yet" vs the generic failure toast (rule #35).
+- **Org-admin surface** — `/manage/my-organisations` gained a "Members' live sessions" card (active
+  Quick sessions hosted by someone in an org the viewer administers, each with an Extend control),
+  column-existence-gated on `serviceMode_idleColumnsExist()`.
+- **Guard** — `tests/php/test-live-follow-extend.php` (Part A static source-scan of the real
+  endpoint/client/org-admin-page wiring; Part B live-DB behavioural against the REAL
+  `serviceMode_liveFollowExtendAuthorize()` + the REAL resolver's out-param — host/org-admin/
+  unrelated-user authorization, create-override + enforced-cap, out-of-range clamping, and channel
+  scoping). Mutation-proven post-commit (org-membership check short-circuit → B3 red; clamp removed
+  from the real case body → A2 red), then reverted via `git checkout --`.
+- **Deviation flagged**: the task brief's "Commit 1 — server" / "Commit 2 — client" split was
+  collapsed into ONE commit. `tests/php/test-orphan-inventory.php` (tree-derived, excludes `tests/`
+  from its caller corpus by design) fails a newly-dispatched public action with no first-party
+  caller, and `tests/php/fixtures/orphan-allowlist.php`'s own header explicitly discourages a
+  temporary entry ("wire it… together, never one without the others") — so landing the server case
+  without its one JS caller in the same commit would have been the very anti-pattern that file's
+  philosophy exists to prevent, as well as a red intermediate commit (the brief's own "never commit
+  red" is the stronger, more explicit rule here). Server + client landed together; the org-admin UI
+  and the guard+docs remained their own commits as specified.
+- **Suites: 144 PHP (143 baseline + this session's new guard) / 53 node (unchanged), all green**
+  after every commit.
+
+## 📌 Continuation note — 2026-08-10 (later still — #1786 admin sortable-headers sweep + #1799 fix, BUILD pass done, NOT YET PUSHED)
+
+**#1786 (admin adoption sweep of the shared multi-column sortable-table module) + #1799 (two broken
+pages) — BUILT, on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped after sweep + guard +
+docs per the build-pass brief; PR/issue bookkeeping is the orchestrator's job).** Module core already
+landed as #1786 core (`js/modules/admin-table-sort.js`, commit `3d2d772f`); this pass was the
+**admin-only** adoption sweep (the public app has no data `<table>`s, so it was out of scope by design).
+
+- **Tree-derived audit found more than #1799 described.** #1799 named two broken pages
+  (`musicians.php` / `musicians-bulk-promote.php`, tagged `mus-sortable` — a class the module's
+  default selector never matches). Deriving the real page list from `grep -rlE '<table'
+  manage/*.php` (rule #34) instead of trusting the existing `cp-sortable` tag turned up **twelve
+  more** pages (activity-log, ccli-report, data-health, languages, missing-numbers, notifications,
+  publishers, requests, revisions, tags, tunes, works) that were tagged `cp-sortable` correctly but
+  **never loaded `admin-table-sort.js` at all** — no `<script type="module">` import anywhere on the
+  page. Same silent-no-op shape as #1799, just not caught by name. All twelve now boot the module.
+- **Full column coverage.** Completed four partially-wired tables (feature-gating.php x2, groups.php,
+  licence-types.php, musician-duplicates.php) and fully wired five previously-bare pages (api-keys.php
+  — 3 tables, catalogues.php, entitlements.php, my-organisations.php — 2 tables, venues.php — 2
+  tables), plus two orphaned tables riding an existing page boot call (organisations.php's edit-view
+  Members list, tags.php's canonicalisation-suggestions list).
+- **#1799 fixed**: both tables retagged `mus-sortable` → `cp-sortable`, fully keyed, and
+  `musicians-bulk-promote.php` got its first-ever module import. Also fixed `musicians.php`'s row id
+  (`(int)$p['Id']` → `(int)($p['registry_id'] ?? 0)` — `'Id'` is never a key in that array; every row
+  silently collided on `id="mus-person-0"`).
+- **Two documented structural exceptions** rather than silent skips: my-organisations.php's Licences
+  table colspan-merges four columns into one inline-edit cell (only Type is positionally addressable);
+  songbooks.php's Order column holds a live `<input>` feeding the existing drag-to-reorder mechanism
+  (rule #6), not sortable text.
+- **New guard**: `tests/php/test-admin-tables-sortable.php` — tree-derived (glob minus a documented
+  `$PAGE_EXCLUSIONS` allow-list: index/diagnostics/schema-audit/setup-database/service-projection/
+  intapps-status/gating-noop-verify/analytics/duplicate-songs, each with a one-line reason), asserts
+  cp-sortable + module-boot + per-column `data-sort-key` coverage. Mutation-proven post-commit per rule
+  #34 (strip cp-sortable → red; drop a column key → red; add a brand-new unwired page → red; all
+  restored via `git checkout --`).
+- **Suites: 143 PHP (142 baseline + this session's new guard) / 53 node (unchanged — no JS touched),
+  all green** after every commit. Four atomic commits: the sweep (25 files), the #1799 fix (2 files),
+  the guard (1 new file), docs (this note + CHANGELOG.md).
+- **Flagged for the orchestrator, not guessed silently**: `service-projection.php`'s small connections
+  table (Label/Prefix/Venue/Protocol/Last used/Actions) looks like a genuine record list but was kept
+  on the pre-approved exclusion list as a live-operator-console widget — worth a second look if that
+  page grows more rows. GitHub issue updates for #1786/#1799 (closing, cross-linking the twelve extra
+  pages found) were **NOT** performed in this pass — that bookkeeping is the orchestrator's job per
+  the build-pass brief.
+
+## 📌 Continuation note — 2026-08-10 (later same day — #1785 status; the #1770 note below is unrelated and still current for that epic)
+
+**#1785 (musician registry-vs-registry duplicate detection + easier merge UX) — C1-C10 ALL BUILT,
+on branch `claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped for review per the build-pass
+brief).** Follow-up to #1784 (the invisible-byte reconcile), under epic #1787. Full design:
+`.claude/musicians-dedup-1785-plan.md` (now carries an as-built header). A prior session landed C1-C5
+(dormant schema, the shared NAME scorer, the merge core extracted then hardened); this pass built
+C6-C10:
+
+- **The scan (C6)** — `includes/musician_duplicates.php`. `musicianDuplicatesFindCandidates()` is
+  PURE (no `\mysqli`) — blocking via an exact fold (Bucket A) or a COMBINED first+last-token metaphone
+  dictionary (Bucket B — the shared key space is what catches a comma-reversed "Newton, John" vs
+  "John Newton"), plus a curated-alias signal (Bucket C). No silent caps (rule #35) — an over-cap
+  block is skipped and the skip reported in `stats.skippedBuckets`. `musicianDisambiguationPayloadBulk()`
+  is the ONE shared payload builder (id, lifespan, per-role use-counts, link/alias/identifier counts)
+  reused by every merge affordance built in C7/C8.
+- **The review page (C7)** — `/manage/musician-duplicates`, mirroring `/manage/duplicate-songs`
+  (#1215): byte-variant groups as cards, fuzzy pairs as a sortable table, one-click Merge (delegating
+  to `musicianMergeExecute()`, never re-implemented), Dismiss/Undismiss (`tblMusicianDuplicatesDismissed`),
+  a `force=1` + type-to-confirm guard on a lifespan-conflicting pair, keyboard nav (j/k/Enter/d/s, `?`
+  legend). CTAs from `/manage/musicians` (a cheap Bucket-A-only count badge) and
+  `/manage/musicians-bulk-promote` (cross-link).
+- **Disambiguation everywhere (C8)** — the merge-target typeahead, the `/manage/musicians` Merge
+  modal (now shows all SIX credit-role pills, not five — `total` already included artist credits from
+  C5's hardening, the visible pills just hadn't caught up), and bulk-promote's match labels all now
+  show WHY two similar names look alike (the variant badge) and WHICH registry row is which
+  (id/lifespan/credit-count) — closes "which is merging into which?" everywhere, not just the new page.
+- **Guards (C9), mutation-proven this session against the two NEW files C6/C7 added** — found and
+  fixed a genuine gap: G3 (`test-musician-credit-tables-single-list.php`)'s file scan was a hardcoded
+  4-file list written before C6/C7 existed, so a re-forked credit-table list in either new file would
+  have gone completely undetected; extended to six files, then mutation-proved (fake fork pasted into
+  each new file → red → reverted). G2/G4/G5 needed no code change (already tree-derived) but were each
+  mutation-proved against the new files too (a `levenshtein()` call, an over-cap-check defeat, a
+  Disambiguation-exclusion removal, and a fake inline merge-core copy — all → red → reverted).
+- **Docs (C10)** — this note, `CHANGELOG.md`, `DEV_NOTES.md` (Architecture Decisions — the shared
+  modules list, mirroring the #1741 pattern), `wiki/Architecture.md` + `Database-&-Migrations.md` +
+  `Security.md`, and an as-built header on the plan file itself.
+
+**Suites: 141 PHP (140 + this session's extension of the C6 guard file, net +1 from the 140
+baseline C1-C5 left) / 53 node (unchanged — no JS files touched this epic), all green.** Runtime-
+verified against the local scratch DB (a request simulator running the REAL page through its actual
+auth/CSRF/dispatch code, not a bypassed check) for the full merge/dismiss/undismiss/degrade/force-gate
+cycle, and separately for C8's additive payload fields — all rolled back or explicitly cleaned up,
+zero leftover fixture rows confirmed each time. GitHub issue updates (closing sub-items, filing the
+discovered `tblSongArtists`-gap follow-ups already noted in earlier commits, filing the
+`credit_search` third-fork follow-up G3's doc-block flags) were NOT performed in this pass — the
+owner handles all issue filing/updates, per this build's explicit instruction; see the session's final
+report for the exact list.
+
+One pre-existing, unrelated bug was discovered but NOT fixed (out of this epic's scope): `manage/
+musicians.php`'s list-render loop reads `$p['Id']` (should be `$p['registry_id']`) at the `<tr id=…>`
+line, producing a PHP "Undefined array key" warning (and an `id="mus-person-0"` HTML attribute) on
+every row — present in the base commit before this branch touched the file. Worth a small follow-up
+issue.
+
+---
+
+## 📌 Continuation note — 2026-08-10 (supersedes the 08-03 note below for #1770 status)
+
+**#1770 (Live Follow UX rework, Option A) — C5-C8 BUILT, on branch `claude/issue-sweep-fixes-89`,
+NOT YET PUSHED (stopped for review per the build-pass brief).** C1-C4 (dormant schema + server
+resolution/broadcast-core logic) had already landed on this branch; this pass added the client +
+the two deferred admin UI surfaces + six mutation-proven guards + docs, per
+`.claude/live-follow-1770-plan.md`:
+
+- **Client (C5)** — `js/utils/presence-identity.js` (device id + presence-cookie set/clear,
+  extracted from `service-follow.js`, now shared by both followers); `live-follow.js` gained a
+  fixed persistent HOST bar (rule #32 shape, wired from `router.js afterPageLoad()` on every
+  navigation), passive leader-activity tracking feeding the heartbeat's `leaderActive` flag, and
+  the presence-minting `_doJoin()` POST upgrade.
+- **Admin UI (C5-UI)** — idle-timeout fields on `/manage/configuration` (app default),
+  `/manage/organisations` + `/manage/my-organisations` (org override/lock, column-existence-gated),
+  and `/settings` (personal preference, an intentionally UNPREFIXED localStorage key —
+  `STORAGE_LIVE_IDLE_TIMEOUT_MINS` in `constants.js` — because it must equal the server's
+  `tblUsers.Settings` JSON root key verbatim); a "Presentation-app control" card on
+  `/manage/service-projection` (mint/list/revoke `tblServiceDriverKeys`).
+- **Optional client (C6)** — `js/modules/live-host-console.js` (reuses `ServiceBroadcaster` via a
+  transport adapter, never a fork); the "Show code" big-code+QR view (`/qr.php`-backed, rule #38);
+  `service-follow.js`'s `?svc_code=` deep-link reader (rule #33 — closes the standing emitter-with-
+  no-reader gap the projection QR had had since #1339).
+- **Guards (C7), all mutation-proven** (broke → red → restored → green, per rule #34):
+  `tests/php/test-live-session-channel.php` (G1, channel-wall presence across the 3 walled tables),
+  `tests/php/test-live-follow-idle.php` (G2, static + a live-DB resolver-precedence matrix),
+  `tests/php/test-live-follow-host-ccli.php` (G3, static + a live-DB dormancy check),
+  `tests/php/test-live-follow-broadcast-core.php` (G4, one-broadcaster-core), `tests/*.js` +
+  `tests/php/test-rate-limit-pairing.php` extended (G5, `service_drive`/`live_follow_poll` keying),
+  `tests/test-svc-code-contract.js` (G6, cross-language emitter/reader). Three now-genuinely-wired
+  `service_driver_key_*` actions were removed from `tests/php/fixtures/orphan-allowlist.php`
+  (self-cleaning, exactly as that file's own history documents).
+- **Docs (C8)** — `api-docs.yaml` (the `live_follow_join` POST/presence mode,
+  `idleTimeoutMins`/`leaderActive` fields), `help/live-follow.md` + the in-app help topic,
+  `wiki/Live-Follow-&-Service-Mode.md`, `CHANGELOG.md`, this note, and one-line pointers from
+  CLAUDE.md rule #26.
+
+**Suites: 135 PHP (131 + 4 new guard files) / 53 node (52 + 1 new guard file), all green.** Deferred/
+flagged, not silently skipped: the live two-device verify (#1339/#1792) is explicitly out of this
+build's scope per the brief (needs two real devices on one channel, never yet executed); the
+ProPresenter-specific protocol shim is its own tracked spike (plan §7/§10 S1), the generic
+`service_drive` contract ships instead. GitHub issue updates (closing sub-items, filing the S1 spike
+issue if not already filed) were NOT performed in this pass — flagged as a remaining standing-task
+item for whoever pushes/opens the PR.
+
+---
+
 ## 📌 Continuation note — 2026-08-03 (supersedes the 07-31 note below)
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)** (its

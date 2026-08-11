@@ -246,7 +246,12 @@ function songSoftDeletedHolds(\mysqli $db, string $id): bool
             return false;   /* un-migrated: no soft-deleted song can exist */
         }
         /* PublicId → SongId when it looks like one; any other id passes
-           through unchanged (the resolver's contract). */
+           through unchanged (the resolver's contract).
+           @disabled-visible: this reads ONLY the IsDeleted column of a
+           specific, already-identified row to answer "is it soft-deleted?"
+           (#1765) — a disabled songbook has no bearing on that question,
+           and the row must be found regardless of its book's state or a
+           soft-deleted-but-disabled-book song could never be recognised. */
         $songId = songPublicId_resolveToSongId($db, $id);
         $stmt = $db->prepare('SELECT IsDeleted FROM tblSongs WHERE SongId = ? LIMIT 1');
         $stmt->bind_param('s', $songId);
@@ -356,6 +361,9 @@ function songSoftDeleteVerdict(string $op, string $songId, bool $ready, ?int $is
  */
 function _songSoftDeleteRowState(\mysqli $db, string $songId): ?array
 {
+    /* @disabled-visible: admin write-path row lock (#1765) — delete/restore/
+       purge must reach a song regardless of its songbook's disabled state
+       (a curator can delete a song inside a disabled book, or restore one). */
     $stmt = $db->prepare('SELECT IsDeleted, SongbookAbbr, Title FROM tblSongs WHERE SongId = ? LIMIT 1 FOR UPDATE');
     $stmt->bind_param('s', $songId);
     $stmt->execute();
@@ -410,6 +418,14 @@ function _songSoftDeleteRecountSongbook(\mysqli $db, string $abbr): void
     }
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';   /* songRelocateIsTransactionFatal() */
     try {
+        /* @disabled-visible: SongCount recompute family (#1765) — the plan's
+           adversarial notes are explicit that SongCount deliberately does
+           NOT change when a book is disabled (disabling hides the book from
+           listings; it does not shrink the number on the tile), so this
+           recompute must count every non-soft-deleted song regardless of the
+           book's OWN disabled state — folding songServableSql() in here
+           would make SongCount and the disable toggle disagree the moment
+           either one moves. */
         $stmt = $db->prepare(
             /* #1694 D1 — SongCount counts VISIBLE songs. songVisibleSql() is
                already settled 'IsDeleted = 0' here (the write cores gate on
@@ -666,6 +682,12 @@ function songPurge(\mysqli $db, string $songId, ?int $userId, ?string $redirectT
         $target = null;
         $redirectTo = trim((string)$redirectTo);
         if ($redirectTo !== '' && $redirectTo !== $songId) {
+            /* @disabled-visible: relink-target existence probe (#1765, one
+               predicate over the #1694 "deliberately visibility-blind"
+               reasoning in this function's own doc-block above) — relinking
+               to a song in a currently-disabled songbook is equally honest:
+               it answers 410 while disabled and self-heals if that book is
+               re-enabled. */
             $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
             $chk->bind_param('s', $redirectTo);
             $chk->execute();

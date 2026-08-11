@@ -38,6 +38,24 @@ Exact formatting (verse/chorus labels, chords, metadata) follows each program's 
 
 ---
 
+## 🖨 Printing & saving as PDF
+
+You can also print a song or a set list on paper — or save it as a **PDF** — without any projection software:
+
+- **A song** — use the **Print** option on the song page. Curators can design **print templates** (which blocks appear, page size, chords, and more) on **Manage → Print Templates**; the print dialog then offers those templates.
+- **Download PDF** — when you're **signed in**, a **Download PDF** button sits beside Print in the template dialog. It builds the same layout on the server and downloads a PDF named after the song — no browser print dialog needed. Signed out, you'll just see Print (whose browser dialog still offers "Save as PDF").
+- **A set list** — open the set list and use **Print**, the browser's **Save as PDF**, or — signed in — **Download PDF**, which renders the *whole* list as one file: a cover page, the running order, then each song's words in order.
+
+### CCLI copy reporting
+
+If you're **signed in**, your organisation holds a **CCLI licence**, and the song carries a CCLI number, printing or downloading asks *how many copies* you're making. iHymns logs them for your organisation's CCLI report (**Manage → CCLI Usage Report**) and adds the required CCL notice to the printed footer automatically. For everyone else nothing changes — there's no prompt and no footer notice.
+
+### Songbook & number on printouts
+
+The **Songbook + number** block on a print template is **context-aware**: it prints the songbook and the song's number **only for songs in a published (official) songbook**. A song that lives in an **unofficial songbook** or a **catalogue** — which don't have song numbers — prints **nothing** for that block, because a book reference and number aren't relevant to that song. You don't need to configure anything; official-hymnal songs show their book and number as normal, and everything else quietly omits it.
+
+---
+
 ## 🛠 If nothing downloads
 
 If the **Export ▾** menu opens but tapping a format doesn't produce a download:

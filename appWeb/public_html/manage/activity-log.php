@@ -870,7 +870,7 @@ try {
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-dark table-hover align-middle cp-sortable"
+                <table class="table table-sm table-dark table-hover align-middle cp-sortable admin-table-responsive"
                        data-activity-table
                        data-page="<?= (int)$page ?>"
                        data-total-pages="<?= (int)$totalPages ?>">
@@ -1357,6 +1357,14 @@ try {
 
         if (toggle.checked) { activate(); }
     })();
+    </script>
+
+    <!-- Sortable table headers (#1786 sweep — table was tagged cp-sortable
+         but this page never loaded the module, so every header click was
+         a silent no-op; #1786 audit caught it). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

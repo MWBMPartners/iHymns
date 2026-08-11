@@ -35,9 +35,11 @@ $error = '';
 
 /* ---------- POST: persist new mapping ---------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    /* CSRF check — matches the token minted by csrfToken() and stored in
-       the admin session. */
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* CSRF check (#1769 P0, rule #29: same-origin-aware). Still accepts the
+       token minted by csrfToken() and stored in the admin session, but ALSO the
+       never-stale X-Requested-With + host-match route, so this long-lived matrix
+       page doesn't throw a spurious CSRF error when its baked token rotates. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -86,8 +88,8 @@ $groups = [
        written landed in the catch-all "Other" bucket, so an operator looking for
        "who can manage Works?" had to scan an unsorted list. Grouped here with
        the surfaces they sit beside in the admin nav. */
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_external_link_types', 'manage_duplicate_songs'],
-    'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_feature_gating'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_publishers', 'manage_external_link_types', 'manage_duplicate_songs'],
+    'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_licence_types', 'manage_feature_gating'],
     'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
     'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
     'Personalisation'    => ['manage_default_card_layout', 'customise_own_card_layout'],
@@ -180,10 +182,12 @@ $ENTITLEMENT_LABELS = [
      * ------------------------------------------------------------------- */
     'manage_works'              => ['Manage works',                   'Group songs into a composition and edit its details (#840)'],
     'manage_tunes'               => ['Manage tunes', 'Edit / merge hymn tunes and their credits, aliases and links (#1748)'],
+    'manage_publishers'          => ['Manage publishers', 'Edit / merge songbook publishers (persons + companies), their imprints and aliases (#93)'],
     'manage_external_link_types'=> ['Manage external-link types',     'Curate the providers behind every "Find this elsewhere" panel'],
     'manage_duplicate_songs'    => ['Merge duplicate songs',          'Review suggested duplicates and permanently merge two songs'],
     'manage_own_organisation'   => ['Manage your own organisation',   'Administer an organisation you own or admin, without a site-wide role'],
     'manage_feature_gating'     => ['Define gateable features',       'Create the capabilities that access tiers switch on and off'],
+    'manage_licence_types'      => ['Manage licence types',           'Define the licence vocabulary (CCLI, MRL, …), what each covers, and any tier it confers'],
     'manage_org_licences'       => ['Manage organisation licences',   'Add, change or remove an organisation\'s CCLI / streaming licences'],
     'manage_user_licences'      => ['Manage user licences',           'Attach or remove a licence held by an individual user'],
     'view_licence_audit'        => ['View licence audit',             'See how a user\'s effective licences were worked out'],
@@ -280,10 +284,10 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
             <div class="card-admin p-3 mb-3">
                 <h2 class="h6 mb-3"><?= htmlspecialchars($groupName) ?></h2>
                 <div class="table-responsive">
-                    <table class="table table-sm ent-grid mb-0">
+                    <table class="table table-sm ent-grid mb-0 cp-sortable">
                         <thead>
                             <tr class="text-muted small">
-                                <th>Capability</th>
+                                <th data-sort-key="capability" data-sort-type="text">Capability</th>
                                 <?php foreach ($ROLES as $r): ?>
                                     <th class="role-col"><?= htmlspecialchars(roleLabel($r)) ?></th>
                                 <?php endforeach; ?>
@@ -296,7 +300,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
                                 [$entLbl, $entDesc] = $entLabel($ent);
                             ?>
                             <tr>
-                                <td>
+                                <td data-sort-value="<?= htmlspecialchars($entLbl, ENT_QUOTES) ?>">
                                     <div class="fw-semibold"><?= htmlspecialchars($entLbl) ?></div>
                                     <?php if ($entDesc !== ''): ?>
                                         <div class="small text-muted"><?= htmlspecialchars($entDesc) ?></div>
@@ -347,6 +351,15 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
     </p>
 
 </div>
+
+<!-- Sortable table headers (#1786 sweep). Only the Capability column is
+     orderable — the role columns are a checkbox matrix, not per-row data,
+     the same shape already established on tiers.php's per-capability
+     columns (#1786). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

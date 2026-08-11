@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.4100.0"
+  version: "0.5050.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -448,6 +448,13 @@ tags:
       nothing for the two to drift on). External-link editing is
       page-only for now — these four actions cover scalar fields,
       aliases, credits, merge and delete.
+  - name: Admin — Licence Types
+    description: |
+      Licence-vocabulary CRUD (#459 / #1769 P4) — `tblLicenceTypes`: the
+      tokens every licence store writes, what each legally covers, and any
+      access tier it confers. Mirrors `/manage/licence-types` (both surfaces
+      call the SAME shared core in `includes/licence_type_admin.php`). Gated
+      on `manage_licence_types`.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -610,6 +617,26 @@ paths:
             type: string
             enum: ["1", "0", "true", "false", "yes"]
             default: "1"
+        - name: sort
+          in: query
+          required: false
+          description: |
+            #1786 Option B — multi-level result order as a comma-separated
+            list of `key.dir` tokens, e.g. `sort=title.asc,number.desc`. Each
+            key may appear once (a repeat's first occurrence wins) and at
+            most 3 tokens are honoured; `dir` is `asc` or `desc` (anything
+            else is treated as `asc`). Unknown/malformed tokens are DROPPED
+            silently, never a 4xx — an unrecognised sort key degrades to the
+            default rather than failing the whole search, so a client on a
+            different build than the API never breaks over this parameter
+            (rule #33: honour it or don't emit it; this endpoint honours it).
+            Omit entirely (the default) for the unchanged relevance-ranked
+            order. `relevance` is only meaningful on the FULLTEXT pass
+            (3+ character queries) — it is accepted but has no effect on the
+            sub-3-character LIKE fallback, which has no relevance score.
+          schema:
+            type: string
+            example: title.asc,number.desc
       responses:
         "200":
           description: Search results
@@ -1304,6 +1331,111 @@ paths:
                         pageOptions:
                           type: object
                           description: Page-level options (margins, font size, etc.); empty object when unset.
+
+  /api.php?action=print_usage_context:
+    get:
+      operationId: getPrintUsageContext
+      tags: [Songs]
+      summary: Should the print/download flow prompt for a CCLI copy count? (#1767 remainder P5)
+      description: |
+        Server-resolved (never a client claim): `requiresCcli`/`promptCopies`
+        are true only when the signed-in caller holds a qualifying CCLI
+        licence (`includes/print_usage.php::printUsageResolveCcliLicence()`)
+        **and** the requested song carries a non-empty CCLI number to report
+        a copy against. Anonymous callers, callers with no CCLI licence, and
+        songs with no CCLI number all answer `false` — the print/download
+        flow then behaves exactly as it did before this feature existed.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [print_usage_context] }
+        - name: song_id
+          in: query
+          required: false
+          description: The song about to be printed/downloaded.
+          schema: { type: string, example: MP-0004 }
+      responses:
+        "200":
+          description: Always 200, for any caller (including anonymous).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requiresCcli: { type: boolean }
+                  promptCopies: { type: boolean }
+                  licenceKey:
+                    type: string
+                    nullable: true
+                    description: The caller's qualifying CCLI licence key, present only when promptCopies is true.
+
+  /api.php?action=print_usage_log:
+    post:
+      operationId: logPrintUsage
+      tags: [Songs]
+      summary: Log a CCLI print-usage event (#1767 remainder P5)
+      description: |
+        Writes one `tblSongUsageEvents` row (`UsageContext='printed'`) via
+        the ONE writer, `includes/print_usage.php::printUsageLog()` —
+        **only** when the authenticated caller holds a qualifying CCLI
+        licence, RE-RESOLVED server-side regardless of what the client
+        believes (a prior `print_usage_context` read is advisory only). The
+        browser-Print flow calls this action directly; the server-PDF flow
+        (`manage/print-pdf.php`) logs in the SAME request that builds the
+        file instead, via a `copies` field on that POST — never through this
+        action. Best-effort: a failed log never implies the print itself
+        failed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [print_usage_log] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, copies]
+              properties:
+                song_id: { type: string, example: MP-0004 }
+                copies:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
+                  example: 20
+                  description: The count the user was PROMPTED for (owner decision — never inferred from page/click counts).
+                surface:
+                  type: string
+                  enum: [browser, pdf]
+                  default: browser
+                template_id:
+                  type: integer
+                  nullable: true
+                  description: The curated (`db:<id>`) template used, if any.
+                setlist_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: |
+            Always 200 for an authenticated caller — `ok:false` (not an
+            error status) covers every reason nothing was written (no
+            qualifying licence, un-migrated install, bad input), matching
+            this endpoint's fire-and-forget, never-block-the-print posture.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "401":
+          description: Authentication required.
+        "405":
+          description: POST method required.
 
   /api.php?action=lyrics_ingest:
     post:
@@ -2271,7 +2403,10 @@ paths:
         Create a new publicly-shareable setlist or update an existing one.
         When updating, the caller must provide the original `id` and matching
         `owner` UUID. Each shared setlist can contain up to 200 songs with
-        optional per-song arrangements.
+        optional per-song arrangements. #1791 — `scope: "edit"` mints a
+        collab-by-link EDIT capability instead of a read-only view link;
+        requires a signed-in owner sharing one of their own saved (live-linked)
+        set lists, refused 403 otherwise.
       parameters:
         - name: action
           in: query
@@ -2309,6 +2444,20 @@ paths:
                   type: string
                   description: Existing setlist ID (for updates only)
                   example: "1a2b3c4d"
+                scope:
+                  type: string
+                  enum: [view, edit]
+                  default: view
+                  description: "#1791 — view (default, read-only) or edit (collab-by-link capability, owner-only)."
+                label:
+                  type: string
+                  maxLength: 100
+                  nullable: true
+                  description: "#1791 — owner-facing name for this link (\"worship team\"), display only."
+                expiresAt:
+                  type: string
+                  nullable: true
+                  description: "#1791 G1 — optional link expiry (UTC). Omitted/blank/past = never expires (the default)."
                 arrangements:
                   type: object
                   description: Optional per-song arrangements mapping song IDs to component index arrays
@@ -2319,6 +2468,27 @@ paths:
                       minimum: 0
                   example:
                     CP-0202: [0, 1, 2, 1, 3]
+                showSharerName:
+                  type: boolean
+                  description: |
+                    #1791 G3 — opt-in "Shared by &lt;owner display name&gt;" byline on
+                    the shared page. Accepted for both `view` and `edit` scope links.
+                    Defaults to `false` (anonymous, the status-quo posture) when omitted.
+                  default: false
+                editAudience:
+                  type: string
+                  enum: [anyone, authenticated]
+                  description: |
+                    #1791 G4 / G4-org — who may edit via an `edit`-scope link. Only
+                    meaningful when `scope` is `"edit"`; ignored for a view link.
+                    `anyone` (the column default — no account needed) is the owner's
+                    full ask; `authenticated` requires the recipient to be signed in.
+                    When omitted, the server resolves the owner's own
+                    app-&gt;org-&gt;user default. Whatever the caller requests is
+                    CLAMPED to any organisation's enforced mandate — an owner can never
+                    mint a link more open than their organisation allows, and the
+                    response's `editAudience` reports the value actually stored (which
+                    may differ from the request if it was clamped).
       responses:
         "200":
           description: Setlist created or updated
@@ -2329,12 +2499,26 @@ paths:
                 properties:
                   id:
                     type: string
-                    description: 8-character hex share ID
+                    description: 8-character hex share ID (view links) or a base64url capability token (edit links, #1791)
                     example: "1a2b3c4d"
                   url:
                     type: string
                     description: Shareable URL path
                     example: /setlist/shared/1a2b3c4d
+                  scope:
+                    type: string
+                    enum: [view, edit]
+                    description: "#1791 — the scope actually stored for this link."
+                  showSharerName:
+                    type: boolean
+                    description: "#1791 G3 — the ShowSharerName flag actually stored for this link."
+                  editAudience:
+                    type: string
+                    nullable: true
+                    enum: [anyone, authenticated, null]
+                    description: |
+                      #1791 G4/G4-org — the edit audience actually STORED (after any
+                      org-mandate clamp), or `null` for a view-scope link.
         "400":
           description: Invalid request body
           content:
@@ -2376,8 +2560,11 @@ paths:
       tags: [Setlists]
       summary: Retrieve a shared setlist
       description: |
-        Retrieve a shared setlist by its short hex ID. Returns public-safe
-        fields only (the owner UUID is excluded).
+        Retrieve a shared setlist by its share id — a short hex string (view
+        links) or a base64url capability token (#1791 edit links). Returns
+        public-safe fields only (the owner id/email are never echoed); an
+        `edit`-scope id additionally resolves `canWrite`/`lockReason` and, when
+        writable, the editable `songsDetailed` shape.
       parameters:
         - name: action
           in: query
@@ -2388,7 +2575,7 @@ paths:
         - name: id
           in: query
           required: true
-          description: 8-character hex setlist ID
+          description: Share id — 8-character hex (view) or a base64url capability token (edit, #1791)
           schema:
             type: string
             example: "1a2b3c4d"
@@ -5857,43 +6044,10 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
-  /api.php?action=suggest:
-    get:
-      operationId: suggest
-      tags: [Discovery]
-      summary: Typeahead suggestions for the search box
-      description: |
-        Lightweight, relevance-ranked title typeahead (live MySQL). Uses the
-        same FULLTEXT BOOLEAN prefix strategy as `action=search` (`+term*`)
-        with a LIKE fallback for sub-3-char queries, returning at most 8
-        minimal rows. Honours the active language filter. Powers the header
-        autocomplete (#1014).
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [suggest] }
-        - name: q
-          in: query
-          required: true
-          schema: { type: string, minLength: 2 }
-      responses:
-        "200":
-          description: Suggestion list (empty when q is shorter than 2 chars)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  suggestions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:       { type: string, example: CP-0202 }
-                        title:    { type: string, example: Amazing Grace }
-                        songbook: { type: string, example: CP }
-                        number:   { type: integer, nullable: true, example: 202 }
+  # /api.php?action=suggest — REMOVED in #307 (header-search autocomplete was
+  # dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
+  # endpoint had no in-repo, native or documented-external consumer). The live
+  # search is `action=search`. Re-add if a real typeahead is ever built.
 
   /api.php?action=related_songs:
     get:
@@ -6291,6 +6445,153 @@ paths:
           description: Missing fields, invalid email, or self-invite
         "404":
           description: Setlist not owned by caller, or no user with that email
+
+  /api.php?action=setlist_token_update:
+    post:
+      operationId: setlistTokenUpdate
+      tags: [Setlists — Collaboration]
+      summary: Edit a shared set list through an edit-scope capability link (#1791)
+      description: >
+        Collab-by-link write. NO account required by default — the edit token in
+        the body is the authorisation (the owner's "share an edit link, like
+        cloud storage" model) UNLESS the link's edit audience (#1791 G4/G4-org)
+        is `authenticated`, in which case a signed-in requester is required
+        too. Same-origin only: requires `X-Requested-With:
+        XMLHttpRequest` and, if present, an `Origin`/`Referer` host matching the
+        server. Rate-limited PER TOKEN (30/min), not per IP (a NAT-shared
+        congregation is one IP). Refuses a view-only (403), revoked/expired (410),
+        owner-account-locked (403), or sign-in-required (401) link. Writes only
+        the owner's one live set list — never inserts or deletes a row. Dormant
+        (409) until the `Set-list share links` migration has run.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_token_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shareId, songs]
+              properties:
+                shareId: { type: string, description: The edit-scope capability token }
+                songs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:       { type: string }
+                      title:    { type: string }
+                      songbook: { type: string }
+                      number:   { type: integer }
+                      arrangement: { type: array, items: { type: integer } }
+                name: { type: string, description: Optional rename; omit to leave the title }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  changed: { type: integer }
+                  songs:   { type: array, items: { type: object } }
+        "401":
+          description: |
+            #1791 G4 — the link's edit audience is `authenticated` and the
+            requester is not signed in. Distinct from 403 (rule #35) so the
+            client can branch on STATUS to prompt sign-in rather than showing
+            a generic error toast.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string, example: "Sign in to edit this set list." }
+                  reason: { type: string, enum: [signin_required], example: signin_required }
+        "403": { description: View-only link, cross-origin, or owner locked }
+        "409": { description: Edit links not migrated on this server }
+        "410": { description: Link revoked or expired }
+        "413": { description: Request body too large }
+        "429": { description: Per-token rate limit exceeded }
+
+  /api.php?action=setlist_share_list:
+    get:
+      operationId: setlistShareList
+      tags: [Setlists — Collaboration]
+      summary: List the caller's share links for one of their set lists (#1791)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_share_list] }
+        - name: setlistId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The owner's share links (empty until the migration has run)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        shareId:   { type: string }
+                        scope:     { type: string, enum: [view, edit] }
+                        label:     { type: string, nullable: true }
+                        url:       { type: string }
+                        created:   { type: string, format: date-time, nullable: true }
+                        lastUsed:  { type: string, format: date-time, nullable: true }
+                        viewCount: { type: integer }
+                        editCount: { type: integer }
+                        revoked:   { type: boolean }
+                        expiresAt: { type: string, format: date-time, nullable: true }
+
+  /api.php?action=setlist_share_revoke:
+    post:
+      operationId: setlistShareRevoke
+      tags: [Setlists — Collaboration]
+      summary: Hard-revoke one of the caller's share links (#1791)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_share_revoke] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shareId]
+              properties:
+                shareId: { type: string }
+      responses:
+        "200":
+          description: Revoked (the read path then refuses the link at every scope)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  revoked: { type: boolean }
+        "403": { description: Caller does not own this link }
+        "404": { description: No such link }
+        "409": { description: Edit links not migrated on this server }
 
   /api.php?action=setlist_collab_list:
     get:
@@ -10185,6 +10486,179 @@ paths:
           description: Tune not found
 
   # ===========================================================================
+  # ADMIN — LICENCE TYPES  (#459 / #1769 P4)
+  #
+  # CRUD over the licence vocabulary (tblLicenceTypes): the tokens every
+  # licence store writes, what each legally covers, and any access tier it
+  # confers. The web page /manage/licence-types and these JSON twins share
+  # ONE core (includes/licence_type_admin.php). Gated on the
+  # manage_licence_types entitlement (default: admin + global_admin).
+  # ===========================================================================
+  /api.php?action=admin_licence_type_create:
+    post:
+      operationId: adminLicenceTypeCreate
+      tags: [Admin — Licence Types]
+      summary: Create a curator-defined licence type
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLicenceTypeInput"
+      responses:
+        "200":
+          description: Licence type created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Validation error (bad/missing key, label, coverage kind, authority)
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: Duplicate key, or the tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_update:
+    post:
+      operationId: adminLicenceTypeUpdate
+      tags: [Admin — Licence Types]
+      summary: Update a licence type (LicenceKey is immutable)
+      description: |
+        The `key` is never changed — too many stores reference it — so it is
+        ignored on update. Omitting `covers` clears coverage; a ticked kind
+        that already carried a qualifier object keeps it verbatim.
+        Editing `confers_tier`/`enabled` takes effect on members' resolved
+        tiers immediately, even while content gating is off.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminLicenceTypeInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Licence type updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: The tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_toggle:
+    post:
+      operationId: adminLicenceTypeToggle
+      tags: [Admin — Licence Types]
+      summary: Flip a licence type's Enabled flag
+      description: |
+        A disabled licence type is excluded from pickers + the registry union
+        but kept so historical rows keep resolving their label — the
+        soft-retire path, distinct from delete.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_toggle] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  enabled: { type: integer, description: The new Enabled state (0 or 1). }
+        "400":
+          description: Missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: The tblLicenceTypes table is not yet migrated on this environment
+
+  /api.php?action=admin_licence_type_delete:
+    post:
+      operationId: adminLicenceTypeDelete
+      tags: [Admin — Licence Types]
+      summary: Delete a curator licence type (refused for system/referenced rows)
+      description: |
+        Refused (409) when the row is a shipped system seed — disable it
+        instead — or when any store (organisations, org/content licences,
+        require_licence restrictions, song rights facts, songbook defaults)
+        still references its key. Disable it to retire it safely.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_licence_type_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing id
+        "403":
+          description: manage_licence_types entitlement required
+        "409":
+          description: Refused — system row, still-referenced key, or table not migrated
+
+  # ===========================================================================
   # ADMIN — ANALYTICS  (#719 PR 2d)
   # ===========================================================================
 
@@ -10543,6 +11017,36 @@ paths:
           content: { text/html: { schema: { type: string } } }
         "400":
           description: Missing work slug
+
+  /api.php?page=publisher:
+    get:
+      operationId: pagePublisher
+      tags: [Pages]
+      summary: Publisher public page HTML fragment (#93)
+      description: |
+        Renders `/publisher/<slug>` — the public page for one publisher
+        (company / person / imprint), listing every songbook it published
+        plus registry metadata (parent, city, industry IDs, aliases).
+        Resolution is a three-rung ladder (rule #33): exact `tblPublishers.Slug`
+        match, then a name-fold over `tblPublishers.Name`, then the same fold
+        over `tblPublisherAliases` (a renamed publisher's old name becomes an
+        alias, so old links keep resolving). A friendly empty/404 state when
+        the registry isn't migrated or the slug is unknown.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [publisher] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: hope-publishing-company }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing publisher slug
 
   /api.php?page=tune:
     get:
@@ -11170,6 +11674,21 @@ paths:
         ⚠ A namespace-less POST still replaces the WHOLE blob, so it clears
         every namespace. Isolation between products holds once all writers
         name a namespace.
+
+        Known iHymns-owned namespaces (not an exhaustive/enforced list — any
+        name matching the grammar is accepted): `ihymns.push` (notification
+        preferences), `list_sorts` (#1786 Option B — the public "Sort ▾"
+        control's per-surface spec, `{ "<surface>": [{key,dir},…] }`,
+        account-synced across a signed-in user's devices; a device that
+        never signs in keeps its own copy in localStorage only).
+
+        A NAMESPACED write additionally requires the request be genuinely
+        same-origin (`validateCsrfRequest()`, rule #29): either a valid
+        `csrf_token` in the body, or the `X-Requested-With` header with no
+        cross-origin `Origin`/`Referer` — which every same-origin
+        `apiFetch()` call already sends by default, so this is not an extra
+        step for a normal browser client. The legacy whole-blob POST is
+        unaffected.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -11216,6 +11735,12 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: |
+            NAMESPACED write only — validateCsrfRequest() rejected the
+            request as not genuinely same-origin (rule #29). Never returned
+            for the legacy whole-blob POST.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "413":
           description: |
@@ -11559,6 +12084,23 @@ paths:
                   maximum: 9999
                 state:
                   $ref: "#/components/schemas/LiveSessionState"
+                idleTimeoutMins:
+                  type: integer
+                  nullable: true
+                  minimum: 5
+                  maximum: 240
+                  example: 60
+                  description: >-
+                    #1798 — declare THIS session's leader-idle auto-close
+                    window at "Go Live" time (clamped to [5, 240]; 240 =
+                    "until I end it" — the existing 4-hour hard ceiling).
+                    Overrides the app->org->user resolved default for this
+                    one session only. If the host is subject to an
+                    ENFORCING org idle-timeout lock, the chosen value is
+                    further capped at that lock — the org's lock always
+                    wins for the host, even when they ask for longer.
+                    Omit to keep today's resolved-default behaviour.
+                    No-op (ignored) on an un-migrated install.
       responses:
         "200":
           description: Session started
@@ -11570,6 +12112,24 @@ paths:
                   ok: { type: boolean, example: true }
                   code: { type: string, example: "7K3PXM" }
                   revision: { type: integer, example: 0 }
+                  sessionId:
+                    type: integer
+                    description: >-
+                      Numeric session id (#1429) — register a native-app Live
+                      Activity push token against it.
+                  idleTimeoutMins:
+                    type: integer
+                    nullable: true
+                    example: 15
+                    description: >-
+                      #1770/#1798 — the leader-idle auto-close timeout
+                      (minutes) actually STAMPED on this session at create
+                      time — the request body's `idleTimeoutMins` when the
+                      caller chose one (subject to any enforcing org cap),
+                      else the app-default -> org-override -> user-preference
+                      precedence chain. `null` on an un-migrated install
+                      (additive; absent from every client before this field
+                      existed — safe to ignore).
         "400":
           description: Unknown songId
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -11650,6 +12210,13 @@ paths:
       description: |
         Keepalive only — refreshes `LastHeartbeatAt` + the 4-hour expiry
         but does NOT bump `StateRevision` (nothing changed for followers).
+        #1770 — when the session has gone leader-idle (no genuine
+        interaction within its resolved `idleTimeoutMins`), `ok` answers
+        `false` even though the row was touched — the client already treats
+        `ok: false` as "session ended" (back-compat: a pre-#1770 client
+        never sends `leaderActive` and is therefore never itself the reason
+        a session goes idle, but it IS still subject to another leader's
+        idle-close the same way it was already subject to a host-side end).
       security:
         - bearerAuth: []
       parameters:
@@ -11666,9 +12233,21 @@ paths:
               required: [code]
               properties:
                 code: { type: string, example: "7K3PXM" }
+                leaderActive:
+                  type: boolean
+                  default: false
+                  description: >-
+                    #1770 — an EXPLICIT "a human genuinely interacted with
+                    the app since the last beat" flag (pointerdown/keydown
+                    while hosting). The automated 30s beat ALONE must never
+                    set this — only a real interaction does, or an abandoned
+                    tab would never idle-close. Omitted/false on every
+                    client before #1770 (additive; the idle clock simply
+                    isn't fed by such a client, matching pre-#1770
+                    behaviour where nothing ever idle-closed a session).
       responses:
         "200":
-          description: '`ok` reflects whether the session is still active and owned by this user.'
+          description: '`ok` reflects whether the session is still active, owned by this user, and not idle-closed (#1770).'
           content:
             application/json:
               schema:
@@ -11720,6 +12299,100 @@ paths:
         "405":
           description: POST method required
 
+  /api.php?action=live_follow_extend:
+    post:
+      operationId: liveFollowExtend
+      tags: [Live Follow]
+      summary: Extend/keep a running Quick session alive mid-service (#1798)
+      description: |
+        Widens the leader-idle auto-close window on an ALREADY-RUNNING
+        session AND resets the idle clock to now, so the full chosen
+        window applies from the moment of extending (not whatever fraction
+        of the old window remained) — the fix for "the leader's phone died
+        during the sermon".
+
+        Authorised for EITHER:
+          - the session's own HOST, or
+          - an admin/owner of an organisation the HOST belongs to
+            (resolved via the host's `tblOrganisationMembers` rows — Quick
+            sessions keep `OrgId = NULL`, so this is never read from the
+            session itself), or
+          - a site admin/global_admin.
+
+        A HOST extending is capped at their own enforcing-org idle-timeout
+        lock, exactly as at `live_follow_create`. An org-admin/site-admin
+        extending on the host's behalf is capped only at the global
+        [5, 240] band — they hold the authority to override that lock.
+
+        Existence-gated on the #1770 idle-timeout migration: returns `409`
+        (not `404`/`400`) on an un-migrated install so a client can tell
+        "not available here yet" apart from "wrong code" (rule #35).
+        Rate-limited to 60 extends / hour / user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_extend] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, idleTimeoutMins]
+              properties:
+                code:
+                  type: string
+                  description: The session code from `live_follow_create` (4-12 alphanumeric).
+                  example: "7K3PXM"
+                idleTimeoutMins:
+                  type: integer
+                  minimum: 5
+                  maximum: 240
+                  example: 120
+                  description: >-
+                    Requested new window in minutes; clamped to [5, 240]
+                    (240 = "until I end it"), then further capped per the
+                    host-vs-org-admin rule described above. The response's
+                    `idleTimeoutMins` is the value actually APPLIED.
+      responses:
+        "200":
+          description: Window extended and the idle clock reset to now
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  idleTimeoutMins:
+                    type: integer
+                    example: 120
+                    description: The idle-timeout window actually applied (after clamping/capping).
+        "400":
+          description: Invalid session code, or idleTimeoutMins missing/non-numeric
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Neither the host, an admin/owner of an org the host belongs to, nor a site admin
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Session not found or ended
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "409":
+          description: >-
+            EITHER this install has not run the #1770 idle-timeout migration
+            yet, OR the session ended between the resolve and the update
+            (race) — the two are distinguished only by the error message,
+            never by status (rule #35 applies to the CLIENT's branching,
+            not to every message this endpoint can return).
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /api.php?action=live_follow_join:
     get:
       operationId: liveFollowJoin
@@ -11733,7 +12406,9 @@ paths:
         CODE remains the real access control. Rate-limited to 120 / 60s
         per IP (generous — a whole congregation joins over a minute or
         two behind one church-wifi IP). Missing/expired/wrong code all
-        return the SAME 404 message (anti-probe).
+        return the SAME 404 message (anti-probe). Byte-identical for every
+        client — see the `post` operation on this SAME path for the #1770
+        additive presence-minting mode.
       parameters:
         - name: action
           in: query
@@ -11756,6 +12431,81 @@ paths:
                   followToken:
                     type: string
                     description: Stateless per-follower token — pass as `token` to `live_follow_poll`.
+                  hostDisplayName: { type: string }
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+        "400":
+          description: Invalid session code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+        "404":
+          description: Session not found, expired, or the code is wrong (identical message for all three)
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+    post:
+      operationId: liveFollowJoinPresence
+      tags: [Live Follow]
+      summary: Join a Live Follow session AND mint a CCLI-unlock presence token (#1770 req #3/#6)
+      description: |
+        Additive presence-minting mode — the session `code` is STILL read
+        from the query string (identical to the `get` operation above),
+        never the body; only the METHOD changes to POST and the body
+        supplies `presenceDeviceId`. On success mints (or re-activates, on
+        a re-join) a `tblServicePresence` row and returns `presenceToken`
+        in the response, exactly like `service_join` already does for a
+        Service-Mode congregant — the client then sets the SAME
+        `ihymns_sf_presence_token` cookie the Phase-3 content gate reads,
+        which is what lets a Quick host's followers read gated lyrics with
+        the CCL notice for the life of the session (bound as narrowly as
+        the mechanism allows — see `serviceMode_presenceCcliNumber()`'s
+        doc-block for the full licensing-flag reasoning). Table-existence-
+        gated: on an install without `tblServicePresence` this degrades to
+        the SAME response as the `get` operation, minus `presenceToken`
+        (always `null` then). Best-effort: a presence-mint failure never
+        fails an otherwise-valid join.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_join] }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, example: "7K3PXM" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [presenceDeviceId]
+              properties:
+                presenceDeviceId:
+                  type: string
+                  maxLength: 64
+                  description: >-
+                    A durable, client-minted anonymous device id (NOT a
+                    login) — the SAME id `service_join` accepts, so a
+                    device shares one identity across both follow paths.
+      responses:
+        "200":
+          description: Joined — same shape as the `get` response, plus `presenceToken`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string }
+                  followToken: { type: string }
+                  presenceToken:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The CCLI-unlock presence token (43 chars), or `null`
+                      when the presence table doesn't exist yet or minting
+                      failed — the join itself still succeeds either way.
                   hostDisplayName: { type: string }
                   currentSongId: { type: string, nullable: true }
                   componentIndex: { type: integer, nullable: true }
@@ -12417,6 +13167,315 @@ paths:
           description: Session control tokens are not available yet (tblSessionControlTokens not migrated)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  # ---------------------------------------------------------------------------
+  # EXTERNAL PRESENTATION-APP DRIVER (#1770 C4) — `tblServiceDriverKeys`
+  # shipped dormant in #1770 C1; every action below is
+  # serviceDriverKeysTableExists()-gated (503 un-migrated). `service_drive`
+  # is the stable internal contract an out-of-repo automation (a
+  # ProPresenter-class shim, a Companion webhook, a curl loop) drives a
+  # church's Service-Mode session through, authenticated by a durable
+  # org-scoped driver key rather than a login — its consumer is, by
+  # construction, out-of-repo and therefore invisible to any in-repo scan
+  # (the same shape as the admin/org JSON API-parity family elsewhere in
+  # this document). The three `service_driver_key_*` lifecycle actions are
+  # RESERVED: their consumer is the "Presentation-app control" admin card on
+  # /manage/service-projection, which is deferred to a later #1770 commit —
+  # see tests/php/fixtures/orphan-allowlist.php's matching entries.
+  # ---------------------------------------------------------------------------
+
+  /api.php?action=service_drive:
+    post:
+      operationId: serviceDrive
+      tags: [Service Mode]
+      summary: Drive a service session's current song/section from an external presentation-app (#1770 C4)
+      description: |
+        Authenticated by a driver key (`Authorization: Bearer <key>` or
+        `X-API-Key: <key>`), NOT a login — this is the endpoint an
+        unattended shim/automation calls on every slide change. Every
+        session resolution is scoped to the driver key's OWN organisation
+        (and, when the key carries one, its own venue) — a key can never
+        resolve, let alone drive, another organisation's session.
+
+        Resolve a session either by an explicit `sessionId`, or by
+        `venueId` (falling back to the key's own bound venue) — the venue
+        path picks the freshest currently-heartbeating `service`-kind
+        session there, which is what lets a shim's config stay static
+        across every service that venue ever runs.
+
+        `songId` may be omitted to keep the session's CURRENT song and
+        only change `sectionIndex`/`sectionRef`. `songRef` (free-text
+        title resolution) is explicitly NOT supported yet — a request
+        that includes it always answers `422`, so a shim fails loud
+        rather than silently. `sectionRef` (a free-text label like
+        `"Verse 2"`, `"V2"`, `"Chorus"`, `"C"`, `"Bridge"`) is resolved
+        server-side against the song's own arrangement-projected render
+        order; an unresolvable reference falls back to a song-level
+        broadcast (`sectionResolved: false`) rather than guessing.
+        `sectionIndex`, when present, is used as-is and wins over
+        `sectionRef`.
+
+        Rate-limited PER KEY (600 / min) — never per-IP. A separate,
+        generous per-IP probe cap (300 / min) exists only to bound
+        pre-authentication lookups from an unidentified caller.
+      security:
+        - driverKeyAuth: []
+        - driverKeyAuthHeader: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_drive] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: integer
+                  description: Explicit target session. Omit to resolve by venueId instead.
+                venueId:
+                  type: integer
+                  description: Resolve the freshest live session at this venue. Falls back to the key's own bound VenueId when omitted.
+                songId:
+                  type: string
+                  nullable: true
+                  example: CP-0202
+                  description: Omit to keep the session's current song and only change section/state.
+                songRef:
+                  type: string
+                  description: NOT SUPPORTED YET — any non-empty value returns 422.
+                sectionIndex:
+                  type: integer
+                  minimum: 0
+                  maximum: 9999
+                  description: Explicit render-order component index. Wins over sectionRef when both are sent.
+                sectionRef:
+                  type: string
+                  example: "Verse 2"
+                  description: Free-text section label ("Verse 2" / "V2" / "Chorus" / "C" / "Bridge" / a bare number, which defaults to verse), resolved server-side.
+                state:
+                  $ref: "#/components/schemas/LiveSessionState"
+      responses:
+        "200":
+          description: Broadcast applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  sessionId: { type: integer }
+                  revision: { type: integer }
+                  sectionResolved:
+                    type: boolean
+                    nullable: true
+                    description: 'true = sectionIndex/sectionRef resolved to a component; false = a sectionRef was given but could not be resolved (fell back to song-level); null = neither was given.'
+        "401":
+          description: Missing or invalid/revoked driver key
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "400":
+          description: Unknown songId, or no venue could be resolved
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown or ended session for this key's organisation/venue/channel (one opaque message)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "422":
+          description: songRef was sent — not supported yet
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: Driver keys are not available yet (tblServiceDriverKeys not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=service_driver_key_mint:
+    post:
+      operationId: serviceDriverKeyMint
+      tags: [Service Mode]
+      summary: Mint a durable org-scoped driver key for an external presentation-app (#1770 C4)
+      description: |
+        **Reserved: no shipped client uses this yet** — its consumer is
+        the "Presentation-app control" admin card deferred to a later
+        #1770 commit. Requires an authenticated global/site admin, or an
+        org-admin of the TARGET organisation, plus the same-origin CSRF
+        check (`validateCsrfRequest()`, rule #29). Rate-limited to 10
+        mints / hour per user. Returns the RAW key exactly once — only its
+        hash is ever stored.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_driver_key_mint] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orgId, label]
+              properties:
+                orgId: { type: integer }
+                label: { type: string, maxLength: 120, example: "Sanctuary ProPresenter" }
+                venueId:
+                  type: integer
+                  description: Optional narrowing to one venue of the organisation.
+                protocol:
+                  type: string
+                  enum: [generic, propresenter, openlp]
+                  default: generic
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Key minted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  key:
+                    type: string
+                    description: The RAW driver key — shown exactly once, never recoverable afterwards.
+                  id: { type: integer }
+                  prefix: { type: string, description: Non-secret leading characters, for admin identification. }
+        "400":
+          description: Missing organisation/label, or an unknown venue for that organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate), or not authorised for this organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Driver keys are not available yet (tblServiceDriverKeys not migrated), or the mint failed — retry
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=service_driver_key_revoke:
+    post:
+      operationId: serviceDriverKeyRevoke
+      tags: [Service Mode]
+      summary: Revoke a driver key (#1770 C4)
+      description: |
+        **Reserved: no shipped client uses this yet** — see
+        `service_driver_key_mint`'s header note. Same operator
+        authorisation + CSRF gate. Retirement is a flag (`RevokedAt` +
+        `IsActive = 0`), never a delete — the row survives for audit.
+        Scoped to `orgId` so an org-admin cannot revoke another
+        organisation's key by guessing/incrementing an id.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_driver_key_revoke] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, orgId]
+              properties:
+                id: { type: integer }
+                orgId: { type: integer }
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: '`ok: true` with `revoked` indicating whether a matching, not-already-revoked key was found.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revoked: { type: boolean }
+        "400":
+          description: Missing key id or organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate), or not authorised for this organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Driver keys are not available yet (tblServiceDriverKeys not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=service_driver_key_list:
+    get:
+      operationId: serviceDriverKeyList
+      tags: [Service Mode]
+      summary: List an organisation's driver keys (#1770 C4)
+      description: |
+        **Reserved: no shipped client uses this yet** — see
+        `service_driver_key_mint`'s header note. Requires an
+        authenticated global/site admin, or an org-admin of the
+        requested organisation. Never returns the key hash or any
+        recoverable form of the raw key — only the non-secret prefix.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_driver_key_list] }
+        - name: orgId
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: 'Empty `keys: []` both when the organisation has none AND when the table is not yet migrated (a read degrades quietly, never a 503).'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        venueId: { type: integer, nullable: true }
+                        prefix: { type: string }
+                        label: { type: string }
+                        scope: { type: string, example: broadcast }
+                        protocol: { type: string, example: generic }
+                        active: { type: boolean }
+                        expiresAt: { type: string, nullable: true }
+                        revokedAt: { type: string, nullable: true }
+                        lastUsedAt: { type: string, nullable: true }
+                        createdAt: { type: string }
+        "400":
+          description: Missing organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised for this organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
 # =============================================================================
 # Editor API v2 (admin) — #1201 per-action breakout
 # =============================================================================
@@ -12580,6 +13639,49 @@ paths:
                   songbook: { type: string }
         "400":
           description: Unknown songbook abbreviation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=duplicate_song:
+    post:
+      operationId: editorDuplicateSong
+      tags: [Editor API v2]
+      summary: Duplicate a song into a hidden staging book as the start of a new songbook entry
+      description: |
+        POST, `edit_songs` role only. Copies an existing song — lyrics,
+        chords, credits, tags, external links, arrangement, key, alternative
+        titles and metadata — into the hidden `PENDING` staging songbook
+        (`IsOfficial=0`, `IsDisabled=1`) via the shared revision-restore copy
+        engine (`ed2_applySongSnapshot`), and returns the new song's id. The
+        copy is opened in the editor with the **Songbook and Song number
+        fields empty**; assigning a real songbook (the #1679 re-key) turns it
+        into a brand-new catalogue song. Reset on the copy: `Number`,
+        `Verified`, recording-level `Isrc`, media flags (media is not copied);
+        a fresh `PublicId`; a `'duplicate'` revision. (#1783)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourceId]
+              properties:
+                sourceId: { type: string, example: MP-1008, description: "SongId of the song to duplicate." }
+      responses:
+        "200":
+          description: Song duplicated into the PENDING staging book
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  songId: { type: string, example: PENDING-000001, description: "The new staging-book SongId." }
+                  pendingSongbook: { type: string, example: PENDING }
+        "404":
+          description: Source song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Source song is soft-deleted
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /manage/editor/api2.php?action=delete_song:
@@ -14668,6 +15770,26 @@ components:
       description: |
         Alternative to the Bearer header for the same machine-to-machine
         key — `X-API-Key: ihk_live_…`.
+    driverKeyAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Durable, org-scoped driver key (#1770 C4) for external
+        presentation-app automation (`service_drive`) — a DIFFERENT
+        credential family from `ingestApiKey` above (`tblServiceDriverKeys`,
+        not `tblApiKeys`): a church's shim may only ever drive its OWN
+        organisation's Service-Mode sessions, whereas an ingest key is
+        site-admin-minted with no org scoping. An org-admin mints it at
+        `service_driver_key_mint`; stored only as a SHA-256 hash + a short
+        prefix. Send as `Authorization: Bearer ihdrv_live_…` or,
+        equivalently, the `X-API-Key` header.
+    driverKeyAuthHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Alternative to the Bearer header for the same #1770 driver key —
+        `X-API-Key: ihdrv_live_…`.
 
   responses:
     RateLimited:
@@ -15009,6 +16131,29 @@ components:
           nullable: true
           description: Library of Congress Classification (#672)
           example: M2117
+        openLibraryWorkId:
+          type: string
+          nullable: true
+          description: OpenLibrary Work ID (#1765)
+          example: OL102749W
+        openLibraryEditionId:
+          type: string
+          nullable: true
+          description: OpenLibrary Edition ID (#1765)
+          example: OL7357422M
+        isPublicDomain:
+          type: boolean
+          description: Whether the songbook, as a published work, is in the public domain (#1765). Informational only — it does not itself gate access to any content.
+          example: false
+        isDisabled:
+          type: boolean
+          description: >-
+            Whether the songbook is disabled (#1765). A disabled songbook is
+            hidden from every public surface but stays fully visible and
+            editable under /manage. Always false in public API responses —
+            disabled books are filtered out server-side — and only ever true
+            in admin-mode reads.
+          example: false
 
     SongbookWriteInput:
       type: object
@@ -15257,11 +16402,15 @@ components:
 
     SharedSetlist:
       type: object
-      description: A publicly shared setlist (owner UUID excluded)
+      description: A publicly shared setlist (owner id/email excluded — a strict allow-list, #1380/#1535/#1791)
       properties:
         id:
           type: string
           description: 8-character hex share ID
+          example: "1a2b3c4d"
+        shareId:
+          type: string
+          description: "#1791 — the resolved share id (8-character hex for a view link, or a base64url capability token for an edit link). Echoes the id/token the request was made with."
           example: "1a2b3c4d"
         name:
           type: string
@@ -15271,6 +16420,19 @@ components:
           items:
             type: string
           example: ["CP-0202", "MP-0042"]
+        live:
+          type: boolean
+          description: "#1380 — true when this share re-resolves the owner's CURRENT set list at read time; false for a frozen snapshot."
+        scope:
+          type: string
+          enum: [view, edit]
+          description: "#1791 — view (read-only, the default) or edit (a collab-by-link capability)."
+        canWrite:
+          type: boolean
+          description: "#1791 — server-stated write capability; the client never re-derives this. Requires scope=edit, a live link, an unlocked owner account (#1698), and — when the link's edit audience is 'authenticated' — a signed-in requester."
+        isOwner:
+          type: boolean
+          description: "#1535 — true only when the CURRENT authenticated viewer is this share's owner. The owner's identity is never otherwise echoed."
         created:
           type: string
           format: date-time
@@ -15286,6 +16448,27 @@ components:
             type: array
             items:
               type: integer
+        songsDetailed:
+          type: array
+          description: "#1791 — the editable object shape ({id, title, songbook, number, arrangement?}), present ONLY when canWrite is true. Same data the view already exposes; no new disclosure."
+          items:
+            type: object
+        lockReason:
+          type: string
+          nullable: true
+          description: |
+            #1791 — present only when canWrite is false, explaining why:
+            `signin_required` (G4 — the link's edit audience is `authenticated`
+            and the requester is not signed in), or one of the pre-existing
+            #1698 owner-lock reasons (the owner's account is disabled/deleted).
+        sharedByName:
+          type: string
+          nullable: true
+          description: |
+            #1791 G3 — the owner's display name, present ONLY when the link's
+            `ShowSharerName` flag is set AND a live owner is known. Strictly
+            opt-in per link (default off); the owner id/email are never echoed
+            regardless of this flag.
 
     UserSetlist:
       type: object
@@ -16068,6 +17251,56 @@ components:
           items:
             $ref: "#/components/schemas/AdminTuneCredit"
           description: Full replacement list, same omit-to-leave-unchanged posture as `aliases`.
+
+    AdminLicenceTypeInput:
+      type: object
+      description: |
+        Shared input for `admin_licence_type_create` and
+        `admin_licence_type_update` (#459 / #1769 P4). Mirrors
+        `manage/licence-types.php`'s POST field names exactly — both surfaces
+        validate via the SAME `licenceTypeAdminValidate()`
+        (`includes/licence_type_admin.php`). On update `key` is ignored
+        (LicenceKey is immutable).
+      required: [key, label]
+      properties:
+        key:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{1,29}$'
+          description: Lowercase token, immutable after create — the value every licence store writes. Ignored on update.
+        label:
+          type: string
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 255
+        confers_tier:
+          type: string
+          nullable: true
+          description: A live tblAccessTiers.Name this licence also grants its holders. Blank/omitted = confers no tier. Validated against the live tiers table.
+        covers:
+          type: array
+          items:
+            type: string
+            enum: [lyrics_display, lyrics_print, music_reproduction, audio_playback]
+          description: Coverage kinds this licence legally unlocks. Full replacement list; empty/omitted clears coverage. Unknown kinds are rejected.
+        requires_number:
+          type: boolean
+          description: 1 = recording this licence needs a licence number (drives form validation only, never enforcement).
+        authority:
+          type: string
+          nullable: true
+          pattern: '^[a-z][a-z0-9_]{0,29}$'
+          description: Optional issuing-body token (e.g. ccli). Blank = unspecified.
+        authority_ref:
+          type: string
+          maxLength: 50
+          nullable: true
+        enabled:
+          type: boolean
+          description: 0 = soft-disabled (excluded from pickers/registry union, kept for historical resolution). Defaults to 1 on create.
+        sort_order:
+          type: integer
+          minimum: 0
 
     AdminDataHealthResponse:
       type: object

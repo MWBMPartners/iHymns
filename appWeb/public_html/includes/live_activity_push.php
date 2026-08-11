@@ -306,6 +306,12 @@ function liveActivitySessionPush(\mysqli $db, int $sessionId, string $event = 'u
            applies. */
         $channel = serviceMode_channel();
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        /* @disabled-visible: resolves an already-broadcast song; the
+           broadcaster gate (service_broadcast / live_follow_update, both
+           now songServableSql()-filtered) is the filter POINT — by the time
+           a song is CurrentSongId here it was already accepted as
+           servable, so this push-title lookup does not need to re-ask
+           (#1765). */
         $sStmt = $db->prepare(
             /* #1694 — the visibility predicate lives in the LEFT JOIN's ON
                clause, NOT the WHERE: in the WHERE it would turn the LEFT JOIN

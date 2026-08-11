@@ -55,6 +55,23 @@ declare(strict_types=1);
         </span>
     </div>
 
+    <!-- Sort control (#1786) — array mode: favourites.js reads the saved
+         spec and sorts its in-memory array before rendering (there is no
+         data-list-sort-list container — a favourites list is JS-rendered
+         from localStorage, not server-rendered DOM to reorder in place).
+         Wired via wireListSortControl('favorites', …) from
+         Favorites.loadFavoritesList(). -->
+    <?php
+        $listSortSurface = 'favorites';
+        $listSortDefault = 'Date added';
+        $listSortOptions = [
+            'added' => ['label' => 'Date added', 'type' => 'date',   'dir' => 'desc'],
+            'title' => ['label' => 'Title',      'type' => 'text',   'dir' => 'asc'],
+            'book'  => ['label' => 'Songbook & number', 'type' => 'text', 'dir' => 'asc'],
+        ];
+        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+    ?>
+
     <!-- Tag filter (#122) — populated by JS -->
     <div id="favorites-tag-filter" class="d-none mb-3">
         <div class="d-flex flex-wrap gap-1" id="favorites-tag-pills" role="group" aria-label="Filter by tag">

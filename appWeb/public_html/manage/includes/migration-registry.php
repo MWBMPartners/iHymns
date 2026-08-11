@@ -316,7 +316,10 @@ return [
             try {
                 /* @deleted-visible: migration probe (#1694) — backfill
                    completeness is PHYSICAL; a hidden song's ISWC still needs
-                   its Work row so the link is intact on restore. */
+                   its Work row so the link is intact on restore.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — migration probes report PHYSICAL schema/data
+                   completeness regardless of a songbook's disabled state. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Iswc IS NOT NULL AND TRIM(s.Iswc) <> ''
@@ -447,6 +450,10 @@ return [
                 return false;
             }
             try {
+                /* @disabled-visible: migration probe (#1765) — reports
+                   PHYSICAL schema/data completeness regardless of a
+                   songbook's disabled state; a disabled CP/JP/MP/SDAH/CH
+                   still needs its Language backfilled. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongbooks
                       WHERE Abbreviation IN ('CP','JP','MP','SDAH','CH')
@@ -505,7 +512,9 @@ return [
                 /* Detect any single-language songbook with at least one
                    member whose primary language subtag differs. */
                 /* @deleted-visible: migration probe (#1694) — language
-                   backfill is PHYSICAL; a hidden row still needs the tag. */
+                   backfill is PHYSICAL; a hidden row still needs the tag.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a row in a disabled songbook still needs the tag. */
                 $res = $db->query(
                     "SELECT 1
                        FROM tblSongs s
@@ -574,7 +583,10 @@ return [
                    has run. */
                 /* @deleted-visible: migration probe (#1694) — prefix/abbr
                    agreement is PHYSICAL integrity; a hidden drifted row still
-                   needs the fixup. */
+                   needs the fixup.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a drifted row in a disabled songbook still needs
+                   the fixup. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongs
                       WHERE SongbookAbbr IS NOT NULL
@@ -893,6 +905,10 @@ return [
             foreach ($mappings as $col => $slug) {
                 if (!_migProbe_columnExists($db, 'tblSongbooks', $col)) continue;
                 try {
+                    /* @disabled-visible: migration probe (#1765) — reports
+                       PHYSICAL backfill completeness regardless of a
+                       songbook's disabled state; a disabled book's legacy
+                       URL column still needs its external-link row. */
                     $stmt = $db->prepare(
                         "SELECT 1
                            FROM tblSongbooks b
@@ -2812,7 +2828,10 @@ return [
         'probe' => static function (\mysqli $db): bool {
             try {
                 /* @deleted-visible: migration probe (#1694) — a hidden
-                   draft-id row still needs its canonical id minted. */
+                   draft-id row still needs its canonical id minted.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a draft-id row in a disabled songbook still
+                   needs its canonical id minted. */
                 $r = $db->query("SELECT 1 FROM tblSongs WHERE SongId LIKE 'song-%' LIMIT 1");
                 $pending = ($r && $r->fetch_row() !== null);
                 if ($r) { $r->close(); }
@@ -3510,6 +3529,10 @@ return [
                    still needs its tblSongExternalIds mirror row so the link
                    is intact if that song is ever restored. Deliberately not
                    scoped to visible-only rows. */
+                /* @disabled-visible: migration probe (#1765) — same physical
+                   posture: a song in a publicly-disabled book still needs its
+                   tblSongExternalIds mirror row, so the probe is not scoped to
+                   visible-only rows. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Isrc IS NOT NULL AND s.Isrc <> ''
@@ -3595,6 +3618,9 @@ return [
                    projected from the store correctly, so the value is right
                    the moment that song is ever restored. Deliberately not
                    scoped to visible-only rows. */
+                /* @disabled-visible: migration probe (#1765) — same physical
+                   posture: reconcile completeness spans songs in publicly-
+                   disabled books too, so the probe is not scoped visible-only. */
                 $r2 = $db->query(
                     'SELECT 1 FROM tblSongs s WHERE NOT (NULLIF(s.Isrc, \'\') <=> ('
                     . songExternalIdIsrcProjectionSql('s.SongId')
@@ -3628,5 +3654,503 @@ return [
         'probe' => static fn(\mysqli $db) =>
                !_migProbe_columnExists($db, 'tblWorks', 'Bowi')
             || !_migProbe_indexExists($db, 'tblWorks', 'uq_bowi'),
+    ],
+
+    /* Commit 2 of 7 in the Songbook/Catalogue Enhancements epic (#1765,
+     * .claude/songbook-catalogue-enhancements-plan.md). Dormant schema batch
+     * — every default keeps today's behaviour byte-identical until the
+     * commit 3 read-path sweep + commit 4 admin surfaces land. */
+    'publication-metadata' => [
+        'script' => 'migrate-publication-metadata.php',
+        'card' => [
+            'title'  => 'Publication Metadata + Google Books + Internet Archive multiplicity (#1765)',
+            'body'   => 'Adds 12 dormant columns across the three publication'
+                      . ' entities: <code>tblSongbooks.IsDisabled</code> /'
+                      . ' <code>IsPublicDomain</code> / <code>OpenLibraryWorkId</code> /'
+                      . ' <code>OpenLibraryEditionId</code>; <code>tblSongbookSeries.Isbn</code> /'
+                      . ' <code>Issn</code> / <code>ArkId</code> / <code>OpenLibraryWorkId</code> /'
+                      . ' <code>OpenLibraryEditionId</code>; <code>tblCatalogues.ArkId</code> /'
+                      . ' <code>OpenLibraryWorkId</code> / <code>OpenLibraryEditionId</code>.'
+                      . ' Also seeds a <code>google-books</code> row into'
+                      . ' <code>tblExternalLinkTypes</code> + its URL patterns into'
+                      . ' <code>tblExternalLinkPatterns</code> (upsert/guard, curator edits'
+                      . ' never stomped), and closes out Feature 7 (Internet Archive'
+                      . ' multiplicity): widens the existing <code>internet-archive</code>'
+                      . ' link type to also apply to songs, then backfills any non-empty'
+                      . ' <code>tblSongbooks.InternetArchiveUrl</code> into'
+                      . ' <code>tblSongbookExternalLinks</code> (the legacy column is kept,'
+                      . ' not dropped). Every new column defaults to 0/NULL and nothing'
+                      . ' reads them yet — applying this card changes zero observable'
+                      . ' behaviour on the running site. Idempotent — safe to re-run.',
+            'button' => 'Run Publication Metadata Migration',
+        ],
+        /* 14-clause OR-probe (rule #19): the 12 new columns, plus 2
+           table-conditioned seed clauses for the Google Books provider row
+           and its first URL pattern. Never `=> true`.
+           The two seed clauses are gated on their own table existing —
+           mirrors the posture every other seed-only card in this family
+           takes (e.g. 'external-links' probing !_migProbe_tableExists(...)
+           for its own prerequisite): if tblExternalLinkTypes /
+           tblExternalLinkPatterns are not yet on this install, the seed
+           step is not this card's business to force, and the 12 column
+           clauses alone still drive the card pending until the ALTERs
+           land. Once the prerequisite table DOES exist and the seed row is
+           genuinely missing, the corresponding clause fires and the card
+           goes pending again until the migration (re-)applies it — exactly
+           the same self-healing shape as 'backfill-songbook-links' above.
+           Feature 7's two data steps (6a AppliesTo widen, 6b
+           InternetArchiveUrl backfill) are deliberately NOT probed here:
+           both are additive/idempotent data operations with no "this
+           column is missing" signal of their own, and gating this card's
+           pending state on live per-songbook backfill status would leave
+           the card oscillating for as long as any curator's URL value sat
+           un-backfilled rather than reflecting schema completion, which is
+           what every other column-adding card in this registry measures. */
+        'probe' => static function (\mysqli $db): bool {
+            $columns = [
+                ['tblSongbooks', 'IsDisabled'],
+                ['tblSongbooks', 'IsPublicDomain'],
+                ['tblSongbooks', 'OpenLibraryWorkId'],
+                ['tblSongbooks', 'OpenLibraryEditionId'],
+                ['tblSongbookSeries', 'Isbn'],
+                ['tblSongbookSeries', 'Issn'],
+                ['tblSongbookSeries', 'ArkId'],
+                ['tblSongbookSeries', 'OpenLibraryWorkId'],
+                ['tblSongbookSeries', 'OpenLibraryEditionId'],
+                ['tblCatalogues', 'ArkId'],
+                ['tblCatalogues', 'OpenLibraryWorkId'],
+                ['tblCatalogues', 'OpenLibraryEditionId'],
+            ];
+            foreach ($columns as [$table, $col]) {
+                if (!_migProbe_columnExists($db, $table, $col)) { return true; }
+            }
+            try {
+                if (_migProbe_tableExists($db, 'tblExternalLinkTypes')) {
+                    $slug = 'google-books';
+                    $stmt = $db->prepare('SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1');
+                    $stmt->bind_param('s', $slug);
+                    $stmt->execute();
+                    $present = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if (!$present) { return true; }
+                }
+                if (_migProbe_tableExists($db, 'tblExternalLinkPatterns')
+                    && _migProbe_tableExists($db, 'tblExternalLinkTypes')) {
+                    $slug = 'google-books';
+                    $stmt = $db->prepare(
+                        'SELECT 1 FROM tblExternalLinkPatterns p
+                           JOIN tblExternalLinkTypes t ON t.Id = p.LinkTypeId
+                          WHERE t.Slug = ? LIMIT 1'
+                    );
+                    $stmt->bind_param('s', $slug);
+                    $stmt->execute();
+                    $present = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if (!$present) { return true; }
+                }
+            } catch (\Throwable $_e) {
+                return false;
+            }
+            return false;
+        },
+    ],
+
+    'gating-facts-licence-types' => [
+        'script' => 'migrate-add-gating-facts-and-licence-types.php',
+        'card' => [
+            'title'  => 'Gating facts + licence-type registry (#1769 P1)',
+            'body'   => 'One-pass additive-dormant batch (rule #20) for the'
+                      . ' Model-2 access consolidation: creates'
+                      . ' <code>tblLicenceTypes</code> (the #459 licence'
+                      . ' vocabulary — seeds <code>ccli</code>/<code>mrl</code>/'
+                      . '<code>ihymns_basic</code>/<code>ihymns_pro</code>/'
+                      . '<code>custom</code> with coverage + tier conferral'
+                      . ' declared), the per-song rights-requirement FACT columns'
+                      . ' (<code>tblSongs.LyricsRightsLicenceKey</code> /'
+                      . ' <code>MusicRightsLicenceKey</code>), the songbook'
+                      . ' editor-default pair, the RESERVED arrangement-grain'
+                      . ' pair on <code>tblSongArrangements</code> (#1768 Q2),'
+                      . ' and <code>tblGatingCapabilities.EnforceJson</code>;'
+                      . ' seeds <code>feature_gating_rules_enabled=0</code>'
+                      . ' (deferred from P0). Everything is DORMANT — nothing'
+                      . ' reads any of it until #1769 P2 — and idempotent;'
+                      . ' INSERT IGNORE seeds never clobber curator edits. Safe'
+                      . ' to re-run. Prerequisites: the #1066 iLyricsDB-alignment'
+                      . ' card (tblSongArrangements) and the #1481 gating-registry'
+                      . ' card (tblGatingCapabilities).',
+            'button' => 'Run Gating Facts + Licence Types Migration',
+        ],
+        /* Multi-object OR-probe (rule #19/#20): pending until EVERY schema
+           object in the batch exists AND both data legs are seeded — a partial
+           apply (an ALTER failed, or a prerequisite table was warn-skipped)
+           never shows the card green. The data legs are probed as bound
+           live-data reads, never a static true (CI test-migration-registry). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblLicenceTypes')
+                || !_migProbe_columnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongs', 'MusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongbooks', 'DefaultLyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongbooks', 'DefaultMusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongArrangements', 'MusicRightsStatus')
+                || !_migProbe_columnExists($db, 'tblSongArrangements', 'MusicRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblGatingCapabilities', 'EnforceJson')) {
+                return true;
+            }
+            $key  = 'mrl';
+            $stmt = $db->prepare('SELECT 1 FROM tblLicenceTypes WHERE LicenceKey = ? LIMIT 1');
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $haveMrl = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if (!$haveMrl) { return true; }
+            $key  = 'feature_gating_rules_enabled';
+            $stmt = $db->prepare('SELECT 1 FROM tblAppSettings WHERE SettingKey = ? LIMIT 1');
+            $stmt->bind_param('s', $key);
+            $stmt->execute();
+            $haveFlag = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$haveFlag;
+        },
+    ],
+
+    'derive-rights-facts' => [
+        'script' => 'migrate-derive-rights-facts.php',
+        'card' => [
+            'title'  => 'Derive rights facts from restrictions (#1769 P4)',
+            'body'   => 'DM-2 — one-shot, fill-NULL-only pass that copies each'
+                      . ' song&rsquo;s existing <code>require_licence</code>'
+                      . ' restriction (the licence key in'
+                      . ' <code>tblContentRestrictions.TargetId</code>) into the'
+                      . ' matching Model-2 per-song FACT column'
+                      . ' (<code>tblSongs.LyricsRightsLicenceKey</code> /'
+                      . ' <code>MusicRightsLicenceKey</code>), so the new resolver'
+                      . ' reads exactly what the old restriction rows implied.'
+                      . ' Which column a licence maps to is decided by the ONE'
+                      . ' shared fold <code>rightsFactColumnForLicence()</code>'
+                      . ' (lyrics coverage &rarr; lyrics column, music &rarr;'
+                      . ' music; plan-conferral / audio-only &rarr; no fact,'
+                      . ' reported). NEVER overwrites a fact a curator already'
+                      . ' set. Data-only (no DDL); idempotent — safe to re-run;'
+                      . ' the probe doubles as a live drift detector. DORMANT:'
+                      . ' the derived fact enforces nothing until #1769 P6.'
+                      . ' Recovery: <code>revert-derive-rights-facts.php</code>'
+                      . ' (CLI). Requires the &ldquo;Gating facts + licence-type'
+                      . ' registry&rdquo; card above.',
+            'button' => 'Derive Rights Facts',
+        ],
+        /* Data-derived drift-detecting probe (rule #19; the reconcile-isrc-denorm
+           precedent). PENDING when: the P1 fact columns aren't live yet (stays
+           pending until that prerequisite card runs — Apply-all orders it first),
+           OR any song carries a require_licence restriction whose licence maps to
+           a fact column that is still NULL (i.e. running the pass would fill
+           something). APPLIED when there is no restriction store (nothing to
+           derive) or every derivable fact is already set. The column choice comes
+           from the SAME shared fold the migration uses, so probe + migration can
+           never disagree (rule #22/#35). Any error → pending (safe direction). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblSongs', 'LyricsRightsLicenceKey')
+                || !_migProbe_columnExists($db, 'tblSongs', 'MusicRightsLicenceKey')) {
+                return true;
+            }
+            if (!_migProbe_tableExists($db, 'tblContentRestrictions')) {
+                return false;   // no restriction store ⇒ nothing to derive ⇒ applied
+            }
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+            try {
+                foreach (licenceTypesAll($db) as $key => $def) {
+                    $col = rightsFactColumnForLicence($def['covers'] ?? null);
+                    if ($col === null) { continue; }
+                    /* $col is a hard-coded fact-column constant from the shared
+                       fold (never input); $key is bound.
+                       @deleted-visible: migration completeness probe (#1694) —
+                       the reconcile-isrc precedent's exact posture. A hidden /
+                       soft-deleted song with a require_licence restriction and a
+                       NULL fact still needs deriving so the fact is correct the
+                       moment it is ever restored; the pass is complete only when
+                       NO song (visible or hidden) has an underivable NULL fact.
+                       Deliberately not scoped to visible-only rows.
+                       @disabled-visible: same posture for #1765 — a song in a
+                       disabled songbook must also have its rights fact derived, so
+                       this completeness probe must see disabled-book rows too. */
+                    $stmt = $db->prepare(
+                        "SELECT 1 FROM tblSongs s
+                           JOIN tblContentRestrictions r
+                             ON r.EntityType = 'song' AND r.EntityId = s.SongId
+                            AND r.RestrictionType = 'require_licence' AND r.TargetId = ?
+                          WHERE s.`{$col}` IS NULL LIMIT 1"
+                    );
+                    $stmt->bind_param('s', $key);
+                    $stmt->execute();
+                    $pending = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($pending) { return true; }
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+
+    'publishers-entity' => [
+        'script' => 'migrate-publishers-entity.php',
+        'card' => [
+            'title'  => 'Publishers registry (#93)',
+            'body'   => 'Creates <code>tblPublishers</code> (persons + companies,'
+                      . ' with imprint / catalogue grouping via a self-FK),'
+                      . ' <code>tblSongbookPublishers</code> (multi-publisher copyright'
+                      . ' M:N), plus the forward-looking <code>tblPublisherAliases</code>'
+                      . ' + <code>tblPublisherExternalLinks</code> (rule #20 one-pass'
+                      . ' batch). Promotes the free-text <code>tblSongbooks.Publisher</code>'
+                      . ' to a first-class registry; the free-text column is KEPT as a'
+                      . ' JOIN-free denorm display mirror, so nothing existing breaks.'
+                      . ' Backfills the registry from distinct Publisher strings + links'
+                      . ' each book. Additive + idempotent — safe to re-run.',
+            'button' => 'Run Publishers Migration',
+        ],
+        /* 4-clause OR-probe (rule #19): the four new tables. Never `=> true`.
+           The backfill has no schema signal of its own (it is INSERT IGNORE
+           against uq_Slug / uq_book_pub_role, self-healing on re-run), so —
+           exactly like 'publication-metadata' above — the card measures schema
+           completion (all four tables present), not per-row backfill status. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblPublishers')
+            || !_migProbe_tableExists($db, 'tblSongbookPublishers')
+            || !_migProbe_tableExists($db, 'tblPublisherAliases')
+            || !_migProbe_tableExists($db, 'tblPublisherExternalLinks'),
+    ],
+
+    'consolidate-org-licences' => [
+        'script' => 'migrate-consolidate-org-licences.php',
+        'card' => [
+            'title'  => 'Consolidate org licences (#1769 P5)',
+            'body'   => 'DM-1 — completes the org-licence consolidation into'
+                      . ' <code>tblOrganisationLicences</code> that the shipped'
+                      . ' &ldquo;Organisation licences (#640)&rdquo; card began.'
+                      . ' That backfill carried LicenceType + LicenceNumber but'
+                      . ' NOT the legacy <code>tblOrganisations.LicenceExpiresAt</code>;'
+                      . ' this fill-NULL-only pass carries the expiry so the join'
+                      . ' table is a genuine superset before any (deferred, gated)'
+                      . ' legacy-column retire. It also consolidates any'
+                      . ' hand-written org-scoped <code>tblContentLicences</code>'
+                      . ' ghost rows (that table has no writer, so this is a'
+                      . ' zero-row no-op on a normal install; a ghost that confers'
+                      . ' a tier is REPORTED before migrating, since the tier'
+                      . ' resolver would then see it). Verified no-op for'
+                      . ' resolution (resolveEffectiveTier unions on LicenceType'
+                      . ' only, never ExpiresAt). Data-only; idempotent — the'
+                      . ' probe doubles as a drift detector. Recovery:'
+                      . ' <code>revert-consolidate-org-licences.php</code> (CLI).'
+                      . ' Requires the &ldquo;Organisation licences (#640)&rdquo; card.',
+            'button' => 'Consolidate Org Licences',
+        ],
+        /* Data-derived drift-detecting probe (rule #19; reconcile-isrc-denorm
+           precedent). PENDING when the join table is absent (prereq card not run
+           — Apply-all orders it first), OR a legacy expiry is still uncarried, OR
+           a hand-written org-scoped ghost is not yet in the join table. APPLIED
+           otherwise. Any error → pending (safe). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblOrganisationLicences')) { return true; }
+            try {
+                if (_migProbe_columnExists($db, 'tblOrganisations', 'LicenceExpiresAt')) {
+                    $r = $db->query(
+                        "SELECT 1 FROM tblOrganisationLicences ol
+                           JOIN tblOrganisations o
+                             ON o.Id = ol.OrganisationId AND ol.LicenceType = o.LicenceType
+                          WHERE ol.ExpiresAt IS NULL
+                            AND o.LicenceExpiresAt IS NOT NULL
+                            AND o.LicenceType NOT IN ('none', '') LIMIT 1"
+                    );
+                    if ($r && $r->fetch_row() !== null) { return true; }
+                }
+                if (_migProbe_tableExists($db, 'tblContentLicences')) {
+                    $r = $db->query(
+                        "SELECT 1 FROM tblContentLicences cl
+                          WHERE cl.OrgId IS NOT NULL AND cl.LicenceType NOT IN ('none', '')
+                            AND NOT EXISTS (
+                                SELECT 1 FROM tblOrganisationLicences ol
+                                 WHERE ol.OrganisationId = cl.OrgId AND ol.LicenceType = cl.LicenceType
+                            ) LIMIT 1"
+                    );
+                    if ($r && $r->fetch_row() !== null) { return true; }
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+    'reconcile-credit-name-bytes' => [
+        'script' => 'migrate-reconcile-credit-name-bytes.php',
+        'card' => [
+            'title'  => 'Reconcile credit-name bytes (#1784)',
+            'body'   => 'Clears the &ldquo;N people are credited but aren&rsquo;t'
+                      . ' saved to the registry yet&rdquo; counter on Musicians /'
+                      . ' Credit People when it is STUCK above zero (the weeks-old'
+                      . ' &ldquo;Eddie James&rdquo; case). A song-credit row and its'
+                      . ' registry row hold the SAME name spelled with different'
+                      . ' invisible bytes (a trailing space, a non-breaking space),'
+                      . ' so the list page — which links them by EXACT byte match —'
+                      . ' never links them and the person shows &ldquo;In use&rdquo;'
+                      . ' forever. This rewrites every legacy credit row to its'
+                      . ' registry row&rsquo;s exact spelling (or normalises + auto-'
+                      . 'registers a name with no registry row at all). New credits'
+                      . ' never hit this — their bytes are trimmed at write time.'
+                      . ' Identity-preserving: it can never merge two DISTINCT people'
+                      . ' (a genuine registry duplicate is reported, not touched).'
+                      . ' Data-only; idempotent — the probe doubles as a drift'
+                      . ' detector.',
+            'button' => 'Reconcile Credit-Name Bytes',
+        ],
+        /* Data-derived drift-detecting probe (rule #19/#35 — this SQL is the same
+           definition the helper acts on and the banner counts). PENDING when any
+           REAL cited name (TRIM(Name) <> '' — blank/whitespace-only rows are junk,
+           not people, and are skipped in lockstep by the helper) has NO byte-exact
+           registry row. BINARY forces bytewise comparison (the default collation
+           is case- and trailing-space-insensitive, which is exactly what hides the
+           mismatch). APPLIED otherwise. Any error (a credit table absent on a bare
+           install) → not pending (safe — nothing to reconcile). */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $res = $db->query(
+                    "SELECT 1 FROM (
+                            SELECT Name FROM tblSongWriters
+                            UNION ALL SELECT Name FROM tblSongComposers
+                            UNION ALL SELECT Name FROM tblSongArrangers
+                            UNION ALL SELECT Name FROM tblSongAdaptors
+                            UNION ALL SELECT Name FROM tblSongTranslators
+                         ) u
+                        WHERE TRIM(u.Name) <> ''
+                          AND NOT EXISTS (
+                                SELECT 1 FROM tblMusicians p
+                                 WHERE BINARY p.Name = BINARY u.Name
+                          )
+                        LIMIT 1"
+                );
+                $needs = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needs;
+            } catch (\Throwable $e) {
+                return false;
+            }
+        },
+    ],
+
+    'setlist-share-scope' => [
+        'script' => 'migrate-setlist-share-scope.php',
+        'card' => [
+            'title'  => 'Set-list share links (#1791)',
+            'body'   => 'Extends <code>tblSharedSetlists</code> for collab-by-link'
+                      . ' set-list sharing — an EDIT-scope capability URL an owner can'
+                      . ' hand out with no email invite and no recipient account.'
+                      . ' Widens <code>ShareId</code> to VARCHAR(64) (legacy 8-hex view'
+                      . ' links stay valid forever; new links are base64url capability'
+                      . ' tokens) and adds <code>Scope</code> (view|edit, VARCHAR not'
+                      . ' ENUM), <code>Label</code>, <code>RevokedAt</code>,'
+                      . ' <code>ExpiresAt</code>, <code>LastUsedAt</code>,'
+                      . ' <code>EditCount</code> + <code>idx_Expiry</code>. Also adds the'
+                      . ' G3/G4 owner-decision columns: <code>ShowSharerName</code>'
+                      . ' (opt-in "Shared by …" byline) and <code>EditAudience</code>'
+                      . ' (anyone|authenticated, DEFAULT anyone) on'
+                      . ' <code>tblSharedSetlists</code>, plus the G4-org policy layer'
+                      . ' on <code>tblOrganisations</code>: <code>SetlistEditAudience</code>'
+                      . ' + <code>EnforceSetlistEditAudience</code> (mirrors the #1770'
+                      . ' idle-timeout org columns). Additive, idempotent, DORMANT —'
+                      . ' every existing view link resolves byte-identically until the'
+                      . ' token model (server C2/C3, client C4/C5) lands. Safe to re-run.',
+            'button' => 'Run Set-list Share Links Migration',
+        ],
+        /* Multi-object OR-probe. PENDING until every capability column exists AND
+           ShareId has been widened to >= 64 chars (the MODIFY keeps DATA_TYPE
+           'varchar', so it's detected by WIDTH via _migProbe_columnCharLength,
+           not type). The G3/G4/G4-org columns (ShowSharerName/EditAudience on
+           tblSharedSetlists, SetlistEditAudience/EnforceSetlistEditAudience on
+           tblOrganisations) re-pend an install that already ran the pre-G3/G4
+           version of this card. APPLIED once all are present. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSharedSetlists', 'Scope')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'Label')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'RevokedAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'ExpiresAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'LastUsedAt')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditCount')
+            || _migProbe_columnCharLength($db, 'tblSharedSetlists', 'ShareId') < 64
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'ShowSharerName')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'EditAudience')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'SetlistEditAudience')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'EnforceSetlistEditAudience'),
+    ],
+
+    'live-follow-quick-capable' => [
+        'script' => 'migrate-live-follow-quick-capable.php',
+        'card' => [
+            'title'  => 'Live Follow: capable Quick sessions (#1770)',
+            'body'   => 'Adds leader-idle auto-close columns to <code>tblLiveFollowSessions</code>, '
+                      . 'org idle-timeout override columns to <code>tblOrganisations</code>, and the '
+                      . '<code>tblServiceDriverKeys</code> table for ProPresenter-class external drivers. '
+                      . 'Additive, idempotent, DORMANT — nothing reads or writes any of it until the '
+                      . '#1770 server/client lands. Safe to re-run.',
+            'button' => 'Run Live Follow Capability Migration',
+        ],
+        /* Multi-object OR-probe: PENDING until the new table AND all four
+           columns exist. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblServiceDriverKeys')
+            || !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'LastLeaderSeenAt')
+            || !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'IdleTimeoutMins')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'LiveIdleTimeoutMins')
+            || !_migProbe_columnExists($db, 'tblOrganisations', 'EnforceIdleTimeout'),
+    ],
+
+    'musician-duplicates-dismissed' => [
+        'script' => 'migrate-musician-duplicates-dismissed.php',
+        'card' => [
+            'title'  => 'Musicians: duplicate-review dismissals (#1785)',
+            'body'   => 'Creates <code>tblMusicianDuplicatesDismissed</code> so "not the same '
+                      . 'person" decisions on /manage/musician-duplicates persist. Idempotent.',
+            'button' => 'Run Musician Duplicates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblMusicianDuplicatesDismissed'),
+    ],
+
+    'ia-reconcile' => [
+        'script' => 'migrate-ia-reconcile.php',
+        'card' => [
+            'title'  => 'Internet Archive OCR reconcile (#94 Phase 1)',
+            'body'   => 'Creates <code>tblIaFetchCache</code> (cached archive.org metadata +'
+                      . ' OCR full-text fetches) and <code>tblIaImportCandidates</code>'
+                      . ' (segmented OCR candidates + reconcile verdicts; dormant Phase-2'
+                      . ' review vocabulary). Read-only audit bookkeeping — no song-content'
+                      . ' tables are touched. Additive + idempotent — safe to re-run.',
+            'button' => 'Run IA Reconcile Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. tblIaImportCandidates
+           is created SECOND in the migration script, so a half-applied run
+           (first CREATE succeeded, second threw) correctly keeps the card pending. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblIaFetchCache')
+            || !_migProbe_tableExists($db, 'tblIaImportCandidates'),
+    ],
+
+    'print-template-layouts' => [
+        'script' => 'migrate-print-template-layouts.php',
+        'card' => [
+            'title'  => 'Print template custom layouts (#1767 remainder P1)',
+            'body'   => 'Creates <code>tblPrintTemplateCustomLayout</code> (uploadable full-page'
+                      . ' HTML "skins" a curator sanitises + saves per template/slot — only the'
+                      . ' sanitised output is ever render-served) and adds the RESERVED DORMANT'
+                      . ' <code>tblPrintTemplates.OrgId</code> column (org-default templates,'
+                      . ' feature K). Schema-only — nothing in the live tree reads either object'
+                      . ' yet; the sanitiser and upload UI land in later commits. Depends on the'
+                      . ' <code>print-templates</code> (#1350) card. Additive + idempotent.',
+            'button' => 'Run Print Template Layouts Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. Either object landing
+           independently (e.g. a partial re-run) correctly keeps the card pending
+           until BOTH are present. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblPrintTemplateCustomLayout')
+            || !_migProbe_columnExists($db, 'tblPrintTemplates', 'OrgId'),
     ],
 ];

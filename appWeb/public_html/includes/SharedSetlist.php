@@ -19,6 +19,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1791 G4 — SETLIST_EDIT_AUDIENCES, the ONE edit-audience vocabulary, so the
+   INSERT below validates against the same central map every other consumer
+   uses rather than a second inline ['anyone','authenticated'] fork. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'setlist_collab.php';
 
 /**
  * Column-existence probe for the #1380 live-link columns
@@ -58,6 +62,60 @@ function _sharedSetlistLiveLinkColumns(): bool
 }
 
 /**
+ * Column-existence probe for the #1791 capability columns
+ * (tblSharedSetlists.Scope + RevokedAt + ExpiresAt + LastUsedAt + EditCount +
+ * Label + ShowSharerName + EditAudience — the last two are the G3/G4 owner
+ * decisions, folded into the SAME migration, rule #19/#20).
+ *
+ * These arrive via migrate-setlist-share-scope.php. Until it has run, every
+ * helper here MUST keep using the pre-#1791 column shape — mysqli runs under
+ * MYSQLI_REPORT_ERROR|STRICT, so SELECTing a column that does not exist would
+ * THROW and break sharing entirely. Mirrors _sharedSetlistLiveLinkColumns():
+ * static-cached per request, fail-open ("absent" → legacy path). All eight must
+ * exist before ANY is used — the migration applies them together, but a partial
+ * hand-edit must degrade to the dormant path, never a half-migrated read. (#1791)
+ */
+function _sharedSetlistTokenColumns(): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $db   = getDbMysqli();
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSharedSetlists'
+                AND COLUMN_NAME IN ('Scope','RevokedAt','ExpiresAt','LastUsedAt','EditCount','Label','ShowSharerName','EditAudience')"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        $cached = ((int)($row[0] ?? 0) === 8);
+    } catch (\Throwable $_e) {
+        $cached = false; /* fail-open → dormant pre-#1791 path */
+    }
+    return $cached;
+}
+
+/**
+ * XSS-/enumeration-safe share-id allow-list (#1791).
+ *
+ * The share-id grammar is `^[A-Za-z0-9_-]{6,64}$` — a SUPERSET of the legacy
+ * 8-hex ids (which stay valid forever, rule #33) that also admits base64url
+ * capability tokens (22-char/128-bit view, 43-char/256-bit edit — the
+ * tblServicePresence.PresenceToken alphabet). It is the SINGLE fold every
+ * consumer of a share id uses (setlist_get, og-image.php, index.php's route,
+ * the client SHARE_ID_RE mirror) so a hand-rolled `[a-f0-9]` class can never
+ * silently reject a valid token on one surface while accepting it on another.
+ * Returns the trimmed id when it matches, or '' when it must be rejected.
+ */
+function sharedSetlistSafeShareId(string $id): string
+{
+    $id = trim($id);
+    return preg_match('/^[A-Za-z0-9_-]{6,64}$/', $id) === 1 ? $id : '';
+}
+
+/**
  * Load a shared setlist by ID. Returns the decoded payload array or
  * null if not found in either store.
  *
@@ -66,49 +124,66 @@ function _sharedSetlistLiveLinkColumns(): bool
  * (leading underscore = "server-internal, never echoed to clients" — callers
  * MUST strip these before building any response). These resolve the owner's
  * CURRENT live setlist at read time.
+ *
+ * When the #1791 capability columns are present, Scope / RevokedAt / ExpiresAt
+ * are returned under `_scope` / `_revokedAt` / `_expiresAt` (same private-key
+ * discipline). The SELECT column list is composed from HARDCODED constants
+ * (rule #5 — never user input) gated on the two migration probes, so a
+ * pre-migration install reads exactly the columns it has and nothing throws.
  */
 function sharedSetlistGet(string $shareId): ?array
 {
     try {
         $db = getDbMysqli();
 
-        /* Live-link columns selected only when present, so a pre-migration
-           install keeps working with the legacy 2-column read. */
-        if (_sharedSetlistLiveLinkColumns()) {
-            $stmt = $db->prepare(
-                'SELECT Data, OwnerUserId, SourceSetlistId FROM tblSharedSetlists WHERE ShareId = ?'
-            );
-            $stmt->bind_param('s', $shareId);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            $raw = (string)($row['Data'] ?? '');
-            if ($raw !== '') {
-                $decoded = json_decode($raw, true);
-                if (is_array($decoded)) {
-                    /* PRIVATE keys (leading underscore) — owner identity is
-                       NEVER part of the public wire shape; setlist_get strips
-                       them when building its allow-listed response. */
-                    $decoded['_ownerUserId']     = isset($row['OwnerUserId']) && $row['OwnerUserId'] !== null
-                        ? (int)$row['OwnerUserId'] : null;
-                    $decoded['_sourceSetlistId'] = isset($row['SourceSetlistId']) && $row['SourceSetlistId'] !== null
-                        ? (string)$row['SourceSetlistId'] : null;
-                    return $decoded;
-                }
-            }
-            return null;
+        $hasLive  = _sharedSetlistLiveLinkColumns();
+        $hasToken = _sharedSetlistTokenColumns();
+
+        /* Compose the column list from hardcoded fragments per the two gates.
+           Legacy (neither) → 'SELECT Data' (byte-identical to the pre-#1380
+           path); live-only → adds OwnerUserId/SourceSetlistId (byte-identical
+           to the #1380 path). */
+        $cols = ['Data'];
+        if ($hasLive)  { $cols[] = 'OwnerUserId'; $cols[] = 'SourceSetlistId'; }
+        if ($hasToken) {
+            $cols[] = 'Scope'; $cols[] = 'RevokedAt'; $cols[] = 'ExpiresAt';
+            /* #1791 G3/G4 — folded into the SAME 8-column gate above, so these
+               are safe to select whenever $hasToken is true. */
+            $cols[] = 'ShowSharerName'; $cols[] = 'EditAudience';
         }
 
-        $stmt = $db->prepare('SELECT Data FROM tblSharedSetlists WHERE ShareId = ?');
+        $stmt = $db->prepare('SELECT ' . implode(', ', $cols) . ' FROM tblSharedSetlists WHERE ShareId = ?');
         $stmt->bind_param('s', $shareId);
         $stmt->execute();
-        $row = $stmt->get_result()->fetch_row();
+        $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
-        $raw = (string)($row[0] ?? '');
-        if ($raw !== '') {
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded)) return $decoded;
+        if ($row === null) { return null; }
+
+        $raw = (string)($row['Data'] ?? '');
+        if ($raw === '') { return null; }
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) { return null; }
+
+        if ($hasLive) {
+            /* PRIVATE keys (leading underscore) — owner identity is NEVER part
+               of the public wire shape; setlist_get strips them. */
+            $decoded['_ownerUserId']     = isset($row['OwnerUserId']) && $row['OwnerUserId'] !== null
+                ? (int)$row['OwnerUserId'] : null;
+            $decoded['_sourceSetlistId'] = isset($row['SourceSetlistId']) && $row['SourceSetlistId'] !== null
+                ? (string)$row['SourceSetlistId'] : null;
         }
+        if ($hasToken) {
+            $decoded['_scope']     = (string)($row['Scope'] ?? 'view');
+            $decoded['_revokedAt'] = isset($row['RevokedAt']) && $row['RevokedAt'] !== null
+                ? (string)$row['RevokedAt'] : null;
+            $decoded['_expiresAt'] = isset($row['ExpiresAt']) && $row['ExpiresAt'] !== null
+                ? (string)$row['ExpiresAt'] : null;
+            /* #1791 G3/G4 — same private-key discipline. Callers strip the
+               leading-underscore keys before building any public response. */
+            $decoded['_showSharerName'] = (int)($row['ShowSharerName'] ?? 0) === 1;
+            $decoded['_editAudience']   = (string)($row['EditAudience'] ?? 'anyone');
+        }
+        return $decoded;
     } catch (\Throwable $_e) {
         /* DB unreachable — clean miss (WS-J: no disk fallback). */
     }
@@ -125,35 +200,62 @@ function sharedSetlistGet(string $shareId): ?array
  * fills the long-unused CreatedBy audit column. All three are written only
  * when the live-link columns exist — a pre-migration install falls open to the
  * legacy 2-column INSERT so sharing never breaks on a partly-migrated deploy.
+ *
+ * $showSharerName / $editAudience are the #1791 G3/G4 owner decisions — both
+ * written only when the (now 8-column) capability gate is open, folded into
+ * the SAME `_sharedSetlistTokenColumns()` check as Scope/Label/ExpiresAt so
+ * they can never land half-migrated.
  */
 function sharedSetlistInsert(
     string $shareId,
     array $data,
     ?int $ownerUserId = null,
     ?string $sourceSetlistId = null,
-    ?int $createdBy = null
+    ?int $createdBy = null,
+    string $scope = 'view',
+    ?string $label = null,
+    ?string $expiresAt = null,
+    bool $showSharerName = false,
+    string $editAudience = 'anyone'
 ): ?bool {
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     /* MySQL atomic insert — duplicate-key collision is the signal so
        the caller can pick another ID. PDO surfaced this as SQLSTATE
        23000 (string); mysqli_sql_exception::getCode() returns the
-       MySQL error number 1062 (ER_DUP_ENTRY) for the same condition. */
+       MySQL error number 1062 (ER_DUP_ENTRY) for the same condition.
+
+       The column list is composed from HARDCODED fragments (rule #5 — never
+       user input) gated on the two migration probes, so a legacy install
+       (neither gate) writes exactly `(ShareId, Data)` as before, a #1380
+       install adds the live-link columns, and a #1791 install adds
+       Scope/Label/ExpiresAt/ShowSharerName/EditAudience. A view link
+       (scope='view', label/expiresAt NULL, showSharerName=false,
+       editAudience='anyone') writes the same values the column DEFAULTs
+       would — byte-identical. */
     try {
         $db = getDbMysqli();
+        $cols  = ['ShareId', 'Data'];
+        $types = 'ss';
+        $vals  = [$shareId, $json];
         if (_sharedSetlistLiveLinkColumns()) {
-            $stmt = $db->prepare(
-                'INSERT INTO tblSharedSetlists (ShareId, Data, OwnerUserId, SourceSetlistId, CreatedBy)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            /* Types: ShareId=s, Data=s, OwnerUserId=i, SourceSetlistId=s, CreatedBy=i.
-               mysqli sends SQL NULL when a bound PHP null is paired with any type, so
-               an anonymous/legacy share (all three null) writes clean NULLs. */
-            $stmt->bind_param('ssisi', $shareId, $json, $ownerUserId, $sourceSetlistId, $createdBy);
-        } else {
-            $stmt = $db->prepare('INSERT INTO tblSharedSetlists (ShareId, Data) VALUES (?, ?)');
-            $stmt->bind_param('ss', $shareId, $json);
+            $cols[] = 'OwnerUserId'; $cols[] = 'SourceSetlistId'; $cols[] = 'CreatedBy';
+            $types .= 'isi';
+            $vals[] = $ownerUserId; $vals[] = $sourceSetlistId; $vals[] = $createdBy;
         }
+        if (_sharedSetlistTokenColumns()) {
+            $cols[] = 'Scope'; $cols[] = 'Label'; $cols[] = 'ExpiresAt';
+            $cols[] = 'ShowSharerName'; $cols[] = 'EditAudience';
+            $types .= 'sssis';
+            $vals[] = ($scope === 'edit' ? 'edit' : 'view'); $vals[] = $label; $vals[] = $expiresAt;
+            $vals[] = ($showSharerName ? 1 : 0);
+            $vals[] = (in_array($editAudience, SETLIST_EDIT_AUDIENCES, true) ? $editAudience : 'anyone');
+        }
+        $ph = implode(', ', array_fill(0, count($cols), '?'));
+        $stmt = $db->prepare('INSERT INTO tblSharedSetlists (' . implode(', ', $cols) . ") VALUES ($ph)");
+        /* mysqli sends SQL NULL when a bound PHP null is paired with any type, so
+           null owner / label / expiry write clean NULLs. */
+        $stmt->bind_param($types, ...$vals);
         $stmt->execute();
         $stmt->close();
         return true;
@@ -289,6 +391,11 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
     $ownerUserId     = $data['_ownerUserId'] ?? null;
     $sourceSetlistId = $data['_sourceSetlistId'] ?? null;
 
+    /* #1791 capability keys (present only post-migration). */
+    $scope     = (string)($data['_scope'] ?? 'view');
+    $revokedAt = $data['_revokedAt'] ?? null;
+    $expiresAt = $data['_expiresAt'] ?? null;
+
     /* Default to the frozen SNAPSHOT, with the FIX-1 id guard applied so even a
        legacy snapshot (written before the guard existed) can't carry an
        attribute-breaking id into a renderer. */
@@ -309,7 +416,27 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
         'arrangements' => $snapshotArrangements,
         'live'         => false,
         'unavailable'  => false,
+        'scope'        => ($scope === 'edit' ? 'edit' : 'view'),
+        'reason'       => null,
+        'songsDetailed' => [],
     ];
+
+    /* #1791 — hard revocation / expiry short-circuit BEFORE any live read.
+       A revoked or expired link refuses at every scope; the caller renders the
+       honest "no longer shared" state (410 for the JSON API, empty OG card).
+       Checked here (the ONE resolver) so og-image + index.php meta honour it
+       too, not just setlist_get. */
+    if ($revokedAt !== null) {
+        $result['unavailable'] = true;
+        $result['reason']      = 'revoked';
+        return $result;
+    }
+    if ($expiresAt !== null && strtotime($expiresAt . ' UTC') !== false
+        && strtotime($expiresAt . ' UTC') <= time()) {
+        $result['unavailable'] = true;
+        $result['reason']      = 'expired';
+        return $result;
+    }
 
     /* No live link → snapshot is the answer. */
     if ($ownerUserId === null || $sourceSetlistId === null || $sourceSetlistId === '') {
@@ -334,6 +461,7 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
             /* Owner deleted the underlying setlist — the live link points at a
                row that no longer exists. Honest "no longer shared". */
             $result['unavailable'] = true;
+            $result['reason']      = 'revoked';
             return $result;
         }
 
@@ -345,12 +473,14 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
         $liveDecoded = json_decode((string)$liveRow['SongsJson'], true);
         $liveSongs        = [];
         $liveArrangements = [];
+        $liveDetailed     = [];
         if (is_array($liveDecoded)) {
             foreach ($liveDecoded as $s) {
                 if (!is_array($s) || !isset($s['id'])) { continue; }
                 $sid = sharedSetlistSafeSongId((string)$s['id']);
                 if ($sid === '') { continue; }
                 $liveSongs[] = $sid;
+                $arr = [];
                 if (isset($s['arrangement']) && is_array($s['arrangement'])) {
                     $arr = array_values(array_filter(
                         $s['arrangement'],
@@ -358,13 +488,29 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
                     ));
                     if (count($arr) > 0) { $liveArrangements[$sid] = $arr; }
                 }
+                /* #1791 — the OBJECT shape an edit-link holder's client needs
+                   (id/title/songbook/number/arrangement), so the shared page can
+                   render + reorder without N per-song fetches. Same four fields
+                   setlistCollabSanitiseSongs keeps; built inline here to avoid a
+                   cross-include dependency on the og-image/index.php callers. Only
+                   surfaced by setlist_get when canWrite (an edit link is always a
+                   live link), so a plain view read never carries it. */
+                $detail = [
+                    'id'       => $sid,
+                    'title'    => mb_substr((string)($s['title'] ?? ''), 0, 300),
+                    'songbook' => mb_substr((string)($s['songbook'] ?? ''), 0, 20),
+                    'number'   => (int)($s['number'] ?? 0),
+                ];
+                if (count($arr) > 0) { $detail['arrangement'] = $arr; }
+                $liveDetailed[] = $detail;
             }
         }
 
-        $result['name']         = (string)$liveRow['Name'];
-        $result['songs']        = $liveSongs;
-        $result['arrangements'] = $liveArrangements;
-        $result['live']         = true;
+        $result['name']          = (string)$liveRow['Name'];
+        $result['songs']         = $liveSongs;
+        $result['arrangements']  = $liveArrangements;
+        $result['songsDetailed'] = $liveDetailed;
+        $result['live']          = true;
         return $result;
     } catch (\Throwable $_e) {
         /* Live read failed — degrade to the frozen snapshot rather than erroring

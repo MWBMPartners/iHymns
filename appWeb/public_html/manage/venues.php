@@ -594,13 +594,13 @@ function venuesUrl(array $overrides = []): string
                     <p class="text-secondary small m-3 mb-3">No venues yet. Add the place(s) your organisation meets.</p>
                 <?php else: ?>
                 <div class="table-responsive">
-                    <table class="table admin-table-responsive align-middle mb-0">
+                    <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                         <thead>
                             <tr>
-                                <th data-col-priority="primary">Venue</th>
-                                <th data-col-priority="secondary">Location</th>
-                                <th data-col-priority="tertiary">Timezone</th>
-                                <th data-col-priority="tertiary">Status</th>
+                                <th data-col-priority="primary" data-sort-key="venue" data-sort-type="text">Venue</th>
+                                <th data-col-priority="secondary" data-sort-key="location" data-sort-type="text">Location</th>
+                                <th data-col-priority="tertiary" data-sort-key="tz" data-sort-type="text">Timezone</th>
+                                <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
                                 <th data-col-priority="primary" class="text-end">Actions</th>
                             </tr>
                         </thead>
@@ -615,7 +615,7 @@ function venuesUrl(array $overrides = []): string
                                 <td data-col-priority="primary">
                                     <span class="fw-semibold"><?= htmlspecialchars($v['Name']) ?></span>
                                 </td>
-                                <td data-col-priority="secondary">
+                                <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars(implode(', ', $loc), ENT_QUOTES) ?>">
                                     <span class="small"><?= $loc ? htmlspecialchars(implode(', ', $loc)) : '<span class="text-secondary">—</span>' ?></span>
                                     <?php if ($hasCoords): ?>
                                         <span class="badge text-bg-light ms-1" title="Map pin set (convenience geofence<?= $v['RadiusMetres'] !== null ? ', radius ' . (int)$v['RadiusMetres'] . ' m' : '' ?>)">
@@ -624,7 +624,7 @@ function venuesUrl(array $overrides = []): string
                                     <?php endif; ?>
                                 </td>
                                 <td data-col-priority="tertiary"><span class="small"><?= htmlspecialchars($v['TimeZone']) ?></span></td>
-                                <td data-col-priority="tertiary">
+                                <td data-col-priority="tertiary" data-sort-value="<?= (int)$v['IsActive'] === 1 ? 'Active' : 'Hidden' ?>">
                                     <?php if ((int)$v['IsActive'] === 1): ?>
                                         <span class="badge text-bg-success-subtle text-success-emphasis">Active</span>
                                     <?php else: ?>
@@ -761,13 +761,13 @@ function venuesUrl(array $overrides = []): string
                         <p class="text-secondary small m-3 mb-3">No service times yet for this venue.</p>
                     <?php else: ?>
                     <div class="table-responsive">
-                        <table class="table admin-table-responsive align-middle mb-0">
+                        <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                             <thead>
                                 <tr>
-                                    <th data-col-priority="primary">Service</th>
-                                    <th data-col-priority="primary">When</th>
-                                    <th data-col-priority="secondary">Next dates</th>
-                                    <th data-col-priority="tertiary">Status</th>
+                                    <th data-col-priority="primary" data-sort-key="service" data-sort-type="text">Service</th>
+                                    <th data-col-priority="primary" data-sort-key="when" data-sort-type="text">When</th>
+                                    <th data-col-priority="secondary" data-sort-key="next" data-sort-type="date">Next dates</th>
+                                    <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
                                     <th data-col-priority="primary" class="text-end">Actions</th>
                                 </tr>
                             </thead>
@@ -777,14 +777,14 @@ function venuesUrl(array $overrides = []): string
                                 <tr>
                                     <td data-col-priority="primary"><span class="fw-semibold"><?= htmlspecialchars($s['Title']) ?></span></td>
                                     <td data-col-priority="primary"><span class="small"><?= htmlspecialchars(venueScheduleSummary($s, $DOW, $NTH_LABELS)) ?></span></td>
-                                    <td data-col-priority="secondary">
+                                    <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars($next[0] ?? '', ENT_QUOTES) ?>">
                                         <?php if ($next): ?>
                                             <span class="small text-secondary"><?= htmlspecialchars(implode(' · ', array_map(static fn($d) => substr($d, 0, 16), $next))) ?></span>
                                         <?php else: ?>
                                             <span class="small text-secondary">—</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td data-col-priority="tertiary">
+                                    <td data-col-priority="tertiary" data-sort-value="<?= (int)$s['IsActive'] === 1 ? 'Active' : 'Hidden' ?>">
                                         <?= (int)$s['IsActive'] === 1
                                             ? '<span class="badge text-bg-success-subtle text-success-emphasis">Active</span>'
                                             : '<span class="badge text-bg-secondary-subtle text-secondary-emphasis">Hidden</span>' ?>
@@ -947,6 +947,12 @@ function venuesUrl(array $overrides = []): string
         venuesToggleRecurrence();
     </script>
     <?php endif; ?>
+
+    <!-- Sortable table headers (#1786 sweep). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
+    </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

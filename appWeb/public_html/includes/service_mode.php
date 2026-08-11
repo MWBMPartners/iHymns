@@ -709,6 +709,114 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
 }
 
 /**
+ * #1792 — the ONE user-facing message shown when a join code is well-formed and
+ * live, but on a DIFFERENT docroot than the one the congregant is on.
+ *
+ * ELI5: the three iHymns web addresses (the dev site, the preview site, the live
+ * site) share one database, but each only "sees" the live sessions started on
+ * itself — the Channel wall (rule #26). So the instinctive test — start the
+ * session on your laptop's dev URL, join on your phone's live PWA — always fails
+ * with "wrong code", which reads as "the feature is broken" when it is actually
+ * the wall doing its job. This message turns that dead-end into the fix.
+ *
+ * DEFINED ONCE (rule #35 — a "keep these two in sync" comment is the bug, not
+ * the fix): both `live_follow_join` and `service_join` reference this constant,
+ * and `tests/php/test-live-follow-cross-channel.php` asserts they do, so the
+ * wording can never drift between the two entry points. Environment-agnostic on
+ * purpose — it never names WHICH other environment (that would be a needless
+ * extra signal); "same web address" is the actionable instruction.
+ */
+const SERVICE_MODE_WRONG_CHANNEL_MESSAGE =
+    'That code belongs to a different iHymns environment (for example the live '
+    . 'site vs a preview). Make sure both devices are using the same web '
+    . 'address, then try again.';
+
+/**
+ * #1792 — is this join code live on a channel OTHER than the caller's?
+ *
+ * ELI5: answers the narrow question "does this exact code belong to a DIFFERENT
+ * iHymns web address right now?", so a failed join can say "you're on the wrong
+ * address" (SERVICE_MODE_WRONG_CHANNEL_MESSAGE) instead of the opaque generic
+ * error — the fix for the owner's recurring "can't test Go Live / Join Live"
+ * (the desktop-on-dev + phone-on-www case is exactly this).
+ *
+ * DETAILED — why this does NOT re-open the anti-probe leak (rule #26 I6, the
+ * opacity that keeps a prober from learning a CURRENT-channel session's
+ * liveness): it returns true ONLY for a code already valid on ANOTHER channel,
+ * i.e. the caller demonstrably holds a real code but is on the wrong docroot. It
+ * reveals nothing about any session on the CURRENT channel (the thing the
+ * opacity protects); it grants no access (that same code would join fine on the
+ * correct address); it names no environment/org/venue; and every call sits
+ * behind the SAME per-IP join rate limit as its caller (both join endpoints
+ * budget the attempt), so it is not a new cheap oracle. A random code-guesser
+ * effectively never lands on a code that is live somewhere else, and if one did,
+ * the rate limit already bounds that just as it bounds any lucky guess.
+ *
+ * Covers BOTH live-session families sharing the #1268 spine — Quick / Live
+ * Follow (`tblLiveFollowSessions.SessionCode`) and Service Mode
+ * (`tblLiveFollowJoinCodes.Code`) — with the SAME active + heartbeat-fresh
+ * predicates the real joins use, so a stale code elsewhere does NOT trigger the
+ * hint (it falls through to the generic message, correctly).
+ *
+ * This is an EXISTENCE probe, deliberately NOT a second copy of
+ * serviceMode_resolveJoin()'s venue/ambiguity disambiguation (rule #22) — the
+ * hint needs only "does a joinable code exist on another channel", never which
+ * session it is.
+ *
+ * @param string $currentChannel  serviceMode_channel() for THIS docroot.
+ * @return bool  true iff a fresh, active session/code with this code exists on a
+ *               channel != $currentChannel.
+ */
+function serviceMode_codeOnOtherChannel(\mysqli $db, string $code, string $currentChannel): bool
+{
+    if ($code === '') { return false; }
+    /* Trusted int constant, interpolated (not a bound value) — mirrors
+       serviceMode_resolveJoin()'s own freshness interpolation. */
+    $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
+
+    /* Quick / Live Follow: the code is the session's own SessionCode. Idle-fresh
+       gated exactly like live_follow_join's resolve (#1770 C2), so an
+       idle-closed session elsewhere doesn't produce a stale hint. */
+    $idleFresh = serviceMode_idleFreshSql($db, 's');
+    $q = $db->prepare(
+        "SELECT 1
+           FROM tblLiveFollowSessions s
+          WHERE s.SessionCode = ?
+            AND s.Channel <> ?
+            AND s.IsActive = 1
+            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)" . $idleFresh . "
+          LIMIT 1"
+    );
+    $q->bind_param('ss', $code, $currentChannel);
+    $q->execute();
+    $hit = (bool) $q->get_result()->fetch_row();
+    $q->close();
+    if ($hit) { return true; }
+
+    /* Service Mode: the code is a rotating tblLiveFollowJoinCodes.Code. Same
+       live-status + expiry + freshness predicates as serviceMode_resolveJoin(). */
+    $live = serviceMode_codeLiveStatusSql();
+    $q2 = $db->prepare(
+        "SELECT 1
+           FROM tblLiveFollowJoinCodes c
+           JOIN tblLiveFollowSessions s ON s.Id = c.SessionId
+          WHERE c.Code = ?
+            AND c.Status IN ({$live})
+            AND c.ExpiresAt > UTC_TIMESTAMP()
+            AND s.Channel <> ?
+            AND s.SessionKind = 'service'
+            AND s.IsActive = 1
+            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+          LIMIT 1"
+    );
+    $q2->bind_param('ss', $code, $currentChannel);
+    $q2->execute();
+    $hit2 = (bool) $q2->get_result()->fetch_row();
+    $q2->close();
+    return $hit2;
+}
+
+/**
  * #1406 — cached probe: does `tblServicePresence.Role` exist yet? Gates every
  * Role read/write so `service_join`/`service_poll` stay dormant-safe on an
  * un-migrated install (the column ships via the Phase-2 schema batch,
@@ -846,6 +954,37 @@ function serviceMode_orgLicencesTableExists(\mysqli $db): bool
 }
 
 /**
+ * #1770 C3 — memoised probe: does `tblServicePresence` exist on THIS install?
+ * Quick (host) live-follow already hard-depends on the SAME migration batch
+ * for `tblLiveFollowSessions.Channel` (the #1405 side-finding fix,
+ * api.php:17024) — this table shipped in that same #1335 Phase-2 batch (the
+ * plan's documented "prerequisite quirk") — but the presence-minting POST
+ * mode added here is new write traffic against it, so it gets its own
+ * explicit existence probe rather than assuming the prerequisite silently
+ * held. Mirrors serviceMode_orgLicencesTableExists() immediately above.
+ */
+function serviceMode_presenceTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblServicePresence' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * Phase 3 gate read (#1335): does this presence token entitle the holder to the
  * org's CCLI licence right now? Returns the org's CCLI LicenceNumber (a string;
  * may be '' if the org left it blank) when the token resolves to an ACTIVE,
@@ -896,6 +1035,38 @@ function serviceMode_orgLicencesTableExists(\mysqli $db): bool
  * presence → session → organisation join. An un-Channel-filtered query here is
  * the cross-env leak class — a presence token minted on one docroot must never
  * unlock content on another.
+ *
+ * #1770 C3 (req #3/#6) — HOST-LICENCE BRANCH. When the org-anchored branch
+ * above finds no grant, a SECOND branch is tried: does the session's HOST
+ * (not the session's org — Quick sessions have `OrgId` hardcoded NULL at
+ * create, api.php:17019/17024, so the org branch's join can never match one
+ * in the first place) hold a qualifying CCLI licence of their OWN — a
+ * personal `CcliNumber`, or a licence from any organisation THEY belong to
+ * (ancestry-aware)? This is what lets a Quick "follow my song" leader's
+ * followers read gated lyrics with the CCL notice for the life of the
+ * session, exactly like a Service-Mode congregant rides their venue org's
+ * licence — reusing `getUserEffectiveLicences()` (includes/licences.php:228,
+ * already required at the top of this file) rather than growing a second
+ * licence resolver.
+ *
+ * ⚠️ LICENSING FLAG (recorded verbatim, owner-accepted 2026-08-05 per the
+ * #1770 analysis §444-459): a Quick session has NO venue and therefore no
+ * physical proof-of-presence — unlocking CCLI for anyone holding the join
+ * code may exceed the letter of some licences' terms. The owner accepted
+ * this basis; the mechanism binds as narrowly as the design allows: an
+ * ACTIVE, heartbeat-fresh, IDLE-FRESH host session, an actively-held
+ * (unexpired, un-revoked) presence token, live resolution of the host's
+ * licence set on EVERY call (no snapshot — a lapsed/removed licence stops
+ * unlocking mid-session), and revocation the instant the session ends
+ * (leave / idle-prune / create-supersede all revoke presence — #1770 C3,
+ * plan §11 landmine 4) or the follower leaves.
+ *
+ * ⚠️ Per plan §11 landmine 5: this HOST branch is deliberately SECOND and
+ * UNCHANGED-FIRST — the org branch above (and its `o.IsActive = 1` owner
+ * decision) is tried FIRST, exactly as before this commit, and the host
+ * branch runs ONLY when it finds nothing. Reordering these would risk a
+ * Quick host's OWN licence silently shadowing a legitimate Service-Mode org
+ * grant on some future shared code path.
  */
 function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
 {
@@ -983,23 +1154,938 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
-        if ($row === null) {
+        if ($row !== null) {
+            $number = (string)($row['LicenceNumber'] ?? '');
+            /* Apply the SAME format criterion as includes/licences.php
+               (#1668) — in PHP, via the shared helper, rather than as extra
+               SQL, so the CCLI format rule keeps living in exactly one place
+               (validateCcliNumber()). A blank number still grants (an
+               operator may legitimately leave the field empty and the row
+               itself is the declaration); a number that is PRESENT but
+               malformed does not. */
+            if (licenceCcliQualifies($number, false)) {
+                return $number;
+            }
+            /* Org row existed but failed the format check — fall through to
+               the #1770 C3 host branch below rather than returning null
+               immediately (a malformed org licence number should not hide a
+               perfectly good personal one). */
+        }
+
+        /* #1770 C3 — host-licence branch (req #3/#6). See this function's
+           doc-block for the full design + the licensing-flag note. Reached
+           when the org-anchored branch above found nothing (the common case
+           for a Quick session, whose OrgId is hardcoded NULL) or a
+           malformed org number. Resolves the session's HostUserId — same
+           presence-token validity window as the org branch, PLUS
+           SessionKind='host', PLUS the #1770 C2 idle-freshness predicate
+           (an idle-closed leader must stop unlocking content the same poll
+           cycle the session itself goes stale in). serviceMode_idleFreshSql()
+           is '' pre-#1770-C1-migration, so this predicate is a no-op on an
+           un-migrated install — never a false denial. */
+        $idleFreshSql = serviceMode_idleFreshSql($db, 's');
+        $hostStmt = $db->prepare(
+            "SELECT s.HostUserId
+               FROM tblServicePresence p
+               JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+              WHERE p.PresenceToken = ?
+                AND p.IsActive = 1
+                AND p.ExpiresAt > UTC_TIMESTAMP()
+                AND p.Channel = ?
+                AND s.SessionKind = 'host'
+                AND s.IsActive = 1
+                AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+                {$idleFreshSql}
+              LIMIT 1"
+        );
+        $hostStmt->bind_param('ss', $presenceToken, $channel);
+        $hostStmt->execute();
+        $hostRow = $hostStmt->get_result()->fetch_assoc();
+        $hostStmt->close();
+        if ($hostRow === null || $hostRow['HostUserId'] === null) {
             return null;
         }
-        $number = (string)($row['LicenceNumber'] ?? '');
-        /* Apply the SAME format criterion as includes/licences.php (#1668) —
-           in PHP, via the shared helper, rather than as extra SQL, so the CCLI
-           format rule keeps living in exactly one place (validateCcliNumber()).
-           A blank number still grants (an operator may legitimately leave the
-           field empty and the row itself is the declaration); a number that is
-           PRESENT but malformed does not. */
-        if (!licenceCcliQualifies($number, false)) {
-            return null;
+        $hostUserId = (int)$hostRow['HostUserId'];
+
+        /* getUserEffectiveLicences() unions personal + every org the host
+           belongs to (ancestry-aware) — includes/licences.php:228 already
+           implements the owner's "user account OR one of their
+           organisations" wording (analysis §444-459), so this is reuse, not
+           a second resolver. Every entry it returns has ALREADY passed
+           licenceCcliQualifies()/licenceOrgRowQualifies() internally; the
+           explicit re-check below is defence-in-depth, mirroring the
+           org-branch's own belt-and-braces re-check above. */
+        foreach (getUserEffectiveLicences($hostUserId) as $licence) {
+            if (($licence['type'] ?? '') !== 'ccli') {
+                continue;
+            }
+            $hostNumber = (string)($licence['key'] ?? '');
+            if (licenceCcliQualifies($hostNumber, false)) {
+                return $hostNumber;
+            }
         }
-        return $number;
+        return null;
     } catch (\Throwable $e) {
         /* Optional tables absent / probe failure → no grant (fail closed). */
         error_log('[service_mode/presenceCcli] ' . $e->getMessage());
         return null;
     }
+}
+
+/* =============================================================================
+ * #1770 C2 — Leader-idle auto-close for Quick (host) sessions (req #2/#5).
+ * =============================================================================
+ * ELI5: today a Quick "follow my song" session never notices when the leader
+ * has actually put the phone down — only a browser closing/crashing kills it,
+ * and if that never happens the session (and, once #1770 C3's presence unlock
+ * lands, any CCLI grant riding on it) can live forever. This section adds a
+ * per-session "how long since a REAL person last drove this?" clock and a
+ * cheap way to ask "has that clock run out?" so every place that reads or
+ * writes a session can answer consistently.
+ *
+ * DETAILED — the whole family is additive + column-existence-gated
+ * (`tblLiveFollowSessions.LastLeaderSeenAt` / `IdleTimeoutMins`, shipped
+ * dormant by #1770 C1). `serviceMode_idleColumnsExist()` is the ONE probe
+ * every helper below defers to (mirrors `serviceMode_presenceRoleColumnExists()`
+ * a few hundred lines up) so an un-migrated docroot degrades to exactly
+ * today's behaviour — no idle enforcement, no extra columns referenced, no
+ * STRICT-mode throw. `serviceMode_idleFreshSql()` is the ONE SQL fragment
+ * every consumer (create/update/heartbeat/join/poll/prune) appends — nobody
+ * hand-types the `TIMESTAMPDIFF(...)` comparison a second time (CLAUDE.md
+ * modularity rule; guard G2a in the plan polices this).
+ *
+ * WHY TWO TIMESTAMPS, NOT ONE. `LastHeartbeatAt` already exists and answers
+ * "is the tab still open/backgrounded-but-alive?" (the 180s
+ * LIVE_SESSION_FRESHNESS_SECONDS window above) — an automated beat sent every
+ * ~30s keeps it fresh with zero human involvement. `LastLeaderSeenAt` answers
+ * a DIFFERENT question: "did a human actually DO something recently?".
+ * Conflating the two is the exact bug this feature exists to fix — an
+ * abandoned-but-still-open tab would heartbeat forever and never be
+ * recognised as abandoned. So `LastLeaderSeenAt` is bumped ONLY by genuine
+ * interaction: session create, a real `live_follow_update` broadcast (the
+ * host changed what's showing — driving IS interaction), or an explicit
+ * client-declared `leaderActive:true` flag on the heartbeat (added so
+ * reading/scrolling without navigating still counts, once the #1770 C5+
+ * client starts sending it) — never the bare automated beat by itself.
+ *
+ * @see .claude/live-follow-1770-plan.md §3.1, §4.1, §4.2, §5
+ * ============================================================================= */
+
+/**
+ * App-level fallback when `tblAppSettings.live_follow_idle_timeout_minutes`
+ * is unset (the #1406 `SERVICE_MODE_POLL_MS_*` precedent — a freeform
+ * tblAppSettings key needs no migration to add or to read).
+ */
+const LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY  = 'live_follow_idle_timeout_minutes';
+const LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES  = 15;
+/** `tblUsers.Settings` JSON root key (rule #28 "new prefs are JSON" posture —
+ *  a personal preference gets a key, never a new tblUsers column). */
+const LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY = 'liveIdleTimeoutMins';
+/** §10 S5 — 5..240 minutes; 240 = the existing 4h `ExpiresAt` hard ceiling
+ *  (SERVICE_MODE_HARD_CEILING_HOURS above), so "never" is structurally
+ *  meaningless and needs no sentinel value. */
+const LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES = 5;
+const LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES = 240;
+/** §4.1 — cap on one opportunistic prune pass, same rationale as
+ *  SERVICE_MODE_CODE_RETIRE_LIMIT above (piggy-backed on a hot request path,
+ *  must never turn a routine create/join into a long-running write). */
+const LIVE_FOLLOW_IDLE_PRUNE_LIMIT = 20;
+
+/**
+ * #1770 — memoised probe: do BOTH idle columns exist on
+ * `tblLiveFollowSessions` yet? Lockstep on purpose (the rule-#25 gate
+ * discipline this codebase already uses for `lyricLinesMirrorPresent()` /
+ * `…SyncReady()`) — the prune predicate needs `IdleTimeoutMins` and
+ * `LastLeaderSeenAt` together, so a half-applied ALTER (which #1770 C1's
+ * single migration transaction makes practically impossible, but a partial
+ * manual patch could still produce) must not be treated as "ready".
+ *
+ * WHY: mysqli runs under MYSQLI_REPORT_STRICT (db_mysql.php), so selecting a
+ * missing column THROWS rather than returning nothing — the #1228 lesson.
+ * Every caller below goes through this probe rather than assuming the #1770
+ * C1 migration has been RUN (schema.sql having the columns is not the same
+ * as an install having applied them — migrations are web-run, never
+ * auto-applied, rule #19).
+ */
+function serviceMode_idleColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblLiveFollowSessions'
+                AND COLUMN_NAME IN ('LastLeaderSeenAt', 'IdleTimeoutMins')"
+        );
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        $cached = ($count === 2);
+    } catch (\Throwable $_e) {
+        /* Probe failure — degrade as "not migrated yet" (fail closed on the
+           columns, fail OPEN on caller behaviour: no idle enforcement,
+           exactly today's posture). */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1770 — memoised probe: do BOTH org-layer idle columns exist on
+ * `tblOrganisations` yet? Same lockstep rationale as
+ * serviceMode_idleColumnsExist() — `EnforceIdleTimeout` is only meaningful
+ * alongside `LiveIdleTimeoutMins`.
+ */
+function serviceMode_orgIdleColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblOrganisations'
+                AND COLUMN_NAME IN ('LiveIdleTimeoutMins', 'EnforceIdleTimeout')"
+        );
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        $cached = ($count === 2);
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1770 — THE one idle-freshness SQL fragment. Returns `''` (no-op) on an
+ * un-migrated install; otherwise a leading- `AND (...)` clause that reads
+ * TRUE for a session that is NOT idle-expired:
+ *
+ *   IdleTimeoutMins IS NULL           -- legacy row / service session / never stamped
+ *   OR LastLeaderSeenAt IS NULL       -- stamped-column but not-yet-seen row
+ *   OR TIMESTAMPDIFF(MINUTE, LastLeaderSeenAt, UTC_TIMESTAMP()) < IdleTimeoutMins
+ *
+ * NULL-SAFETY IS THE DORMANCY (plan §11 landmine 2): a `NOT NULL DEFAULT 15`
+ * column would have retroactively idle-closed every in-flight session the
+ * instant the migration ran. Both NULL branches read as "never idle" so a
+ * legacy/service/un-stamped row is untouched.
+ *
+ * $alias is a HARDCODED CALL-SITE CONSTANT (never request input) naming
+ * either a table alias ('s') or, for an alias-less single-table query, the
+ * bare table name itself (MySQL accepts `tablename.column` there) — the
+ * regex guard below is defence-in-depth mirroring
+ * serviceMode_codeLiveStatusSql()'s treatment of its own trusted constants
+ * (rule #5: the only legitimate SQL interpolations are hardcoded source
+ * constants or allow-list-validated values — this is the former, checked
+ * like the latter).
+ *
+ * DEVIATION FROM THE PLAN'S LITERAL SIGNATURE: the plan text (§4.1) writes
+ * `serviceMode_idleFreshSql(string $alias = 's'): string` with no `$db`
+ * parameter — but answering "un-migrated?" requires a live connection to
+ * probe INFORMATION_SCHEMA (serviceMode_idleColumnsExist() takes `\mysqli`,
+ * as every other existence probe in this file does), so `$db` is added as
+ * the first parameter here. Every call site in this commit passes it.
+ *
+ * @param \mysqli $db
+ * @param string  $alias Table alias or bare table name to qualify columns with.
+ * @return string '' pre-migration, else ' AND (...)' ready to append to a WHERE
+ *                clause or nest inside a boolean expression.
+ */
+function serviceMode_idleFreshSql(\mysqli $db, string $alias = 's'): string
+{
+    if (!serviceMode_idleColumnsExist($db)) {
+        return '';
+    }
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $alias)) {
+        throw new \RuntimeException('Invalid SQL alias literal: ' . var_export($alias, true));
+    }
+    return " AND ({$alias}.IdleTimeoutMins IS NULL OR {$alias}.LastLeaderSeenAt IS NULL"
+         . " OR TIMESTAMPDIFF(MINUTE, {$alias}.LastLeaderSeenAt, UTC_TIMESTAMP()) < {$alias}.IdleTimeoutMins)";
+}
+
+/**
+ * #1792 — the "is this Quick (Live Follow) session still JOINABLE?" predicate.
+ *
+ * ELI5: a Quick session's join code is FIXED (it never rotates), so — like
+ * Kahoot / Mentimeter — it should stay valid for **as long as the session is
+ * alive**, and anyone can join at any point. What ends a session is the leader
+ * ending it, signing out, or going idle past the configurable timeout — NOT a
+ * short heartbeat gap. The old join/poll gate required a heartbeat within the
+ * last 180 s, which quietly locked followers out whenever the leader's phone
+ * backgrounded the tab (mobile browsers pause timers), even though the service
+ * was still running. That was never a "code expiry" — only a crude host-alive
+ * proxy from before #1770 gave us a real one.
+ *
+ * DETAILED — two regimes, by whether #1770's idle machinery is migrated:
+ *  - **Migrated** (the norm): "alive" = the leader hasn't gone idle past
+ *    `IdleTimeoutMins` (serviceMode_idleFreshSql — the app→org→user resolved
+ *    value, default 15 min, an org can set it to hours for a long service). The
+ *    180 s heartbeat window is dropped entirely, so a backgrounded host phone no
+ *    longer blocks joins; the idle-auto-close (#1770 req 2/5) is the single,
+ *    human-meaningful, configurable "session over" boundary. Trade-off: a host
+ *    who CLOSES the tab leaves a joinable-but-frozen session until idle-close
+ *    reaps it — acceptable (self-healing, and the leader's screen is the source
+ *    of truth anyway).
+ *  - **Un-migrated**: there is NO idle-close to bound an abandoned session, so
+ *    the heartbeat-freshness window is retained as the liveness proxy (byte-
+ *    identical to the pre-#1792 gate). Such installs get the new behaviour only
+ *    after running the #1770 C1 migration card.
+ *
+ * The idle predicate is still applied through serviceMode_idleFreshSql() (rule
+ * #26 — one idle predicate), so this is a THIN regime-selector, not a second
+ * copy. Callers: `live_follow_join`, `live_follow_poll`. (`live_follow_update`
+ * and the heartbeat liveness re-check keep calling serviceMode_idleFreshSql()
+ * directly — they already had no 180 s gate, since the host is demonstrably
+ * present when it drives/beats.)
+ *
+ * @param string $alias Table alias in the caller's query ('s' or the bare
+ *                      table name).
+ * @return string A leading-" AND …" SQL fragment (never empty — a Quick session
+ *               always has at least the IsActive gate around this).
+ */
+function serviceMode_liveFollowAliveSql(\mysqli $db, string $alias = 's'): string
+{
+    if (serviceMode_idleColumnsExist($db)) {
+        /* Migrated: the idle window IS the "alive" boundary; no heartbeat gate. */
+        return serviceMode_idleFreshSql($db, $alias);
+    }
+    /* Un-migrated fallback: heartbeat-freshness proxy (pre-#1792 behaviour). */
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,63}$/', $alias)) {
+        throw new \RuntimeException('Invalid SQL alias literal: ' . var_export($alias, true));
+    }
+    return ' AND ' . $alias . '.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL '
+         . (int) LIVE_SESSION_FRESHNESS_SECONDS . ' SECOND)';
+}
+
+/**
+ * #1770 §5 — THE idle-timeout precedence resolver: app default → org layer →
+ * user layer → an org's ENFORCED override, in that priority. Called ONCE, at
+ * `live_follow_create`, and the result is STAMPED onto the new row
+ * (`IdleTimeoutMins`) — every gate/prune predicate afterwards reads the
+ * stamped column, never re-resolves this chain per-row (§3.1's "stamp-at-
+ * create, not resolve-at-read" design: an admin changing the app default
+ * mid-session affects the NEXT session, not running ones).
+ *
+ * ELI5: "how long can this leader go quiet before we close their session?" —
+ * ask their church first (if the church has LOCKED an answer, that wins,
+ * picking the strictest if they belong to several); otherwise ask the
+ * leader's own preference; otherwise fall back to whatever their church
+ * suggests as a default; otherwise use the site-wide default.
+ *
+ * PRECEDENCE (owner's formula, analysis §491): `enforced ?? (user ?? orgDefault ?? appDefault)`.
+ *   1. App default   — `getAppSetting('live_follow_idle_timeout_minutes')`,
+ *      falling back to LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES (15).
+ *   2. Org layer      — every ACTIVE org the user belongs to
+ *      (`tblOrganisationMembers` ⋈ `tblOrganisations WHERE IsActive = 1`)
+ *      with a non-NULL `LiveIdleTimeoutMins`. Any org with
+ *      `EnforceIdleTimeout = 1` contributes to $enforced (the MINIMUM such
+ *      value wins outright across a multi-org user — most-restrictive,
+ *      deterministic, fails toward safety, §10 S3); every other org
+ *      contributes to $orgDefault (again the minimum).
+ *   3. User layer     — `tblUsers.Settings` JSON root key
+ *      `liveIdleTimeoutMins` (an int > 0; anything else is ignored).
+ *   4. Resolution      — `$enforced ?? ($user ?? ($orgDefault ?? $appDefault))`,
+ *      clamped to [LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES,
+ *      LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES].
+ *
+ * Column-existence-gated at both layers (serviceMode_orgIdleColumnsExist(),
+ * and the user layer simply reads a JSON key that is absent pre-#1770 UI —
+ * absence is not an error, just "no preference set"). Every DB read here is
+ * wrapped: a resolver failure must never break session creation, so any
+ * \Throwable degrades that ONE layer to "not set" rather than propagating.
+ *
+ * #1798 — `$enforcedMinsOut` is an ADDITIVE by-reference out-param (default
+ * null, so every pre-#1798 call site is untouched) that exposes JUST the
+ * enforced-layer value the resolver already computed internally, clamped the
+ * same way the return value is. It exists so `live_follow_create`'s
+ * client-chosen "Go Live" duration and `live_follow_extend`'s host-initiated
+ * extension can each be capped at the HOST's own org lock ("the org lock
+ * wins for the host") without a second reader of `LiveIdleTimeoutMins` /
+ * `EnforceIdleTimeout` — the A3 guard in `tests/php/test-live-follow-idle.php`
+ * asserts those two columns are read ONLY inside this resolver (or their own
+ * `const`/column-probe declarations), so a standalone
+ * "just get me the enforced value" helper would itself be the violation this
+ * out-param avoids. `null` means "no org enforces a value for this user" —
+ * the caller then applies no additional cap beyond the global [5, 240] band.
+ *
+ * @param \mysqli   $db
+ * @param int       $userId          The host creating/extending the session
+ *                                   (>0 — Quick sessions always have an
+ *                                   authenticated HostUserId).
+ * @param int|null &$enforcedMinsOut #1798 OUT: the enforced-org value (already
+ *                                   clamped to [5, 240]), or null when no org
+ *                                   the user belongs to enforces one.
+ * @return int Resolved minutes, clamped to the app-wide [5, 240] band.
+ */
+function serviceMode_resolveIdleTimeoutMins(\mysqli $db, int $userId, ?int &$enforcedMinsOut = null): int
+{
+    /* --- 1. App default ---------------------------------------------- */
+    $appDefault = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES;
+    if (function_exists('getAppSetting')) {
+        $raw = getAppSetting(LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)$appDefault);
+        if ($raw !== null && is_numeric($raw) && (int)$raw > 0) {
+            $appDefault = (int)$raw;
+        }
+    }
+
+    /* --- 2. Org layer (enforced + default), minimum-wins -------------- */
+    $enforced   = null;
+    $orgDefault = null;
+    if ($userId > 0 && serviceMode_orgIdleColumnsExist($db)) {
+        try {
+            $stmt = $db->prepare(
+                'SELECT o.LiveIdleTimeoutMins AS Mins, o.EnforceIdleTimeout AS Enforce
+                   FROM tblOrganisationMembers m
+                   JOIN tblOrganisations o ON o.Id = m.OrgId
+                  WHERE m.UserId = ? AND o.IsActive = 1 AND o.LiveIdleTimeoutMins IS NOT NULL'
+            );
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            foreach ($rows as $r) {
+                $mins = (int)$r['Mins'];
+                if ($mins <= 0) {
+                    continue;
+                }
+                if ((int)$r['Enforce'] === 1) {
+                    $enforced = ($enforced === null) ? $mins : min($enforced, $mins);
+                } else {
+                    $orgDefault = ($orgDefault === null) ? $mins : min($orgDefault, $mins);
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no org layer" — never break create. */
+        }
+    }
+
+    /* --- 3. User layer -------------------------------------------------- */
+    $userVal = null;
+    if ($userId > 0) {
+        try {
+            $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $rawSettings = $row['Settings'] ?? null;
+            $arr = (is_string($rawSettings) && $rawSettings !== '') ? json_decode($rawSettings, true) : null;
+            if (is_array($arr) && isset($arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY])
+                && is_numeric($arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY])) {
+                $candidate = (int)$arr[LIVE_FOLLOW_IDLE_TIMEOUT_USER_SETTING_KEY];
+                if ($candidate > 0) {
+                    $userVal = $candidate;
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* Fail-open: treat as "no user preference set". */
+        }
+    }
+
+    /* --- 4. Resolve + clamp --------------------------------------------- */
+    /* #1798 — expose the enforced layer alone (clamped, same as the return
+       value) so a create/extend caller can cap a CLIENT-CHOSEN value at it,
+       independently of whichever layer ends up winning $resolved below. */
+    $enforcedMinsOut = $enforced !== null
+        ? max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, $enforced))
+        : null;
+    $resolved = $enforced ?? ($userVal ?? ($orgDefault ?? $appDefault));
+    return max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, $resolved));
+}
+
+/**
+ * #1770 §4.1 — opportunistic, best-effort prune of Quick (host) sessions that
+ * have gone idle-expired. Piggy-backed on `live_follow_create` /
+ * `live_follow_join` (both run whenever Quick is in use at all; this host has
+ * no cron wired to the web app — the SAME rationale as
+ * serviceMode_retireExpiredCodes() above), capped at
+ * LIVE_FOLLOW_IDLE_PRUNE_LIMIT so a routine create/join can never become a
+ * long-running write, and CHANNEL-FILTERED (rule #26) so alpha traffic only
+ * ever prunes alpha sessions.
+ *
+ * ELI5: every so often, while somebody is starting or joining a Quick
+ * session anyway, take a quick look for any OTHER Quick sessions on this
+ * environment whose leader clearly wandered off — and quietly close them.
+ *
+ * DETAILED — for each idle-expired `SessionKind = 'host'` row found:
+ *   1. `IsActive = 0` (re-checked with `AND IsActive = 1` so two concurrent
+ *      prune passes can't double-count one session).
+ *   2. Revoke that session's `tblServicePresence` rows (`IsActive = 0` by
+ *      `SessionId`) — the instant-stop half of the #1770 C3 host-CCLI
+ *      mitigation. Harmless here in isolation (nothing mints Quick presence
+ *      rows until C3 lands), but the prune must already do this so C3 does
+ *      not have to touch this function again — see plan §11 landmine 4:
+ *      "presence revocation must be on EVERY session-death path".
+ *   3. `liveActivitySessionPush($db, $id, 'end')` (best-effort, mirrors
+ *      every other session-end path in this file) so a native app's Live
+ *      Activity doesn't sit stuck "live" forever.
+ *
+ * Wrapped in ONE try/catch, matching serviceMode_retireExpiredCodes()'s
+ * posture: a prune failure (lock contention, a transient DB hiccup) must
+ * NEVER fail the create/join it rides in on.
+ *
+ * @param \mysqli $db
+ * @param string  $channel serviceMode_channel() of the CURRENT request.
+ * @return int Sessions pruned (0 is normal).
+ */
+function serviceMode_pruneIdleQuickSessions(\mysqli $db, string $channel): int
+{
+    if (!serviceMode_idleColumnsExist($db)) {
+        return 0;
+    }
+    try {
+        $cap = (int) LIVE_FOLLOW_IDLE_PRUNE_LIMIT;
+        $stmt = $db->prepare(
+            "SELECT Id FROM tblLiveFollowSessions
+              WHERE SessionKind = 'host' AND IsActive = 1 AND Channel = ?
+                AND IdleTimeoutMins IS NOT NULL AND LastLeaderSeenAt IS NOT NULL
+                AND TIMESTAMPDIFF(MINUTE, LastLeaderSeenAt, UTC_TIMESTAMP()) >= IdleTimeoutMins
+              LIMIT {$cap}"
+        );
+        $stmt->bind_param('s', $channel);
+        $stmt->execute();
+        $ids = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+        $stmt->close();
+
+        if (!$ids) {
+            return 0;
+        }
+
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'live_activity_push.php';
+
+        $pruned = 0;
+        foreach ($ids as $id) {
+            $upd = $db->prepare("UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE Id = ? AND IsActive = 1");
+            $upd->bind_param('i', $id);
+            $upd->execute();
+            $changed = $upd->affected_rows;
+            $upd->close();
+            if ($changed <= 0) {
+                continue; /* Already closed by a concurrent pass. */
+            }
+            $pruned++;
+
+            $rev = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+            $rev->bind_param('i', $id);
+            $rev->execute();
+            $rev->close();
+
+            if (function_exists('liveActivitySessionPush')) {
+                liveActivitySessionPush($db, $id, 'end');
+            }
+        }
+        return $pruned;
+    } catch (\Throwable $e) {
+        error_log('[service_mode/pruneIdleQuickSessions] ' . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * #1798 (follow-on to #1770/#1792) — resolve WHO may extend/keep-alive a
+ * RUNNING Quick (host) session: the session's own HOST, an admin/owner of an
+ * organisation the HOST belongs to, or a site admin/global_admin.
+ *
+ * ELI5: "is this person allowed to add more time to that leader's session?"
+ * — yes if it's their OWN session, yes if they run a church the leader
+ * belongs to, yes if they're a whole-site administrator, no otherwise.
+ *
+ * DETAILED — resolved via the HOST's OWN `tblOrganisationMembers` rows,
+ * NEVER the session's own `OrgId` column: Quick sessions keep `OrgId = NULL`
+ * (rule #26, load-bearing for the CCLI gate — a Quick session must never be
+ * treated as belonging to an organisation for gating purposes), so
+ * org-admin authority here is entirely about who the HOST is, not a session
+ * column. Extracted out of `api.php`'s `live_follow_extend` case body (as a
+ * pure decision, no response-writing) so the AUTHORIZATION outcome is
+ * independently unit-testable against a live DB
+ * (`tests/php/test-live-follow-extend.php`) without needing an HTTP harness
+ * around the dispatcher — the same "testable primitive behind a thin case"
+ * shape `serviceMode_codeOnOtherChannel()` already established for #1792.
+ *
+ * @param \mysqli $db
+ * @param int     $hostUserId      The session's HostUserId.
+ * @param int     $requesterUserId The authenticated caller attempting to extend.
+ * @param string  $requesterRole   The caller's tblUsers.Role.
+ * @return string One of 'host' | 'org_admin' | 'site_admin' | 'denied'. The
+ *                caller treats 'host' specially (the org-enforced cap
+ *                applies); 'org_admin' and 'site_admin' both mean "extend
+ *                allowed, capped only at the global band"; 'denied' means
+ *                403.
+ */
+function serviceMode_liveFollowExtendAuthorize(\mysqli $db, int $hostUserId, int $requesterUserId, string $requesterRole): string
+{
+    if ($hostUserId > 0 && $hostUserId === $requesterUserId) {
+        return 'host';
+    }
+    if (in_array($requesterRole, ['admin', 'global_admin'], true)) {
+        return 'site_admin';
+    }
+    if ($requesterUserId <= 0 || !function_exists('userIsOrgAdminOf')) {
+        /* userIsOrgAdminOf() lives in includes/entitlements.php — best-effort
+           against a caller that hasn't loaded it (mirrors userCanActOnOrg()'s
+           own fail-closed posture in organisation_validation.php). */
+        return 'denied';
+    }
+    $adminOrgs = userIsOrgAdminOf($requesterUserId);
+    if (!$adminOrgs) {
+        return 'denied';
+    }
+    /* Placeholders built from a COUNT — a hardcoded construction, never
+       request data (rule #5). */
+    $placeholders = implode(',', array_fill(0, count($adminOrgs), '?'));
+    $stmt = $db->prepare(
+        "SELECT 1 FROM tblOrganisationMembers WHERE UserId = ? AND OrgId IN ({$placeholders}) LIMIT 1"
+    );
+    $types  = 'i' . str_repeat('i', count($adminOrgs));
+    $params = array_merge([$hostUserId], $adminOrgs);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit ? 'org_admin' : 'denied';
+}
+
+/* =============================================================================
+ * #1770 C4 — ONE broadcast core + server-side section resolution (req #4/#7).
+ * =============================================================================
+ * ELI5: whatever tells iHymns "show THIS song, at THIS point" — the
+ * Service-Projection console, a co-leader's phone, or now an external
+ * presentation-app driver hitting `service_drive` — needs to write the SAME
+ * three columns the SAME way every time, or two of those writers could
+ * quietly disagree about what "broadcasting" means. This section pulls that
+ * ONE write out of `service_broadcast` into a function so every future
+ * writer calls it instead of copying it (rule #26 I4 / CLAUDE.md modularity
+ * rule; plan guard G4 tree-derives every writer of these two columns and
+ * asserts the set never grows beyond this core + `live_follow_update`'s own,
+ * deliberately-separate, code-scoped writer).
+ *
+ * @see .claude/live-follow-1770-plan.md §4.4
+ * ============================================================================= */
+
+/**
+ * THE ONE broadcast write. Sets `CurrentSongId` / `CurrentComponentIndex` /
+ * `StateJson`, bumps `StateRevision`, touches `LastHeartbeatAt` (a broadcast
+ * IS the operator's heartbeat — no separate beat needed the same instant),
+ * pushes a Live Activity 'update', and returns the POST-write revision.
+ *
+ * Extracted verbatim from `service_broadcast` (api.php) — same SQL text,
+ * same statement order — so the extraction is a fixture-diffed no-op for
+ * every existing caller; `service_drive` (§4.5) is simply the SECOND caller.
+ *
+ * DELIBERATELY NOT the same function `live_follow_update` uses: that
+ * endpoint's WHERE is `SessionCode + HostUserId` (not a bare `Id`) and it
+ * ALSO rolls `ExpiresAt` — folding it in would change semantics for a
+ * different session KIND. Noted as a possible future convergence, not
+ * forced here (plan §4.4).
+ *
+ * @param \mysqli     $db
+ * @param int         $sessionId
+ * @param string|null $songId
+ * @param int|null    $componentIndex
+ * @param string|null $stateJson Pre-cleaned via serviceMode_cleanState() —
+ *                                this function does NOT re-validate it.
+ * @return int The StateRevision AFTER this write.
+ */
+function serviceMode_applyBroadcast(\mysqli $db, int $sessionId, ?string $songId, ?int $componentIndex, ?string $stateJson): int
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'live_activity_push.php';
+
+    $upd = $db->prepare(
+        'UPDATE tblLiveFollowSessions
+            SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                StateRevision = StateRevision + 1, LastHeartbeatAt = UTC_TIMESTAMP()
+          WHERE Id = ?'
+    );
+    $upd->bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId);
+    $upd->execute();
+    $upd->close();
+
+    $rev = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+    $rev->bind_param('i', $sessionId);
+    $rev->execute();
+    $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
+    $rev->close();
+
+    if (function_exists('liveActivitySessionPush')) {
+        liveActivitySessionPush($db, $sessionId, 'update');
+    }
+    return $revision;
+}
+
+/**
+ * #1770 — the closed section-label vocabulary `serviceMode_resolveSectionIndex()`
+ * folds a free-text driver label through. VARCHAR-style app vocab (rule #20 —
+ * a growable list, never an ENUM); every value here is a member of the SAME
+ * component-type vocabulary the editor/importers already use
+ * (`_BULK_IMPORT_IHYMNS_COMPONENT_TYPES`, includes/song_importers.php) so a
+ * type this map resolves to always matches a real stored component `type`.
+ * Single-letter aliases mirror the importers' own free-text parsers
+ * (includes/song_importers.php's `_bulkImport_componentTypeFor`-family
+ * helpers) rather than inventing a third shorthand convention.
+ */
+const SERVICE_MODE_SECTION_LABEL_MAP = [
+    'v' => 'verse',       'verse'     => 'verse',
+    'c' => 'chorus',      'chorus'    => 'chorus',
+    'r' => 'refrain',     'refrain'   => 'refrain',
+    'interlude'           => 'refrain',
+    'vamp'                => 'refrain',
+    'b' => 'bridge',      'bridge'    => 'bridge',
+    'i' => 'intro',       'intro'     => 'intro',
+    'o' => 'outro',       'outro'     => 'outro',
+    't' => 'outro',       'tag'       => 'outro',
+    'ending'              => 'outro', 'coda' => 'outro',
+    'p' => 'pre-chorus',  'prechorus' => 'pre-chorus', 'pre-chorus' => 'pre-chorus',
+];
+
+/**
+ * #1798 — PURE parse of a driver's free-text section label into a normalised
+ * word-key + optional trailing number, tolerant of the SPACE form ("Pre Chorus
+ * 2", which some presentation tools emit) that the old letters-only regex in
+ * serviceMode_resolveSectionIndex() rejected outright.
+ *
+ * Extracted pure (no DB) so `tests/php/test-service-section-resolve.php` can
+ * prove the parse without a song fixture (rule #34). resolveSectionIndex() is
+ * the ONE caller; it matches `wordKey` against the song's stored component types
+ * (exact first, coarse-fold fallback — see there), which is what lets a section
+ * stored as `tag`/`coda`/`interlude`/`vamp` be addressed by its own name.
+ *
+ * @param string $sectionRef Free-text label from the driver payload.
+ * @return array{word:string,wordKey:string,num:?int}|null null when unparseable.
+ */
+function serviceMode_sectionLabelParse(string $sectionRef): ?array
+{
+    $sectionRef = trim($sectionRef);
+    if ($sectionRef === '') {
+        return null;
+    }
+    /* Split an optional TRAILING integer from the label; the label itself may
+       carry interior spaces/hyphens ("Pre Chorus", "pre-chorus"). */
+    if (!preg_match('/^(.*?)\s*(\d*)\s*$/', $sectionRef, $m)) {
+        return null;
+    }
+    $word = strtolower(trim($m[1]));
+    $num  = ($m[2] !== '') ? (int)$m[2] : null;
+    if ($word === '') {
+        $word = 'verse'; /* documented default — a bare number means a verse */
+    }
+    /* Fold spaces + hyphens away so "Pre Chorus" ≡ "pre-chorus" ≡ "prechorus". */
+    $wordKey = (string)preg_replace('/[\s\-]+/', '', $word);
+    if ($wordKey === '') {
+        return null;
+    }
+    return ['word' => $word, 'wordKey' => $wordKey, 'num' => $num];
+}
+
+/**
+ * #1770 — memoised probe: does `tblSongs.ArrangementJson` (#892) exist on
+ * THIS install? Mirrors `SongData::_hasArrangementColumn()`'s pattern
+ * (private to that class — this is the standalone equivalent for
+ * `service_mode.php`, which has no SongData instance to hand).
+ */
+function serviceMode_songsArrangementColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongs'
+                AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Project a song's components into RENDER order — the SAME order
+ * `song.php` renders `.lyric-component` and `js/modules/service-broadcast.js`'s
+ * `_projectSections()` computes client-side (#160 arrangement-aware
+ * rendering): when `tblSongs.ArrangementJson` (#892) is present and
+ * non-empty, render order = `arrangement.map(i => components[i])`,
+ * dropping any out-of-range ordinal; otherwise the raw component order.
+ * Column-existence-gated + fully wrapped — any failure degrades to the raw
+ * (un-arranged) component order rather than throwing, since an
+ * unresolvable section reference is meant to fall back to song-level only
+ * (owner req #7), never to break the broadcast.
+ *
+ * @param array<int, array<string,mixed>> $components From
+ *        lyricLinesAssembleComponents() — raw component order.
+ * @return array<int, array<string,mixed>> Render-order-projected components.
+ */
+function serviceMode_projectArrangement(\mysqli $db, string $songId, array $components): array
+{
+    if (!$components || !serviceMode_songsArrangementColumnExists($db)) {
+        return $components;
+    }
+    try {
+        /* @disabled-visible: broadcaster gate-elsewhere exemption (#1765) —
+           this is a metadata lookup (the running order) for a SongId the
+           CALLER has already resolved + visibility/servability-checked via
+           songVisibleSql()/songServableSql() before it was ever accepted
+           into a broadcast (service_broadcast / service_drive both do this
+           up front). A disabled/hidden song can never reach this line in
+           the first place, so re-applying the predicate here would only add
+           a redundant query, not change any outcome.
+           @deleted-visible: same reasoning, one predicate over (#1694) — the
+           same up-front songVisibleSql()/songServableSql() check the
+           broadcaster gate already ran also excludes soft-deleted songs, so
+           a deleted SongId can no more reach this lookup than a
+           disabled-songbook one can. */
+        $stmt = $db->prepare('SELECT ArrangementJson FROM tblSongs WHERE SongId = ?');
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $raw = $row['ArrangementJson'] ?? null;
+        if ($raw === null || $raw === '') {
+            return $components;
+        }
+        $decoded = is_array($raw) ? $raw : json_decode((string)$raw, true);
+        if (!is_array($decoded) || !$decoded) {
+            return $components;
+        }
+        $projected = [];
+        foreach ($decoded as $ord) {
+            if (!is_int($ord) && !(is_string($ord) && ctype_digit($ord))) {
+                continue;
+            }
+            $idx = (int)$ord;
+            if (isset($components[$idx])) {
+                $projected[] = $components[$idx];
+            }
+        }
+        /* An arrangement that resolves to NOTHING (every ordinal out of
+           range — e.g. stale after a component delete) falls back to the
+           raw order rather than handing the caller an empty list. */
+        return $projected ?: $components;
+    } catch (\Throwable $_e) {
+        return $components;
+    }
+}
+
+/**
+ * #1770 §4.4 (req #7) — resolve an external driver's free-text section
+ * label ("Verse 2" / "V2" / "Chorus" / "C" / "Bridge" / a bare "2") to the
+ * 0-based RENDER-ORDER index the congregant client already scrolls to
+ * (`service-follow.js`'s `_scrollToComponent`, nth-child over
+ * `.lyric-component`) — i.e. exactly what `componentIndex` means everywhere
+ * else in this file.
+ *
+ * ELI5: a presentation-app operator says "Verse 2" out loud (or a shim
+ * sends that string) — this works out WHICH numbered slot on the
+ * congregant's screen that actually is, accounting for the song's own
+ * custom running order.
+ *
+ * PARSING (documented default, since the plan intentionally left this
+ * underspecified — see the caller's own doc-block for the flagged
+ * assumption): `/^([a-zA-Z\-]*)\s*(\d*)\s*$/` splits a leading word from a
+ * trailing number. A BARE number ("2", no word) defaults to type
+ * `'verse'` — the common case for a plain numbered slide deck and the same
+ * default the free-text bulk importer already uses
+ * (`song_importers.php`'s numbered-line parser, ~:3613). An unrecognised
+ * word (fails `SERVICE_MODE_SECTION_LABEL_MAP`) is UNRESOLVABLE → null, per
+ * owner req #7's "song-level stays the fallback" — never a guess.
+ *
+ * NUMBER MATCHING, in order: (1) an EXACT match against the component's own
+ * stored `number` field; (2) failing that, the Nth (1-based) occurrence of
+ * that TYPE in render order — because not every import populates `number`
+ * consistently (a song with one unnumbered chorus commonly stores
+ * `number = 0`), so a driver saying "Chorus 1" must still resolve against a
+ * song whose only chorus is stored as `number = 0`. No number at all →
+ * the FIRST occurrence of that type.
+ *
+ * @param \mysqli $db
+ * @param string  $songId
+ * @param string  $sectionRef Free-text label from the driver payload.
+ * @return int|null 0-based render-order index, or null when unresolvable
+ *                   (the caller applies song-level only — owner req #7).
+ */
+function serviceMode_resolveSectionIndex(\mysqli $db, string $songId, string $sectionRef): ?int
+{
+    $songId     = trim($songId);
+    $sectionRef = trim($sectionRef);
+    if ($songId === '' || $sectionRef === '') {
+        return null;
+    }
+    /* #1798 — parse via the shared pure helper so the space form ("Pre Chorus
+       2") is handled identically here and in the guard. Returns the folded
+       word-key + optional trailing number, or null when unparseable. */
+    $parsed = serviceMode_sectionLabelParse($sectionRef);
+    if ($parsed === null) {
+        return null;
+    }
+    $wordKey = $parsed['wordKey'];   /* lower-cased, spaces/hyphens stripped: "prechorus", "tag", "verse" */
+    $num     = $parsed['num'];
+
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    try {
+        $components = lyricLinesAssembleComponents($db, $songId);
+    } catch (\Throwable $_e) {
+        return null;
+    }
+    if (!$components) {
+        return null;
+    }
+    $ordered = serviceMode_projectArrangement($db, $songId, $components);
+
+    /* #1798 — two-pass type resolution (was single-pass, which folded the
+       INCOMING label to a coarse type and matched that against the RAW stored
+       type — so a component stored as `tag`/`coda`/`interlude`/`vamp` could
+       never be addressed by its own name, since the map folds tag→outro etc.).
+       PASS 1: exact stored-type match (own-name addressing — the fix). PASS 2:
+       only if the label named no stored type directly, fall back to the coarse
+       SERVICE_MODE_SECTION_LABEL_MAP alias fold, matching a component whose OWN
+       type also folds to the same coarse bucket (so `o`/`outro`/`ending` still
+       resolve, and a coarse alias can still reach a fine-grained section when no
+       literal one exists). $normType strips spaces/hyphens so "pre-chorus" ≡
+       "prechorus". */
+    $normType = static fn(string $s): string => (string)preg_replace('/[\s\-]+/', '', strtolower($s));
+
+    $ofType = [];
+    foreach ($ordered as $idx => $c) {
+        if ($normType((string)($c['type'] ?? '')) === $wordKey) {
+            $ofType[] = ['idx' => (int)$idx, 'number' => (int)($c['number'] ?? 0)];
+        }
+    }
+    if (!$ofType) {
+        $coarse = SERVICE_MODE_SECTION_LABEL_MAP[$wordKey] ?? null;
+        if ($coarse === null) {
+            return null; /* unrecognised label AND not a stored type — unresolvable, not a guess */
+        }
+        foreach ($ordered as $idx => $c) {
+            $ctype = $normType((string)($c['type'] ?? ''));
+            if ($ctype === $normType($coarse) || (SERVICE_MODE_SECTION_LABEL_MAP[$ctype] ?? null) === $coarse) {
+                $ofType[] = ['idx' => (int)$idx, 'number' => (int)($c['number'] ?? 0)];
+            }
+        }
+    }
+    if (!$ofType) {
+        return null;
+    }
+    if ($num === null) {
+        return $ofType[0]['idx'];
+    }
+    foreach ($ofType as $entry) {
+        if ($entry['number'] === $num) {
+            return $entry['idx'];
+        }
+    }
+    if ($num >= 1 && $num <= count($ofType)) {
+        return $ofType[$num - 1]['idx'];
+    }
+    return null;
 }

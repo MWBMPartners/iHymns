@@ -350,6 +350,9 @@ if ($hasSchema
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     try {
+        /* @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision); a curator can
+           still add a song from a disabled book into a Work. */
         $like = '%' . $q . '%';
         if ($q === '') {
             $sql = "SELECT SongId, Title, SongbookAbbr, Number
@@ -1620,6 +1623,13 @@ if ($hasSchema) {
                 }
             });
         })();
+    </script>
+
+    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+         booted; every header click was a silent no-op until now). -->
+    <script type="module">
+        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+        bootSortableTables();
     </script>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

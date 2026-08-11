@@ -42,9 +42,19 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php'; // appCanonicalHost() for the same-origin probe (security audit)
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
 
-requireGlobalAdmin();
+/* #1769 P4 Commit E (D9) — gate on the manage_configuration entitlement, the
+   SAME check its new nav entry advertises (admin-links.php), rather than a raw
+   requireGlobalAdmin(). Admittance-identical at the default entitlement map
+   (manage_configuration defaults to global_admin only), but now a page and its
+   nav link can never drift (#1587) and an operator's override is honoured. */
+requireAuth();
 $currentUser = getCurrentUser();
+if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The manage_configuration entitlement is required.');
+}
 $activePage  = 'gating-noop-verify';
 
 const GATING_NOOP_SENTINEL = 'gating_noop_baseline';
@@ -76,8 +86,11 @@ function gatingNoop_sampleIds(\mysqli $db): array
     foreach ($buckets as $where) {
         /* #1694 — sample only VISIBLE songs: the harness fetches each sample
            id via the public song_detail path, and a hidden pick would 410 and
-           read as a false gating diff. */
-        $sql = "SELECT SongId FROM tblSongs WHERE {$where} AND " . songVisibleSql($db, '') . " ORDER BY SongId ASC LIMIT {$per}";
+           read as a false gating diff. #1765 — same for a song whose
+           songbook is disabled: the harness's SongData instances are
+           deliberately PUBLIC (see the two `new SongData()` markers below),
+           so a disabled-book pick would read as the identical false diff. */
+        $sql = "SELECT SongId FROM tblSongs WHERE {$where} AND " . songVisibleSql($db, '') . " AND " . songServableSql($db, '') . " ORDER BY SongId ASC LIMIT {$per}";
         $res = $db->query($sql);
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_row()) {
@@ -191,6 +204,11 @@ try {
     $gatingOn = (getAppSetting('content_gating_enabled', '0') === '1');
 
     if (!$gatingOn && in_array($action, ['capture', 'verify'], true)) {
+        /* #1765 Feature 1 — deliberately PUBLIC, not SongData::forAdmin():
+           this tool verifies that content gating is a byte-identical no-op
+           against the PUBLIC payload, so it must see exactly what the
+           public site sees — a disabled songbook's songs included in the
+           exclusion. */
         $songData = new SongData();
         $ids = gatingNoop_sampleIds($db);
 
@@ -236,6 +254,7 @@ try {
     /* Audio-route probe (always runs) — HEAD a few sample mp3s. Same-origin. */
     if ($action === 'probe-audio' || $action === '') {
         $audioProbe = [];
+        /* #1765 Feature 1 — deliberately PUBLIC, same reasoning as above. */
         $songData2  = new SongData();
         $sampleIds  = array_slice(gatingNoop_sampleIds($db), 0, 3);
         $scheme     = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';

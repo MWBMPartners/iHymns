@@ -598,6 +598,31 @@ declare(strict_types=1);
                 </div>
             </div>
 
+            <!-- Live Follow leader-idle timeout (#1770 §4.7) -->
+            <div class="mb-3">
+                <label for="setting-live-idle-timeout-mins" class="form-label fw-semibold">
+                    Live Follow idle timeout
+                </label>
+                <div class="d-flex align-items-center gap-2">
+                    <input type="number"
+                           class="form-control"
+                           style="max-width: 8rem;"
+                           id="setting-live-idle-timeout-mins"
+                           min="5"
+                           max="240"
+                           step="1"
+                           placeholder="default"
+                           aria-label="Minutes of inactivity before a Go Live session auto-closes">
+                    <span class="small text-muted">minutes</span>
+                </div>
+                <small class="text-muted mt-1 d-block">
+                    When you "Go Live" for congregants to follow, the session auto-closes after this
+                    many minutes with no genuine interaction from you (just having the app open
+                    doesn't count). Leave blank to use the default — your organisation may enforce
+                    its own value.
+                </small>
+            </div>
+
             <!-- Font size -->
             <div class="mb-0">
                 <label for="setting-font-size" class="form-label fw-semibold">

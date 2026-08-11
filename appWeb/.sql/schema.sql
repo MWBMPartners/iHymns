@@ -182,6 +182,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',
     Colour          VARCHAR(7)      NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default)',
     IsOfficial      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = published hymnal; 0 = curated grouping / pseudo-songbook (#502)',
+    IsDisabled      TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Disable-a-songbook flag (Feature 1, epic #1765): 1 = hidden from every public read, still visible and editable under /manage; reversible, nothing deleted. Read-path enforcement lands in commit 3 (songbookVisibleSql()); this column is dormant until then; DEFAULT 0 keeps every existing songbook visible',
+    IsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Public-domain flag for the songbook as a published work (Feature 2, epic #1765) - informational only, never a content gate; mirrors the tblSongs LyricsPublicDomain / MusicPublicDomain precedent. DEFAULT 0 so no existing songbook is retroactively marked PD',
     Publisher       VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Publisher or originator (e.g. Praise Trust, Hope Publishing) (#502)',
     PublicationYear VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Year / edition range (free-form: 1986, 1986-2003, 2nd edition 2011) (#502)',
     /* Publication city — VARCHAR mirror for JOIN-free reads + FK
@@ -192,6 +194,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     Affiliation     VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Denominational / religious affiliation; backed by tblSongbookAffiliations registry (#670)',
     IsChristian     TINYINT(1)      NOT NULL DEFAULT 1 COMMENT 'Christian-corpus filter axis (#1045): iHymns surfaces only WHERE IsChristian=1; the shared iLyricsDB core applies no filter. Every iHymns songbook is Christian, hence default 1.',
     Language        VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional IETF BCP 47 tag (language[-script][-region], e.g. en, pt-BR, zh-Hans-CN); NULL = not specified. Soft validation via the composite picker dropdowns; widened from VARCHAR(10) to fit script+region subtags (#681)',
+    DefaultLyricsRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'EDITOR-DEFAULT only, NEVER resolver-read (#1769 P1): pre-fills the Rights panel LyricsRightsLicenceKey for new songs in this book and powers the P4 apply-to-all-songs bulk action. The resolver reads ONLY the per-song fact — no inheritance chase, no JOIN, and tblSongs NULL keeps its single meaning (no requirement). NO FK (degrade-safe). DORMANT until the P4 editor reads it',
+    DefaultMusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'EDITOR-DEFAULT only, NEVER resolver-read (#1769 P1): pre-fills the Rights panel MusicRightsLicenceKey for new songs in this book; see DefaultLyricsRightsLicenceKey. NO FK (degrade-safe). DORMANT until the P4 editor reads it',
 
     /* Bibliographic + authority-control identifiers (#672). All
        optional, all VARCHAR — no FKs, no CHECK constraints. Curators
@@ -206,6 +210,8 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     LcpNumber           VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Library of Congress permalink / project number (#672)',
     Isbn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'ISBN-10 or ISBN-13 (dashes optional) (#672)',
     ArkId               VARCHAR(80)     NULL DEFAULT NULL COMMENT 'Archival Resource Key (e.g. ark:/13960/t8jf3w89z) (#672)',
+    OpenLibraryWorkId   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Open Library Work id, e.g. OL102749W (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=work',
+    OpenLibraryEditionId VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Open Library Edition id, e.g. OL7357422M (Feature 3, epic #1765; mirrors the #672 identifier-column pattern). Bare id form; validated by ihymns_canonical_openlibrary() in includes/identifier_normalize.php, kind=edition',
     IsniId              VARCHAR(25)     NULL DEFAULT NULL COMMENT 'International Standard Name Identifier (16 digits, optional spacing) (#672)',
     ViafId              VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Virtual International Authority File ID (#672)',
     Lccn                VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Library of Congress Control Number (#672)',
@@ -286,6 +292,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
+    LyricsRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song LYRICS-rights requirement FACT (#1769 P1, Model 2): tblLicenceTypes.LicenceKey a viewer must hold (via their org licence set or Service-Mode presence) for gated lyric actions on this song. NULL = no per-song requirement — plan caps + LyricsPublicDomain alone govern. NO FK, degrade-safe like tblUsers.AccessTier: an unknown or retired key degrades to no-requirement, never blocks a save or read. DORMANT until the P2 resolver reads it',
+    MusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song MUSIC-rights requirement FACT (#1769 P1 / #1768): tblLicenceTypes.LicenceKey required for music-reproduction actions (chord display, sheet music, MusicXML, MIDI — plan Q3: MIDI counts). NULL = no per-song requirement — plan caps + MusicPublicDomain alone govern. NO FK (degrade-safe, see LyricsRightsLicenceKey). Song-grain first (#1768 Q2); the arrangement-grain override is the reserved pair on tblSongArrangements. DORMANT until the P2 resolver reads it',
     Availability        VARCHAR(20)     NOT NULL DEFAULT 'available' COMMENT 'available | paid_only | unavailable (#1090 audit). Owner-driven rights gate read by content_access.php — distinct from the blanket PD flags; VARCHAR not ENUM',
     IsExplicit          TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Explicit-content flag (#1046); 0 for the Christian corpus, axis exists for generic/secular imports',
     Genre               VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Free-text secondary genre (#1046): Hymn / Contemporary Worship / … (NOT the Christian-filter axis — that is tblSongbooks.IsChristian)',
@@ -319,6 +327,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_Isrc              (Isrc),
     INDEX idx_Iswc              (Iswc),
     INDEX idx_Ccli              (Ccli),
+    INDEX idx_LyricsRightsLicence (LyricsRightsLicenceKey),
+    INDEX idx_MusicRightsLicence  (MusicRightsLicenceKey),
     INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
@@ -1187,10 +1197,14 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
        into tblPlaces for country grouping / regional filters. */
     PhysicalCity     VARCHAR(255)   NULL DEFAULT NULL,
     PhysicalCityId   INT UNSIGNED   NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'none, ihymns_basic, ihymns_pro, ccli',
+    LicenceType     VARCHAR(30)     NOT NULL DEFAULT 'none' COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). Values: none | ccli | mrl | ihymns_basic | ihymns_pro | custom. Legacy primary-licence column; multi-licence rows live in tblOrganisationLicences',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'CCLI licence number or iHymns key',
     LicenceExpiresAt TIMESTAMP      NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    LiveIdleTimeoutMins SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Org override for the Quick-session leader-idle timeout (minutes). NULL = no override — the app default applies (#1770 req 5)',
+    EnforceIdleTimeout TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = the org LOCKS LiveIdleTimeoutMins for its members (their personal value is ignored). Only meaningful when LiveIdleTimeoutMins is non-NULL (#1770 req 5)',
+    SetlistEditAudience VARCHAR(20) NULL DEFAULT NULL COMMENT 'G4-org #1791: this org''s preference for members'' set-list EDIT links — anyone | authenticated | NULL (no org opinion). App-validated VARCHAR vocab.',
+    EnforceSetlistEditAudience TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'G4-org #1791: 0 = SetlistEditAudience is an advisory default a member may loosen; 1 = mandatory cap (a member''s edit links can never be more open than SetlistEditAudience). Mirrors EnforceIdleTimeout (#1770).',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -1242,7 +1256,7 @@ CREATE TABLE IF NOT EXISTS tblOrganisationMembers (
 CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrganisationId  INT UNSIGNED    NOT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ccli, mrl, ihymns_basic, ihymns_pro, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ccli | mrl | ihymns_basic | ihymns_pro | custom',
     LicenceNumber   VARCHAR(100)    NOT NULL DEFAULT '',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
@@ -1269,7 +1283,7 @@ CREATE TABLE IF NOT EXISTS tblContentLicences (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     OrgId           INT UNSIGNED    NULL DEFAULT NULL,
     UserId          INT UNSIGNED    NULL DEFAULT NULL,
-    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'ihymns_basic, ihymns_pro, ccli, custom',
+    LicenceType     VARCHAR(30)     NOT NULL COMMENT 'Licence vocabulary token -- registry: tblLicenceTypes (includes/licence_registry.php, #459/#1769 P2). e.g. ihymns_basic | ihymns_pro | ccli | mrl | custom',
     LicenceKey      VARCHAR(100)    NOT NULL DEFAULT '',
     ExpiresAt       TIMESTAMP       NULL DEFAULT NULL,
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
@@ -1416,8 +1430,16 @@ CREATE TABLE IF NOT EXISTS tblUserSetlistTombstones (
 -- working when historical JSON files are imported by the migration.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSharedSetlists (
-    ShareId         VARCHAR(16)     NOT NULL PRIMARY KEY COMMENT '8 hex chars by default; column wider for forward-compat',
+    ShareId         VARCHAR(64)     NOT NULL PRIMARY KEY COMMENT '8 hex chars (legacy view links, 32-bit) or 22/43-char base64url capability token (128/256-bit). Widened #1791.',
     Data            JSON            NOT NULL COMMENT 'Full setlist payload as written by the share API',
+    Scope           VARCHAR(10)     NOT NULL DEFAULT 'view' COMMENT 'view | edit — app-validated VARCHAR vocab, never ENUM (rule #20). edit implies view.',
+    Label           VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Owner-facing name for this link ("worship team"). Display only.',
+    RevokedAt       DATETIME        NULL DEFAULT NULL COMMENT 'Hard revocation instant (UTC). Non-NULL = link refuses at every scope.',
+    ExpiresAt       DATETIME        NULL DEFAULT NULL COMMENT 'Optional expiry (UTC), NULL = never. DATETIME not TIMESTAMP (rule #20 TTL convention).',
+    LastUsedAt      DATETIME        NULL DEFAULT NULL COMMENT 'Last successful token READ or WRITE (edit links) — owner-facing "in use?" signal.',
+    EditCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Successful token WRITES through this link (mirrors ViewCount).',
+    ShowSharerName  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'G3 #1791: 1 = shared page shows "Shared by <owner display name>"; 0 (default) = anonymous, current posture. Owner-set per link at mint.',
+    EditAudience    VARCHAR(20)     NOT NULL DEFAULT 'anyone' COMMENT 'G4 #1791: who may edit via an edit-scope link — anyone | authenticated. Owner-set per link; DEFAULT anyone (no account needed). App-validated VARCHAR vocab, never ENUM (rule #20). Ignored for view-scope links.',
     OwnerUserId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Live-share link: FK to tblUsers.Id of the authenticated owner. NULL = legacy/anonymous snapshot-only share (#1380).',
     SourceSetlistId VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Live-share link: the owner''s tblUserSetlists.SetlistId. (OwnerUserId, SourceSetlistId) resolves the CURRENT setlist at read time. NULL = snapshot-only (#1380).',
     CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for guest creates)',
@@ -1436,6 +1458,7 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     INDEX idx_CreatedBy (CreatedBy),
     INDEX idx_CreatedAt (CreatedAt),
     KEY idx_LiveSource (OwnerUserId, SourceSetlistId),
+    KEY idx_Expiry (ExpiresAt),
 
     CONSTRAINT fk_SharedSetlists_User FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE,
@@ -2478,6 +2501,9 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     UpdatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)        NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default) (#1181)',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the collection (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672). No Isbn/Issn on this table - a curated collection (rule #24: catalogue internally, Collection in UI) is not itself a catalogued serial publication, see the plan adversarial notes section',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the collection, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the collection, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     UNIQUE KEY uk_Slug (Slug),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
@@ -2741,6 +2767,30 @@ CREATE TABLE IF NOT EXISTS tblMusicianRelations (
   COMMENT='Group/band/collective -> individual member musicians (#1502).';
 
 
+-- ----------------------------------------------------------------------------
+-- tblMusicianDuplicatesDismissed (#1785) — a curator's "these two registry
+-- rows are NOT the same person" memory for /manage/musician-duplicates.
+-- Mirrors tblSongLinkSuggestionsDismissed: pair normalised (IdA < IdB,
+-- numeric), UNIQUE per pair, FK-cascaded so merging/deleting either person
+-- auto-cleans the dismissal. Scores are deliberately NOT stored — the scan
+-- recomputes live (#1785 §3.4), so a stored score could only go stale.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblMusicianDuplicatesDismissed (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    MusicianIdA  INT UNSIGNED NOT NULL COMMENT 'Always numerically < MusicianIdB (#1785)',
+    MusicianIdB  INT UNSIGNED NOT NULL,
+    DismissedBy  INT UNSIGNED NULL DEFAULT NULL COMMENT 'tblUsers.Id; NULL = user since deleted',
+    DismissedAt  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Reason       VARCHAR(255) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_pair (MusicianIdA, MusicianIdB),
+    KEY idx_B (MusicianIdB),
+    CONSTRAINT fk_MusDupDism_A FOREIGN KEY (MusicianIdA) REFERENCES tblMusicians(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_MusDupDism_B FOREIGN KEY (MusicianIdB) REFERENCES tblMusicians(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ============================================================================
 -- FAMILY: MUSICIANS BACK-COMPAT VIEWS (#1741 P2)
 --
@@ -2919,6 +2969,11 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeries (
                  COMMENT 'URL-safe lowercase form for /series/<slug> public listing pages',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     Colour       VARCHAR(7)    NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB inherited by all member songbooks; empty = theme default (#1181)',
+    Isbn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISBN for the series as a whole (Feature 3, epic #1765); mirrors tblSongbooks.Isbn (#672). Deliberately absent from tblCatalogues - see the plan adversarial notes section',
+    Issn                 VARCHAR(20) NULL DEFAULT NULL COMMENT 'ISSN for the series as a whole (Feature 3, epic #1765); a series is the one publication entity of the three that commonly carries a serial number. Deliberately absent from tblSongbooks and tblCatalogues',
+    ArkId                 VARCHAR(80) NULL DEFAULT NULL COMMENT 'Archival Resource Key for the series (Feature 3, epic #1765); mirrors tblSongbooks.ArkId (#672)',
+    OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the series, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
+    OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the series, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     KEY idx_Name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -3190,6 +3245,8 @@ CREATE TABLE IF NOT EXISTS tblSongArrangements (
     Description        TEXT          NULL DEFAULT NULL COMMENT 'Free-text notes about this arrangement',
     KeySignature       VARCHAR(10)   NULL DEFAULT NULL COMMENT 'Structured key, e.g. G, Bb, F#m — home for the future transpose feature',
     CapoFret           TINYINT       NULL DEFAULT NULL COMMENT 'Capo fret position for chord display (0-12); NULL = none',
+    MusicRightsStatus  VARCHAR(20)   NULL DEFAULT NULL COMMENT 'RESERVED DORMANT (#1769 P1 / #1768 Q2): arrangement-grain music-rights status — pd | licensed | restricted (app-validated growable vocabulary, VARCHAR never ENUM, rule #20). NULL = inherit the song-grain facts (tblSongs.MusicPublicDomain + MusicRightsLicenceKey). Nothing reads this yet; the arrangement-grain gate flips on later with zero migration',
+    MusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'RESERVED DORMANT (#1769 P1 / #1768 Q2): arrangement-grain requirement override — tblLicenceTypes.LicenceKey needed for music-reproduction actions on THIS arrangement. NULL = inherit song-grain. NO FK (degrade-safe, matches tblSongs.MusicRightsLicenceKey)',
     CreatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -3750,6 +3807,138 @@ ALTER TABLE tblSongs
     ADD CONSTRAINT fk_Songs_DeletedBy
         FOREIGN KEY (DeletedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- ============================================================================
+-- FAMILY: PUBLISHERS (#93 / epic #1765) — the songbook Publisher promoted from
+-- the free-text tblSongbooks.Publisher scalar to a first-class registry of
+-- persons AND companies, with multi-publisher copyright (M:N) and imprint /
+-- catalogue grouping (self-FK). Mirrors the tblTunes family idiom (registry +
+-- aliases + external links) and the tblSongbookCompilers M:N idiom.
+-- Forward-looking ONE-PASS batch (rule #20): the aliases + external-links
+-- tables ship now so the family never needs a second migration, even though
+-- their editor panels land alongside. The free-text tblSongbooks.Publisher
+-- column STAYS as a JOIN-free denorm display mirror (same pattern as
+-- TuneName<->TuneId), so every existing reader keeps working with no JOIN;
+-- migrate-publishers-entity.php backfills the registry from DISTINCT non-empty
+-- Publisher strings. ENTIRELY additive + idempotent.
+-- ----------------------------------------------------------------------------
+-- tblPublishers — the registry. A publisher is a company OR a person (Kind),
+-- optionally linked to tblMusicians (a musician who is also a publisher is not
+-- duplicated). ParentId self-FK models imprint / catalogue grouping (mirrors
+-- tblWorks.ParentWorkId / tblSongTags.ParentId).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublishers (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ParentId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'Self-FK: imprint / catalogue grouping — an imprint points to its parent publisher (mirrors tblWorks.ParentWorkId / tblSongTags.ParentId). NULL = top-level. (#93)',
+    Name           VARCHAR(255) NOT NULL COMMENT 'Publisher display name (company name, or the person''s name for a person-publisher).',
+    Slug           VARCHAR(120) NOT NULL COMMENT 'URL-safe handle, unique.',
+    Kind           VARCHAR(20)  NOT NULL DEFAULT 'company' COMMENT 'Publisher kind — app-validated vocabulary, VARCHAR not ENUM (rule #20): company | person | imprint | society | other.',
+    MusicianId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional FK to tblMusicians for a person-publisher, so a musician who also publishes is not duplicated. NULL for a pure company. (#93)',
+    Subtitle       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional publisher subtitle / tagline.',
+    Disambiguation VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named publishers.',
+    Ipi            VARCHAR(20)  NULL DEFAULT NULL COMMENT 'Interested-Parties Information number (publishers hold these too). NULL (not empty string) so absent values coexist under uq_Ipi.',
+    Isni           VARCHAR(20)  NULL DEFAULT NULL COMMENT 'ISNI. NULL (not empty string) so absent values coexist under uq_Isni.',
+    CityName       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Publisher city display string (denorm mirror of CityId, same pattern as tblWorks.OriginCity).',
+    CityId         INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblPlaces for the publisher city (mirrors tblWorks.OriginCityId).',
+    Notes          TEXT         NULL DEFAULT NULL,
+    IsActive       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT 'Soft-hide a defunct publisher from pickers without deleting its songbook links.',
+    CreatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Slug     (Slug),
+    UNIQUE KEY uq_Ipi      (Ipi),
+    UNIQUE KEY uq_Isni     (Isni),
+    INDEX      idx_Parent   (ParentId),
+    INDEX      idx_Kind     (Kind),
+    INDEX      idx_Musician (MusicianId),
+    INDEX      idx_Name     (Name),
+    INDEX      idx_Active   (IsActive),
+    INDEX      idx_City     (CityId),
+
+    CONSTRAINT fk_Publisher_Parent
+        FOREIGN KEY (ParentId)   REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Publisher_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)  ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Publisher_City
+        FOREIGN KEY (CityId)     REFERENCES tblPlaces(Id)     ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Songbook publishers as first-class entities — persons + companies (#93 / epic #1765).';
+
+-- ----------------------------------------------------------------------------
+-- tblSongbookPublishers (#93) — the many-to-many between songbooks and
+-- publishers (multi-publisher copyright). Mirrors tblSongbookCompilers exactly;
+-- Role is an app-validated VARCHAR vocabulary (not ENUM, rule #20). The nullable
+-- ValidFrom/ValidTo reserve rights-window tracking so a future "publisher held
+-- rights 1990-2005" need costs no ALTER (rule #20 forward-looking).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongbookPublishers (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongbookId   INT UNSIGNED NOT NULL,
+    PublisherId  INT UNSIGNED NOT NULL,
+    Role         VARCHAR(30)  NOT NULL DEFAULT 'publisher' COMMENT 'Role in this songbook — app-validated, VARCHAR not ENUM: publisher | co-publisher | distributor | imprint | administrator | printer.',
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL DEFAULT NULL,
+    ValidFrom    DATE         NULL DEFAULT NULL COMMENT 'Reserved (#93): start of this publisher''s rights window for this book. Dormant until a rights-window feature lands.',
+    ValidTo      DATE         NULL DEFAULT NULL COMMENT 'Reserved (#93): end of this publisher''s rights window for this book. Dormant until a rights-window feature lands.',
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_book_pub_role (SongbookId, PublisherId, Role),
+    INDEX      idx_book (SongbookId),
+    INDEX      idx_pub  (PublisherId),
+
+    CONSTRAINT fk_sbpub_book
+        FOREIGN KEY (SongbookId)  REFERENCES tblSongbooks(Id)  ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_sbpub_pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Songbook<->publisher many-to-many for multi-publisher copyright (#93).';
+
+-- ----------------------------------------------------------------------------
+-- tblPublisherAliases (#93) — alternate names a publisher is known by (former
+-- names, imprints-as-strings). Mirrors tblTuneAliases / tblMusicianAliases;
+-- indexed rows, not JSON. Feeds publisher typeahead matching.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublisherAliases (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    PublisherId INT UNSIGNED NOT NULL,
+    Name        VARCHAR(255) NOT NULL,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_PubName (PublisherId, Name),
+    INDEX      idx_Pub    (PublisherId),
+    INDEX      idx_Name   (Name),
+
+    CONSTRAINT fk_PubAlias_Pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Alternate / former names for a publisher (#93).';
+
+-- ----------------------------------------------------------------------------
+-- tblPublisherExternalLinks (#93) — per-publisher external-link rows. Mirrors
+-- tblTuneExternalLinks / tblWorkExternalLinks exactly (rule #15: a new
+-- external-links entity gets its own tbl<Entity>ExternalLinks table, never a
+-- generic FK column).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPublisherExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    PublisherId INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_pub  (PublisherId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id)      ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_pub
+        FOREIGN KEY (LinkTypeId)  REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-publisher external-link rows (#93), mirroring tblTuneExternalLinks.';
+
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on
 -- date Y in context Z by org O". The substrate for CCLI / CCS / OneLicense
@@ -3935,6 +4124,8 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     StartedAt            DATETIME     NOT NULL,
     LastHeartbeatAt      DATETIME     NOT NULL,
     ExpiresAt            DATETIME     NULL DEFAULT NULL COMMENT 'Cleanup horizon for the prune job',
+    LastLeaderSeenAt DATETIME NULL DEFAULT NULL COMMENT 'UTC instant of the last GENUINE leader interaction (broadcast/create/console action, or a leaderActive heartbeat) — NOT bumped by the automated 30s keepalive alone. NULL = pre-#1770 row or not yet stamped; idle enforcement skips it (#1770)',
+    IdleTimeoutMins SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Resolved idle-timeout (minutes) stamped at session create from the app→org→user precedence chain (serviceMode_resolveIdleTimeoutMins). NULL = no idle enforcement (service sessions, legacy rows, un-migrated writers) (#1770)',
     CreatedAt            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -3943,6 +4134,7 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     INDEX      idx_Active (IsActive, LastHeartbeatAt),
     INDEX      idx_Service (VenueId, ScheduleId, OccurrenceDate, IsActive),
     INDEX      idx_OrgActive (OrgId, IsActive),
+    INDEX      idx_Idle (SessionKind, IsActive, LastLeaderSeenAt),
 
     CONSTRAINT fk_LiveFollow_Host
         FOREIGN KEY (HostUserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -4502,6 +4694,41 @@ CREATE TABLE IF NOT EXISTS tblOrgVenues (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Org physical venues — Service Mode Phase 1 (#1325). lat/lng/radius = convenience geofence + map pin; presence gate is the venue rotating code.';
 
+-- ---------------------------------------------------------------------------
+-- tblServiceDriverKeys (#1770 req 4/7) — durable org-scoped credentials for
+-- external presentation-app drivers (ProPresenter/OpenLP shims) of Service-Mode
+-- sessions. Placed AFTER tblOrgVenues (its FK target) so a fresh sequential
+-- install satisfies the FK. Deliberately NO Channel column — the rule-#26 wall
+-- is enforced at session-resolution time, never on the durable credential.
+-- Dormant until C4.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblServiceDriverKeys (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    OrgId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrganisations — the org whose service sessions this key may drive. v1 mint path always sets it; app rule: exactly one of OrgId / OwnerUserId is non-NULL (#1770 req 4)',
+    OwnerUserId INT UNSIGNED NULL DEFAULT NULL COMMENT 'RESERVED-DORMANT (rule #20): a future personal driver key for Quick sessions. No v1 code writes it (#1770 §10 S4)',
+    VenueId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrgVenues — optional narrowing to one venue; NULL = any venue of the org',
+    KeyHash     CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the raw key — raw value never stored (tblSessionControlTokens / tblApiKeys discipline)',
+    KeyPrefix   VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'Non-secret leading chars for admin identification (mirrors tblApiKeys.KeyPrefix)',
+    Label       VARCHAR(120) NOT NULL COMMENT 'Operator-facing name, e.g. "Sanctuary ProPresenter"',
+    Scope       VARCHAR(40)  NOT NULL DEFAULT 'broadcast' COMMENT 'Granted capability — app-validated VARCHAR vocab, never ENUM (rule #20)',
+    Protocol    VARCHAR(30)  NOT NULL DEFAULT 'generic' COMMENT 'Which shim family minted/uses it: generic | propresenter | openlp | … — display + diagnostics vocab, app-validated VARCHAR',
+    IsActive    TINYINT(1)   NOT NULL DEFAULT 1,
+    ExpiresAt   DATETIME     NULL DEFAULT NULL COMMENT 'Optional expiry (UTC), NULL = never. DATETIME not TIMESTAMP (rule #20 TTL convention)',
+    RevokedAt   DATETIME     NULL DEFAULT NULL COMMENT 'Hard revocation instant (UTC); non-NULL = refused',
+    LastUsedAt  DATETIME     NULL DEFAULT NULL,
+    LastUsedIp  VARCHAR(45)  NULL DEFAULT NULL,
+    CreatedBy   INT UNSIGNED NULL DEFAULT NULL COMMENT 'tblUsers.Id of the minting org-admin',
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_KeyHash (KeyHash),
+    INDEX idx_Org (OrgId, IsActive),
+    CONSTRAINT fk_DriverKey_Org   FOREIGN KEY (OrgId)       REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_Venue FOREIGN KEY (VenueId)     REFERENCES tblOrgVenues(Id)     ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_User  FOREIGN KEY (OwnerUserId) REFERENCES tblUsers(Id)         ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_DriverKey_Creator FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)         ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Durable org-scoped credentials for external presentation-app drivers (ProPresenter/OpenLP shims) of Service-Mode sessions (#1770 req 4/7). Deliberately NO Channel column — the wall is enforced at session-resolution time (rule #26): every resolve filters the serving docroot''s channel.';
+
 -- ----------------------------------------------------------------------------
 -- tblOrgServiceSchedules (#1325) — recurring service times per venue. The
 -- service-OCCURRENCE (scheduleId,date) is computed at read time; Phase-2
@@ -4670,6 +4897,7 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
     Name            VARCHAR(120)    NOT NULL COMMENT 'Curator-visible template name',
     Scope           VARCHAR(20)     NOT NULL DEFAULT 'song' COMMENT 'song | setlist | … (VARCHAR not ENUM, rule #20 — new scopes need no ALTER)',
     OwnerId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — NULL = global/curated template (reserves per-user templates without a second migration)',
+    OrgId           INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblOrganisations.Id — NULL = global/curated; set = visible only to that org''s members (K, #1767; UI may lag the column)',
     BlocksJson      JSON            NOT NULL COMMENT 'Ordered block list: [{type, …options}] — title/subtitle/credits/lyrics/copyright/identifiers/spacer/pagebreak/text. Adding a block type needs no ALTER.',
     PageOptionsJson JSON            NULL DEFAULT NULL COMMENT 'Page-level options (base font pt, columns, …)',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = hidden from the picker without deleting',
@@ -4681,9 +4909,44 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
 
     INDEX idx_ScopeActive (Scope, IsActive, SortOrder),
     INDEX idx_Owner (OwnerId),
+    INDEX idx_Org (OrgId),
 
     CONSTRAINT fk_PrintTemplate_Owner
-        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PrintTemplate_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================================
+-- Print template custom layouts (#1767 remainder P1) — uploadable full-page
+-- HTML "skins" a curator sanitises + saves per template/slot. Only
+-- HtmlSanitised (ihymnsSanitizeHtml() output, includes/html_sanitizer.php) is
+-- ever render-served; HtmlOriginal is dormant, kept only so a future
+-- allow-list widening can re-sanitise from source (render paths must never
+-- read it). Slot is reserved (rule #20) — v1 only ever writes 'page'.
+-- Mirrors appWeb/.sql/migrate-print-template-layouts.php (rule #19).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tblPrintTemplateCustomLayout (
+    Id               INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    TemplateId       INT UNSIGNED    NOT NULL COMMENT 'FK tblPrintTemplates.Id — the template this full-page layout skins',
+    Slot             VARCHAR(20)     NOT NULL DEFAULT 'page' COMMENT 'page | cover | continuation | … (VARCHAR not ENUM, rule #20; reserved multiplicity — v1 writes only ''page'')',
+    HtmlSanitised    MEDIUMTEXT      NOT NULL COMMENT 'The ONLY render-served payload — output of ihymnsSanitizeHtml(layout). Render paths must never read HtmlOriginal.',
+    HtmlOriginal     MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'Upload as received (dormant) — sole source for re-sanitising after an allow-list change; guard-banned from render paths',
+    SanitiserVersion INT UNSIGNED    NOT NULL DEFAULT 1 COMMENT 'IHYMNS_HTML_SANITISER_VERSION that produced HtmlSanitised; a bump flags rows for re-sanitise',
+    SizeBytes        INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'LENGTH(HtmlSanitised) at save — cheap cap/audit read without pulling the blob',
+    IsActive         TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = template falls back to the standard document shell without deleting the upload',
+    CreatedBy        INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — who uploaded it',
+    CreatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_TemplateSlot (TemplateId, Slot),
+    INDEX idx_CreatedBy (CreatedBy),
+
+    CONSTRAINT fk_PtLayout_Template
+        FOREIGN KEY (TemplateId) REFERENCES tblPrintTemplates(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PtLayout_User
+        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -4812,6 +5075,7 @@ CREATE TABLE IF NOT EXISTS tblGatingCapabilities (
     Description   VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Checkbox tooltip / hint text',
     DefaultValue  TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Assumed 0/1 value when a tier has not set this cap (mirrors the TIER_CAPS 4-tuple default slot)',
     EmitInApi     TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1 = surfaced as a camelCase key on the public access_tiers API emit (rule #28 contract stays additive-only -- the 7 built-ins are unaffected)',
+    EnforceJson   JSON         NULL DEFAULT NULL COMMENT 'Enforcement mapping this admin-defined cap CARRIES (#1769 P1): object keyed by behaviour kind from the includes/gating_rules.php catalog (strip_payload_keys | drop_media_kinds | requiresCoverage | ...), value = kind-specific params. Mirrors the additive 5th enforce element TIER_CAPS gains in P2 so a cap definition and its enforcement live in ONE place and tblGatingRules can retire (P5). NULL = definition-only cap (identical to pre-#1769 behaviour -- what keeps this dormant). App-validated growable JSON, never ENUM (rule #20)',
     Enabled       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0 = soft-disabled -- excluded from the tierCapsEffective() union but kept for audit/history; hard-delete is separate and blocked while tblGatingRules references the CapKey',
     SortOrder     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Display order on the /manage/tiers matrix and the /manage/feature-gating list',
     Source        VARCHAR(20)  NOT NULL DEFAULT 'admin' COMMENT 'provenance vocabulary -- VARCHAR not ENUM (rule #20); "admin" today, room to grow (e.g. a future bulk-import source) with no ALTER',
@@ -4891,6 +5155,145 @@ CREATE TABLE IF NOT EXISTS tblIntAppsSync (
     UNIQUE KEY uq_IntAppsSync_ScopeChannelApp (Scope, Channel, AppSlug)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='IntAppsAPI gateway local snapshot + refresh bookkeeping (#1725/#1727). Dormant until tblAppSettings.intappsapi_enabled_channels names the current channel; fail-open contract lives in includes/intapps_client.php.';
+
+-- ============================================================================
+-- GATING FACTS + LICENCE-TYPE REGISTRY (#1769 P1, Model 2) — the one-pass
+-- additive-dormant schema batch for the access-model consolidation. Creates
+-- the #459 licence vocabulary table and the per-entity rights-requirement
+-- FACT columns (mirrored above on tblSongs / tblSongbooks / tblSongArrangements
+-- / tblGatingCapabilities). EVERYTHING here is DORMANT: no code reads any of
+-- these objects until #1769 P2 wires the licence registry + resolver, and the
+-- whole family only acts when tblAppSettings.content_gating_enabled = 1
+-- (rule #28 A). Mirrors appWeb/.sql/migrate-add-gating-facts-and-licence-types.php
+-- (rule #19 — DDL stays token-identical, COMMENT text included).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblLicenceTypes (#459, built by #1769 P1) — THE licence vocabulary + per-type
+-- metadata. Collapses the six hardcoded licence-vocab sites (organisations.php,
+-- restrictions.php, my-organisations.php, the ccli_validator licence-to-tier
+-- map, and the two divergent schema comments). A licence type declares WHAT IT
+-- LEGALLY COVERS (CoversJson) and WHICH TIER IT CONFERS (ConfersTier — the
+-- previously hidden bridge, now a visible attribute). The ABSENCE of a licence
+-- is the absence of a row; there is deliberately NO "none" row (all three
+-- licence stores filter LicenceType <> "none" before the vocabulary is read).
+-- P2 keeps the legacy hardcoded maps as the un-migrated fallback.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLicenceTypes (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LicenceKey     VARCHAR(30)  NOT NULL COMMENT 'THE licence vocabulary token (#459/#1769) -- the value every licence store writes (tblOrganisations.LicenceType, tblOrganisationLicences.LicenceType, tblContentLicences.LicenceType) and every requirement fact names (tblSongs LyricsRightsLicenceKey/MusicRightsLicenceKey, require_licence restriction targets). Lowercase snake, grammar ^[a-z][a-z0-9_]{1,29}$ app-validated in includes/licence_registry.php (P2) -- VARCHAR never ENUM (rule #20). Absence of a licence is the ABSENCE of a row, not a none row',
+    Label          VARCHAR(100) NOT NULL COMMENT 'Curator-facing display name, e.g. CCLI, iHymns Pro',
+    Description    VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Curator-facing hint text shown in pickers and on the admin Licences tab',
+    ConfersTier    VARCHAR(30)  NULL DEFAULT NULL COMMENT 'tblAccessTiers.Name this licence ALSO grants its holders -- the now-visible licence-to-tier bridge that was the hidden hardcoded map in ccli_validator.php (#1769 OV-6). NULL = confers no tier. NO FK, degrade-safe like tblUsers.AccessTier: an unknown or renamed tier degrades to no conferral, never RESTRICT-fails',
+    CoversJson     JSON         NULL DEFAULT NULL COMMENT 'Coverage SET this licence legally unlocks: object keyed by coverage kind -- lyrics_display | lyrics_print | music_reproduction | audio_playback (growable app-validated vocabulary, LICENCE_COVERAGE_KINDS in includes/licence_registry.php, P2; VARCHAR-in-JSON never ENUM, rule #20) -- value = per-kind qualifier object, {} = unqualified, RESERVED for future regional/time-box qualifiers so richer coverage never needs an ALTER. NULL = no legal coverage (a plan-conferral licence acts through ConfersTier only)',
+    RequiresNumber TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = recording this licence needs a licence number entered (CCLI/MRL); drives P4 form validation only, never enforcement',
+    Authority      VARCHAR(30)  NULL DEFAULT NULL COMMENT 'RESERVED (#1769 P1): issuing-body vocabulary -- ccli | onelicense | ihymns | ... (app-validated, VARCHAR never ENUM). NULL = unspecified. Nothing reads it yet; exists so a per-issuer picker grouping or validation route never needs an ALTER',
+    AuthorityRef   VARCHAR(50)  NULL DEFAULT NULL COMMENT 'RESERVED (#1769 P1): the issuing-authority reference for this licence product (e.g. a CCLI product/programme code) -- free text, NULL = none. Dormant sibling of tblSongTags.CcliThemeId',
+    Enabled        TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0 = soft-disabled -- excluded from pickers and the P2 registry union but kept so historical org-licence rows keep resolving their label; hard-delete is refused while any store references the key (app-enforced -- no FK exists to enforce it)',
+    SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Display order in pickers and on the admin Licences tab',
+    Source         VARCHAR(20)  NOT NULL DEFAULT 'curator' COMMENT 'Provenance vocabulary -- system (shipped seed) | curator (admin-created); VARCHAR never ENUM (rule #20)',
+    CreatedBy      INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who created this licence type (NULL for seeds)',
+    UpdatedBy      INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who last edited it',
+    CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_LicenceTypes_Key      (LicenceKey),
+    INDEX      idx_LicenceTypes_Enabled (Enabled, SortOrder),
+
+    CONSTRAINT fk_LicenceTypes_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_LicenceTypes_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='THE licence-type vocabulary + per-type metadata (#459, built by #1769 P1) -- collapses the six hardcoded licence-vocab sites. DORMANT until includes/licence_registry.php (P2) reads it; the legacy hardcoded maps survive as the un-migrated fallback.';
+
+-- Seed the licence-type vocabulary (#1769 P1). INSERT IGNORE keyed on the
+-- uq_LicenceTypes_Key UNIQUE: re-running never clobbers curator edits to a
+-- row. ConfersTier mirrors the legacy hardcoded licence-to-tier map in
+-- ccli_validator.php (ccli->ccli, ihymns_basic->free, ihymns_pro->premium);
+-- mrl and custom confer NO tier (#1769 sub-question 5). mrl ships Enabled=1
+-- because my-organisations.php already records mrl licences today and the
+-- whole family is dormant behind content_gating_enabled anyway (rule #28 A).
+INSERT IGNORE INTO tblLicenceTypes
+    (LicenceKey, Label, Description, ConfersTier, CoversJson, RequiresNumber, Authority, AuthorityRef, Enabled, SortOrder, Source) VALUES
+    ('ccli',         'CCLI',         'Christian Copyright Licensing International -- Church Copyright Licence. Covers displaying and printing copyrighted LYRICS for congregational use. Licence number required.', 'ccli',    '{"lyrics_display": {}, "lyrics_print": {}}', 1, 'ccli',   NULL, 1, 10, 'system'),
+    ('mrl',          'MRL',          'Music Reproduction Licence (CCLI) -- covers reproducing the MUSICAL WORK: sheet music, chord charts, MusicXML, MIDI (#1768). Licence number required.',                       NULL,      '{"music_reproduction": {}}',                 1, 'ccli',   NULL, 1, 20, 'system'),
+    ('ihymns_basic', 'iHymns Basic', 'Free iHymns plan licence -- public-domain songs only. Confers the free tier; carries no legal coverage of its own.',                                                          'free',    NULL,                                         0, 'ihymns', NULL, 1, 30, 'system'),
+    ('ihymns_pro',   'iHymns Pro',   'Paid iHymns plan licence -- full catalogue access. Confers the premium tier; carries no legal coverage of its own.',                                                          'premium', NULL,                                         0, 'ihymns', NULL, 1, 40, 'system'),
+    ('custom',       'Custom',       'Free-form licence recorded by an organisation. Coverage and tier conferral are set per install by a curator.',                                                                NULL,      NULL,                                         0, NULL,     NULL, 1, 50, 'system');
+
+-- feature_gating_rules_enabled was never seeded (#1769 P0 finding, deferred to
+-- this batch). Reads already default to 0 when the row is absent, so this is a
+-- pure make-the-switch-visible seed, not a behaviour change.
+INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
+    ('feature_gating_rules_enabled', '0', 'Enable the admin-defined payload-rules engine (/manage/feature-gating). Nested under content_gating_enabled -- rules apply only when BOTH are 1. Seeded 0 by #1769 P1 (deferred from P0).');
+
+-- ----------------------------------------------------------------------------
+-- Internet Archive OCR reconcile (#94 Phase 1 — read-only audit).
+-- tblIaFetchCache caches fetched IA artefacts (metadata JSON / OCR full-text)
+-- so repeat audits are instant and courteous to archive.org.
+-- Payload is MEDIUMTEXT (16 MiB byte cap); the client caps fetches at 15 MiB
+-- (IA_MAX_FULLTEXT_BYTES) so a payload can never overflow the column.
+-- Kind is VARCHAR not ENUM (rule #20 — 'metadata' | 'fulltext' today; a later
+-- 'djvu-xml' / 'search-inside' kind is an app-level allow-list add, no ALTER).
+-- FetchedAt is DATETIME not TIMESTAMP (rule #20 — TTL semantics).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIaFetchCache (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Identifier  VARCHAR(120)    NOT NULL COMMENT 'archive.org item identifier (their rules: 1-100 chars [A-Za-z0-9._-], starts alphanumeric; validated by iaIdentifierValid())',
+    Kind        VARCHAR(20)     NOT NULL COMMENT 'metadata | fulltext (app-validated VARCHAR vocabulary, never ENUM — rule #20)',
+    FileName    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Source file within the item for fulltext rows (e.g. <id>_djvu.txt); empty string (not NULL) for metadata rows so uq_Item_Kind_File stays a real uniqueness',
+    HttpStatus  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Last HTTP status observed for this artefact (diagnostic only)',
+    ByteSize    INT UNSIGNED    NOT NULL DEFAULT 0,
+    Sha256      CHAR(64)        NULL DEFAULT NULL COMMENT 'sha256 of Payload — the reconcile RunSha for fulltext rows',
+    Payload     MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'The cached artefact bytes (UTF-8-sanitised before insert). NULL = a fetch was attempted but never succeeded; a failed refetch NEVER overwrites a previous good payload',
+    FetchedAt   DATETIME        NULL DEFAULT NULL COMMENT 'UTC time of the last SUCCESSFUL fetch; NULL = never succeeded. DATETIME not TIMESTAMP (rule #20 TTL semantics)',
+    MetaJson    JSON            NULL DEFAULT NULL COMMENT 'Forward-looking per-row facts (rule #20, the #1590 Capabilities-JSON precedent) so an unforeseen bookkeeping need lands without ALTER',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Item_Kind_File (Identifier, Kind, FileName),
+    INDEX idx_FetchedAt (FetchedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Cached archive.org fetch artefacts for the #94 OCR reconcile audit.';
+
+-- ----------------------------------------------------------------------------
+-- One row per segmented OCR candidate per (item x target songbook). Phase 1
+-- writes score/verdict bookkeeping ONLY (never song content); Phase 2's
+-- approve-to-import flow consumes ReviewState (dormant vocabulary until then).
+-- SegmentFingerprint (not SegmentIndex) keys the upsert so a re-run on
+-- re-OCRed text UPDATES rather than duplicates, and a curator's Phase-2
+-- ReviewState survives re-runs (the tblSongLinkSuggestionsDismissed lesson).
+-- BestSongId is a SOFT reference (no FK) so a song purge never blocks on, or
+-- cascades into, audit bookkeeping.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIaImportCandidates (
+    Id                 INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    Identifier         VARCHAR(120)  NOT NULL COMMENT 'archive.org item identifier this candidate was segmented from',
+    SongbookAbbr       VARCHAR(10)   NOT NULL COMMENT 'Target songbook (tblSongbooks.Abbreviation charset) the audit compared against — soft reference, no FK',
+    RunSha             CHAR(64)      NOT NULL COMMENT 'sha256 of the fulltext payload this run segmented (= tblIaFetchCache.Sha256); rows with a stale RunSha and ReviewState=none are pruned on the next run',
+    SegmentIndex       INT UNSIGNED  NOT NULL COMMENT 'Position of this candidate within its run (display order only — NOT part of the upsert key)',
+    SegmentFingerprint CHAR(64)      NOT NULL COMMENT 'sha256(NormTitle + \n + NormFirstLine) — the stable identity of a candidate across re-segmentations; the upsert key',
+    HeadingNumber      VARCHAR(20)   NULL DEFAULT NULL COMMENT 'Hymn number as printed in the scan (VARCHAR: 123, 123a, App.7)',
+    PageGuess          INT UNSIGNED  NULL DEFAULT NULL COMMENT '1-based page ordinal when the OCR carried form-feed page breaks; NULL otherwise',
+    RawTitle           VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'Title line as OCRed (untrusted text — HTML-escape on render)',
+    NormTitle          VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'ihymns_normalize_title() fold of RawTitle (the EXACT dedup fold — same fold as tblSongs.NormalizedTitle)',
+    FirstLine          VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'First lyric-looking line of the candidate body',
+    BodyExcerpt        TEXT          NULL DEFAULT NULL COMMENT 'First ~1000 chars of the candidate body for curator eyeballing. NEVER imported in Phase 1',
+    LineStart          INT UNSIGNED  NOT NULL DEFAULT 0 COMMENT '0-based line offsets of the segment within the (normalised) fulltext',
+    LineEnd            INT UNSIGNED  NOT NULL DEFAULT 0,
+    BestSongId         VARCHAR(20)   NULL DEFAULT NULL COMMENT 'tblSongs.SongId of the best-scoring match; NULL when the verdict is gap/unscorable. SOFT reference, no FK',
+    BestScore          DECIMAL(4,3)  NULL DEFAULT NULL COMMENT 'Adjusted composite in [0,1] (ihymns_sim_score() blend rescaled for the absent-authors signal — see includes/ia_reconcile.php iaRecAdjustedScore())',
+    Verdict            VARCHAR(20)   NOT NULL COMMENT 'exact | strong | review | gap | unscorable (app-validated VARCHAR vocabulary, never ENUM — rule #20)',
+    ReviewState        VARCHAR(20)   NOT NULL DEFAULT 'none' COMMENT 'DORMANT Phase-2 vocabulary: none | approved_for_import | dismissed | imported (app-validated; Phase 1 only ever writes none)',
+    ReviewedBy         INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblUsers.Id (dormant until Phase 2)',
+    ReviewedAt         DATETIME      NULL DEFAULT NULL,
+    ReviewNote         TEXT          NULL DEFAULT NULL,
+    MetaJson           JSON          NULL DEFAULT NULL COMMENT 'Forward-looking per-row facts (rule #20) — e.g. a later per-line OCR-confidence map — so no second ALTER',
+    CreatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Item_Book_Fingerprint (Identifier, SongbookAbbr, SegmentFingerprint),
+    INDEX idx_Book_Verdict (SongbookAbbr, Verdict),
+    INDEX idx_Item_Run (Identifier, RunSha)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Segmented OCR candidates + reconcile verdicts for the #94 audit; Phase-2 import queue (dormant).';
 
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)

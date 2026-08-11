@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Admin: Credit People (#545)
+ * iHymns — Admin: Musicians (formerly "Credit People", #545; display renamed #1741 P2-B / #1784)
  *
  * Catalogue-wide CRUD for the people credited on songs, unioned
  * across tblSongWriters / tblSongComposers / tblSongArrangers /
@@ -48,6 +48,11 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    admin_musician_* API endpoints in /api.php so a tweak to the
    link-type set or the row-shape rules lands on both surfaces. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1785 §7/§8 — the registry-duplicate scan helper (the cheap Bucket-A-
+   only CTA-badge count below) + the shared disambiguation payload
+   builder the merge-target typeahead/Merge-modal preview consume
+   (#1785 C8). require_once is idempotent. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
 /* Places registry helper — exposes placesUpsertFromPayload() +
    musicianPlaceIdColumnsExist(), used by the add / update_person
    handlers to persist BirthPlaceId / DeathPlaceId alongside the
@@ -205,19 +210,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 
         /* For each role table, fetch the songs that cite this name.
            Joining to tblSongs on SongId gives us the human-friendly
-           Title + SongbookAbbr + Number for the modal. */
-        $tables = [
-            'writer'     => 'tblSongWriters',
-            'composer'   => 'tblSongComposers',
-            'arranger'   => 'tblSongArrangers',
-            'adaptor'    => 'tblSongAdaptors',
-            'translator' => 'tblSongTranslators',
-        ];
+           Title + SongbookAbbr + Number for the modal. #1785 C5 —
+           MUSICIAN_CREDIT_ROLE_TABLES (was a hand-typed 5-role map
+           missing 'artist', so a person credited only as a performing
+           artist never showed any songs in this modal). */
         $byRole = [];
-        foreach ($tables as $role => $tbl) {
+        foreach (MUSICIAN_CREDIT_ROLE_TABLES as $role => $tbl) {
             /* #1694 — visible songs only, matching the public person page.
                (Person merges/renames rewrite tblSong* rows BY NAME, unfiltered,
-               so hidden rows are still correctly rewritten either way.) */
+               so hidden rows are still correctly rewritten either way.)
+               @disabled-visible: admin surface (#1765) — disabled songbooks
+               stay fully visible/editable in /manage (owner decision); a
+               song in a disabled book still needs to show here so a
+               merge/rename touches it. */
             $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
                       FROM {$tbl} c
                       JOIN tblSongs s ON s.SongId = c.SongId
@@ -266,7 +271,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
  * includes/musician_helpers.php — so it's testable independent of
  * this dispatch block and reusable if another surface ever needs the
  * same "pick a credit person" search.
- * ---------------------------------------------------------------------- */
+ *
+ * #1785 C8 — ADDITIVE disambiguation fields (plan §8.1). A candidate
+ * whose "name" collides visually with another (two byte-variants, or
+ * just two different people who share a spelling) used to render as two
+ * identical-looking <option> labels — "which is merging into which?"
+ * (problem 2 of the #1785 issue body). Every REGISTRY candidate (never
+ * the in-use-only bucket — hydrating that would need a second, non-id
+ * lookup path musicianDisambiguationPayloadBulk() doesn't offer) now
+ * carries disambiguation/born/died/type/useCount from the SAME shared
+ * payload builder the review page uses (rule #22 — one builder, never
+ * re-forked per surface), plus `variant`: the byte-variant classification
+ * of this candidate AGAINST THE SOURCE name (musicianNameVariantClass(),
+ * only computed when `exclude_name` is present — i.e. an open merge
+ * always supplies it). All additive — the pre-existing
+ * {key,id,name,total} shape is untouched, so the member-picker consumer
+ * (which filters on `c.id` alone, musicians.php's memberLabelToKey/
+ * portrayedByLabelToKey blocks below) is unaffected. -------------------- */
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'merge_target_search') {
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
@@ -280,12 +301,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
     try {
         $db = getDbMysqli();
         $candidates = searchMusicianMergeTargets($db, $q, $excludeId, $excludeName, $limit);
+
+        /* #1785 C8 — hydrate the registry-bucket candidates (those with
+           a real `id`) with the shared disambiguation payload, in ONE
+           bulk round-trip rather than per-row. */
+        $registryIds = array_values(array_filter(array_map(
+            static fn(array $c) => $c['id'],
+            $candidates
+        )));
+        $payloads = $registryIds ? musicianDisambiguationPayloadBulk($db, $registryIds) : [];
+        foreach ($candidates as &$c) {
+            if ($c['id'] === null || !isset($payloads[$c['id']])) { continue; }
+            $p = $payloads[$c['id']];
+            $c['disambiguation'] = $p['disambiguation'];
+            $c['born']           = $p['born'];
+            $c['died']           = $p['died'];
+            $c['type']           = $p['type'];
+            $c['useCount']       = $p['useCount'];
+            $c['variant']        = $excludeName !== '' ? musicianNameVariantClass($excludeName, $c['name']) : null;
+        }
+        unset($c);
+
         echo json_encode(['candidates' => $candidates], JSON_UNESCAPED_UNICODE);
         exit;
     } catch (\Throwable $e) {
         error_log('[manage/musicians.php] merge_target_search failed: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => 'Search failed.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * GET endpoint — name_fold_check (#1800 C3)
+ *
+ * ELI5: the Add-person drawer's Name field calls this (debounced, as the
+ * curator types) to ask "does an existing registry entry already fold to
+ * EXACTLY this spelling?" — a soft, non-blocking "possible duplicate — view?"
+ * hint appears if so; the curator can still save regardless.
+ *
+ * GET ?action=name_fold_check&name=<text>&exclude_id=<id>
+ *
+ * The fold comparison itself lives in the shared
+ * musicianFindFoldMatches() helper (includes/musician_helpers.php,
+ * ihymns_sim_name_normalise() — rule #22), so this dispatch block is just
+ * the thin HTTP wrapper, matching merge_target_search's shape immediately
+ * above. Read-only GET — no CSRF header needed (mirrors merge_target_search,
+ * which also skips X-Requested-With; only the state-changing POST actions
+ * below require it). -------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'name_fold_check') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    $name      = trim((string)($_GET['name'] ?? ''));
+    $excludeId = (int)($_GET['exclude_id'] ?? 0);
+
+    try {
+        $db = getDbMysqli();
+        $matches = $name !== '' ? musicianFindFoldMatches($db, $name, $excludeId) : [];
+        echo json_encode(['matches' => $matches], JSON_UNESCAPED_UNICODE);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/musicians.php] name_fold_check failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Fold check failed.']);
         exit;
     }
 }
@@ -579,6 +659,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 $newId = registerMusicianByName($db, $name);
                 if ($newId > 0) { $registered++; } else { $skipped++; }
             }
+
+            /* #1784 — self-heal the byte-variant names the register loop above
+               "skips". A candidate like "Eddie James " (trailing space) already
+               has a collation-matching registry row ("Eddie James"), so the loop
+               finds it and skips — but the credit rows keep their stray bytes and
+               the counter never clears. Reconciliation rewrites those credit rows
+               to the registry's exact spelling (and auto-registers any name with
+               no registry row at all), so pressing "Add all now" actually drives
+               the counter to zero. Same shared core the migration runs (rule #22);
+               runs inside this same transaction. */
+            $reconcile = musicianReconcileCreditNameBytes($db);
+
             $db->commit();
 
             $logMusician('bulk_register_remaining', '', [
@@ -586,9 +678,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
                 'registered'  => $registered,
                 'skipped'     => $skipped,
                 'candidates'  => count($names),
+                'reconciled_rewritten' => $reconcile['rewritten'],
+                'reconciled_adopted'   => $reconcile['adopted'],
+                'reconciled_new'       => $reconcile['registered'],
+                'reconciled_ambiguous' => $reconcile['ambiguous'],
             ]);
+            $reconFixed = $reconcile['rewritten'] + $reconcile['registered'];
             $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
-                     . ' registered' . ($skipped > 0 ? ", {$skipped} already registered (skipped)" : '') . '.';
+                     . ' registered'
+                     . ($reconFixed > 0 ? ", {$reconcile['adopted']} matched an existing registry spelling and {$reconcile['rewritten']} credit row(s) tidied" : '')
+                     . ($reconcile['ambiguous'] > 0 ? ", {$reconcile['ambiguous']} left for duplicate review (registry has two matching rows)" : '')
+                     . '.';
         } catch (\Throwable $tx) {
             $db->rollback();
             throw $tx;
@@ -1236,8 +1336,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
             /* --------------------------------------------------------
              * rename — change the canonical name, cascading the UPDATE
-             *          across all five song-credit tables AND the
-             *          registry row inside one transaction.
+             *          across all six song-credit tables (#1785 C5 —
+             *          MUSICIAN_CREDIT_ROLE_TABLES) AND the registry
+             *          row inside one transaction.
              *
              * Refuses if the new name already belongs to a different
              * registry row (would clash with the UNIQUE Name index
@@ -1299,15 +1400,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
                 $db->begin_transaction();
                 try {
-                    /* Cascade the rename across the five song-credit
-                       tables. A song that cites the old spelling under
-                       multiple roles is updated in each table. */
-                    $tables = [
-                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                        'tblSongAdaptors', 'tblSongTranslators',
-                    ];
+                    /* Cascade the rename across the six song-credit
+                       tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES;
+                       was five, missing tblSongArtists). A song that
+                       cites the old spelling under multiple roles is
+                       updated in each table. */
                     $affected = [];
-                    foreach ($tables as $tbl) {
+                    foreach (MUSICIAN_CREDIT_ROLE_TABLES as $tbl) {
                         $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
                         $stmt->bind_param('ss', $newName, $oldName);
                         $stmt->execute();
@@ -1315,7 +1414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                         $stmt->close();
                     }
 
-                    /* Update the registry row last — if any of the five
+                    /* Update the registry row last — if any of the
                        cascades fail, rollback restores everything. */
                     $stmt = $db->prepare('UPDATE tblMusicians SET Name = ? WHERE Id = ?');
                     $stmt->bind_param('si', $newName, $id);
@@ -1333,6 +1432,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                             'arrangers'   => $affected['tblSongArrangers'],
                             'adaptors'    => $affected['tblSongAdaptors'],
                             'translators' => $affected['tblSongTranslators'],
+                            'artists'     => $affected['tblSongArtists'],
                         ],
                     ]);
                     $totalRenamed = array_sum($affected);
@@ -1386,130 +1486,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 $sourceId = $resolvePersonId($sourceId, $sourceName);
                 $targetId = $resolvePersonId($targetId, $targetName);
 
+                /* Kept HERE (not delegated) so the page keeps its own
+                   surface-appropriate wording — musicianMergeExecute()
+                   (includes/musician_helpers.php, #1785 C4) re-validates
+                   the same two conditions defensively for a caller that
+                   skips this, but by pre-checking here only the "not
+                   found" exception can ever reach the catch below. */
                 if ($sourceId <= 0 || $targetId <= 0) { $error = 'Both source and target are required.'; break; }
                 if ($sourceId === $targetId)          { $error = 'Source and target must be different people.'; break; }
 
-                /* Look up both rows. Source name is what we cascade
-                   in the song-credit tables; target name is the
-                   surviving spelling. */
-                $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
-                $stmt->bind_param('ii', $sourceId, $targetId);
-                $stmt->execute();
-                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-                $byId = [];
-                foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
-                if (!isset($byId[$sourceId])) { $error = 'Source person not found.'; break; }
-                if (!isset($byId[$targetId])) { $error = 'Target person not found.'; break; }
-                $sourceName = $byId[$sourceId];
-                $targetName = $byId[$targetId];
-
-                $db->begin_transaction();
+                /* #1785 C4 — the ONE merge core, shared with api.php's
+                   admin_musician_merge. Everything from the row lookup
+                   through the five-table re-point, the link/IPI
+                   kept-vs-dropped bookkeeping, and the source-row DELETE
+                   (in its own transaction) now lives there. */
                 try {
-                    /* Re-point song-credit rows: source name → target
-                       name across all five tables. */
-                    $tables = [
-                        'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-                        'tblSongAdaptors', 'tblSongTranslators',
-                    ];
-                    $affected = [];
-                    foreach ($tables as $tbl) {
-                        $stmt = $db->prepare("UPDATE {$tbl} SET Name = ? WHERE Name = ?");
-                        $stmt->bind_param('ss', $targetName, $sourceName);
-                        $stmt->execute();
-                        $affected[$tbl] = $stmt->affected_rows;
-                        $stmt->close();
-                    }
-
-                    /* Migrate the chosen child rows from source →
-                       target. Anything not in keep_link_ids / keep_ipi_ids
-                       gets dropped via the cascade when the source
-                       registry row is deleted below. */
-                    $linksKept = 0;
-                    $linksDropped = 0;
-                    $ipiKept = 0;
-                    $ipiDropped = 0;
-
-                    /* Count links currently on the source so we can report
-                       kept-vs-dropped accurately. */
-                    $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
-                    $stmt->close();
-
-                    $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
-                    $stmt->close();
-
-                    /* Re-point each kept child row. Anything from
-                       keep_links that isn't actually on the source is
-                       silently ignored — the form might be stale. */
-                    if ($keepLinks && $sourceLinkIds) {
-                        $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
-                        if ($toMove) {
-                            $upd = $db->prepare(
-                                'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
-                            );
-                            foreach ($toMove as $lid) {
-                                $upd->bind_param('iii', $targetId, $lid, $sourceId);
-                                $upd->execute();
-                                $linksKept += $upd->affected_rows;
-                            }
-                            $upd->close();
-                        }
-                    }
-                    $linksDropped = max(0, count($sourceLinkIds) - $linksKept);
-
-                    if ($keepIpi && $sourceIpiIds) {
-                        $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
-                        if ($toMove) {
-                            $upd = $db->prepare(
-                                'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
-                            );
-                            foreach ($toMove as $iid) {
-                                $upd->bind_param('iii', $targetId, $iid, $sourceId);
-                                $upd->execute();
-                                $ipiKept += $upd->affected_rows;
-                            }
-                            $upd->close();
-                        }
-                    }
-                    $ipiDropped = max(0, count($sourceIpiIds) - $ipiKept);
-
-                    /* Drop the source registry row. Cascade removes any
-                       child rows the admin chose not to migrate. */
-                    $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    $db->commit();
-
-                    $logMusician('merge', (string)$targetId, [
-                        'source'     => ['id' => $sourceId, 'name' => $sourceName],
-                        'target'     => ['id' => $targetId, 'name' => $targetName],
-                        'affected'   => [
-                            'writers'     => $affected['tblSongWriters'],
-                            'composers'   => $affected['tblSongComposers'],
-                            'arrangers'   => $affected['tblSongArrangers'],
-                            'adaptors'    => $affected['tblSongAdaptors'],
-                            'translators' => $affected['tblSongTranslators'],
-                        ],
-                        'child_rows' => [
-                            'links_kept'    => $linksKept,
-                            'links_dropped' => $linksDropped,
-                            'ipi_kept'      => $ipiKept,
-                            'ipi_dropped'   => $ipiDropped,
-                        ],
+                    $report = musicianMergeExecute($db, $sourceId, $targetId, [
+                        'keepLinkIds' => $keepLinks,
+                        'keepIpiIds'  => $keepIpi,
                     ]);
-                    $totalRenamed = array_sum($affected);
-                    $success = "Merged '{$sourceName}' → '{$targetName}' ({$totalRenamed} song-credit row(s) re-pointed).";
-                } catch (\Throwable $e) {
-                    $db->rollback();
-                    throw $e;
+                } catch (\InvalidArgumentException $e) {
+                    // Only "Source/Target person not found." can reach here —
+                    // see the pre-checks above.
+                    $error = $e->getMessage();
+                    break;
+                }
+
+                $logMusician('merge', (string)$targetId, [
+                    'source'     => ['id' => $sourceId, 'name' => $report['sourceName']],
+                    'target'     => ['id' => $targetId, 'name' => $report['targetName']],
+                    'affected'   => [
+                        'writers'     => $report['affected']['tblSongWriters'],
+                        'composers'   => $report['affected']['tblSongComposers'],
+                        'arrangers'   => $report['affected']['tblSongArrangers'],
+                        'adaptors'    => $report['affected']['tblSongAdaptors'],
+                        'translators' => $report['affected']['tblSongTranslators'],
+                        'artists'     => $report['affected']['tblSongArtists'], // #1785 C5
+                    ],
+                    'child_rows' => [
+                        'links_kept'        => $report['linksKept'],
+                        'links_dropped'     => $report['linksDropped'],
+                        'ipi_kept'          => $report['ipiKept'],
+                        'ipi_dropped'       => $report['ipiDropped'],
+                        // #1785 C5 — alias/relation carry-over + source-name-preserved-as-alias.
+                        'aliases_moved'     => $report['aliasesMoved'],
+                        'relations_moved'   => $report['relationsMoved'],
+                        'source_name_aliased' => $report['sourceNameAliased'],
+                        // #1800 C2 — COALESCE-fill: which empty target fields got backfilled from the source.
+                        'fields_filled'     => $report['fieldsFilled'],
+                    ],
+                ]);
+                $totalRenamed = array_sum($report['affected']);
+                $success = "Merged '{$report['sourceName']}' → '{$report['targetName']}' ({$totalRenamed} song-credit row(s) re-pointed).";
+                if ($report['fieldsFilled']) {
+                    $success .= ' ' . count($report['fieldsFilled']) . ' empty field(s) on the survivor filled from the merged record.';
                 }
                 break;
             }
@@ -1537,18 +1567,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 if ($name === '') { $error = 'Person not found.'; break; }
 
                 /* Count how many song-credit rows still cite this name
-                   across the five tables — a single UNION ALL keeps
-                   the round-trip count to one. */
-                $stmt = $db->prepare(
-                    "SELECT (
-                        (SELECT COUNT(*) FROM tblSongWriters     WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongComposers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongArrangers   WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongAdaptors    WHERE Name = ?) +
-                        (SELECT COUNT(*) FROM tblSongTranslators WHERE Name = ?)
-                     ) AS total"
-                );
-                $stmt->bind_param('sssss', $name, $name, $name, $name, $name);
+                   across the six tables (#1785 C5 —
+                   MUSICIAN_CREDIT_ROLE_TABLES; was five, missing
+                   tblSongArtists — a person deletable-because-"unused"
+                   could actually still be cited as a performing artist) —
+                   a single query keeps the round-trip count to one. Table
+                   names come from the hardcoded PHP constant (rule #5's
+                   carve-out); the six repeated `?` placeholders all bind
+                   the same $name value. */
+                $countSql = implode(' + ', array_map(
+                    static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
+                    MUSICIAN_CREDIT_ROLE_TABLES
+                ));
+                $stmt = $db->prepare("SELECT ({$countSql}) AS total");
+                $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
+                $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
                 $stmt->execute();
                 $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
                 $stmt->close();
@@ -1612,7 +1645,17 @@ $countryOptions = [];
 try {
     $db = getDbMysqli();
 
-    /* Q1 — usage aggregate across the five song-credit tables. */
+    /* Q1 — usage aggregate across the six song-credit tables (#1785 C5 —
+       MUSICIAN_CREDIT_ROLE_TABLES; was five, missing tblSongArtists, so
+       an artist-only credited name silently undercounted as "0 uses"
+       and could never show up as "cited"). Table names + role labels
+       come from the hardcoded PHP constant (rule #5's carve-out). */
+    $creditUnion = implode("\n              UNION ALL\n              ", array_map(
+        static fn(string $role, string $tbl): string =>
+            "SELECT Name, '{$role}' AS kindLabel, COUNT(*) AS cnt FROM {$tbl} GROUP BY Name",
+        array_keys(MUSICIAN_CREDIT_ROLE_TABLES),
+        array_values(MUSICIAN_CREDIT_ROLE_TABLES)
+    ));
     $usageSql = "
         SELECT Name,
                SUM(IF(kindLabel = 'writer',     cnt, 0)) AS WriterCount,
@@ -1620,17 +1663,10 @@ try {
                SUM(IF(kindLabel = 'arranger',   cnt, 0)) AS ArrangerCount,
                SUM(IF(kindLabel = 'adaptor',    cnt, 0)) AS AdaptorCount,
                SUM(IF(kindLabel = 'translator', cnt, 0)) AS TranslatorCount,
+               SUM(IF(kindLabel = 'artist',     cnt, 0)) AS ArtistCount,
                SUM(cnt) AS TotalUsage
           FROM (
-              SELECT Name, 'writer'     AS kindLabel, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
-              UNION ALL
-              SELECT Name, 'composer'   AS kindLabel, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'arranger'   AS kindLabel, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
-              UNION ALL
-              SELECT Name, 'adaptor'    AS kindLabel, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
-              UNION ALL
-              SELECT Name, 'translator' AS kindLabel, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+              {$creditUnion}
           ) u
          GROUP BY Name
     ";
@@ -1860,6 +1896,7 @@ try {
             'arrangers'   => (int)$u['ArrangerCount'],
             'adaptors'    => (int)$u['AdaptorCount'],
             'translators' => (int)$u['TranslatorCount'],
+            'artists'     => (int)$u['ArtistCount'], // #1785 C5
             'total'       => (int)$u['TotalUsage'],
             'registry_id' => null,
             'notes'       => null,
@@ -1898,6 +1935,7 @@ try {
                 'arrangers'   => 0,
                 'adaptors'    => 0,
                 'translators' => 0,
+                'artists'     => 0, // #1785 C5
                 'total'       => 0,
                 'registry_id' => null,
                 'notes'       => null,
@@ -2006,7 +2044,7 @@ try {
     error_log('[manage/musicians.php] load failed: ' . $e->getMessage());
     logActivityError('admin.musicians.list', 'musician', '', $e);
     $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
-    $error = 'Could not load credit people: ' . $e->getMessage() . $where;
+    $error = 'Could not load musicians: ' . $e->getMessage() . $where;
 }
 
 /* ----------------------------------------------------------------------
@@ -2042,6 +2080,18 @@ $totalRegistryOnly    = $totalNames - $totalInUse;
 $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
     $p['total'] > 0 && $p['registry_id'] === null
 ));
+
+/* #1785 §7 — cheap CTA badge for the duplicates-review page: Bucket A
+   (byte-variant) group count ONLY, no fuzzy scoring (musicianDuplicates
+   CountBucketA()'s own doc-block). Wrapped defensively — a failure here
+   (e.g. an un-migrated dependency) must never break the parent Musicians
+   page over a nicety badge; it just hides the CTA. */
+$dupeGroupCount = 0;
+try {
+    $dupeGroupCount = musicianDuplicatesCountBucketA($db);
+} catch (\Throwable $_e) {
+    $dupeGroupCount = 0;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -2061,6 +2111,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         .role-pill.role-ar    { background-color: #fb950033; color: #ffab40; }
         .role-pill.role-ad    { background-color: #2ea04333; color: #56d364; }
         .role-pill.role-t     { background-color: #d73a4933; color: #ff7b72; }
+        .role-pill.role-ai    { background-color: #17a2b833; color: #5bc0de; } /* #1785 C5 — artist */
         .role-pill[data-zero] { opacity: 0.25; }
 
         /* Person-name column gets a slightly larger, slightly bolder
@@ -2084,7 +2135,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Credit People</h1>
+        <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Musicians</h1>
         <p class="text-secondary small mb-3">
             Every individual credited as a writer, composer, arranger, adaptor or
             translator across the catalogue, plus every pre-registered name in
@@ -2117,7 +2168,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <span>
                     <strong><?= number_format($totalInUseUnregistered) ?></strong>
                     <?= $totalInUseUnregistered === 1 ? 'person is' : 'people are' ?> credited on a song
-                    but <em><?= $totalInUseUnregistered === 1 ? "isn't" : "aren't" ?></em> saved to Credit People yet.
+                    but <em><?= $totalInUseUnregistered === 1 ? "isn't" : "aren't" ?></em> in your Musicians list yet.
                 </span>
                 <!-- #1543 — plain-English CTA labels. The action still "promotes"
                      (bulk_register_unregistered) internally; only the user-facing
@@ -2126,13 +2177,35 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <i class="bi bi-magic me-1"></i>Review &amp; add (checks for duplicates)
                 </a>
                 <form method="POST" class="d-inline"
-                      onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to Credit People as new entries?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
+                      onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to your Musicians list?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="bulk_register_unregistered">
                     <button type="submit" class="btn btn-sm btn-outline-info">
                         <i class="bi bi-person-plus me-1"></i>Add all <?= number_format($totalInUseUnregistered) ?> now
                     </button>
                 </form>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($dupeGroupCount > 0): ?>
+            <!-- #1785 §7 — CTA into the registry-duplicate review page,
+                 beside the #846 bulk-promote CTA above. Distinct job:
+                 that one finds cited-but-UNREGISTERED names; this one
+                 finds registry rows that are probably the SAME person
+                 spelled two ways. Count is Bucket-A-only (cheap, no
+                 fuzzy scoring) — the review page itself also surfaces
+                 the fuzzy "similar names" section, so the true total is
+                 usually higher than this badge. -->
+            <div class="alert alert-warning d-flex flex-wrap align-items-center gap-2 py-2">
+                <i class="bi bi-people-fill" aria-hidden="true"></i>
+                <span>
+                    <strong><?= number_format($dupeGroupCount) ?></strong>
+                    probable duplicate <?= $dupeGroupCount === 1 ? 'group' : 'groups' ?> in your Musicians registry —
+                    the same person spelled two different ways.
+                </span>
+                <a href="/manage/musician-duplicates" class="btn btn-sm btn-outline-warning ms-auto">
+                    <i class="bi bi-git-compare me-1"></i>Review duplicates
+                </a>
             </div>
         <?php endif; ?>
 
@@ -2186,6 +2259,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="arranger">Arrangers</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="adaptor">Adaptors</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="translator">Translators</button>
+                        <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="artist">Artists</button>
                         <button type="button" class="btn btn-outline-secondary filter-btn" data-filter="registry-only">Registry-only</button>
                     </div>
                 </div>
@@ -2211,15 +2285,15 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         <!-- People table -->
         <div class="card bg-dark border-secondary p-2 mb-3">
             <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle mb-0 mus-sortable admin-table-responsive">
+                <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
                         <tr>
                             <th scope="col" data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
-                            <th scope="col" data-col-priority="primary"   class="text-center">Roles</th>
+                            <th scope="col" data-col-priority="primary"   class="text-center" data-sort-key="roles" data-sort-type="text">Roles</th>
                             <th scope="col" data-col-priority="primary"   class="text-end" data-sort-key="total" data-sort-type="number">Total uses</th>
                             <th scope="col" data-col-priority="secondary" data-sort-key="source" data-sort-type="text">Source</th>
                             <th scope="col" data-col-priority="secondary" data-sort-key="lifespan" data-sort-type="text">Lifespan</th>
-                            <th scope="col" data-col-priority="tertiary"  class="text-end">Meta</th>
+                            <th scope="col" data-col-priority="tertiary"  class="text-end" data-sort-key="meta" data-sort-type="number">Meta</th>
                             <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                         </tr>
                     </thead>
@@ -2230,12 +2304,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             $arrangers   = $p['arrangers'];
                             $adaptors    = $p['adaptors'];
                             $translators = $p['translators'];
+                            $artists     = $p['artists']; // #1785 C5
                             $rolesCsv    = implode(',', array_filter([
                                 $writers     ? 'writer'     : '',
                                 $composers   ? 'composer'   : '',
                                 $arrangers   ? 'arranger'   : '',
                                 $adaptors    ? 'adaptor'    : '',
                                 $translators ? 'translator' : '',
+                                $artists     ? 'artist'     : '',
                             ]));
                             $isRegistryOnly = $p['total'] === 0;
                             $haystack = strtolower(implode(' ', array_filter([
@@ -2285,6 +2361,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'arrangers'   => $arrangers,
                                 'adaptors'    => $adaptors,
                                 'translators' => $translators,
+                                'artists'     => $artists, // #1785 C5 — not yet rendered by the Merge modal's preview widget (C8)
                                 'total'       => $p['total'],
                                 /* #1501 — optional Maiden Surname, so the Edit
                                    drawer can pre-fill it. NULL on registry-only-
@@ -2314,7 +2391,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             $akaList = array_map(static fn(array $a): string => (string)$a['Name'], $p['aliases'] ?? []);
                             $akaAttr = implode(' · ', $akaList);
                         ?>
-                            <tr id="mus-person-<?= (int)$p['Id'] ?>"
+                            <tr id="mus-person-<?= (int)($p['registry_id'] ?? 0) ?>"
                                 data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
@@ -2348,12 +2425,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                         </span>
                                     <?php endif; ?>
                                 </td>
-                                <td data-col-priority="primary" class="text-center">
+                                <td data-col-priority="primary" class="text-center" data-sort-value="<?= htmlspecialchars($rolesCsv, ENT_QUOTES) ?>">
                                     <span class="badge role-pill role-w"  <?= $writers     ? '' : 'data-zero' ?>>W&middot;<?= $writers ?></span>
                                     <span class="badge role-pill role-c"  <?= $composers   ? '' : 'data-zero' ?>>C&middot;<?= $composers ?></span>
                                     <span class="badge role-pill role-ar" <?= $arrangers   ? '' : 'data-zero' ?>>Ar&middot;<?= $arrangers ?></span>
                                     <span class="badge role-pill role-ad" <?= $adaptors    ? '' : 'data-zero' ?>>Ad&middot;<?= $adaptors ?></span>
                                     <span class="badge role-pill role-t"  <?= $translators ? '' : 'data-zero' ?>>T&middot;<?= $translators ?></span>
+                                    <span class="badge role-pill role-ai" <?= $artists     ? '' : 'data-zero' ?>>Art&middot;<?= $artists ?></span>
                                 </td>
                                 <td data-col-priority="primary"   class="text-end" data-sort-value="<?= (int)$p['total'] ?>"><strong><?= number_format($p['total']) ?></strong></td>
                                 <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars($p['registry_id'] !== null && $p['total'] > 0 ? 'Both' : ($p['registry_id'] !== null ? 'Registry' : 'In use')) ?>"><?= $sourceBadge($p) ?></td>
@@ -2361,7 +2439,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                     <?php $life = $lifespan($p['birth_date'], $p['death_date']);
                                           echo $life !== '' ? $life : '<span class="text-secondary">—</span>'; ?>
                                 </td>
-                                <td data-col-priority="tertiary" class="text-end meta-col">
+                                <td data-col-priority="tertiary" class="text-end meta-col" data-sort-value="<?= (int)($p['link_count'] + $p['ipi_count']) ?>">
                                     <?php if ($p['link_count'] > 0): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis badge-icon-count"
                                               title="<?= (int)$p['link_count'] ?> external link(s)">
@@ -2640,7 +2718,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <!-- Song-credit re-point preview (#583). The Source
                              aggregate already carries per-role counts in its
                              data-person attribute, so we render them inline
-                             when the modal opens — no extra round-trip. -->
+                             when the modal opens — no extra round-trip.
+                             #1785 C8 — the sixth "Artist" role joined the
+                             other five in the underlying data back at C5
+                             (MUSICIAN_CREDIT_ROLE_TABLES), but this preview
+                             widget itself was never updated to show it — so
+                             `total` included artist credits while the five
+                             visible pills didn't sum to it. Added here. -->
                         <div id="mus-merge-credit-preview" class="alert alert-info py-2 small mb-3 d-none">
                             <div class="fw-semibold mb-1">
                                 <i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>
@@ -2652,8 +2736,33 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 <span>Arranger&nbsp;<strong id="mus-merge-count-arranger">0</strong></span>
                                 <span>Adaptor&nbsp;<strong id="mus-merge-count-adaptor">0</strong></span>
                                 <span>Translator&nbsp;<strong id="mus-merge-count-translator">0</strong></span>
+                                <span>Artist&nbsp;<strong id="mus-merge-count-artist">0</strong></span>
                                 <span class="ms-auto">Total&nbsp;<strong id="mus-merge-count-total">0</strong></span>
                             </div>
+                        </div>
+
+                        <!-- #1785 C8 — disambiguation comparison (plan §8.2):
+                             the direct answer to "which is merging into
+                             which?" (problem 2 of the #1785 issue body).
+                             Populated once a target is actually picked from
+                             the typeahead (its payload is what the
+                             merge_target_search endpoint's #1785 C8
+                             additive fields carry) — hidden until then, since
+                             a half-typed target has nothing to compare. -->
+                        <div id="mus-merge-disambig" class="row g-2 small mb-3 d-none">
+                            <div class="col-6">
+                                <div class="border rounded p-2">
+                                    <div class="text-secondary">Source (removed)</div>
+                                    <div id="mus-merge-disambig-source" class="fw-semibold"></div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="border rounded p-2">
+                                    <div class="text-secondary">Target (survives)</div>
+                                    <div id="mus-merge-disambig-target" class="fw-semibold"></div>
+                                </div>
+                            </div>
+                            <div class="col-12" id="mus-merge-disambig-variant"></div>
                         </div>
 
                         <div id="mus-merge-children" class="d-none">
@@ -2768,6 +2877,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="form-text small" id="mus-drawer-name-help">
                     The canonical spelling. To rename, save first, then use the Rename action — renames cascade to every song that cites this person.
                 </div>
+                <!-- #1800 C3 — soft, non-blocking fold-match hint. Hidden until
+                     the debounced ?action=name_fold_check lookup (see the JS
+                     controller below) reports a candidate whose
+                     ihymns_sim_name_normalise() fold exactly matches what's
+                     been typed; NEVER disables the Save button — a curator
+                     can always proceed, this is a hint, not a gate. -->
+                <div class="form-text small text-warning-emphasis d-none" id="mus-drawer-name-foldhint" role="status" aria-live="polite"></div>
             </div>
 
             <!-- Classification (#584 / #585, widened by #1741 P4a's Type
@@ -3526,6 +3642,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const form      = document.getElementById('mus-drawer-form');
             const titleEl   = document.getElementById('mus-drawer-title');
             const nameHelp  = document.getElementById('mus-drawer-name-help');
+            const nameFoldHint = document.getElementById('mus-drawer-name-foldhint'); // #1800 C3
             const actionIn  = document.getElementById('mus-drawer-action');
             const idIn      = document.getElementById('mus-drawer-id');
             const nameIn    = document.getElementById('mus-drawer-name');
@@ -3579,6 +3696,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let isniIndex  = 0;
             let otherIdIndex = 0; // #1348
             let aliasIndex = 0;
+            let nameFoldDebounce = null; // #1800 C3
+            let nameFoldInflight = null; // #1800 C3
 
             /* #trim — client-side UX half of the whitespace-trim fix (the
                server side is the shared musTrimmed() PHP helper). ELI5: as
@@ -3852,6 +3971,57 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 return row;
             }
 
+            /* #1800 C3 — soft "possible duplicate" fold-match hint. Debounced
+               GET against ?action=name_fold_check (mirrors memberLookup()'s
+               debounced-GET + AbortController shape below); the SERVER side
+               of the fold comparison is the shared musicianFindFoldMatches()
+               helper (includes/musician_helpers.php), so this is only the
+               thin client wiring. NEVER blocks Save — reports only, and is
+               only ever wired to fire while the Name field is editable (Edit
+               mode locks it — renames go through the separate Rename action
+               instead, so there is nothing to debounce there). */
+            function clearNameFoldHint() {
+                if (!nameFoldHint) return;
+                nameFoldHint.classList.add('d-none');
+                nameFoldHint.innerHTML = '';
+            }
+            function nameFoldCheck(rawValue) {
+                if (!nameFoldHint) return;
+                if (nameFoldInflight) nameFoldInflight.abort();
+                const v = String(rawValue || '').trim();
+                if (v.length < 2) { clearNameFoldHint(); return; }
+                const ac = new AbortController();
+                nameFoldInflight = ac;
+                const excludeId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                const url = '/manage/musicians?action=name_fold_check'
+                          + '&name=' + encodeURIComponent(v)
+                          + '&exclude_id=' + encodeURIComponent(excludeId);
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then((r) => (r.ok ? r.json() : { matches: [] }))
+                    .then((data) => {
+                        const matches = Array.isArray(data.matches) ? data.matches : [];
+                        if (!matches.length) { clearNameFoldHint(); return; }
+                        const shown = matches.slice(0, 3).map((m) => {
+                            const label = '“' + escapeMemberHtml(String(m.name || '')) + '”';
+                            return m.slug
+                                ? label + ' <a href="/musician/' + encodeURIComponent(m.slug)
+                                    + '" target="_blank" rel="noopener">(view)</a>'
+                                : label;
+                        });
+                        const more = matches.length > 3 ? ' and ' + (matches.length - 3) + ' more' : '';
+                        nameFoldHint.innerHTML = '<i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>'
+                            + 'Possible duplicate of ' + shown.join(', ') + more
+                            + ' already in the registry — check before creating a new entry.';
+                        nameFoldHint.classList.remove('d-none');
+                    })
+                    .catch((err) => { if (err.name !== 'AbortError') clearNameFoldHint(); });
+            }
+            nameIn?.addEventListener('input', () => {
+                if (nameIn.readOnly) return; // Edit mode locks the field — nothing to check
+                clearTimeout(nameFoldDebounce);
+                nameFoldDebounce = setTimeout(() => nameFoldCheck(nameIn.value), 350);
+            });
+
             function resetDrawer() {
                 form.reset();
                 linksBox.innerHTML  = '';
@@ -3864,6 +4034,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 isniIndex  = 0;
                 otherIdIndex = 0; // #1348
                 aliasIndex = 0;
+                /* #1800 C3 — cancel any pending fold-check + clear the hint so
+                   a previous open's result never leaks into the next one. */
+                clearTimeout(nameFoldDebounce);
+                if (nameFoldInflight) nameFoldInflight.abort();
+                clearNameFoldHint();
                 /* form.reset() doesn't reset hidden inputs whose
                    default value is empty — explicitly clear the
                    place-id sidecars so a previous open's pick
@@ -4720,11 +4895,35 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                used on /manage/songbooks (same <input> + <datalist> +
                debounced-GET shape), just against
                ?action=merge_target_search instead of loading every
-               person into the DOM up front. */
+               person into the DOM up front.
+               #1785 C8 — `labelToCandidate` is the additive sibling: maps
+               the SAME full label to the whole candidate object (now
+               carrying disambiguation/born/died/type/useCount/variant, plan
+               §8.1) so a pick can render the disambiguation comparison
+               panel without a second round-trip. Keying BOTH maps on the
+               full disambiguated label (not the bare name) is what fixes
+               the underlying bug: two byte-variant candidates used to
+               render two visually IDENTICAL <option> labels, so picking
+               either one collided in labelToKey; disambiguated labels
+               (#id · lifespan · credits) can no longer collide. */
             let labelToKey = new Map();
+            let labelToCandidate = new Map();
             let targetInflight = null;
             let targetDebounce  = null;
             const currentExclude = { id: 0, name: '' };
+
+            /* #1785 C8 — "Eddie James — #45 · 12 credits · b. 1961". Only
+               a registry candidate (c.id truthy) carries the additive
+               fields; an in-use-only name keeps its existing plain label. */
+            function candidateLabel(c) {
+                if (!c.id) { return c.name + ' (not yet in registry)'; }
+                const bits = ['#' + c.id];
+                if (c.useCount) { bits.push(c.useCount + ' credit' + (c.useCount === 1 ? '' : 's')); }
+                if (c.born) { bits.push('b. ' + c.born); }
+                if (c.died) { bits.push('d. ' + c.died); }
+                if (c.disambiguation) { bits.push(c.disambiguation); }
+                return c.name + ' — ' + bits.join(' · ');
+            }
 
             function targetLookup(query) {
                 if (targetInflight) targetInflight.abort();
@@ -4740,13 +4939,49 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     .then(data => {
                         const list = Array.isArray(data.candidates) ? data.candidates : [];
                         labelToKey = new Map();
+                        labelToCandidate = new Map();
                         targetDatalist.innerHTML = list.map(c => {
-                            const label = c.name + (c.id ? '' : ' (not yet in registry)');
+                            const label = candidateLabel(c);
                             labelToKey.set(label, c.key);
+                            labelToCandidate.set(label, c);
                             return '<option value="' + label.replace(/"/g, '&quot;') + '"></option>';
                         }).join('');
                     })
                     .catch(err => { if (err.name !== 'AbortError') { /* silent — search is a nicety, not critical path */ } });
+            }
+
+            /* #1785 C8 — render the source-vs-target disambiguation panel
+               (plan §8.2's direct answer to "which is merging into
+               which?"). Hidden until a real target candidate is picked;
+               cleared (not just hidden) on every fresh merge open below. */
+            const disambigWrap    = document.getElementById('mus-merge-disambig');
+            const disambigSource  = document.getElementById('mus-merge-disambig-source');
+            const disambigTarget  = document.getElementById('mus-merge-disambig-target');
+            const disambigVariant = document.getElementById('mus-merge-disambig-variant');
+            const VARIANT_LABELS = {
+                'identical': 'identical bytes',
+                'unicode-normalisation': 'differs only by Unicode form (combining vs. precomposed accent)',
+                'whitespace': 'differs only by invisible spacing',
+                'case': 'differs only by letter case',
+                'punctuation': 'differs only by punctuation/accents',
+            };
+            function renderDisambig(candidate) {
+                if (!disambigWrap) return;
+                if (!candidate || !candidate.id) { disambigWrap.classList.add('d-none'); return; }
+                disambigSource.textContent = currentExclude.name || '(unregistered)';
+                const tBits = [];
+                if (candidate.born) { tBits.push('b. ' + candidate.born); }
+                if (candidate.died) { tBits.push('d. ' + candidate.died); }
+                if (candidate.disambiguation) { tBits.push(candidate.disambiguation); }
+                disambigTarget.textContent = candidate.name + (tBits.length ? ' (' + tBits.join(', ') + ')' : '');
+                if (candidate.variant) {
+                    const label = VARIANT_LABELS[candidate.variant] || candidate.variant;
+                    disambigVariant.innerHTML = '<span class="badge bg-info-subtle text-info-emphasis">'
+                        + candidate.variant + '</span> <span class="text-secondary">' + label + '</span>';
+                } else {
+                    disambigVariant.innerHTML = '<span class="badge bg-secondary-subtle text-secondary-emphasis">different words</span>';
+                }
+                disambigWrap.classList.remove('d-none');
             }
 
             targetTxt?.addEventListener('input', () => {
@@ -4759,6 +4994,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    enable on a half-typed, unresolved name (#583's
                    irreversible-merge guard depends on a REAL target). */
                 targetKeyIn.value = labelToKey.get(v) || '';
+                renderDisambig(labelToCandidate.get(v) || null);
                 refreshSubmitState();
                 if (v.trim() === '') {
                     targetDatalist.innerHTML = '';
@@ -4798,7 +5034,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (confirmCb) confirmCb.checked = false;
 
                 /* Per-role re-point preview (#583). The byName aggregate
-                   already carries every count we need; just display them. */
+                   already carries every count we need; just display them.
+                   #1785 C8 — the "Artist" pill joins the other five (see
+                   the credit-preview markup's own doc-comment above). */
                 const previewWrap = document.getElementById('mus-merge-credit-preview');
                 if (previewWrap) {
                     document.getElementById('mus-merge-count-writer').textContent     = person.writers     || 0;
@@ -4806,6 +5044,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     document.getElementById('mus-merge-count-arranger').textContent   = person.arrangers   || 0;
                     document.getElementById('mus-merge-count-adaptor').textContent    = person.adaptors    || 0;
                     document.getElementById('mus-merge-count-translator').textContent = person.translators || 0;
+                    document.getElementById('mus-merge-count-artist').textContent     = person.artists     || 0;
                     document.getElementById('mus-merge-count-total').textContent      = person.total       || 0;
                     previewWrap.classList.remove('d-none');
                 }
@@ -4822,6 +5061,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 targetTxt.value      = '';
                 targetKeyIn.value    = '';
                 targetDatalist.innerHTML = '';
+                labelToKey = new Map();
+                labelToCandidate = new Map();
+                renderDisambig(null); // #1785 C8 — clear any stale comparison from a prior merge open
 
                 /* Source children — render each link + IPI + ISNI as a
                    checkbox row (default checked = keep on target). IPI
@@ -5008,6 +5250,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 arranger:   'Arrangers',
                 adaptor:    'Adaptors',
                 translator: 'Translators',
+                artist:     'Artists', // #1785 C5
             };
 
             function renderRoleGroup(role, songs) {
@@ -5061,7 +5304,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             emptyEl.classList.remove('d-none');
                             return;
                         }
-                        const html = ['writer', 'composer', 'arranger', 'adaptor', 'translator']
+                        // #1785 C5 — 'artist' added (server's by_role now carries it too).
+                        const html = ['writer', 'composer', 'arranger', 'adaptor', 'translator', 'artist']
                             .map(role => renderRoleGroup(role, j.by_role[role] || []))
                             .join('');
                         bodyEl.innerHTML = html;

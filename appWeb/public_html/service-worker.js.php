@@ -289,6 +289,34 @@ function swSongCacheName(saved) {
 }
 
 /**
+ * May this response be written to a Cache-API bucket? (#1769 P3)
+ *
+ * ELI5: if the server said "don't store this", we don't store it.
+ *
+ * Detail: the Cache API keys entries by URL alone and cannot evaluate a
+ * `Vary: Cookie` header, so a per-viewer response cached under its plain URL
+ * would be served to a DIFFERENT viewer of the same device when offline. When
+ * content gating is ON, api.php marks the viewer-dependent page=song fragment
+ * `Cache-Control: private, no-store` (see api.php $_gatedSongFragment) — this
+ * helper honours that so such a fragment is NEVER persisted to PAGES_CACHE /
+ * RECENT_CACHE / SAVED_CACHE. DORMANT: with gating off no cacheable-path
+ * response carries `no-store`, so every existing put still fires — byte-identical
+ * SW behaviour. Missing/blank header ⇒ cacheable (the pre-#1769 default).
+ * https://developer.mozilla.org/en-US/docs/Web/API/Cache/put
+ *
+ * @param {Response} response
+ * @returns {boolean} false only when Cache-Control contains `no-store`.
+ */
+function swResponseCacheable(response) {
+    try {
+        const cc = (response && response.headers && response.headers.get('Cache-Control')) || '';
+        return cc.toLowerCase().indexOf('no-store') === -1;
+    } catch (e) {
+        return true; /* header unreadable (opaque response) — keep the old behaviour */
+    }
+}
+
+/**
  * The oldest keys to delete so a bucket fits its cap.
  *
  * ELI5: when the box is too full, take the things that went in first back out.
@@ -827,7 +855,7 @@ self.addEventListener('fetch', (event) => {
                        fragment bucket on every online fetch, then keep it
                        under its cap. Nothing here can reach the app shell in
                        CACHE_VERSION or the user's songs in SAVED_CACHE. */
-                    if (offlinePage && response.ok) {
+                    if (offlinePage && response.ok && swResponseCacheable(response)) {
                         try {
                             const pages = await caches.open(PAGES_CACHE);
                             await pages.put(event.request, response.clone());
@@ -846,7 +874,7 @@ self.addEventListener('fetch', (event) => {
                        there first; otherwise a saved song would silently stop
                        receiving updates and would also get a duplicate copy
                        written into the recency bucket. */
-                    if (isSongPage && response.ok) {
+                    if (isSongPage && response.ok && swResponseCacheable(response)) {
                         const saved = await caches.open(SAVED_CACHE);
                         const inSaved = await saved.match(event.request);
                         const cache = inSaved ? saved : await caches.open(RECENT_CACHE);
@@ -1526,7 +1554,16 @@ self.addEventListener('message', (event) => {
         const total = songIds.length;
         let completed = 0, failed = 0;
         /* Deliberate download → the untrimmed bucket, same as the bulk path
-           above (#1597 RC1). */
+           above (#1597 RC1).
+           #1769 P3 — this is a DELIBERATE per-user save, so it is NOT gated by
+           swResponseCacheable(): even when content gating is on (every page=song
+           then carries `no-store` because the fragment is viewer-dependent), an
+           ENTITLED user must still be able to save their songs offline. The
+           no-store gate applies only to the INCIDENTAL caches (PAGES_CACHE +
+           RECENT_CACHE in the fetch handler) that could serve one viewer's
+           fragment to another; a saved copy is re-gated on the next online fetch
+           (#1388 posture). The shared-device case (user A saves, user B reads
+           offline) is closed by clearing user caches on login — filed follow-up. */
         const cache = await caches.open(SAVED_CACHE);
         const BATCH = 20;
         for (let i = 0; i < songIds.length; i += BATCH) {

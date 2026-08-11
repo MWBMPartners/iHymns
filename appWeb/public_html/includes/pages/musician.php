@@ -48,6 +48,8 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1786 — ihymns_title_sort_key() for the discography's Title sort key. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 /**
  * Slug → display name when no registry row exists. Mirrors the
@@ -331,12 +333,14 @@ $totalSongs = 0;
 $matchedSongIds = [];
 foreach ($roleTables as $roleKey => $cfg) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
     $creditPh = implode(',', array_fill(0, count($creditNames), '?'));
     $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
               FROM {$cfg['table']} c
               JOIN tblSongs s ON s.SongId = c.SongId
              WHERE c.Name IN ($creditPh) AND " . songVisibleSql($db, 's') . "
-             ORDER BY s.SongbookAbbr, s.Number";   /* #1694 — visible songs only */
+               AND " . songServableSql($db, 's') . "
+             ORDER BY s.SongbookAbbr, s.Number";   /* #1694/#1765 — visible songs only, in a non-disabled songbook */
     try {
         $stmt = $db->prepare($sql);
         $stmt->bind_param(str_repeat('s', count($creditNames)), ...$creditNames);
@@ -370,14 +374,15 @@ if ($person && (int)$person['Id'] > 0) {
         $hasCompTable = $r && $r->fetch_row() !== null;
         if ($r) $r->close();
         if ($hasCompTable) {
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
             $stmt = $db->prepare(
                 'SELECT b.Abbreviation AS abbr, b.Name AS name, b.SongCount AS songCount,
                         c.Note         AS note,  c.SortOrder AS sortOrder
                    FROM tblSongbookCompilers c
                    JOIN tblSongbooks b ON b.Id = c.SongbookId
-                  WHERE c.MusicianId = ?
+                  WHERE c.MusicianId = ? AND ' . songbookVisibleSql($db) . '
                   ORDER BY b.Name ASC'
-            );
+            );   /* #1765 — a disabled songbook is not listed as compiled here */
             $pid = (int)$person['Id'];
             $stmt->bind_param('i', $pid);
             $stmt->execute();
@@ -982,6 +987,22 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
     <?php endif; ?>
 
     <!-- Discography grouped by role -->
+    <?php if (!empty($discography)): ?>
+        <!-- Sort control (#1786) — Number / Title / Songbook. One control
+             governs EVERY per-role group below (multi-container — each
+             role's own .song-list sorts independently; grouping by role is
+             the page's information architecture and is never flattened). -->
+        <?php
+            $listSortSurface = 'musician-songs';
+            $listSortDefault = 'Songbook & number';
+            $listSortOptions = [
+                'number' => ['label' => 'Number',   'type' => 'number', 'dir' => 'asc'],
+                'title'  => ['label' => 'Title',    'type' => 'text',   'dir' => 'asc'],
+                'book'   => ['label' => 'Songbook', 'type' => 'text',   'dir' => 'asc'],
+            ];
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+        ?>
+    <?php endif; ?>
     <?php foreach ($discography as $roleKey => $entry):
         $cfg = $entry['cfg'];
         $songs = $entry['songs'];
@@ -992,13 +1013,16 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                 <?= htmlspecialchars($cfg['label']) ?>
                 <small class="text-muted">(<?= count($songs) ?>)</small>
             </h2>
-            <div class="list-group song-list" role="list">
+            <div class="list-group song-list" role="list" data-list-sort-list="musician-songs">
                 <?php foreach ($songs as $s): ?>
                     <a href="/song/<?= htmlspecialchars($s['SongId']) ?>"
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="<?= htmlspecialchars($s['SongId']) ?>"
-                       role="listitem">
+                       role="listitem"
+                       <?php if ((int)$s['Number'] > 0): ?>data-sort-number="<?= (int)$s['Number'] ?>"<?php endif; ?>
+                       data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$s['Title'])) ?>"
+                       data-sort-book="<?= htmlspecialchars(mb_strtolower((string)$s['SongbookAbbr'], 'UTF-8')) ?>">
 <?php /* Unnumbered (Misc / unofficial) → emit a TRULY EMPTY badge (no whitespace)
                            so the shared `.song-number-badge:empty::before` book glyph shows
                            instead of a literal "0" (matches history.js:376). */ ?>

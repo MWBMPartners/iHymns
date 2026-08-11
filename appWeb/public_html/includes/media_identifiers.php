@@ -438,3 +438,237 @@ function mediaIdentifierRoyaltyAuthorities(): array
     }
     return $out;
 }
+
+/* =========================================================================
+ * PUBLICATION_IDENTIFIER_TYPES — publication-entity (songbook / series /
+ * catalogue) identifier vocabulary (Songbook/Catalogue Enhancements epic,
+ * commit 1 of 7 — pure foundations, dormant until the migration in commit 2
+ * lands the columns this map describes).
+ *
+ * ELI5
+ * ----
+ * The WORK_IDENTIFIER_TYPES map above says "what identifiers can a work have,
+ * and where do they live?". This is the SAME question one level up, for the
+ * publication itself (the physical/curated hymnal, series, or collection) —
+ * ARK, OpenLibrary Work id, OpenLibrary Edition id, ISBN, ISSN.
+ *
+ * DETAILED / WHY "SAME ENTRY SHAPE AS WORK_IDENTIFIER_TYPES" BUT A SEPARATE
+ * CONST RATHER THAN MORE ENTRIES IN THAT ONE
+ * ----------------------------------------------------------------------------
+ * `WORK_IDENTIFIER_TYPES` and this map are keyed by DIFFERENT, non-
+ * overlapping vocabularies for DIFFERENT entities (a work's ISWC/BOWI/CCLI
+ * vs. a publication's ISBN/ISSN/ARK/OpenLibrary) — mixing them into one
+ * array would mean a lookup by slug could resolve against the wrong grain,
+ * exactly the mistake `mediaIdentifierWorkValidate()`'s own doc-block warns
+ * against for `RECORDING_EXTERNAL_ID_TYPES` vs `WORK_IDENTIFIER_TYPES`. This
+ * map reuses that SAME field shape (`label`/`storage`/`column`/
+ * `authorityCode`/`authority`/`validate`) — every entry here is
+ * `storage => 'column'` because, per the epic's Feature 3 decision, every
+ * publication identifier is a plain nullable `VARCHAR` column (the #672
+ * pattern `tblSongbooks.Isbn`/`ArkId` already established), never a
+ * generic key/value side-table — plus one addition this map's callers need
+ * that WORK_IDENTIFIER_TYPES's callers do not yet: a nullable `url`
+ * "%s"-templated printf lookup URL (mirrors `RECORDING_EXTERNAL_ID_TYPES`'s
+ * `url` field), for a future admin "view on OpenLibrary/ISSN portal" link —
+ * filled in only where the public lookup shape is genuinely well-known and
+ * stable (all five below are).
+ *
+ * `column` NAMES THE CONVENTIONAL COLUMN, NOT A SINGLE TABLE: unlike
+ * `WORK_IDENTIFIER_TYPES['iswc']['column']` (which names exactly one
+ * `tblWorks` column), a publication identifier's column of the SAME NAME may
+ * exist on ZERO, ONE, TWO or ALL THREE of `tblSongbooks` /
+ * `tblSongbookSeries` / `tblCatalogues` — the epic's migration deliberately
+ * does NOT give every entity every column (`tblSongbooks` has no `Issn`,
+ * `tblCatalogues` has no `Isbn`/`Issn` at all — see the plan's "Adversarial
+ * notes": "series 260$b / catalogue ISBN deliberately absent"). `column`
+ * here documents the NAME a caller should look for; it is each entity's own
+ * concern (and `includes/marcxml.php`'s `marcxmlFieldMap()`, its first
+ * consumer) to know which of the three entities actually carries it.
+ *
+ * NOT YET WIRED TO ANY LIVE WRITE PATH: `mediaIdentifierPublicationValidate()`
+ * is exactly the guard `includes/marcxml.php`'s importer will call once
+ * MARCXML handlers land (commit 6) — nothing calls it from this commit.
+ * The `ark` / `openlibrary-work` / `openlibrary-edition` slugs canonicalise
+ * via `identifier_normalize.php`'s folds FIRST (never re-derive their shape
+ * here — this map's `validate` regex for those three is for a caller that
+ * only wants a truth check, e.g. a future admin form's client-side hint,
+ * and is intentionally the SAME shape those folds enforce, matching the
+ * pre-existing `WORK_IDENTIFIER_TYPES['iswc']['validate']` /
+ * `ihymns_canonical_iswc()` precedent of two independently-declared but
+ * shape-identical checks for two different purposes).
+ *
+ * @link .claude/songbook-catalogue-enhancements-plan.md  the epic plan (Feature 3 + Feature 6 sections)
+ * @see appWeb/public_html/includes/identifier_normalize.php  ihymns_canonical_ark() / ihymns_canonical_openlibrary() — the authoritative folds for ark/openlibrary-*
+ * @see appWeb/public_html/includes/marcxml.php               the first consumer (marcxmlMapToEntity())
+ * @see tests/php/test-media-identifiers.php                  the vocabulary guard this map is checked against
+ * ========================================================================= */
+const PUBLICATION_IDENTIFIER_TYPES = [
+    'ark' => [
+        /* `maxlen` mirrors the storage column width (rule #19) so an
+           over-length-but-format-valid value is rejected by
+           mediaIdentifierPublicationClean() BEFORE it reaches a bind and
+           overflows the column under STRICT mysqli (#1765 review). ARK's
+           name part is unbounded in the format regex, so this is the real
+           guard. */
+        'label' => 'ARK', 'storage' => 'column', 'column' => 'ArkId', 'maxlen' => 80, 'authorityCode' => null,
+        'authority' => 'ARK Alliance / California Digital Library',
+        'validate' => '#^ark:/\d{5,9}/[!-~]+$#',
+        'url' => 'https://n2t.net/%s',
+    ],
+    'openlibrary-work' => [
+        'label' => 'OpenLibrary Work', 'storage' => 'column', 'column' => 'OpenLibraryWorkId', 'maxlen' => 20, 'authorityCode' => null,
+        'authority' => 'Internet Archive / Open Library',
+        'validate' => '/^OL\d+W$/',
+        'url' => 'https://openlibrary.org/works/%s',
+    ],
+    'openlibrary-edition' => [
+        'label' => 'OpenLibrary Edition', 'storage' => 'column', 'column' => 'OpenLibraryEditionId', 'maxlen' => 20, 'authorityCode' => null,
+        'authority' => 'Internet Archive / Open Library',
+        'validate' => '/^OL\d+M$/',
+        'url' => 'https://openlibrary.org/books/%s',
+    ],
+    /* ISBN/ISSN validate against the CLEANED shape (digits + an optional
+       trailing check-"digit" X, hyphens already stripped) — this file ships
+       no ihymns_canonical_isbn()/_issn() fold (unlike ark/openlibrary-*, the
+       epic's Feature 6 scope does not call for one), so a caller with a
+       curator-typed value carrying hyphens/spaces must strip them itself
+       before calling mediaIdentifierPublicationValidate('isbn', …), the same
+       pre-cleaned-input expectation mediaIdentifierValidateValue() already
+       has for 'isrc'/'ccli'. includes/marcxml.php does this cleaning inline
+       for the one caller this commit ships. */
+    'isbn' => [
+        'label' => 'ISBN', 'storage' => 'column', 'column' => 'Isbn', 'maxlen' => 20, 'authorityCode' => null,
+        'authority' => 'International ISBN Agency',
+        'validate' => '/^(?:\d{9}[\dX]|\d{13})$/',
+        'url' => null,
+    ],
+    'issn' => [
+        'label' => 'ISSN', 'storage' => 'column', 'column' => 'Issn', 'maxlen' => 20, 'authorityCode' => null,
+        'authority' => 'ISSN International Centre',
+        'validate' => '/^\d{7}[\dX]$/',
+        'url' => 'https://portal.issn.org/resource/ISSN/%s',
+    ],
+];
+
+/**
+ * The whole publication-identifier registry.
+ *
+ * @return array<string,array{label:string,storage:string,column:?string,maxlen?:int,authorityCode:?string,authority:string,validate:?string,url:?string}>
+ */
+function mediaIdentifierPublicationTypes(): array
+{
+    return PUBLICATION_IDENTIFIER_TYPES;
+}
+
+/**
+ * True when $value passes $slug's documented shape — the
+ * PUBLICATION_IDENTIFIER_TYPES mirror of `mediaIdentifierWorkValidate()`.
+ *
+ * ELI5: "does this ARK / OpenLibrary id / ISBN / ISSN a curator typed (or
+ * MARCXML import extracted) actually look like a real one?"
+ *
+ * Mirrors `mediaIdentifierWorkValidate()`'s exact contract against the
+ * sibling map: unrecognised slug → false, empty value → false (trimmed),
+ * a recognised slug with `validate === null` → any non-empty value accepted
+ * (none of the five entries above currently has a null validate, but the
+ * contract is kept identical to its siblings for a future entry that might),
+ * else the PCRE match result.
+ *
+ * @param string $slug  A PUBLICATION_IDENTIFIER_TYPES key, e.g. 'ark', 'isbn'.
+ * @param string $value The value to check — for isbn/issn this must already
+ *                       be cleaned (digits + optional trailing X, no
+ *                       hyphens/spaces); for ark/openlibrary-* callers
+ *                       should prefer the canonicalising fold in
+ *                       identifier_normalize.php, which validates AND
+ *                       cleans in one step.
+ * @return bool
+ * @see appWeb/public_html/includes/marcxml.php  the first call site
+ */
+function mediaIdentifierPublicationValidate(string $slug, string $value): bool
+{
+    $reg = PUBLICATION_IDENTIFIER_TYPES[$slug] ?? null;
+    if ($reg === null) return false;
+    if (trim($value) === '') return false;
+    if ($reg['validate'] === null) return true;
+    return (bool)preg_match($reg['validate'], $value);
+}
+
+/**
+ * Trim + validate a curator-typed publication identifier ready for direct
+ * column storage — the ONE place `/manage/songbooks`, `/manage/songbook-
+ * series` and `/manage/catalogues`' create/update handlers turn a raw
+ * `$_POST` value into either a clean string to bind or a friendly error,
+ * without each hand-rolling its own copy of the "empty → null, else
+ * validate" dance (Songbook/Catalogue Enhancements epic, #1765, commit 4 —
+ * rule #22 modularity: three admin pages needed the exact same three-line
+ * shape, so it lives here once).
+ *
+ * ELI5
+ * ----
+ * A curator types (or leaves blank) an ARK / OpenLibrary Work / OpenLibrary
+ * Edition / ISBN / ISSN box. This turns that into either
+ * `['value' => 'the cleaned string', 'error' => null]` — ready to bind
+ * straight into the column — or `['value' => null, 'error' => 'a friendly
+ * message']` when it doesn't look like a real one, so a blank box always
+ * means "not recorded" (NULL) and a malformed one is caught before it ever
+ * reaches a bind_param() call.
+ *
+ * DETAILED / WHY THIS DOESN'T CANONICALISE VIA THE identifier_normalize.php
+ * FOLDS
+ * ----------------------------------------------------------------------------
+ * `ihymns_canonical_ark()` / `ihymns_canonical_openlibrary()`
+ * (`includes/identifier_normalize.php`, commit 1 of this epic) accept a
+ * full resolver/OpenLibrary URL and clean it down to the bare canonical
+ * form — a richer paste-a-URL UX these three admin forms don't yet offer.
+ * This commit's explicit scope is "validate via
+ * `mediaIdentifierPublicationValidate()`, do not hand-roll" — a curator who
+ * pastes a full URL today gets a friendly rejection, not a silent
+ * auto-clean. Wiring the canonicalising fold in is a follow-on, not a
+ * regression: this function's contract (empty → null, malformed → error)
+ * does not change either way, so a future caller can swap the validation
+ * step for the canonicalising fold without touching anything downstream of
+ * this function's return shape.
+ *
+ * @param string $slug A PUBLICATION_IDENTIFIER_TYPES key, e.g. 'ark',
+ *                      'openlibrary-work', 'openlibrary-edition', 'isbn',
+ *                      'issn'.
+ * @param string $raw  The raw `$_POST` value (untrimmed is fine — this
+ *                      trims internally, same as every other field on
+ *                      these pages).
+ * @return array{value:?string,error:?string} `value` is the trimmed input
+ *              ready to bind, or null (either "left blank" — no error — or
+ *              "failed validation" — paired with a non-null `error`).
+ *              `error` is null on success (blank OR valid); a friendly
+ *              message naming the field's label on failure.
+ * @see appWeb/public_html/manage/songbooks.php        the ark_id / openlibrary_work_id / openlibrary_edition_id call sites
+ * @see appWeb/public_html/manage/songbook-series.php   the isbn / issn / ark_id / openlibrary_* call sites
+ * @see appWeb/public_html/manage/catalogues.php        the ark_id / openlibrary_* call sites
+ */
+function mediaIdentifierPublicationClean(string $slug, string $raw): array
+{
+    $value = trim($raw);
+    if ($value === '') {
+        return ['value' => null, 'error' => null];
+    }
+    if (!mediaIdentifierPublicationValidate($slug, $value)) {
+        $label = PUBLICATION_IDENTIFIER_TYPES[$slug]['label'] ?? $slug;
+        return ['value' => null, 'error' => "'{$value}' doesn't look like a valid {$label}."];
+    }
+    /* Column-width guard (#1765 review). A value can be format-VALID yet longer
+       than its storage column: the ARK name part `[!-~]+` and the OpenLibrary
+       `OL\d+W`/`OL\d+M` digit runs are unbounded in the `validate` regex, so a
+       200-char ARK passes validation but overflows `ArkId VARCHAR(80)` at
+       bind time — and mysqli runs STRICT (rule #19), so that overflow THROWS
+       rather than truncating, white-screening the create/update handler. We
+       reject over-length here (→ a friendly error on the form, or a skip into
+       the MARCXML import's "skipped" note, like any other invalid value)
+       BEFORE it ever reaches bind_param(). `maxlen` mirrors the column width
+       declared in schema.sql; an entry without one (none today) is unbounded.
+       @link https://www.php.net/manual/en/mysqli-driver.report-mode.php  STRICT throws, not truncates */
+    $maxlen = PUBLICATION_IDENTIFIER_TYPES[$slug]['maxlen'] ?? null;
+    if ($maxlen !== null && mb_strlen($value) > $maxlen) {
+        $label = PUBLICATION_IDENTIFIER_TYPES[$slug]['label'] ?? $slug;
+        return ['value' => null, 'error' => "That {$label} is too long (max {$maxlen} characters)."];
+    }
+    return ['value' => $value, 'error' => null];
+}

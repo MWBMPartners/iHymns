@@ -26,6 +26,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Licence-type registry (#459 / #1769 P2) — the ONE source of the licence→tier
+   conferral overlaid onto the legacy $licenceToTier fallback in
+   resolveEffectiveTier(). Requires only db_mysql (no cycle). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'licence_registry.php';
 
 /**
  * Validate a CCLI licence number format.
@@ -82,6 +86,13 @@ function validateCcliNumber(string $number): array
  */
 /**
  * Tier level hierarchy — higher number = more access.
+ *
+ * ⚠️ This const is now the FALLBACK, not the source of truth (#1769 P0, OV-4):
+ * the live, admin-editable ranking is `tblAccessTiers.Level`, read via
+ * tierLevelRank() below. TIER_LEVELS only supplies a rank for the five reserved
+ * names on an install that can't read the column (rule #28C degrade-safety),
+ * and 0 for anything unknown. Do NOT compare tiers by indexing this const
+ * directly — that was the bug where a curator-created tier ranked 0.
  */
 const TIER_LEVELS = [
     'public'  => 0,
@@ -92,11 +103,59 @@ const TIER_LEVELS = [
 ];
 
 /**
+ * Name => Level map read from the LIVE tblAccessTiers, request-cached (#1769 P0).
+ *
+ * ELI5: the ladder positions an admin actually typed into the Level boxes on
+ * /manage/tiers — not the hardcoded guess in TIER_LEVELS.
+ *
+ * DETAILED / DEGRADE-SAFE: `Level` is a core column (schema.sql:1156, INT
+ * NOT NULL DEFAULT 0), but the three shared-host docroots run web-applied
+ * migrations, so a read must never THROW under STRICT mysqli on a
+ * hypothetically-behind install — any failure yields [] and the caller falls
+ * back to the TIER_LEVELS const (rule #28C). Cached per request because tiers
+ * do not change mid-request and resolveEffectiveTier() calls the ranker several
+ * times per invocation.
+ *
+ * @return array<string,int> Name => Level, or [] when the table/column can't be read.
+ */
+function tierLevelMap(\mysqli $db): array
+{
+    static $cache = null;
+    if ($cache !== null) { return $cache; }
+    $cache = [];
+    try {
+        $res = $db->query('SELECT Name, Level FROM tblAccessTiers');
+        if ($res) {
+            foreach ($res->fetch_all(MYSQLI_ASSOC) as $r) {
+                $cache[(string)$r['Name']] = (int)$r['Level'];
+            }
+        }
+    } catch (\Throwable $_e) {
+        $cache = []; // un-migrated / unreadable — caller uses the TIER_LEVELS fallback
+    }
+    return $cache;
+}
+
+/**
+ * Ordering rank of a tier NAME: the live tblAccessTiers.Level when known, else
+ * the TIER_LEVELS fallback, else 0 (#1769 P0, OV-4). resolveEffectiveTier()
+ * compares tiers through this so a curator-created tier ranks by the Level an
+ * admin set on /manage/tiers instead of silently ranking 0.
+ */
+function tierLevelRank(\mysqli $db, string $tier): int
+{
+    $live = tierLevelMap($db);
+    if (array_key_exists($tier, $live)) { return $live[$tier]; }
+    return TIER_LEVELS[$tier] ?? 0;
+}
+
+/**
  * Resolve the effective tier for a user by taking the highest of:
  *   1. Their personal AccessTier
  *   2. Any organisation-level tier they inherit via membership
  *
- * Whichever tier is higher (by TIER_LEVELS) wins.
+ * Whichever tier is higher (by the live tblAccessTiers.Level, via
+ * tierLevelRank() — TIER_LEVELS is only the un-migrated fallback) wins.
  *
  * @param int $userId The user ID
  * @return string The effective tier name
@@ -182,7 +241,15 @@ function resolveEffectiveTier(int $userId): string
         $stmt->close();
     }
 
-    /* Map org licence types to access tiers */
+    /* Map org licence types to access tiers. The literal is the FALLBACK; the
+       ONE licence registry (#1769 P2) overlays its ConfersTier on top. This is
+       ENFORCEMENT-relevant (resolveEffectiveTier runs regardless of the gating
+       flag), so it is a PROVEN IDENTITY for every current input: the registry
+       confers ccli→ccli, ihymns_basic→free, ihymns_pro→premium (== the literal),
+       while mrl/custom confer nothing and fall through to the literal's default
+       'free' — the preserved "mrl→free" accident (the intended end-state flip
+       is a P6 owner decision, tracked separately). test-licence-registry.php
+       pins this no-op across all inputs. */
     $licenceToTier = [
         'none'         => 'public',
         'ihymns_basic' => 'free',
@@ -191,16 +258,25 @@ function resolveEffectiveTier(int $userId): string
         'premium'      => 'premium',
         'pro'          => 'pro',
     ];
+    /* Registry conferral map, fetched ONCE (licenceTypesAll degrades to the
+       byte-exact fallback on any failure — never throws). */
+    $registryLicences = licenceTypesAll($db);
 
     foreach ($orgLicences as $licence) {
-        $mapped = $licenceToTier[$licence] ?? 'free';
-        if ((TIER_LEVELS[$mapped] ?? 0) > (TIER_LEVELS[$orgTier] ?? 0)) {
+        /* array_key_exists on ['confersTier'] would still ?? to null for the
+           legitimately-null mrl/custom, so a plain ?? is correct here: a null
+           conferral falls through to the legacy literal. */
+        $confers = $registryLicences[$licence]['confersTier'] ?? null;
+        $mapped  = $confers ?? ($licenceToTier[$licence] ?? 'free');
+        if (tierLevelRank($db, $mapped) > tierLevelRank($db, $orgTier)) {
             $orgTier = $mapped;
         }
     }
 
-    /* Return whichever tier is higher */
-    return (TIER_LEVELS[$personalTier] ?? 0) >= (TIER_LEVELS[$orgTier] ?? 0)
+    /* Return whichever tier is higher — ranked by the live tblAccessTiers.Level
+       (tierLevelRank), so a curator-created tier ranks by the Level an admin
+       actually set, not 0 (#1769 P0, OV-4). */
+    return tierLevelRank($db, $personalTier) >= tierLevelRank($db, $orgTier)
         ? $personalTier
         : $orgTier;
 }

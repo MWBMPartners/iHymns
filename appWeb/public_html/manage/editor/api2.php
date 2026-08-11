@@ -375,6 +375,16 @@ const ED2_CREDIT_TABLES = [
     'artists'     => 'tblSongArtists',
 ];
 
+/** #1783 — the hidden staging songbook a duplicated song lands in until the
+ *  curator assigns it a real book + number. A song's id IS `<Abbr>-<n>`
+ *  (rule #27), so a duplicate cannot be truly bookless; it lives here
+ *  (IsOfficial=0, IsDisabled=1 → hidden from every public read via
+ *  songbookVisibleSql, still editable under /manage) and the editor PRESENTS
+ *  its Songbook + Number fields as empty. The ONE definition — every client
+ *  surface receives it from a server response (`load_index.pendingSongbook`),
+ *  never re-types the literal (rule #35). */
+const ED2_PENDING_SONGBOOK = 'PENDING';
+
 /** Editable scalar field -> [column, bind-type]. Allow-list (CLAUDE.md #5): the
  *  column name is the only non-bound SQL fragment and comes from this constant,
  *  never from input. */
@@ -419,6 +429,17 @@ const ED2_META_FIELDS = [
     'musicPublicDomain'  => ['MusicPublicDomain', 'i'],
     'hasAudio'           => ['HasAudio', 'i'],
     'hasSheetMusic'      => ['HasSheetMusic', 'i'],
+    /* #1769 P4 — per-song RIGHTS FACTS (the licence a song's lyrics / music are
+       covered by). Both columns ship dormant in the P1 gating-facts batch and
+       may be absent on an un-migrated install, so — like the identity columns
+       above — the KEY stays in this static allow-list while the WRITE is gated
+       (ed2_rightsColsPresent() 409, metadata_field_update below). They take a
+       DEDICATED validation branch (value must be '' → NULL or a live licence
+       key, else 422) rather than the generic string coercion, and land their
+       own audit key (admin.song.rights_set). Nothing ENFORCES on them until P6
+       — see .claude/gating-p4-design.md. */
+    'lyricsRightsLicenceKey' => ['LyricsRightsLicenceKey', 's'],
+    'musicRightsLicenceKey'  => ['MusicRightsLicenceKey', 's'],
 ];
 
 /* --------------------------------------------------------------- Helpers --- */
@@ -473,6 +494,55 @@ function ed2_songMediaTableExists(\mysqli $db): bool {
 }
 
 /**
+ * #1783 — find-or-create the hidden staging songbook (ED2_PENDING_SONGBOOK) a
+ * duplicated song lives in until the curator assigns it a real book. Idempotent
+ * + self-healing across the three docroots (a DATA row, not DDL — schema.sql is
+ * untouched, so rule #19 imposes nothing; mirrors the tuneFindOrCreateByName
+ * precedent). `IsOfficial=0` always; `IsDisabled=1` only when that column exists
+ * (#1765) — a pre-#1765 install degrades to a visible staging book, acceptable
+ * because all three docroots share the one migrated DB in practice. Called in
+ * autocommit (before the duplicate's own transaction) so the staging book is a
+ * durable fixture regardless of whether a given duplicate commits or rolls back.
+ */
+function ed2_ensurePendingSongbook(\mysqli $db): void {
+    static $done = false;
+    if ($done) { return; }
+    $abbr = ED2_PENDING_SONGBOOK;
+    /* @disabled-visible: this find-or-create existence probe MUST see the hidden
+       staging book — it is deliberately IsDisabled=1 (#1783), so filtering it out
+       via songbookVisibleSql() would make this re-INSERT a duplicate PENDING book
+       on every duplicate. It is an admin-only fixture, never a public read. */
+    $q = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+    $q->bind_param('s', $abbr);
+    $q->execute();
+    $present = $q->get_result()->fetch_row() !== null;
+    $q->close();
+    if ($present) { $done = true; return; }
+
+    $hasDisabled = false;
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks'
+                AND COLUMN_NAME = 'IsDisabled' LIMIT 1"
+        );
+        $hasDisabled = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) { $hasDisabled = false; }
+
+    $name = 'Pending duplicates';
+    if ($hasDisabled) {
+        $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, IsOfficial, IsDisabled) VALUES (?, ?, 0, 1)');
+    } else {
+        $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, IsOfficial) VALUES (?, ?, 0)');
+    }
+    $ins->bind_param('ss', $abbr, $name);
+    $ins->execute();
+    $ins->close();
+    $done = true;
+}
+
+/**
  * Per-column present-map for the #1741 P1 tblSongs identity columns — ONE
  * INFORMATION_SCHEMA.COLUMNS query (IN-list of hardcoded constants, rule #5),
  * memoised like ed2_songMediaTableExists() just above. `Isrc` (#1064) is
@@ -510,6 +580,83 @@ function ed2_songIdentityColsPresent(\mysqli $db): array {
            safe direction, matching every other existence probe in this file. */
     }
     return $presence;
+}
+
+/**
+ * Memoised probe: do the per-song RIGHTS-FACT columns exist on this install
+ * (#1769 P4 / P1 gating-facts batch)? A dedicated sibling of
+ * ed2_songIdentityColsPresent() — same shape, same degrade-to-false-on-failure
+ * posture — so metadata_field_update can 409 a rights write (and the restore
+ * loop can skip a rights restore) on an un-migrated install rather than throw a
+ * raw mysqli_sql_exception under STRICT.
+ *
+ * @return array<string,bool> column name => present
+ */
+function ed2_rightsColsPresent(\mysqli $db): array {
+    static $presence = null;
+    if ($presence !== null) { return $presence; }
+    $presence = ['LyricsRightsLicenceKey' => false, 'MusicRightsLicenceKey' => false];
+    try {
+        $r = $db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs'
+                AND COLUMN_NAME IN ('LyricsRightsLicenceKey','MusicRightsLicenceKey')"
+        );
+        if ($r) {
+            while ($row = $r->fetch_row()) { $presence[$row[0]] = true; }
+            $r->close();
+        }
+    } catch (\Throwable $_e) {
+        /* Degrade to "not migrated" — the safe direction (rule #9). */
+    }
+    return $presence;
+}
+
+/**
+ * The songbook's default rights-fact keys, as a PREFILL HINT for the editor's
+ * rights panel (#1769 P4, D4: a hint the curator may adopt, NEVER an automatic
+ * write). Returns `['lyrics'=>?key, 'music'=>?key]` when the tblSongbooks
+ * default columns exist, or `null` on an un-migrated install so the client can
+ * simply omit the hint. Existence-gated (rule #9) + try/caught.
+ *
+ * @return array{lyrics:?string,music:?string}|null
+ */
+function ed2_songbookRightsDefaults(\mysqli $db, string $abbr): ?array {
+    if ($abbr === '') { return null; }
+    static $colsPresent = null;
+    if ($colsPresent === null) {
+        $colsPresent = false;
+        try {
+            $r = $db->query(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks'
+                    AND COLUMN_NAME IN ('DefaultLyricsRightsLicenceKey','DefaultMusicRightsLicenceKey')"
+            );
+            if ($r) { $colsPresent = ((int)($r->fetch_row()[0] ?? 0)) === 2; $r->close(); }
+        } catch (\Throwable $_e) { $colsPresent = false; }
+    }
+    if (!$colsPresent) { return null; }
+    try {
+        /* @disabled-visible: editor admin surface (#1765) — the song editor must
+           read a songbook's default rights even when the book is disabled/hidden
+           from the public site, so a curator can still edit its songs. Never a
+           public read (api2 is the authenticated editor API). */
+        $s = $db->prepare(
+            'SELECT DefaultLyricsRightsLicenceKey, DefaultMusicRightsLicenceKey
+               FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+        );
+        $s->bind_param('s', $abbr);
+        $s->execute();
+        $row = $s->get_result()->fetch_assoc();
+        $s->close();
+        if (!$row) { return null; }
+        return [
+            'lyrics' => ($row['DefaultLyricsRightsLicenceKey'] ?? '') !== '' ? (string)$row['DefaultLyricsRightsLicenceKey'] : null,
+            'music'  => ($row['DefaultMusicRightsLicenceKey']  ?? '') !== '' ? (string)$row['DefaultMusicRightsLicenceKey']  : null,
+        ];
+    } catch (\Throwable $_e) {
+        return null;
+    }
 }
 
 /**
@@ -687,6 +834,9 @@ function ed2_songExists(\mysqli $db, string $songId): bool {
     /* @deleted-visible: write-path existence check (#1694) — "does the row
        exist?" is an FK/identity question; a soft-deleted row exists, and a
        write into it is harmless and restore-preserving. */
+    /* @disabled-visible: same reasoning, one predicate over (#1765) — existence
+       is an identity question; a song in a publicly-disabled book still exists
+       and the admin editor still writes to it. */
     $s = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -740,6 +890,9 @@ function ed2_songExternalIdRowShape(array $r): array {
  * of truth is the live data (no counter table), locked FOR UPDATE.
  */
 function ed2_allocateSongId(\mysqli $db, string $abbr): string {
+    /* @disabled-visible: id-allocation (#1765) — the MAX(SongId) scan must span
+       every song in the book regardless of public disabled state so a newly
+       minted id never collides with an existing (possibly hidden) song. */
     $abbr = strtoupper(trim($abbr));
     /* Allow-list: abbreviation is [A-Z0-9]{1,10}; this validates the only value
        that ends up in the REGEXP fragment below. */
@@ -938,6 +1091,9 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
        repairing or reviewing a hidden song's record must still be able to
        load it by direct id; discovery goes dark instead (the sidebar's
        getSongsSlimIndex() is filtered — restore-first workflow). */
+    /* @disabled-visible: same reasoning, one predicate over (#1765) — a curator
+       loads a song by direct id for repair regardless of its book's public
+       disabled state; discovery (the filtered sidebar index) goes dark. */
     $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -1066,6 +1222,7 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
     /* Scalars — only the allow-listed editable columns (same coercion as
        metadata_field_update). */
     $ed2IdentityPresence = ed2_songIdentityColsPresent($db);   // #1741 P1 gate
+    $ed2RightsPresence   = ed2_rightsColsPresent($db);          // #1769 P4 gate
     $ed2WroteIsrc = false;
     /* #1741 P5c — captured in the scalar loop, restored AFTER it through the
        ONE tune write core so TuneId lands in lockstep with TuneName. */
@@ -1094,6 +1251,12 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
            optional field on an un-migrated install (mirrors works.php's
            partial-apply posture, P4 plan §2 gating note). */
         if (array_key_exists($column, $ed2IdentityPresence) && !$ed2IdentityPresence[$column]) { continue; }
+        /* #1769 P4 — same partial-apply posture for the rights-fact columns:
+           skip a restore of one that doesn't exist on this un-migrated install
+           rather than throw under STRICT (the identity-column precedent above).
+           No key VALIDATION on restore — the snapshot's value was valid when
+           saved and a stale registry mustn't block a whole revision restore. */
+        if (array_key_exists($column, $ed2RightsPresence) && !$ed2RightsPresence[$column]) { continue; }
         if (!array_key_exists($column, $songRow)) { continue; }
         $raw = $songRow[$column];
         if ($type === 'i') {
@@ -1104,8 +1267,9 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
             $value = $raw === null ? '' : trim((string)$raw);
             /* 'TuneName' deliberately absent (#1741 P5c) — it is captured and
                skipped above, then restored via ed2_songTuneApply() after the
-               loop; it can never reach this generic scalar path. */
-            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
+               loop; it can never reach this generic scalar path. The two #1769
+               P4 rights-fact columns are nullable too ('' → NULL = no fact). */
+            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle', 'LyricsRightsLicenceKey', 'MusicRightsLicenceKey'], true) && $value === '') { $value = null; }
         }
         $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
         if ($value === null) { $np = null; $u->bind_param('ss', $np, $songId); }
@@ -1347,16 +1511,34 @@ try {
            component-content snapshot, like media. */
         $enrichment = lineEnrichmentForSong($db, $songId);
 
+        /* #1769 P4 — the song's songbook default rights keys, a PREFILL HINT
+           for the rights panel (D4: a hint the curator may adopt, never an
+           automatic write). null on an un-migrated install so the client omits
+           the hint. Read off the snapshot's SongbookAbbr — not the song fact
+           columns, so a revision restore never carries it. */
+        $songbookAbbr = (string)($snapshot['song']['SongbookAbbr'] ?? '');
+        $songbookRightsDefaults = ed2_songbookRightsDefaults($db, $songbookAbbr);
+
         ed2_respond(array_merge(['ok' => true], $snapshot, [
             'media'            => $media,
             'lineTranslations' => $enrichment['translations'],
             'lineAnnotations'  => $enrichment['annotations'],
+            'songbookRightsDefaults' => $songbookRightsDefaults,
+            /* #1783 — true when this is a not-yet-assigned duplicate (lives in
+               the hidden staging book). The Metadata tab then renders the
+               Songbook + Number fields EMPTY (the "Assign to songbook" panel).
+               Added HERE, in the case, not in ed2_buildSongSnapshot(), so a
+               revision snapshot never carries it. */
+            'isPendingDuplicate' => ($songbookAbbr === ED2_PENDING_SONGBOOK),
         ]));
         break;
     }
 
     /* ---- create_song (POST) — server-owned canonical id ---- */
     case 'create_song': {
+        /* @disabled-visible: admin editor API (#1765) — the target-songbook
+           existence check must accept a publicly-disabled book (still a valid
+           admin create target). */
         $abbr  = strtoupper(trim((string)($body['songbook'] ?? '')));
         if ($abbr === '') { $abbr = 'MISC'; }
         $title = trim((string)($body['title'] ?? ''));
@@ -1409,6 +1591,242 @@ try {
 
         logActivity('song.create', 'song', $songId, ['title' => $title, 'songbook' => $abbr]);
         ed2_respond(['ok' => true, 'songId' => $songId, 'title' => $title, 'songbook' => $abbr]);
+        break;
+    }
+
+    /* ---- duplicate_song (POST, #1783) — copy an existing song into the hidden
+           staging book (ED2_PENDING_SONGBOOK) as a starting point for a NEW
+           songbook. The duplicate opens in the editor with EMPTY Songbook +
+           Number (presented over the staging home); the curator assigns a real
+           book + number, which re-keys it (songRelocate, #1679) into a brand-new
+           song. Copy machinery is the revision-restore engine
+           ed2_applySongSnapshot() — NO second copy loop (rule #22). ---- */
+    case 'duplicate_song': {
+        ed2_requireEntitlement('edit_songs');
+        $sourceId = trim((string)($body['sourceId'] ?? ''));
+        if ($sourceId === '') { ed2_respond(['ok' => false, 'error' => 'sourceId is required.'], 400); }
+
+        /* Same builder load_song + a revision snapshot use — so the duplicate is
+           exactly as faithful as a restore, via the same funnel. */
+        $snap = ed2_buildSongSnapshot($db, $sourceId);
+        if ($snap === null) { ed2_respond(['ok' => false, 'error' => 'Source song not found.'], 404); }
+        /* Restore-first (#1694): a soft-deleted source is under review — the
+           curator restores it before copying. Status IS the contract (rule #35). */
+        if ((int)($snap['song']['IsDeleted'] ?? 0) === 1) {
+            ed2_respond(['ok' => false, 'error' => 'Cannot duplicate a deleted song — restore it first.'], 409);
+        }
+
+        $title = mb_substr(trim((string)($snap['song']['Title'] ?? 'New Song')), 0, 500);
+        if ($title === '') { $title = 'New Song'; }
+
+        /* Reset identity/lifecycle on the snapshot copy BEFORE apply
+           (ed2_applySongSnapshot writes ED2_META_FIELDS scalars from $snap['song']):
+             Number NULL         — the owner's "empty song number" (set at assign)
+             Verified 0          — not reviewed in its new context (D4)
+             Isrc NULL           — recording-level id tied to media we don't copy (D2)
+             HasAudio/HasSheet 0 — media rows are NOT copied (D3); flags must not
+                                   claim media that isn't there.
+           SongbookAbbr needs no reset — apply never writes it (#1679 exclusion). */
+        $snap['song']['Number']        = null;
+        $snap['song']['Verified']      = 0;
+        $snap['song']['Isrc']          = null;
+        $snap['song']['HasAudio']      = 0;
+        $snap['song']['HasSheetMusic'] = 0;
+
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+
+        /* Staging book is a durable fixture — ensure it in autocommit, before tx. */
+        ed2_ensurePendingSongbook($db);
+        $pendingAbbr = ED2_PENDING_SONGBOOK;
+
+        $db->begin_transaction();
+        try {
+            $newId = ed2_allocateSongId($db, $pendingAbbr);
+            $norm  = ed2_normalizeTitle($title);
+            if (songPublicId_columnReady($db)) {
+                $pubId = songPublicId_mintUnique($db);
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
+                $ins->bind_param('sssss', $newId, $pubId, $title, $norm, $pendingAbbr);
+            } else {
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $newId, $title, $norm, $pendingAbbr);
+            }
+            $ins->execute();
+            $ins->close();
+
+            /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
+               flags reset above), components + lyric lines + per-line chords,
+               ArrangementJson, all six credit roles (+musicianPromote), tags, and
+               external links — all through the ONE apply engine. */
+            ed2_applySongSnapshot($db, $newId, $snap);
+
+            /* Extra content NOT carried by ED2_META_FIELDS / the snapshot, copied
+               explicitly. Each guarded so a missing optional table (un-migrated
+               install) is skipped, never aborting the duplicate — the failed
+               statement has no effect and the tx stays valid. */
+            foreach ([
+                'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature) '
+                    . 'SELECT ?, OriginalKey, Tempo, TimeSignature FROM tblSongKeys WHERE SongId = ?',
+                'INSERT INTO tblSongAlternativeTitles (SongId, Title, Language, SortOrder, Note) '
+                    . 'SELECT ?, Title, Language, SortOrder, Note FROM tblSongAlternativeTitles WHERE SongId = ?',
+            ] as $copySql) {
+                try {
+                    $cp = $db->prepare($copySql);
+                    $cp->bind_param('ss', $newId, $sourceId);
+                    $cp->execute();
+                    $cp->close();
+                } catch (\Throwable $_ce) {
+                    error_log('[editor duplicate_song] optional copy skipped: ' . $_ce->getMessage());
+                }
+            }
+            /* Genre / IsExplicit / Availability — import-populated tblSongs columns
+               (not in ED2_META_FIELDS). Best-effort UPDATE from the source row. */
+            try {
+                $g = $db->prepare('UPDATE tblSongs t JOIN tblSongs s ON s.SongId = ? '
+                    . 'SET t.Genre = s.Genre, t.IsExplicit = s.IsExplicit, t.Availability = s.Availability '
+                    . 'WHERE t.SongId = ?');
+                $g->bind_param('ss', $sourceId, $newId);
+                $g->execute();
+                $g->close();
+            } catch (\Throwable $_ge) {
+                error_log('[editor duplicate_song] Genre/Explicit/Availability copy skipped: ' . $_ge->getMessage());
+            }
+
+            /* #1783 commit 4 — per-line enrichment (translations + annotations,
+               #1088) and scripture refs (#1350) re-anchored onto the NEW lines.
+               These three tables anchor on tblLyricLines.Id (rule #21/#1350), so
+               a naive INSERT…SELECT would point the copies at the SOURCE's lines.
+               ed2_applySongSnapshot() has already written the new song's lines
+               from the SAME component payload, so the source and new primary line
+               lists are same-length, same-order (lyricLinesFetchPrimary both in
+               global SortOrder) — build a positional srcLineId → newLineId map and
+               remap the copies. Best-effort: an un-migrated optional table
+               (#1088/#1350) throws on its first statement → caught → the whole
+               enrichment copy is skipped, never aborting the duplicate (a
+               statement error does not roll back the tx; same contract as the
+               $copySql block above). Any single-row mapping miss skips that row. */
+            try {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+                $srcLines = lyricLinesFetchPrimary($db, $sourceId);
+                $newLines = lyricLinesFetchPrimary($db, $newId);
+                if ($srcLines && count($srcLines) === count($newLines)) {
+                    /* Positional map + the NEW song's single ihymns LyricsId (the
+                       denorm both enrichment tables carry — derived from the line,
+                       never copied from the source, per the schema COMMENT). */
+                    $lineMap = [];
+                    $n = count($srcLines);
+                    for ($i = 0; $i < $n; $i++) {
+                        $lineMap[(int)$srcLines[$i]['line_id']] = (int)$newLines[$i]['line_id'];
+                    }
+                    $newLyricsId = null;
+                    $lq = $db->prepare("SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1");
+                    $lq->bind_param('s', $newId);
+                    $lq->execute();
+                    $lr = $lq->get_result()->fetch_row();
+                    $lq->close();
+                    if ($lr) { $newLyricsId = (int)$lr[0]; }
+
+                    $srcIds = array_keys($lineMap);
+                    /* Generic remap-copy: INSERT one row per source row, columns
+                       hardcoded (rule #5), FK/anchor columns remapped by $remap,
+                       everything else verbatim. All-'s' bind types — mysqli
+                       coerces ints and binds PHP null as SQL NULL. */
+                    $copyRemapped = function (string $selSql, array $selBind, string $table, array $cols, callable $remap) use ($db) {
+                        $sel = $db->prepare($selSql);
+                        if ($selBind) { $sel->bind_param(str_repeat('s', count($selBind)), ...$selBind); }
+                        $sel->execute();
+                        $rows = $sel->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $sel->close();
+                        if (!$rows) { return 0; }
+                        $ph  = implode(',', array_fill(0, count($cols), '?'));
+                        $ins = $db->prepare('INSERT INTO ' . $table . ' (' . implode(',', $cols) . ") VALUES ({$ph})");
+                        $done = 0;
+                        foreach ($rows as $row) {
+                            $vals = $remap($row);
+                            if ($vals === null) { continue; }   // mapping miss → skip this row
+                            $ordered = array_map(static fn($c) => $vals[$c] ?? null, $cols);
+                            $ins->bind_param(str_repeat('s', count($cols)), ...$ordered);
+                            $ins->execute();
+                            $done++;
+                        }
+                        $ins->close();
+                        return $done;
+                    };
+
+                    if ($newLyricsId !== null && $srcIds) {
+                        $inPh = implode(',', array_fill(0, count($srcIds), '?'));
+                        $srcIdStr = array_map('strval', $srcIds);
+
+                        /* (a) per-line translations / romanizations. */
+                        $copyRemapped(
+                            "SELECT LineId,Kind,TargetLanguage,TranslationType,Text,SortOrder,Source,SourceUrl,SourceRef,IsPrimary,IsAutoGenerated,Status,SubmittedBy,ApprovedBy,ApprovedAt,MetaJson FROM tblLyricLineTranslations WHERE LineId IN ({$inPh})",
+                            $srcIdStr, 'tblLyricLineTranslations',
+                            ['LineId','LyricsId','Kind','TargetLanguage','TranslationType','Text','SortOrder','Source','SourceUrl','SourceRef','IsPrimary','IsAutoGenerated','Status','SubmittedBy','ApprovedBy','ApprovedAt','MetaJson'],
+                            function (array $r) use ($lineMap, $newLyricsId) {
+                                $new = $lineMap[(int)$r['LineId']] ?? null;
+                                if ($new === null) { return null; }
+                                $r['LineId'] = $new; $r['LyricsId'] = $newLyricsId;
+                                return $r;
+                            }
+                        );
+
+                        /* (b) Genius-style annotations (span StartLineId + nullable
+                           EndLineId; offsets are code-point indices into identical
+                           text — copied verbatim, rule #21). */
+                        $copyRemapped(
+                            "SELECT StartLineId,EndLineId,StartOffset,EndOffset,AnnotationType,LanguageCode,Body,BodyFormat,SortOrder,Source,SourceUrl,SourceRef,Status,SubmittedBy,ApprovedBy,ApprovedAt,IsVerified,VerifiedBy,VerifiedAt,MetaJson FROM tblLyricLineAnnotations WHERE StartLineId IN ({$inPh})",
+                            $srcIdStr, 'tblLyricLineAnnotations',
+                            ['StartLineId','EndLineId','StartOffset','EndOffset','LyricsId','AnnotationType','LanguageCode','Body','BodyFormat','SortOrder','Source','SourceUrl','SourceRef','Status','SubmittedBy','ApprovedBy','ApprovedAt','IsVerified','VerifiedBy','VerifiedAt','MetaJson'],
+                            function (array $r) use ($lineMap, $newLyricsId) {
+                                $start = $lineMap[(int)$r['StartLineId']] ?? null;
+                                if ($start === null) { return null; }
+                                $r['StartLineId'] = $start;
+                                $r['EndLineId']   = ($r['EndLineId'] !== null) ? ($lineMap[(int)$r['EndLineId']] ?? null) : null;
+                                $r['LyricsId']    = $newLyricsId;
+                                return $r;
+                            }
+                        );
+                    }
+
+                    /* (c) scripture refs — SongId re-pointed; a line-anchored ref
+                       (StartLineId non-NULL) is remapped through $lineMap, a
+                       whole-song ref (StartLineId NULL) copies as-is. Gated only
+                       on the table (not on $newLyricsId — scripture refs carry no
+                       LyricsId), but still inside the count-matched-lines block:
+                       a source with zero lyric lines can carry no line map, and a
+                       whole-song-only ref on a lyric-less song is a marginal case
+                       we deliberately don't chase here. */
+                    $copyRemapped(
+                        'SELECT StartLineId,Book,Chapter,VerseStart,VerseEnd,OsisRef,Source,SortOrder FROM tblSongScriptureRefs WHERE SongId = ?',
+                        [$sourceId], 'tblSongScriptureRefs',
+                        ['SongId','StartLineId','Book','Chapter','VerseStart','VerseEnd','OsisRef','Source','SortOrder'],
+                        function (array $r) use ($lineMap, $newId) {
+                            $r['SongId']      = $newId;
+                            $r['StartLineId'] = ($r['StartLineId'] !== null) ? ($lineMap[(int)$r['StartLineId']] ?? null) : null;
+                            return $r;
+                        }
+                    );
+                }
+            } catch (\Throwable $_ee) {
+                error_log('[editor duplicate_song] enrichment/scripture copy skipped: ' . $_ee->getMessage());
+            }
+
+            /* One forced 'duplicate' revision — a fresh trail; the source's
+               revisions are never copied (rule: id-derived state). */
+            ed2_touchRevision($db, $newId, $ed2UserId, 'duplicate', true);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        /* Post-commit, best-effort (parity with create_song, #1742). */
+        try { songbookRecomputeSongCount($db, $pendingAbbr); }
+        catch (\Throwable $_e) { error_log('[editor duplicate_song] SongCount recompute failed: ' . $_e->getMessage()); }
+
+        logActivity('song.duplicate', 'song', $newId, ['source' => $sourceId, 'title' => $title]);
+        ed2_respond(['ok' => true, 'songId' => $newId, 'sourceId' => $sourceId, 'title' => $title]);
         break;
     }
 
@@ -1582,6 +2000,69 @@ try {
             }
             logActivity('song.metadata', 'song', $songId, ['field' => $field, 'tuneId' => $tuneResult['tuneId']]);
             ed2_respond(['ok' => true, 'field' => 'tuneName', 'tuneId' => $tuneResult['tuneId']]);
+        }
+
+        /* ---- #1769 P4 — RIGHTS FACTS are not a generic scalar update -------
+           A per-song rights key must be either cleared ('' → NULL) or a licence
+           key that EXISTS in the live registry — never arbitrary free text (the
+           generic path would happily store a typo). Self-contained like the
+           SongbookAbbr / TuneName branches above: own existence gate (409 on an
+           un-migrated install, rule #9/#35), own entitlement (edit_songs — the
+           PD-flag class, P4 D3; equivalence-neutral at the default entitlement
+           map, which is exactly this file's editor-role gate), own validation
+           (422), own before/after audit key (admin.song.rights_set), own
+           response. Nothing ENFORCES on the stored fact until P6. */
+        if ($column === 'LyricsRightsLicenceKey' || $column === 'MusicRightsLicenceKey') {
+            $ed2RightsPresence = ed2_rightsColsPresent($db);
+            if (empty($ed2RightsPresence[$column])) {
+                ed2_respond(['ok' => false, 'error' => 'This install has not applied the gating-facts migration card yet (run it at /manage/setup-database).'], 409);
+            }
+            ed2_requireEntitlement('edit_songs');
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+            $rightsKey = trim((string)($raw ?? ''));
+            if ($rightsKey !== '' && !in_array($rightsKey, licenceTypeKeys($db), true)) {
+                /* Status is the contract (rule #35) — the panel branches on 422. */
+                ed2_respond(['ok' => false, 'error' => 'Unknown licence key "' . $rightsKey . '". Pick one defined on /manage/licence-types.'], 422);
+            }
+            $rightsValue = $rightsKey === '' ? null : $rightsKey;
+
+            /* Before/after for the audit — read the current value first.
+               @deleted-visible: editor before/after audit read (#1694 / #1769 P4)
+               — the curator is editing THIS exact song by direct id (the same
+               editor-context rationale as ed2_buildSongSnapshot's load read); a
+               soft-deleted song's rights value must still be readable to record
+               the change, and this reads only the one rights column, never lists.
+               @disabled-visible: same editor-context rationale for #1765 — a song
+               in a disabled songbook is still editable by direct id in the admin
+               editor; this single-song by-id read must not filter on book visibility. */
+            $prev = null;
+            $ps = $db->prepare("SELECT `{$column}` FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $ps->bind_param('s', $songId);
+            $ps->execute();
+            $prevRow = $ps->get_result()->fetch_assoc();
+            $ps->close();
+            if ($prevRow) { $prev = $prevRow[$column]; }
+
+            $db->begin_transaction();
+            try {
+                $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
+                if ($rightsValue === null) { $np = null; $u->bind_param('ss', $np, $songId); }
+                else { $u->bind_param('ss', $rightsValue, $songId); }
+                $u->execute();
+                $u->close();
+                ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('admin.song.rights_set', 'song', $songId, [
+                'field'  => $field,
+                'column' => $column,
+                'from'   => ($prev === '' ? null : $prev),
+                'to'     => $rightsValue,
+            ]);
+            ed2_respond(['ok' => true, 'field' => $field, 'value' => $rightsValue]);
         }
 
         /* Coerce per the allow-listed type; numberless/empty → NULL where the
@@ -2491,6 +2972,8 @@ try {
            tblSongLinkSuggestions from the fuzzy-match batch (#1219), which an
            older-but-still-#1216-migrated install could plausibly lack. ---- */
     case 'song_links': {
+        /* @disabled-visible: admin editor API (#1765) — lists a song's links for
+           the editor regardless of any book's public disabled state. */
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
@@ -2551,6 +3034,8 @@ try {
                one side first (rule #35: this is a STATUS code, 409, not a
                string the client pattern-matches). ---- */
     case 'song_link_add': {
+        /* @disabled-visible: admin editor API (#1765) — cross-book link write;
+           either endpoint may live in a disabled book, still fully editable. */
         ed2_requireEntitlement('edit_songs');
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $srcId = trim((string)($body['sourceSongId'] ?? ''));
@@ -2770,6 +3255,8 @@ try {
            tableMissing:true rather than a mysqli-STRICT throw (matches v1
            exactly, api.php:686-700). ---- */
     case 'song_link_suggestions': {
+        /* @disabled-visible: admin editor API (#1765) — suggestion review spans all
+           songs regardless of any book's public disabled state. */
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
@@ -3832,6 +4319,8 @@ try {
     /* ---- import_zip_skipped_csv (GET) — CSV of the SongIds an async job skipped
            (already existed). Own jobs only. Streams CSV, not JSON. ---- */
     case 'import_zip_skipped_csv': {
+        /* @disabled-visible: admin editor API (#1765) — CSV of skipped-import rows
+           spans all songs/songbooks regardless of public disabled state. */
         $jobId = (int)($_GET['job_id'] ?? 0);
         if ($jobId <= 0) { ed2_respond(['ok' => false, 'error' => 'job_id required.'], 400); }
         if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Job tracking not enabled.', 'migration_needed' => true], 404); }
@@ -4005,26 +4494,33 @@ try {
         break;
     }
 
-    /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the five
+    /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the six
            song-credit tables (grouped by name → combined usage count + the roles
            it appears in) + the tblMusicians registry for kind=any. Table +
            label fragments come ONLY from the hardcoded allow-list (CLAUDE.md #5);
-           the query term is bound. ---- */
+           the query term is bound.
+
+           #1800 C1 — the (role => table) map used to be a THIRD hand-typed copy
+           of the same six pairs, alongside ED2_CREDIT_TABLES (this file, above)
+           and MUSICIAN_CREDIT_ROLE_TABLES (includes/musician_helpers.php, already
+           require_once'd by this file — line ~256). Flagged as "discovered, not
+           fixed here" in tests/php/test-musician-credit-tables-single-list.php's
+           doc-block since #1785; fixed here by delegating directly to
+           MUSICIAN_CREDIT_ROLE_TABLES instead of ED2_CREDIT_TABLES — its keys are
+           ALREADY the exact singular convention ('writer'/'composer'/…) this
+           endpoint's own `kind=` query param uses, so no key transform is needed,
+           whereas ED2_CREDIT_TABLES's plural JSON-payload keys ('writers'/…)
+           would have needed one. Rule #22 — reuse the shared source of truth,
+           never re-fork the list a third time. ---- */
     case 'credit_search': {
         $q     = trim((string)($_GET['q'] ?? ''));
         $kind  = strtolower(trim((string)($_GET['kind'] ?? 'any')));
         $limit = max(1, min(20, (int)($_GET['limit'] ?? 12)));
         if ($q === '') { ed2_respond(['ok' => true, 'suggestions' => []]); }
 
-        /* Allow-list: only these (label => table) pairs ever reach the SQL. */
-        $kindToTable = [
-            'writer'     => 'tblSongWriters',
-            'composer'   => 'tblSongComposers',
-            'arranger'   => 'tblSongArrangers',
-            'adaptor'    => 'tblSongAdaptors',
-            'translator' => 'tblSongTranslators',
-            'artist'     => 'tblSongArtists',
-        ];
+        /* Allow-list: only these (label => table) pairs ever reach the SQL —
+           MUSICIAN_CREDIT_ROLE_TABLES itself, not a local re-typed copy. */
+        $kindToTable = MUSICIAN_CREDIT_ROLE_TABLES;
         $tables = ($kind === 'any') ? $kindToTable : (isset($kindToTable[$kind]) ? [$kind => $kindToTable[$kind]] : []);
         if (!$tables) { ed2_respond(['ok' => false, 'error' => 'Unknown kind.'], 400); }
 
@@ -4172,7 +4668,9 @@ try {
            uses) — NEVER materialises the whole corpus (CLAUDE.md #17). ---- */
     case 'load_index': {
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
-        $songData = new SongData();
+        /* #1765 Feature 1 — admin surface: the v2 sidebar + songbook <select>
+           must keep listing songs/songbooks disabled from the public site. */
+        $songData = SongData::forAdmin();
         /* #1679 A2 — `songbooks` is the REAL catalogue, not the set of books that
            happen to appear in the song index.
            WHY: v2's songbook <select> derived its options from the loaded index
@@ -4202,6 +4700,10 @@ try {
             'ok'        => true,
             'songs'     => $songData->getSongsSlimIndex(),
             'songbooks' => $books,
+            /* #1783 — the staging-book abbr, so the client can exclude it as a
+               move TARGET (a duplicate is assigned FROM it, never TO it) without
+               hardcoding the literal (rule #35). */
+            'pendingSongbook' => ED2_PENDING_SONGBOOK,
         ]);
         break;
     }
@@ -4224,7 +4726,9 @@ try {
         $oneId    = trim((string)($_GET['id'] ?? ''));
         $maxLines = max(0, (int)($_GET['maxLinesPerSlide'] ?? 0));
         try {
-            $songData = new SongData();
+            /* #1765 Feature 1 — admin surface: exporting must reach a
+               disabled songbook's songs. */
+            $songData = SongData::forAdmin();
             $songs    = [];
             $stem     = 'EasyWorship';
             if ($oneId !== '') {

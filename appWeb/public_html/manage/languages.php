@@ -302,7 +302,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 /* @deleted-visible: refuse-on-cite integrity count (#1694) — a
                    soft-deleted song still cites the language and would come
                    back citing it on restore, so it must keep blocking the
-                   delete. */
+                   delete.
+                   @disabled-visible: same reasoning, one predicate over
+                   (#1765) — a song/songbook in a disabled state still cites
+                   the language and must keep blocking the delete; disabled
+                   is reversible, same as soft-delete. */
                 $stmt = $db->prepare(
                     'SELECT
                         (SELECT COUNT(*) FROM tblSongs     WHERE Language = ? OR Language LIKE ?) AS songs,
@@ -558,7 +562,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </p>
 
     <div class="table-responsive">
-        <table class="table table-dark table-striped table-hover align-middle cp-sortable" id="languages-table">
+        <table class="table table-dark table-striped table-hover align-middle cp-sortable admin-table-responsive" id="languages-table">
             <thead>
                 <tr>
                     <th scope="col" data-sort-key="code" data-sort-type="text">Code</th>
@@ -752,6 +756,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
     </div>
 </div>
+
+<!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
+     booted; every header click was a silent no-op until now). -->
+<script type="module">
+    import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
+    bootSortableTables();
+</script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 
