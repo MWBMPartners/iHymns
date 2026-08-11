@@ -38,6 +38,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    EnforceIdleTimeout) so this org-admin surface degrades cleanly on an
    un-migrated install (rule #19), same posture as /manage/organisations.php. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+/* #1791 G4-org — setlistOrgAudienceColumnsExist() gates the ORG layer of the
+   set-list edit-link audience precedence chain (SetlistEditAudience /
+   EnforceSetlistEditAudience). Column-existence-tolerant posture mirrors
+   $orgIdleColsExist above verbatim (rule #19 / CLAUDE.md rule: reuse a
+   shape, don't re-fork it). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -84,6 +90,8 @@ $error   = '';
 $success = '';
 /* #1770 §4.7 — memoised; cheap to call once here and re-check inline below. */
 $orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
+/* #1791 G4-org — same posture, the set-list edit-audience org columns. */
+$setlistAudienceColsExist = setlistOrgAudienceColumnsExist($db);
 /* #1798 — declared here (not just before its query block below) because the
    $orgs-query branch can `goto render;` on an early empty-org exit (see
    below), which would otherwise skip straight past the declaration and
@@ -350,6 +358,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'setlist_edit_audience_update': {
+                /* #1791 G4-org — the ORG layer of the set-list edit-link
+                   audience precedence chain, editable by the org's OWN admin.
+                   Column-existence-gated (rule #19); modelled line-for-line
+                   on idle_timeout_update above (CLAUDE.md rule: reuse a
+                   shape, don't re-fork it). The <select> only ever offers
+                   three choices, so they are read as ONE combined field
+                   rather than a separate audience + enforce pair — 'anyone'
+                   is never a meaningful ORG preference (it is already the
+                   app-wide default), so the only two audience values worth
+                   an org opinion on are "advisory authenticated" and
+                   "enforced authenticated". */
+                if (!$setlistAudienceColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $audienceChoice = (string)($_POST['setlist_edit_audience_choice'] ?? 'none');
+                switch ($audienceChoice) {
+                    case 'require':
+                        $audienceVal = 'authenticated';
+                        $enforceVal  = 1;
+                        break;
+                    case 'default':
+                        $audienceVal = 'authenticated';
+                        $enforceVal  = 0;
+                        break;
+                    case 'none':
+                    default:
+                        $audienceVal = null;
+                        $enforceVal  = 0;
+                        break;
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblOrganisations
+                        SET SetlistEditAudience = ?, EnforceSetlistEditAudience = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sii', $audienceVal, $enforceVal, $orgId);
+                $stmt->execute();
+                $stmt->close();
+                logActivity('org_admin.setlist_edit_audience_update', 'organisation', (string)$orgId, [
+                    'setlist_edit_audience'         => $audienceVal,
+                    'enforce_setlist_edit_audience' => (bool)$enforceVal,
+                ]);
+                $success = 'Set-list edit-link preference saved.';
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -368,10 +422,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    (rule #19); the hardcoded-source-constant interpolation is safe per rule
    #5 ($orgIdleColsExist is a bool, not request input). */
 $orgIdleSelectCols = $orgIdleColsExist ? ', LiveIdleTimeoutMins, EnforceIdleTimeout' : '';
+/* #1791 G4-org — same posture, the set-list edit-audience org columns. */
+$setlistAudienceSelectCols = $setlistAudienceColsExist ? ', SetlistEditAudience, EnforceSetlistEditAudience' : '';
 try {
     if ($systemAdmin) {
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
                FROM tblOrganisations
               ORDER BY Name ASC"
         );
@@ -383,7 +439,7 @@ try {
         }
         $placeholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
                FROM tblOrganisations
               WHERE Id IN ({$placeholders})
               ORDER BY Name ASC"
@@ -860,6 +916,47 @@ $csrf = csrfToken();
                         <p class="text-muted small mb-0">
                             A worship leader's "Go Live" session in this organisation auto-closes after this many
                             minutes of no genuine leader interaction.
+                        </p>
+                    </div>
+                </form>
+                <?php endif; ?>
+
+                <!-- #1791 G4-org — set-list EDIT-LINK audience org preference. -->
+                <?php if ($setlistAudienceColsExist):
+                    $setlistAudienceChoice = 'none';
+                    if (!empty($o['EnforceSetlistEditAudience'])) {
+                        $setlistAudienceChoice = 'require';
+                    } elseif (($o['SetlistEditAudience'] ?? null) === 'authenticated') {
+                        $setlistAudienceChoice = 'default';
+                    }
+                ?>
+                <h3 class="h6 mt-3 mb-2">Set-list edit links</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="setlist_edit_audience_update">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-5">
+                        <label class="form-label small mb-0" for="setlist-edit-audience-<?= $orgId ?>">
+                            Who may edit a shared set-list link
+                        </label>
+                        <select name="setlist_edit_audience_choice" id="setlist-edit-audience-<?= $orgId ?>"
+                                class="form-select form-select-sm">
+                            <option value="none" <?= $setlistAudienceChoice === 'none' ? 'selected' : '' ?>>No preference</option>
+                            <option value="default" <?= $setlistAudienceChoice === 'default' ? 'selected' : '' ?>>Default to signed-in (members may still loosen it)</option>
+                            <option value="require" <?= $setlistAudienceChoice === 'require' ? 'selected' : '' ?>>Require signed-in (locked for members)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                    <div class="col-12">
+                        <p class="text-muted small mb-0">
+                            Controls who can edit a set list via an anonymous "anyone with the link can edit" link
+                            created by this organisation's members. "No preference" leaves the app default (anyone
+                            with the link, no account needed). "Require signed-in" caps every member's edit links
+                            so an account is always needed to make a change, even if a member asks for "anyone".
                         </p>
                     </div>
                 </form>
