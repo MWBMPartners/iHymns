@@ -91,20 +91,27 @@ declare(strict_types=1);
  * surface is unproven until something is broken and shown red) — see the
  * #1785 C9 commit body for the broken -> red -> restored record.
  *
- * ⚠️ DISCOVERED, NOT FIXED HERE: manage/editor/api2.php's `credit_search`
- * action ALSO carries a third, independent six-table map (`$kindToTable`,
- * same six tables, singular keys matching MUSICIAN_CREDIT_ROLE_TABLES's
- * convention) — a local variable duplicating BOTH ED2_CREDIT_TABLES (same
- * file) AND MUSICIAN_CREDIT_ROLE_TABLES. It is currently harmless (correctly
- * includes tblSongArtists, so no counting/cascade bug), but it is a THIRD
- * copy of the same fact and a future table addition could still miss it.
- * Fixing it is out of #1785's registry-merge scope (a different endpoint,
- * the editor's credit-search autocomplete) — flagged here for a follow-up
- * issue rather than silently left unrecorded.
+ * PART C — the credit_search fork, closed (#1800 C1). manage/editor/api2.php's
+ * `credit_search` action used to carry a THIRD, independent six-table map
+ * (`$kindToTable`, same six tables, singular keys matching
+ * MUSICIAN_CREDIT_ROLE_TABLES's own convention) — a local variable duplicating
+ * BOTH ED2_CREDIT_TABLES (same file) AND MUSICIAN_CREDIT_ROLE_TABLES. It was
+ * flagged here (#1785) as "discovered, not fixed" because it was a different
+ * endpoint (the editor's credit-search autocomplete) outside #1785's
+ * registry-merge scope. #1800 C1 closes it: `$kindToTable` now reads
+ * `MUSICIAN_CREDIT_ROLE_TABLES` directly (its keys already match this
+ * endpoint's `kind=` convention, so no transform was needed). PART C below is
+ * the mechanism, not a comment (rule #35): it isolates the `credit_search`
+ * case block by source position (NOT by requiring api2.php — a live HTTP
+ * dispatcher, unsafe to include statically, same reasoning PART B already
+ * documents) and asserts the block contains no bare six-table-name string
+ * literal AND does reference MUSICIAN_CREDIT_ROLE_TABLES, so a future
+ * hand-typed re-fork at this THIRD site is caught the same way PART A catches
+ * one at the original four/six.
  *
  *   php tests/php/test-musician-credit-tables-single-list.php
  *
- * Exit status 0 = both checks pass, 1 = a fork or a drift was found.
+ * Exit status 0 = all checks pass, 1 = a fork or a drift was found.
  *
  * @see .claude/musicians-dedup-1785-plan.md §10 (guard G3)
  */
@@ -275,9 +282,65 @@ if ($sortedMusician === $sortedEd2 && $sortedMusician !== []) {
     fwrite(STDERR, "        ED2_CREDIT_TABLES:           " . implode(', ', $sortedEd2) . "\n");
 }
 
+/* =========================================================================
+ * PART C — api2.php's credit_search action reuses MUSICIAN_CREDIT_ROLE_TABLES
+ * instead of hand-typing a THIRD copy of the six-table map (#1800 C1 — closes
+ * the "discovered, not fixed here" gap this file's doc-block used to flag).
+ * ========================================================================= */
+echo "\n3 — credit_search reuses MUSICIAN_CREDIT_ROLE_TABLES, no third hand-typed table list\n";
+
+/* $api2Src was already read+cached by PART B above (empty string if that
+   read failed — PART B already reported that failure, so this just skips
+   silently rather than double-reporting the same missing-file condition). */
+$api2Src = $api2Src ?? '';
+if ($api2Src === '') {
+    $failed++;
+    fwrite(STDERR, "  FAIL  manage/editor/api2.php was not readable for the credit_search check (see PART B's failure above)\n");
+} else {
+    $strippedApi2 = musCtSlStripPhpComments($api2Src);
+    /* Isolate the credit_search case block by SOURCE POSITION — up to the
+       next `case '...'  :` at the same 4-space switch-statement indentation
+       — rather than by brace-balancing (the block's own foreach loops
+       contain nested braces, so a naive first-`}` match would truncate
+       early). Mirrors PART B's "extract via regex on raw source, never
+       require() this live dispatcher" posture. */
+    if (!preg_match("/case\\s+'credit_search'\\s*:(.*?)(?=\\n\\s{4}case\\s+')/s", $strippedApi2, $csm)) {
+        $failed++;
+        fwrite(STDERR, "  FAIL  could not isolate the `case 'credit_search':` block in manage/editor/api2.php — has it been renamed or restructured?\n");
+    } else {
+        $block = $csm[1];
+
+        /* No bare six-table-name STRING LITERAL may remain inside the
+           block — that shape is exactly the hand-typed $kindToTable fork
+           #1800 C1 removed. (Subscript reads like $affected['tblSongWriters']
+           aren't reachable here — this block never builds that kind of
+           array — so, unlike PART A, no subscript-exclusion is needed.) */
+        $literalHit = null;
+        foreach (MUS_CT_SL_TABLES as $tbl) {
+            if (preg_match('/[\'"]' . preg_quote($tbl, '/') . '[\'"]/', $block)) {
+                $literalHit = $tbl;
+                break;
+            }
+        }
+        $usesRegistry = str_contains($block, 'MUSICIAN_CREDIT_ROLE_TABLES');
+
+        if ($literalHit === null && $usesRegistry) {
+            echo "  PASS  credit_search delegates to MUSICIAN_CREDIT_ROLE_TABLES, no hand-typed table literal remains\n";
+        } else {
+            $failed++;
+            if ($literalHit !== null) {
+                fwrite(STDERR, "  FAIL  credit_search still hand-types a table literal ('{$literalHit}') — re-point it at MUSICIAN_CREDIT_ROLE_TABLES.\n");
+            }
+            if (!$usesRegistry) {
+                fwrite(STDERR, "  FAIL  credit_search no longer references MUSICIAN_CREDIT_ROLE_TABLES — has the #1800 C1 fix regressed?\n");
+            }
+        }
+    }
+}
+
 if ($failed > 0) {
     fwrite(STDERR, "\n$failed check(s) failed.\n");
     exit(1);
 }
-echo "\nmusician-credit-tables-single-list: both checks passed.\n";
+echo "\nmusician-credit-tables-single-list: all checks passed.\n";
 exit(0);

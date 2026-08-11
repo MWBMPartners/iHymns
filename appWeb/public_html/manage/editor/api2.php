@@ -4494,26 +4494,33 @@ try {
         break;
     }
 
-    /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the five
+    /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the six
            song-credit tables (grouped by name → combined usage count + the roles
            it appears in) + the tblMusicians registry for kind=any. Table +
            label fragments come ONLY from the hardcoded allow-list (CLAUDE.md #5);
-           the query term is bound. ---- */
+           the query term is bound.
+
+           #1800 C1 — the (role => table) map used to be a THIRD hand-typed copy
+           of the same six pairs, alongside ED2_CREDIT_TABLES (this file, above)
+           and MUSICIAN_CREDIT_ROLE_TABLES (includes/musician_helpers.php, already
+           require_once'd by this file — line ~256). Flagged as "discovered, not
+           fixed here" in tests/php/test-musician-credit-tables-single-list.php's
+           doc-block since #1785; fixed here by delegating directly to
+           MUSICIAN_CREDIT_ROLE_TABLES instead of ED2_CREDIT_TABLES — its keys are
+           ALREADY the exact singular convention ('writer'/'composer'/…) this
+           endpoint's own `kind=` query param uses, so no key transform is needed,
+           whereas ED2_CREDIT_TABLES's plural JSON-payload keys ('writers'/…)
+           would have needed one. Rule #22 — reuse the shared source of truth,
+           never re-fork the list a third time. ---- */
     case 'credit_search': {
         $q     = trim((string)($_GET['q'] ?? ''));
         $kind  = strtolower(trim((string)($_GET['kind'] ?? 'any')));
         $limit = max(1, min(20, (int)($_GET['limit'] ?? 12)));
         if ($q === '') { ed2_respond(['ok' => true, 'suggestions' => []]); }
 
-        /* Allow-list: only these (label => table) pairs ever reach the SQL. */
-        $kindToTable = [
-            'writer'     => 'tblSongWriters',
-            'composer'   => 'tblSongComposers',
-            'arranger'   => 'tblSongArrangers',
-            'adaptor'    => 'tblSongAdaptors',
-            'translator' => 'tblSongTranslators',
-            'artist'     => 'tblSongArtists',
-        ];
+        /* Allow-list: only these (label => table) pairs ever reach the SQL —
+           MUSICIAN_CREDIT_ROLE_TABLES itself, not a local re-typed copy. */
+        $kindToTable = MUSICIAN_CREDIT_ROLE_TABLES;
         $tables = ($kind === 'any') ? $kindToTable : (isset($kindToTable[$kind]) ? [$kind => $kindToTable[$kind]] : []);
         if (!$tables) { ed2_respond(['ok' => false, 'error' => 'Unknown kind.'], 400); }
 
