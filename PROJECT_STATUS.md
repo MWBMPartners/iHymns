@@ -125,7 +125,7 @@ runtime surprise there invalidates assumptions the rest build on.
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
 - **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.4001.0 Alpha (authoritative: `includes/infoAppVer.php`)
+- **Version**: 1.5000.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
 
 ---

@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.4100.0"
+  version: "1.5000.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -11017,6 +11017,36 @@ paths:
           content: { text/html: { schema: { type: string } } }
         "400":
           description: Missing work slug
+
+  /api.php?page=publisher:
+    get:
+      operationId: pagePublisher
+      tags: [Pages]
+      summary: Publisher public page HTML fragment (#93)
+      description: |
+        Renders `/publisher/<slug>` — the public page for one publisher
+        (company / person / imprint), listing every songbook it published
+        plus registry metadata (parent, city, industry IDs, aliases).
+        Resolution is a three-rung ladder (rule #33): exact `tblPublishers.Slug`
+        match, then a name-fold over `tblPublishers.Name`, then the same fold
+        over `tblPublisherAliases` (a renamed publisher's old name becomes an
+        alias, so old links keep resolving). A friendly empty/404 state when
+        the registry isn't migrated or the slug is unknown.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [publisher] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: hope-publishing-company }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing publisher slug
 
   /api.php?page=tune:
     get:
