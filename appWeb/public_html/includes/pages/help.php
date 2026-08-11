@@ -19,7 +19,15 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-08-11 — rewrote the Setlists &amp; Sharing "Sharing"
+ * Last updated: 2026-08-11 (#91 final docs sweep) — added three topics
+ * that had shipped without any in-app help: "Printing &amp; Saving as
+ * PDF" (print templates, signed-in Download PDF, whole-set-list single
+ * PDF, CCLI copies prompt — #1767 remainder) after Sharing &amp;
+ * Exporting; "Sorting Lists" (multi-level Sort control with per-surface
+ * memory + account sync — #1786) after Searching; a themes/tags-chips
+ * bullet in Reading a Song (#288); and a "Print or save it" cross-link
+ * under Setlists.
+ * Previous update 2026-08-11 — rewrote the Setlists &amp; Sharing "Sharing"
  * topic for collab-by-link (#1791): three distinct sharing models now
  * exist (view link / edit link with a per-link "who can edit" +
  * "show my name" choice + Active-links management / email invite via
@@ -237,6 +245,40 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- Sorting lists (#1786). Public multi-level list sort with per-surface
+             memory + account sync. No inline <script>: this is a shared-cache
+             fragment (rule #30). -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-sorting"
+                        aria-expanded="false"
+                        aria-controls="help-sorting">
+                    <i class="fa-solid fa-arrow-down-wide-short me-2" aria-hidden="true"></i>
+                    Sorting Lists
+                </button>
+            </h2>
+            <div id="help-sorting" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Most lists of songs carry a <strong>Sort &#9662;</strong> control — the
+                        <a href="/songbooks" data-navigate="songbooks">Songbooks</a> list, the songs inside a
+                        songbook, your favourites, search results, and the theme, musician, tune, publisher,
+                        work and identifier pages. Pick how the list is ordered — by number, title, or the
+                        page's own natural order — and choose ascending or descending.
+                    </p>
+                    <ul>
+                        <li><strong>Sort by more than one thing:</strong> add a &ldquo;then by&hellip;&rdquo; level (up to three) to break ties — for example <em>by songbook, then by number</em>.</li>
+                        <li><strong>It remembers per list:</strong> the way you sort your favourites is kept separately from the way you sort search results, on this device.</li>
+                        <li><strong>Synced to your account:</strong> when you're <a href="/login" data-navigate="login">signed in</a>, your sort choices follow you to every device. Anonymous users get per-device memory instead.</li>
+                        <li><strong>Reset to default</strong> in the same control puts a list back to how it started.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
         <!-- Reading a song -->
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -260,6 +302,7 @@ declare(strict_types=1);
                         <li><strong>Audio playback:</strong> when a recording or tune is linked, play it back from the song page.</li>
                         <li><strong>Compare versions:</strong> when the same song appears in more than one songbook, open <strong>Compare versions</strong> to view the variants side by side.</li>
                         <li><strong>Presentation mode:</strong> tap <strong>Presentation</strong> (or press <kbd>P</kbd>) for a large, full-screen, one-stanza-at-a-time view suitable for projecting or reading at a distance. Use the arrow keys to move between sections.</li>
+                        <li><strong>Themes &amp; tags:</strong> where a curator has themed a song, its topics show as tappable chips near the top of the page (e.g. &ldquo;Grace&rdquo;, &ldquo;Communion&rdquo;). Tap one to open a theme page listing every hymn that shares it.</li>
                         <li><strong>Previous / next:</strong> step through the songbook in number order with the <kbd>&larr;</kbd> and <kbd>&rarr;</kbd> arrow keys.</li>
                     </ul>
                 </div>
@@ -295,6 +338,67 @@ declare(strict_types=1);
                     <p class="small text-muted mb-0">
                         If the menu opens but nothing downloads, refresh the page once — you
                         may be running an older cached version of iHymns.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Printing & saving as PDF (#1767 remainder). Print templates,
+             signed-in Download PDF, whole-set-list single PDF, CCLI copies
+             prompt. Zero print/PDF help existed before this. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-print"
+                        aria-expanded="false"
+                        aria-controls="help-print">
+                    <i class="fa-solid fa-print me-2" aria-hidden="true"></i>
+                    Printing &amp; Saving as PDF
+                </button>
+            </h2>
+            <div id="help-print" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        You can print a song or a whole set list on paper — or save it as a
+                        <strong>PDF</strong> — without any projection software.
+                    </p>
+                    <h3 class="h6">Print a song</h3>
+                    <p>
+                        On a song page, tap <strong>Print</strong> and pick a
+                        <strong>template</strong>. Curators design these templates — they decide
+                        which blocks appear (title, lyrics, credits, copyright, chords), the page
+                        size, and more — so the printout looks the way your church likes it.
+                    </p>
+                    <h3 class="h6">Download PDF</h3>
+                    <p>
+                        <strong>Sign in</strong> to get a <strong>Download PDF</strong> button beside
+                        Print in the template dialog. It builds the same layout as the printout on the
+                        server and downloads a tidy PDF named after the song — no browser print dialog
+                        needed. Signed out, you'll just see Print (which can still &ldquo;Save as PDF&rdquo;
+                        through your browser's own print dialog).
+                    </p>
+                    <h3 class="h6">Set lists</h3>
+                    <p>
+                        Open a set list and use <strong>Print</strong>, the browser's <strong>Save as
+                        PDF</strong>, or — when signed in — <strong>Download PDF</strong>, which renders
+                        the <em>whole</em> set as one file: a cover page, the running order, then each
+                        song's words in order.
+                    </p>
+                    <h3 class="h6">CCLI copy reporting</h3>
+                    <p>
+                        If you're signed in, your organisation holds a <strong>CCLI licence</strong>, and
+                        the song carries a CCLI number, printing or downloading asks <em>how many
+                        copies</em> you're making. iHymns logs them for your organisation's CCLI report
+                        (<a href="/manage/ccli-report">Manage &rarr; CCLI Usage Report</a>) and adds the
+                        required CCL notice to the printed footer automatically. For everyone else nothing
+                        changes — there's no prompt and no footer notice.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Songs in an <strong>unofficial songbook</strong> or a <strong>collection</strong>
+                        don't have hymn numbers, so the songbook-and-number line is quietly left off their
+                        printouts.
                     </p>
                 </div>
             </div>
@@ -447,6 +551,14 @@ declare(strict_types=1);
                         Tap the <i class="fa-solid fa-xmark" aria-hidden="true"></i> on the bar to stop.
                         Your place is remembered if you reload the page — handy if the browser stumbles
                         mid-service — but starts over once you close the tab or app.
+                    </p>
+                    <h3 class="h6 mt-3">Print or save it</h3>
+                    <p>
+                        Use <strong>Print</strong> on a set list to put it on paper, the browser's
+                        <strong>Save as PDF</strong> to keep a copy, or — signed in —
+                        <strong>Download PDF</strong> to get the whole set as a single file (cover page,
+                        running order, and every song). See <strong>Printing &amp; Saving as PDF</strong>
+                        above for the full detail, including CCLI copy reporting.
                     </p>
                     <h3 class="h6 mt-3">Schedule a setlist for a date</h3>
                     <p>

@@ -43,7 +43,12 @@ Exact formatting (verse/chorus labels, chords, metadata) follows each program's 
 You can also print a song or a set list on paper — or save it as a **PDF** — without any projection software:
 
 - **A song** — use the **Print** option on the song page. Curators can design **print templates** (which blocks appear, page size, chords, and more) on **Manage → Print Templates**; the print dialog then offers those templates.
-- **A set list** — open the set list and use **Print** or the **Save as PDF** button. You get a tidy document with a cover page, the running order, and each song's words. (There's no separate download — your browser's print dialog is where "Save as PDF" lives, and the file is named after the set list.)
+- **Download PDF** — when you're **signed in**, a **Download PDF** button sits beside Print in the template dialog. It builds the same layout on the server and downloads a PDF named after the song — no browser print dialog needed. Signed out, you'll just see Print (whose browser dialog still offers "Save as PDF").
+- **A set list** — open the set list and use **Print**, the browser's **Save as PDF**, or — signed in — **Download PDF**, which renders the *whole* list as one file: a cover page, the running order, then each song's words in order.
+
+### CCLI copy reporting
+
+If you're **signed in**, your organisation holds a **CCLI licence**, and the song carries a CCLI number, printing or downloading asks *how many copies* you're making. iHymns logs them for your organisation's CCLI report (**Manage → CCLI Usage Report**) and adds the required CCL notice to the printed footer automatically. For everyone else nothing changes — there's no prompt and no footer notice.
 
 ### Songbook & number on printouts
 

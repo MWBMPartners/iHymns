@@ -95,6 +95,15 @@ $sections = [
         'title' => 'Songbooks',
         'group' => 'Content',
     ],
+    /* #94 IA-reconcile: a read-only audit tool that fetches an archive.org
+       item's OCR text and scores it against a songbook. Icon mirrors the
+       admin-links.php nav entry ('bi-archive', Catalogue group). */
+    [
+        'id'    => 'ia-reconcile',
+        'icon'  => 'bi-archive',
+        'title' => 'IA Reconcile',
+        'group' => 'Content',
+    ],
     [
         'id'    => 'songbook-series',
         'icon'  => 'bi-collection-fill',
@@ -111,6 +120,14 @@ $sections = [
         'id'    => 'musicians',
         'icon'  => 'bi-person-vcard',
         'title' => 'Musicians',
+        'group' => 'Content',
+    ],
+    /* #93 Publishers registry (part of epic #1765). Icon + Catalogue placement
+       mirror the admin-links.php nav entry ('bi-building', manage_publishers). */
+    [
+        'id'    => 'publishers',
+        'icon'  => 'bi-building',
+        'title' => 'Publishers',
         'group' => 'Content',
     ],
     [
@@ -159,6 +176,24 @@ $sections = [
         'id'    => 'tiers',
         'icon'  => 'bi-stars',
         'title' => 'Access Tiers',
+        'group' => 'Content',
+    ],
+    /* #1769 P1 — the licence-type vocabulary registry (tblLicenceTypes). Icon +
+       Access placement mirror the admin-links.php nav entry
+       ('bi-patch-check', manage_licence_types). */
+    [
+        'id'    => 'licence-types',
+        'icon'  => 'bi-patch-check',
+        'title' => 'Licence Types',
+        'group' => 'Content',
+    ],
+    /* #1769 — the gating family hub + activation-readiness checklist. Icon +
+       Access placement mirror the admin-links.php nav entry
+       ('bi-shield-shaded', manage_configuration). */
+    [
+        'id'    => 'gating',
+        'icon'  => 'bi-shield-shaded',
+        'title' => 'Gating Hub',
         'group' => 'Content',
     ],
     [
@@ -896,6 +931,32 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="ia-reconcile" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-archive me-2"></i>IA Reconcile</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <div class="alert alert-info small">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Read-only.</strong> This tool <em>never</em> adds, edits, or deletes a song. It only produces a report you read (#94 Phase 1). A curator-approved import path is a separate, later phase.
+                    </div>
+                    <p>
+                        Pick a songbook and an <a href="https://archive.org" target="_blank" rel="noopener noreferrer">archive.org</a> scan, then <strong>Run reconcile</strong>. iHymns fetches the item's OCR text, segments it into likely hymns, and scores each against the songs already in that songbook. Gated by <code>edit_songs</code> — the curators who work the gap list.
+                    </p>
+                    <h3 class="h6">What the report shows</h3>
+                    <dl class="actions">
+                        <dt>Exact / Strong</dt><dd>A hymn in the scan that clearly matches a song already in iHymns.</dd>
+                        <dt>Review</dt><dd>A plausible-but-uncertain match for a human to judge.</dd>
+                        <dt>Gap</dt><dd>The whole point of the tool: a hymn that appears in the scan but seems to be <em>missing</em> from your songbook.</dd>
+                        <dt>Unmatched in book</dt><dd>A song in the songbook that was never found in the scan — maybe bad OCR, maybe missing pages.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Results persist between visits (cached in <code>tblIaFetchCache</code> / <code>tblIaImportCandidates</code>) so you don't re-fetch the same large scan — but they are audit bookkeeping, not song content. The archive.org fetch is host-locked and SSRF-hardened.
+                    </div>
+                </section>
+
                 <section id="songbook-series" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-collection-fill me-2"></i>Songbook Series</h2>
                     <p class="role-badges">
@@ -928,10 +989,27 @@ foreach ($sections as $s) {
                     <ul>
                         <li><strong>Create / Edit</strong> a template by arranging blocks and setting page options.</li>
                         <li><strong>Live preview</strong> renders through the <em>same</em> renderer the print path uses, so what you see is byte-identical to the printed page &mdash; one source of truth, no &ldquo;looked fine in the editor, broke on paper.&rdquo;</li>
+                        <li><strong>Clone</strong> a template to start from an existing one; <strong>import / export</strong> a template as JSON to move it between installs; pick a <strong>system default</strong> offered when no other template is chosen (#1767 Z/J).</li>
                         <li><strong>Delete</strong> a template you no longer want offered.</li>
                     </ul>
+                    <h3 class="h6 mt-3">Org-scoped templates (#1767 remainder)</h3>
+                    <p>
+                        A template can be owned by an <strong>organisation</strong> (<code>OrgId</code>) so a church's own layouts appear only to its members, alongside the curated/global ones. Leave the owner blank for a global template.
+                    </p>
+                    <h3 class="h6 mt-3">Download PDF &amp; the server-PDF path</h3>
+                    <p>
+                        Signed-in users get a <strong>Download PDF</strong> button beside Print. Instead of relying on the browser's print dialog, the server renders the same layout to a real PDF (<code>manage/print-pdf.php</code> &rarr; the <code>includes/pdf_renderer.php</code> engine seam). If the engine isn't available the app quietly falls back to browser Print &mdash; never an error page.
+                    </p>
+                    <h3 class="h6 mt-3">Custom full-page HTML layouts (#1767 P7)</h3>
+                    <p>
+                        Beyond the block list, a template can be a <strong>full-page HTML layout</strong> you upload (<code>tblPrintTemplateCustomLayout</code>). It passes through an <strong>allowlist sanitiser</strong> on save <em>and</em> at render time: only safe markup and inline styles survive &mdash; <code>&lt;script&gt;</code>, event handlers (<code>onclick</code>&hellip;), <code>&lt;iframe&gt;</code>, forms, and any external fetch (remote images / stylesheets / fonts) are stripped. Design for print, not interactivity.
+                    </p>
+                    <h3 class="h6 mt-3">CCLI print-usage logging (#1767 P5)</h3>
+                    <p>
+                        When the signed-in user's organisation holds a CCLI licence and the song carries a CCLI number, printing or downloading prompts for a <strong>copies count</strong>, logs it against the org's <a href="#ccli-report">CCLI Usage Report</a>, and adds the required CCL notice to the printed <strong>footer</strong> automatically. The licence is re-resolved server-side &mdash; the client can't claim the count for a song it isn't entitled to.
+                    </p>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> The block model and the renderer live in <code>js/modules/print.js</code>; this page only writes the rows. Add a new block <em>type</em> in code, not here.
+                        <strong>Gotcha:</strong> The block model and body renderer live in <code>js/modules/print.js</code> + <code>includes/print_template_schema.php</code>; browser Print, the server PDF, the batch set-list PDF, and this page's live preview all go through the <em>same</em> renderer. Add a new block <em>type</em> in code (both mirrors), not here.
                     </div>
                 </section>
 
@@ -960,6 +1038,40 @@ foreach ($sections as $s) {
                     <p>
                         When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Musicians page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
                     </p>
+                    <h3 class="h6 mt-3">Musician Duplicates review (#1784/#1785)</h3>
+                    <p>
+                        From the Musicians header, <strong>Review musician duplicates &rarr;</strong> opens <code>/manage/musician-duplicates</code> — a review surface that finds registry rows that look like the same person (e.g. <em>J. Newton</em> vs <em>John Newton</em>) using the shared similarity scorer, and lets you <strong>Merge</strong> them or <strong>Dismiss</strong> a pair as &ldquo;different person&rdquo; (dismissals persist). Same <code>manage_musicians</code> entitlement as this page.
+                    </p>
+                </section>
+
+                <section id="publishers" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-building me-2"></i>Publishers</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A registry of songbook <strong>publishers</strong> — persons <em>and</em> companies — promoted from the old free-text songbook field (#93, part of epic #1765). Like the Musicians registry, it fixes the &ldquo;same publisher, five spellings&rdquo; problem in one place. Gated by <code>manage_publishers</code>.
+                    </p>
+                    <h3 class="h6">Per-publisher fields</h3>
+                    <dl class="actions">
+                        <dt>Name &amp; Kind</dt><dd>The publisher's name and whether it's a person, company, imprint, etc. (a curated <em>Kind</em> vocabulary).</dd>
+                        <dt>Parent</dt><dd>Optional self-reference for an <strong>imprint</strong> under a parent house, or a catalogue grouping.</dd>
+                        <dt>Linked musician</dt><dd>If the publisher is also a credited person, link the existing <a href="#musicians">Musicians</a> row instead of duplicating them.</dd>
+                        <dt>City, identifiers, aliases</dt><dd>Optional place, standard identifiers (IPI / ISNI), and alternate spellings (aliases) that resolve to this publisher.</dd>
+                    </dl>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Rename</dt><dd>Cascades the new name across everything that cites it, atomically.</dd>
+                        <dt>Merge</dt><dd>Collapse two publishers into one survivor; references re-point and the duplicate is removed.</dd>
+                        <dt>Delete</dt><dd>Refuses by default while a songbook still cites the publisher.</dd>
+                    </dl>
+                    <p class="small">
+                        The songbook editor's <strong>multi-publisher picker</strong> lets a book credit several publishers (each with a role). On save it re-syncs the book's free-text <code>Publisher</code> display field to the <em>primary</em> (first-listed) publisher — the registry is authoritative, the text field is just a denormalised mirror.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Public page:</strong> every publisher has a page at <code>/publisher/&lt;slug&gt;</code> listing the books it published; the admin list and the editor picker emit that link.
+                    </div>
                 </section>
 
                 <section id="duplicate-songs" class="help-section card-admin mb-4">
@@ -1174,6 +1286,46 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="licence-types" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-patch-check me-2"></i>Licence Types</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The <strong>licence vocabulary</strong> (<code>tblLicenceTypes</code>) — CCLI, MRL, iHymns Basic / Pro, custom — and what each one <em>legally covers</em> (lyric display / print, music reproduction, audio playback) plus any access <a href="#tiers">tier</a> it confers (#459 / #1769 P4). The one source of that vocabulary is <code>includes/licence_registry.php</code>; this page is its write path. Gated by <code>manage_licence_types</code>.
+                    </p>
+                    <h3 class="h6">Per-licence fields</h3>
+                    <dl class="actions">
+                        <dt>Licence key</dt><dd>The stable machine name (e.g. <code>ccli</code>). <strong>Immutable</strong> once created — everything references it.</dd>
+                        <dt>Covers</dt><dd>Which rights the licence grants (display, print, audio, &hellip;), used by the gating resolver.</dd>
+                        <dt>Confers tier</dt><dd>Optionally, holding this licence bumps a member to a given tier.</dd>
+                        <dt>Enabled</dt><dd>Turn a licence type on or off in the picker.</dd>
+                    </dl>
+                    <div class="gotcha small" style="border-left-color: var(--bs-warning);">
+                        <strong>Acts immediately:</strong> editing a licence's <em>Confers-tier</em> or <em>Enabled</em> flag changes members' effective tier <strong>at once — even while content gating is off</strong>, because the tier resolver overlays the conferral regardless of the master switch. Change it deliberately.
+                    </div>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> System licence rows (the built-in CCLI / MRL / iHymns ones) can't be deleted — other data depends on them. Disable one instead if you don't want it offered.
+                    </div>
+                </section>
+
+                <section id="gating" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-shield-shaded me-2"></i>Gating Hub</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <div class="alert alert-info small">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Dormant by default.</strong> The whole gating program ships switched <em>off</em> (<code>content_gating_enabled = '0'</code>) and is a verified no-op until you deliberately turn it on. Until then, the API sends full song data and the apps self-limit.
+                    </div>
+                    <p>
+                        One page that answers &ldquo;what is gated, for whom, and is it safe to turn on?&rdquo; without visiting the five separate gating pages (#1769 / #1778). It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Access Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Gating, <a href="#entitlements">Entitlements</a> — behind a <strong>readiness checklist</strong> and shows the master-switch state. Gated by <code>manage_configuration</code>.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Read-only by design:</strong> this hub does <em>not</em> own the master switch. Turning enforcement on is the one action in the program that isn't a no-op — it changes what every reader emits at once — so it stays a deliberate human act on <a href="/manage/configuration#feature-gating">Configuration &rarr; Feature gating</a>, with exactly one write path. The hub reads the state, runs the checklist, and links you to the switch.
+                    </div>
+                </section>
+
                 <!-- ====================================================================
                      PEOPLE
                      ==================================================================== -->
@@ -1289,6 +1441,12 @@ foreach ($sections as $s) {
                         <dt>Change licence</dt><dd>Edit number, expiry date, active flag, notes. Type is immutable on a row — to switch types, remove and re-add.</dd>
                         <dt>Remove licence</dt><dd>Drops the row. Belt-and-braces ownership check on the server.</dd>
                     </dl>
+                    <h3 class="h6">Organisation policies</h3>
+                    <dl class="actions">
+                        <dt>Set-list edit links (#1791)</dt><dd>Choose how much freedom your members have when they share an <strong>editable</strong> set-list link: <em>No preference</em> (each member decides per link), <em>Default to signed-in</em> (new edit links start locked to signed-in editors, changeable), or <em>Require signed-in</em> (every edit link the org's members create is clamped to signed-in-only — members can't loosen it). Applies to the &ldquo;anyone with the link&rdquo; vs &ldquo;must sign in&rdquo; choice in the share dialog.</dd>
+                        <dt>Live idle-timeout (#1770 / #1798)</dt><dd>Set an organisation-wide default for how long a member's <a href="#service-mode">Live Follow</a> session may sit idle before it auto-closes, and optionally <strong>enforce</strong> it so members can't override it upward. Sits in the app &rarr; org &rarr; user precedence ladder.</dd>
+                        <dt>Members' live sessions — extend on behalf</dt><dd>A <strong>Members' live sessions</strong> panel lists your members' currently-live sessions; an org admin can <strong>Extend</strong> one on the leader's behalf (e.g. the leader's phone died mid-service). Same core as the leader's own Extend control.</dd>
+                    </dl>
                     <h3 class="h6">Row-level gate</h3>
                     <p>
                         Every action runs <code>userCanActOnOrg($userId, $orgId)</code> server-side before any mutation, regardless of whether the call came from the form or a crafted POST. A licence_id from one org can never be edited via an org_id you happen to admin elsewhere.
@@ -1348,6 +1506,14 @@ foreach ($sections as $s) {
                     <h3 class="h6">CCLI unlock (Phase 3)</h3>
                     <p class="small">
                         When the dormant gate is enabled, a valid presence token whose session belongs to an org holding a <em>live</em> CCLI licence unlocks the copyrighted-lyrics view for the duration of the service &mdash; the congregant sees the per-song CCL copyright notice. The owner has accepted the licensing basis for this (#1324).
+                    </p>
+                    <h3 class="h6">Presentation-app control (#1770)</h3>
+                    <p class="small">
+                        Service Projection carries a <strong>Presentation-app control</strong> card that mints a <strong>driver key</strong> (<code>tblServiceDriverKeys</code>). An external presentation app (ProPresenter and the like) can then drive which song is current over the API (<code>service_drive</code>) using that key — writing through the <em>same</em> broadcast core the operator console uses. Mint, list, and revoke keys from that card.
+                    </p>
+                    <h3 class="h6">The join QR (#1339)</h3>
+                    <p class="small">
+                        The projection screen shows a scannable <strong>QR of the join URL</strong> beside the typed code. The QR image now comes from the same-origin <code>/qr.php</code> endpoint (backed by the CueRCode service). If CueRCode isn't configured, the QR image simply doesn't appear and the always-visible <strong>typed code</strong> is the fallback — nothing breaks.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Proof-of-presence is the venue-displayed rotating code, deliberately &mdash; <em>not</em> geolocation (which is spoofable). Don't expect a GPS check; the code rotating at the venue is what proves someone is actually there.

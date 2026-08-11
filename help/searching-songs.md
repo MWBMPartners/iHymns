@@ -53,4 +53,15 @@ Search by the writer or composer's name to find all their songs.
 
 ---
 
+## Sorting your results
+
+Search results — like the other song lists across iHymns (a songbook's songs, your favourites, and the theme, musician, tune, publisher and work pages) — carry a **Sort ▾** control:
+
+- Choose how the list is ordered — by **relevance**, **title**, or **number** — and pick ascending or descending.
+- Add a **"then by…"** level (up to three) to break ties, e.g. *by songbook, then by number*.
+- Your choice is **remembered per list** on this device, and **synced to your account** when you're signed in, so it follows you to every device.
+- **Reset to default** puts the list back to how it started.
+
+---
+
 Copyright &copy; 2026 MWBM Partners Ltd. All rights reserved.

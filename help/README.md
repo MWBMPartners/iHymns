@@ -9,7 +9,7 @@
 | Guide | Description |
 | --- | --- |
 | [Getting Started](getting-started.md) | How to install and start using iHymns |
-| [Searching Songs](searching-songs.md) | How to search by title, lyrics, songbook, and more |
+| [Searching Songs](searching-songs.md) | How to search by title, lyrics, songbook, and more — plus sorting your results |
 | [Songbooks](songbooks.md) | Browse and navigate the available songbooks |
 | [External Links & Works](external-links-and-works.md) | Find songs, songbooks and people elsewhere on the web; understand Works (groupings of the same composition across sources) |
 | [Favorites](favorites.md) | Save and manage your favorite songs |
