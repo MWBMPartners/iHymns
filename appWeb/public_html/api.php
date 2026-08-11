@@ -2228,6 +2228,42 @@ if ($action !== null) {
                 }
             }
 
+            /* #1791 G3 — opt-in "Shared by <owner display name>" byline.
+               Accepted for BOTH scopes (a view link can carry a byline too);
+               setlist_get only echoes the name when this flag AND a live
+               owner are both present. Any truthy JSON value (true/1/"1")
+               opts in; absent/false/0 stays the anonymous default. */
+            $showSharerName = !empty($body['showSharerName']) ? 1 : 0;
+
+            /* #1791 G4/G4-org — EDIT-scope edit audience (anyone|authenticated).
+               Meaningless for a view link (the column default 'anyone' is
+               simply unused/ignored there). Resolved against the owner's
+               app->org->user default via setlistResolveEditAudienceDefault()
+               (includes/setlist_collab.php) and, whether the owner supplied a
+               choice or not, CLAMPED to any org's enforced mandate — an owner
+               can never mint a link more open than their organisation allows.
+               The resolver needs a real authenticated owner to consult the
+               org/user layers; scope='edit' already requires one below, so
+               this degrades harmlessly to the app default when absent. */
+            $editAudience = SETLIST_EDIT_AUDIENCE_APP_DEFAULT;
+            if ($shareScope === 'edit') {
+                $enforcedAudience = null;
+                $resolvedDefaultAudience = ($authUserId !== null)
+                    ? setlistResolveEditAudienceDefault(getDbMysqli(), $authUserId, $enforcedAudience)
+                    : SETLIST_EDIT_AUDIENCE_APP_DEFAULT;
+                if (isset($body['editAudience']) && is_string($body['editAudience']) && trim($body['editAudience']) !== '') {
+                    $requestedAudience = setlistNormaliseEditAudience($body['editAudience']);
+                    $editAudience = ($enforcedAudience !== null)
+                        ? setlistMoreRestrictiveEditAudience($requestedAudience, $enforcedAudience)
+                        : $requestedAudience;
+                } else {
+                    /* Owner supplied nothing — store the resolver's own
+                       pre-clamped resolved default (app->org->user, already
+                       floored to any enforced mandate). */
+                    $editAudience = $resolvedDefaultAudience;
+                }
+            }
+
             if ($setlistName === '' || $ownerId === '') {
                 sendJson(['error' => 'Invalid name or owner ID.'], 400);
                 break;
@@ -2419,7 +2455,8 @@ if ($action !== null) {
                     $result = sharedSetlistInsert(
                         $shareId, $shareData,
                         $persistOwnerUserId, $persistSourceSetlist, $persistOwnerUserId,
-                        $shareScope, $shareLabel, $shareExpiresAt
+                        $shareScope, $shareLabel, $shareExpiresAt,
+                        (bool)$showSharerName, $editAudience
                     );
                     if ($result === true)  { $created = true;  break; }
                     if ($result === null)  { /* hard failure */ break; }
@@ -2439,17 +2476,27 @@ if ($action !== null) {
                 'setlist',
                 $shareId,
                 [
-                    'name'        => $setlistName,
-                    'song_count'  => count($setlistSongs),
+                    'name'             => $setlistName,
+                    'song_count'       => count($setlistSongs),
                     'has_arrangements' => !empty($arrangements),
-                    'scope'       => $shareScope,
+                    'scope'            => $shareScope,
+                    'show_sharer_name' => (bool)$showSharerName,
+                    'edit_audience'    => $shareScope === 'edit' ? $editAudience : null,
                 ]
             );
 
+            /* #1791 G3/G4 — echo back what was actually STORED (not merely
+               requested): editAudience may have been silently clamped to an
+               org's enforced mandate, so the caller must be told the real
+               value rather than assume its own request was honoured verbatim
+               (rule #35 — server states policy, the client never re-derives
+               it). showSharerName is echoed for both scopes. */
             sendJson([
-                'id'    => $shareId,
-                'url'   => '/setlist/shared/' . $shareId,
-                'scope' => $shareScope,
+                'id'              => $shareId,
+                'url'             => '/setlist/shared/' . $shareId,
+                'scope'           => $shareScope,
+                'showSharerName'  => (bool)$showSharerName,
+                'editAudience'    => $shareScope === 'edit' ? $editAudience : null,
             ]);
             break;
 
@@ -2546,12 +2593,35 @@ if ($action !== null) {
                a LIVE setlist whose owner's account is not locked (#1698). The
                link is already known non-revoked / non-expired here (the resolver
                returned unavailable otherwise). scope + shareId are additive keys
-               a pre-C4 client simply ignores — dormant by construction. */
+               a pre-C4 client simply ignores — dormant by construction.
+               lockReason explains a false canWrite: the pre-existing owner
+               lock (#1698) or the new #1791 G4 sign-in requirement below —
+               the client renders a sign-in prompt on 'signin_required' and an
+               owner-lock banner on the other reasons, never re-deriving which
+               from canWrite alone. */
             $shareScope = ($wire['scope'] ?? 'view') === 'edit' ? 'edit' : 'view';
             $canWrite   = false;
+            $lockReason = null;
             if ($shareScope === 'edit' && !empty($wire['live']) && $sharedOwnerUserId !== null) {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_status.php';
-                $canWrite = !userContentLocked(userOwnerState($db, (int)$sharedOwnerUserId));
+                $ownerState = userOwnerState($db, (int)$sharedOwnerUserId);
+                if (userContentLocked($ownerState)) {
+                    $lockReason = userStateLockReason($ownerState);
+                } else {
+                    /* #1791 G4 — an 'authenticated' edit audience additionally
+                       requires the REQUESTER (not the owner) to be signed in —
+                       a valid bearer resolving to a real, active account.
+                       $viewer was already resolved above (it is set whenever
+                       $sharedOwnerUserId !== null, the same guard this branch
+                       is nested under) so this adds no extra query. 'anyone'
+                       (the column DEFAULT) keeps the fully-anonymous branch. */
+                    $editAudience = setlistNormaliseEditAudience($meta['_editAudience'] ?? null);
+                    if ($editAudience === 'authenticated' && $viewer === null) {
+                        $lockReason = 'signin_required';
+                    } else {
+                        $canWrite = true;
+                    }
+                }
             }
 
             /* PUBLIC-SAFE response — strict ALLOW-LIST. NEVER echo any of the
@@ -2559,7 +2629,8 @@ if ($action !== null) {
                _sourceSetlistId, CreatedBy, or any email. The only fields that
                leave the server are: id, shareId, name, songs, live, scope,
                canWrite, isOwner (a boolean), created, updated, and (optionally)
-               arrangements / songsDetailed. (#1380 / #1535 / #1791) */
+               arrangements / songsDetailed / lockReason / sharedByName.
+               (#1380 / #1535 / #1791) */
             $response = [
                 'id'       => $meta['id'] ?? $shareId,
                 'shareId'  => $shareId,
@@ -2580,6 +2651,28 @@ if ($action !== null) {
                to ship it to read-only holders. */
             if ($canWrite && !empty($wire['songsDetailed'])) {
                 $response['songsDetailed'] = $wire['songsDetailed'];
+            }
+            /* #1791 — why canWrite is false, so the client can render a
+               sign-in prompt on 'signin_required' vs. an owner-lock banner
+               on the #1698 reasons, instead of guessing from canWrite alone. */
+            if ($lockReason !== null) {
+                $response['lockReason'] = $lockReason;
+            }
+            /* #1791 G3 — "Shared by <name>", the ONE conditional allow-list
+               key: added ONLY when the owner opted in for THIS link
+               (ShowSharerName=1) AND a live owner is known. A bound lookup
+               on the display name alone — the owner id/email are never
+               echoed, holding the pre-existing privacy invariant (#1535). */
+            if (($meta['_showSharerName'] ?? false) === true && $sharedOwnerUserId !== null) {
+                $nameStmt = $db->prepare('SELECT DisplayName FROM tblUsers WHERE Id = ? LIMIT 1');
+                $nameStmt->bind_param('i', $sharedOwnerUserId);
+                $nameStmt->execute();
+                $nameRow = $nameStmt->get_result()->fetch_assoc();
+                $nameStmt->close();
+                $sharedByName = trim((string)($nameRow['DisplayName'] ?? ''));
+                if ($sharedByName !== '') {
+                    $response['sharedByName'] = $sharedByName;
+                }
             }
 
             sendJson($response);
@@ -11577,6 +11670,23 @@ if ($action !== null) {
                 if ($tokOwnerUserId === null || $tokSetlistId === null || $tokSetlistId === '') {
                     /* An edit link is meaningless without a live target. */
                     sendJson(['error' => 'This edit link is no longer connected to a set list.'], 409);
+                    break;
+                }
+
+                /* (4b) #1791 G4 — an 'authenticated' edit audience requires the
+                   REQUESTER (not the owner) to be signed in: a valid bearer
+                   resolving to a real, active account. Implicitly
+                   column-existence-gated — this whole case already 409s
+                   pre-migration at the top of the handler, so _editAudience is
+                   always present by the time execution reaches here, and an
+                   un-migrated install never gets this far (dormant-safe, rule
+                   C). Distinct 401 status + a machine-readable `reason` (rule
+                   #35) so the client branches on it to prompt sign-in rather
+                   than rendering a generic error toast. 'anyone' (the column
+                   DEFAULT) proceeds anonymously exactly as before. */
+                $tokEditAudience = setlistNormaliseEditAudience($tokData['_editAudience'] ?? null);
+                if ($tokEditAudience === 'authenticated' && getAuthenticatedUser() === null) {
+                    sendJson(['error' => 'Sign in to edit this set list.', 'reason' => 'signin_required'], 401);
                     break;
                 }
 

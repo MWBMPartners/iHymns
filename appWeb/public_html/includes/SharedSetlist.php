@@ -19,6 +19,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1791 G4 — SETLIST_EDIT_AUDIENCES, the ONE edit-audience vocabulary, so the
+   INSERT below validates against the same central map every other consumer
+   uses rather than a second inline ['anyone','authenticated'] fork. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'setlist_collab.php';
 
 /**
  * Column-existence probe for the #1380 live-link columns
@@ -59,13 +63,15 @@ function _sharedSetlistLiveLinkColumns(): bool
 
 /**
  * Column-existence probe for the #1791 capability columns
- * (tblSharedSetlists.Scope + RevokedAt + ExpiresAt + LastUsedAt + EditCount + Label).
+ * (tblSharedSetlists.Scope + RevokedAt + ExpiresAt + LastUsedAt + EditCount +
+ * Label + ShowSharerName + EditAudience — the last two are the G3/G4 owner
+ * decisions, folded into the SAME migration, rule #19/#20).
  *
  * These arrive via migrate-setlist-share-scope.php. Until it has run, every
  * helper here MUST keep using the pre-#1791 column shape — mysqli runs under
  * MYSQLI_REPORT_ERROR|STRICT, so SELECTing a column that does not exist would
  * THROW and break sharing entirely. Mirrors _sharedSetlistLiveLinkColumns():
- * static-cached per request, fail-open ("absent" → legacy path). All six must
+ * static-cached per request, fail-open ("absent" → legacy path). All eight must
  * exist before ANY is used — the migration applies them together, but a partial
  * hand-edit must degrade to the dormant path, never a half-migrated read. (#1791)
  */
@@ -79,12 +85,12 @@ function _sharedSetlistTokenColumns(): bool
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME   = 'tblSharedSetlists'
-                AND COLUMN_NAME IN ('Scope','RevokedAt','ExpiresAt','LastUsedAt','EditCount','Label')"
+                AND COLUMN_NAME IN ('Scope','RevokedAt','ExpiresAt','LastUsedAt','EditCount','Label','ShowSharerName','EditAudience')"
         );
         $stmt->execute();
         $row = $stmt->get_result()->fetch_row();
         $stmt->close();
-        $cached = ((int)($row[0] ?? 0) === 6);
+        $cached = ((int)($row[0] ?? 0) === 8);
     } catch (\Throwable $_e) {
         $cached = false; /* fail-open → dormant pre-#1791 path */
     }
@@ -139,7 +145,12 @@ function sharedSetlistGet(string $shareId): ?array
            to the #1380 path). */
         $cols = ['Data'];
         if ($hasLive)  { $cols[] = 'OwnerUserId'; $cols[] = 'SourceSetlistId'; }
-        if ($hasToken) { $cols[] = 'Scope'; $cols[] = 'RevokedAt'; $cols[] = 'ExpiresAt'; }
+        if ($hasToken) {
+            $cols[] = 'Scope'; $cols[] = 'RevokedAt'; $cols[] = 'ExpiresAt';
+            /* #1791 G3/G4 — folded into the SAME 8-column gate above, so these
+               are safe to select whenever $hasToken is true. */
+            $cols[] = 'ShowSharerName'; $cols[] = 'EditAudience';
+        }
 
         $stmt = $db->prepare('SELECT ' . implode(', ', $cols) . ' FROM tblSharedSetlists WHERE ShareId = ?');
         $stmt->bind_param('s', $shareId);
@@ -167,6 +178,10 @@ function sharedSetlistGet(string $shareId): ?array
                 ? (string)$row['RevokedAt'] : null;
             $decoded['_expiresAt'] = isset($row['ExpiresAt']) && $row['ExpiresAt'] !== null
                 ? (string)$row['ExpiresAt'] : null;
+            /* #1791 G3/G4 — same private-key discipline. Callers strip the
+               leading-underscore keys before building any public response. */
+            $decoded['_showSharerName'] = (int)($row['ShowSharerName'] ?? 0) === 1;
+            $decoded['_editAudience']   = (string)($row['EditAudience'] ?? 'anyone');
         }
         return $decoded;
     } catch (\Throwable $_e) {
@@ -185,6 +200,11 @@ function sharedSetlistGet(string $shareId): ?array
  * fills the long-unused CreatedBy audit column. All three are written only
  * when the live-link columns exist — a pre-migration install falls open to the
  * legacy 2-column INSERT so sharing never breaks on a partly-migrated deploy.
+ *
+ * $showSharerName / $editAudience are the #1791 G3/G4 owner decisions — both
+ * written only when the (now 8-column) capability gate is open, folded into
+ * the SAME `_sharedSetlistTokenColumns()` check as Scope/Label/ExpiresAt so
+ * they can never land half-migrated.
  */
 function sharedSetlistInsert(
     string $shareId,
@@ -194,7 +214,9 @@ function sharedSetlistInsert(
     ?int $createdBy = null,
     string $scope = 'view',
     ?string $label = null,
-    ?string $expiresAt = null
+    ?string $expiresAt = null,
+    bool $showSharerName = false,
+    string $editAudience = 'anyone'
 ): ?bool {
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
@@ -207,8 +229,10 @@ function sharedSetlistInsert(
        user input) gated on the two migration probes, so a legacy install
        (neither gate) writes exactly `(ShareId, Data)` as before, a #1380
        install adds the live-link columns, and a #1791 install adds
-       Scope/Label/ExpiresAt. A view link (scope='view', label/expiresAt NULL)
-       writes the same values the column DEFAULTs would — byte-identical. */
+       Scope/Label/ExpiresAt/ShowSharerName/EditAudience. A view link
+       (scope='view', label/expiresAt NULL, showSharerName=false,
+       editAudience='anyone') writes the same values the column DEFAULTs
+       would — byte-identical. */
     try {
         $db = getDbMysqli();
         $cols  = ['ShareId', 'Data'];
@@ -221,8 +245,11 @@ function sharedSetlistInsert(
         }
         if (_sharedSetlistTokenColumns()) {
             $cols[] = 'Scope'; $cols[] = 'Label'; $cols[] = 'ExpiresAt';
-            $types .= 'sss';
+            $cols[] = 'ShowSharerName'; $cols[] = 'EditAudience';
+            $types .= 'sssis';
             $vals[] = ($scope === 'edit' ? 'edit' : 'view'); $vals[] = $label; $vals[] = $expiresAt;
+            $vals[] = ($showSharerName ? 1 : 0);
+            $vals[] = (in_array($editAudience, SETLIST_EDIT_AUDIENCES, true) ? $editAudience : 'anyone');
         }
         $ph = implode(', ', array_fill(0, count($cols), '?'));
         $stmt = $db->prepare('INSERT INTO tblSharedSetlists (' . implode(', ', $cols) . ") VALUES ($ph)");
