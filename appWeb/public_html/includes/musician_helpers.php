@@ -830,6 +830,73 @@ function searchMusicianMergeTargets(
     return $out;
 }
 
+/**
+ * iHymns — create-time fold-match probe (#1800 C3).
+ *
+ * ELI5: the curator is about to type a BRAND NEW name into the registry —
+ * this checks "does an existing person already have EXACTLY this spelling,
+ * once you ignore an extra space / curly-vs-straight apostrophe / accent
+ * mark?" and hands back who, so a soft "possible duplicate — view?" hint can
+ * show BEFORE the insert happens, rather than the curator finding out later
+ * on the /manage/musician-duplicates review page (rule #33 — surface it at
+ * the point of entry, don't just leave it for a later scan).
+ *
+ * DETAILED / WHY REUSE, NOT RE-SCORE: this is Bucket A's exact-fold-equal
+ * test from includes/musician_duplicates.php (musicianDuplicatesFindCandidates()),
+ * applied to ONE not-yet-inserted candidate name against the live registry,
+ * rather than an all-pairs scan of the whole table — same
+ * `ihymns_sim_name_normalise()` fold (includes/song_similarity.php, rule
+ * #22), never a re-forked comparison. Deliberately EXACT-FOLD only (not the
+ * fuzzy Bucket B/C scorer) — a create-time hint needs to be cheap enough to
+ * run on every keystroke (debounced client-side) and confident enough not
+ * to nag on merely-similar-but-different names; the fuzzy pass stays the
+ * review page's job.
+ *
+ * NEVER BLOCKS: this only REPORTS matches — the caller decides whether/how
+ * to render a hint and the curator can always proceed with the insert
+ * regardless (a hard block belongs to a uniqueness constraint, not a
+ * dedup hint; tblMusicians' own uk_Name UNIQUE KEY already refuses a
+ * byte-IDENTICAL name, which this catches earlier and with better wording).
+ *
+ * @param string $candidateName The name the curator is about to save —
+ *        NOT YET a registry row.
+ * @param int    $excludeId     Optional tblMusicians.Id to exclude from the
+ *        scan (defensive — e.g. a future "check on rename" caller editing
+ *        an existing row shouldn't match against itself). 0 = no exclusion.
+ * @return list<array{id:int,name:string,slug:?string}> Every existing
+ *         registry row whose fold exactly equals the candidate's fold.
+ *         Empty when the candidate folds to '' (blank/punctuation-only
+ *         input) or nothing matches.
+ */
+function musicianFindFoldMatches(\mysqli $db, string $candidateName, int $excludeId = 0): array
+{
+    $fold = ihymns_sim_name_normalise($candidateName);
+    if ($fold === '') { return []; }
+
+    $hasSlug = musicianSlugColumnExists($db);
+    $slugCol = $hasSlug ? 'Slug' : 'NULL';
+    $sql = "SELECT Id, Name, {$slugCol} AS Slug FROM tblMusicians" . ($excludeId > 0 ? ' WHERE Id <> ?' : '');
+    $stmt = $db->prepare($sql);
+    if ($excludeId > 0) {
+        $stmt->bind_param('i', $excludeId);
+    }
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $out = [];
+    foreach ($rows as $r) {
+        if (ihymns_sim_name_normalise((string)$r['Name']) === $fold) {
+            $out[] = [
+                'id'   => (int)$r['Id'],
+                'name' => (string)$r['Name'],
+                'slug' => $r['Slug'] !== null ? (string)$r['Slug'] : null,
+            ];
+        }
+    }
+    return $out;
+}
+
 /* =========================================================================
  * PARTIAL BIRTH / DEATH DATES (precision flags)
  *

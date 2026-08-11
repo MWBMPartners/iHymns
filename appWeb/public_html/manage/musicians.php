@@ -333,6 +333,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 }
 
 /* ----------------------------------------------------------------------
+ * GET endpoint — name_fold_check (#1800 C3)
+ *
+ * ELI5: the Add-person drawer's Name field calls this (debounced, as the
+ * curator types) to ask "does an existing registry entry already fold to
+ * EXACTLY this spelling?" — a soft, non-blocking "possible duplicate — view?"
+ * hint appears if so; the curator can still save regardless.
+ *
+ * GET ?action=name_fold_check&name=<text>&exclude_id=<id>
+ *
+ * The fold comparison itself lives in the shared
+ * musicianFindFoldMatches() helper (includes/musician_helpers.php,
+ * ihymns_sim_name_normalise() — rule #22), so this dispatch block is just
+ * the thin HTTP wrapper, matching merge_target_search's shape immediately
+ * above. Read-only GET — no CSRF header needed (mirrors merge_target_search,
+ * which also skips X-Requested-With; only the state-changing POST actions
+ * below require it). -------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'name_fold_check') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    $name      = trim((string)($_GET['name'] ?? ''));
+    $excludeId = (int)($_GET['exclude_id'] ?? 0);
+
+    try {
+        $db = getDbMysqli();
+        $matches = $name !== '' ? musicianFindFoldMatches($db, $name, $excludeId) : [];
+        echo json_encode(['matches' => $matches], JSON_UNESCAPED_UNICODE);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/musicians.php] name_fold_check failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Fold check failed.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST endpoints — add_member / remove_member (#1502)
  *
  * ELI5: these are the "save" buttons for the Members card-list inside
@@ -2839,6 +2877,13 @@ try {
                 <div class="form-text small" id="mus-drawer-name-help">
                     The canonical spelling. To rename, save first, then use the Rename action — renames cascade to every song that cites this person.
                 </div>
+                <!-- #1800 C3 — soft, non-blocking fold-match hint. Hidden until
+                     the debounced ?action=name_fold_check lookup (see the JS
+                     controller below) reports a candidate whose
+                     ihymns_sim_name_normalise() fold exactly matches what's
+                     been typed; NEVER disables the Save button — a curator
+                     can always proceed, this is a hint, not a gate. -->
+                <div class="form-text small text-warning-emphasis d-none" id="mus-drawer-name-foldhint" role="status" aria-live="polite"></div>
             </div>
 
             <!-- Classification (#584 / #585, widened by #1741 P4a's Type
@@ -3597,6 +3642,7 @@ try {
             const form      = document.getElementById('mus-drawer-form');
             const titleEl   = document.getElementById('mus-drawer-title');
             const nameHelp  = document.getElementById('mus-drawer-name-help');
+            const nameFoldHint = document.getElementById('mus-drawer-name-foldhint'); // #1800 C3
             const actionIn  = document.getElementById('mus-drawer-action');
             const idIn      = document.getElementById('mus-drawer-id');
             const nameIn    = document.getElementById('mus-drawer-name');
@@ -3650,6 +3696,8 @@ try {
             let isniIndex  = 0;
             let otherIdIndex = 0; // #1348
             let aliasIndex = 0;
+            let nameFoldDebounce = null; // #1800 C3
+            let nameFoldInflight = null; // #1800 C3
 
             /* #trim — client-side UX half of the whitespace-trim fix (the
                server side is the shared musTrimmed() PHP helper). ELI5: as
@@ -3923,6 +3971,57 @@ try {
                 return row;
             }
 
+            /* #1800 C3 — soft "possible duplicate" fold-match hint. Debounced
+               GET against ?action=name_fold_check (mirrors memberLookup()'s
+               debounced-GET + AbortController shape below); the SERVER side
+               of the fold comparison is the shared musicianFindFoldMatches()
+               helper (includes/musician_helpers.php), so this is only the
+               thin client wiring. NEVER blocks Save — reports only, and is
+               only ever wired to fire while the Name field is editable (Edit
+               mode locks it — renames go through the separate Rename action
+               instead, so there is nothing to debounce there). */
+            function clearNameFoldHint() {
+                if (!nameFoldHint) return;
+                nameFoldHint.classList.add('d-none');
+                nameFoldHint.innerHTML = '';
+            }
+            function nameFoldCheck(rawValue) {
+                if (!nameFoldHint) return;
+                if (nameFoldInflight) nameFoldInflight.abort();
+                const v = String(rawValue || '').trim();
+                if (v.length < 2) { clearNameFoldHint(); return; }
+                const ac = new AbortController();
+                nameFoldInflight = ac;
+                const excludeId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                const url = '/manage/musicians?action=name_fold_check'
+                          + '&name=' + encodeURIComponent(v)
+                          + '&exclude_id=' + encodeURIComponent(excludeId);
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then((r) => (r.ok ? r.json() : { matches: [] }))
+                    .then((data) => {
+                        const matches = Array.isArray(data.matches) ? data.matches : [];
+                        if (!matches.length) { clearNameFoldHint(); return; }
+                        const shown = matches.slice(0, 3).map((m) => {
+                            const label = '“' + escapeMemberHtml(String(m.name || '')) + '”';
+                            return m.slug
+                                ? label + ' <a href="/musician/' + encodeURIComponent(m.slug)
+                                    + '" target="_blank" rel="noopener">(view)</a>'
+                                : label;
+                        });
+                        const more = matches.length > 3 ? ' and ' + (matches.length - 3) + ' more' : '';
+                        nameFoldHint.innerHTML = '<i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>'
+                            + 'Possible duplicate of ' + shown.join(', ') + more
+                            + ' already in the registry — check before creating a new entry.';
+                        nameFoldHint.classList.remove('d-none');
+                    })
+                    .catch((err) => { if (err.name !== 'AbortError') clearNameFoldHint(); });
+            }
+            nameIn?.addEventListener('input', () => {
+                if (nameIn.readOnly) return; // Edit mode locks the field — nothing to check
+                clearTimeout(nameFoldDebounce);
+                nameFoldDebounce = setTimeout(() => nameFoldCheck(nameIn.value), 350);
+            });
+
             function resetDrawer() {
                 form.reset();
                 linksBox.innerHTML  = '';
@@ -3935,6 +4034,11 @@ try {
                 isniIndex  = 0;
                 otherIdIndex = 0; // #1348
                 aliasIndex = 0;
+                /* #1800 C3 — cancel any pending fold-check + clear the hint so
+                   a previous open's result never leaks into the next one. */
+                clearTimeout(nameFoldDebounce);
+                if (nameFoldInflight) nameFoldInflight.abort();
+                clearNameFoldHint();
                 /* form.reset() doesn't reset hidden inputs whose
                    default value is empty — explicitly clear the
                    place-id sidecars so a previous open's pick
