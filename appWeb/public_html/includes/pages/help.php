@@ -19,7 +19,12 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-08-02 — added "Also appears in — the same hymn in
+ * Last updated: 2026-08-11 — rewrote the Setlists &amp; Sharing "Sharing"
+ * topic for collab-by-link (#1791): three distinct sharing models now
+ * exist (view link / edit link with a per-link "who can edit" +
+ * "show my name" choice + Active-links management / email invite via
+ * Collaborators), where before only the view link existed.
+ * Previous update 2026-08-02 — added "Also appears in — the same hymn in
  * other songbooks" under "Find a hymn elsewhere & Works", covering the
  * public cross-book counterparts feature (#807, editor side #1608) and
  * drawing the distinction from Works (same composition) and
@@ -403,11 +408,33 @@ declare(strict_types=1);
                     </ul>
                     <h3 class="h6">Sharing</h3>
                     <p>
-                        Tap the <i class="fa-solid fa-share-nodes" aria-hidden="true"></i> share icon on any of your setlists. iHymns generates
-                        a short share URL that anyone can open — no account required for the recipient. They land
-                        on a read-only copy with the same songs and order. You stay the owner; if you reorder
-                        or add songs, the next time they open the link they see the updated version.
+                        Tap the <i class="fa-solid fa-share-nodes" aria-hidden="true"></i> share icon on any of your
+                        setlists to open the Share dialog. There are three ways to let someone else see or work with
+                        a setlist, and you can combine them:
                     </p>
+                    <ul>
+                        <li>
+                            <strong>View link</strong> — a short URL anyone can open, no account required. They land
+                            on a read-only copy with the same songs and order; you stay the owner, and if you
+                            reorder or add songs the link always shows your latest version.
+                        </li>
+                        <li>
+                            <strong>Edit link</strong> — a longer, harder-to-guess URL that lets whoever holds it
+                            reorder or remove songs directly, without needing an account of their own — handy for
+                            handing planning off to a co-leader for the week. You choose, per link, whether
+                            <strong>anyone with the link</strong> can edit or whether they must first
+                            <strong>sign in to iHymns</strong>; your organisation may also require sign-in for every
+                            edit link its members create. Both link types can optionally show your name on the
+                            shared page. The dialog's <strong>Active links</strong> list shows every link you've
+                            created for that setlist — how it's being used, and a <strong>Revoke</strong> button to
+                            switch one off at any time.
+                        </li>
+                        <li>
+                            <strong>Email invite</strong> — the <strong>Collaborators</strong> panel below invites one
+                            specific person by email, view or edit, as described next. Unlike a share link this
+                            needs the recipient to already have an iHymns account.
+                        </li>
+                    </ul>
                     <h3 class="h6">Playing through a setlist</h3>
                     <p>
                         Tap any song in a setlist — your own, or one someone has shared with you — to

@@ -197,12 +197,13 @@ return [
         'auth_device_code_poll'       => '#1511 live-dormant; consumer = tvOS client, approve side already live',
         'service_control_token_mint'  => '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
         'service_control_token_revoke'=> '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
-        /* #1791 collab-by-link — server (C2b) landed ahead of the client
-           (C4/C5); the share dialog + shared-page edit surface that call these
-           are the next commits. Documented in api-docs.yaml. */
-        'setlist_token_update'        => '#1791 C2b server; consumer = shared-page edit surface (C4/C5), documented in api-docs.yaml',
-        'setlist_share_list'          => '#1791 C2b server; consumer = owner share dialog (C4), documented in api-docs.yaml',
-        'setlist_share_revoke'        => '#1791 C2b server; consumer = owner share dialog (C4), documented in api-docs.yaml',
+        /* #1791 collab-by-link — setlist_token_update / setlist_share_list /
+           setlist_share_revoke WERE allowlisted here while the server (C2b)
+           was ahead of the client. The share dialog (setlist.js
+           renderShareDialog()) and the shared-page token-edit surface
+           (initSharedSetListPage()) now call all three, so the entries were
+           removed per the allowlist's own self-cleaning rule — see git log
+           on this file for the commit that wired them. */
 
         /* ---------------------------------------------------------------
          * 1d. Misc public API, API-parity spillover — 8 (§2.5 six + 2 the

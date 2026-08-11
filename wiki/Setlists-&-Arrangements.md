@@ -76,14 +76,50 @@ An arrangement of `[0, 1, 2, 1, 3, 1]` would produce: V1, C, V2, C, B, C.
 
 ---
 
-## Sharing Setlists
+## Sharing Setlists (#1790 playlist-first + #1791 collab-by-link)
 
-Click the **"Share"** button on a setlist to generate a shareable link. The link includes:
-- Setlist name
-- Song IDs
-- Custom arrangements (if any)
+The **Share** icon on a setlist's detail page opens a Share dialog offering three distinct, combinable
+grant models — server-side capability rows in `tblSharedSetlists` (view/edit scope) plus the
+pre-existing `tblSetlistCollaborators` email-invite table:
 
-Recipients can import the shared setlist via the link. Arrangements are preserved in the shared data.
+| Model | Recipient needs an account? | Can the recipient edit? | Mint path |
+|---|---|---|---|
+| **View link** | No | No — read-only, tap-to-play | `setlist_share` (`scope:"view"`, default) |
+| **Edit link** | No, unless the owner (or their org) requires it | Yes — reorder/remove songs | `setlist_share` (`scope:"edit"`) |
+| **Email invite (Collaborators)** | Yes — an existing iHymns account | View or edit, chosen per invite | `setlist_collab_invite` |
+
+A **view link** is a short URL (legacy 8-hex, or a 22-char/128-bit token for new links) that anyone can
+open — no account required. Recipients land on a read-only, playlist-first page (#1790): tapping any
+song, or the **Start set list** button, arms the Prev/Next playback bar; the page no longer leads with
+"Import it to use it" — importing is demoted to a single secondary **Save a copy** button. A **live**
+link (minted by a signed-in owner from one of their saved setlists) re-resolves the owner's current list
+on every open, so later edits reach every link holder automatically.
+
+An **edit link** is a 43-char/256-bit capability token minted only by a signed-in owner from one of
+their own live-linked setlists. Per link, the owner chooses:
+- **Who can edit** — *anyone with the link* (the default) or *people signed in to iHymns*. An
+  organisation may set a preference or a hard requirement for its members' edit links (three-layer
+  app → org → user precedence, `SetlistEditAudience`/`EnforceSetlistEditAudience` on
+  `tblOrganisations`, mirroring the #1770 Live Follow idle-timeout resolver) — the server may clamp a
+  requested "anyone" link to "signed-in required" and the dialog reflects whatever was actually stored,
+  never assuming the request was honoured verbatim.
+- **Show my name on the shared page** — an opt-in "Shared by &lt;name&gt;" byline (`ShowSharerName`),
+  off by default.
+
+On the public shared page, when the server reports `canWrite:true` for the link, the song list becomes
+an editable staged-copy surface: reorder/remove buttons push immediately to `setlist_token_update`
+(optimistic UI, aria-live save status, reverts to the last-known-good order on a refused write). If the
+link requires sign-in and the viewer isn't signed in, the server answers `401 {reason:"signin_required"}`
+and the client shows a sign-in prompt instead of the editor. The Share dialog's **Active links** list
+(`setlist_share_list`) shows every link minted for a setlist — scope, label, created/last-used,
+view/edit counts — with a per-link **Revoke** (`setlist_share_revoke`, hard, immediate).
+
+The row-move/remove markup and wiring are ONE shared pair of client helpers
+(`sharedSetlistRowsHtml()` / `bindSharedSetlistRowControls()` in `js/modules/setlist.js`), consumed by
+both the anonymous/token edit surface above and the pre-existing signed-in **email-invite Collaborators**
+detail view below — not two forks of the same row template.
+
+Both link types carry custom arrangements (if any) in the shared payload/live setlist.
 
 ---
 
