@@ -57,6 +57,11 @@ $_adminLinks = [
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
+    /* IA Reconcile (#94 Phase 1) — read-only archive.org OCR audit, a
+       per-songbook tool, so it sits directly after Songbooks. Gate MUST
+       equal manage/ia-reconcile.php's own check (rule #1587;
+       test-admin-gate-parity.php derives this pairing from the tree). */
+    ['ia-reconcile',         '/manage/ia-reconcile',           'bi-archive',         'IA Reconcile',          'edit_songs',                  'Catalogue'  ],
     ['songbook-series',      '/manage/songbook-series',        'bi-collection',      'Songbook Series',       'manage_songbooks',            'Catalogue'  ],
     /* User-facing label is "Collections" (#1223); the route + table + entitlement
        stay 'catalogue(s)' internally (owner decision — keep tblCatalogues). */
