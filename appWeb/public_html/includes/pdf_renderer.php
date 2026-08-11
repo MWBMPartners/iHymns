@@ -579,13 +579,23 @@ function _pdfSanitiseMetaString($v, int $max = 200): string
  * rule #35). `$pageOptions` MUST already be the output of
  * `ptSanitisePageOptions()` (`includes/print_template_schema.php`).
  *
- * @param  list<array{bodyHtml:string,meta?:array<string,mixed>}> $docs
- *         One (P3) or, in a later phase, several print documents to
- *         concatenate into one PDF. Each `bodyHtml` is one already-sanitised
- *         `renderTemplateBodyHtml()` output.
+ * @param  list<array{bodyHtml:string,meta?:array<string,mixed>,ccliNotice?:string}> $docs
+ *         One (`song`/`preview`) or, since #1767 remainder P6, several
+ *         (`batch` — a whole set-list/songbook) print documents to
+ *         concatenate into ONE PDF. Each `bodyHtml` is one already-sanitised
+ *         `renderTemplateBodyHtml()` output. `meta` (per-document — songId/
+ *         title/lang/dir/book) and `ccliNotice` (per-document, already a
+ *         ready-built, un-escaped string — see the loop below) drive that
+ *         SPECIFIC document's own running header + CCLI footer; a document
+ *         with neither key falls back to the request-level `$opts['meta']`
+ *         (kept for a hypothetical caller that only ever sends one shared
+ *         meta — `manage/print-pdf.php` itself always sets both keys on
+ *         every document, single or batch, so this fallback is dormant for
+ *         its actual caller).
  * @param  string $css          Already-sanitised `printCss()` output, shared by every doc.
  * @param  array  $pageOptions  Already re-validated `ptSanitisePageOptions()` output (may be []).
- * @param  array  $opts         Optional: `meta` (array{title?,songId?,...}) for PDF metadata (AC).
+ * @param  array  $opts         Optional: `meta` (array{title?,songId?,...}) for PDF metadata (AC)
+ *                               and as the per-document meta FALLBACK described above.
  * @return string|null PDF bytes (always starts `%PDF-`), or null on ANY failure.
  */
 function ihymnsPdfRender(array $docs, string $css, array $pageOptions, array $opts = []): ?string
@@ -610,56 +620,28 @@ function ihymnsPdfRender(array $docs, string $css, array $pageOptions, array $op
         /* AC — minimal server-resolved PDF metadata. `meta` is caller
            (endpoint)-supplied, itself built from a server-fetched song row,
            never parsed out of the POSTed HTML (the plan's §2 "what the
-           server MAY add" line). */
+           server MAY add" line). For a batch, this is the FIRST document's
+           meta (manage/print-pdf.php) — good enough for a single PDF Info-
+           dictionary Title/Author/Creator, which has no per-page concept at
+           all (unlike the running header/footer below, which DOES vary per
+           document). */
         $meta  = is_array($opts['meta'] ?? null) ? $opts['meta'] : [];
         $title = _pdfSanitiseMetaString($meta['title'] ?? '');
         $mpdf->SetTitle($title !== '' ? $title : 'iHymns');
         $mpdf->SetCreator('iHymns');
         $mpdf->SetAuthor('iHymns');
 
-        /* §4.3 — H-family page furniture (U pageNumbers, running header).
-           Set BEFORE any WriteHTML() call so it applies from page 1 onward
-           (mPDF headers/footers apply to every page rendered AFTER the
-           call). Header and the page-number footer are independent knobs;
-           the CCLI notice footer (#1767 remainder P5, §6.3) is a THIRD,
-           separate footer source — all footer pieces are combined into ONE
-           SetHTMLFooter() call below, because mPDF's footer is a single
-           slot and a second call would silently replace the first. */
-        $headerHtml = _pdfRunningHeaderHtml($pageOptions, $meta);
-        if ($headerHtml !== '') {
-            $mpdf->SetHTMLHeader($headerHtml);
-        }
-        $footerParts = [];
-        if (!empty($pageOptions['pageNumbers'])) {
-            $footerParts[] = _pdfPageNumberFooterHtml();
-        }
-        /* #1767 remainder P5 — server-ENFORCED CCLI notice. `$opts['ccliNotice']`
-           is a ready-built, already-esc'd-by-the-caller string (resolved from
-           the caller's OWN qualifying licence + the song's REAL CCLI number,
-           `manage/print-pdf.php` — never trusts the POSTed HTML/meta for
-           this). Absent/empty for every non-CCLI render, so this is a
-           byte-identical no-op until P5's caller starts populating it. */
-        $ccliNotice = trim((string)($opts['ccliNotice'] ?? ''));
-        if ($ccliNotice !== '') {
-            $footerParts[] = '<div class="print-ccli-notice" style="font-size:8pt;color:#666;text-align:center;">'
-                . htmlspecialchars($ccliNotice, ENT_QUOTES, 'UTF-8') . '</div>';
-        }
-        if ($footerParts !== []) {
-            $mpdf->SetHTMLFooter(implode('', $footerParts));
-        }
-
         $adaptedCss = _pdfAdaptCss($css);
         if ($adaptedCss !== '') {
             $mpdf->WriteHTML('<style>' . $adaptedCss . '</style>', \Mpdf\HTMLParserMode::HEADER_CSS);
         }
 
-        /* T (onePerPage) — whether the SECOND and later documents in a future
-           batch render (P6; THIS phase caps $docs at one element, so the
-           loop body below never runs twice yet) start on a fresh page.
-           Absent/true reproduces the only behaviour this pipeline has ever
-           had (every prior document unconditionally AddPage()'d); explicit
-           false is the forward-looking opt-out a set-list-as-one-continuous-
-           flow render would want. */
+        /* T (onePerPage) — whether the SECOND and later documents (#1767
+           remainder P6 — a batch routinely has several) start on a fresh
+           page. Absent/true reproduces the only behaviour this pipeline has
+           ever had (every prior document unconditionally AddPage()'d);
+           explicit false is the forward-looking opt-out a set-list-as-one-
+           continuous-flow render would want. */
         $onePerPage = !array_key_exists('onePerPage', $pageOptions) || (bool)$pageOptions['onePerPage'];
         $wroteAny = false;
         foreach ($docs as $i => $doc) {
@@ -667,9 +649,84 @@ function ihymnsPdfRender(array $docs, string $css, array $pageOptions, array $op
             if ($bodyHtml === '') {
                 continue;
             }
-            if ($wroteAny && $onePerPage) {
-                $mpdf->AddPage(); // second+ document starts on a fresh page (future batch mode, P6)
+
+            /* §4.3 H-family (running header + page numbers) + §6.3 CCLI
+               notice — PER-DOCUMENT page furniture (#1767 remainder P6,
+               plan §4.4). mPDF's own documented technique for "varying
+               headers and footers" mid-document is to re-call
+               SetHTMLHeader()/SetHTMLFooter() between WriteHTML() calls —
+               re-calling them here per document changes the page furniture
+               going forward from exactly THAT document's own page(s), never
+               retroactively touching a page already written for an earlier
+               document in the same batch. A single-document request runs
+               this exactly once (i === 0 below), reproducing the P3-P5
+               behaviour byte-for-byte.
+               @link https://mpdf.github.io/headers-footers/varying-headers-footers.html
+
+               VERIFIED ORDERING QUIRK (this vendored mPDF version, tested
+               with a 4-document batch + a natural-overflow single document —
+               see the P6 commit message for the full before/after
+               transcript): the HEADER must be set BEFORE the page it
+               applies to is added (AddPage()), but the FOOTER must be set
+               AFTER — setting both before AddPage() (the naive symmetric
+               approach) silently DROPS document 0's footer specifically
+               (it renders correctly for every later document, and for
+               document 0 alone with no later AddPage() at all — the bug
+               only manifests once a SUBSEQUENT AddPage()+SetHTMLFooter()
+               pair exists). The fix that empirically produces the correct
+               footer AND header on every page, for every document
+               including the first, is: set the header, THEN AddPage()
+               (document 0's own — see below), THEN set the footer, THEN
+               WriteHTML(). Header and the page-number footer are
+               independent knobs; the CCLI notice is a THIRD, separate
+               footer source — all footer pieces are combined into ONE
+               SetHTMLFooter() call per document, because mPDF's footer is
+               a single slot and a second call would silently replace the
+               first. */
+            $docMeta = (is_array($doc['meta'] ?? null) && $doc['meta'] !== []) ? $doc['meta'] : $meta;
+            $mpdf->SetHTMLHeader(_pdfRunningHeaderHtml($pageOptions, $docMeta));
+
+            /* Document 0 ALWAYS gets its own explicit AddPage() call here —
+               NOT left to mPDF's implicit "page 1 already exists" behaviour
+               — because that explicit call is what makes the ordering fix
+               above take effect for the very first page too (verified
+               empirically; the implicit first page does not go through the
+               same header/footer-capture step AddPage() performs). This
+               does NOT insert a spurious blank page — mPDF's very first
+               AddPage() call on a fresh instance becomes page 1, it does
+               not create page 2 (verified: doc-count in equals page-count
+               out for every batch size tested). Document 1+ still obeys
+               `onePerPage` (T) exactly as before: a fresh page only when it
+               is true (default); false means continuous flow, so no
+               AddPage() call and the header/footer above take effect
+               whenever the CURRENT page naturally advances next. */
+            if (!$wroteAny || $onePerPage) {
+                $mpdf->AddPage();
             }
+
+            $footerParts = [];
+            if (!empty($pageOptions['pageNumbers'])) {
+                $footerParts[] = _pdfPageNumberFooterHtml();
+            }
+            /* #1767 remainder P5 (single doc) / P6 (per doc, batch) —
+               server-ENFORCED CCLI notice. `$doc['ccliNotice']` (falling
+               back to `$opts['ccliNotice']` for a hypothetical single-meta
+               caller — manage/print-pdf.php always sets the per-document
+               key, so this fallback is dormant for its actual caller) is a
+               ready-built, already-esc'd-by-THIS-function string (the
+               VALUE itself is resolved by the caller from ITS OWN
+               qualifying licence + the song's REAL CCLI number — never
+               trusts the POSTed HTML/meta for that). Absent/empty for
+               every document without a qualifying licence or whose own
+               song has no CCLI number, so this is a byte-identical no-op
+               for the overwhelming majority of documents/renders. */
+            $ccliNotice = trim((string)($doc['ccliNotice'] ?? ($opts['ccliNotice'] ?? '')));
+            if ($ccliNotice !== '') {
+                $footerParts[] = '<div class="print-ccli-notice" style="font-size:8pt;color:#666;text-align:center;">'
+                    . htmlspecialchars($ccliNotice, ENT_QUOTES, 'UTF-8') . '</div>';
+            }
+            $mpdf->SetHTMLFooter(implode('', $footerParts));
+
             $mpdf->WriteHTML(_pdfAdaptHtml($bodyHtml), \Mpdf\HTMLParserMode::HTML_BODY);
             $wroteAny = true;
         }

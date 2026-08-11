@@ -23,7 +23,7 @@ import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/componen
 import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
-import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss } from './print.js';
+import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
 
 /**
  * May the viewer WRITE to this shared set list? (#1638 / #1698)
@@ -4037,14 +4037,24 @@ export class SetList {
         /* Same picker as the single-song Print — gives the set list a
            template choice it never had before (#1789). Cancel (Esc / backdrop
            / Cancel button) resolves null and we simply don't print.
-           #1767 remainder P4 — `pickPrintTemplate()` now resolves
-           `{ tpl, action }`; batch PDF download (P6) isn't built yet, so this
-           call deliberately omits `offerPdf` and never shows the button —
-           `action` always comes back 'print'. */
+           #1767 remainder P4/P6 — `pickPrintTemplate()` now resolves
+           `{ tpl, action }`; `offerPdf: true` shows the Download-PDF button
+           whenever the SAME `?ping=1` auth/engine probe the single-song path
+           uses says the server-PDF endpoint is reachable (print.js's own
+           memoised check — never a second probe here). */
         const templates = await loadTemplates(this.app);
-        const picked = await pickPrintTemplate(this.app, templates);
+        const picked = await pickPrintTemplate(this.app, templates, { offerPdf: true });
         if (!picked) { return; }
-        const { tpl } = picked;
+        const { tpl, action } = picked;
+
+        /* #1767 remainder P6 (plan §4.4) — batch server-PDF: render EVERY
+           song via the ONE renderer and POST them as a single `mode:'batch'`
+           request. Delegated to its own method (below) — the browser-Print
+           path underneath is UNCHANGED. */
+        if (action === 'pdf') {
+            await this._downloadSetListPdf(list, tpl);
+            return;
+        }
 
         this.app.showToast('Preparing print layout...', 'info', 2000);
 
@@ -4151,6 +4161,95 @@ export class SetList {
         printWindow.onload = () => {
             printWindow.print();
         };
+    }
+
+    /**
+     * #1767 remainder P6 (plan §4.4) — set-list "Download PDF": renders
+     * EVERY song via the SAME renderTemplateBodyHtml()/applyCustomLayout()
+     * the browser-print path above and the single-song downloadSongPdf()
+     * (print.js) both use — the one-renderer invariant holds for the batch
+     * path exactly as it does for the single-song one, because this calls
+     * the identical client function once per song, never a second renderer.
+     * Assembles `documents: [...]` for the WHOLE (possibly capped) list and
+     * POSTs `mode: 'batch'` via the shared downloadPrintPdf() (print.js) —
+     * never a second POST/status-branch/download implementation.
+     *
+     * CCLI copies prompt fires ONCE for the whole set (plan §6.3's
+     * multi-song design), reusing the SAME printUsageContextFor()/
+     * promptForCopies() the single-song path uses — checked against the
+     * FIRST song in the (server-fetched) set that actually carries a CCLI
+     * number, because the underlying question — "does THIS signed-in
+     * account hold a qualifying CCLI licence" — is licence-scoped, not
+     * song-scoped, so any CCLI-bearing song answers it for the whole batch.
+     * A set with no CCLI-numbered song at all has nothing to report and
+     * skips the prompt entirely. The SERVER re-resolves the licence AND
+     * each song's own CCLI number again from scratch
+     * (manage/print-pdf.php) — this client-side check only decides whether
+     * to SHOW the prompt, never what gets logged.
+     *
+     * @param {object} list The set list { id, name, songs }.
+     * @param {object} tpl  The picked print template.
+     */
+    async _downloadSetListPdf(list, tpl) {
+        this.app.showToast('Preparing PDF…', 'info', 2000);
+
+        /* v1 batch cap (plan §4.4) mirrors the server's PDF_MAX_DOCUMENTS —
+           sliced HONESTLY (never silently) so a very large set list's PDF
+           names the songs it actually included. Only THIS (PDF) path caps —
+           the browser-Print path above has no such limit (window.print()
+           paginates whatever HTML it's given). */
+        const PDF_BATCH_SONG_CAP = 50;
+        const overCap = list.songs.length > PDF_BATCH_SONG_CAP;
+        const songsMeta = overCap ? list.songs.slice(0, PDF_BATCH_SONG_CAP) : list.songs;
+
+        const songs = (await Promise.all(
+            songsMeta.map((s) => fetchSong(this.app, s.id))
+        )).filter(Boolean);
+        if (!songs.length) {
+            this.app.showToast('Could not load any songs to build the PDF.', 'danger', 3500);
+            return;
+        }
+        if (overCap) {
+            this.app.showToast(`PDF includes the first ${PDF_BATCH_SONG_CAP} of ${list.songs.length} songs.`, 'info', 5000);
+        }
+
+        const ccliSong = songs.find((s) => String((s && s.ccli) || '').trim() !== '');
+        let copies = null;
+        if (ccliSong) {
+            const usageCtx = await printUsageContextFor(this.app, ccliSong.publicId || ccliSong.id);
+            if (usageCtx.promptCopies) {
+                copies = await promptForCopies(this.app);
+                if (copies === null) { return; }
+            }
+        }
+
+        const documents = songs.map((song) => {
+            const contentHtml = renderTemplateBodyHtml(song, tpl);
+            const bodyHtml = (tpl && tpl.layoutHtml)
+                ? applyCustomLayout(tpl.layoutHtml, song, contentHtml)
+                : contentHtml;
+            return {
+                bodyHtml,
+                meta: {
+                    songId: song.publicId || song.id || '',
+                    title:  song.title || 'Untitled',
+                    lang:   song.language || 'en',
+                    dir:    'ltr',
+                    book:   song.songbookName || song.songbook || '',
+                },
+            };
+        });
+
+        const payload = {
+            mode: 'batch',
+            documents,
+            css: printCss(tpl.pageOptions),
+            pageOptions: tpl.pageOptions || {},
+            filename: pdfFilenameFor({ title: list.name }),
+        };
+        if (copies != null) { payload.copies = copies; }
+
+        await downloadPrintPdf(this.app, payload);
     }
 
     /**

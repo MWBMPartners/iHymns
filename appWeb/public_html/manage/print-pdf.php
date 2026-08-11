@@ -54,20 +54,26 @@ declare(strict_types=1);
  *
  * REQUEST CONTRACT (POST, `Content-Type: application/json`):
  *   {
- *     "mode": "song" | "preview",
- *     "documents": [ { "bodyHtml": "…", "meta": { "songId", "title", "lang", "dir", "book" } } ],
+ *     "mode": "song" | "batch" | "preview",
+ *     "documents": [ { "bodyHtml": "…", "meta": { "songId", "title", "lang", "dir", "book" } }, … ],
  *     "css": "…printCss() output…",
  *     "pageOptions": { … },        // re-validated against the SAME schema the editor uses
  *     "filename": "amazing-grace", // optional; slug-sanitised server-side either way
- *     "copies": 1                  // optional int 1..10000 — #1767 remainder P5, rides into printUsageLog()
+ *     "copies": 1                  // optional int 1..10000 — #1767 remainder P5, rides into printUsageLog() PER QUALIFYING DOCUMENT
  *   }
  * `meta.book` (#1767 remainder P4, §4.3) feeds the OPTIONAL `runningHeader`
  * page option's 'titleBook' mode only — capped/control-stripped exactly like
  * every other meta string below, never rendered as markup.
- * `documents` is an ARRAY on purpose (the plan's future batch mode, P6, is
- * the same shape with a higher cap) but THIS phase accepts exactly one — see
- * `PDF_MAX_DOCUMENTS`. `mode: "batch"` is therefore a 400, not a 500 — it is
- * a recognised-but-not-yet-implemented value, never an unexpected one.
+ * `documents` is an ARRAY on purpose — `mode: "song"`/`"preview"` send
+ * exactly one, `mode: "batch"` (#1767 remainder P6 — the whole set-list/
+ * songbook as ONE PDF) sends up to `PDF_MAX_DOCUMENTS`. The renderer
+ * (`includes/pdf_renderer.php ihymnsPdfRender()`) concatenates every
+ * document into ONE PDF via its existing `AddPage()`-between-docs loop —
+ * built forward-compat for this in P3, unchanged by this phase beyond
+ * raising the cap. Each document is sanitised, gets its OWN server-resolved
+ * running header + CCLI footer (never the first document's), and — when
+ * `copies` rides along — its OWN `tblSongUsageEvents` row when (and only
+ * when) ITS song resolves to a qualifying CCLI licence (§6.2/§6.3, looped).
  *
  * PIPELINE ORDER (fixed, mirrors `qr.php`'s cheap-checks-first shape):
  *   auth(401) → CSRF(403) → rate-limit(429) → parse+cap(400) →
@@ -127,13 +133,22 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    Side-effect-free to require (mirrors pdf_renderer.php's own discipline). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_usage.php';
 
-/* ---- Caps (400 on breach) — constants at top of file, per the plan §3.1 ---- */
-const PDF_MAX_DOCUMENTS        = 1;            // raised when batch mode (P6) lands — the request SHAPE already supports it
-const PDF_MAX_BODY_HTML_BYTES  = 512 * 1024;    // per-document bodyHtml
+/* ---- Caps (400 on breach) — constants at top of file, per the plan §3.1 ----
+   #1767 remainder P6 (§4.4) — batch: a whole set-list/songbook as ONE PDF.
+   PDF_MAX_DOCUMENTS raised from the P3-P5 placeholder of 1 to a sane batch
+   ceiling (a large set list or songbook, not "the whole corpus" — rule #17's
+   spirit applied to a PDF instead of a JSON corpus). PDF_MAX_TOTAL_BYTES
+   raised PROPORTIONATELY (not to `50 * PDF_MAX_BODY_HTML_BYTES` ≈ 25 MiB —
+   that would let a crafted batch alone approach the renderer's memory
+   budget) and stays BOUNDED at 8 MiB so a batch can never OOM the shared-
+   hosting renderer regardless of how many documents are packed under that
+   ceiling; the per-document cap (unchanged) still applies to each one. */
+const PDF_MAX_DOCUMENTS        = 50;            // #1767 remainder P6 — whole set-list/songbook as one PDF
+const PDF_MAX_BODY_HTML_BYTES  = 512 * 1024;    // per-document bodyHtml (unchanged)
 const PDF_MAX_CSS_BYTES        = 64 * 1024;
-const PDF_MAX_TOTAL_BYTES      = 2 * 1024 * 1024; // whole raw POST body (generous headroom over 1 doc + css)
+const PDF_MAX_TOTAL_BYTES      = 8 * 1024 * 1024; // whole raw POST body — bounded, never proportional to the full 50-doc ceiling
 const PDF_MAX_FILENAME_LEN     = 100;
-const PDF_ALLOWED_MODES        = ['song', 'preview'];
+const PDF_ALLOWED_MODES        = ['song', 'batch', 'preview'];
 
 /**
  * Emit a JSON error body with the given HTTP status and stop.
@@ -214,14 +229,19 @@ if (!is_array($body)) {
 
 $mode = (string)($body['mode'] ?? 'song');
 if (!in_array($mode, PDF_ALLOWED_MODES, true)) {
-    /* Includes the recognised-but-not-yet-built 'batch' value (P6) — a
-       deliberate, documented 400, never an unexpected 500. */
+    /* Any OTHER value is a deliberate, documented 400, never an unexpected
+       500 — 'song' (one document), 'batch' (#1767 remainder P6 — up to
+       PDF_MAX_DOCUMENTS), and 'preview' (the admin editor's sample render)
+       are the only three recognised shapes. */
     _pdfFailJson(400, "Unsupported mode '{$mode}'.");
 }
 
 $documentsRaw = $body['documents'] ?? null;
 if (!is_array($documentsRaw) || $documentsRaw === [] || count($documentsRaw) > PDF_MAX_DOCUMENTS) {
-    _pdfFailJson(400, 'documents must be a non-empty array of at most ' . PDF_MAX_DOCUMENTS . ' item(s) in this phase.');
+    /* #1767 remainder P6 — this cap check runs BEFORE any sanitise/adapt/
+       convert work (and long before ihymnsPdfRender()), so a batch that
+       breaches it never reaches the renderer at all. */
+    _pdfFailJson(400, 'documents must be a non-empty array of at most ' . PDF_MAX_DOCUMENTS . ' item(s).');
 }
 foreach ($documentsRaw as $d) {
     if (!is_array($d) || !isset($d['bodyHtml']) || !is_string($d['bodyHtml']) || $d['bodyHtml'] === '') {
@@ -294,57 +314,88 @@ if (!ihymnsPdfEngineAvailable()) {
     _pdfFailJson(503, 'PDF engine is not installed on this server.');
 }
 
-/* ---- §6.3 — server-ENFORCED CCLI notice (#1767 remainder P5) ----
-   Computed BEFORE the convert step so it can ride into ihymnsPdfRender()'s
-   $opts — this is what makes it ENFORCED rather than advisory: the notice
-   comes from the caller's OWN re-resolved licence (printUsageResolveCcliLicence(),
-   NEVER trusting anything the POST claimed) and the song's REAL CCLI number
+/* ---- §6.3 — server-ENFORCED CCLI notice, PER DOCUMENT (#1767 remainder
+   P5 single-song, extended to the WHOLE batch by P6) ----
+   The licence is resolved ONCE (the same authenticated caller for every
+   document in the request) but the SONG-specific half — does THIS
+   document's song carry a CCLI number to attribute — is re-resolved for
+   EACH document, never assumed from document 0: a batch's songs can, and
+   routinely will, differ in whether they carry a CCLI number at all. A
+   single-document 'song'/'preview' request runs this exact same loop body
+   once, so it degrades to byte-identical P5 behaviour. Computed BEFORE the
+   convert step so each document's own notice can ride into
+   ihymnsPdfRender() as that document's ccliNotice — this is what makes it
+   ENFORCED rather than advisory: the notice comes from the caller's OWN
+   re-resolved licence (printUsageResolveCcliLicence(), NEVER trusting
+   anything the POST claimed) and the song's REAL CCLI number
    (printUsageSongCcliNumber(), a fresh DB read keyed on the sanitised
    meta.songId — never parsed out of the POSTed bodyHtml), so a client
    cannot strip it by omitting/editing the HTML it sends. Empty for every
-   caller without a qualifying licence or a song with no CCLI number — a
-   verified no-op for the overwhelming majority of renders. */
-$pdfMeta = $sanitisedDocs[0]['meta'] ?? [];
-$pdfCcliNotice = '';
+   document without a qualifying licence or a song with no CCLI number — a
+   verified no-op for the overwhelming majority of renders/documents. */
+$pdfMeta    = $sanitisedDocs[0]['meta'] ?? [];
 $pdfLicence = printUsageResolveCcliLicence((int)($currentUser['id'] ?? 0));
-if ($pdfLicence !== null) {
-    $pdfSongIdForNotice = trim((string)($pdfMeta['songId'] ?? ''));
-    if ($pdfSongIdForNotice !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfSongIdForNotice)) {
-        $pdfCcliNumber = printUsageSongCcliNumber($pdfSongIdForNotice);
-        if ($pdfCcliNumber !== '') {
-            $pdfCcliNotice = printUsageCcliNoticeText($pdfCcliNumber, (string)($pdfLicence['key'] ?? ''));
+foreach ($sanitisedDocs as $pdfDocIdx => $pdfDoc) {
+    $ccliNotice     = '';
+    $pdfDocCcliNumber = '';
+    if ($pdfLicence !== null) {
+        $pdfDocSongId = trim((string)($pdfDoc['meta']['songId'] ?? ''));
+        if ($pdfDocSongId !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfDocSongId)) {
+            $pdfDocCcliNumber = printUsageSongCcliNumber($pdfDocSongId);
+            if ($pdfDocCcliNumber !== '') {
+                $ccliNotice = printUsageCcliNoticeText($pdfDocCcliNumber, (string)($pdfLicence['key'] ?? ''));
+            }
         }
     }
+    /* 'ccliNumber' rides ONLY into the post-render logging loop below —
+       includes/pdf_renderer.php never reads it (only 'bodyHtml'/'meta'/
+       'ccliNotice' — the one-renderer guard's server-chrome allow-list is
+       unaffected by an extra array key it never inspects). */
+    $sanitisedDocs[$pdfDocIdx]['ccliNotice'] = $ccliNotice;
+    $sanitisedDocs[$pdfDocIdx]['ccliNumber'] = $pdfDocCcliNumber;
 }
 
 /* ---- Convert (adapt + render happen INSIDE pdf_renderer.php — never here;
    this file must never grow a `case` on a block type, rule #35 / the
    one-renderer invariant) ---- */
 $pdfBytes = ihymnsPdfRender($sanitisedDocs, $sanCss, $pageOptions, [
-    'meta'       => $pdfMeta,
-    'ccliNotice' => $pdfCcliNotice,
+    'meta' => $pdfMeta,
 ]);
 if ($pdfBytes === null) {
     _pdfFailJson(503, 'PDF render failed.');
 }
 
-/* ---- §6.2 — CCLI print-usage LOG (#1767 remainder P5) ----
+/* ---- §6.2 — CCLI print-usage LOG, PER DOCUMENT (#1767 remainder P5
+   single-song, extended to the WHOLE batch by P6) ----
    ONLY when the client supplied a `copies` count (the picker only ever
-   sends one when print_usage_context said this render would be logged —
-   an absent field means no prompt was shown, so nothing is logged here
-   either) — printUsageLog() re-resolves the licence itself regardless, so
-   a forged `copies` on an unlicensed account still writes nothing. This
-   runs AFTER a successful render, on a best-effort basis: a logging
-   failure must never turn a successful PDF into a failed request — the
-   file the user is waiting for still streams below either way. */
+   sends one when the copies prompt was shown — an absent field means no
+   prompt was shown, so nothing is logged here either; for a batch, ONE
+   prompt covers the WHOLE set, so the SAME copies count is what every
+   qualifying document's row carries). Each document gets its OWN
+   `tblSongUsageEvents` row, and ONLY when THAT document's own song
+   resolves to a qualifying CCLI number (the `ccliNumber` computed in the
+   notice loop above, from a server-side re-check — never the client's
+   claim) — a song with no CCLI number to attribute is skipped, never
+   logged against nothing. printUsageLog() ALSO re-resolves the licence
+   itself on every call regardless (its own internal gate,
+   includes/print_usage.php — never trusted from here), so a forged
+   `copies` on an unlicensed account still writes nothing even if this
+   loop's own pre-check were somehow bypassed. Runs AFTER a successful
+   render, on a best-effort basis: a logging failure must never turn a
+   successful PDF into a failed request — the file the user is waiting for
+   still streams below regardless of how many (if any) rows got written. */
 $pdfCopiesRaw = $body['copies'] ?? null;
 if ($pdfCopiesRaw !== null) {
-    $pdfSongIdForLog = trim((string)($pdfMeta['songId'] ?? ''));
-    if ($pdfSongIdForLog !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfSongIdForLog)) {
+    foreach ($sanitisedDocs as $pdfDoc) {
+        $pdfLogSongId = trim((string)($pdfDoc['meta']['songId'] ?? ''));
+        $pdfLogCcli   = (string)($pdfDoc['ccliNumber'] ?? '');
+        if ($pdfLogSongId === '' || $pdfLogCcli === '' || !preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfLogSongId)) {
+            continue; // this document doesn't qualify — no licence, no CCLI number on the song, or an invalid songId
+        }
         try {
             printUsageLog(
                 (int)($currentUser['id'] ?? 0),
-                $pdfSongIdForLog,
+                $pdfLogSongId,
                 (int)$pdfCopiesRaw,
                 ['surface' => 'pdf', 'templateId' => isset($body['templateId']) ? (int)$body['templateId'] : null]
             );

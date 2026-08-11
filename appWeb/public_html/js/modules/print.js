@@ -716,12 +716,14 @@ export async function pickPrintTemplate(app, templates, opts = {}) {
     });
 }
 
-/* Turn a song title into a filesystem/URL-safe filename stem. Mirrors the
+/* Turn a title into a filesystem/URL-safe filename stem. Mirrors the
    character class manage/print-pdf.php's own Content-Disposition sanitiser
    allows (`[^A-Za-z0-9_-]` stripped server-side too) — this client-side pass
    just makes the DOWNLOADED file's name legible instead of relying solely
-   on the server's stricter fallback. */
-function pdfFilenameFor(song) {
+   on the server's stricter fallback. Exported (#1767 remainder P6) so the
+   set-list batch Download-PDF path (setlist.js) can reuse the SAME
+   slugifier for `{title: list.name}` — never a second slug implementation. */
+export function pdfFilenameFor(song) {
     const raw = String((song && song.title) || 'ihymns-print').toLowerCase();
     const slug = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     return slug || 'ihymns-print';
@@ -744,20 +746,72 @@ function triggerBlobDownload(blob, filename) {
 }
 
 /**
- * #1767 remainder P4 (§3.1/§3.3) — POST the SAME HTML/CSS pieces the browser
- * Print path builds (renderTemplateBodyHtml()/printCss() — the one-renderer
- * invariant, never a second render) to the server-PDF endpoint and download
- * the resulting file. `copies` (nullable) rides along so the server can log
- * CCLI print-usage in the SAME request (#1767 remainder P5, §6.3) — the
- * client never makes a separate log call for the PDF path.
+ * #1767 remainder P4/P6 — POST a print-pdf.php request body (`mode`,
+ * `documents`, `css`, `pageOptions`, `filename`, `copies?`) to the
+ * server-PDF endpoint and download the resulting file. THE ONE POST +
+ * status-branch + blob-download implementation — shared by the single-song
+ * Download-PDF path (`downloadSongPdf()` below, one document) AND the
+ * set-list batch Download-PDF path (`SetList._downloadSetListPdf()` in
+ * setlist.js, many documents via `mode: 'batch'`) — never forked per caller
+ * (rule #22). `payload.copies` (nullable) rides along so the server can log
+ * CCLI print-usage in the SAME request (#1767 remainder P5/P6, §6.3) — the
+ * client never makes a separate log call for either PDF path.
  *
  * Branches on HTTP STATUS (rule #35), never the response prose: 503 → the
  * PDF engine isn't installed on this server, fall back to Print; 401 → the
  * session lapsed since the ping check; 429 → rate-limited; anything else →
  * a generic retry toast.
+ *
+ * @param {object} app
+ * @param {object} payload  The full print-pdf.php POST body.
+ * @returns {Promise<boolean>} true on a completed download, false on any
+ *          failure (the caller has already been toasted either way).
+ */
+export async function downloadPrintPdf(app, payload) {
+    app.showToast?.('Building PDF…', 'info', 2500);
+
+    let res;
+    try {
+        res = await apiFetch('/manage/print-pdf.php', {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+    } catch (_e) {
+        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
+        return false;
+    }
+
+    if (res.status === 200) {
+        const blob = await res.blob();
+        /* Reuses the SAME slug already sent as `payload.filename` — one
+           source for the stem, never a second independent slugify at
+           download time that could drift from what the server was told. */
+        const stem = (payload && typeof payload.filename === 'string' && payload.filename) || 'ihymns-print';
+        triggerBlobDownload(blob, stem + '.pdf');
+        return true;
+    }
+    if (res.status === 503) {
+        app.showToast?.("PDF isn't available on this server — use Print instead.", 'warning', 4500);
+    } else if (res.status === 401) {
+        app.showToast?.('Sign in again to download a PDF.', 'warning', 3500);
+    } else if (res.status === 429) {
+        app.showToast?.('Too many PDFs just now, try again in a moment.', 'warning', 4000);
+    } else {
+        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
+    }
+    return false;
+}
+
+/**
+ * #1767 remainder P4 (§3.1/§3.3) — the single-song Download-PDF path: builds
+ * the SAME HTML/CSS pieces the browser Print path builds
+ * (renderTemplateBodyHtml()/printCss() — the one-renderer invariant, never a
+ * second render), then delegates to the shared downloadPrintPdf() above for
+ * the actual POST/download.
  */
 async function downloadSongPdf(app, song, tpl, copies) {
-    app.showToast?.('Building PDF…', 'info', 2500);
     /* #1767 remainder P7 (§7.1 point 4) — "the client POSTs the
        post-substitution HTML": the SAME applyCustomLayout() call
        buildPrintDoc() makes for the browser path runs here too, BEFORE the
@@ -785,33 +839,7 @@ async function downloadSongPdf(app, song, tpl, copies) {
     };
     if (copies != null) { payload.copies = copies; }
 
-    let res;
-    try {
-        res = await apiFetch('/manage/print-pdf.php', {
-            method: 'POST',
-            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-        });
-    } catch (_e) {
-        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
-        return;
-    }
-
-    if (res.status === 200) {
-        const blob = await res.blob();
-        triggerBlobDownload(blob, pdfFilenameFor(song) + '.pdf');
-        return;
-    }
-    if (res.status === 503) {
-        app.showToast?.("PDF isn't available on this server — use Print instead.", 'warning', 4500);
-    } else if (res.status === 401) {
-        app.showToast?.('Sign in again to download a PDF.', 'warning', 3500);
-    } else if (res.status === 429) {
-        app.showToast?.('Too many PDFs just now, try again in a moment.', 'warning', 4000);
-    } else {
-        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
-    }
+    await downloadPrintPdf(app, payload);
 }
 
 /* #1767 remainder P5 (§6.1) — session-scoped memo of print_usage_context
@@ -832,9 +860,16 @@ const _printUsageContextCache = new Map();
  * never a blocked print, which is the correct trade-off for a feature that
  * must never regress the core Print/Download action.
  *
+ * Exported (#1767 remainder P6) so the set-list batch Download-PDF path
+ * (setlist.js) can reuse this SAME context check — checked against the
+ * first CCLI-bearing song in the set, since the underlying question
+ * ("does this signed-in account hold a qualifying CCLI licence") is
+ * licence-scoped, not song-scoped, so any one CCLI-bearing song answers it
+ * for the whole batch.
+ *
  * @returns {Promise<{requiresCcli:boolean, promptCopies:boolean, licenceKey:?string}>}
  */
-async function printUsageContextFor(app, songId) {
+export async function printUsageContextFor(app, songId) {
     if (_printUsageContextCache.has(songId)) { return _printUsageContextCache.get(songId); }
     const promise = (async () => {
         try {
@@ -903,9 +938,11 @@ function dbTemplateIdOf(tpl) {
  * Cancel/Esc/backdrop-click — a Cancel here abandons the WHOLE print/
  * download (an under-count is a compliance defect per the owner's decision,
  * so silently defaulting to "1" past a user's Cancel would be worse than
- * asking again).
+ * asking again). Exported (#1767 remainder P6) so the set-list batch
+ * Download-PDF path (setlist.js) shows this SAME prompt ONCE for the whole
+ * set, rather than once per song.
  */
-function promptForCopies(app) {
+export function promptForCopies(app) {
     return new Promise((resolve) => {
         const overlay = document.createElement('div');
         overlay.className = 'print-copies-overlay';
