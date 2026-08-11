@@ -42,6 +42,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* songbookVisibleSql() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';   /* #1786 — ihymns_title_sort_key() */
 if (!defined('IHYMNS_PUBLISHER_KINDS')) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 }
@@ -283,9 +284,21 @@ $pubRoleLabels = IHYMNS_PUBLISHER_ROLES;
         <?php if (!$publisherBooks): ?>
             <p class="text-muted">No songbooks are currently attributed to this publisher.</p>
         <?php else: ?>
-            <ul class="list-group">
+            <!-- Sort control (#1786) — Name. Default IS the server order
+                 (b.Name ASC), so this offers a viewer-driven descending flip
+                 more than a genuinely different order today. -->
+            <?php
+                $listSortSurface = 'publisher-books';
+                $listSortDefault = 'Name (A–Z)';
+                $listSortOptions = [
+                    'name' => ['label' => 'Name', 'type' => 'text', 'dir' => 'asc'],
+                ];
+                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+            ?>
+            <ul class="list-group song-list" data-list-sort-list="publisher-books">
                 <?php foreach ($publisherBooks as $b): ?>
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                    <li class="list-group-item d-flex justify-content-between align-items-center"
+                        data-sort-name="<?= htmlspecialchars(ihymns_title_sort_key((string)$b['Name'])) ?>">
                         <a href="/songbook/<?= htmlspecialchars((string)$b['Abbreviation']) ?>" data-navigate="songbook">
                             <?= htmlspecialchars((string)$b['Name']) ?>
                         </a>

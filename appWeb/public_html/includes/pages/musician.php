@@ -48,6 +48,8 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1786 — ihymns_title_sort_key() for the discography's Title sort key. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 /**
  * Slug → display name when no registry row exists. Mirrors the
@@ -985,6 +987,22 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
     <?php endif; ?>
 
     <!-- Discography grouped by role -->
+    <?php if (!empty($discography)): ?>
+        <!-- Sort control (#1786) — Number / Title / Songbook. One control
+             governs EVERY per-role group below (multi-container — each
+             role's own .song-list sorts independently; grouping by role is
+             the page's information architecture and is never flattened). -->
+        <?php
+            $listSortSurface = 'musician-songs';
+            $listSortDefault = 'Songbook & number';
+            $listSortOptions = [
+                'number' => ['label' => 'Number',   'type' => 'number', 'dir' => 'asc'],
+                'title'  => ['label' => 'Title',    'type' => 'text',   'dir' => 'asc'],
+                'book'   => ['label' => 'Songbook', 'type' => 'text',   'dir' => 'asc'],
+            ];
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+        ?>
+    <?php endif; ?>
     <?php foreach ($discography as $roleKey => $entry):
         $cfg = $entry['cfg'];
         $songs = $entry['songs'];
@@ -995,13 +1013,16 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                 <?= htmlspecialchars($cfg['label']) ?>
                 <small class="text-muted">(<?= count($songs) ?>)</small>
             </h2>
-            <div class="list-group song-list" role="list">
+            <div class="list-group song-list" role="list" data-list-sort-list="musician-songs">
                 <?php foreach ($songs as $s): ?>
                     <a href="/song/<?= htmlspecialchars($s['SongId']) ?>"
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="<?= htmlspecialchars($s['SongId']) ?>"
-                       role="listitem">
+                       role="listitem"
+                       <?php if ((int)$s['Number'] > 0): ?>data-sort-number="<?= (int)$s['Number'] ?>"<?php endif; ?>
+                       data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$s['Title'])) ?>"
+                       data-sort-book="<?= htmlspecialchars(mb_strtolower((string)$s['SongbookAbbr'], 'UTF-8')) ?>">
 <?php /* Unnumbered (Misc / unofficial) → emit a TRULY EMPTY badge (no whitespace)
                            so the shared `.song-number-badge:empty::before` book glyph shows
                            instead of a literal "0" (matches history.js:376). */ ?>

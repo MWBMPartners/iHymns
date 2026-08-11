@@ -74,6 +74,7 @@ declare(strict_types=1);
  */
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'identifier_resolve.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';   /* #1786 — ihymns_title_sort_key() */
 
 $idScheme = isset($idScheme) ? (string)$idScheme : '';
 $idCode   = isset($idCode) ? trim((string)$idCode) : '';
@@ -216,19 +217,35 @@ $idMusicians = $idResult['musicians'];
                 $idSongsByBook[$abbr]['rows'][] = $r;
             }
             ?>
+            <!-- Sort control (#1786) — Number / Title / Songbook. One
+                 control governs every per-songbook group below
+                 (multi-container). -->
+            <?php
+                $listSortSurface = 'identifier-songs';
+                $listSortDefault = 'Songbook & number';
+                $listSortOptions = [
+                    'number' => ['label' => 'Number',   'type' => 'number', 'dir' => 'asc'],
+                    'title'  => ['label' => 'Title',    'type' => 'text',   'dir' => 'asc'],
+                    'book'   => ['label' => 'Songbook', 'type' => 'text',   'dir' => 'asc'],
+                ];
+                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+            ?>
             <?php foreach ($idSongsByBook as $abbr => $book): ?>
                 <section class="mb-4">
                     <h2 class="h6 text-muted">
                         <span class="badge bg-body-secondary text-body-emphasis me-2"><?= htmlspecialchars($abbr) ?></span>
                         <?= htmlspecialchars($book['name']) ?>
                     </h2>
-                    <div class="list-group list-group-flush" role="list">
+                    <div class="list-group list-group-flush song-list" role="list" data-list-sort-list="identifier-songs">
                         <?php foreach ($book['rows'] as $r): ?>
                             <a class="list-group-item list-group-item-action song-list-item"
                                href="/song/<?= htmlspecialchars((string)$r['SongId']) ?>"
                                data-navigate="song"
                                data-song-id="<?= htmlspecialchars((string)$r['SongId']) ?>"
-                               role="listitem">
+                               role="listitem"
+                               <?php if ((int)$r['Number'] > 0): ?>data-sort-number="<?= (int)$r['Number'] ?>"<?php endif; ?>
+                               data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$r['Title'])) ?>"
+                               data-sort-book="<?= htmlspecialchars(mb_strtolower((string)$abbr, 'UTF-8')) ?>">
                                 <span class="song-number-badge"><?= (int)$r['Number'] ?: '?' ?></span>
                                 <div class="song-info flex-grow-1">
                                     <span class="song-title"><?= htmlspecialchars((string)$r['Title']) ?></span>

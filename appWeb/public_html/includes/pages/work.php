@@ -42,6 +42,8 @@ if (!isset($songData) || !is_object($songData)) {
     require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'SongData.php';
     $songData = new SongData();
 }
+/* #1786 — ihymns_title_sort_key() for the member-song list's Title sort key. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 $work = method_exists($songData, 'getWork') ? $songData->getWork($workSlug ?? '') : null;
 
@@ -292,6 +294,21 @@ foreach ($workCreditGroups as $workCreditGroup) {
         <?php if (empty($membersByBook)): ?>
             <p class="text-muted small mb-0">This work has no member songs yet.</p>
         <?php else: ?>
+            <!-- Sort control (#1786) — Default is the WORK's own curated
+                 member order (a movement/version order is meaningful — this
+                 is NOT an arbitrary server default like other surfaces'
+                 "Number"). One control governs every per-songbook group
+                 below (multi-container). -->
+            <?php
+                $listSortSurface = 'work-songs';
+                $listSortDefault = 'Work order';
+                $listSortOptions = [
+                    'number' => ['label' => 'Number',   'type' => 'number', 'dir' => 'asc'],
+                    'title'  => ['label' => 'Title',    'type' => 'text',   'dir' => 'asc'],
+                    'book'   => ['label' => 'Songbook', 'type' => 'text',   'dir' => 'asc'],
+                ];
+                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+            ?>
             <?php foreach ($membersByBook as $abbr => $book): ?>
                 <div class="mb-3">
                     <div class="d-flex align-items-baseline gap-2 mb-1">
@@ -303,13 +320,16 @@ foreach ($workCreditGroups as $workCreditGroup) {
                             <?= htmlspecialchars($book['name']) ?>
                         </a>
                     </div>
-                    <div class="list-group" role="list">
+                    <div class="list-group song-list" role="list" data-list-sort-list="work-songs">
                         <?php foreach ($book['members'] as $m): ?>
                             <a href="/song/<?= htmlspecialchars($m['songId']) ?>"
                                class="list-group-item list-group-item-action d-flex align-items-center gap-2"
                                data-navigate="song"
                                data-song-id="<?= htmlspecialchars($m['songId']) ?>"
-                               role="listitem">
+                               role="listitem"
+                               <?php if ((int)$m['number'] > 0): ?>data-sort-number="<?= (int)$m['number'] ?>"<?php endif; ?>
+                               data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$m['title'])) ?>"
+                               data-sort-book="<?= htmlspecialchars(mb_strtolower($abbr, 'UTF-8')) ?>">
                                 <?php if ((int)$m['number'] > 0): ?>
                                     <span class="badge bg-body-secondary">#<?= (int)$m['number'] ?></span>
                                 <?php endif; ?>
