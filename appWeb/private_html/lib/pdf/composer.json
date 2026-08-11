@@ -1,0 +1,6 @@
+{
+    "name": "ihymns/pdf-vendor",
+    "require": {
+        "mpdf/mpdf": "^8.2"
+    }
+}

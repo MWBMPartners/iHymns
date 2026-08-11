@@ -427,15 +427,32 @@ if (is_readable($realFile)) {
 }
 
 /* Scan the WHOLE tree for the signature, derived rather than typed (rule #34).
-   If any file anywhere mints a type-named unit, this reports it by name. */
+   If any file anywhere mints a type-named unit, this reports it by name.
+   `vendor` (+ `.git` / `node_modules`, for parity with every other full-tree
+   PHP walker in this suite — test-song-relocate-funnels.php's
+   relocGuardPhpFiles() is the precedent) is SKIPPED: this guard exists to
+   catch OUR OWN closure/case naming-collision bug (#1703/#1707) in code we
+   wrote and hold to house annotation/naming discipline — it was never meant
+   to police a vendored third-party library's own coding style. #1767
+   remainder P3 vendored mPDF (GPL-2.0, `appWeb/private_html/lib/pdf/vendor/`)
+   as the first PHP dependency ever to live under `appWeb/`, and its own
+   `Writer/BaseWriter.php` innocently tripped the un-scoped scan the same
+   day this exclusion was added — proof the guard COULD false-positive
+   before this fix, not just a defensive guess. */
 $root    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'appWeb';
 $typeSet = ['int', 'bool', 'string', 'float', 'void', 'array', 'mixed', 'callable', 'object', 'iterable', 'never'];
 $offend  = [];
 $scanned = 0;
+$skipDirs = ['.git' => true, 'node_modules' => true, 'vendor' => true];
 
 if (is_dir($root)) {
     $it = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+        new RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            static function ($current) use ($skipDirs): bool {
+                return !($current->isDir() && isset($skipDirs[$current->getFilename()]));
+            }
+        )
     );
     foreach ($it as $f) {
         if (!$f->isFile() || strtolower($f->getExtension()) !== 'php') { continue; }

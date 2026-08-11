@@ -1,0 +1,22 @@
+# ============================================================================
+# iHymns — vendored mPDF library: belt-and-braces deny-all
+#
+# ELI5: this folder holds a PHP toolbox we PHP-require from inside our own
+# server code — nobody's browser should ever be able to ask for a file in
+# here directly.
+#
+# DETAIL: `appWeb/private_html/` already sits behind the directory-wide
+# HTTP Basic Auth in `appWeb/private_html/.htaccess` (#1767 remainder P3,
+# `.claude/print-templates-1767-remainder-plan.md` §3.2). This file is a
+# second, independent layer scoped to just the vendored PDF library tree —
+# defence in depth so a future edit to the parent `.htaccess` (or a hosting
+# migration that doesn't carry it over) can't silently expose ~14 000 lines
+# of third-party PHP + font binaries to the public web. `includes/pdf_renderer.php`
+# reaches this tree only via a PHP `require`, which never goes through the
+# web server's URL-to-file mapping, so this deny costs it nothing.
+#
+# @see appWeb/private_html/.htaccess          the directory-wide Basic Auth
+# @see appWeb/public_html/includes/pdf_renderer.php  the ONE PHP consumer
+# @link https://httpd.apache.org/docs/current/mod/mod_authz_core.html#require
+# ============================================================================
+Require all denied

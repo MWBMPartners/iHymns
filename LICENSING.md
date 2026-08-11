@@ -43,6 +43,20 @@ are those currently pinned in the web app (verify against the source on update).
 | **jQuery** | 3.7.1 | MIT | Limited legacy use |
 | **protobuf.js** (`protobufjs`) | ^8.5.0 | BSD-3-Clause | Dev dependency (ProPresenter import tooling) |
 | **jsdom** | ^30.0.1 | MIT | Dev dependency (DOM-backed unit tests, #1594) — **never shipped**; test-time only |
+| **mPDF** (`mpdf/mpdf`) | 8.3.x | **GPL-2.0-only** | ⚠️ See note below. Server-side HTML→PDF engine (#1767 remainder P3) — vendored via Composer at `appWeb/private_html/lib/pdf/vendor/`, **outside every web docroot**, never loaded by a browser. Its own runtime dependencies (`setasign/fpdi`, `mpdf/psr-http-message-shim`, `mpdf/psr-log-aware-trait`, `myclabs/deep-copy`, `paragonie/random_compat`, `psr/http-message`, `psr/log`) are all separately MIT-licensed and ship in the same vendored tree |
+
+> ⚠️ **mPDF licence note.** mPDF is **GPL-2.0-only**. Using it SERVER-SIDE inside
+> a proprietary SaaS app is legally sound: GPLv2's copyleft obligations trigger
+> on *distributing* the software, and this repository (and the PHP process that
+> runs mPDF) is never distributed to an end user — only the PDF FILES it
+> produces are. Generated PDFs are ordinary program OUTPUT, not a derivative
+> work of mPDF's source, and carry no GPL obligation of their own (the same
+> reasoning that lets a proprietary app link GPL `ffmpeg`/`ImageMagick`
+> binaries to produce media files). If mPDF's presence in the tree at all is
+> ever a concern for a distribution channel, `includes/pdf_renderer.php` is
+> the ONE swappable module a different engine (LGPL Dompdf, or a self-hosted
+> Chromium render service) would replace — see
+> `.claude/print-templates-1767-remainder-plan.md`'s engine-decision record.
 
 > ⚠️ **animate.css 4.x licence note.** animate.css moved from MIT to the
 > **Hippocratic License 2.1** in v4 — an *ethical-source* licence with use
