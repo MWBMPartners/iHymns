@@ -65,6 +65,13 @@ export const STORAGE_PWA_BANNER_DISMISSED = 'ihymns_pwa_banner_dismissed';
 
 export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
 
+/* #1786 Option B — the public card/list "Sort ▾" control's saved spec, one
+   JSON blob keyed by surface id: `{ "<surface>": [{key,dir},…] }`. Device
+   copy for anonymous users / first-paint; signed-in users additionally sync
+   this SAME shape through the `list_sorts` namespace of the existing
+   `user_settings` endpoint (#1671 F5) — see js/modules/list-sort.js. */
+export const STORAGE_LIST_SORT = 'ihymns_list_sorts';
+
 /* Auth (cross-subdomain SPA session token + cached user object) */
 export const STORAGE_AUTH_TOKEN         = 'ihymns_auth_token';
 export const STORAGE_AUTH_USER          = 'ihymns_auth_user';

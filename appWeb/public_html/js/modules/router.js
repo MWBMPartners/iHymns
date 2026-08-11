@@ -684,6 +684,17 @@ export class Router {
            that already have handlers. */
         import('./offline-ui.js').then(m => m.bootOfflineUi()).catch(() => {});
 
+        /* #1786 Option B — the public "Sort ▾" control. ONE unconditional
+           boot for every page, never a per-page branch (a hand-typed page
+           list rots — rule #34): initListSort() finds every
+           [data-list-sort-surface] control in the fresh fragment and wires
+           any that has a matching [data-list-sort-list] container. A
+           surface with no container (favourites/search, array/server mode)
+           is skipped by construction — those modules wire themselves via
+           wireListSortControl(). */
+        import('./list-sort.js').then(m => m.initListSort())
+            .catch(err => console.error('[Router] list-sort init failed:', err));
+
         /* Reading-progress bar on every scrollable page (#751). Was
            song-only originally (#109); the module's short-page
            short-circuit handles non-scrollable pages cleanly so
