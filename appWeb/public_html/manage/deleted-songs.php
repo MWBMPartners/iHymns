@@ -220,7 +220,7 @@ $reasonLabels = songDeleteReasons();
                 <strong>Purge</strong> permanently destroys it (and can point its old link at
                 another song); that cannot be undone.
             <?php else: ?>
-                Permanent removal (purge) needs the <code>purge_songs</code> entitlement.
+                Permanent removal (purge) needs an extra permission.
             <?php endif; ?>
         </p>
 

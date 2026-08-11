@@ -319,9 +319,9 @@ $csrf = csrfToken();
 
         <h1 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Content Restrictions</h1>
         <p class="text-secondary small mb-3">
-            Rule-based lockout for regular users: hide specific songs, whole songbooks, or app features
-            based on platform, user, organisation, or licence. Rules evaluate by <code>Priority</code>
-            (highest first); at equal priority, <em>deny</em> beats <em>allow</em>.
+            Set rules that hide specific songs, whole songbooks, or app features from certain people,
+            based on their platform, account, organisation, or licence. When two rules clash, the one
+            with the higher priority number wins, and a <em>hide</em> rule beats an <em>allow</em> rule.
         </p>
 
         <?php if (!$gatingEnabled): ?>

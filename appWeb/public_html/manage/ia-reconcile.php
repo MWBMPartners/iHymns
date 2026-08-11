@@ -265,7 +265,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IA Reconcile — iHymns Admin</title>
+    <title>Scan Import — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
@@ -274,12 +274,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-archive me-2"></i>Internet Archive OCR Reconcile</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-archive me-2"></i>Scan Import</h1>
         <p class="text-secondary small mb-4">
-            Read-only audit (#94 Phase 1). Fetches an archive.org scan's OCR full-text, splits it
-            into hymn-shaped candidates, and compares each one against a chosen songbook. Nothing on
-            this page ever creates, edits or deletes a song — the <strong>Gap</strong> list is the
-            point: hymns that look like they exist in the scan but not (yet) in iHymns.
+            Compare a scanned songbook from the Internet Archive (archive.org) against one of your
+            songbooks in iHymns. Pick a songbook and a scan, then run the check to see which hymns in
+            the scan already match songs you have, which look like they are missing, and which of your
+            songs weren't found in the scan. This only shows you a report — it never adds, changes or
+            deletes any song. The main thing to look for is the <strong>Gap</strong> list: hymns that
+            appear in the scan but aren't in iHymns yet.
         </p>
         <p class="text-secondary small mb-4">
             Known limitations, honestly stated: prose front-matter and two-column layouts segment

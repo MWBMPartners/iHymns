@@ -2137,11 +2137,10 @@ try {
 
         <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Musicians</h1>
         <p class="text-secondary small mb-3">
-            Every individual credited as a writer, composer, arranger, adaptor or
-            translator across the catalogue, plus every pre-registered name in
-            <code>tblMusicians</code>. Use this view to spot duplicates that
-            need merging (e.g. <code>J. Newton</code> vs <code>John Newton</code>)
-            or registry-only names that are waiting on a song to cite them.
+            Everyone credited on your songs as a writer, composer, arranger,
+            adaptor or translator, plus any names added ahead of time. Use this
+            page to spot duplicates that need merging (for example, J. Newton and
+            John Newton), or to see names that are set up but no song uses yet.
         </p>
 
         <?php if ($success): ?>

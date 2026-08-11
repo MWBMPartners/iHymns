@@ -465,8 +465,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <i class="bi bi-translate me-2"></i>Languages
             </h1>
             <p class="text-secondary small mb-0">
-                IETF BCP 47 language registry (<code>tblLanguages</code>) — backs the language picker (#681 / #685) and the language filter (#737).
-                Most rows are seeded from the IANA registry by <code>migrate-iana-language-subtag-registry.php</code>; use this surface for private-use codes, NativeName fixes, and retiring deprecated subtags.
+                The list of languages iHymns knows about. These power the language picker and the
+                language filter that readers and curators use to find songs in a particular language.
+                Most languages are already set up for you; use this page to add one that's missing, fix
+                how a language's own name is written, or hide one you no longer want to offer.
             </p>
         </div>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create">

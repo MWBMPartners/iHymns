@@ -535,7 +535,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Feature Gating — iHymns Admin</title>
+    <title>Feature Access — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -545,14 +545,14 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-toggles me-2"></i>Feature Gating</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-toggles me-2"></i>Feature Access</h1>
         <p class="text-secondary small mb-4">
-            Define <strong>additional</strong> gateable capabilities — beyond the built-in seven
-            (Lyrics / Copyrighted / Audio / MIDI / PDF / Offline / Needs&nbsp;CCLI) — without a code
-            deploy. Every enabled capability here appears as a new column + checkbox on
-            <a href="/manage/tiers" class="text-info">Access Tiers</a>, where you set its
-            per-tier value. This page only defines <em>what</em> a capability is — not which
-            tiers grant it.
+            Add your own <strong>extra</strong> permissions — beyond the standard set
+            (Lyrics / Copyrighted / Audio / MIDI / PDF / Offline / Needs&nbsp;CCLI) — without needing a
+            developer. Each one you add here appears as a new tick-box on
+            <a href="/manage/tiers" class="text-info">Membership Tiers</a>, where you choose which
+            levels get it. This page only defines <em>what</em> a permission is — not which
+            levels grant it.
         </p>
 
         <?php if ($success): ?>

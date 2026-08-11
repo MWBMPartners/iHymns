@@ -1049,7 +1049,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuration — iHymns Admin</title>
+    <title>Settings — iHymns Admin</title>
     <?php /* #965 — use the shared head bundler. Loads admin-theme-init.php
              so the page obeys the user's theme preference (was light-only),
              and syncs Bootstrap + Bootstrap-Icons versions with the rest
@@ -1063,11 +1063,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-start mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-sliders me-2"></i>Configuration
+                <i class="bi bi-sliders me-2"></i>Settings
                 <?= entitlementLockChipHtml('manage_configuration') ?>
             </h1>
             <p class="text-secondary small mb-0">
-                System-wide settings. Changes apply immediately across the app.
+                Site-wide settings for iHymns, including email delivery and connections to other services. Changes take effect immediately.
                 <span class="badge bg-danger text-light ms-1" style="font-size: 0.7rem; font-weight: 600;">
                     <i class="bi bi-lock-fill me-1" aria-hidden="true"></i>Global Admin only
                 </span>

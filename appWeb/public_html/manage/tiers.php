@@ -286,7 +286,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Access Tiers — iHymns Admin</title>
+    <title>Membership Tiers — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -296,15 +296,15 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-stars me-2"></i>Access Tiers</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-stars me-2"></i>Membership Tiers</h1>
         <p class="text-secondary small mb-4">
-            Each regular user carries an access tier (<code>tblUsers.AccessTier</code>) that controls
-            whether they see copyrighted lyrics, play audio, or download MIDI / sheet music / offline
-            content. Higher <em>Level</em> values are treated as more privileged.
-            Assign tiers per user from <a href="/manage/users" class="text-info">User Management</a>.
+            Set the membership levels a user can be given, and choose what each level is allowed to do —
+            see copyrighted lyrics, play audio, download MIDI or sheet music, or save songs offline.
+            A higher <em>Level</em> number counts as more privileged.
+            Give each user a level from <a href="/manage/users" class="text-info">Users</a>.
             <?php if ($currentUser && userHasEntitlement('manage_feature_gating', $currentUser['role'] ?? null)): ?>
-                Add or gate <strong>additional</strong> capabilities (beyond the built-in seven) on
-                <a href="/manage/feature-gating" class="text-info">Feature Gating</a>.
+                Add or control <strong>extra</strong> permissions (beyond the standard set) on
+                <a href="/manage/feature-gating" class="text-info">Feature Access</a>.
             <?php endif; ?>
         </p>
 

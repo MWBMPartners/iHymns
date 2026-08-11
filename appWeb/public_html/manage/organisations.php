@@ -544,8 +544,8 @@ $csrf = csrfToken();
 
         <h1 class="h4 mb-3"><i class="bi bi-building me-2"></i>Organisations</h1>
         <p class="text-secondary small mb-4">
-            Add and edit organisations (churches / groups), manage their members,
-            and maintain licence metadata.
+            Add and edit organisations (churches and groups), manage who belongs to each one,
+            and keep their licence details up to date.
         </p>
 
         <?php if ($success): ?>

@@ -145,9 +145,10 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
 
         <h1 class="h4 mb-3"><i class="bi bi-patch-check me-2"></i>Licence Types</h1>
         <p class="text-secondary small mb-3">
-            The licence vocabulary the catalogue uses — what each licence legally <em>covers</em> and any
-            access <em>tier</em> it confers. Organisations, songs and content-restriction rules all reference
-            these keys. The key is fixed once created (it is stored across many tables); everything else is editable.
+            The list of licence types the site knows about — such as CCLI or MRL — with what each one
+            legally <em>allows</em> (showing or printing lyrics, reproducing music, playing audio) and any
+            membership level it grants. Organisations, songs and content rules all point to these licences.
+            A licence's short code can't be changed once it's created; everything else can.
         </p>
         <div class="alert alert-warning py-2 small" role="note">
             <i class="bi bi-exclamation-triangle me-1"></i>

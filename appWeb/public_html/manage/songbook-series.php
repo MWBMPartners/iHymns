@@ -630,10 +630,11 @@ if ($hasSchema) {
 
         <h1 class="h4 mb-3"><i class="bi bi-collection me-2"></i>Songbook Series</h1>
         <p class="text-secondary small mb-4">
-            Group songbooks that share collection identity but have no canonical parent —
-            Songs of Fellowship volumes 1/2/3/4, themed compilations, etc. For
-            translation / edition relationships use the <strong>Parent songbook</strong>
-            field on <a href="/manage/songbooks">/manage/songbooks</a> instead (#782).
+            Group songbooks that belong together but have no single main book to
+            point to — like Songs of Fellowship volumes 1/2/3/4, or themed
+            compilations. If instead one book is a translation or a new edition of
+            another, set its <strong>parent book</strong> on the
+            <a href="/manage/songbooks">Songbooks</a> page.
         </p>
 
         <?php if ($success): ?>

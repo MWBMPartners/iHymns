@@ -436,7 +436,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Musician Duplicates Review — iHymns Admin</title>
+    <title>Find Duplicate Musicians — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
@@ -445,15 +445,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <main class="container-fluid py-4">
     <div class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-2">
         <div>
-            <h1 class="h3 mb-1"><i class="bi bi-people-fill me-2"></i>Musician Duplicates Review</h1>
+            <h1 class="h3 mb-1"><i class="bi bi-people-fill me-2"></i>Find Duplicate Musicians</h1>
             <p class="text-secondary small mb-0" style="max-width:60rem;">
-                Two registry entries that are probably the same person — either the <strong>exact same
-                spelling</strong> minus invisible bytes (a curly apostrophe, an extra space), or names that
-                are <strong>similar enough</strong> to be worth a look. Scored live on every visit — nothing
-                here is precomputed or can go stale.
+                Two entries in your Musicians list that are probably the same person — either the
+                <strong>exact same name</strong> give or take an invisible difference (a curly apostrophe,
+                an extra space), or names that are <strong>similar enough</strong> to be worth a look.
+                Merge the ones that really match to keep your list tidy. Checked fresh every time you
+                open the page.
                 <a href="/manage/musicians" class="link-secondary">← back to Musicians</a>
                 &middot; <a href="/manage/musicians-bulk-promote" class="link-secondary">Add Musicians in Bulk</a>
-                (a different job — names cited on a song that <em>aren't in the registry at all</em>)
+                (a different job — names used on a song that <em>aren't in your Musicians list at all</em>)
             </p>
         </div>
         <div class="d-flex flex-wrap gap-2">

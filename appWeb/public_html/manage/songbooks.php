@@ -3119,9 +3119,10 @@ $csrf = csrfToken();
 
         <h1 class="h4 mb-3"><i class="bi bi-book me-2"></i>Songbooks</h1>
         <p class="text-secondary small mb-4">
-            Add, rename, reorder and remove the songbooks users see in filters,
-            search and the Song Editor. Abbreviation is the natural key on each
-            song (<code>tblSongs.SongbookAbbr</code>), so renaming is opt-in.
+            Add, rename, reorder and remove the songbooks people see in filters,
+            search and the Song Editor. Each song is tied to its songbook by a
+            short code, so changing that code is a deliberate step rather than
+            something that happens automatically.
         </p>
 
         <?php if ($success): ?>

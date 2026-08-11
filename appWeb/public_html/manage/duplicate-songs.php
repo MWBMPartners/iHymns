@@ -1019,7 +1019,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Duplicate &amp; Counterpart Review — iHymns Admin</title>
+    <title>Find Duplicates — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
@@ -1028,14 +1028,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <main class="container-fluid py-4">
     <div class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-2">
         <div>
-            <h1 class="h3 mb-1"><i class="bi bi-git-compare me-2"></i>Duplicate &amp; Counterpart Review</h1>
+            <h1 class="h3 mb-1"><i class="bi bi-git-compare me-2"></i>Find Duplicates</h1>
             <p class="text-secondary small mb-0" style="max-width:60rem;">
-                Candidate groups scored by the similarity engine — <strong>title + first lyric line +
-                writers/composers</strong>, plus any shared ISWC / CCLI / ISRC (a shared code is a certain
-                match). <strong>Link</strong> the same hymn across songbooks; <strong>Merge</strong> true
-                duplicates (irreversible); <strong>Dismiss</strong> false positives. Two songs sharing a
-                title <em>within one published hymnal</em> are almost always different hymns — they get a
-                guarded section of their own (#1215).
+                Songs that might be the same are grouped here, matched on their title, first line and
+                writers, plus any shared music-industry code. <strong>Link</strong> the same hymn when it
+                appears in more than one songbook; <strong>Merge</strong> two records that are truly the
+                same into one (this cannot be undone); <strong>Dismiss</strong> a group that is not really a
+                match. Two songs with the same title inside one published songbook are usually different
+                hymns, so they are listed separately for a careful look.
             </p>
         </div>
         <div class="d-flex flex-wrap gap-2">

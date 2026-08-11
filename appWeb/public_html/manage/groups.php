@@ -245,8 +245,8 @@ $csrf = csrfToken();
 
         <h1 class="h4 mb-3"><i class="bi bi-people-fill me-2"></i>User Groups</h1>
         <p class="text-secondary small mb-4">
-            Define groups for shared access settings (alpha / beta / RC / RTW).
-            Each user belongs to at most one group via <code>tblUsers.GroupId</code>.
+            Group users together to control which early-access builds of iHymns they can use —
+            alpha, beta, release candidate, and the public release. Each user belongs to one group at a time.
         </p>
 
         <?php if ($success): ?>

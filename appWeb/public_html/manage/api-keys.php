@@ -364,9 +364,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div>
             <h1 class="h3 mb-1"><i class="bi bi-key me-2"></i>API Keys</h1>
             <p class="text-secondary small mb-0">
-                Machine-to-machine keys for external services (e.g. MeedyaDL) calling the public API without a session —
-                today the lyrics-ingest endpoint (<code>scope&nbsp;lyrics:ingest</code>). Keys are stored hashed; the raw value is shown
-                <strong>once</strong> at creation. <code>tblApiKeys</code> (#1064).
+                Keys that let trusted outside services (for example MeedyaDL)
+                connect to iHymns automatically, without anyone signing in —
+                today, to send in song lyrics. Each key is secret and shown in
+                full only <strong>once</strong>, when it's created, so copy it
+                somewhere safe straight away.
             </p>
         </div>
         <?php if ($canManage): ?>

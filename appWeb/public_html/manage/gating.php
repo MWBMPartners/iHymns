@@ -135,7 +135,7 @@ $gatingDecisions = [
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gating Hub — iHymns Admin</title>
+    <title>Content Access — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -145,12 +145,13 @@ $gatingDecisions = [
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-shaded me-2"></i>Gating Hub</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-shield-shaded me-2"></i>Content Access</h1>
         <p class="text-secondary small mb-4">
-            One place to see the whole content-gating family and whether it is safe to
-            turn enforcement on. The entire program (#1769) ships <strong>dormant</strong> —
-            with the master switch off, every reader emits exactly what it does today.
-            Turning it on is a deliberate, human-only act (this page never flips it).
+            One place to see everything that controls who can view and download your songs,
+            and to check whether it is safe to switch content locking on. While the master
+            switch is <strong>off</strong>, everything here is inactive and people see songs
+            exactly as they do now. Turning it on is a deliberate step you take by hand — this
+            page never does it for you.
         </p>
 
         <!-- Master-switch state (read-only; the control lives on Configuration) -->

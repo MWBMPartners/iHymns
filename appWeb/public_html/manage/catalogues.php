@@ -504,10 +504,10 @@ if ($hasSchema && !empty($catalogues)) {
         <i class="bi bi-collection me-1" aria-hidden="true"></i>Collections
     </h1>
     <p class="small text-muted mb-3">
-        A <strong>Collection</strong> is a free-form many-to-many grouping of songs that sits alongside
-        the Songbook hierarchy. Use it for thematic collections (Christmas, Easter), worship-leader
-        curations (Modern, Traditional), denominational groupings, Public-Domain-only views — anything
-        where one song should appear in many groupings without duplicating data.
+        A <strong>Collection</strong> is a flexible way to group songs, separate from which songbook
+        each song lives in. Use it for themed sets (Christmas, Easter), worship-leader picks (Modern,
+        Traditional), denominational groupings, or Public-Domain-only lists — anywhere one song should
+        appear in several groupings at once.
     </p>
 
     <?php if (!empty($error)): ?>

@@ -284,11 +284,11 @@ $csrf = csrfToken();
 
         <h1 class="h4 mb-3"><i class="bi bi-activity me-2"></i>Data Health Check</h1>
         <p class="text-secondary small mb-4">
-            Confirm MySQL is fully authoritative before retiring the legacy
-            <code>songs.json</code>, shared-setlist JSON files and SQLite
-            database used in earlier iterations. Nothing on this page is
-            destructive — "disconnect" renames the legacy sources to
-            <code>*.disabled</code>, which is trivially reversible.
+            Checks that the live database now holds every song, user and
+            shared set list, so the old backup files kept from earlier
+            versions of the site can be safely switched off. Nothing here
+            deletes anything — switching a file off just renames it so it
+            stops being used, and you can rename it back at any time.
         </p>
 
         <?php if ($flash): ?>

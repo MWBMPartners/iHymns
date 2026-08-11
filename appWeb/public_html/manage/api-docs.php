@@ -106,12 +106,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <i class="bi bi-file-earmark-code me-2"></i>API Docs
             </h1>
             <p class="text-secondary small mb-0">
-                Browseable rendering of <code>/api-docs.yaml</code> — every
-                endpoint of the iHymns REST API with request / response
-                schemas, examples, and a "Try it out" runner. Authenticated
-                endpoints need a Bearer token; paste yours into Swagger's
-                <em>Authorize</em> dialog to exercise admin / user-scoped
-                routes inline.
+                A developer reference for the iHymns web API: every request the
+                apps and other services can make, with examples and a built-in
+                "Try it out" tool. Requests that need a sign-in take a key —
+                paste yours into the <em>Authorize</em> box to try those too.
                 <span class="badge bg-info-subtle text-info-emphasis ms-1" style="font-size: 0.7rem; font-weight: 600;">
                     Editor / Admin only
                 </span>
