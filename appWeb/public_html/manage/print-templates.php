@@ -33,6 +33,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    lands those symbols directly in THIS file's global scope — every call site
    below is unchanged. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_schema.php';
+/* printCustomLayoutSave() / printCustomLayoutDelete() / printCustomLayoutGetForEdit()
+   — feature E (#1767 remainder P7), THE ONE CRUD surface for a template's
+   uploaded full-page layout skin. Reused, never forked (rule #22) — the
+   render path (api.php's print_templates action) reads the SAME table via
+   this module's separate render-path functions, never HtmlOriginal. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -291,6 +297,45 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 header('Location: /manage/print-templates?imported=1');
                 exit;
             }
+
+            /* #1767 remainder P7 — feature E: save (create/replace) a
+               template's custom full-page layout skin. THE ONE writer is
+               printCustomLayoutSave() (includes/print_custom_layout.php) —
+               this handler does no sanitisation/validation of its own; it
+               only forwards the raw textarea/upload text and reports back
+               whatever that ONE function decides. */
+            case 'layout_save': {
+                $id      = (int)($_POST['id'] ?? 0);
+                $rawHtml = (string)($_POST['layout_html'] ?? '');
+                $result  = printCustomLayoutSave($id, $rawHtml, (int)($currentUser['id'] ?? 0));
+                if (!$result['ok']) {
+                    $error = $result['error'] ?? 'Could not save the custom layout.';
+                    break;
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('print_template.layout_save', 'print_template', (string)$id, [
+                        'sizeBytes' => $result['sizeBytes'] ?? null,
+                    ]);
+                }
+                header('Location: /manage/print-templates?layout_saved=1');
+                exit;
+            }
+
+            /* #1767 remainder P7 — feature E: remove a template's custom
+               layout (falls back to the standard document shell). */
+            case 'layout_delete': {
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id > 0 && printCustomLayoutDelete($id)) {
+                    if (function_exists('logActivity')) {
+                        logActivity('print_template.layout_delete', 'print_template', (string)$id, []);
+                    }
+                } else {
+                    $error = 'Could not remove the custom layout.';
+                    break;
+                }
+                header('Location: /manage/print-templates?layout_deleted=1');
+                exit;
+            }
         }
     } catch (\Throwable $e) {
         /* Log the detail; show a generic message so raw SQL/table names never
@@ -306,6 +351,8 @@ if (isset($_GET['deleted']))     { $success = 'Template deleted.'; }
 if (isset($_GET['cloned']))      { $success = 'Template cloned.'; }
 if (isset($_GET['default_set'])) { $success = 'Default template set.'; }
 if (isset($_GET['imported']))    { $success = 'Template imported.'; }
+if (isset($_GET['layout_saved']))   { $success = 'Custom layout saved.'; }
+if (isset($_GET['layout_deleted'])) { $success = 'Custom layout removed.'; }
 
 /* #1767 Z — export a template as a downloadable JSON file (the round-trip
    partner of the `import` POST action). GET so a plain link works; streamed
@@ -373,12 +420,29 @@ if ($hasSchema) {
                 'isActive'   => (int)$row['IsActive'],
                 'isDefault'  => (int)$row['IsDefault'],
             ];
+            /* #1767 remainder P7 (feature E) — EDIT-PATH read only (never
+               the render path): the sanitised copy feeds the SAME live
+               preview the block editor already renders (via
+               applyCustomLayout() in print.js, below), and the raw upload
+               pre-fills the textarea so a curator re-editing sees what they
+               actually typed, not the stripped-down sanitised copy. Absent
+               entirely for a template with no layout (or an un-migrated
+               install) — the JS below treats `layout: null` as "no custom
+               layout". */
+            $layoutRow = printCustomLayoutGetForEdit($id);
+
             $editorData[$id] = [
                 'id'          => $id,
                 'name'        => (string)$row['Name'],
                 'isActive'    => (int)$row['IsActive'] === 1,
                 'blocks'      => $blocks,
                 'pageOptions' => $pageOpts,
+                'layout'      => $layoutRow ? [
+                    'html'             => $layoutRow['htmlSanitised'], // preview ONLY — never treat as the raw upload
+                    'htmlOriginal'     => $layoutRow['htmlOriginal'],  // textarea pre-fill ONLY — never rendered
+                    'sizeBytes'        => $layoutRow['sizeBytes'],
+                    'sanitiserVersion' => $layoutRow['sanitiserVersion'],
+                ] : null,
             ];
         }
         if ($res) { $res->close(); }
@@ -668,6 +732,54 @@ if ($hasSchema) {
                     </button>
                 </div>
             </form>
+
+            <!-- #1767 remainder P7 (feature E) — a template's OPTIONAL
+                 full-page custom layout skin. A SEPARATE <form> (its own
+                 `action`, its own CSRF-gated POST) — a template must already
+                 have an id before it can own a layout row (the DB FK), so
+                 this whole section stays hidden for a brand-new, unsaved
+                 template (see openEditor()'s toggle below). -->
+            <hr class="my-4">
+            <div id="pt-layout-editor" class="d-none">
+                <div class="d-flex align-items-center mb-2">
+                    <h3 class="h6 mb-0"><i class="bi bi-file-earmark-richtext me-2"></i>Custom full-page layout</h3>
+                    <span id="pt-layout-status" class="badge bg-secondary-subtle text-secondary-emphasis ms-2"></span>
+                </div>
+                <p class="text-secondary small mb-3">
+                    Optional. Upload or paste a full HTML page &mdash; a cover sheet, a branded
+                    letterhead, a booklet shell &mdash; that WRAPS this template&rsquo;s printed
+                    content. Your HTML is run through iHymns&rsquo; sanitiser (scripts, event
+                    handlers, forms, stylesheets and any link to gated media are stripped); only
+                    the sanitised result is ever shown to curators or printed. It MUST contain the
+                    literal token <code>{{content}}</code> <strong>exactly once</strong> &mdash;
+                    that is where the song&rsquo;s printed content is inserted. Optional metadata
+                    tokens, replaced with this song&rsquo;s own values when printed:
+                    <code>{{title}}</code>, <code>{{songbook}}</code>, <code>{{number}}</code>,
+                    <code>{{ccli}}</code>, <code>{{copyright}}</code>, <code>{{date}}</code>,
+                    <code>{{pageUrl}}</code>.
+                </p>
+                <form method="POST" id="pt-layout-form">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                    <input type="hidden" name="action" value="layout_save">
+                    <input type="hidden" name="id" id="pt-layout-id" value="">
+                    <label class="form-label small mb-1" for="pt-layout-html">Layout HTML</label>
+                    <textarea class="form-control form-control-sm font-monospace" id="pt-layout-html" name="layout_html"
+                              rows="8" placeholder='&lt;div class="cover-page"&gt;&#10;  &lt;h1&gt;{{title}}&lt;/h1&gt;&#10;  {{content}}&#10;&lt;/div&gt;'></textarea>
+                    <div class="d-flex gap-2 mt-2">
+                        <button type="submit" class="btn btn-amber btn-sm">
+                            <i class="bi bi-save me-1"></i>Save layout
+                        </button>
+                        <button type="button" class="btn btn-outline-danger btn-sm d-none" id="pt-layout-remove">
+                            <i class="bi bi-trash me-1"></i>Remove layout
+                        </button>
+                    </div>
+                </form>
+                <form method="POST" id="pt-layout-delete-form" class="d-none">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                    <input type="hidden" name="action" value="layout_delete">
+                    <input type="hidden" name="id" id="pt-layout-delete-id" value="">
+                </form>
+            </div>
         </div>
 
         <!-- #1767 remainder P4 — the true PDF preview modal. Native browser PDF
@@ -694,7 +806,7 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, printCss }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, printCss, applyCustomLayout }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
@@ -727,11 +839,20 @@ if ($hasSchema) {
         const idEl        = $('#pt-id');
         const titleEl     = $('#pt-editor-title');
 
+        // #1767 remainder P7 (feature E) — custom-layout section refs.
+        const layoutSectionEl  = $('#pt-layout-editor');
+        const layoutStatusEl   = $('#pt-layout-status');
+        const layoutHtmlEl     = $('#pt-layout-html');
+        const layoutIdEl       = $('#pt-layout-id');
+        const layoutRemoveBtn  = $('#pt-layout-remove');
+        const layoutDeleteForm = $('#pt-layout-delete-form');
+        const layoutDeleteIdEl = $('#pt-layout-delete-id');
+
         // The working template the editor mutates; serialised to hidden inputs on submit.
         let working = freshTemplate();
 
         function freshTemplate() {
-            return { id: null, name: '', isActive: true, pageOptions: defaultPageOptions(), blocks: [] };
+            return { id: null, name: '', isActive: true, pageOptions: defaultPageOptions(), blocks: [], layoutHtml: null };
         }
 
         // Seed pageOptions with every registry default, so a fresh template
@@ -947,10 +1068,19 @@ if ($hasSchema) {
                 && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(po.accentColor)) ? po.accentColor : '';
             previewEl.classList.toggle('pt-accent', !!accent);
             if (accent) { previewEl.style.setProperty('--pt-accent', accent); }
-            previewEl.innerHTML = renderTemplateBodyHtml(
+            const contentHtml = renderTemplateBodyHtml(
                 PRINT_SAMPLE_SONG,
                 { blocks: working.blocks, pageOptions: working.pageOptions }
             );
+            // #1767 remainder P7 (feature E) — when this template has a
+            // saved custom layout, the SAME applyCustomLayout() call the
+            // real print/PDF paths make wraps the preview too, so this
+            // panel IS the "sanitised preview" the layout deliverable asks
+            // for (working.layoutHtml is always the server's SANITISED
+            // copy — see openEditor() below).
+            previewEl.innerHTML = working.layoutHtml
+                ? applyCustomLayout(working.layoutHtml, PRINT_SAMPLE_SONG, contentHtml)
+                : contentHtml;
         }
 
         // ---- delegated handlers on the block list (option edits + reorder/remove) ----
@@ -1007,6 +1137,41 @@ if ($hasSchema) {
 
         // (page-option inputs feed working.pageOptions via onPageOptMutate, wired above.)
 
+        // #1767 remainder P7 (feature E) — show/hide + populate the custom-
+        // layout section for whichever template is currently open. A
+        // brand-new (unsaved) template has no id yet, so it stays hidden
+        // (the DB row's TemplateId FK needs a real template to point at).
+        function refreshLayoutSection(tpl) {
+            if (!working.id) {
+                layoutSectionEl.classList.add('d-none');
+                return;
+            }
+            layoutSectionEl.classList.remove('d-none');
+            layoutIdEl.value = String(working.id);
+            layoutDeleteIdEl.value = String(working.id);
+            const layout = tpl && tpl.layout;
+            if (layout) {
+                // The RAW upload pre-fills the textarea (so re-editing shows what
+                // the curator actually typed) — never the sanitised copy, which
+                // would look mangled to re-submit. This is display chrome, not a
+                // render path: the LIVE PREVIEW below still only ever uses
+                // working.layoutHtml (the sanitised copy).
+                layoutHtmlEl.value = layout.htmlOriginal || '';
+                layoutStatusEl.textContent = 'Saved · ' + (layout.sizeBytes || 0) + ' bytes';
+                layoutRemoveBtn.classList.remove('d-none');
+            } else {
+                layoutHtmlEl.value = '';
+                layoutStatusEl.textContent = 'None';
+                layoutRemoveBtn.classList.add('d-none');
+            }
+        }
+        layoutRemoveBtn.addEventListener('click', () => {
+            if (!working.id) { return; }
+            if (!confirm('Remove this template’s custom layout? It will fall back to the standard document shell.')) { return; }
+            layoutDeleteIdEl.value = String(working.id);
+            layoutDeleteForm.submit();
+        });
+
         // ---- open / close the editor ----
         function openEditor(tpl) {
             working = tpl
@@ -1019,6 +1184,10 @@ if ($hasSchema) {
                        a sensible default and every control has a value to bind. */
                     pageOptions: Object.assign(defaultPageOptions(), tpl.pageOptions || {}),
                     blocks: JSON.parse(JSON.stringify(Array.isArray(tpl.blocks) ? tpl.blocks : [])),
+                    /* #1767 remainder P7 — the SANITISED copy only (server-side
+                       edit-path read, includes/print_custom_layout.php); this is
+                       what feeds the live preview via applyCustomLayout(). */
+                    layoutHtml: (tpl.layout && typeof tpl.layout.html === 'string') ? tpl.layout.html : null,
                   }
                 : freshTemplate();
 
@@ -1029,6 +1198,7 @@ if ($hasSchema) {
 
             buildPageOptions();
             renderBlocks();
+            refreshLayoutSection(tpl);
             renderPreview();
             editorEl.classList.remove('d-none');
             editorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1110,7 +1280,15 @@ if ($hasSchema) {
             previewPdfBtn.disabled = true;
             previewPdfBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Rendering…';
             try {
-                const bodyHtml = renderTemplateBodyHtml(PRINT_SAMPLE_SONG, { blocks: working.blocks, pageOptions: working.pageOptions });
+                const contentHtml = renderTemplateBodyHtml(PRINT_SAMPLE_SONG, { blocks: working.blocks, pageOptions: working.pageOptions });
+                // #1767 remainder P7 — the SAME applyCustomLayout() call the
+                // real song print/PDF paths make, so "Preview as PDF" shows
+                // this template's custom layout exactly as a curator's own
+                // printout would (the endpoint re-sanitises with the wider
+                // 'layout' profile regardless — manage/print-pdf.php).
+                const bodyHtml = working.layoutHtml
+                    ? applyCustomLayout(working.layoutHtml, PRINT_SAMPLE_SONG, contentHtml)
+                    : contentHtml;
                 const css = printCss(working.pageOptions);
                 const res = await fetch('/manage/print-pdf.php', {
                     method: 'POST',

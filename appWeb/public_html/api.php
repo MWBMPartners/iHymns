@@ -1253,6 +1253,27 @@ if ($action !== null) {
                     ];
                 }
                 $stmt->close();
+
+                /* #1767 remainder P7 (§7.1 point 2) — batch-attach each
+                   template's SANITISED custom layout (feature E). Existence-
+                   gated read (includes/print_custom_layout.php); an
+                   un-migrated install or a template with no layout simply
+                   omits the key — js/modules/print.js's loadTemplates() maps
+                   an absent `layoutHtml` to `null` and every consumer treats
+                   that as "render the standard document shell", so this is
+                   fully back-compat. ONLY the sanitised column is ever read
+                   here (never HtmlOriginal) — this IS the render path. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
+                $ptLayouts = printCustomLayoutGetSanitisedForTemplates(array_column($ptOut, 'id'));
+                if ($ptLayouts !== []) {
+                    foreach ($ptOut as &$ptRow) {
+                        if (isset($ptLayouts[$ptRow['id']])) {
+                            $ptRow['layoutHtml'] = $ptLayouts[$ptRow['id']];
+                        }
+                    }
+                    unset($ptRow);
+                }
+
                 sendJson(['templates' => $ptOut]);
             } catch (\Throwable $e) {
                 sendJson(['templates' => []]); /* graceful — built-ins still work */

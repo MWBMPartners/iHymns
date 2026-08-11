@@ -271,10 +271,13 @@ function _pdfMpdfFormatForPageSize($pageSize): string
 function _pdfInlineQrImage(string $src): ?string
 {
     if (preg_match('#^/qr\.php\?#', $src) !== 1) {
-        /* Cannot happen under the 'print' sanitiser profile today (its
-           img_src allow-list admits nothing else) — kept as a defensive
-           floor rather than trusted-by-construction, so a future profile
-           widening can never smuggle an unrecognised src past this file. */
+        /* Reached today ONLY via a data:image/… src, which the caller
+           (_pdfAdaptHtml()) already intercepts and skips before ever
+           calling this function (#1767 remainder P7 — the 'layout'
+           profile's other self-contained img_src shape) — kept as a
+           defensive floor rather than trusted-by-construction, so ANY
+           other unrecognised src that somehow reaches this function is
+           refused, never passed through. */
         return null;
     }
     if (!function_exists('cuercodeGenerate')) {
@@ -302,8 +305,9 @@ function _pdfInlineQrImage(string $src): ?string
 }
 
 /**
- * Adapt ALREADY-SANITISED print HTML for mPDF (§4.2 point 2, §4.5) — a
- * SINGLE DOM pass performing two deterministic, documented rewrites:
+ * Adapt ALREADY-SANITISED print HTML for mPDF (§4.2 point 2, §4.5, and
+ * #1767 remainder P7 §7.1 point 4) — a SINGLE DOM pass performing three
+ * deterministic, documented rewrites:
  *
  *   1. `<div class="print-lyrics" style="…columns:2…">` → the SAME div,
  *      now wrapping an mPDF-proprietary `<columns column-count="2">…
@@ -313,17 +317,30 @@ function _pdfInlineQrImage(string $src): ?string
  *      message). A 1-column template never carries `columns:2` at all, so
  *      the cheap `str_contains()` pre-check below skips the whole DOM
  *      parse for the common case.
- *   2. Every `<img>` — under the 'print' sanitiser profile there is
- *      structurally only ONE possible src shape left (`^/qr\.php\?`) — is
- *      either inlined via `_pdfInlineQrImage()` or REMOVED outright. An
+ *   2. Every `/qr.php?…`-sourced `<img>` — the ONE src shape BOTH sanitiser
+ *      profiles admit that isn't self-contained (`includes/html_sanitizer.php`)
+ *      — is either inlined via `_pdfInlineQrImage()` or REMOVED outright. An
  *      `<img>` is NEVER passed through to mPDF with its original
  *      (relative, unreachable-by-mPDF) `/qr.php?…` src: mPDF has no base
  *      URL configured for this render, so it would not resolve anyway, and
  *      removing it outright — rather than leaving a broken-image glyph —
  *      matches the "the caption text is the fallback" principle §4.5
  *      states for the browser path too.
+ *   3. Every `data:image/…;base64,…`-sourced `<img>` — the OTHER src shape
+ *      the endpoint's (now-widened, P7) 'layout' sanitiser profile admits,
+ *      for a curator's own logo/background embedded IN their custom
+ *      layout upload — is left COMPLETELY UNTOUCHED. mPDF resolves a
+ *      `data:` URI directly (no network fetch, nothing to adapt), so
+ *      routing it through `_pdfInlineQrImage()` (which only recognises
+ *      `/qr.php?…` and returns null for anything else) would have silently
+ *      DELETED every embedded image a custom layout carries — caught
+ *      before it shipped by re-reading this function against the widened
+ *      profile, not by a failing test (a `data:` `<img>` with no
+ *      surrounding caption text has no "the URL beside it is the fallback"
+ *      safety net the QR case relies on, so a silent drop here would be a
+ *      real regression for feature E, not merely a divergence).
  *
- * WHY THIS IS NOT "A SECOND RENDERER": both rewrites are STRUCTURAL
+ * WHY THIS IS NOT "A SECOND RENDERER": all three rewrites are STRUCTURAL
  * transforms of markup the client's `renderTemplateBodyHtml()` ALREADY
  * produced and the sanitiser ALREADY approved — this function adds no new
  * TEXT content, makes no block-type decision, and cannot be reached by any
@@ -331,7 +348,12 @@ function _pdfInlineQrImage(string $src): ?string
  * is the mutation-proven guard that keeps this true (rule #35 — a
  * mechanism, not this paragraph).
  *
- * @param  string $html Already-sanitised print HTML (`ihymnsSanitizeHtml($x, 'print')` output).
+ * @param  string $html Already-sanitised print HTML — `manage/print-pdf.php`
+ *                        calls `ihymnsSanitizeHtml($x, 'layout')` on every
+ *                        document (P7 widened this from 'print'; 'layout' is
+ *                        a strict superset, §7.1 point 4), so this may be a
+ *                        plain block-rendered document OR one wrapped in a
+ *                        curator's custom full-page layout.
  * @return string Adapted HTML, safe to hand to `Mpdf::WriteHTML()`.
  */
 function _pdfAdaptHtml(string $html): string
@@ -386,8 +408,21 @@ function _pdfAdaptHtml(string $html): string
     if ($needsImgPass) {
         foreach (iterator_to_array($doc->getElementsByTagName('img')) as $img) {
             /** @var \DOMElement $img */
-            $src     = $img->getAttribute('src');
-            $dataUri = ($src !== '') ? _pdfInlineQrImage($src) : null;
+            $src = $img->getAttribute('src');
+            if ($src === '') {
+                $img->parentNode?->removeChild($img);
+                continue;
+            }
+            /* #1767 remainder P7 — a data: URI (only possible via the
+               'layout' sanitiser profile, a custom layout's own embedded
+               image) is left ALONE: mPDF resolves it directly, and running
+               it through _pdfInlineQrImage() below would misread it as
+               "not /qr.php?, so drop it" and silently delete it (see this
+               function's own doc-block, point 3). */
+            if (str_starts_with($src, 'data:image/')) {
+                continue;
+            }
+            $dataUri = _pdfInlineQrImage($src);
             if ($dataUri !== null) {
                 $img->setAttribute('src', $dataUri);
             } else {

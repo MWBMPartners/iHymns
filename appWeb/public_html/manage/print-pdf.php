@@ -243,7 +243,22 @@ $filenameRaw    = (string)($body['filename'] ?? 'ihymns-print');
 /* ---- Sanitise (P2's ONE sanitiser — reused, never forked, plan §5.2) ---- */
 $sanitisedDocs = [];
 foreach ($documentsRaw as $d) {
-    $sanHtml = ihymnsSanitizeHtml((string)$d['bodyHtml'], 'print');
+    /* #1767 remainder P7 (§7.1 point 4) — sanitise with the 'layout'
+       profile, not 'print'. 'layout' is a STRICT superset of 'print' (every
+       tag/attribute/class-pattern/img-src shape 'print' allows, 'layout'
+       also allows — includes/html_sanitizer.php's two profiles, §5.1), so
+       this is "one profile at the endpoint, tightest at upload" (the plan's
+       own words): a plain block-only bodyHtml (no custom layout) sanitises
+       byte-identically either way, while a custom-layout-wrapped bodyHtml
+       (whose wrapper tags — h2, table, header, … — the narrower 'print'
+       profile would have stripped) now survives correctly. The ACTUAL
+       security boundary for an uploaded layout is upload-time
+       (includes/print_custom_layout.php::printCustomLayoutSave(), ALSO
+       'layout') — this is defence-in-depth re-sanitisation of whatever the
+       client claims to have already merged, exactly like the 'print'
+       profile always was for a plain template (§5.2 — "the POST body is
+       attacker-writable independently of whether print.js ever ran"). */
+    $sanHtml = ihymnsSanitizeHtml((string)$d['bodyHtml'], 'layout');
     $rawMeta = is_array($d['meta'] ?? null) ? $d['meta'] : [];
     /* Metadata strings are NOT rendered as markup (they feed mPDF's PDF
        Info dictionary via pdf_renderer.php's own _pdfSanitiseMetaString()),

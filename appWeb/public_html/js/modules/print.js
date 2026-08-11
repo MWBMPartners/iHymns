@@ -447,6 +447,14 @@ export function buildPrintDoc(song, template, opts = {}) {
     const book  = song.songbookName || song.songbook || '';
     const notice = (opts && opts.ccliLicenceKey) ? ccliNoticeText(song, opts.ccliLicenceKey) : '';
     const noticeHtml = notice ? `\n<div class="print-ccli-notice">${esc(notice)}</div>` : '';
+    /* #1767 remainder P7 — a template carrying a custom full-page layout
+       (feature E) wraps the rendered content via applyCustomLayout();
+       everything else about this function is unchanged, and a template
+       with no layoutHtml renders byte-identically to before this feature. */
+    const contentHtml = renderTemplateBodyHtml(song, template);
+    const bodyHtml = (template && template.layoutHtml)
+        ? applyCustomLayout(template.layoutHtml, song, contentHtml)
+        : contentHtml;
     return `<!DOCTYPE html>
 <html lang="${esc(song.language || 'en')}">
 <head>
@@ -455,7 +463,7 @@ export function buildPrintDoc(song, template, opts = {}) {
 <style>${printCss(template.pageOptions)}</style>
 </head>
 <body>
-${renderTemplateBodyHtml(song, template)}${noticeHtml}
+${bodyHtml}${noticeHtml}
 </body>
 </html>`;
 }
@@ -504,11 +512,95 @@ export async function loadTemplates(app) {
             if (Array.isArray(json.templates)) {
                 custom = json.templates
                     .filter(t => t && Array.isArray(t.blocks) && t.name)
-                    .map(t => ({ id: 'db:' + t.id, name: String(t.name), blocks: t.blocks, pageOptions: t.pageOptions || {} }));
+                    .map(t => ({
+                        id: 'db:' + t.id, name: String(t.name), blocks: t.blocks, pageOptions: t.pageOptions || {},
+                        /* #1767 remainder P7 (feature E) — the template's ALREADY-SANITISED
+                           full-page layout skin (api.php's print_templates action, backed by
+                           includes/print_custom_layout.php's render-path reader — it NEVER
+                           serves HtmlOriginal). `null` for a template with no custom layout,
+                           which every consumer below treats as "render the standard shell". */
+                        layoutHtml: (typeof t.layoutHtml === 'string' && t.layoutHtml.trim() !== '') ? t.layoutHtml : null,
+                    }));
             }
         }
     } catch (_e) { /* built-ins only */ }
     return PRINT_BUILTIN_TEMPLATES.concat(custom);
+}
+
+/* The one literal slot token feature E's layouts use — a named constant so
+   applyCustomLayout() and the server's own validation
+   (includes/print_custom_layout.php's IHYMNS_PRINT_CUSTOM_LAYOUT_TOKEN;
+   PHP can't share a JS constant, so the two are held in lockstep by
+   tests/php/test-print-custom-layout.php instead — rule #35) can never
+   silently drift to two different spellings. */
+const IHYMNS_CUSTOM_LAYOUT_CONTENT_TOKEN = '{{content}}';
+
+/**
+ * #1767 remainder P7 (§7.1 point 3) — apply a template's custom full-page
+ * layout SKIN around this song's rendered content. The ONE `{{content}}`
+ * substitution point for feature E, shared by every caller that can produce
+ * a printed page: `buildPrintDoc()` (browser Print + the PDF-download body),
+ * and the admin editor's own live preview (`manage/print-templates.php`).
+ *
+ * ELI5: `layoutHtml` is a curator's uploaded page design with one blank spot
+ * marked `{{content}}` — this drops the song's actual printed content into
+ * that spot, and fills in a small set of other blanks (title, songbook
+ * number, …) if the layout used them too.
+ *
+ * SAFETY (plan §7.2 — "why substitution happens AFTER sanitisation"):
+ * `layoutHtml` is ALREADY the server's sanitised output (never the raw
+ * upload — see `loadTemplates()` above); `contentHtml` is
+ * `renderTemplateBodyHtml()`'s output, escaped-by-construction (every
+ * dynamic value it interpolates goes through this module's own `esc()`).
+ * The metadata tokens below are escaped HERE, at substitution time, because
+ * — unlike `contentHtml` — they are plain strings, not pre-built HTML.
+ * Substituting `{{content}}` FIRST (raw HTML insert) and the metadata
+ * tokens SECOND (escaped text insert) cannot reopen either half to
+ * injection: neither half's own escaping is undone by the other's
+ * insertion, and an unrecognised `{{token}}` is left VISIBLE rather than
+ * silently dropped (fail-visible, so a curator notices a typo'd token
+ * immediately in the preview instead of it vanishing without a trace).
+ *
+ * @param  {string|null} layoutHtml  A template's already-sanitised layout,
+ *                                    or null/'' — returns `contentHtml`
+ *                                    unchanged (no layout to apply).
+ * @param  {object} song             The song being printed (for the
+ *                                    metadata token set).
+ * @param  {string} contentHtml      `renderTemplateBodyHtml()`'s output —
+ *                                    inserted VERBATIM (it is already-safe
+ *                                    HTML, not text to escape).
+ * @returns {string} The layout with `{{content}}` and every recognised
+ *                    metadata token substituted; `contentHtml` unchanged
+ *                    when there is no layout to apply.
+ */
+export function applyCustomLayout(layoutHtml, song, contentHtml) {
+    if (typeof layoutHtml !== 'string' || layoutHtml.trim() === '') {
+        return contentHtml;
+    }
+    const s = song || {};
+    const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+    const pid = s.publicId || s.id || '';
+    const pageUrl = pid ? origin + '/song/' + encodeURIComponent(pid) : '';
+    const numberText = (s.number != null && parseInt(s.number, 10) > 0) ? String(parseInt(s.number, 10)) : '';
+
+    /* {{content}} first — the ONE raw-HTML insertion point (§7.1's exact
+       slot). Every other token below is plain text, escaped as it is
+       substituted. */
+    let out = layoutHtml.split(IHYMNS_CUSTOM_LAYOUT_CONTENT_TOKEN).join(contentHtml);
+
+    const metaTokens = {
+        '{{title}}':     esc(s.title || ''),
+        '{{songbook}}':  esc(s.songbookName || s.songbook || ''),
+        '{{number}}':    esc(numberText),
+        '{{ccli}}':      esc(s.ccli || ''),
+        '{{copyright}}': esc(s.copyright || ''),
+        '{{date}}':      esc(new Date().toLocaleDateString()),
+        '{{pageUrl}}':   esc(pageUrl),
+    };
+    Object.keys(metaTokens).forEach((token) => {
+        out = out.split(token).join(metaTokens[token]);
+    });
+    return out;
 }
 
 /* #1767 remainder P4 (§3.3) — is the server-PDF endpoint reachable for THIS
@@ -666,7 +758,16 @@ function triggerBlobDownload(blob, filename) {
  */
 async function downloadSongPdf(app, song, tpl, copies) {
     app.showToast?.('Building PDF…', 'info', 2500);
-    const bodyHtml = renderTemplateBodyHtml(song, tpl);
+    /* #1767 remainder P7 (§7.1 point 4) — "the client POSTs the
+       post-substitution HTML": the SAME applyCustomLayout() call
+       buildPrintDoc() makes for the browser path runs here too, BEFORE the
+       POST — the server-PDF endpoint does "nothing special" for a custom
+       layout beyond re-sanitising whatever full document it receives with
+       the wider 'layout' profile (manage/print-pdf.php). */
+    const contentHtml = renderTemplateBodyHtml(song, tpl);
+    const bodyHtml = (tpl && tpl.layoutHtml)
+        ? applyCustomLayout(tpl.layoutHtml, song, contentHtml)
+        : contentHtml;
     const css      = printCss(tpl.pageOptions);
     const meta = {
         songId: song.publicId || song.id || '',
