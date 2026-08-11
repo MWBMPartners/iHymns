@@ -1,7 +1,7 @@
 {
   "name": "ihymns",
   "version": "1.0.0-alpha.1",
-  "description": "iHymns \u2014 A multiplatform Christian lyrics application for worship enhancement",
+  "description": "iHymns — A multiplatform Christian lyrics application for worship enhancement",
   "private": true,
   "type": "module",
   "scripts": {
@@ -40,6 +40,7 @@
   "devDependencies": {
     "eslint": "^10.1.0",
     "jsdom": "^30.0.1",
-    "protobufjs": "^8.5.0"
+    "protobufjs": "^8.7.2",
+    "protobufjs-cli": "^2.6.2"
   }
 }
