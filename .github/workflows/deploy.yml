@@ -338,7 +338,7 @@ jobs:
       # Covered by tests/test-whats-new-extraction.js, which lifts THIS awk
       # program out of THIS file and runs it against the real CHANGELOG.md —
       # so the test cannot drift from the deployed logic by copying it.
-      - name: Extract What's New from CHANGELOG.md
+      - name: Extract What's New for the app
         if: steps.changes.outputs.has_changes == 'true'
         run: |
           SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
@@ -349,8 +349,16 @@ jobs:
           WHATS_NEW_PER_SECTION=10
           WHATS_NEW_MAX_ENTRIES=50
 
-          if [[ ! -f "CHANGELOG.md" ]]; then
-            echo "CHANGELOG.md not found — skipping What's New extraction (whats-new.php renders its fallback card)"
+          # Source of the user-facing What's New page. Prefer the hand-written,
+          # plain-language WHATS-NEW.md (no internals — owner directive
+          # 2026-08-11; house style in .claude/whats-new-style.md). Fall back to
+          # the technical CHANGELOG.md only if WHATS-NEW.md is somehow absent, so
+          # a fresh checkout still shows something rather than the empty card.
+          WHATS_NEW_SRC="CHANGELOG.md"
+          if [[ -f "WHATS-NEW.md" ]]; then WHATS_NEW_SRC="WHATS-NEW.md"; fi
+
+          if [[ ! -f "$WHATS_NEW_SRC" ]]; then
+            echo "$WHATS_NEW_SRC not found — skipping What's New extraction (whats-new.php renders its fallback card)"
           else
             mkdir -p "$WHATS_NEW_DIR"
             LC_ALL=C awk \
@@ -396,7 +404,7 @@ jobs:
               # the first entry are dropped, as in the original.
                      { if (pending != "") pending = pending $0 "\n" }
               END    { flush() }
-            ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" \
+            ' "$WHATS_NEW_SRC" | head -c "$WHATS_NEW_MAX_BYTES" \
               | iconv -f UTF-8 -t UTF-8 -c > "$WHATS_NEW_FILE" || true
             echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes, $(grep -c '^## ' "$WHATS_NEW_FILE" || true) releases, $(grep -c '^- ' "$WHATS_NEW_FILE" || true) entries -> $WHATS_NEW_FILE"
           fi
