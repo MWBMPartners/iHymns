@@ -4036,10 +4036,15 @@ export class SetList {
 
         /* Same picker as the single-song Print — gives the set list a
            template choice it never had before (#1789). Cancel (Esc / backdrop
-           / Cancel button) resolves null and we simply don't print. */
+           / Cancel button) resolves null and we simply don't print.
+           #1767 remainder P4 — `pickPrintTemplate()` now resolves
+           `{ tpl, action }`; batch PDF download (P6) isn't built yet, so this
+           call deliberately omits `offerPdf` and never shows the button —
+           `action` always comes back 'print'. */
         const templates = await loadTemplates(this.app);
-        const tpl = await pickPrintTemplate(this.app, templates);
-        if (!tpl) { return; }
+        const picked = await pickPrintTemplate(this.app, templates);
+        if (!picked) { return; }
+        const { tpl } = picked;
 
         this.app.showToast('Preparing print layout...', 'info', 2000);
 

@@ -125,7 +125,13 @@ check('printSetList() calls the shared renderTemplateBodyHtml()', /\brenderTempl
 /* 3. print.js exports the reusable pieces (regex each individual `export`
       declaration, not just presence of the identifier anywhere). */
 [
-    ['pickPrintTemplate', /export\s+function\s+pickPrintTemplate\s*\(/],
+    /* #1767 remainder P4 — pickPrintTemplate() became `async` (it awaits the
+       memoised ?ping=1 check before deciding whether to offer Download PDF),
+       matching the SAME `export\s+async\s+function` shape loadTemplates()/
+       fetchSong() already use below — `async` is now OPTIONAL here rather
+       than disallowed, so this stays green on the (still entirely valid)
+       non-async form too if a future refactor drops the await. */
+    ['pickPrintTemplate', /export\s+(?:async\s+)?function\s+pickPrintTemplate\s*\(/],
     ['loadTemplates', /export\s+async\s+function\s+loadTemplates\s*\(/],
     ['fetchSong', /export\s+async\s+function\s+fetchSong\s*\(/],
     ['printCss', /export\s+function\s+printCss\s*\(/],

@@ -103,6 +103,22 @@ $PAGE_OPTION_SCHEMA = [
     'contrast'    => ['kind' => 'enum', 'choices' => ['normal', 'high']],
     'accentColor' => ['kind' => 'color'],
     'inkSaver'    => ['kind' => 'bool'],
+
+    /* #1767 remainder P4 (§4.3) — PDF-only options, mirroring
+       PRINT_PAGE_OPTIONS's `serverOnly: true` entries in print.js. The
+       'kind' drives the SAME ptSanitisePageOptions() coercion as every
+       other option below — 'server_only' carries no coercion behaviour of
+       its own (the browser/server DISTINCTION lives entirely in how
+       includes/pdf_renderer.php reads $pageOptions vs. how printCss()
+       ignores unknown keys); it exists purely so
+       tests/php/test-print-block-registry.php can assert the flag agrees
+       with print.js — an option marked serverOnly on one side and not the
+       other would mislead either the editor's "PDF only" grouping or a
+       future browser-CSS author into thinking it has no effect when it
+       does (or vice versa). */
+    'pageNumbers'   => ['kind' => 'bool', 'server_only' => true],
+    'runningHeader' => ['kind' => 'enum', 'choices' => ['none', 'title', 'titleBook'], 'server_only' => true],
+    'onePerPage'    => ['kind' => 'bool', 'server_only' => true],
 ];
 
 /**

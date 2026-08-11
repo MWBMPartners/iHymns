@@ -213,6 +213,53 @@ if (count($phpPageKeys) < PT_MIN_PAGE_OPTS) {
 foreach (array_diff($jsPageKeys, $phpPageKeys) as $k) { $fail[] = "Page option '$k' is in PRINT_PAGE_OPTIONS (print.js) but missing from \$PAGE_OPTION_SCHEMA (print-templates.php) — server would DROP it on save."; }
 foreach (array_diff($phpPageKeys, $jsPageKeys) as $k) { $fail[] = "Page option '$k' is in \$PAGE_OPTION_SCHEMA (print-templates.php) but missing from PRINT_PAGE_OPTIONS (print.js) — editor can't offer it."; }
 
+/* ---- 4b. `serverOnly` FLAG PARITY (#1767 remainder P4, §4.3) ----
+   A page option flagged serverOnly on one side and not the other is
+   MISLEADING rather than silently dropped (both sides already agree the
+   KEY exists, per 4 above) — the editor's "PDF only" grouping, or a future
+   author reading printCss(), would draw the wrong conclusion about whether
+   the option has a browser-side effect. Extract each key's FULL single-line
+   definition (both sources write one option per line) and look for the
+   literal `serverOnly: true` / `'server_only' => true` marker inside it. */
+$jsPageServerOnly  = [];   // key => bool
+$phpPageServerOnly = [];   // key => bool
+foreach (explode("\n", $jsPageRegion) as $line) {
+    /* Greedy `.*` deliberately (not `[^}]*`): a value could itself contain a
+       nested `{...}`/`[...]` in the future, and greedy backtracking finds
+       the LAST `}` on the line — the object literal's real close — rather
+       than stopping at a nested one. A trailing `/* comment *`/` after the
+       closing `}`/`,` is simply left unmatched, not required to be absent
+       (an earlier, end-anchored draft of this regex wrongly required NO
+       trailing comment and silently matched zero lines — caught only
+       because the parser-sanity floor below went red first). */
+    if (preg_match('/^\s*(\w+)\s*:\s*\{(.*)\}/', $line, $lm)) {
+        $jsPageServerOnly[$lm[1]] = (bool)preg_match('/\bserverOnly\s*:\s*true\b/', $lm[2]);
+    }
+}
+foreach (explode("\n", $phpPageRegion) as $line) {
+    if (preg_match("/^\s*'(\w+)'\s*=>\s*\[(.*)\]/", $line, $lm)) {
+        $phpPageServerOnly[$lm[1]] = (bool)preg_match("/'server_only'\s*=>\s*true/", $lm[2]);
+    }
+}
+const PT_MIN_SERVER_ONLY = 1;   // parser-sanity floor (there are 3 today)
+$jsServerOnlyCount = count(array_filter($jsPageServerOnly));
+if ($jsServerOnlyCount < PT_MIN_SERVER_ONLY) {
+    $fail[] = sprintf(
+        'PRINT_PAGE_OPTIONS: parsed only %d serverOnly:true entr(y/ies) (< %d) — parser anchor moved, or every serverOnly flag was removed.',
+        $jsServerOnlyCount, PT_MIN_SERVER_ONLY
+    );
+}
+foreach ($jsPageKeys as $k) {
+    if (!isset($phpPageServerOnly[$k])) { continue; } // already reported by 4 above
+    $jsFlag  = $jsPageServerOnly[$k] ?? false;
+    $phpFlag = $phpPageServerOnly[$k];
+    if ($jsFlag !== $phpFlag) {
+        $fail[] = "Page option '$k' has serverOnly=" . ($jsFlag ? 'true' : 'false') . ' in PRINT_PAGE_OPTIONS (print.js) '
+            . 'but server_only=' . ($phpFlag ? 'true' : 'false') . " in \$PAGE_OPTION_SCHEMA (print-templates.php) — "
+            . 'the editor\'s "PDF only" grouping and the browser/server behaviour would disagree about this option.';
+    }
+}
+
 /* ---- 5. CONDITIONAL VISIBILITY vocab: PRINT_SHOWIF_CONDITIONS (js) == $SHOWIF_CONDITIONS (php) ----
    The universal `showIf` block property (#1767 Y): a condition the editor offers
    but the server doesn't allow-list is dropped on save (silent). */

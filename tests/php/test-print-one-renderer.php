@@ -52,8 +52,17 @@ declare(strict_types=1);
  *      and not named in `api.php`'s `$_cacheablePages` list. Asserted by
  *      walking EVERY `.php` file under `appWeb/public_html`
  *      (`RecursiveDirectoryIterator`, never a hand-typed file list — rule
- *      #34) and confirming the ONLY file whose comment-stripped source
- *      names `print-pdf.php` / `print_pdf` is `manage/print-pdf.php` itself.
+ *      #34) and confirming NO reference to `print-pdf.php` / `print_pdf`
+ *      exists in `api.php` or under `includes/pages/`/`includes/partials/`
+ *      — the three PUBLIC/CACHEABLE surfaces the invariant actually
+ *      protects. ⚠️ Other files under `manage/` (an authenticated,
+ *      never-cached admin tree) ARE allowed to reference it: #1767
+ *      remainder P4 adds exactly one — `manage/print-templates.php`'s
+ *      "Preview as PDF" button, a legitimate sibling-admin-page call the
+ *      original all-files-ban was too blunt to distinguish from a public
+ *      leak (rule #34 — "a guard so blunt it fails on correct code…gets it
+ *      weakened or deleted rather than fixed"; this is that fix, not a
+ *      weakening of what the guard actually needs to hold).
  *
  * DERIVATION (rule #34): the block-type set is PARSED from
  * `PRINT_BLOCK_TYPES` in `js/modules/print.js` (the same extraction shape
@@ -342,12 +351,26 @@ foreach ($allPublicPhp as $f) {
     if ($f === $printPdfPath) {
         continue; // a file never counts as "referencing itself"
     }
+    $rel = ltrim(str_replace($publicRoot, '', $f), '/');
+    /* Every OTHER file under manage/ is a legitimate referrer: an
+       authenticated, non-cacheable admin surface — never reachable from a
+       public/cached page, so calling a sibling admin endpoint crosses
+       NEITHER line this guard exists to hold (see the doc-block's §B note).
+       #1767 remainder P4 adds exactly one such reference
+       (manage/print-templates.php's "Preview as PDF" button). */
+    if (str_starts_with($rel, 'manage' . DIRECTORY_SEPARATOR) || str_starts_with($rel, 'manage/')) {
+        continue;
+    }
     $stripped = loadStrippedPhp($f);
     if (str_contains($stripped, 'print-pdf.php') || str_contains($stripped, 'print_pdf')) {
-        $badReferrers[] = ltrim(str_replace($publicRoot, '', $f), '/');
+        $badReferrers[] = $rel;
     }
 }
-check('manage/print-pdf.php is referenced from NO other file under public_html (not an api.php action, not in includes/pages or includes/partials, not cacheable)', $badReferrers === []);
+check(
+    'manage/print-pdf.php is referenced from NO public/cacheable surface (api.php, includes/pages/*, includes/partials/*) '
+        . '— only other manage/* admin pages may call it directly',
+    $badReferrers === []
+);
 if ($badReferrers !== []) {
     echo '       unexpected referrer(s): ' . implode(', ', $badReferrers) . "\n";
 }

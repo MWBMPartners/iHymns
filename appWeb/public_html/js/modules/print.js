@@ -54,6 +54,24 @@ export const PRINT_PAGE_OPTIONS = {
     contrast:    { label: 'High contrast',    kind: 'enum',  def: 'normal', choices: ['normal', 'high'] },             /* #1767 V */
     accentColor: { label: 'Accent colour',    kind: 'color', def: '' },                                                /* #1767 AM */
     inkSaver:    { label: 'Ink-saver (mono)', kind: 'bool',  def: false },                                             /* #1767 AB */
+
+    /* #1767 remainder P4 (§4.3) — PDF-ONLY options, each flagged
+       `serverOnly: true`. Browser `@page` margin-box support is too patchy
+       to ship (the reason the original #1767 slice deferred the whole
+       H-family) — these three exist ONLY because the server-PDF pipeline
+       (includes/pdf_renderer.php, mPDF's own SetHTMLHeader/SetHTMLFooter)
+       CAN honour them reliably. `printCss()` below never reads a
+       `serverOnly` key (it destructures specific known keys only), so the
+       browser Print path is a structural, code-level no-op for these — not
+       a documentation promise. The editor's page-options panel
+       (manage/print-templates.php) groups `serverOnly` entries under a
+       "PDF only" heading so a curator never expects one to affect the
+       browser preview. Mirrored 1:1 (including the `serverOnly` flag) into
+       `$PAGE_OPTION_SCHEMA` (includes/print_template_schema.php), held in
+       lockstep by tests/php/test-print-block-registry.php. */
+    pageNumbers:   { label: 'Page numbers',   kind: 'bool', def: false,  serverOnly: true },                              /* #1767 U */
+    runningHeader: { label: 'Running header', kind: 'enum', def: 'none', choices: ['none', 'title', 'titleBook'], serverOnly: true }, /* #1767 H */
+    onePerPage:    { label: 'One song per page (batch PDFs)', kind: 'bool', def: true, serverOnly: true },                /* #1767 T */
 };
 
 /* Accepted CSS colour shape for the accent option — #rgb or #rrggbb. Validated
@@ -471,10 +489,41 @@ export async function loadTemplates(app) {
     return PRINT_BUILTIN_TEMPLATES.concat(custom);
 }
 
-/* Show the template picker; resolve to the chosen template object, or null if
-   cancelled (Esc / backdrop / Cancel). Shared by the single-song Print and the
-   set-list Print (rule #22 — one picker, one look). */
-export function pickPrintTemplate(app, templates) {
+/* #1767 remainder P4 (§3.3) — is the server-PDF endpoint reachable for THIS
+   session? `manage/print-pdf.php?ping=1` answers 204 (authenticated + the
+   mPDF engine is vendored on this install) or 401/503 (not shown — the
+   Download-PDF affordance is gated on this, never assumed). Memoised at
+   MODULE scope so only the FIRST print action in a page session pays the
+   round trip; every subsequent pickPrintTemplate({offerPdf:true}) call
+   reuses the settled promise instantly. A network failure degrades to
+   "unavailable" (false), never a thrown error the picker would have to
+   catch — the browser Print path is always the safe fallback. */
+let _pdfPingPromise = null;
+function pdfEndpointAvailable() {
+    if (!_pdfPingPromise) {
+        _pdfPingPromise = apiFetch('/manage/print-pdf.php?ping=1', {
+            method: 'GET',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+        }).then((res) => res.status === 204).catch(() => false);
+    }
+    return _pdfPingPromise;
+}
+
+/* Show the template picker; resolves `{ tpl, action }` (action: 'print' |
+   'pdf'), or null if cancelled (Esc / backdrop / Cancel). Shared by the
+   single-song Print and the set-list Print (rule #22 — one picker, one
+   look). `opts.offerPdf` (default false) is what makes the "Download PDF"
+   button possible to show at all — callers that haven't built the
+   server-PDF POST path yet (the set-list print, still browser-only this
+   phase — batch mode is #1767 remainder P6) simply never pass it, so no
+   ping request fires and no button appears for them; every resolve still
+   carries `action: 'print'` in that case, so an un-migrated caller needs
+   no other change. */
+export async function pickPrintTemplate(app, templates, opts = {}) {
+    const offerPdf = !!(opts && opts.offerPdf);
+    const pdfAvailable = offerPdf && await pdfEndpointAvailable();
+
     return new Promise((resolve) => {
         const overlay = document.createElement('div');
         overlay.className = 'print-picker-overlay';
@@ -484,12 +533,17 @@ export function pickPrintTemplate(app, templates) {
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-labelledby', 'print-picker-title');
 
-        const opts = templates.map((t, i) => `
+        const opts2 = templates.map((t, i) => `
             <label class="list-group-item d-flex gap-2 align-items-center">
                 <input class="form-check-input flex-shrink-0" type="radio" name="print-template"
                        value="${i}" ${i === 0 ? 'checked' : ''}>
                 <span><strong>${esc(t.name)}</strong>${t.builtin ? '' : ' <span class="badge bg-secondary-subtle text-secondary-emphasis">custom</span>'}</span>
             </label>`).join('');
+
+        const pdfBtnHtml = pdfAvailable
+            ? `<button type="button" class="btn btn-outline-secondary btn-sm print-picker-pdf">
+                   <i class="fa-solid fa-file-pdf me-1" aria-hidden="true"></i>Download PDF</button>`
+            : '';
 
         const dialog = document.createElement('div');
         dialog.className = 'card shadow-lg';
@@ -499,9 +553,10 @@ export function pickPrintTemplate(app, templates) {
                 <h2 class="h5 card-title d-flex align-items-center gap-2" id="print-picker-title">
                     <i class="fa-solid fa-print" aria-hidden="true"></i>Print song</h2>
                 <p class="card-text small text-muted">Choose a layout — a clean, printer-friendly page (no app buttons).</p>
-                <div class="list-group mb-3" style="max-height:18rem;overflow:auto">${opts}</div>
+                <div class="list-group mb-3" style="max-height:18rem;overflow:auto">${opts2}</div>
                 <div class="d-flex justify-content-end gap-2">
                     <button type="button" class="btn btn-outline-secondary btn-sm print-picker-cancel">Cancel</button>
+                    ${pdfBtnHtml}
                     <button type="button" class="btn btn-primary btn-sm print-picker-go">
                         Print <i class="fa-solid fa-arrow-right ms-1" aria-hidden="true"></i></button>
                 </div>
@@ -511,6 +566,11 @@ export function pickPrintTemplate(app, templates) {
 
         const goEl     = dialog.querySelector('.print-picker-go');
         const cancelEl = dialog.querySelector('.print-picker-cancel');
+        const pdfEl    = dialog.querySelector('.print-picker-pdf');
+        /* Tab-trap over WHICHEVER buttons actually rendered — generalised
+           (rather than hardcoding "cancel then go") so the optional pdfEl
+           slots in without a separate branch. */
+        const focusables = [cancelEl, pdfEl, goEl].filter(Boolean);
         const lastFocus = document.activeElement;
         let resolved = false;
         function close(result) {
@@ -518,41 +578,144 @@ export function pickPrintTemplate(app, templates) {
             if (lastFocus && lastFocus.focus) { lastFocus.focus(); }
             if (!resolved) { resolved = true; resolve(result); }
         }
+        function pickedTemplate() {
+            const sel = overlay.querySelector('input[name="print-template"]:checked');
+            return templates[sel ? parseInt(sel.value, 10) : 0] || templates[0];
+        }
         goEl.focus();
 
         overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(null); } });
         overlay.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') { close(null); return; }
             if (e.key === 'Tab') {
-                if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); goEl.focus(); }
-                else if (!e.shiftKey && document.activeElement === goEl) { e.preventDefault(); cancelEl.focus(); }
+                const idx = focusables.indexOf(document.activeElement);
+                if (idx === -1) { return; }
+                if (e.shiftKey && idx === 0) { e.preventDefault(); focusables[focusables.length - 1].focus(); }
+                else if (!e.shiftKey && idx === focusables.length - 1) { e.preventDefault(); focusables[0].focus(); }
             }
         });
         cancelEl.addEventListener('click', () => close(null));
-        goEl.addEventListener('click', () => {
-            const sel = overlay.querySelector('input[name="print-template"]:checked');
-            const tpl = templates[sel ? parseInt(sel.value, 10) : 0] || templates[0];
-            close(tpl);
-        });
+        if (pdfEl) {
+            pdfEl.addEventListener('click', () => close({ tpl: pickedTemplate(), action: 'pdf' }));
+        }
+        goEl.addEventListener('click', () => close({ tpl: pickedTemplate(), action: 'print' }));
     });
+}
+
+/* Turn a song title into a filesystem/URL-safe filename stem. Mirrors the
+   character class manage/print-pdf.php's own Content-Disposition sanitiser
+   allows (`[^A-Za-z0-9_-]` stripped server-side too) — this client-side pass
+   just makes the DOWNLOADED file's name legible instead of relying solely
+   on the server's stricter fallback. */
+function pdfFilenameFor(song) {
+    const raw = String((song && song.title) || 'ihymns-print').toLowerCase();
+    const slug = raw.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    return slug || 'ihymns-print';
+}
+
+/* Trigger a browser "Save As" for an already-fetched Blob, without ever
+   navigating the current page away. Revokes the object URL shortly after —
+   long enough for the download to have started, short enough not to leak
+   memory on a page that stays open a while (the print picker can be
+   reopened many times in one session). */
+function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/**
+ * #1767 remainder P4 (§3.1/§3.3) — POST the SAME HTML/CSS pieces the browser
+ * Print path builds (renderTemplateBodyHtml()/printCss() — the one-renderer
+ * invariant, never a second render) to the server-PDF endpoint and download
+ * the resulting file. `copies` (nullable) rides along so the server can log
+ * CCLI print-usage in the SAME request (#1767 remainder P5, §6.3) — the
+ * client never makes a separate log call for the PDF path.
+ *
+ * Branches on HTTP STATUS (rule #35), never the response prose: 503 → the
+ * PDF engine isn't installed on this server, fall back to Print; 401 → the
+ * session lapsed since the ping check; 429 → rate-limited; anything else →
+ * a generic retry toast.
+ */
+async function downloadSongPdf(app, song, tpl, copies) {
+    app.showToast?.('Building PDF…', 'info', 2500);
+    const bodyHtml = renderTemplateBodyHtml(song, tpl);
+    const css      = printCss(tpl.pageOptions);
+    const meta = {
+        songId: song.publicId || song.id || '',
+        title:  song.title || 'Untitled',
+        lang:   song.language || 'en',
+        dir:    'ltr',
+        book:   song.songbookName || song.songbook || '',
+    };
+    const payload = {
+        mode: 'song',
+        documents: [{ bodyHtml, meta }],
+        css,
+        pageOptions: tpl.pageOptions || {},
+        filename: pdfFilenameFor(song),
+    };
+    if (copies != null) { payload.copies = copies; }
+
+    let res;
+    try {
+        res = await apiFetch('/manage/print-pdf.php', {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+        });
+    } catch (_e) {
+        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
+        return;
+    }
+
+    if (res.status === 200) {
+        const blob = await res.blob();
+        triggerBlobDownload(blob, pdfFilenameFor(song) + '.pdf');
+        return;
+    }
+    if (res.status === 503) {
+        app.showToast?.("PDF isn't available on this server — use Print instead.", 'warning', 4500);
+    } else if (res.status === 401) {
+        app.showToast?.('Sign in again to download a PDF.', 'warning', 3500);
+    } else if (res.status === 429) {
+        app.showToast?.('Too many PDFs just now, try again in a moment.', 'warning', 4000);
+    } else {
+        app.showToast?.('Could not build the PDF — please try again.', 'danger', 4000);
+    }
 }
 
 /**
  * openSongPrintDialog(app) — entry point for the song page's Print action. Loads the
- * available templates (built-in + curated), shows the shared picker, then fetches
- * and prints the current song in the chosen template. Falls back to window.print()
- * if we can't identify a song.
+ * available templates (built-in + curated), shows the shared picker (offering
+ * Download PDF alongside Print when the server-PDF endpoint is reachable —
+ * #1767 remainder P4), then fetches and prints/downloads the current song in
+ * the chosen template. Falls back to window.print() if we can't identify a
+ * song.
  */
 export async function openSongPrintDialog(app) {
     const page = document.querySelector('.page-song');
     const songId = page && page.dataset ? page.dataset.songId : '';
     if (!songId) { window.print(); return; }
     const templates = await loadTemplates(app);
-    const tpl = await pickPrintTemplate(app, templates);
-    if (!tpl) { return; }
+    const picked = await pickPrintTemplate(app, templates, { offerPdf: true });
+    if (!picked) { return; }
+    const { tpl, action } = picked;
     app.showToast?.('Preparing print…', 'info', 1500);
     const song = await fetchSong(app, songId);
     if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
+
+    if (action === 'pdf') {
+        await downloadSongPdf(app, song, tpl, null);
+        return;
+    }
+
     /* #1767 R — a `qr` block renders as an <img> to the same-origin /qr.php
        (CueRCode-backed) endpoint; no pre-pass needed. */
     if (!printDoc(buildPrintDoc(song, tpl))) {

@@ -642,9 +642,22 @@ if ($hasSchema) {
 
                     <!-- Right column: live preview -->
                     <div class="col-lg-5">
-                        <label class="form-label small mb-1">
-                            <i class="bi bi-eye me-1"></i>Live preview <span class="text-muted">(sample song)</span>
-                        </label>
+                        <div class="d-flex align-items-center justify-content-between mb-1">
+                            <label class="form-label mb-0">
+                                <i class="bi bi-eye me-1"></i>Live preview <span class="text-muted">(sample song)</span>
+                            </label>
+                            <!-- #1767 remainder P4 (§3.3, "AA") — a TRUE paginated PDF
+                                 preview, rendered by the same server pipeline a curator's
+                                 printout would use, so the "PDF only" page options above
+                                 actually have somewhere to be seen. The browser preview to
+                                 the left is a visual approximation only (its skin is a CSS
+                                 shim, not printCss() — see the head <style> block's
+                                 comment); this is the real thing. -->
+                            <button type="button" class="btn btn-outline-info btn-sm" id="pt-preview-pdf"
+                                    title="Render a true paginated PDF preview using this template">
+                                <i class="bi bi-file-earmark-pdf me-1"></i>Preview as PDF
+                            </button>
+                        </div>
                         <div class="pt-preview-paper" id="pt-preview"><!-- renderTemplateBodyHtml output --></div>
                     </div>
                 </div>
@@ -657,6 +670,23 @@ if ($hasSchema) {
             </form>
         </div>
 
+        <!-- #1767 remainder P4 — the true PDF preview modal. Native browser PDF
+             viewer inside an <iframe> (no pdf.js needed, plan §3.3 "AA"). -->
+        <div class="modal fade" id="pt-pdf-preview-modal" tabindex="-1" aria-hidden="true" aria-labelledby="pt-pdf-preview-title">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                <div class="modal-content" style="height:85vh;">
+                    <div class="modal-header">
+                        <h2 class="modal-title h6 mb-0" id="pt-pdf-preview-title">
+                            <i class="bi bi-file-earmark-pdf me-2"></i>PDF preview</h2>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body p-0">
+                        <iframe id="pt-pdf-preview-frame" title="PDF preview" style="width:100%;height:100%;border:0;"></iframe>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <?php endif; ?>
     </div>
 
@@ -664,7 +694,7 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, printCss }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
@@ -737,38 +767,63 @@ if ($hasSchema) {
         }
 
         // ---- page-options panel, driven by PRINT_PAGE_OPTIONS (#1767 G/V/AB/AM/F) ----
+        // #1767 remainder P4 (§4.3) — `serverOnly` entries render as a SEPARATE
+        // row group, under a "PDF only" heading, so a curator never expects one
+        // of these to move the browser preview (it structurally can't — printCss()
+        // never reads them). One control-builder shared by both groups; only the
+        // grouping/heading is new.
+        function pageOptionControlHtml(key, def) {
+            const cur = (working.pageOptions[key] !== undefined && working.pageOptions[key] !== null)
+                ? working.pageOptions[key] : def.def;
+            const id  = 'pt-po-' + key;
+            const col = document.createElement('div');
+            col.className = 'col-auto';
+            if (def.kind === 'bool') {
+                col.innerHTML = `<div class="form-check mt-4"><input class="form-check-input" type="checkbox" id="${id}" data-page-opt="${esc(key)}"${cur ? ' checked' : ''}>`
+                    + `<label class="form-check-label small" for="${id}">${esc(def.label)}</label></div>`;
+            } else if (def.kind === 'int') {
+                col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
+                    + `<input type="number" class="form-control form-control-sm" id="${id}" data-page-opt="${esc(key)}" min="${def.min}" max="${def.max}" value="${esc(cur)}" style="width:6rem">`;
+            } else if (def.kind === 'enum') {
+                const opts = def.choices.map(c => `<option value="${esc(c)}"${String(cur) === String(c) ? ' selected' : ''}>${esc(c)}</option>`).join('');
+                col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
+                    + `<select class="form-select form-select-sm" id="${id}" data-page-opt="${esc(key)}">${opts}</select>`;
+            } else if (def.kind === 'color') {
+                /* An <input type=color> can't represent "no accent", so pair it
+                   with an enable checkbox; unchecked = '' (renderer default). */
+                const has = typeof cur === 'string' && cur !== '';
+                const val = has ? cur : '#333333';
+                col.innerHTML = `<div class="d-flex align-items-center gap-2 mt-4">`
+                    + `<div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="${id}-on" data-page-opt-enable="${esc(key)}"${has ? ' checked' : ''}>`
+                    + `<label class="form-check-label small" for="${id}-on">${esc(def.label)}</label></div>`
+                    + `<input type="color" class="form-control form-control-color form-control-sm" id="${id}" data-page-opt="${esc(key)}" value="${esc(val)}"${has ? '' : ' disabled'} aria-label="${esc(def.label)}">`
+                    + `</div>`;
+            }
+            return col;
+        }
+
         function buildPageOptions() {
             pageOptsEl.innerHTML = '';
+            const browserRow = document.createElement('div');
+            browserRow.className = 'row g-2 align-items-end';
+            const pdfRow = document.createElement('div');
+            pdfRow.className = 'row g-2 align-items-end mt-1';
+
             Object.keys(PRINT_PAGE_OPTIONS).forEach((key) => {
                 const def = PRINT_PAGE_OPTIONS[key];
-                const cur = (working.pageOptions[key] !== undefined && working.pageOptions[key] !== null)
-                    ? working.pageOptions[key] : def.def;
-                const id  = 'pt-po-' + key;
-                const col = document.createElement('div');
-                col.className = 'col-auto';
-                if (def.kind === 'bool') {
-                    col.innerHTML = `<div class="form-check mt-4"><input class="form-check-input" type="checkbox" id="${id}" data-page-opt="${esc(key)}"${cur ? ' checked' : ''}>`
-                        + `<label class="form-check-label small" for="${id}">${esc(def.label)}</label></div>`;
-                } else if (def.kind === 'int') {
-                    col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
-                        + `<input type="number" class="form-control form-control-sm" id="${id}" data-page-opt="${esc(key)}" min="${def.min}" max="${def.max}" value="${esc(cur)}" style="width:6rem">`;
-                } else if (def.kind === 'enum') {
-                    const opts = def.choices.map(c => `<option value="${esc(c)}"${String(cur) === String(c) ? ' selected' : ''}>${esc(c)}</option>`).join('');
-                    col.innerHTML = `<label class="form-label small mb-0" for="${id}">${esc(def.label)}</label>`
-                        + `<select class="form-select form-select-sm" id="${id}" data-page-opt="${esc(key)}">${opts}</select>`;
-                } else if (def.kind === 'color') {
-                    /* An <input type=color> can't represent "no accent", so pair it
-                       with an enable checkbox; unchecked = '' (renderer default). */
-                    const has = typeof cur === 'string' && cur !== '';
-                    const val = has ? cur : '#333333';
-                    col.innerHTML = `<div class="d-flex align-items-center gap-2 mt-4">`
-                        + `<div class="form-check mb-0"><input class="form-check-input" type="checkbox" id="${id}-on" data-page-opt-enable="${esc(key)}"${has ? ' checked' : ''}>`
-                        + `<label class="form-check-label small" for="${id}-on">${esc(def.label)}</label></div>`
-                        + `<input type="color" class="form-control form-control-color form-control-sm" id="${id}" data-page-opt="${esc(key)}" value="${esc(val)}"${has ? '' : ' disabled'} aria-label="${esc(def.label)}">`
-                        + `</div>`;
-                }
-                pageOptsEl.appendChild(col);
+                const target = def.serverOnly ? pdfRow : browserRow;
+                target.appendChild(pageOptionControlHtml(key, def));
             });
+
+            pageOptsEl.appendChild(browserRow);
+            if (pdfRow.children.length) {
+                const heading = document.createElement('div');
+                heading.className = 'small text-muted mt-2 mb-1';
+                heading.innerHTML = '<i class="bi bi-file-earmark-pdf me-1"></i>PDF only '
+                    + '<span class="badge bg-info-subtle text-info-emphasis">no effect on browser Print</span>';
+                pageOptsEl.appendChild(heading);
+                pageOptsEl.appendChild(pdfRow);
+            }
         }
 
         function onPageOptMutate(ev) {
@@ -1011,6 +1066,96 @@ if ($hasSchema) {
         buildPalette();
         /* #1767 R — the QR block previews via an <img> to /qr.php (CueRCode-backed);
            renderTemplateBodyHtml emits it directly, so no QR pre-pass is needed. */
+
+        /* #1767 remainder P4 (§3.3, "AA") — "Preview as PDF": POSTs the CURRENT
+           working template (mode=preview, inline disposition) rendered against
+           the sample song — the SAME renderTemplateBodyHtml()/printCss() the
+           browser preview already uses — and shows the resulting PDF blob in
+           the modal <iframe> above. This is a full admin page with its own
+           <head> (not an SPA fragment), so this module JS is legitimate
+           (rule #30 exempt, matching the rest of this file's inline module).
+           Plain `fetch()` here, not apiFetch() — this page has no
+           X-Preferred-Languages/auth-token cross-cutting concern (rule #31 is
+           about the SPA's api-client.js consumers; every other admin page's
+           own AJAX, e.g. manage/duplicate-songs.php, follows the same plain-
+           fetch + X-Requested-With + this page's own csrf_token convention). */
+        const previewPdfBtn = $('#pt-preview-pdf');
+        const pdfPreviewModalEl = $('#pt-pdf-preview-modal');
+        const pdfPreviewFrame   = $('#pt-pdf-preview-frame');
+        let pdfPreviewObjectUrl = null;
+
+        function openPdfPreviewModal(objectUrl) {
+            if (pdfPreviewObjectUrl) { URL.revokeObjectURL(pdfPreviewObjectUrl); }
+            pdfPreviewObjectUrl = objectUrl;
+            pdfPreviewFrame.src = objectUrl;
+            if (window.bootstrap && window.bootstrap.Modal) {
+                const modal = window.bootstrap.Modal.getOrCreateInstance(pdfPreviewModalEl);
+                pdfPreviewModalEl.addEventListener('hidden.bs.modal', () => {
+                    pdfPreviewFrame.src = 'about:blank';
+                    if (pdfPreviewObjectUrl) { URL.revokeObjectURL(pdfPreviewObjectUrl); pdfPreviewObjectUrl = null; }
+                }, { once: true });
+                modal.show();
+            } else {
+                // Bootstrap JS not yet available for some reason — degrade to a new tab.
+                window.open(objectUrl, '_blank');
+            }
+        }
+
+        previewPdfBtn.addEventListener('click', async () => {
+            if (!working.blocks.length) {
+                alert('Add at least one block before previewing.');
+                return;
+            }
+            const originalHtml = previewPdfBtn.innerHTML;
+            previewPdfBtn.disabled = true;
+            previewPdfBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Rendering…';
+            try {
+                const bodyHtml = renderTemplateBodyHtml(PRINT_SAMPLE_SONG, { blocks: working.blocks, pageOptions: working.pageOptions });
+                const css = printCss(working.pageOptions);
+                const res = await fetch('/manage/print-pdf.php', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-Token': <?= json_encode($csrf, $JSON_SAFE) ?>,
+                    },
+                    body: JSON.stringify({
+                        mode: 'preview',
+                        documents: [{
+                            bodyHtml,
+                            meta: {
+                                songId: PRINT_SAMPLE_SONG.publicId || PRINT_SAMPLE_SONG.id || '',
+                                title: PRINT_SAMPLE_SONG.title || '',
+                                lang: PRINT_SAMPLE_SONG.language || 'en',
+                                dir: 'ltr',
+                                book: PRINT_SAMPLE_SONG.songbookName || '',
+                            },
+                        }],
+                        css,
+                        pageOptions: working.pageOptions || {},
+                        filename: 'print-template-preview',
+                    }),
+                });
+                if (res.status === 200) {
+                    const blob = await res.blob();
+                    openPdfPreviewModal(URL.createObjectURL(blob));
+                } else if (res.status === 503) {
+                    alert("The PDF engine isn't installed on this server yet.");
+                } else if (res.status === 429) {
+                    alert('Too many PDF renders just now — try again shortly.');
+                } else if (res.status === 401) {
+                    alert('Your session has expired — please sign in again.');
+                } else {
+                    alert('Could not build the PDF preview — please try again.');
+                }
+            } catch (_e) {
+                alert('Could not build the PDF preview — please try again.');
+            } finally {
+                previewPdfBtn.disabled = false;
+                previewPdfBtn.innerHTML = originalHtml;
+            }
+        });
     </script>
     <?php endif; ?>
 

@@ -407,6 +407,80 @@ function _pdfAdaptHtml(string $html): string
 }
 
 /* =============================================================================
+ * §4.3 — THE H-FAMILY: serverOnly PAGE FURNITURE (running header + page
+ * numbers). Page FURNITURE, never block content — the mutation-proven guard
+ * (tests/php/test-print-one-renderer.php §A(c)) allow-lists exactly the
+ * class names these two helpers emit (`print-running-header`,
+ * `print-running-footer`) alongside the #1767 remainder P5 `print-ccli-notice`
+ * class. Both helpers are pure string-builders: no DB, no network, nothing
+ * that can fail — the caller decides WHETHER to apply their output.
+ * ========================================================================== */
+
+/**
+ * §4.3 (U/H-family) — build the mPDF running-HEADER HTML string from
+ * SERVER-VALIDATED `$meta` + the already re-validated `runningHeader` page
+ * option ('none' | 'title' | 'titleBook', `ptSanitisePageOptions()` output —
+ * an unrecognised value is IMPOSSIBLE here, not merely unexpected). Returns
+ * '' when the option is 'none'/absent, or `$meta` carries no title — never
+ * leaves a blank header bar sitting on the page.
+ *
+ * ELI5: this is the small, quiet line printed along the very top margin of
+ * every page — "Amazing Grace" or "Amazing Grace — Sample Hymnal" — built
+ * from data the SERVER already trusts (the title/book strings the endpoint
+ * capped and control-character-stripped into `$meta`), never from anything
+ * inside the POSTed `bodyHtml`.
+ *
+ * DETAIL — WHY THIS IS PAGE FURNITURE, NOT A SECOND RENDERER: the ONLY
+ * inputs are the coerced `runningHeader` enum and two already-capped
+ * strings from `$meta` (`_pdfSanitiseMetaString()`, the SAME helper AC's
+ * PDF-metadata stamp uses below) — never a block `type`, never anything
+ * parsed out of `bodyHtml`. The emitted markup carries exactly ONE class,
+ * `print-running-header`, the allow-listed server-chrome class
+ * `tests/php/test-print-one-renderer.php` §A(c) exists to police.
+ *
+ * @param  array $pageOptions Already `ptSanitisePageOptions()`-coerced.
+ * @param  array $meta        Already-capped request meta (the endpoint's `$safeMeta`).
+ * @return string HTML for `Mpdf::SetHTMLHeader()`, or '' to leave the default (blank) header.
+ */
+function _pdfRunningHeaderHtml(array $pageOptions, array $meta): string
+{
+    $mode = $pageOptions['runningHeader'] ?? 'none';
+    if (!in_array($mode, ['title', 'titleBook'], true)) {
+        return '';
+    }
+    $title = _pdfSanitiseMetaString($meta['title'] ?? '');
+    if ($title === '') {
+        return '';
+    }
+    $bits = [$title];
+    if ($mode === 'titleBook') {
+        $book = _pdfSanitiseMetaString($meta['book'] ?? '', 120);
+        if ($book !== '') {
+            $bits[] = $book;
+        }
+    }
+    $text = implode(' — ', $bits);
+    return '<div class="print-running-header" style="font-size:9pt;color:#666;'
+        . 'border-bottom:0.5pt solid #ccc;padding-bottom:2pt;">'
+        . htmlspecialchars($text, ENT_QUOTES, 'UTF-8') . '</div>';
+}
+
+/**
+ * §4.3 (U) — the page-number footer HTML mPDF stamps when the caller's
+ * `pageNumbers` page option is true. `{PAGENO}`/`{nbpg}` are mPDF's OWN
+ * documented footer placeholders, substituted internally by mPDF at output
+ * time — never PHP string interpolation, so there is nothing here for a
+ * crafted request to influence (the function takes no arguments at all).
+ *
+ * @link https://mpdf.github.io/headers-footers/headers-and-footers.html
+ */
+function _pdfPageNumberFooterHtml(): string
+{
+    return '<div class="print-running-footer" style="font-size:9pt;color:#666;text-align:center;">'
+        . '{PAGENO} / {nbpg}</div>';
+}
+
+/* =============================================================================
  * §3.2 — HARDENED mPDF CONFIG + THE ONE CONVERT ENTRY POINT
  * ========================================================================== */
 
@@ -508,18 +582,57 @@ function ihymnsPdfRender(array $docs, string $css, array $pageOptions, array $op
         $mpdf->SetCreator('iHymns');
         $mpdf->SetAuthor('iHymns');
 
+        /* §4.3 — H-family page furniture (U pageNumbers, running header).
+           Set BEFORE any WriteHTML() call so it applies from page 1 onward
+           (mPDF headers/footers apply to every page rendered AFTER the
+           call). Header and the page-number footer are independent knobs;
+           the CCLI notice footer (#1767 remainder P5, §6.3) is a THIRD,
+           separate footer source — all footer pieces are combined into ONE
+           SetHTMLFooter() call below, because mPDF's footer is a single
+           slot and a second call would silently replace the first. */
+        $headerHtml = _pdfRunningHeaderHtml($pageOptions, $meta);
+        if ($headerHtml !== '') {
+            $mpdf->SetHTMLHeader($headerHtml);
+        }
+        $footerParts = [];
+        if (!empty($pageOptions['pageNumbers'])) {
+            $footerParts[] = _pdfPageNumberFooterHtml();
+        }
+        /* #1767 remainder P5 — server-ENFORCED CCLI notice. `$opts['ccliNotice']`
+           is a ready-built, already-esc'd-by-the-caller string (resolved from
+           the caller's OWN qualifying licence + the song's REAL CCLI number,
+           `manage/print-pdf.php` — never trusts the POSTed HTML/meta for
+           this). Absent/empty for every non-CCLI render, so this is a
+           byte-identical no-op until P5's caller starts populating it. */
+        $ccliNotice = trim((string)($opts['ccliNotice'] ?? ''));
+        if ($ccliNotice !== '') {
+            $footerParts[] = '<div class="print-ccli-notice" style="font-size:8pt;color:#666;text-align:center;">'
+                . htmlspecialchars($ccliNotice, ENT_QUOTES, 'UTF-8') . '</div>';
+        }
+        if ($footerParts !== []) {
+            $mpdf->SetHTMLFooter(implode('', $footerParts));
+        }
+
         $adaptedCss = _pdfAdaptCss($css);
         if ($adaptedCss !== '') {
             $mpdf->WriteHTML('<style>' . $adaptedCss . '</style>', \Mpdf\HTMLParserMode::HEADER_CSS);
         }
 
+        /* T (onePerPage) — whether the SECOND and later documents in a future
+           batch render (P6; THIS phase caps $docs at one element, so the
+           loop body below never runs twice yet) start on a fresh page.
+           Absent/true reproduces the only behaviour this pipeline has ever
+           had (every prior document unconditionally AddPage()'d); explicit
+           false is the forward-looking opt-out a set-list-as-one-continuous-
+           flow render would want. */
+        $onePerPage = !array_key_exists('onePerPage', $pageOptions) || (bool)$pageOptions['onePerPage'];
         $wroteAny = false;
         foreach ($docs as $i => $doc) {
             $bodyHtml = (string)($doc['bodyHtml'] ?? '');
             if ($bodyHtml === '') {
                 continue;
             }
-            if ($wroteAny) {
+            if ($wroteAny && $onePerPage) {
                 $mpdf->AddPage(); // second+ document starts on a fresh page (future batch mode, P6)
             }
             $mpdf->WriteHTML(_pdfAdaptHtml($bodyHtml), \Mpdf\HTMLParserMode::HTML_BODY);

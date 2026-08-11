@@ -55,11 +55,15 @@ declare(strict_types=1);
  * REQUEST CONTRACT (POST, `Content-Type: application/json`):
  *   {
  *     "mode": "song" | "preview",
- *     "documents": [ { "bodyHtml": "…", "meta": { "songId", "title", "lang", "dir" } } ],
+ *     "documents": [ { "bodyHtml": "…", "meta": { "songId", "title", "lang", "dir", "book" } } ],
  *     "css": "…printCss() output…",
  *     "pageOptions": { … },        // re-validated against the SAME schema the editor uses
- *     "filename": "amazing-grace"  // optional; slug-sanitised server-side either way
+ *     "filename": "amazing-grace", // optional; slug-sanitised server-side either way
+ *     "copies": 1                  // optional int 1..10000 — #1767 remainder P5, rides into printUsageLog()
  *   }
+ * `meta.book` (#1767 remainder P4, §4.3) feeds the OPTIONAL `runningHeader`
+ * page option's 'titleBook' mode only — capped/control-stripped exactly like
+ * every other meta string below, never rendered as markup.
  * `documents` is an ARRAY on purpose (the plan's future batch mode, P6, is
  * the same shape with a higher cap) but THIS phase accepts exactly one — see
  * `PDF_MAX_DOCUMENTS`. `mode: "batch"` is therefore a 400, not a 500 — it is
@@ -246,6 +250,10 @@ foreach ($documentsRaw as $d) {
         'title'  => isset($rawMeta['title'])  ? mb_substr(trim((string)$rawMeta['title']), 0, 200) : null,
         'lang'   => isset($rawMeta['lang'])   ? mb_substr(trim((string)$rawMeta['lang']), 0, 35) : null,
         'dir'    => (($rawMeta['dir'] ?? '') === 'rtl') ? 'rtl' : 'ltr',
+        /* #1767 remainder P4 (§4.3) — feeds ONLY the optional `runningHeader`
+           page option's 'titleBook' mode (includes/pdf_renderer.php
+           ::_pdfRunningHeaderHtml()); never rendered as markup. */
+        'book'   => isset($rawMeta['book'])   ? mb_substr(trim((string)$rawMeta['book']), 0, 120) : null,
     ];
     $sanitisedDocs[] = ['bodyHtml' => $sanHtml, 'meta' => $safeMeta];
 }
