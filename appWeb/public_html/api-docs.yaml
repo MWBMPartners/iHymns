@@ -617,6 +617,26 @@ paths:
             type: string
             enum: ["1", "0", "true", "false", "yes"]
             default: "1"
+        - name: sort
+          in: query
+          required: false
+          description: |
+            #1786 Option B — multi-level result order as a comma-separated
+            list of `key.dir` tokens, e.g. `sort=title.asc,number.desc`. Each
+            key may appear once (a repeat's first occurrence wins) and at
+            most 3 tokens are honoured; `dir` is `asc` or `desc` (anything
+            else is treated as `asc`). Unknown/malformed tokens are DROPPED
+            silently, never a 4xx — an unrecognised sort key degrades to the
+            default rather than failing the whole search, so a client on a
+            different build than the API never breaks over this parameter
+            (rule #33: honour it or don't emit it; this endpoint honours it).
+            Omit entirely (the default) for the unchanged relevance-ranked
+            order. `relevance` is only meaningful on the FULLTEXT pass
+            (3+ character queries) — it is accepted but has no effect on the
+            sub-3-character LIKE fallback, which has no relevance score.
+          schema:
+            type: string
+            example: title.asc,number.desc
       responses:
         "200":
           description: Search results

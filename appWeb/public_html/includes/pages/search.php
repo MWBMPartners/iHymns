@@ -127,6 +127,23 @@ $songbooks = $songData->getSongbooks();
                 </select>
             </div>
 
+            <!-- Sort control (#1786) — SERVER-SIDE mode: search results are
+                 paginated ("Load more"), so re-sorting only the currently
+                 loaded page client-side would silently sort a slice and
+                 lie about the rest. search.js re-fetches from offset 0 with
+                 a `sort=` query param instead — see wireListSortControl in
+                 initSearchPage(). Default = Relevance, the FULLTEXT match's
+                 own ranking; picking Title/Number is an explicit level. -->
+            <?php
+                $listSortSurface = 'search';
+                $listSortDefault = 'Relevance';
+                $listSortOptions = [
+                    'title'  => ['label' => 'Title',            'type' => 'text',   'dir' => 'asc'],
+                    'number' => ['label' => 'Songbook & number', 'type' => 'number', 'dir' => 'asc'],
+                ];
+                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+            ?>
+
             <!-- Lyrics search toggle (#93) -->
             <div class="form-check form-switch mb-3">
                 <input class="form-check-input" type="checkbox" role="switch"

@@ -3078,7 +3078,7 @@ class SongData
      *                                    comments), not an oversight.
      * @return array Matching song objects
      */
-    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true, array $langSubtags = []): array
+    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true, array $langSubtags = [], array $sortSpec = []): array
     {
         $query = trim($query);
         if ($query === '') {
@@ -3135,7 +3135,7 @@ class SongData
         /* Very short queries (< 3 chars) sit below InnoDB's FULLTEXT
            minimum token length, so a LIKE scan is the only option. */
         if (mb_strlen($query) < 3 || empty($tokens)) {
-            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags);
+            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags, $sortSpec);
         } else {
             /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
                term prefix-matched AND required (+term*). Catches partial
@@ -3150,14 +3150,14 @@ class SongData
                     $primary = '(' . $primary . ') (' . $expExpr . ')';
                 }
             }
-            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags);
+            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
 
             /* D2 hybrid — step 2: if requiring every term found nothing,
                broaden to ANY term (drop the +) so a single mistyped
                token doesn't sink the whole query. */
             if (empty($results)) {
                 $loose   = self::_booleanPrefixExpr($tokens, false);
-                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags);
+                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
             }
         }
 
@@ -3229,12 +3229,86 @@ class SongData
     }
 
     /**
+     * #1786 Option B — compose a search ORDER BY clause from a validated
+     * multi-level sort spec, using ONLY hardcoded constant fragments (rule
+     * #5's allow-list carve-out: a key is matched by literal `===`
+     * comparison against a fixed list and mapped to a fixed SQL string —
+     * `$spec`'s caller-controlled `key`/`dir` strings are NEVER concatenated
+     * into the SQL themselves).
+     *
+     * `$spec` is expected already shape-validated by the caller (api.php's
+     * `search` case parses+allow-lists the `sort=` CSV param before it ever
+     * reaches here) — this method additionally re-validates defensively
+     * (unknown key ⇒ skipped, non-'desc' ⇒ 'ASC', ⚑ N1's 3-level cap, first
+     * occurrence of a repeated key wins) so a SECOND caller can never rely
+     * on api.php having done that work first.
+     *
+     * @param array<int,array{key?:mixed,dir?:mixed}> $spec Ordered levels.
+     * @param bool $hasRelevance Whether the CALLING query even has a
+     *   `relevance` computed column — true for the FULLTEXT path
+     *   (`_runFulltextSearch`), false for the LIKE path (`_searchByLike`,
+     *   which has no MATCH() at all). A `relevance` level is silently
+     *   ignored (not an error) when false — the documented degradation
+     *   for a sub-3-char query landing on the LIKE fallback.
+     * @return string A complete ORDER BY expression (no `ORDER BY` prefix),
+     *   ALWAYS ending in the `s.SongbookAbbr, s.Number` tie-break so results
+     *   are deterministic even when every requested level ties.
+     */
+    private static function _searchOrderBy(array $spec, bool $hasRelevance): string
+    {
+        $defaultOrder = $hasRelevance
+            ? 'relevance DESC, s.SongbookAbbr, s.Number'
+            : 's.SongbookAbbr, s.Number';
+
+        $fragments = [];
+        $seenKeys  = [];
+        foreach ($spec as $level) {
+            if (count($fragments) >= 3) break; // ⚑ N1 — defence in depth; api.php already caps at 3
+            if (!is_array($level)) continue;
+            $key = is_string($level['key'] ?? null) ? $level['key'] : '';
+            if ($key === '' || isset($seenKeys[$key])) continue;
+            $dir = (($level['dir'] ?? '') === 'desc') ? 'DESC' : 'ASC';
+
+            if ($key === 'relevance' && $hasRelevance) {
+                /* Relevance is always "most relevant first" — there is no
+                   sensible "least relevant first" reading, so this level
+                   never honours a requested direction. */
+                $fragments[] = 'relevance DESC';
+                $seenKeys[$key] = true;
+            } elseif ($key === 'title') {
+                $fragments[] = "s.Title {$dir}";
+                $seenKeys[$key] = true;
+            } elseif ($key === 'number') {
+                $fragments[] = "s.SongbookAbbr {$dir}, s.Number {$dir}";
+                $seenKeys[$key] = true;
+            }
+            /* An unrecognised key (including 'relevance' when
+               !$hasRelevance) is silently skipped — never a 4xx error and
+               never interpolated, matching api.php's own "unknown tokens
+               fold to default, never an error" contract (§9.11 of the
+               plan). */
+        }
+
+        if ($fragments === []) {
+            return $defaultOrder;
+        }
+
+        /* Always suffixed with the default tie-break, so results stay
+           deterministic even when every explicit level ties (and so a
+           spec of just `number` — which already sorts by SongbookAbbr,
+           Number — doesn't need special-casing to avoid a redundant
+           ORDER BY; a duplicate tie-break fragment is harmless in SQL). */
+        $fragments[] = 's.SongbookAbbr, s.Number';
+        return implode(', ', $fragments);
+    }
+
+    /**
      * Run a single FULLTEXT BOOLEAN-mode pass and return lightweight,
      * relevance-ordered rows (credits are bulk-attached by the caller).
      * songbookName comes from the LIVE tblSongbooks JOIN, not the
      * denormalised tblSongs.SongbookName (WS-E #1013).
      */
-    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = []): array
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = [], array $sortSpec = []): array
     {
         if (trim($ftQuery) === '') {
             return [];
@@ -3264,6 +3338,14 @@ class SongData
         $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
         $whereClause = implode(' AND ', $where) . $langWhere;
 
+        /* #1786 — server-side multi-level sort (⚑ N5). $sortSpec has
+           already been parsed + allow-list-validated by api.php's `search`
+           case (never a raw key reaching this file); _searchOrderBy() maps
+           it to HARDCODED ORDER BY fragments only — never interpolates a
+           caller-controlled string into SQL (rule #5's allow-list carve-
+           out). Empty spec ⇒ today's unchanged default. */
+        $orderBy = self::_searchOrderBy($sortSpec, true);
+
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
@@ -3274,7 +3356,7 @@ class SongData
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
-                ORDER BY relevance DESC, s.SongbookAbbr, s.Number
+                ORDER BY {$orderBy}
                 {$limitClause}";
 
         /* MATCH appears in SELECT (relevance) and WHERE — bind twice. */
@@ -3298,7 +3380,7 @@ class SongData
      * FULLTEXT minimum token length. Returns lightweight rows; credits
      * are bulk-attached by the caller.
      */
-    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics, array $langSubtags = []): array
+    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics, array $langSubtags = [], array $sortSpec = []): array
     {
         $like = '%' . $query . '%';
 
@@ -3331,6 +3413,12 @@ class SongData
         $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
         $whereClause = implode(' AND ', $where) . $langWhere;
 
+        /* #1786 — same server-side sort as _runFulltextSearch(); this path
+           has no `relevance` column (no FULLTEXT MATCH here), so a
+           `relevance` level in $sortSpec is simply ignored by
+           _searchOrderBy()'s $hasRelevance=false. */
+        $orderBy = self::_searchOrderBy($sortSpec, false);
+
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
@@ -3340,7 +3428,7 @@ class SongData
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
-                ORDER BY s.SongbookAbbr, s.Number
+                ORDER BY {$orderBy}
                 {$limitClause}";
 
         if ($limit > 0) {

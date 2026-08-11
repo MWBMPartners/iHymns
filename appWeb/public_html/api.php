@@ -914,6 +914,39 @@ if ($action !== null) {
                 break;
             }
 
+            /* #1786 Option B (⚑ N5) — multi-level sort as CSV `key.dir`
+               tokens, e.g. `sort=title.asc,number.desc`. Each token is
+               validated against a FIXED allow-list; an unknown token is
+               DROPPED, never a 4xx — the PWA and this server can skew
+               across deploys (a client on a newer/older build than the API
+               must never break the whole search over an unrecognised sort
+               key). Empty/absent/all-unknown ⇒ [] ⇒ SongData's own default
+               (relevance). Capped at 3 (⚑ N1); a repeated key's FIRST
+               occurrence wins. This is the ONLY place a request-supplied
+               sort key is read — SongData::_searchOrderBy() maps it to
+               hardcoded ORDER BY fragments only (rule #5), never a raw
+               interpolation. */
+            $sortSpec = [];
+            $sortParam = isset($_GET['sort']) ? (string)$_GET['sort'] : '';
+            if ($sortParam !== '') {
+                $sortAllowedKeys = ['relevance', 'title', 'number'];
+                foreach (explode(',', $sortParam) as $sortToken) {
+                    if (count($sortSpec) >= 3) break;
+                    $sortToken = trim($sortToken);
+                    if ($sortToken === '') continue;
+                    $sortParts = explode('.', $sortToken, 2);
+                    $sortKey = $sortParts[0] ?? '';
+                    $sortDir = (isset($sortParts[1]) && $sortParts[1] === 'desc') ? 'desc' : 'asc';
+                    if (!in_array($sortKey, $sortAllowedKeys, true)) continue;
+                    $sortKeyAlreadyUsed = false;
+                    foreach ($sortSpec as $sortExisting) {
+                        if ($sortExisting['key'] === $sortKey) { $sortKeyAlreadyUsed = true; break; }
+                    }
+                    if ($sortKeyAlreadyUsed) continue;
+                    $sortSpec[] = ['key' => $sortKey, 'dir' => $sortDir];
+                }
+            }
+
             /* Language filter (#736), pushed into the SQL itself (#1639) via
                applyLanguageFilterSql() — same helper + call shape SongData's
                getSongsIndex() already uses (SongData.php:1695). The old code
@@ -929,7 +962,7 @@ if ($action !== null) {
 
             /* Over-fetch by one so we can report hasMore for "load more"
                pagination without a separate COUNT round-trip. */
-            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics, $_langSubtags);
+            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics, $_langSubtags, $sortSpec);
 
             $hasMore = count($results) > $limit;
             if ($hasMore) {

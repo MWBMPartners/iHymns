@@ -28,6 +28,24 @@ import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
    on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
    itself, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
+/* #1786 Option B — search is a SERVER-SORT surface: results are paginated
+   ("Load more"), so re-ordering only the currently-loaded page client-side
+   would silently sort a slice and lie about the rest. getListSort() reads
+   the saved spec to build the `sort=` query param; wireListSortControl()
+   re-runs a fresh (offset-0) search on change. The offline fallback (a
+   client-only slim-index filter, ≤ PAGE_SIZE rows, no pagination) DOES sort
+   client-side with the shared comparator — there is no server to ask. */
+import { wireListSortControl, getListSort } from './list-sort.js';
+import { multiKeyCompareMissingLast } from '../utils/sort-compare.js';
+
+/** Allowed list-sort keys for the `search` surface — matches search.php's
+ *  $listSortOptions; 'relevance' is the SERVER default and is never an
+ *  explicit level a user picks (mirrors SongData::_searchOrderBy()). Both
+ *  keys resolve to a TEXT comparator client-side (offline fallback only —
+ *  `number` composes songbook+number into one padded string, the same
+ *  combined-fragment shape SongData::_searchOrderBy() gives that key
+ *  server-side); the live search path never sorts client-side at all. */
+const SEARCH_SORT_TYPES = { title: 'text', number: 'text' };
 /* #307 — the header-search autocomplete typeahead (which imported
    combobox-a11y.js for its ARIA, #1594 part 2) was removed as dead code: its
    `_initAutocomplete` had zero callers, so the dropdown, its CSS, the
@@ -255,6 +273,18 @@ export class Search {
                 }
             });
         }
+
+        /* #1786 — Sort ▾ control. A change re-runs the CURRENT query fresh
+           (append=false inside performSearch resets offset/loaded — see
+           apiSearch() below for how the spec becomes a `sort=` param). No
+           query yet ⇒ nothing to re-sort, so this is a silent no-op until
+           the visitor has actually searched for something. */
+        wireListSortControl('search', () => {
+            const q = input.value.trim();
+            if (q.length >= 2) {
+                this.performSearch(q, filter?.value || '', results);
+            }
+        });
     }
 
     /* =====================================================================
@@ -385,6 +415,16 @@ export class Search {
         url.searchParams.set('lyrics', this.lyricsSearchEnabled ? '1' : '0');
         if (songbook) url.searchParams.set('songbook', songbook);
 
+        /* #1786 — CSV `key.dir` tokens, e.g. `sort=title.asc,number.desc`.
+           Default (no saved spec) sends no `sort` param at all, so a
+           server that has never seen this parameter behaves exactly as
+           before (rule #33 — a param the destination doesn't need is
+           simply omitted, never sent empty). */
+        const sortSpec = getListSort('search', Object.keys(SEARCH_SORT_TYPES));
+        if (sortSpec.length) {
+            url.searchParams.set('sort', sortSpec.map((s) => `${s.key}.${s.dir}`).join(','));
+        }
+
         const response = await apiFetch(url);
         if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
@@ -464,7 +504,32 @@ export class Search {
         }
         if (!Array.isArray(index) || index.length === 0) return false;
 
-        const results = this._filterSlimIndex(index, query, songbook);
+        let results = this._filterSlimIndex(index, query, songbook);
+
+        /* #1786 — there is no server to send `sort=` to while offline, so
+           this (already tiny, ≤ PAGE_SIZE, unpaginated) fallback list sorts
+           client-side with the SAME shared comparator every other surface
+           uses. `number` composes songbook+number into one text value
+           (matching SongData::_searchOrderBy()'s combined
+           `s.SongbookAbbr, s.Number` fragment for that key). */
+        const sortSpec = getListSort('search', Object.keys(SEARCH_SORT_TYPES));
+        if (sortSpec.length) {
+            const levels = sortSpec.map((s) => ({ key: s.key, type: 'text', direction: s.dir }));
+            const decorated = results.map((row, i) => ({
+                row,
+                i,
+                vals: {
+                    title: row.title || '',
+                    number: `${(row.songbook || '').toLowerCase()} ${String(row.number ?? 0).padStart(6, '0')}`,
+                },
+            }));
+            decorated.sort((a, b) => {
+                const cmp = multiKeyCompareMissingLast(levels, a.vals, b.vals);
+                return cmp !== 0 ? cmp : a.i - b.i; /* stable */
+            });
+            results = decorated.map((d) => d.row);
+        }
+
         container.innerHTML = `
             <div class="alert alert-warning py-2 small mb-2" role="status">
                 <i class="fa-solid fa-wifi-slash me-1" aria-hidden="true"></i>
