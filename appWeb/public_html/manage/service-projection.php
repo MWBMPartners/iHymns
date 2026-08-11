@@ -156,7 +156,7 @@ if ($driverKeysReady && $venues) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Service Projection — iHymns Admin</title>
+    <title>Projector Screen — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
     <style>
@@ -208,7 +208,7 @@ if ($driverKeysReady && $venues) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-2"><i class="bi bi-projector me-2"></i>Service Projection</h1>
+        <h1 class="h4 mb-2"><i class="bi bi-projector me-2"></i>Projector Screen</h1>
         <p class="text-secondary small mb-4" style="max-width: 62ch;">
             Start a live service and project a join code your congregation enters in iHymns to follow along.
             Open this on the screen the congregation can see. The code rotates automatically.

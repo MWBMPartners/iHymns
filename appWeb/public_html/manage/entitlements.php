@@ -210,7 +210,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Entitlements — iHymns Admin</title>
+    <title>Role Permissions — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <style>
         .ent-grid th, .ent-grid td { vertical-align: middle; }
@@ -225,12 +225,12 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
 
 <div class="container-admin py-4">
 
-    <h1 class="h4 mb-3">Role → Entitlement map</h1>
+    <h1 class="h4 mb-3">Role Permissions</h1>
     <p class="text-secondary small mb-4">
-        Decide which roles hold which capabilities. A tick in a cell
-        means users with that role can perform the named action; an
-        unticked cell revokes it. Changes take effect on the next
-        request — no sign-out required.
+        Choose what each type of user is allowed to do. A tick in a cell
+        means users with that role can do the named action; an empty
+        cell takes it away. Changes take effect straight away — nobody
+        needs to sign out and back in.
     </p>
 
     <?php if ($isGlobalAdmin): ?>

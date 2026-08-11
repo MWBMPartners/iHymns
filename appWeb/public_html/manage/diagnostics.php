@@ -372,7 +372,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SQL Diagnostics — iHymns Admin</title>
+    <title>Database Query Tool — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -382,12 +382,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-terminal me-2"></i>SQL Diagnostics</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-terminal me-2"></i>Database Query Tool</h1>
         <p class="text-secondary small mb-3">
-            Run <strong>read-only</strong> queries against the live database for forensics and
-            "what's actually in there right now?" questions. Only
-            <code>SELECT</code>, <code>SHOW</code>, <code>EXPLAIN</code> and
-            <code>DESCRIBE</code> are accepted; results are capped at
+            Run read-only look-ups against the live database to investigate a
+            problem — a way to see exactly what is stored right now. Nothing
+            here can change or delete anything; results are capped at
             <?= number_format(DIAGNOSTICS_MAX_ROWS) ?> rows and every run is recorded in the
             <a href="/manage/activity-log" class="link-light">Activity Log</a>.
         </p>

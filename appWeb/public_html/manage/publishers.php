@@ -343,11 +343,10 @@ if ($hasSchema) {
     <div class="container-admin py-4">
         <h1 class="h4 mb-3"><i class="bi bi-building me-2"></i>Publishers</h1>
         <p class="text-secondary small mb-4">
-            A <strong>Publisher</strong> is the person or company that published a songbook. Curating
-            publishers here as a registry — with a parent/imprint hierarchy, an optional link to a
-            person in the Musicians registry, and alternate names — lets a songbook cite one or more
-            publishers precisely (multi-publisher copyright) instead of a free-text string, and keeps
-            the free-text <code>Publisher</code> field on each book working as a display fallback.
+            A <strong>Publisher</strong> is the person or company that published a songbook. Keep
+            publishers here — with imprints grouped under their parent company, an optional link to a
+            person in Musicians, and alternate names — so a songbook can name one or more publishers
+            exactly instead of a single typed-in name.
         </p>
 
         <?php if ($success): ?>

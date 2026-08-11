@@ -104,7 +104,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Revisions — iHymns Admin</title>
+    <title>Edit History — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -115,7 +115,7 @@ try {
 <div class="container-admin py-4">
 
     <div class="d-flex flex-wrap align-items-end justify-content-between mb-3 gap-2">
-        <h1 class="h4 mb-0">Song edit revisions</h1>
+        <h1 class="h4 mb-0">Edit history</h1>
         <span class="text-muted small">
             <?= number_format(count($rows)) ?> showing (of <?= number_format($total) ?> in this range)
         </span>

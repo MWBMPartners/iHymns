@@ -1416,7 +1416,7 @@ if ($action !== '') {
         Database Setup<?= entitlementLockChipHtml('run_db_install') ?>
     </h1>
     <p class="text-secondary mb-4">
-        iHymns Admin &mdash; Installation, migration, and maintenance.
+        Install the iHymns database, apply pending updates to it, and run backups and maintenance.
         <span class="badge bg-danger text-light ms-2" style="font-size: 0.7rem; font-weight: 600;">
             <i class="bi bi-lock-fill me-1" aria-hidden="true"></i>Global Admin only
         </span>
@@ -2403,7 +2403,7 @@ if ($hasCredentials && defined('DB_HOST')) {
         Database Setup<?= entitlementLockChipHtml('run_db_install') ?>
     </h1>
     <p class="text-secondary mb-4">
-        iHymns Admin &mdash; Installation, migration, and maintenance.
+        Install the iHymns database, apply pending updates to it, and run backups and maintenance.
         <span class="badge bg-danger text-light ms-2" style="font-size: 0.7rem; font-weight: 600;">
             <i class="bi bi-lock-fill me-1" aria-hidden="true"></i>Global Admin only
         </span>

@@ -851,12 +851,10 @@ if ($hasSchema) {
     <div class="container-admin py-4">
         <h1 class="h4 mb-3"><i class="bi bi-diagram-3 me-2"></i>Works</h1>
         <p class="text-secondary small mb-4">
-            A <strong>Work</strong> groups multiple songs that represent the same composition
-            across different songbooks, arrangements or translations — mirrors the
-            <a href="https://musicbrainz.org/doc/Work" target="_blank" rel="noopener noreferrer">MusicBrainz Work</a>
-            ↔ Recording relationship. Works can be nested without limit (an original work
-            can have arrangement / translation children, each with their own children, etc.).
-            ISWC is optional — supply it for compositions registered with a CISAC society.
+            A <strong>Work</strong> groups songs that are really the same underlying composition —
+            the same hymn or tune appearing across different songbooks, arrangements or translations.
+            Use this page when you want to tie those versions together, and you can nest one version
+            under another as deeply as you need.
         </p>
 
         <?php if ($success): ?>

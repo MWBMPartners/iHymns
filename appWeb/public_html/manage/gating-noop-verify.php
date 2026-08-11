@@ -312,7 +312,7 @@ function gatingNoop_statusFromHeaders(array $headers): int
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gating No-Op Verifier — iHymns Admin</title>
+    <title>Content Lock Safety Check — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -322,15 +322,12 @@ function gatingNoop_statusFromHeaders(array $headers): int
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-check me-2"></i>Gating No-Op Verifier</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-shield-check me-2"></i>Content Lock Safety Check</h1>
         <p class="text-secondary small mb-4">
-            Proves the content-gating completion (#1357 / #1358) is a
-            <strong>byte-identical no-op</strong> while
-            <code>content_gating_enabled='0'</code>. Capture a baseline now, then
-            re-run "Verify" after each deploy — every sampled song must hash
-            identically. The audio-route probe confirms the static
-            <code>/data/audio/&lt;id&gt;.mp3</code> path still serves and the
-            <code>#1358</code> deny seal is not active yet.
+            Before you ever turn content locking on, this confirms it would
+            change nothing yet — every checked song still looks exactly the
+            same and its audio still plays. Take a snapshot now, then run
+            "Verify" again after each update to make sure nothing has changed.
         </p>
 
         <?php if ($pageError !== null): ?>

@@ -164,7 +164,7 @@ if ($audit !== null) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Schema Audit — iHymns Admin</title>
+    <title>Database Structure Check — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -174,15 +174,13 @@ if ($audit !== null) {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-clipboard2-data me-2"></i>Schema Audit</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-clipboard2-data me-2"></i>Database Structure Check</h1>
         <p class="text-secondary small mb-4">
-            Compares <code>appWeb/.sql/schema.sql</code> (what the code expects)
-            against the live MySQL database (what's actually there) and the
-            <code>migrate-*.php</code> scripts (what's covered by an existing
-            migration). Surfaces drift before it manifests as a runtime fatal.
-            Read-only — no ALTER statements run from this page; use
-            <a href="/manage/setup-database" class="link-light">Database Setup</a>
-            to actually run the migrations this report names.
+            Checks that the live database has the exact structure iHymns
+            expects, and flags anything that is missing or extra. This page
+            only looks — it never changes anything; if something is missing,
+            use <a href="/manage/setup-database" class="link-light">Database Setup</a>
+            to add it.
         </p>
 
         <?php if ($dbError !== null): ?>

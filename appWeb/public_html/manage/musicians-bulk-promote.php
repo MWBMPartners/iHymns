@@ -366,7 +366,7 @@ if (!empty($registryByName)) {
                  DIFFERENT job: this page finds cited-but-UNREGISTERED names;
                  /manage/musician-duplicates finds registry rows that are
                  probably the same person spelled two ways. -->
-            &middot; Looking for duplicates <em>already in</em> the registry (not cited names waiting to be added)?
+            &middot; Looking for duplicates <em>already in</em> your Musicians list (not names still waiting to be added)?
             <a href="/manage/musician-duplicates" class="link-secondary">Review musician duplicates →</a>
         </p>
 

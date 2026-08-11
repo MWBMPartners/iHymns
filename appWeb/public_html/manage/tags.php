@@ -449,11 +449,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <?= entitlementLockChipHtml('manage_tags') ?>
             </h1>
             <p class="text-secondary small mb-0">
-                Curator-managed taxonomy that powers the public Browse-by-Theme home section and
-                <code>/tag/&lt;slug&gt;</code> listing pages. Rows badged <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
-                are the seeded CCLI / OpenLyrics theme vocabulary (#1152) — the editor's tag typeahead autofills
-                from this list, so curators reuse the canonical spelling instead of re-typing variants. Use
-                <strong>Merge</strong> to fold a duplicate-meaning tag into its canonical row.
+                The words and themes you can tag songs with. These power the Browse by Theme section on
+                the home page and the theme listing pages readers can open. Tags badged <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
+                come from a ready-made, standard list of song themes — the editor suggests them as you type,
+                so everyone uses the same spelling instead of re-typing variants. Use
+                <strong>Merge</strong> to fold a duplicate tag into the one you want to keep.
             </p>
         </div>
         <div class="d-flex gap-2">

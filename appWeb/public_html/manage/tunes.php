@@ -430,11 +430,10 @@ if ($hasSchema) {
     <div class="container-admin py-4">
         <h1 class="h4 mb-3"><i class="bi bi-music-note-beamed me-2"></i>Tunes</h1>
         <p class="text-secondary small mb-4">
-            A <strong>Tune</strong> is the MELODY a hymn is sung to — HYFRYDOL, OLD HUNDREDTH — as a
-            first-class registry entry, distinct from the song lyrics that use it. Curating a tune's
-            meter, composer credits and external links here enriches the public
-            <code>/tune/&lt;slug&gt;</code> page for every song that cites it, whether via this
-            registry or the free-text <code>TuneName</code> field on the song itself.
+            A <strong>Tune</strong> is the melody a hymn is sung to — like HYFRYDOL or OLD HUNDREDTH —
+            kept as its own entry, separate from the lyrics that use it. Adding a tune's meter,
+            composer credits and links here improves the public tune page shown for every song that
+            names it.
         </p>
 
         <?php if ($success): ?>

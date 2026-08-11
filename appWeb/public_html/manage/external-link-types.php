@@ -291,15 +291,13 @@ $categoryLabels = [
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-link-45deg me-2"></i>External-Link Types &amp; URL Patterns</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-link-45deg me-2"></i>Link Types</h1>
         <p class="text-secondary small mb-4">
-            The controlled-vocabulary registry that drives every <strong>Find this … elsewhere</strong>
-            panel on the public site, plus the URL → provider patterns the auto-detect
-            module uses. Curator-edits land immediately — no code deploy needed. Each
-            link type can carry many patterns; sub-domain matching covers
-            <code>en.wikipedia.org</code> from a single <code>wikipedia.org</code> rule, and
-            an optional path-prefix (e.g. <code>/work/</code>) discriminates same-host providers
-            (MusicBrainz Work vs Recording vs Artist).
+            The list of outside places a song, songbook or person can link to — such as a hymn's page on
+            Wikipedia or an artist on a music service. It fills the <strong>Find this … elsewhere</strong>
+            panels on the public site, and it also spots a pasted web address and picks the right type for
+            you. Each type can list the web addresses it recognises. Add or change a type here and it takes
+            effect straight away.
         </p>
 
         <?php if ($success): ?>

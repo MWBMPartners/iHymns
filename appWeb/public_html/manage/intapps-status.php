@@ -110,7 +110,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IntApps Gateway Status — iHymns Admin</title>
+    <title>Connected Apps — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
@@ -119,13 +119,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-broadcast-pin me-2"></i>IntApps Gateway Status</h1>
+        <h1 class="h4 mb-3"><i class="bi bi-broadcast-pin me-2"></i>Connected Apps</h1>
         <p class="text-secondary small mb-4">
-            Read-only view of the MWBM-IntAppsAPI gateway integration's runtime state.
-            Credentials + the per-channel enabled-channels allow-list are set on
-            <a href="/manage/configuration" class="link-light">Configuration</a>.
-            This page never edits gateway-side flags — that stays on the gateway's own
-            admin UI; iHymns only ever consumes.
+            Shows whether iHymns is linked to the outside app service and its
+            latest status. This page only displays information — you set up and
+            turn on the link over on
+            <a href="/manage/configuration" class="link-light">Settings</a>.
         </p>
 
         <?php if (!$configured): ?>

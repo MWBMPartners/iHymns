@@ -574,7 +574,7 @@ $csrf = csrfToken();
         <i class="bi bi-building me-2"></i>My Organisations
     </h1>
     <p class="text-muted small">
-        Organisations where you hold an admin or owner role. You can add or remove members, change their org-role, and edit licence rows here. System administrators see every organisation because they can manage any of them.
+        The organisations you help run as an admin or owner. Here you can add or remove members, change each member's role, and keep their licence details up to date. System administrators see every organisation because they can manage any of them.
     </p>
 
     <?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
