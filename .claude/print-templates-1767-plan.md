@@ -102,6 +102,32 @@ before the shape is known). They are batched below and do **not** block the slic
 | W, X, AC, AD, AJ | RTL/embedded-fonts, batch, PDF metadata, booklet imposition, PDF/UA | **server-PDF pipeline** — needs **Decision #1** (build a server renderer at all?) |
 | Q, S, AH | transpose/capo, bilingual parallel, chord diagrams | depend on #1768 chords / #1088 per-line translations — data-model prerequisites |
 
+## REMAINDER DECISIONS — RESOLVED 2026-08-11 (owner) — authoritative
+
+The four batched decisions below are now answered. **This block binds the remainder build:**
+
+1. **Server-side PDF renderer → BUILD ONE.** (Owner chose to build, against the "stay browser-only"
+   recommendation.) Unlocks W/X/AC/AD/AJ + server-enforced white-label (L) + AK footer enforcement.
+   ⚠️ **Open sub-question for the remainder plan (engine + prod deployability):** a server PDF needs a
+   rendering engine available on the SHARED-HOSTING production docroots — either a **pure-PHP library**
+   (mPDF / Dompdf — deploys anywhere the app runs, no system binary, but CSS fidelity differs from a
+   browser) or a **binary/headless engine** (wkhtmltopdf / headless-Chromium — browser-faithful, but
+   needs a binary the shared host may not permit). The remainder plan MUST assess what's actually
+   available/allowed in prod and recommend an engine (defensible default for shared PHP hosting =
+   pure-PHP mPDF, flagged changeable) — this is the one residual judgement call to resolve in planning.
+2. **CCLI print-usage count → PROMPT FOR COPIES** (accurate licence reporting; an under-count is a
+   compliance defect). Reuse `tblSongUsageEvents.MetaJson` (no new table).
+3. **Branding / white-label → DEFER to the #1769 gating epic** — the `CanRemoveIHymnsBranding` cap lands
+   in the ONE `TIER_CAPS` registry there, not bolted on here. So **D/L/K-branding are OUT of this
+   remainder** (org-default *templates* — K without branding — may still be built if cheap).
+4. **Uploadable full-page designs → FULL SANITISED HTML UPLOAD** (owner chose max flexibility over the
+   constrained-slot recommendation). This fixes `tblPrintTemplateCustomLayout` as an HTML-payload shape
+   and makes a **robust, permanently-maintained HTML sanitiser** load-bearing. The remainder plan MUST
+   reuse an existing house sanitiser if one exists (grep first — HTMLPurifier / a house helper), design
+   the allow-list (tags/attrs/CSS) conservatively, and add a mutation-proven guard that the render path
+   can never emit un-sanitised uploaded markup or a raw `/song-media/<id>` URL. This is now a security-
+   critical surface, not a convenience feature — treat it accordingly.
+
 ## Batched owner decisions (for GitHub #1767 — none block slice A)
 
 1. **Server-side PDF renderer — build one, or stay browser-`print()`-only?** *(gates W/X/AC/AD/AJ/AK-footer-enforcement/L-enforcement)*
