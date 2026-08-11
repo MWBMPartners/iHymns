@@ -49,7 +49,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,7 +58,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WORKFLOW = process.env.WHATS_NEW_WORKFLOW
     || join(REPO_ROOT, '.github', 'workflows', 'deploy.yml');
 const CHANGELOG = join(REPO_ROOT, 'CHANGELOG.md');
-const STEP_NAME = "Extract What's New from CHANGELOG.md";
+const WHATS_NEW = join(REPO_ROOT, 'WHATS-NEW.md');
+const STEP_NAME = "Extract What's New for the app";
 
 /* The cap deploy.yml enforces. Asserted against the workflow text below so a
    future edit to one number cannot silently desync this suite from reality. */
@@ -133,9 +134,18 @@ function extractRunBlock(workflowPath, stepName) {
    doing so would test a stricter shell than the one that actually deploys.
    https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#defaultsrunshell
    ------------------------------------------------------------------------ */
-function runExtractor(script) {
+function runExtractor(script, { srcName } = {}) {
     const scratch = mkdtempSync(join(tmpdir(), 'whats-new-'));
     try {
+        /* When a specific source is requested, place ONLY that file in the
+           scratch cwd and run there — so the step's "prefer WHATS-NEW.md, else
+           CHANGELOG.md" selection resolves deterministically to it. Without a
+           srcName the block runs at REPO_ROOT (both files present → it picks
+           WHATS-NEW.md, same as a real deploy); the legacy control below relies
+           on that REPO_ROOT behaviour. */
+        if (srcName) {
+            copyFileSync(join(REPO_ROOT, srcName), join(scratch, srcName));
+        }
         const shell = script.replace(
             /\$\{\{\s*steps\.target\.outputs\.source_dir\s*\}\}/g,
             `${scratch}/`,
@@ -144,7 +154,7 @@ function runExtractor(script) {
             throw new Error(`unsubstituted workflow expression remains: ${shell.match(/\$\{\{[^}]*\}\}/)[0]}`);
         }
         const stdout = execFileSync('bash', ['-e', '-c', shell], {
-            cwd: REPO_ROOT,
+            cwd: srcName ? scratch : REPO_ROOT,
             encoding: 'utf8',
             env: { ...process.env, GITHUB_OUTPUT: join(scratch, 'gh-output') },
         });
@@ -257,7 +267,10 @@ ok('the lifted step still normalises UTF-8 with iconv (rule: ENT_SUBSTITUTE need
 ok('the lifted step still keeps head -c as a byte backstop',
     script.includes('head -c'));
 
-const current = runExtractor(script);
+/* Exercise the TRUNCATION LOGIC (the #1589 guard) against CHANGELOG.md — the
+   large fallback source. WHATS-NEW.md is small by design and can't reproduce the
+   byte-cap-mid-section-one scenario, so it can't stand in for this. */
+const current = runExtractor(script, { srcName: 'CHANGELOG.md' });
 assertExcerpt(current, 'current extractor', record);
 
 /* 4b. Sanity on the *source*: this test is only meaningful while the real
@@ -275,6 +288,47 @@ record(`CHANGELOG.md section 1 is ${changelogSection1Bytes} bytes`);
 ok('CHANGELOG.md section 1 still exceeds the cap (so this test is not vacuous)',
     changelogSection1Bytes > MAX_BYTES,
     `section 1 is only ${changelogSection1Bytes} bytes — the #1589 scenario can no longer be reproduced from this fixture`);
+
+/* ------------------------------------------------------------------------
+   4c. The REAL user-facing source — WHATS-NEW.md, through the SAME lifted step
+   (which prefers it). It is small and curated, so the truncation asserts above
+   don't apply; instead it MUST (i) produce a valid non-empty excerpt and (ii)
+   leak NO technical internals into what users see. (ii) is the whole reason the
+   dedicated file exists (owner directive 2026-08-11; house style
+   .claude/whats-new-style.md) — mechanise it so a future edit can't quietly
+   reintroduce file names, table names, issue numbers or code paths.
+   ------------------------------------------------------------------------ */
+ok('the lifted step prefers WHATS-NEW.md as its source',
+    /WHATS_NEW_SRC=/.test(script) && script.includes('WHATS-NEW.md'),
+    'the step no longer selects WHATS-NEW.md — user-facing notes would fall back to the technical CHANGELOG');
+
+const wn = runExtractor(script, { srcName: 'WHATS-NEW.md' });
+ok('WHATS-NEW.md: extractor writes a non-empty excerpt', wn.bytes.length > 0);
+const wnText = wn.bytes.toString('utf8');
+const wnHeadings = wnText.split('\n').filter(l => l.startsWith('## '));
+ok('WHATS-NEW.md: at least one release heading', wnHeadings.length >= 1,
+    `got ${wnHeadings.length}`);
+ok('WHATS-NEW.md: within the byte cap', wn.bytes.length <= MAX_BYTES);
+
+/* No-internals scan on the EXTRACTED, user-visible text (the `## ` headings +
+   `- ` bullets only — the awk already drops the developer note at the top of
+   WHATS-NEW.md, which intentionally names files). Patterns are chosen to catch
+   leakage without tripping on ordinary prose. */
+const LEAKS = [
+    [/\btbl[A-Z]\w+/, 'a database table name'],
+    [/[\w-]+\.(?:php|js|css|md|json|ya?ml|sql)\b/i, 'a source/asset file name'],
+    [/(?:^|\s)#\d{2,}\b/, 'an issue/PR number'],
+    [/\b(?:includes|manage|appWeb|js\/modules|js\/utils)\//, 'a code path'],
+    [/\bIHYMNS_[A-Z_]+\b/, 'an internal constant'],
+];
+let leak = '';
+for (const line of wnText.split('\n')) {
+    for (const [re, what] of LEAKS) {
+        if (re.test(line)) { leak = `${what}: ${JSON.stringify(line.trim().slice(0, 80))}`; break; }
+    }
+    if (leak) break;
+}
+ok('WHATS-NEW.md: the user-facing excerpt leaks no technical internals', leak === '', leak);
 
 /* ------------------------------------------------------------------------
    5. THE GUARD'S OWN GUARD.
