@@ -701,6 +701,44 @@ function musicianSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSu
 }
 
 /**
+ * Cached check for the MusicBrainzArtistMBID column (#1090 P6,
+ * migrate-identifier-media-hardening.php — added by ALTER, pre-dating the
+ * #1741 P2-A registry rename to tblMusicians; NOT part of the table's
+ * original definition). Mirrors
+ * musicianMaidenSurnameColumnExists()'s pattern exactly — a partly-migrated
+ * install may still lack it, so any caller that reads/writes it individually
+ * (rather than through a query some OTHER already-gated caller controls)
+ * must probe first or risk an "Unknown column" throw under mysqli STRICT
+ * (rule #9). Used by musicianMergeExecute()'s COALESCE-fill below (#1800 C2)
+ * so a merge on an un-migrated install simply skips filling this one field.
+ *
+ * includes/pages/musician.php runs its own equivalent ad-hoc
+ * INFORMATION_SCHEMA probe inline (predates this helper, #1348) — left
+ * unchanged here to keep this commit's blast radius to the merge path;
+ * pointing it at this shared probe instead is a candidate future cleanup,
+ * not required by #1800.
+ */
+function musicianMbidColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblMusicians'
+                AND COLUMN_NAME  = 'MusicBrainzArtistMBID' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * #1500 — merge-target candidate search. Replaces the old client-side
  * "every registry + in-use-only name in one giant <select>" Merge-modal
  * Target picker (unusable once the registry passed a few hundred rows)
@@ -1910,11 +1948,26 @@ function musicianReconcileCreditNameBytes(\mysqli $db): array
  * checks here exist as defence-in-depth for a FUTURE caller (e.g. the
  * #1785 registry-duplicates review page) that might not pre-validate.
  *
+ * #1800 C2 — before the source row is deleted, this ALSO COALESCE-fills a
+ * short list of safe, single-value, BIOGRAPHICAL/descriptive fields on the
+ * TARGET from the source: Biography, MusicBrainzArtistMBID, Disambiguation,
+ * and BirthDate/DeathDate (+ their precision flags, existence-gated). A
+ * field is filled ONLY when the target's own value is empty/NULL AND the
+ * source's is not — the survivor's own data ALWAYS wins, never overwritten.
+ * Deliberately excludes identity-shaped columns (FirstNames/Surname/Suffix/
+ * MaidenSurname) — those are risky to silently fill and weren't asked for —
+ * and ISNI/IPI, which aren't single-value columns on this table at all: they
+ * live as multi-row children in tblMusicianIdentifiers, already covered by
+ * the caller-selected `keepIpiIds` carry-over below. Every optional column
+ * is existence-gated (rule #9). See the "COALESCE-fill" block near the
+ * DELETE below for why that fill happens AFTER the source row is gone (the
+ * MusicBrainzArtistMBID column carries a UNIQUE key).
+ *
  * @param \mysqli $db       Live connection.
  * @param int     $sourceId tblMusicians.Id — the row that will be DELETED.
  * @param int     $targetId tblMusicians.Id — the row that survives.
  * @param array{keepLinkIds?:list<int>,keepIpiIds?:list<int>} $opts
- * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int,aliasesMoved:int,relationsMoved:int,sourceNameAliased:bool}
+ * @return array{sourceName:string,targetName:string,affected:array<string,int>,linksKept:int,linksDropped:int,ipiKept:int,ipiDropped:int,aliasesMoved:int,relationsMoved:int,sourceNameAliased:bool,fieldsFilled:list<string>}
  * @throws \InvalidArgumentException on any refusal (missing side / same id / not found).
  */
 function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $opts = []): array
@@ -1929,15 +1982,41 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
     $keepLinkIds = array_map('intval', $opts['keepLinkIds'] ?? []);
     $keepIpiIds  = array_map('intval', $opts['keepIpiIds']  ?? []);
 
-    /* Look up both rows. Source name is what we cascade in the
-       song-credit tables; target name is the surviving spelling. */
-    $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
+    /* #1800 C2 — which COALESCE-fill candidate columns actually exist on
+       this install. BirthDate/DeathDate are part of tblMusicians' original
+       definition (no gate needed); everything else was added later by
+       ALTER and may be absent on a partly-migrated install (rule #9). */
+    $profileCols        = musicianProfileColumnsExist($db); // Type/Biography/Disambiguation
+    $hasBiography       = $profileCols['Biography'];
+    $hasDisambiguation  = $profileCols['Disambiguation'];
+    $hasMbid            = musicianMbidColumnExists($db);
+    $hasDatePrecision   = musicianDatePrecisionColumnsExist($db);
+
+    $fillCols = ['BirthDate', 'DeathDate'];
+    if ($hasBiography)      { $fillCols[] = 'Biography'; }
+    if ($hasMbid)            { $fillCols[] = 'MusicBrainzArtistMBID'; }
+    if ($hasDisambiguation)  { $fillCols[] = 'Disambiguation'; }
+    if ($hasDatePrecision)  { $fillCols[] = 'BirthDatePrecision'; $fillCols[] = 'DeathDatePrecision'; }
+
+    /* Look up both rows in ONE round-trip: Name (needed for the song-credit
+       re-point below) PLUS every COALESCE-fill candidate column above — read
+       BEFORE the source row is deleted so its values are still available in
+       PHP once the row is gone. $fillCols is built exclusively from the
+       hardcoded literals above (never user input) — safe to interpolate
+       (rule #5's carve-out). */
+    $fillSelectList = implode(', ', $fillCols);
+    $stmt = $db->prepare("SELECT Id, Name, {$fillSelectList} FROM tblMusicians WHERE Id IN (?, ?)");
     $stmt->bind_param('ii', $sourceId, $targetId);
     $stmt->execute();
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
-    $byId = [];
-    foreach ($rows as $r) { $byId[(int)$r['Id']] = (string)$r['Name']; }
+    $byId     = [];
+    $fillById = [];
+    foreach ($rows as $r) {
+        $id = (int)$r['Id'];
+        $byId[$id]     = (string)$r['Name'];
+        $fillById[$id] = $r;
+    }
     if (!isset($byId[$sourceId])) { throw new \InvalidArgumentException('Source person not found.'); }
     if (!isset($byId[$targetId])) { throw new \InvalidArgumentException('Target person not found.'); }
     $sourceName = $byId[$sourceId];
@@ -2182,6 +2261,79 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
         $stmt->execute();
         $stmt->close();
 
+        /* #1800 C2 — COALESCE-fill the survivor's EMPTY biographical fields
+           from the source, now that the source row is GONE. Order matters:
+           MusicBrainzArtistMBID carries a UNIQUE key (uq_MbArtist), so
+           filling the target's copy BEFORE deleting the source would
+           collide with the source row's own still-live value — doing it
+           here, post-DELETE/pre-commit, inside the SAME transaction, is
+           what makes it safe. Never overwrites a non-empty TARGET value —
+           the survivor's own data always wins; a field only fills when the
+           target's value is blank AND the source's is not. */
+        $srcFill = $fillById[$sourceId] ?? [];
+        $tgtFill = $fillById[$targetId] ?? [];
+        $isBlank = static fn($v): bool => $v === null || (is_string($v) && trim($v) === '');
+
+        $fillSet      = [];
+        $fillValues   = [];
+        $fillTypes    = '';
+        $fieldsFilled = [];
+
+        if ($hasBiography && $isBlank($tgtFill['Biography'] ?? null) && !$isBlank($srcFill['Biography'] ?? null)) {
+            $fillSet[]      = 'Biography = ?';
+            $fillValues[]   = $srcFill['Biography'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'Biography';
+        }
+        if ($hasMbid && $isBlank($tgtFill['MusicBrainzArtistMBID'] ?? null) && !$isBlank($srcFill['MusicBrainzArtistMBID'] ?? null)) {
+            $fillSet[]      = 'MusicBrainzArtistMBID = ?';
+            $fillValues[]   = $srcFill['MusicBrainzArtistMBID'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'MusicBrainzArtistMBID';
+        }
+        if ($hasDisambiguation && $isBlank($tgtFill['Disambiguation'] ?? null) && !$isBlank($srcFill['Disambiguation'] ?? null)) {
+            $fillSet[]      = 'Disambiguation = ?';
+            $fillValues[]   = $srcFill['Disambiguation'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'Disambiguation';
+        }
+        /* Birth/death date + precision fill as a PAIR — a date with no
+           recorded precision is meaningless, so precision only ever moves
+           alongside a date that is ALSO being filled. */
+        if ($isBlank($tgtFill['BirthDate'] ?? null) && !$isBlank($srcFill['BirthDate'] ?? null)) {
+            $fillSet[]      = 'BirthDate = ?';
+            $fillValues[]   = $srcFill['BirthDate'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'BirthDate';
+            if ($hasDatePrecision) {
+                $fillSet[]      = 'BirthDatePrecision = ?';
+                $fillValues[]   = $srcFill['BirthDatePrecision'] ?? null;
+                $fillTypes     .= 's';
+                $fieldsFilled[] = 'BirthDatePrecision';
+            }
+        }
+        if ($isBlank($tgtFill['DeathDate'] ?? null) && !$isBlank($srcFill['DeathDate'] ?? null)) {
+            $fillSet[]      = 'DeathDate = ?';
+            $fillValues[]   = $srcFill['DeathDate'];
+            $fillTypes     .= 's';
+            $fieldsFilled[] = 'DeathDate';
+            if ($hasDatePrecision) {
+                $fillSet[]      = 'DeathDatePrecision = ?';
+                $fillValues[]   = $srcFill['DeathDatePrecision'] ?? null;
+                $fillTypes     .= 's';
+                $fieldsFilled[] = 'DeathDatePrecision';
+            }
+        }
+
+        if ($fillSet) {
+            $fillValues[] = $targetId;
+            $fillTypes   .= 'i';
+            $fillStmt = $db->prepare('UPDATE tblMusicians SET ' . implode(', ', $fillSet) . ' WHERE Id = ?');
+            $fillStmt->bind_param($fillTypes, ...$fillValues);
+            $fillStmt->execute();
+            $fillStmt->close();
+        }
+
         $db->commit();
     } catch (\Throwable $e) {
         $db->rollback();
@@ -2202,6 +2354,10 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
         'aliasesMoved'      => $aliasesMoved,
         'relationsMoved'    => $relationsMoved,
         'sourceNameAliased' => $sourceNameAliased,
+        // #1800 C2 — additive; [] when nothing needed filling (every
+        // target field was already non-empty, or the source's own values
+        // were all empty too).
+        'fieldsFilled'      => $fieldsFilled,
     ];
 }
 

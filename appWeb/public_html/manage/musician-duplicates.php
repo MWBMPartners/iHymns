@@ -202,6 +202,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     'aliases_moved'       => $report['aliasesMoved'],
                     'relations_moved'     => $report['relationsMoved'],
                     'source_name_aliased' => $report['sourceNameAliased'],
+                    // #1800 C2 — COALESCE-fill: which empty survivor fields got backfilled from the source.
+                    'fields_filled'       => $report['fieldsFilled'],
                 ],
             ]);
 

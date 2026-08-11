@@ -16046,6 +16046,7 @@ if ($action !== null) {
                 $aliasesMoved      = $report['aliasesMoved'];
                 $relationsMoved    = $report['relationsMoved'];
                 $sourceNameAliased = $report['sourceNameAliased'];
+                $fieldsFilled      = $report['fieldsFilled']; // #1800 C2
 
                 $totalRenamed = array_sum($affected);
                 logActivity('api.admin.musician.merge', 'musician', (string)$targetId, [
@@ -16068,6 +16069,8 @@ if ($action !== null) {
                         'aliases_moved'       => $aliasesMoved,
                         'relations_moved'     => $relationsMoved,
                         'source_name_aliased' => $sourceNameAliased,
+                        // #1800 C2 — COALESCE-fill: which empty target fields got backfilled from the source.
+                        'fields_filled'       => $fieldsFilled,
                     ],
                 ]);
 
@@ -16086,6 +16089,8 @@ if ($action !== null) {
                     'aliases_moved'         => $aliasesMoved,
                     'relations_moved'       => $relationsMoved,
                     'source_name_aliased'   => $sourceNameAliased,
+                    // #1800 C2 — additive response field.
+                    'fields_filled'         => $fieldsFilled,
                 ]);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.musician.merge', 'musician', (string)$targetId, $e, [

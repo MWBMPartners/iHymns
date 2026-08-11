@@ -1494,10 +1494,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                         'aliases_moved'     => $report['aliasesMoved'],
                         'relations_moved'   => $report['relationsMoved'],
                         'source_name_aliased' => $report['sourceNameAliased'],
+                        // #1800 C2 — COALESCE-fill: which empty target fields got backfilled from the source.
+                        'fields_filled'     => $report['fieldsFilled'],
                     ],
                 ]);
                 $totalRenamed = array_sum($report['affected']);
                 $success = "Merged '{$report['sourceName']}' → '{$report['targetName']}' ({$totalRenamed} song-credit row(s) re-pointed).";
+                if ($report['fieldsFilled']) {
+                    $success .= ' ' . count($report['fieldsFilled']) . ' empty field(s) on the survivor filled from the merged record.';
+                }
                 break;
             }
 
