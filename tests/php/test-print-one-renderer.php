@@ -195,8 +195,8 @@ check(
 /* =============================================================================
  * §0b — DERIVE the "server PDF module" file set: every *pdf*.php under
  * manage/ and includes/ (tree-derived — a future file with "pdf" in its
- * name is covered automatically) PLUS the one explicitly-named, existing
- * exception the plan calls out that doesn't carry "pdf" in its filename.
+ * name is covered automatically) PLUS the plan-named exceptions that don't
+ * carry "pdf" in their filename.
  * ============================================================================= */
 
 function globPdfPhpFiles(string $dir): array
@@ -221,14 +221,26 @@ $serverPdfModules = array_merge(
     globPdfPhpFiles($publicRoot . '/manage'),
     globPdfPhpFiles($publicRoot . '/includes')
 );
-/* The one plan-named exception that doesn't carry "pdf" in its filename
-   (P2's shared sanitiser — reused by the PDF endpoint, never forked). A
-   future includes/print_usage.php (P5) is explicitly out of THIS phase's
-   scope and isn't on disk yet, so it cannot be globbed OR listed here
-   without inventing a file — add it here the day it lands. */
-$htmlSanitizer = $publicRoot . '/includes/html_sanitizer.php';
-if (is_file($htmlSanitizer) && !in_array($htmlSanitizer, $serverPdfModules, true)) {
-    $serverPdfModules[] = $htmlSanitizer;
+/* Plan-named exceptions that don't carry "pdf" in their filename:
+   - includes/html_sanitizer.php (P2's shared sanitiser — reused by the PDF
+     endpoint, never forked).
+   - includes/print_usage.php (#1767 remainder P5 — landed this commit; the
+     P3 draft of this comment named it as "not yet on disk, add it here the
+     day it lands" — this IS that day). It emits no `print-*`/`lyric-*`
+     markup at all (its one HTML-adjacent function,
+     printUsageCcliNoticeText(), returns a plain, class-free string — the
+     CALLER, pdf_renderer.php, wraps it in the allow-listed
+     `print-ccli-notice` div), so its inclusion here is a floor, not
+     expected to ever trip §A(c) — but it is included so a future edit
+     THAT does add markup is caught immediately rather than by omission. */
+$explicitServerPdfModules = [
+    $publicRoot . '/includes/html_sanitizer.php',
+    $publicRoot . '/includes/print_usage.php',
+];
+foreach ($explicitServerPdfModules as $explicitFile) {
+    if (is_file($explicitFile) && !in_array($explicitFile, $serverPdfModules, true)) {
+        $serverPdfModules[] = $explicitFile;
+    }
 }
 sort($serverPdfModules);
 

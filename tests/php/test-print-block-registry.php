@@ -282,12 +282,66 @@ if (count($phpShowIf) < PT_MIN_SHOWIF) {
 foreach (array_diff($jsShowIf, $phpShowIf) as $c) { $fail[] = "showIf condition '$c' is in PRINT_SHOWIF_CONDITIONS (print.js) but missing from \$SHOWIF_CONDITIONS (print-templates.php) — server would DROP it on save."; }
 foreach (array_diff($phpShowIf, $jsShowIf) as $c) { $fail[] = "showIf condition '$c' is in \$SHOWIF_CONDITIONS (print-templates.php) but missing from PRINT_SHOWIF_CONDITIONS (print.js) — editor can't offer it / renderer can't evaluate it."; }
 
+/* ---- 6. CCLI NOTICE TEXT LOCKSTEP (#1767 remainder P5, §6.3) ----
+   print.js's ccliNoticeText() (the browser path's ADVISORY footer) and
+   includes/print_usage.php's printUsageCcliNoticeText() (the SERVER-
+   ENFORCED mPDF footer stamped from a re-resolved licence + a re-fetched
+   song row — a client cannot strip it) must read IDENTICALLY, or a curator
+   sees one wording on screen and the printed PDF says something else. This
+   is exactly the "a comment saying keep these in sync is the failure, not
+   the fix" shape (rule #35) — so this compares the actual LITERAL English
+   wording extracted from BOTH functions, not a hand-typed copy of either.
+
+   Compared as a "skeleton": JS's template-literal `${…}` interpolations and
+   PHP's `. $var .` concatenations are both stripped away, leaving only the
+   fixed English text either function would print — which must match
+   byte-for-byte. The extraction takes the LAST `return …;` inside each
+   function body specifically (both functions have an earlier
+   `return ''` guard for "no CCLI number" that a naive first-match would
+   wrongly grab instead of the real content line). */
+$printUsagePhpPath = $repoRoot . '/appWeb/public_html/includes/print_usage.php';
+if (!is_file($printUsagePhpPath)) {
+    $fail[] = 'includes/print_usage.php not found — cannot verify the ccliNoticeText() lockstep (#1767 remainder P5, §6.3).';
+} else {
+    $printUsagePhpSrc = (string)file_get_contents($printUsagePhpPath);
+
+    $jsNoticeSkeleton = null;
+    if (preg_match('/function\s+ccliNoticeText\s*\([^)]*\)\s*\{(.*?)\n\}/s', $jsSrc, $jcm)) {
+        if (preg_match('/`([^`]*)`/', $jcm[1], $jtm)) {
+            $jsNoticeSkeleton = (string)preg_replace('/\$\{[^}]*\}/', '', $jtm[1]);
+        }
+    }
+
+    $phpNoticeSkeleton = null;
+    if (preg_match('/function\s+printUsageCcliNoticeText\s*\([^)]*\)\s*:\s*string\s*\{(.*?)\n\}/s', $printUsagePhpSrc, $pcm)) {
+        if (preg_match_all('/return\s+(.+?);/s', $pcm[1], $prm)) {
+            $lastReturn = (string)end($prm[1]); // the content return is the LAST one in the function
+            preg_match_all("/'([^']*)'/", $lastReturn, $plm);
+            $phpNoticeSkeleton = implode('', $plm[1]);
+        }
+    }
+
+    if ($jsNoticeSkeleton === null || $phpNoticeSkeleton === null) {
+        $fail[] = 'Could not extract the ccliNoticeText() literal skeleton from print.js and/or '
+            . 'printUsageCcliNoticeText() from includes/print_usage.php — parser anchor moved, or one of '
+            . 'the two functions was renamed/removed (#1767 remainder P5, §6.3).';
+    } elseif ($jsNoticeSkeleton === '' || $phpNoticeSkeleton === '') {
+        $fail[] = 'Extracted an EMPTY ccliNoticeText() skeleton from one side — that is the parser matching '
+            . "nothing meaningful, not two functions that legitimately agree on '' (rule #34 anti-under-report).";
+    } elseif ($jsNoticeSkeleton !== $phpNoticeSkeleton) {
+        $fail[] = "ccliNoticeText() wording drift (#1767 remainder P5, §6.3): print.js's ccliNoticeText() reads "
+            . "\"$jsNoticeSkeleton\" but includes/print_usage.php's printUsageCcliNoticeText() reads "
+            . "\"$phpNoticeSkeleton\" — the browser's advisory notice and the server-enforced PDF footer must "
+            . 'say the same thing.';
+    }
+}
+
 if ($fail) {
     fwrite(STDERR, "FAIL: print block-type registry drift (#1767, rule #35)\n");
     foreach ($fail as $f) { fwrite(STDERR, "  - $f\n"); }
     exit(1);
 }
 
-printf("OK: print registry agrees — %d block types (option keys aligned across print.js + renderBlock() + \$BLOCK_SCHEMA) + %d page options aligned across PRINT_PAGE_OPTIONS + \$PAGE_OPTION_SCHEMA.\n",
+printf("OK: print registry agrees — %d block types (option keys aligned across print.js + renderBlock() + \$BLOCK_SCHEMA) + %d page options aligned across PRINT_PAGE_OPTIONS + \$PAGE_OPTION_SCHEMA + the ccliNoticeText() wording lockstep.\n",
     count($jsKeys), count($jsPageKeys));
 exit(0);

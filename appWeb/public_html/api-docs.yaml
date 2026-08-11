@@ -1312,6 +1312,111 @@ paths:
                           type: object
                           description: Page-level options (margins, font size, etc.); empty object when unset.
 
+  /api.php?action=print_usage_context:
+    get:
+      operationId: getPrintUsageContext
+      tags: [Songs]
+      summary: Should the print/download flow prompt for a CCLI copy count? (#1767 remainder P5)
+      description: |
+        Server-resolved (never a client claim): `requiresCcli`/`promptCopies`
+        are true only when the signed-in caller holds a qualifying CCLI
+        licence (`includes/print_usage.php::printUsageResolveCcliLicence()`)
+        **and** the requested song carries a non-empty CCLI number to report
+        a copy against. Anonymous callers, callers with no CCLI licence, and
+        songs with no CCLI number all answer `false` — the print/download
+        flow then behaves exactly as it did before this feature existed.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [print_usage_context] }
+        - name: song_id
+          in: query
+          required: false
+          description: The song about to be printed/downloaded.
+          schema: { type: string, example: MP-0004 }
+      responses:
+        "200":
+          description: Always 200, for any caller (including anonymous).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requiresCcli: { type: boolean }
+                  promptCopies: { type: boolean }
+                  licenceKey:
+                    type: string
+                    nullable: true
+                    description: The caller's qualifying CCLI licence key, present only when promptCopies is true.
+
+  /api.php?action=print_usage_log:
+    post:
+      operationId: logPrintUsage
+      tags: [Songs]
+      summary: Log a CCLI print-usage event (#1767 remainder P5)
+      description: |
+        Writes one `tblSongUsageEvents` row (`UsageContext='printed'`) via
+        the ONE writer, `includes/print_usage.php::printUsageLog()` —
+        **only** when the authenticated caller holds a qualifying CCLI
+        licence, RE-RESOLVED server-side regardless of what the client
+        believes (a prior `print_usage_context` read is advisory only). The
+        browser-Print flow calls this action directly; the server-PDF flow
+        (`manage/print-pdf.php`) logs in the SAME request that builds the
+        file instead, via a `copies` field on that POST — never through this
+        action. Best-effort: a failed log never implies the print itself
+        failed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [print_usage_log] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, copies]
+              properties:
+                song_id: { type: string, example: MP-0004 }
+                copies:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
+                  example: 20
+                  description: The count the user was PROMPTED for (owner decision — never inferred from page/click counts).
+                surface:
+                  type: string
+                  enum: [browser, pdf]
+                  default: browser
+                template_id:
+                  type: integer
+                  nullable: true
+                  description: The curated (`db:<id>`) template used, if any.
+                setlist_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: |
+            Always 200 for an authenticated caller — `ok:false` (not an
+            error status) covers every reason nothing was written (no
+            qualifying licence, un-migrated install, bad input), matching
+            this endpoint's fire-and-forget, never-block-the-print posture.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "401":
+          description: Authentication required.
+        "405":
+          description: POST method required.
+
   /api.php?action=lyrics_ingest:
     post:
       operationId: lyricsIngest

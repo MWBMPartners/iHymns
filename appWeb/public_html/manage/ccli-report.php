@@ -59,6 +59,41 @@ $db = getDbMysqli();
    interpolate. */
 $ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
 
+/* #1767 remainder P5 — "Printed copies" column, sourced from
+   tblSongUsageEvents (UsageContext='printed'), the table
+   includes/print_usage.php::printUsageLog() writes. Existence-gated
+   (INFORMATION_SCHEMA probe, not a bare query() — CLAUDE.md red-flag
+   "treats query() as returning false on error": mysqli STRICT mode THROWS
+   on a missing table, so an un-migrated install must be detected BEFORE
+   the main query references it, not discovered by catching the throw) so
+   a checkout that hasn't run migrate-usage-events.php still renders the
+   report — just without this column, exactly like the table's own
+   dormant-until-a-writer-lands history (#1090 P5). */
+$hasUsageEvents = false;
+try {
+    $ueProbe = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongUsageEvents' LIMIT 1"
+    );
+    $hasUsageEvents = $ueProbe && $ueProbe->fetch_row() !== null;
+    if ($ueProbe) { $ueProbe->close(); }
+} catch (\Throwable $e) {
+    error_log('[ccli-report] usage-events probe failed: ' . $e->getMessage());
+}
+$printedJoin   = '';
+$printedSelect = '0 AS printed_copies';
+if ($hasUsageEvents) {
+    $printedJoin = "LEFT JOIN (
+               SELECT SongId, SUM(Quantity) AS printed_copies
+                 FROM tblSongUsageEvents
+                WHERE UsageContext = 'printed'
+                  AND UsedAt >= ?
+                  AND UsedAt <  DATE_ADD(?, INTERVAL 1 DAY)
+                GROUP BY SongId
+           ) p ON p.SongId = s.SongId";
+    $printedSelect = 'COALESCE(p.printed_copies, 0) AS printed_copies';
+}
+
 try {
     /* SongbookAbbr is the actual column name on tblSongs (the
        schema has used Abbreviation as the natural FK key since
@@ -82,7 +117,8 @@ try {
                 s.Number         AS number,
                 s.Ccli           AS ccli,
                 s.Copyright      AS copyright,
-                COALESCE(h.view_count, 0) AS view_count
+                COALESCE(h.view_count, 0) AS view_count,
+                $printedSelect
            FROM tblSongs s
            LEFT JOIN (
                SELECT SongId, COUNT(*) AS view_count
@@ -91,12 +127,21 @@ try {
                   AND ViewedAt <  DATE_ADD(?, INTERVAL 1 DAY)
                 GROUP BY SongId
            ) h ON h.SongId = s.SongId
+          $printedJoin
           WHERE 1 = 1
           $ccliFilter
           ORDER BY view_count DESC, s.Title ASC
           LIMIT 5000"
     );
-    $stmt->bind_param('ss', $fromDate, $toDate);
+    /* The printed-copies subquery (when present) needs the SAME date-range
+       pair a second time — placeholder count/order follows the query text
+       top-to-bottom (rule #5's "?,?,?" discipline, applied to a variable
+       placeholder COUNT rather than a variable VALUE list). */
+    if ($hasUsageEvents) {
+        $stmt->bind_param('ssss', $fromDate, $toDate, $fromDate, $toDate);
+    } else {
+        $stmt->bind_param('ss', $fromDate, $toDate);
+    }
     $stmt->execute();
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
@@ -125,7 +170,10 @@ if (($_GET['export'] ?? '') === 'csv') {
     header('Cache-Control: no-store');
 
     $out = fopen('php://output', 'wb');
-    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views']);
+    /* #1767 remainder P5 — "Printed copies" appended as the LAST column so
+       an existing CCLI-portal upload template that maps the first 7
+       columns positionally is unaffected by this addition. */
+    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views', 'Printed copies']);
     foreach ($rows as $r) {
         ihymns_fputcsv($out, [
             $r['song_id'],
@@ -135,6 +183,7 @@ if (($_GET['export'] ?? '') === 'csv') {
             $r['ccli'],
             $r['copyright'],
             $r['view_count'],
+            $r['printed_copies'],
         ]);
     }
     fclose($out);
@@ -143,7 +192,11 @@ if (($_GET['export'] ?? '') === 'csv') {
 
 $totalSongs = count($rows);
 $totalViews = 0;
-foreach ($rows as $r) $totalViews += (int)$r['view_count'];
+$totalPrinted = 0;
+foreach ($rows as $r) {
+    $totalViews   += (int)$r['view_count'];
+    $totalPrinted += (int)$r['printed_copies'];
+}
 
 ?>
 <!DOCTYPE html>
@@ -208,19 +261,30 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
 
         <!-- Summary strip -->
         <div class="row g-3 mb-3">
-            <div class="col-sm-6 col-md-4">
+            <div class="col-sm-6 col-md-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Songs in report</div>
                     <div class="h4 mb-0"><?= number_format($totalSongs) ?></div>
                 </div>
             </div>
-            <div class="col-sm-6 col-md-4">
+            <div class="col-sm-6 col-md-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Total views</div>
                     <div class="h4 mb-0"><?= number_format($totalViews) ?></div>
                 </div>
             </div>
-            <div class="col-sm-6 col-md-4">
+            <div class="col-sm-6 col-md-3">
+                <div class="card-admin">
+                    <div class="text-muted text-uppercase small">
+                        Printed copies
+                        <?php if (!$hasUsageEvents): ?>
+                            <i class="bi bi-info-circle ms-1" title="Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install" aria-hidden="true"></i>
+                        <?php endif; ?>
+                    </div>
+                    <div class="h4 mb-0"><?= number_format($totalPrinted) ?></div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-md-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Window</div>
                     <div class="small mb-0">
@@ -246,6 +310,9 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
                             <th scope="col" data-sort-key="song"      data-sort-type="text">Song</th>
                             <th scope="col" class="text-end" data-sort-key="ccli" data-sort-type="text">CCLI #</th>
                             <th scope="col" class="text-end" data-sort-key="views" data-sort-type="number">Views</th>
+                            <!-- #1767 remainder P5 — printed copies, logged via the "How many
+                                 copies?" prompt (js/modules/print.js) under a CCLI licence. -->
+                            <th scope="col" class="text-end" data-sort-key="printed" data-sort-type="number">Printed copies</th>
                             <th scope="col" data-sort-key="copyright" data-sort-type="text">Copyright</th>
                         </tr>
                     </thead>
@@ -267,6 +334,9 @@ foreach ($rows as $r) $totalViews += (int)$r['view_count'];
                                 </td>
                                 <td class="text-end fw-semibold">
                                     <?= number_format((int)$r['view_count']) ?>
+                                </td>
+                                <td class="text-end fw-semibold">
+                                    <?= number_format((int)$r['printed_copies']) ?>
                                 </td>
                                 <td class="small text-muted">
                                     <?= htmlspecialchars($r['copyright']) ?>

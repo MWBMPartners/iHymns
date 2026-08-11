@@ -418,13 +418,35 @@ export function printCss(pageOptions) {
     .print-qr-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
     .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cMuted2}; margin-top: 0.3em; word-break: break-all; }
     .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: ${cFaint}; }
+    .print-ccli-notice { margin-top: 1em; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cFaint}; text-align: center; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
 }
 
-/* Assemble the full standalone print document. */
-export function buildPrintDoc(song, template) {
+/* #1767 remainder P5 (§6.3) — the CCLI compliance notice text. ONE literal
+   format shared (in wording — PHP and JS can't share a function) with
+   `printUsageCcliNoticeText()` in includes/print_usage.php; the two are
+   held in LOCKSTEP by tests/php/test-print-block-registry.php (rule #35).
+   This client-side copy is ADVISORY ONLY — the browser print path cannot
+   enforce anything a user could edit out of the DOM before printing; the
+   AUTHORITATIVE copy is the SERVER-stamped mPDF footer
+   (manage/print-pdf.php -> includes/print_usage.php::printUsageCcliNoticeText()). */
+export function ccliNoticeText(song, licenceKey) {
+    const ccli = String((song && song.ccli) || '').trim();
+    if (!ccli) { return ''; }
+    return `CCLI Song #${ccli} · Reproduced under CCL Licence #${licenceKey}. Used by permission.`;
+}
+
+/* Assemble the full standalone print document. `opts.ccliLicenceKey`
+   (#1767 remainder P5) appends the advisory `.print-ccli-notice` line when
+   supplied AND the song carries a CCLI number — omitted entirely otherwise,
+   so every caller that doesn't pass it (the admin editor's own preview,
+   any future consumer) gets byte-identical output to before this option
+   existed. */
+export function buildPrintDoc(song, template, opts = {}) {
     const title = song.title || 'Untitled';
     const book  = song.songbookName || song.songbook || '';
+    const notice = (opts && opts.ccliLicenceKey) ? ccliNoticeText(song, opts.ccliLicenceKey) : '';
+    const noticeHtml = notice ? `\n<div class="print-ccli-notice">${esc(notice)}</div>` : '';
     return `<!DOCTYPE html>
 <html lang="${esc(song.language || 'en')}">
 <head>
@@ -433,7 +455,7 @@ export function buildPrintDoc(song, template) {
 <style>${printCss(template.pageOptions)}</style>
 </head>
 <body>
-${renderTemplateBodyHtml(song, template)}
+${renderTemplateBodyHtml(song, template)}${noticeHtml}
 </body>
 </html>`;
 }
@@ -691,6 +713,155 @@ async function downloadSongPdf(app, song, tpl, copies) {
     }
 }
 
+/* #1767 remainder P5 (§6.1) — session-scoped memo of print_usage_context
+   results, keyed by songId. Avoids a repeat GET when the same song is
+   printed twice in one page session (a plausible flow: print, notice a
+   typo mid-copy-count-entry, cancel, reopen the picker). Cleared only by a
+   full page reload — the licence/song-CCLI facts this reflects don't
+   change mid-session in any way a stale cache here could meaningfully harm
+   (worst case: one extra prompt or one fewer, in the rare window a licence
+   is added/removed while the page stays open). */
+const _printUsageContextCache = new Map();
+
+/**
+ * GET api.php?action=print_usage_context for this song — server-resolved,
+ * NEVER a client guess about whether the signed-in account holds a
+ * qualifying CCLI licence. Fails CLOSED (no prompt, no logging) on any
+ * network/parse error — an under-prompt is a missed compliance log entry,
+ * never a blocked print, which is the correct trade-off for a feature that
+ * must never regress the core Print/Download action.
+ *
+ * @returns {Promise<{requiresCcli:boolean, promptCopies:boolean, licenceKey:?string}>}
+ */
+async function printUsageContextFor(app, songId) {
+    if (_printUsageContextCache.has(songId)) { return _printUsageContextCache.get(songId); }
+    const promise = (async () => {
+        try {
+            const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+            const res = await apiFetch(
+                `${base}?action=print_usage_context&song_id=${encodeURIComponent(songId)}`,
+                { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', auth: true });
+            if (!res.ok) { return { requiresCcli: false, promptCopies: false, licenceKey: null }; }
+            const json = await res.json();
+            return {
+                requiresCcli: !!json.requiresCcli,
+                promptCopies: !!json.promptCopies,
+                licenceKey: json.licenceKey || null,
+            };
+        } catch (_e) {
+            return { requiresCcli: false, promptCopies: false, licenceKey: null };
+        }
+    })();
+    _printUsageContextCache.set(songId, promise);
+    return promise;
+}
+
+/**
+ * POST api.php?action=print_usage_log — fire-and-forget from the BROWSER
+ * print path (the server-PDF path logs SERVER-side instead, riding `copies`
+ * into the same POST that builds the file — see downloadSongPdf()). A
+ * failed log must never look like a failed print (the print already
+ * happened by the time this runs), but the compliance count matters, so a
+ * failure gets its own toast asking the user to retry rather than
+ * disappearing silently.
+ */
+async function logPrintUsage(app, songId, copies, surface, templateId) {
+    try {
+        const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+        const res = await apiFetch(`${base}?action=print_usage_log`, {
+            method: 'POST',
+            auth: true,
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+                song_id: songId, copies, surface,
+                ...(templateId != null ? { template_id: templateId } : {}),
+            }),
+        });
+        if (!res.ok) { throw new Error('print_usage_log failed: ' + res.status); }
+    } catch (_e) {
+        app.showToast?.('Could not log this print for CCLI reporting — please retry from the print dialog.', 'warning', 4500);
+    }
+}
+
+/* A `db:<id>` template id (custom, curated) resolves to its numeric row id
+   for the log's MetaJson.templateId; a builtin: id has none. */
+function dbTemplateIdOf(tpl) {
+    const id = tpl && tpl.id;
+    if (typeof id === 'string' && id.startsWith('db:')) {
+        const n = parseInt(id.slice(3), 10);
+        return Number.isFinite(n) ? n : null;
+    }
+    return null;
+}
+
+/**
+ * #1767 remainder P5 (§6.3) — "How many copies?" prompt. Shown ONLY when
+ * `printUsageContextFor()` says this print will be logged for CCLI
+ * reporting; resolves the chosen integer (1..10000, default 1), or null on
+ * Cancel/Esc/backdrop-click — a Cancel here abandons the WHOLE print/
+ * download (an under-count is a compliance defect per the owner's decision,
+ * so silently defaulting to "1" past a user's Cancel would be worse than
+ * asking again).
+ */
+function promptForCopies(app) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'print-copies-overlay';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:2100;display:flex;align-items:center;'
+            + 'justify-content:center;background:rgba(0,0,0,.55);padding:1rem;';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-labelledby', 'print-copies-title');
+
+        const dialog = document.createElement('div');
+        dialog.className = 'card shadow-lg';
+        dialog.style.cssText = 'max-width:22rem;width:100%;';
+        dialog.innerHTML = `
+            <div class="card-body">
+                <h2 class="h6 card-title" id="print-copies-title">How many copies?</h2>
+                <p class="card-text small text-muted">Logged for your CCLI usage reporting.</p>
+                <label class="form-label small mb-1" for="print-copies-input">Copies</label>
+                <input type="number" class="form-control form-control-sm mb-3" id="print-copies-input"
+                       min="1" max="10000" step="1" value="1">
+                <div class="d-flex justify-content-end gap-2">
+                    <button type="button" class="btn btn-outline-secondary btn-sm print-copies-cancel">Cancel</button>
+                    <button type="button" class="btn btn-primary btn-sm print-copies-go">Continue</button>
+                </div>
+            </div>`;
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        const inputEl  = dialog.querySelector('#print-copies-input');
+        const goEl     = dialog.querySelector('.print-copies-go');
+        const cancelEl = dialog.querySelector('.print-copies-cancel');
+        const lastFocus = document.activeElement;
+        let resolved = false;
+        function close(result) {
+            overlay.remove();
+            if (lastFocus && lastFocus.focus) { lastFocus.focus(); }
+            if (!resolved) { resolved = true; resolve(result); }
+        }
+        inputEl.focus();
+        inputEl.select();
+
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(null); } });
+        overlay.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { close(null); return; }
+            if (e.key === 'Enter') { e.preventDefault(); goEl.click(); }
+            if (e.key === 'Tab') {
+                if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); goEl.focus(); }
+                else if (!e.shiftKey && document.activeElement === goEl) { e.preventDefault(); cancelEl.focus(); }
+            }
+        });
+        cancelEl.addEventListener('click', () => close(null));
+        goEl.addEventListener('click', () => {
+            const n = Math.max(1, Math.min(10000, parseInt(inputEl.value, 10) || 1));
+            close(n);
+        });
+    });
+}
+
 /**
  * openSongPrintDialog(app) — entry point for the song page's Print action. Loads the
  * available templates (built-in + curated), shows the shared picker (offering
@@ -707,18 +878,37 @@ export async function openSongPrintDialog(app) {
     const picked = await pickPrintTemplate(app, templates, { offerPdf: true });
     if (!picked) { return; }
     const { tpl, action } = picked;
+
+    /* #1767 remainder P5 (§6.3) — CCLI copies prompt. Entirely invisible
+       unless the SERVER says this account holds a qualifying CCLI licence
+       AND the song has a CCLI number to report against. */
+    const usageCtx = await printUsageContextFor(app, songId);
+    let copies = null;
+    if (usageCtx.promptCopies) {
+        copies = await promptForCopies(app);
+        if (copies === null) { return; }
+    }
+
     app.showToast?.('Preparing print…', 'info', 1500);
     const song = await fetchSong(app, songId);
     if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
 
     if (action === 'pdf') {
-        await downloadSongPdf(app, song, tpl, null);
+        /* `copies` rides into the SAME POST that builds the file — the
+           SERVER logs it there (manage/print-pdf.php), so no separate
+           logPrintUsage() call for this branch. */
+        await downloadSongPdf(app, song, tpl, copies);
         return;
     }
 
     /* #1767 R — a `qr` block renders as an <img> to the same-origin /qr.php
        (CueRCode-backed) endpoint; no pre-pass needed. */
-    if (!printDoc(buildPrintDoc(song, tpl))) {
+    const docOpts = usageCtx.licenceKey ? { ccliLicenceKey: usageCtx.licenceKey } : {};
+    if (!printDoc(buildPrintDoc(song, tpl, docOpts))) {
         app.showToast?.('Pop-up blocked — allow pop-ups to print.', 'warning', 4000);
+        return;
+    }
+    if (copies !== null) {
+        logPrintUsage(app, songId, copies, 'browser', dbTemplateIdOf(tpl));
     }
 }

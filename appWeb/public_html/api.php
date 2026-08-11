@@ -9372,6 +9372,75 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * #1767 remainder P5 (§6.1) — CCLI print-usage CONTEXT read.
+         *
+         * Parameters: song_id (required for a meaningful answer — see below)
+         *
+         * Output: { requiresCcli: bool, promptCopies: bool, licenceKey: string|null }
+         * `licensed` (server-resolved, NEVER a client claim — includes/print_usage.php
+         * ::printUsageResolveCcliLicence()) folds to false whenever EITHER the
+         * caller holds no qualifying CCLI licence OR the requested song
+         * carries no CCLI number to report a copy against (a licence with
+         * nothing to attribute is not worth prompting for). Anonymous callers
+         * always get false — printUsageLog() requires a real UserId.
+         * ----------------------------------------------------------------- */
+        case 'print_usage_context':
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_usage.php';
+            $puSongId = isset($_GET['song_id']) ? trim((string)$_GET['song_id']) : '';
+            $puAuth   = getAuthenticatedUser();
+            $puUid    = $puAuth ? (int)$puAuth['Id'] : null;
+            $puCtx    = printUsageContext($puUid);
+
+            $puSongHasCcli = false;
+            if ($puCtx['requiresCcli'] && $puSongId !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $puSongId)) {
+                $puSongHasCcli = printUsageSongCcliNumber($puSongId) !== '';
+            }
+            $puPrompt = $puCtx['requiresCcli'] && $puSongHasCcli;
+            sendJson([
+                'requiresCcli' => $puPrompt,
+                'promptCopies' => $puPrompt,
+                'licenceKey'   => $puPrompt ? $puCtx['licenceKey'] : null,
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * #1767 remainder P5 (§6.2/§6.3) — CCLI print-usage LOG write. The
+         * browser-Print funnel into includes/print_usage.php::printUsageLog()
+         * — the server-PDF funnel calls that function DIRECTLY from
+         * manage/print-pdf.php (no HTTP round-trip needed there). Auth +
+         * this file's global X-Requested-With POST gate (top of file) is the
+         * full CSRF posture (rule #29) — no per-action token needed.
+         *
+         * POST body (JSON): { song_id, copies, surface?, template_id?, setlist_id? }
+         * ----------------------------------------------------------------- */
+        case 'print_usage_log':
+            if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $plAuth = getAuthenticatedUser();
+            if (!$plAuth) {
+                sendJson(['error' => 'Authentication required.'], 401);
+                break;
+            }
+            $plBody   = json_decode((string)file_get_contents('php://input'), true);
+            $plSongId = is_array($plBody) ? trim((string)($plBody['song_id'] ?? '')) : '';
+            if ($plSongId === '' || !preg_match('/^[A-Za-z0-9_-]{1,32}$/', $plSongId)) {
+                sendJson(['error' => 'Invalid song ID.'], 400);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_usage.php';
+            $plCopies = max(1, min(10000, (int)($plBody['copies'] ?? 1)));
+            $plMeta = [
+                'surface'    => ((string)($plBody['surface'] ?? '') === 'pdf') ? 'pdf' : 'browser',
+                'templateId' => isset($plBody['template_id']) ? (int)$plBody['template_id'] : null,
+                'setlistId'  => isset($plBody['setlist_id']) ? (string)$plBody['setlist_id'] : null,
+            ];
+            $plOk = printUsageLog((int)$plAuth['Id'], $plSongId, $plCopies, $plMeta);
+            sendJson(['ok' => $plOk]);
+            break;
+
+        /* -----------------------------------------------------------------
          * One-time history backfill (WS-G #1019)
          *
          * Pushes a signed-in user's pre-existing LOCAL recently-viewed list

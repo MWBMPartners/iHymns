@@ -122,6 +122,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    it instead of forking a third copy). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_schema.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pdf_renderer.php';
+/* printUsageResolveCcliLicence() / printUsageSongCcliNumber() /
+   printUsageCcliNoticeText() / printUsageLog() — #1767 remainder P5, §6.
+   Side-effect-free to require (mirrors pdf_renderer.php's own discipline). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_usage.php';
 
 /* ---- Caps (400 on breach) — constants at top of file, per the plan §3.1 ---- */
 const PDF_MAX_DOCUMENTS        = 1;            // raised when batch mode (P6) lands — the request SHAPE already supports it
@@ -275,13 +279,64 @@ if (!ihymnsPdfEngineAvailable()) {
     _pdfFailJson(503, 'PDF engine is not installed on this server.');
 }
 
+/* ---- §6.3 — server-ENFORCED CCLI notice (#1767 remainder P5) ----
+   Computed BEFORE the convert step so it can ride into ihymnsPdfRender()'s
+   $opts — this is what makes it ENFORCED rather than advisory: the notice
+   comes from the caller's OWN re-resolved licence (printUsageResolveCcliLicence(),
+   NEVER trusting anything the POST claimed) and the song's REAL CCLI number
+   (printUsageSongCcliNumber(), a fresh DB read keyed on the sanitised
+   meta.songId — never parsed out of the POSTed bodyHtml), so a client
+   cannot strip it by omitting/editing the HTML it sends. Empty for every
+   caller without a qualifying licence or a song with no CCLI number — a
+   verified no-op for the overwhelming majority of renders. */
+$pdfMeta = $sanitisedDocs[0]['meta'] ?? [];
+$pdfCcliNotice = '';
+$pdfLicence = printUsageResolveCcliLicence((int)($currentUser['id'] ?? 0));
+if ($pdfLicence !== null) {
+    $pdfSongIdForNotice = trim((string)($pdfMeta['songId'] ?? ''));
+    if ($pdfSongIdForNotice !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfSongIdForNotice)) {
+        $pdfCcliNumber = printUsageSongCcliNumber($pdfSongIdForNotice);
+        if ($pdfCcliNumber !== '') {
+            $pdfCcliNotice = printUsageCcliNoticeText($pdfCcliNumber, (string)($pdfLicence['key'] ?? ''));
+        }
+    }
+}
+
 /* ---- Convert (adapt + render happen INSIDE pdf_renderer.php — never here;
    this file must never grow a `case` on a block type, rule #35 / the
    one-renderer invariant) ---- */
-$pdfMeta  = $sanitisedDocs[0]['meta'] ?? [];
-$pdfBytes = ihymnsPdfRender($sanitisedDocs, $sanCss, $pageOptions, ['meta' => $pdfMeta]);
+$pdfBytes = ihymnsPdfRender($sanitisedDocs, $sanCss, $pageOptions, [
+    'meta'       => $pdfMeta,
+    'ccliNotice' => $pdfCcliNotice,
+]);
 if ($pdfBytes === null) {
     _pdfFailJson(503, 'PDF render failed.');
+}
+
+/* ---- §6.2 — CCLI print-usage LOG (#1767 remainder P5) ----
+   ONLY when the client supplied a `copies` count (the picker only ever
+   sends one when print_usage_context said this render would be logged —
+   an absent field means no prompt was shown, so nothing is logged here
+   either) — printUsageLog() re-resolves the licence itself regardless, so
+   a forged `copies` on an unlicensed account still writes nothing. This
+   runs AFTER a successful render, on a best-effort basis: a logging
+   failure must never turn a successful PDF into a failed request — the
+   file the user is waiting for still streams below either way. */
+$pdfCopiesRaw = $body['copies'] ?? null;
+if ($pdfCopiesRaw !== null) {
+    $pdfSongIdForLog = trim((string)($pdfMeta['songId'] ?? ''));
+    if ($pdfSongIdForLog !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $pdfSongIdForLog)) {
+        try {
+            printUsageLog(
+                (int)($currentUser['id'] ?? 0),
+                $pdfSongIdForLog,
+                (int)$pdfCopiesRaw,
+                ['surface' => 'pdf', 'templateId' => isset($body['templateId']) ? (int)$body['templateId'] : null]
+            );
+        } catch (\Throwable $e) {
+            error_log('[print-pdf] usage log failed: ' . $e->getMessage());
+        }
+    }
 }
 
 /* ---- Stream (200) ---- */
