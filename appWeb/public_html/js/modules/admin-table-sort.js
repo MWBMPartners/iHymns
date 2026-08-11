@@ -41,15 +41,18 @@
 
 /* #1786 (rev 2 / public-sort build) — makeCompare()/multiKeyCompare() used to
    be defined HERE. They are now the shared core in
-   js/utils/sort-compare.js, imported below, so the public card/list
-   "Sort ▾" panel (js/modules/list-sort.js) can reuse the exact same
-   comparator instead of re-forking it (rule #22 — the duplicate/counterpart
-   scorer's old `_bsls_*` copies are the shape this avoids repeating).
-   `multiKeyCompare` is RE-EXPORTED unchanged so
-   tests/test-admin-table-sort.js's existing `import { multiKeyCompare, … }
-   from '.../admin-table-sort.js'` keeps working with zero behaviour
-   change — this file's own logic did not move, only its HOME did. */
-import { makeCompare, multiKeyCompare } from '../utils/sort-compare.js';
+   js/utils/sort-compare.js so the public card/list "Sort ▾" panel
+   (js/modules/list-sort.js) can reuse the exact same comparator instead of
+   re-forking it (rule #22 — the duplicate/counterpart scorer's old `_bsls_*`
+   copies are the shape this avoids repeating). Only `multiKeyCompare` is
+   imported + RE-EXPORTED here, unchanged, so tests/test-admin-table-sort.js's
+   existing `import { multiKeyCompare, … } from '.../admin-table-sort.js'`
+   keeps working with zero behaviour change. `makeCompare` is NOT imported
+   here on purpose — nothing in this file uses it and its callers import it
+   directly from js/utils/sort-compare.js, so naming it here would be a dead
+   import (ESLint no-unused-vars). This file's own logic did not move, only its
+   HOME did. */
+import { multiKeyCompare } from '../utils/sort-compare.js';
 export { multiKeyCompare };
 
 /* Single-column click cycle. Shift-click uses the same asc→desc→remove ladder
