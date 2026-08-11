@@ -173,6 +173,15 @@ export const EVT_FETCH_FAILED             = 'ihymns:fetch-failed';
 export const EVT_FETCH_SUCCEEDED          = 'ihymns:fetch-succeeded';
 export const EVT_LANGUAGE_FILTER_CHANGED  = 'ihymns:language-filter-changed';
 export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
+/* #1786 Option B — fired on `document` by list-sort.js every time a
+   surface's applied sort spec changes (including a reset back to Default),
+   `detail: { surface, spec }`. Dispatcher: list-sort.js's DOM-mode apply
+   path. Listener: songbook-index.js, which rebuilds its alphabet-strip
+   letter map after the song list is re-ordered — the pre-existing #111
+   toggle this absorbs had no such event because it WAS the only sorter on
+   the page; now that list-sort.js owns sorting, the strip has to learn
+   about a re-order it didn't itself perform. */
+export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

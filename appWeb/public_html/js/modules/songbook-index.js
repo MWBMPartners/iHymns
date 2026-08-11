@@ -4,10 +4,44 @@
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Adds an alphabetical jump-to-letter index and a sort toggle (by number
- * or title) to songbook pages. Tapping a letter scrolls to the first song
- * starting with that letter. Letters with no matching songs are dimmed.
+ * Adds an alphabetical jump-to-letter index to songbook pages. Tapping a
+ * letter scrolls to the first song starting with that letter. Letters with
+ * no matching songs are dimmed.
+ *
+ * #1786 ABSORB — the sort toggle this module used to own
+ * ---------------------------------------------------------
+ * Before #1786, this module ALSO drew its own "# Number / A-Z Title" sort
+ * toggle and did the actual re-ordering itself — a second, competing sort
+ * authority on the same page, with no article fold, no direction, no
+ * persistence and no announcement (the modularity rule exists to stop
+ * exactly this). Sorting on `/songbook/<abbr>` now belongs entirely to
+ * `js/modules/list-sort.js`'s "Sort ▾" control (surface `songbook-songs`,
+ * wired from `includes/pages/songbook.php`'s markup) — the SAME absorption
+ * shape as `/manage/duplicate-songs` swallowing `/manage/song-link-
+ * suggestions` (rule #22).
+ *
+ * This module keeps ONLY the alphabet strip, and stops being able to
+ * re-order anything itself: when list-sort.js re-orders the song list out
+ * from under it, this module has no idea unless told, so its letter map
+ * (built once from the SERVER-rendered order) would silently point at the
+ * wrong rows after a sort. It listens for `EVT_LIST_SORT_CHANGED`
+ * (`js/constants.js`, dispatched by list-sort.js on `document` every time
+ * `songbook-songs` changes — including the very first, async apply of an
+ * already-saved preference, which can reorder the page before this
+ * module's own synchronous initial build would otherwise know) and rebuilds
+ * the letter map from whatever order the DOM is in at that moment.
+ *
+ * The listener is registered FRESH each time `initSongbookPage()` runs (once
+ * per `/songbook/<abbr>` visit) and closes over THAT page's own `strip` /
+ * `songList` elements. It never needs `removeEventListener`: once the SPA
+ * router swaps the page away, `document.contains(strip)` goes false and the
+ * listener is a one-line no-op forever after — cheap enough that letting old
+ * listeners linger costs nothing worth a teardown mechanism (contrast rule
+ * #32, which is about a *visible* fixed element stranding on screen; a dead
+ * document-level listener has no such user-facing symptom).
  */
+
+import { EVT_LIST_SORT_CHANGED } from '../constants.js';
 
 export class SongbookIndex {
     /**
@@ -37,8 +71,8 @@ export class SongbookIndex {
         /* Build letter map */
         const letterMap = this.buildLetterMap(items);
 
-        /* Insert sort toggle + alphabet strip */
-        this.insertControls(page, songList, items, letterMap);
+        /* Insert alphabet strip */
+        this.insertControls(page, songList, letterMap);
     }
 
     /**
@@ -59,29 +93,17 @@ export class SongbookIndex {
     }
 
     /**
-     * Insert the sort toggle and alphabet strip into the page.
+     * Insert the alphabet strip into the page and wire it to the CURRENT
+     * letter map. Also registers this page's #1786 re-sort listener — see
+     * the module doc-block for why it needs no teardown.
+     *
      * @param {HTMLElement} page The songbook page section
      * @param {HTMLElement} songList The song list container
-     * @param {HTMLElement[]} items Song list items
      * @param {Map<string, HTMLElement>} letterMap Letter-to-element map
      */
-    insertControls(page, songList, items, letterMap) {
+    insertControls(page, songList, letterMap) {
         const container = document.createElement('div');
         container.className = 'songbook-index-controls mb-3';
-
-        /* Sort toggle */
-        const sortGroup = document.createElement('div');
-        sortGroup.className = 'btn-group btn-group-sm mb-2';
-        sortGroup.setAttribute('role', 'group');
-        sortGroup.setAttribute('aria-label', 'Sort songs by');
-        sortGroup.innerHTML = `
-            <button type="button" class="btn btn-outline-secondary active" data-sort="number">
-                <i class="fa-solid fa-hashtag me-1" aria-hidden="true"></i># Number
-            </button>
-            <button type="button" class="btn btn-outline-secondary" data-sort="title">
-                <i class="fa-solid fa-font me-1" aria-hidden="true"></i>A-Z Title
-            </button>`;
-        container.appendChild(sortGroup);
 
         /* Alphabet strip */
         const strip = document.createElement('div');
@@ -96,22 +118,6 @@ export class SongbookIndex {
             btn.className = 'alphabet-letter';
             btn.textContent = letter;
             btn.setAttribute('aria-label', `Jump to letter ${letter}`);
-
-            if (letterMap.has(letter)) {
-                btn.addEventListener('click', () => {
-                    const target = letterMap.get(letter);
-                    if (target) {
-                        target.scrollIntoView({ behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth', block: 'start' });
-                        /* Brief highlight */
-                        target.classList.add('alphabet-highlight');
-                        setTimeout(() => target.classList.remove('alphabet-highlight'), 1500);
-                    }
-                });
-            } else {
-                btn.classList.add('disabled');
-                btn.setAttribute('aria-disabled', 'true');
-            }
-
             strip.appendChild(btn);
         }
 
@@ -120,56 +126,48 @@ export class SongbookIndex {
         /* Insert before the song list */
         songList.before(container);
 
-        /* Sort toggle handlers */
-        let currentSort = 'number';
-        sortGroup.querySelectorAll('[data-sort]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const mode = btn.dataset.sort;
-                if (mode === currentSort) return;
-                currentSort = mode;
+        /* Initial wiring — same code path a re-sort rebuild uses below. */
+        this._rebuildStrip(strip, letterMap);
 
-                /* Update active state */
-                sortGroup.querySelector('.active')?.classList.remove('active');
-                btn.classList.add('active');
+        /* #1786 absorb — rebuild whenever list-sort.js reorders THIS
+           surface. See the module doc-block for the self-evicting shape. */
+        document.addEventListener(EVT_LIST_SORT_CHANGED, (ev) => {
+            if (!document.contains(strip)) return; /* this page has been navigated away from */
+            if (ev?.detail?.surface !== 'songbook-songs') return;
+            const freshItems = Array.from(songList.querySelectorAll('.song-list-item'));
+            this._rebuildStrip(strip, this.buildLetterMap(freshItems));
+        });
+    }
 
-                /* Sort items */
-                const sorted = [...items].sort((a, b) => {
-                    if (mode === 'title') {
-                        const titleA = a.querySelector('.song-title')?.textContent?.trim() || '';
-                        const titleB = b.querySelector('.song-title')?.textContent?.trim() || '';
-                        return titleA.localeCompare(titleB);
-                    }
-                    /* Sort by number (original DOM order, use aria-label or data-song-id) */
-                    const numA = parseInt(a.querySelector('.song-number-badge')?.textContent?.trim(), 10) || 0;
-                    const numB = parseInt(b.querySelector('.song-number-badge')?.textContent?.trim(), 10) || 0;
-                    return numA - numB;
+    /**
+     * (Re)wire every letter button in `strip` against `letterMap` — enabled
+     * + a fresh click handler when a target exists, disabled otherwise.
+     * Cloning + replacing each button (rather than tracking/removing the
+     * previous listener by hand) is the simplest way to guarantee exactly
+     * ONE click handler survives per button across repeated rebuilds.
+     *
+     * @param {HTMLElement} strip
+     * @param {Map<string, HTMLElement>} letterMap
+     */
+    _rebuildStrip(strip, letterMap) {
+        strip.querySelectorAll('.alphabet-letter').forEach(letterBtn => {
+            const letter = letterBtn.textContent;
+            const target = letterMap.get(letter);
+            const freshBtn = letterBtn.cloneNode(true);
+            if (target) {
+                freshBtn.classList.remove('disabled');
+                freshBtn.removeAttribute('aria-disabled');
+                freshBtn.addEventListener('click', () => {
+                    target.scrollIntoView({ behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth', block: 'start' });
+                    /* Brief highlight */
+                    target.classList.add('alphabet-highlight');
+                    setTimeout(() => target.classList.remove('alphabet-highlight'), 1500);
                 });
-
-                /* Re-append in new order */
-                sorted.forEach(item => songList.appendChild(item));
-
-                /* Rebuild letter map for new order */
-                const newLetterMap = this.buildLetterMap(sorted);
-                strip.querySelectorAll('.alphabet-letter').forEach(letterBtn => {
-                    const letter = letterBtn.textContent;
-                    /* Update click handler */
-                    const newTarget = newLetterMap.get(letter);
-                    const newBtn = letterBtn.cloneNode(true);
-                    if (newTarget) {
-                        newBtn.classList.remove('disabled');
-                        newBtn.removeAttribute('aria-disabled');
-                        newBtn.addEventListener('click', () => {
-                            newTarget.scrollIntoView({ behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth', block: 'start' });
-                            newTarget.classList.add('alphabet-highlight');
-                            setTimeout(() => newTarget.classList.remove('alphabet-highlight'), 1500);
-                        });
-                    } else {
-                        newBtn.classList.add('disabled');
-                        newBtn.setAttribute('aria-disabled', 'true');
-                    }
-                    letterBtn.replaceWith(newBtn);
-                });
-            });
+            } else {
+                freshBtn.classList.add('disabled');
+                freshBtn.setAttribute('aria-disabled', 'true');
+            }
+            letterBtn.replaceWith(freshBtn);
         });
     }
 }

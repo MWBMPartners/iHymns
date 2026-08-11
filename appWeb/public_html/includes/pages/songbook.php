@@ -17,6 +17,8 @@ declare(strict_types=1);
 
 /* #1328 — hide the abbreviation badge when it just repeats the title. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+/* #1786 — ihymns_title_sort_key() for the song list's Title sort key. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 /* Fetch songbook. */
 $book = $songData->getSongbook($bookId);
@@ -337,14 +339,44 @@ if (!empty($songs)) {
         </div>
     <?php endif; ?>
 
+    <!-- Sort control (#1786) — Number / Title / Writer. `number` is an
+         explicit option (only an explicit level can be direction-flipped;
+         the server default is ALSO number-first, so Default and "Number ↑"
+         happen to render identically — the control still needs it as a
+         pickable level for "Number ↓" and for combining with a second
+         level). -->
+    <?php
+        $listSortSurface = 'songbook-songs';
+        $listSortDefault = 'Number';
+        $listSortOptions = [
+            'number'  => ['label' => 'Number', 'type' => 'number', 'dir' => 'asc'],
+            'title'   => ['label' => 'Title',  'type' => 'text',   'dir' => 'asc'],
+            'writers' => ['label' => 'Writer', 'type' => 'text',   'dir' => 'asc'],
+        ];
+        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'list-sort-control.php';
+    ?>
+
     <!-- Song list -->
-    <div class="list-group song-list" role="list">
+    <div class="list-group song-list" role="list" data-list-sort-list="songbook-songs">
         <?php foreach ($songs as $song): ?>
+            <?php
+                /* #1786 sort-key attributes. A missing data-sort-number
+                   (unnumbered Misc/unofficial song) sorts AFTER every
+                   numbered song in both directions (list-sort.js's
+                   multiKeyCompareMissingLast) — matching the un-numbered
+                   tail this page's server default already produces. */
+                $songSortWriters = !empty($writersMap[$song['id']])
+                    ? mb_strtolower(implode('; ', $writersMap[$song['id']]), 'UTF-8')
+                    : '';
+            ?>
             <a href="/song/<?= htmlspecialchars($song['id']) ?>"
                class="list-group-item list-group-item-action song-list-item"
                data-navigate="song"
                data-song-id="<?= htmlspecialchars($song['id']) ?>"
                role="listitem"
+               <?php if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0): ?>data-sort-number="<?= (int)$song['number'] ?>"<?php endif; ?>
+               data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>"
+               <?php if ($songSortWriters !== ''): ?>data-sort-writers="<?= htmlspecialchars($songSortWriters) ?>"<?php endif; ?>
                aria-label="<?= isset($song['number']) && $song['number'] !== null ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase($song['title'])) ?>">
                 <!-- Song number badge — left empty when the song has no
                      songbook position (Number IS NULL, e.g. Misc or

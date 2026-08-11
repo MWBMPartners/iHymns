@@ -69,7 +69,7 @@
 
 import { announce } from '../utils/announce.js';
 import { multiKeyCompareMissingLast, normalizeSortSpec } from '../utils/sort-compare.js';
-import { STORAGE_LIST_SORT } from '../constants.js';
+import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED } from '../constants.js';
 
 /** ⚑ N1 — a card-friendly panel tops out at 3 levels. */
 const MAX_LEVELS = 3;
@@ -305,6 +305,17 @@ function _wireControlCommon(controlEl, surface, options, defaultLabel, onApply) 
         renderLevels();
         renderSummary();
         onApply(spec);
+        /* Dispatched on EVERY apply, not just a user-driven one — a page
+           loading with an already-saved non-default spec re-orders the DOM
+           on this very FIRST apply (async, after songbook-index.js's own
+           synchronous initial letter-map build — see router.js's
+           afterPageLoad ordering), so a listener that only rebuilds derived
+           UI on "user changed something" would start life already stale.
+           Listeners filter on `detail.surface`, so this is a cheap no-op
+           for every surface that has none. */
+        try {
+            document.dispatchEvent(new CustomEvent(EVT_LIST_SORT_CHANGED, { detail: { surface, spec } }));
+        } catch (_e) { /* legacy browsers without CustomEvent — never fatal */ }
         if (changed) announce(_announceText(spec, options));
         if (fromUser) _saveSpec(surface, spec);
     }
