@@ -108,6 +108,30 @@ The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as 
 
 `tblSongs` also gained identity/publication columns in the same pass: `Isrc`, `Subtitle`, `Disambiguation`, `FirstPublishedYear`, `CopyrightYears`, `CopyrightHolder` (the last three split the single old `Copyright` field). Alias URLs `/isrc /iswc /ccli /ipi /isni /bowi` resolve an industry identifier to its entity via one shared normaliser + resolver (see [[Architecture]] and [[API Reference]]). All of the above is additive and byte-mirrored into `schema.sql`; each migration has a real completion probe.
 
+### Publishers, Gating, Sharing & Print (branch `claude/issue-sweep-fixes-89`, epics #1765 / #1769 / #1767)
+
+This batch landed several feature families as additive, dormant, forward-looking schema in one pass each (rule #20 — every growable vocabulary is `VARCHAR`, app-validated, never `ENUM`). All tables below are byte-mirrored into `schema.sql`, and each migration carries a real completion probe.
+
+| Table | Purpose |
+|---|---|
+| `tblPublishers` | Songbook publisher registry — persons **and** companies (#93, part of epic #1765). `Kind` `VARCHAR` vocab; optional `MusicianId` FK (a musician-publisher isn't duplicated); `ParentId` self-FK for imprint / catalogue grouping; `Ipi` / `Isni` NULL-distinct UNIQUE; `CityName` + `CityId` place mirror; `IsActive`. Page `/publisher/<slug>`. |
+| `tblSongbookPublishers` | Songbook↔publisher M:N (mirrors `tblSongbookCompilers`). `Role` `VARCHAR` vocab; `uq_book_pub_role` allows one publisher in several roles but never the same role twice. |
+| `tblPublisherAliases` / `tblPublisherExternalLinks` | Publisher name variants + per-publisher external links (shared chip-list editor). |
+| `tblLicenceTypes` | The licence vocabulary registry (#1769 P1) — CCLI / MRL / iHymns Basic / Pro / custom, what each covers, and any tier it confers. The one reader is `includes/licence_registry.php`; seeds are preserved on un-migrated installs. |
+| `tblServiceDriverKeys` | Org-scoped external-driver credentials for the `service_drive` endpoint (#1770) — lets a presentation app drive the current song. |
+| `tblPrintTemplateCustomLayout` | Uploadable full-page custom HTML print layouts (#1767 remainder P7), passed through the allowlist sanitiser on save and at render. Pairs with the new `tblPrintTemplates.OrgId` (org-scoped templates). |
+| `tblIaFetchCache` / `tblIaImportCandidates` | IA-reconcile audit bookkeeping (#94 Phase 1) — cached archive.org OCR fetches + scored reconcile candidates. **Audit data, not song content**; the tool never writes a song. |
+
+**Column families added on existing tables (all dormant until their feature is switched on):**
+
+- **Set-list share scope (#1791):** `tblSharedSetlists` + `Scope` (`view` / `edit`), `EditAudience`, `ShowSharerName`, `Label`, `RevokedAt`, `ExpiresAt`, `LastUsedAt`, `EditCount` — an edit link is a 256-bit capability token whose power lives in the row (see [[Security]]).
+- **Org policy (#1791 / #1770):** `tblOrganisations` + `SetlistEditAudience` / `EnforceSetlistEditAudience` (share-link clamp) and `LiveIdleTimeoutMins` / `EnforceIdleTimeout` (live-session idle policy).
+- **Live-Follow session length (#1770 / #1798):** `tblLiveFollowSessions` + `IdleTimeoutMins` / `LastLeaderSeenAt` — resolved once at create via the app→org→user precedence ladder.
+- **Gating rights facts (#1769 P1, all dormant behind the master switch):** `tblSongs.LyricsRightsLicenceKey` / `MusicRightsLicenceKey`, `tblSongbooks.DefaultLyricsRightsLicenceKey` / `DefaultMusicRightsLicenceKey`, `tblSongArrangements.MusicRightsLicenceKey` / `MusicRightsStatus`, `tblGatingCapabilities.EnforceJson`.
+- **Publication metadata (#1765):** `tblSongbooks.IsDisabled` / `IsPublicDomain` / `OpenLibraryWorkId` / `OpenLibraryEditionId`; `tblSongbookSeries` + `tblSongbooks`-mirroring identifier columns (`Isbn` / `Issn` / `ArkId` / `OpenLibrary*`); `tblCatalogues.ArkId` / `OpenLibrary*`.
+
+**Migration cards (all in `migration-registry.php` with real probes; operator-run via `/manage/setup-database`, not auto-applied on deploy):** `migrate-publication-metadata`, `migrate-publishers-entity` (idempotent by Name existence, not slug), `migrate-reconcile-credit-name-bytes`, `migrate-musician-duplicates-dismissed`, `migrate-add-gating-facts-and-licence-types`, `migrate-derive-rights-facts`, `migrate-consolidate-org-licences`, `migrate-live-follow-quick-capable`, `migrate-setlist-share-scope`, `migrate-print-template-layouts`, `migrate-ia-reconcile`.
+
 ### User & Access Control Tables
 
 | Table | Purpose |

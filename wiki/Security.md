@@ -67,7 +67,7 @@ Uncaught browser errors surface one generic toast to the user and are beaconed �
 - Per-session CSRF token (64 hex chars via `random_bytes(32)`)
 - Validated with `hash_equals()` — timing-safe comparison
 - Required on all admin panel form submissions
-- State-changing AJAX (the editor save, duplicate-songs merge/delete, musician-duplicates merge/dismiss/undismiss (#1785), places-api, and every legacy editor POST) instead calls `validateCsrfRequest()`, which accepts EITHER a still-valid session token OR a genuine same-origin request: the `X-Requested-With` header (a browser cannot set it cross-origin without a CORS preflight this server never grants) plus any present `Origin`/`Referer` matching the request's own host **and port**. This exists because a baked per-session token goes stale on a long-lived page (rotates, GCs, or changes across tabs) and produces a sporadic "CSRF error" on save — the same-origin check never goes stale. The port comparison was itself a fix (#1709): `HTTP_HOST` keeps the port but a parsed `Origin`/`Referer` host does not, so the original naive string compare could never match a site on a non-default port, and separately never rejected a *different* port on the same host as if it were same-origin.
+- State-changing AJAX (the editor save, duplicate-songs merge/delete, musician-duplicates merge/dismiss/undismiss (#1785), publishers CRUD (#93), licence-types CRUD (#1769), the tiers / content-restrictions / entitlements gating pages (#1769 P0), the set-list share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), places-api, and every legacy editor POST) instead calls `validateCsrfRequest()`, which accepts EITHER a still-valid session token OR a genuine same-origin request: the `X-Requested-With` header (a browser cannot set it cross-origin without a CORS preflight this server never grants) plus any present `Origin`/`Referer` matching the request's own host **and port**. This exists because a baked per-session token goes stale on a long-lived page (rotates, GCs, or changes across tabs) and produces a sporadic "CSRF error" on save — the same-origin check never goes stale. The port comparison was itself a fix (#1709): `HTTP_HOST` keeps the port but a parsed `Origin`/`Referer` host does not, so the original naive string compare could never match a site on a non-default port, and separately never rejected a *different* port on the same host as if it were same-origin.
 
 ---
 
@@ -183,6 +183,15 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 - Setlist IDs are 8-character hex strings (4 bytes of randomness)
 - Atomic file creation with `fopen('x')` to prevent TOCTOU races
 - Ownership verified before updates (owner UUID must match)
+
+---
+
+## Feature security — branch `claude/issue-sweep-fixes-89`
+
+- **Custom print layouts pass through an allowlist HTML/CSS sanitiser** (`includes/html_sanitizer.php`) on save AND on the server-PDF render path (#1767 remainder). No `<script>`, no event handlers, no `<iframe>`/forms, and no external fetch (remote images / stylesheets / fonts) survive — a curator's uploaded layout can only be safe, print-oriented markup.
+- **The server-PDF endpoint** (`manage/print-pdf.php`) requires an authenticated session and answers **401 JSON** (not a redirect) when absent; it sanitises the POSTed document server-side, and the GPL rendering engine (mPDF) is vendored **outside every web docroot** (`appWeb/private_html/lib/pdf/vendor/`). The CCLI copies count is re-resolved server-side — the client can't claim it.
+- **Set-list edit links are 256-bit capability URLs** (#1791). A link's power lives in the `tblSharedSetlists` row (scope, edit audience, revoked flag), not in who holds the URL: each link is revocable per-link, an org may clamp "anyone with the link" to "signed-in required", and the server **re-resolves the audience on every write** — a write that needs sign-in and doesn't have it gets `401 {reason:'signin_required'}`, never trusting the client's claimed audience.
+- **The IA fetch client** (`includes/ia_client.php`) is SSRF-hardened: host-bound to archive.org, size-capped with an aborting write-callback, no redirects, SSL verify on — the same house pattern as `intapps_client.php` / `cuercode_client.php`.
 
 ---
 

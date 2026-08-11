@@ -181,6 +181,25 @@ The pre-#1533 `activeSetListId` field (set via a setlist's "Use" button) survive
 
 ---
 
+## Printing & PDF (#1767 / #1789 / #302)
+
+A set list can be put on paper or saved as a PDF without any projection software:
+
+- **Print** renders the set list through the **same** print-template engine as a single song
+  (#1789, `83d45a68` — set lists reuse the ONE body renderer; there is no second renderer). Screen-only
+  chrome (the playback bar, nav) is stripped from the printout.
+- **Save as PDF** (#302) goes through the browser's own print dialog.
+- **Download PDF** (#1767 remainder P6) — for a signed-in user — renders the **whole list as one PDF**
+  server-side: a cover page, the running order, then each song's words in order. When the org holds a
+  CCLI licence, a **single** copies prompt covers the whole set, logged to the org's CCLI report, and
+  the CCL notice is added to the footer automatically.
+
+The one-renderer invariant (browser Print, single-song server PDF, whole-set-list PDF, and the admin
+live preview all flow through the same body renderer) is CI-guarded — see [[Architecture]] § Print
+pipeline.
+
+---
+
 ## Cross-Device Sync
 
 Logged-in users can sync setlists across all their devices:

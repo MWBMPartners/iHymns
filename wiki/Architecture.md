@@ -165,6 +165,26 @@ In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the single place
 
 **Musician-registry deduplication (#1785).** `/manage/musician-duplicates` finds registry rows that are probably the same person spelled two ways, live-computed per page load (no precompute table — the registry is two orders of magnitude lighter than the song corpus, so the staleness cost that justifies `tblSongLinkSuggestions` for songs isn't worth paying here). Blocking (an exact fold, or a metaphone of the first/last name token) keeps candidate pairs to the low thousands even at N≈5,000 registry rows — `includes/musician_duplicates.php`'s `musicianDuplicatesFindCandidates()` is a PURE function over plain name arrays (no `\mysqli` in its call graph), separated from the DB-touching orchestrator `musicianFindRegistryDuplicates()` so the blocking maths is unit-testable without a database. Every merge, from any of the three affordances that offer one (`/manage/musicians`'s Merge modal, `/manage/musicians-bulk-promote`, this review page), delegates to the ONE shared core `musicianMergeExecute()` (`includes/musician_helpers.php`, #1785 C4/C5) — never re-implemented per surface. Dismissals persist to `tblMusicianDuplicatesDismissed` (mirrors `tblSongLinkSuggestionsDismissed`'s pair-normalised shape). See `.claude/musicians-dedup-1785-plan.md` for the full design.
 
+### Shared cores — branch `claude/issue-sweep-fixes-89` (#1765 / #1769 / #1767 / #94 / #1786 / #93)
+
+Each family below lands as a small set of single-home modules; a new caller reuses, never re-forks (the modularity rule made concrete). Design lives in the cited `.claude/*-plan.md`, not duplicated here.
+
+**Print pipeline (#1767 remainder, `.claude/print-templates-1767-remainder-plan.md`).** `includes/print_template_schema.php` is the ONE block/page-option registry (mirrored client-side; agreement CI-guarded by `test-print-block-registry.php`). `includes/pdf_renderer.php` is the ONE swappable engine seam — mPDF ~8.3 vendored under `appWeb/private_html/lib/pdf/vendor/`, **outside every docroot** (GPL-2.0, see LICENSING.md), 503-degrading. `includes/html_sanitizer.php` provides the allowlist profiles applied to uploaded custom layouts; `includes/print_usage.php` is the ONE CCLI print-usage writer; `includes/print_custom_layout.php` handles the full-page layouts. **One-renderer invariant:** browser print, server PDF (`manage/print-pdf.php`), batch set-list PDF, and the admin live preview all render through the same body renderer — guard `tests/php/test-print-one-renderer.php`.
+
+**Gating Model-2 (#1769 P2, `.claude/gating-model-review-1769-plan.md`).** `includes/access_context.php` resolves the viewer ONCE per request; `includes/access_resolver.php` makes every field/media decision; `includes/licence_registry.php` is the ONE `tblLicenceTypes` reader. `contentGatingApply()` / `contentGatingMediaAllowed()` in `includes/content_gating.php` are thin delegates over these. Entirely dormant behind `content_gating_enabled='0'`; hub at `/manage/gating`.
+
+**Publisher cores (#93).** `includes/publisher_admin.php` (validate / uniqueness / persist / rename-cascade / aliases / merge / delete) + `includes/publisher_helpers.php` (`IHYMNS_PUBLISHER_KINDS` / `IHYMNS_PUBLISHER_ROLES` VARCHAR vocabs, slug fold, `publisherFindOrCreateByName()`). Fully specified in CLAUDE.md rule #37; `/manage/publishers` and the future `admin_publisher_*` API both delegate here.
+
+**IA reconcile (#94, `.claude/ia-ocr-94-plan.md`).** `includes/ia_client.php` — an SSRF-hardened, host-bound archive.org fetcher in the `intapps_client.php` / `cuercode_client.php` mould — plus `includes/ia_reconcile.php`, a pure segmenter/scorer. Read-only for song content, CI-enforced by `tests/php/test-ia-reconcile-guards.php`.
+
+**List-sort cores (#1786, `.claude/public-list-sort-1786-plan.md`).** `js/utils/sort-compare.js` (pure comparators, shared with `js/modules/admin-table-sort.js`) + `js/modules/list-sort.js` + `includes/partials/list-sort-control.php`. Persistence is device-local plus the `user_settings` namespace `list_sorts` for signed-in sync (never a bespoke per-user endpoint).
+
+**Songbook visibility (#1765).** `includes/songbook_visibility.php` + a `SongData` audience mode (`forAdmin()`); public reads compose `songVisibleSql()` AND `songServableSql()` so a disabled songbook drops out of every public query at once.
+
+**MARCXML + service driver (#1765 / #1770).** `includes/marcxml.php` is the pure, DB-free MARCXML import+export for the three publication entities (`manage/includes/marcxml_admin.php` is the admin funnel). `includes/service_driver_keys.php` backs the `service_drive` endpoint, which writes through the same `serviceMode_applyBroadcast()` core as `service_broadcast`.
+
+**QR (#1767 R / owner directive).** QR images are generated server-side by the CueRCode service via `includes/cuercode_client.php` and served by the same-origin `/qr.php` endpoint — no client-side QR library. See CLAUDE.md rule #38.
+
 ---
 
 ## Native App Architecture

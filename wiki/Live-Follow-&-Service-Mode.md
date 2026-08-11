@@ -117,6 +117,37 @@ looked fine, it just never did the one useful thing.
 
 ---
 
+## #1798 — declared session length + extend
+
+Issue [#1798](https://github.com/MWBMPartners/iHymns/issues/1798) added an explicit **session length**
+to Live Follow so a genuinely quiet stretch (the sermon gap) doesn't trip the #1770 idle auto-close.
+
+**Declaring a length at Go Live.** When a host taps **Go Live** they choose how long to keep the
+session live — 30 minutes, 1 hour, 2 hours, or until they end it — passed as
+`live_follow_create`'s additive `idleTimeoutMins` param (clamped 5–240; "until you end it" resolves to
+the 240-minute / 4-hour hard ceiling). Omitting it falls back to the #1770 app→org→user resolver, so
+this is purely an optional per-session override.
+
+**Extend, live.** The red **LIVE** bar carries an **Extend** control that re-opens the same picker
+mid-service via the new **`live_follow_extend`** endpoint (POST, authenticated, `X-Requested-With` +
+`validateCsrfRequest` CSRF, rate-limited). Extending **resets the idle clock** — the full new window
+starts from that moment — so a leader whose phone died can pick up where they left off.
+
+**Extend on behalf.** An org admin can extend a *member's* live session for them from a **"Members'
+live sessions"** panel on `/manage/my-organisations`, using the same `live_follow_extend` core (the
+endpoint accepts an org-admin requester acting on another user's session, not just the host).
+
+**Un-migrated degrade.** Session length lives on the additive `tblLiveFollowSessions.IdleTimeoutMins`
+/ `LastLeaderSeenAt` columns. On an install that hasn't run the `migrate-live-follow-quick-capable`
+card yet, `live_follow_extend` answers **`409`** with "this install has not been migrated for Live
+Follow session lengths yet" (distinct from a `404` wrong-code, rule #35), and `live_follow_create`
+simply omits the override — never a STRICT-mode fatal (rule #9).
+
+Service Mode needs none of this: it's bounded by the scheduled service's own occurrence end, never an
+idle clock.
+
+---
+
 ## Service Mode (#1323 / #1335)
 
 **Start.** Requires the caller to be signed in **and** either an admin/global-admin, or an org-admin of the venue's own organisation. The endpoint validates a real `venueId > 0`, a well-formed `YYYY-MM-DD` occurrence date, and that the venue actually exists — each with its own distinct error message ("Missing venue.", "Invalid occurrence date.", "Unknown venue.").
@@ -174,4 +205,4 @@ Four App Shortcuts / Siri phrases are wired up (`IHymnsAppShortcuts.swift`):
 
 - [[Troubleshooting & FAQ]] — the condensed, user-facing symptom list
 - [[PWA Features]] — where this sits among the rest of the web app's features
-- Issues: [#1268](https://github.com/MWBMPartners/iHymns/issues/1268) (Live Follow), [#1323](https://github.com/MWBMPartners/iHymns/issues/1323) / [#1335](https://github.com/MWBMPartners/iHymns/issues/1335) (Service Mode), [#1576](https://github.com/MWBMPartners/iHymns/issues/1576) (known bug — an ad-hoc service started in the evening can be born already expired; not fixed as of this writing), [#1770](https://github.com/MWBMPartners/iHymns/issues/1770) (persistent host bar, leader-idle auto-close, host-CCLI unlock, external presentation-app driver), [#1339](https://github.com/MWBMPartners/iHymns/issues/1339) / [#1792](https://github.com/MWBMPartners/iHymns/issues/1792) (the still-outstanding live two-device verify — needs two real devices on one channel, never yet executed)
+- Issues: [#1268](https://github.com/MWBMPartners/iHymns/issues/1268) (Live Follow), [#1323](https://github.com/MWBMPartners/iHymns/issues/1323) / [#1335](https://github.com/MWBMPartners/iHymns/issues/1335) (Service Mode), [#1576](https://github.com/MWBMPartners/iHymns/issues/1576) (known bug — an ad-hoc service started in the evening can be born already expired; not fixed as of this writing), [#1770](https://github.com/MWBMPartners/iHymns/issues/1770) (persistent host bar, leader-idle auto-close, host-CCLI unlock, external presentation-app driver), [#1798](https://github.com/MWBMPartners/iHymns/issues/1798) (declared session length + `live_follow_extend` + extend-on-behalf), [#1339](https://github.com/MWBMPartners/iHymns/issues/1339) / [#1792](https://github.com/MWBMPartners/iHymns/issues/1792) (the still-outstanding live two-device verify — needs two real devices on one channel, never yet executed)
