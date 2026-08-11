@@ -2278,7 +2278,10 @@ paths:
         Create a new publicly-shareable setlist or update an existing one.
         When updating, the caller must provide the original `id` and matching
         `owner` UUID. Each shared setlist can contain up to 200 songs with
-        optional per-song arrangements.
+        optional per-song arrangements. #1791 — `scope: "edit"` mints a
+        collab-by-link EDIT capability instead of a read-only view link;
+        requires a signed-in owner sharing one of their own saved (live-linked)
+        set lists, refused 403 otherwise.
       parameters:
         - name: action
           in: query
@@ -2316,6 +2319,20 @@ paths:
                   type: string
                   description: Existing setlist ID (for updates only)
                   example: "1a2b3c4d"
+                scope:
+                  type: string
+                  enum: [view, edit]
+                  default: view
+                  description: "#1791 — view (default, read-only) or edit (collab-by-link capability, owner-only)."
+                label:
+                  type: string
+                  maxLength: 100
+                  nullable: true
+                  description: "#1791 — owner-facing name for this link (\"worship team\"), display only."
+                expiresAt:
+                  type: string
+                  nullable: true
+                  description: "#1791 G1 — optional link expiry (UTC). Omitted/blank/past = never expires (the default)."
                 arrangements:
                   type: object
                   description: Optional per-song arrangements mapping song IDs to component index arrays
@@ -2326,6 +2343,27 @@ paths:
                       minimum: 0
                   example:
                     CP-0202: [0, 1, 2, 1, 3]
+                showSharerName:
+                  type: boolean
+                  description: |
+                    #1791 G3 — opt-in "Shared by &lt;owner display name&gt;" byline on
+                    the shared page. Accepted for both `view` and `edit` scope links.
+                    Defaults to `false` (anonymous, the status-quo posture) when omitted.
+                  default: false
+                editAudience:
+                  type: string
+                  enum: [anyone, authenticated]
+                  description: |
+                    #1791 G4 / G4-org — who may edit via an `edit`-scope link. Only
+                    meaningful when `scope` is `"edit"`; ignored for a view link.
+                    `anyone` (the column default — no account needed) is the owner's
+                    full ask; `authenticated` requires the recipient to be signed in.
+                    When omitted, the server resolves the owner's own
+                    app-&gt;org-&gt;user default. Whatever the caller requests is
+                    CLAMPED to any organisation's enforced mandate — an owner can never
+                    mint a link more open than their organisation allows, and the
+                    response's `editAudience` reports the value actually stored (which
+                    may differ from the request if it was clamped).
       responses:
         "200":
           description: Setlist created or updated
@@ -2336,12 +2374,26 @@ paths:
                 properties:
                   id:
                     type: string
-                    description: 8-character hex share ID
+                    description: 8-character hex share ID (view links) or a base64url capability token (edit links, #1791)
                     example: "1a2b3c4d"
                   url:
                     type: string
                     description: Shareable URL path
                     example: /setlist/shared/1a2b3c4d
+                  scope:
+                    type: string
+                    enum: [view, edit]
+                    description: "#1791 — the scope actually stored for this link."
+                  showSharerName:
+                    type: boolean
+                    description: "#1791 G3 — the ShowSharerName flag actually stored for this link."
+                  editAudience:
+                    type: string
+                    nullable: true
+                    enum: [anyone, authenticated, null]
+                    description: |
+                      #1791 G4/G4-org — the edit audience actually STORED (after any
+                      org-mandate clamp), or `null` for a view-scope link.
         "400":
           description: Invalid request body
           content:
@@ -2383,8 +2435,11 @@ paths:
       tags: [Setlists]
       summary: Retrieve a shared setlist
       description: |
-        Retrieve a shared setlist by its short hex ID. Returns public-safe
-        fields only (the owner UUID is excluded).
+        Retrieve a shared setlist by its share id — a short hex string (view
+        links) or a base64url capability token (#1791 edit links). Returns
+        public-safe fields only (the owner id/email are never echoed); an
+        `edit`-scope id additionally resolves `canWrite`/`lockReason` and, when
+        writable, the editable `songsDetailed` shape.
       parameters:
         - name: action
           in: query
@@ -2395,7 +2450,7 @@ paths:
         - name: id
           in: query
           required: true
-          description: 8-character hex setlist ID
+          description: Share id — 8-character hex (view) or a base64url capability token (edit, #1791)
           schema:
             type: string
             example: "1a2b3c4d"
@@ -6272,15 +6327,17 @@ paths:
       tags: [Setlists — Collaboration]
       summary: Edit a shared set list through an edit-scope capability link (#1791)
       description: >
-        Collab-by-link write. NO account required — the 256-bit edit token in the
-        body is the authorisation (the owner's "share an edit link, like cloud
-        storage" model). Same-origin only: requires `X-Requested-With:
+        Collab-by-link write. NO account required by default — the edit token in
+        the body is the authorisation (the owner's "share an edit link, like
+        cloud storage" model) UNLESS the link's edit audience (#1791 G4/G4-org)
+        is `authenticated`, in which case a signed-in requester is required
+        too. Same-origin only: requires `X-Requested-With:
         XMLHttpRequest` and, if present, an `Origin`/`Referer` host matching the
         server. Rate-limited PER TOKEN (30/min), not per IP (a NAT-shared
         congregation is one IP). Refuses a view-only (403), revoked/expired (410),
-        or owner-account-locked (403) link. Writes only the owner's one live set
-        list — never inserts or deletes a row. Dormant (409) until the
-        `Set-list share links` migration has run.
+        owner-account-locked (403), or sign-in-required (401) link. Writes only
+        the owner's one live set list — never inserts or deletes a row. Dormant
+        (409) until the `Set-list share links` migration has run.
       parameters:
         - name: action
           in: query
@@ -6317,6 +6374,19 @@ paths:
                   ok:      { type: boolean }
                   changed: { type: integer }
                   songs:   { type: array, items: { type: object } }
+        "401":
+          description: |
+            #1791 G4 — the link's edit audience is `authenticated` and the
+            requester is not signed in. Distinct from 403 (rule #35) so the
+            client can branch on STATUS to prompt sign-in rather than showing
+            a generic error toast.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string, example: "Sign in to edit this set list." }
+                  reason: { type: string, enum: [signin_required], example: signin_required }
         "403": { description: View-only link, cross-origin, or owner locked }
         "409": { description: Edit links not migrated on this server }
         "410": { description: Link revoked or expired }
@@ -16156,11 +16226,15 @@ components:
 
     SharedSetlist:
       type: object
-      description: A publicly shared setlist (owner UUID excluded)
+      description: A publicly shared setlist (owner id/email excluded — a strict allow-list, #1380/#1535/#1791)
       properties:
         id:
           type: string
           description: 8-character hex share ID
+          example: "1a2b3c4d"
+        shareId:
+          type: string
+          description: "#1791 — the resolved share id (8-character hex for a view link, or a base64url capability token for an edit link). Echoes the id/token the request was made with."
           example: "1a2b3c4d"
         name:
           type: string
@@ -16170,6 +16244,19 @@ components:
           items:
             type: string
           example: ["CP-0202", "MP-0042"]
+        live:
+          type: boolean
+          description: "#1380 — true when this share re-resolves the owner's CURRENT set list at read time; false for a frozen snapshot."
+        scope:
+          type: string
+          enum: [view, edit]
+          description: "#1791 — view (read-only, the default) or edit (a collab-by-link capability)."
+        canWrite:
+          type: boolean
+          description: "#1791 — server-stated write capability; the client never re-derives this. Requires scope=edit, a live link, an unlocked owner account (#1698), and — when the link's edit audience is 'authenticated' — a signed-in requester."
+        isOwner:
+          type: boolean
+          description: "#1535 — true only when the CURRENT authenticated viewer is this share's owner. The owner's identity is never otherwise echoed."
         created:
           type: string
           format: date-time
@@ -16185,6 +16272,27 @@ components:
             type: array
             items:
               type: integer
+        songsDetailed:
+          type: array
+          description: "#1791 — the editable object shape ({id, title, songbook, number, arrangement?}), present ONLY when canWrite is true. Same data the view already exposes; no new disclosure."
+          items:
+            type: object
+        lockReason:
+          type: string
+          nullable: true
+          description: |
+            #1791 — present only when canWrite is false, explaining why:
+            `signin_required` (G4 — the link's edit audience is `authenticated`
+            and the requester is not signed in), or one of the pre-existing
+            #1698 owner-lock reasons (the owner's account is disabled/deleted).
+        sharedByName:
+          type: string
+          nullable: true
+          description: |
+            #1791 G3 — the owner's display name, present ONLY when the link's
+            `ShowSharerName` flag is set AND a live owner is known. Strictly
+            opt-in per link (default off); the owner id/email are never echoed
+            regardless of this flag.
 
     UserSetlist:
       type: object
