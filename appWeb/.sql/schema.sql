@@ -5190,6 +5190,75 @@ INSERT IGNORE INTO tblLicenceTypes
 INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('feature_gating_rules_enabled', '0', 'Enable the admin-defined payload-rules engine (/manage/feature-gating). Nested under content_gating_enabled -- rules apply only when BOTH are 1. Seeded 0 by #1769 P1 (deferred from P0).');
 
+-- ----------------------------------------------------------------------------
+-- Internet Archive OCR reconcile (#94 Phase 1 — read-only audit).
+-- tblIaFetchCache caches fetched IA artefacts (metadata JSON / OCR full-text)
+-- so repeat audits are instant and courteous to archive.org.
+-- Payload is MEDIUMTEXT (16 MiB byte cap); the client caps fetches at 15 MiB
+-- (IA_MAX_FULLTEXT_BYTES) so a payload can never overflow the column.
+-- Kind is VARCHAR not ENUM (rule #20 — 'metadata' | 'fulltext' today; a later
+-- 'djvu-xml' / 'search-inside' kind is an app-level allow-list add, no ALTER).
+-- FetchedAt is DATETIME not TIMESTAMP (rule #20 — TTL semantics).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIaFetchCache (
+    Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Identifier  VARCHAR(120)    NOT NULL COMMENT 'archive.org item identifier (their rules: 1-100 chars [A-Za-z0-9._-], starts alphanumeric; validated by iaIdentifierValid())',
+    Kind        VARCHAR(20)     NOT NULL COMMENT 'metadata | fulltext (app-validated VARCHAR vocabulary, never ENUM — rule #20)',
+    FileName    VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Source file within the item for fulltext rows (e.g. <id>_djvu.txt); empty string (not NULL) for metadata rows so uq_Item_Kind_File stays a real uniqueness',
+    HttpStatus  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Last HTTP status observed for this artefact (diagnostic only)',
+    ByteSize    INT UNSIGNED    NOT NULL DEFAULT 0,
+    Sha256      CHAR(64)        NULL DEFAULT NULL COMMENT 'sha256 of Payload — the reconcile RunSha for fulltext rows',
+    Payload     MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'The cached artefact bytes (UTF-8-sanitised before insert). NULL = a fetch was attempted but never succeeded; a failed refetch NEVER overwrites a previous good payload',
+    FetchedAt   DATETIME        NULL DEFAULT NULL COMMENT 'UTC time of the last SUCCESSFUL fetch; NULL = never succeeded. DATETIME not TIMESTAMP (rule #20 TTL semantics)',
+    MetaJson    JSON            NULL DEFAULT NULL COMMENT 'Forward-looking per-row facts (rule #20, the #1590 Capabilities-JSON precedent) so an unforeseen bookkeeping need lands without ALTER',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Item_Kind_File (Identifier, Kind, FileName),
+    INDEX idx_FetchedAt (FetchedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Cached archive.org fetch artefacts for the #94 OCR reconcile audit.';
+
+-- ----------------------------------------------------------------------------
+-- One row per segmented OCR candidate per (item x target songbook). Phase 1
+-- writes score/verdict bookkeeping ONLY (never song content); Phase 2's
+-- approve-to-import flow consumes ReviewState (dormant vocabulary until then).
+-- SegmentFingerprint (not SegmentIndex) keys the upsert so a re-run on
+-- re-OCRed text UPDATES rather than duplicates, and a curator's Phase-2
+-- ReviewState survives re-runs (the tblSongLinkSuggestionsDismissed lesson).
+-- BestSongId is a SOFT reference (no FK) so a song purge never blocks on, or
+-- cascades into, audit bookkeeping.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIaImportCandidates (
+    Id                 INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    Identifier         VARCHAR(120)  NOT NULL COMMENT 'archive.org item identifier this candidate was segmented from',
+    SongbookAbbr       VARCHAR(10)   NOT NULL COMMENT 'Target songbook (tblSongbooks.Abbreviation charset) the audit compared against — soft reference, no FK',
+    RunSha             CHAR(64)      NOT NULL COMMENT 'sha256 of the fulltext payload this run segmented (= tblIaFetchCache.Sha256); rows with a stale RunSha and ReviewState=none are pruned on the next run',
+    SegmentIndex       INT UNSIGNED  NOT NULL COMMENT 'Position of this candidate within its run (display order only — NOT part of the upsert key)',
+    SegmentFingerprint CHAR(64)      NOT NULL COMMENT 'sha256(NormTitle + \n + NormFirstLine) — the stable identity of a candidate across re-segmentations; the upsert key',
+    HeadingNumber      VARCHAR(20)   NULL DEFAULT NULL COMMENT 'Hymn number as printed in the scan (VARCHAR: 123, 123a, App.7)',
+    PageGuess          INT UNSIGNED  NULL DEFAULT NULL COMMENT '1-based page ordinal when the OCR carried form-feed page breaks; NULL otherwise',
+    RawTitle           VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'Title line as OCRed (untrusted text — HTML-escape on render)',
+    NormTitle          VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'ihymns_normalize_title() fold of RawTitle (the EXACT dedup fold — same fold as tblSongs.NormalizedTitle)',
+    FirstLine          VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'First lyric-looking line of the candidate body',
+    BodyExcerpt        TEXT          NULL DEFAULT NULL COMMENT 'First ~1000 chars of the candidate body for curator eyeballing. NEVER imported in Phase 1',
+    LineStart          INT UNSIGNED  NOT NULL DEFAULT 0 COMMENT '0-based line offsets of the segment within the (normalised) fulltext',
+    LineEnd            INT UNSIGNED  NOT NULL DEFAULT 0,
+    BestSongId         VARCHAR(20)   NULL DEFAULT NULL COMMENT 'tblSongs.SongId of the best-scoring match; NULL when the verdict is gap/unscorable. SOFT reference, no FK',
+    BestScore          DECIMAL(4,3)  NULL DEFAULT NULL COMMENT 'Adjusted composite in [0,1] (ihymns_sim_score() blend rescaled for the absent-authors signal — see includes/ia_reconcile.php iaRecAdjustedScore())',
+    Verdict            VARCHAR(20)   NOT NULL COMMENT 'exact | strong | review | gap | unscorable (app-validated VARCHAR vocabulary, never ENUM — rule #20)',
+    ReviewState        VARCHAR(20)   NOT NULL DEFAULT 'none' COMMENT 'DORMANT Phase-2 vocabulary: none | approved_for_import | dismissed | imported (app-validated; Phase 1 only ever writes none)',
+    ReviewedBy         INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblUsers.Id (dormant until Phase 2)',
+    ReviewedAt         DATETIME      NULL DEFAULT NULL,
+    ReviewNote         TEXT          NULL DEFAULT NULL,
+    MetaJson           JSON          NULL DEFAULT NULL COMMENT 'Forward-looking per-row facts (rule #20) — e.g. a later per-line OCR-confidence map — so no second ALTER',
+    CreatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt          TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Item_Book_Fingerprint (Identifier, SongbookAbbr, SegmentFingerprint),
+    INDEX idx_Book_Verdict (SongbookAbbr, Verdict),
+    INDEX idx_Item_Run (Identifier, RunSha)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Segmented OCR candidates + reconcile verdicts for the #94 audit; Phase-2 import queue (dormant).';
+
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)
 --

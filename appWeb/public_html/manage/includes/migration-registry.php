@@ -4113,4 +4113,23 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblMusicianDuplicatesDismissed'),
     ],
+
+    'ia-reconcile' => [
+        'script' => 'migrate-ia-reconcile.php',
+        'card' => [
+            'title'  => 'Internet Archive OCR reconcile (#94 Phase 1)',
+            'body'   => 'Creates <code>tblIaFetchCache</code> (cached archive.org metadata +'
+                      . ' OCR full-text fetches) and <code>tblIaImportCandidates</code>'
+                      . ' (segmented OCR candidates + reconcile verdicts; dormant Phase-2'
+                      . ' review vocabulary). Read-only audit bookkeeping — no song-content'
+                      . ' tables are touched. Additive + idempotent — safe to re-run.',
+            'button' => 'Run IA Reconcile Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. tblIaImportCandidates
+           is created SECOND in the migration script, so a half-applied run
+           (first CREATE succeeded, second threw) correctly keeps the card pending. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblIaFetchCache')
+            || !_migProbe_tableExists($db, 'tblIaImportCandidates'),
+    ],
 ];
