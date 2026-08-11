@@ -1126,9 +1126,9 @@ export class SetList {
             this.renderSetListOverview();
         });
 
-        /* Share (#147) */
+        /* Share (#147, dialog #1791) */
         container.querySelector('#setlist-share-btn')?.addEventListener('click', () => {
-            this.shareSetlist(listId);
+            this.renderShareDialog(listId);
         });
 
         /* Rename */
@@ -2424,6 +2424,378 @@ export class SetList {
             localStorage.setItem(STORAGE_OWNER_ID, id);
         }
         return id;
+    }
+
+    /**
+     * Mint (or re-mint) a server-side share link, supporting the #1791
+     * capability fields `generateShareLink()` predates: `scope` ('view' |
+     * 'edit'), `showSharerName`, and — for an edit link — `editAudience`.
+     *
+     * Returns the RESPONSE's ACTUAL stored values (rule #35) — an org
+     * mandate may clamp `editAudience` stricter than what was requested, so
+     * the caller must read what was stored rather than assume its own
+     * request was honoured verbatim.
+     *
+     * Deliberately a SEPARATE method from `generateShareLink()` rather than
+     * an extra parameter on it: that method returns a bare URL STRING and
+     * always reuses `list.shareId` for updates, a contract `shareSetlist()`
+     * (whose exact body `tests/test-user-sync-client.js` pins) still depends
+     * on. An edit link is a DIFFERENT identity under the #1791 multi-link
+     * model — minting a second edit link must never silently overwrite a
+     * first one (e.g. one team's link replacing another's) — so it always
+     * mints fresh rather than reusing any stored id.
+     *
+     * @param {string} listId
+     * @param {{scope?:'view'|'edit', showSharerName?:boolean, editAudience?:'anyone'|'authenticated', label?:string}} [opts]
+     * @returns {Promise<{ok:true,id:string,url:string,scope:string,showSharerName:boolean,editAudience:?string}|{ok:false,error:string}>}
+     */
+    async mintShareLink(listId, opts = {}) {
+        const list = this.getById(listId);
+        if (!list) return { ok: false, error: 'Set list not found.' };
+
+        const scope = opts.scope === 'edit' ? 'edit' : 'view';
+
+        const arrangements = {};
+        list.songs.forEach(s => {
+            if (s.arrangement && Array.isArray(s.arrangement) && s.arrangement.length > 0) {
+                arrangements[s.id] = s.arrangement;
+            }
+        });
+
+        const payload = {
+            name: list.name,
+            songs: list.songs.map(s => s.id),
+            owner: this.getOwnerId(),
+            setlistId: listId,
+            scope,
+        };
+        if (Object.keys(arrangements).length > 0) payload.arrangements = arrangements;
+        if (opts.showSharerName) payload.showSharerName = true;
+        if (scope === 'edit' && opts.editAudience) payload.editAudience = opts.editAudience;
+        if (opts.label) payload.label = opts.label;
+        /* View links reuse the stored shareId (update-in-place — matches
+           generateShareLink()'s existing behaviour); edit links ALWAYS mint
+           fresh (see the doc comment above — the multi-link model). */
+        if (scope !== 'edit' && list.shareId) payload.id = list.shareId;
+
+        try {
+            const response = await apiFetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...(this.app?.userAuth?.authHeaders?.() || {}),
+                },
+                body: JSON.stringify(payload),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                return { ok: false, error: result.error || response.statusText || 'Could not create the link.' };
+            }
+            if (scope !== 'edit' && result.id) {
+                const allLists = this.getAll();
+                const target = allLists.find(l => l.id === listId);
+                if (target) { target.shareId = result.id; this.saveAll(allLists); }
+            }
+            return {
+                ok: true,
+                id: result.id,
+                url: window.location.origin + result.url,
+                scope: result.scope === 'edit' ? 'edit' : 'view',
+                showSharerName: result.showSharerName === true,
+                editAudience: typeof result.editAudience === 'string' ? result.editAudience : null,
+            };
+        } catch (_e) {
+            return { ok: false, error: 'Network error — please try again.' };
+        }
+    }
+
+    /**
+     * Copy plain text to the clipboard, falling back to the classic
+     * execCommand path for older browsers. Returns whether it worked so the
+     * caller can choose its own success/failure copy.
+     *
+     * A small, deliberate duplicate of the fallback already inlined in
+     * `shareSetlist()` (Web-Share/clipboard flow) rather than a shared
+     * extraction of THAT method's tail — `shareSetlist()`'s body is pinned
+     * verbatim by `tests/test-user-sync-client.js` (the `_syncReady` sync
+     * gating it checks for), so reshaping any part of it risks that guard
+     * for a few lines of copy-paste saved.
+     *
+     * @param {string} text
+     * @returns {Promise<boolean>}
+     */
+    async _copyPlainText(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                textarea.remove();
+                return true;
+            } catch {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * The owner's Share dialog (#1791) — replaces the old bare
+     * `shareSetlist()` toast flow with a modal offering a VIEW link, an EDIT
+     * link (with a "who can edit" choice + a "show my name" opt-in), and
+     * this set list's Active links with per-link Revoke. Built the same way
+     * as this file's other modals (`showAddToSetListDetail()`, the
+     * arrangement editor further down) — `document.createElement` +
+     * `bootstrap.Modal`, torn down on `hidden.bs.modal`.
+     *
+     * @param {string} listId
+     */
+    renderShareDialog(listId) {
+        const list = this.getById(listId);
+        if (!list) return;
+
+        document.getElementById('setlist-share-modal')?.remove();
+
+        const loggedIn = this.app?.userAuth?.isLoggedIn?.() === true;
+
+        const modal = document.createElement('div');
+        modal.id = 'setlist-share-modal';
+        modal.className = 'modal fade';
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-labelledby', 'setlist-share-modal-label');
+        modal.setAttribute('aria-hidden', 'true');
+
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="setlist-share-modal-label">
+                            <i class="fa-solid fa-share-nodes me-2" aria-hidden="true"></i>
+                            Share &ldquo;${escapeHtml(list.name)}&rdquo;
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="border rounded p-3 mb-3">
+                            <h6 class="mb-1">Anyone with the link can view</h6>
+                            <p class="text-muted small mb-2">
+                                They can look through the songs and use Prev/Next to follow along. No account, no changes.
+                            </p>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="share-view-showname">
+                                <label class="form-check-label small" for="share-view-showname">Show my name on the shared page</label>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm" id="share-view-copy-btn">
+                                <i class="fa-solid fa-copy me-1" aria-hidden="true"></i>Copy link
+                            </button>
+                            <div class="small mt-2" id="share-view-status" aria-live="polite"></div>
+                        </div>
+
+                        <div class="border rounded p-3 mb-3">
+                            <h6 class="mb-1">Anyone with the link can edit</h6>
+                            <p class="text-muted small mb-2">
+                                They can reorder and remove songs — no account needed, unless you require sign-in below.
+                            </p>
+                            ${loggedIn ? `
+                            <div class="mb-2">
+                                <span class="small fw-semibold d-block mb-1" id="share-edit-audience-label">Who can edit</span>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="share-edit-audience" id="share-edit-audience-anyone" value="anyone" checked>
+                                    <label class="form-check-label small" for="share-edit-audience-anyone">Anyone with the link</label>
+                                </div>
+                                <div class="form-check form-check-inline">
+                                    <input class="form-check-input" type="radio" name="share-edit-audience" id="share-edit-audience-auth" value="authenticated">
+                                    <label class="form-check-label small" for="share-edit-audience-auth">People signed in to iHymns</label>
+                                </div>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="share-edit-showname">
+                                <label class="form-check-label small" for="share-edit-showname">Show my name on the shared page</label>
+                            </div>
+                            <div class="small text-warning-emphasis d-none mb-2" id="share-edit-org-note"></div>
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="share-edit-create-btn">
+                                <i class="fa-solid fa-user-pen me-1" aria-hidden="true"></i>Create &amp; copy
+                            </button>
+                            <div class="small mt-2" id="share-edit-status" aria-live="polite"></div>
+                            ` : `
+                            <p class="text-muted small mb-0">
+                                <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+                                Sign in to create an edit link — it always writes back to YOUR saved set list, so it needs an account to attach to.
+                            </p>
+                            `}
+                        </div>
+
+                        <div>
+                            <h6 class="mb-2">Active links</h6>
+                            <div id="share-links-list"><p class="text-muted small mb-0">Loading&hellip;</p></div>
+                        </div>
+                        <p class="text-muted small mb-0 mt-3">
+                            Want to invite one specific person instead? Use the Collaborators card below — they will need an iHymns account.
+                        </p>
+                    </div>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        modal.addEventListener('hidden.bs.modal', () => modal.remove());
+        bsModal.show();
+
+        /* -------------------------------------------------------------
+         * Active links — setlist_share_list (owner-auth'd, cookie session).
+         * ----------------------------------------------------------- */
+        const linksListEl = modal.querySelector('#share-links-list');
+        const refreshLinks = () => {
+            if (!linksListEl) return;
+            if (!loggedIn) {
+                linksListEl.innerHTML = '<p class="text-muted small mb-0">Sign in to see and manage links you’ve created for this set list.</p>';
+                return;
+            }
+            apiFetch(`/api?action=setlist_share_list&setlistId=${encodeURIComponent(listId)}`, {
+                credentials: 'same-origin',
+            })
+                .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+                .then(data => {
+                    const links = Array.isArray(data.links) ? data.links : [];
+                    if (links.length === 0) {
+                        linksListEl.innerHTML = '<p class="text-muted small mb-0">No links yet.</p>';
+                        return;
+                    }
+                    linksListEl.innerHTML = `<div class="list-group list-group-flush">
+                        ${links.map(l => this._shareLinkRowHtml(l)).join('')}
+                    </div>`;
+                    linksListEl.querySelectorAll('.btn-share-revoke').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            btn.disabled = true;
+                            apiFetch('/api?action=setlist_share_revoke', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                                credentials: 'same-origin',
+                                body: JSON.stringify({ shareId: btn.dataset.shareId }),
+                            })
+                                .then(r => (r.ok ? r.json() : Promise.reject(r)))
+                                .then(() => refreshLinks())
+                                .catch(() => {
+                                    btn.disabled = false;
+                                    this.app.showToast('Could not revoke that link.', 'danger', 3000);
+                                });
+                        });
+                    });
+                })
+                .catch(() => {
+                    linksListEl.innerHTML = '<p class="text-danger small mb-0">Could not load active links.</p>';
+                });
+        };
+        refreshLinks();
+
+        /* -------------------------------------------------------------
+         * View row — Copy link.
+         * ----------------------------------------------------------- */
+        modal.querySelector('#share-view-copy-btn')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const status = modal.querySelector('#share-view-status');
+            const showName = modal.querySelector('#share-view-showname')?.checked === true;
+            btn.disabled = true;
+            if (status) status.innerHTML = '<span class="text-muted">Creating link…</span>';
+            const result = await this.mintShareLink(listId, { scope: 'view', showSharerName: showName });
+            btn.disabled = false;
+            if (!result.ok) {
+                if (status) status.innerHTML = `<span class="text-danger">${escapeHtml(result.error)}</span>`;
+                return;
+            }
+            const copied = await this._copyPlainText(result.url);
+            if (status) {
+                status.innerHTML = copied
+                    ? '<span class="text-success">Link copied to clipboard.</span>'
+                    : `<span class="text-muted">Link: <code>${escapeHtml(result.url)}</code></span>`;
+            }
+            refreshLinks();
+        });
+
+        /* -------------------------------------------------------------
+         * Edit row — "Who can edit" + "Create & copy".
+         * ----------------------------------------------------------- */
+        modal.querySelector('#share-edit-create-btn')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const status = modal.querySelector('#share-edit-status');
+            const orgNote = modal.querySelector('#share-edit-org-note');
+            const showName = modal.querySelector('#share-edit-showname')?.checked === true;
+            const requested = modal.querySelector('input[name="share-edit-audience"]:checked')?.value === 'authenticated'
+                ? 'authenticated' : 'anyone';
+            btn.disabled = true;
+            if (status) status.innerHTML = '<span class="text-muted">Creating link…</span>';
+            orgNote?.classList.add('d-none');
+            const result = await this.mintShareLink(listId, {
+                scope: 'edit',
+                showSharerName: showName,
+                editAudience: requested,
+            });
+            btn.disabled = false;
+            if (!result.ok) {
+                if (status) status.innerHTML = `<span class="text-danger">${escapeHtml(result.error)}</span>`;
+                return;
+            }
+            /* #1791 G4-org — read the RESPONSE, never assume the request was
+               honoured verbatim (rule #35): the server may have CLAMPED
+               editAudience stricter than requested because an org mandates
+               sign-in. Reflect the actual stored value and explain why. */
+            if (requested === 'anyone' && result.editAudience === 'authenticated') {
+                const anyoneRadio = modal.querySelector('#share-edit-audience-anyone');
+                if (anyoneRadio) anyoneRadio.disabled = true;
+                const authRadio = modal.querySelector('#share-edit-audience-auth');
+                if (authRadio) authRadio.checked = true;
+                if (orgNote) {
+                    orgNote.textContent = 'Your organisation requires people to sign in to edit shared set lists.';
+                    orgNote.classList.remove('d-none');
+                }
+            }
+            const copied = await this._copyPlainText(result.url);
+            if (status) {
+                status.innerHTML = copied
+                    ? '<span class="text-success">Link copied to clipboard.</span>'
+                    : `<span class="text-muted">Link: <code>${escapeHtml(result.url)}</code></span>`;
+            }
+            refreshLinks();
+        });
+    }
+
+    /**
+     * One row of the Share dialog's "Active links" list.
+     *
+     * @param {{shareId:string,scope:string,label:?string,created:?string,lastUsed:?string,viewCount:number,editCount:number,revoked:boolean}} l
+     *        Entry from `setlist_share_list`.
+     * @returns {string} HTML
+     * @private
+     */
+    _shareLinkRowHtml(l) {
+        const scopeLabel = l.scope === 'edit' ? 'Edit' : 'View';
+        const badgeCls = l.scope === 'edit' ? 'text-bg-warning' : 'text-bg-secondary';
+        const revoked = l.revoked === true;
+        const usage = l.scope === 'edit'
+            ? `${Number(l.editCount) || 0} edit${Number(l.editCount) === 1 ? '' : 's'}`
+            : `${Number(l.viewCount) || 0} view${Number(l.viewCount) === 1 ? '' : 's'}`;
+        return `
+            <div class="list-group-item d-flex align-items-center justify-content-between gap-2 small">
+                <div class="flex-grow-1">
+                    <span class="badge ${badgeCls}" style="font-size:0.65rem">${escapeHtml(scopeLabel)}</span>
+                    ${l.label ? ` <strong>${escapeHtml(l.label)}</strong>` : ''}
+                    ${revoked ? ' <span class="badge text-bg-danger" style="font-size:0.65rem">Revoked</span>' : ''}
+                    <span class="text-muted d-block">
+                        ${escapeHtml(usage)}
+                        ${l.created ? ` &middot; created ${escapeHtml(this.formatDate(l.created))}` : ''}
+                        ${l.lastUsed ? ` &middot; last used ${escapeHtml(this.formatDate(l.lastUsed))}` : ''}
+                    </span>
+                </div>
+                ${revoked ? '' : `
+                <button type="button" class="btn btn-sm btn-outline-danger btn-share-revoke" data-share-id="${escapeHtml(String(l.shareId))}">
+                    Revoke
+                </button>`}
+            </div>`;
     }
 
     /**
