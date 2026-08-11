@@ -26,6 +26,13 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* $BLOCK_SCHEMA / $SHOWIF_CONDITIONS / $PAGE_OPTION_SCHEMA / ptSanitiseBlocks() /
+   ptSanitisePageOptions() — the server-side print-template allow-list, shared
+   with manage/print-pdf.php so the two surfaces can never drift into two
+   different rulebooks (#1767 remainder P3, rule #35). A top-level require_once
+   lands those symbols directly in THIS file's global scope — every call site
+   below is unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_schema.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -44,49 +51,6 @@ $success = '';
 $db      = getDbMysqli();
 $csrf    = csrfToken();
 
-/* The CANONICAL block-type allow-list — mirrors PRINT_BLOCK_TYPES in
-   js/modules/print.js. A POSTed block whose `type` isn't here is
-   dropped, and only the option keys declared here are kept (so a
-   crafted POST cannot persist arbitrary JSON). The value is the
-   per-type option schema: key => coercion kind. Keeping this beside
-   the JS registry is deliberate — the JS drives the editor UI, this
-   drives the server-side gate; both enumerate the same 9 types. */
-$BLOCK_SCHEMA = [
-    'title'       => [],
-    'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool', 'bookAbbr' => 'bool'],   // #1767 B
-    'credits'     => [],
-    'lyrics'      => ['showLabels' => 'bool', 'showChords' => 'bool', 'columns' => 'cols', 'align' => 'align', 'size' => 'size'],  // #1767 A
-    'copyright'   => [],
-    'identifiers' => ['ccli' => 'bool', 'iswc' => 'bool'],
-    'scripture'   => [],                          // #1767 N
-    'tune'        => ['showMetre' => 'bool'],     // #1767 O
-    'themes'      => [],                          // #1767 P
-    'text'        => ['content' => 'str'],
-    'permalink'   => [],
-    'qr'          => ['size' => 'size'],          // #1767 R
-    'spacer'      => ['size' => 'size'],
-    'pagebreak'   => [],
-];
-
-/* The CANONICAL conditional-visibility vocabulary (#1767 Y) — a UNIVERSAL block
-   property `showIf` any block may carry. Mirrors PRINT_SHOWIF_CONDITIONS in
-   js/modules/print.js, held in lockstep by the registry guard (rule #35). A
-   posted showIf not in this list (or 'always', the default) is dropped. */
-$SHOWIF_CONDITIONS = ['always', 'hasChords', 'hasCopyright', 'hasCcli', 'hasScripture', 'hasThemes', 'hasTune'];
-
-/* The CANONICAL page-option allow-list (#1767 G/V/AB/AM/F) — mirrors
-   PRINT_PAGE_OPTIONS in js/modules/print.js, held in lockstep by
-   tests/php/test-print-block-registry.php (rule #35). Each entry's `kind` drives
-   coercion in ptSanitisePageOptions(); an option not listed here is DROPPED. */
-$PAGE_OPTION_SCHEMA = [
-    'fontPt'      => ['kind' => 'int',  'min' => 6, 'max' => 72],
-    'pageSize'    => ['kind' => 'enum', 'choices' => ['A4', 'Letter', 'Legal']],
-    'lineHeight'  => ['kind' => 'enum', 'choices' => ['tight', 'normal', 'relaxed']],
-    'contrast'    => ['kind' => 'enum', 'choices' => ['normal', 'high']],
-    'accentColor' => ['kind' => 'color'],
-    'inkSaver'    => ['kind' => 'bool'],
-];
-
 /* JSON-encode flags that make a value safe to drop into an inline
    <script> (no </script> break-out, no quote break-out). #1350 req #5. */
 $JSON_SAFE = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
@@ -103,97 +67,6 @@ try {
     if ($r) { $r->close(); }
 } catch (\Throwable $e) {
     error_log('[print-templates] schema probe failed: ' . $e->getMessage());
-}
-
-/**
- * Sanitise a decoded blocks array against $BLOCK_SCHEMA.
- *
- * Drops unknown types and unknown option keys; coerces every kept
- * value to its declared kind. Returns a clean array safe to persist.
- *
- * @param array $raw               The json_decode'd POST blocks (assoc).
- * @param array $schema            $BLOCK_SCHEMA.
- * @param array $showIfConditions  $SHOWIF_CONDITIONS (universal visibility vocab).
- * @return array                   Sanitised ordered block list.
- */
-function ptSanitiseBlocks(array $raw, array $schema, array $showIfConditions = []): array
-{
-    $clean = [];
-    foreach ($raw as $block) {
-        if (!is_array($block)) { continue; }                 // not an object — drop
-        $type = (string)($block['type'] ?? '');
-        if (!isset($schema[$type])) { continue; }            // unknown type — drop
-        $row = ['type' => $type];
-        /* #1767 Y — a UNIVERSAL showIf on ANY block. Kept only when it names a
-           known condition and isn't the 'always' default (which we omit to keep
-           the stored JSON minimal — absent showIf == always visible). */
-        if (isset($block['showIf'])
-            && in_array($block['showIf'], $showIfConditions, true)
-            && $block['showIf'] !== 'always') {
-            $row['showIf'] = (string)$block['showIf'];
-        }
-        foreach ($schema[$type] as $key => $kind) {
-            if (!array_key_exists($key, $block)) { continue; } // option not posted — use renderer default
-            $v = $block[$key];
-            switch ($kind) {
-                case 'bool':
-                    $row[$key] = (bool)$v;
-                    break;
-                case 'cols':
-                    $row[$key] = ((int)$v === 2) ? 2 : 1;       // lyrics columns: only 1 or 2
-                    break;
-                case 'size':
-                    $row[$key] = in_array($v, ['sm', 'md', 'lg'], true) ? $v : 'md';
-                    break;
-                case 'align':                                    // #1767 A
-                    $row[$key] = in_array($v, ['left', 'center', 'right'], true) ? $v : 'left';
-                    break;
-                case 'str':
-                default:
-                    $row[$key] = mb_substr((string)$v, 0, 2000); // custom text — cap length
-                    break;
-            }
-        }
-        $clean[] = $row;
-    }
-    return $clean;
-}
-
-/**
- * Sanitise decoded page options against $PAGE_OPTION_SCHEMA (#1767 G/V/AB/AM/F).
- *
- * Drops unknown keys; coerces each kept value to its declared kind (int clamp,
- * enum membership, #rgb/#rrggbb colour, bool). Returns null when nothing valid
- * was supplied. We persist the RE-ENCODED clean options, never the raw POST.
- *
- * @param mixed $raw      The json_decode'd POST page_options (assoc), or non-array.
- * @param array $schema   $PAGE_OPTION_SCHEMA.
- * @return array|null     Sanitised page options, or null when empty.
- */
-function ptSanitisePageOptions($raw, array $schema): ?array
-{
-    if (!is_array($raw)) { return null; }
-    $out = [];
-    foreach ($schema as $key => $def) {
-        if (!array_key_exists($key, $raw)) { continue; }   // not posted — renderer default
-        $v = $raw[$key];
-        switch ($def['kind']) {
-            case 'int':
-                $out[$key] = max((int)$def['min'], min((int)$def['max'], (int)$v));
-                break;
-            case 'enum':
-                if (in_array($v, $def['choices'], true)) { $out[$key] = $v; }  // else drop
-                break;
-            case 'color':
-                $s = (string)$v;
-                if ($s !== '' && preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $s)) { $out[$key] = $s; }
-                break;
-            case 'bool':
-                $out[$key] = (bool)$v;
-                break;
-        }
-    }
-    return $out ?: null;
 }
 
 /* ---- POST actions ---- */

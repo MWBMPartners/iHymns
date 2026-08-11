@@ -19,10 +19,14 @@ declare(strict_types=1);
  *      per-block option defaults. What a curator can add and tweak.
  *   2. the `renderBlock()` switch in the SAME file — the RENDERER. A type in
  *      the registry but missing a `case` renders nothing (silent no-op).
- *   3. `$BLOCK_SCHEMA` in manage/print-templates.php — the SERVER allow-list.
- *      A POSTed type or option key absent here is DROPPED on save, so a
- *      control the editor offers whose key the server discards is a silent
- *      no-op too (the #1565/#1581 failure class, applied to print).
+ *   3. `$BLOCK_SCHEMA` in includes/print_template_schema.php — the SERVER
+ *      allow-list. A POSTed type or option key absent here is DROPPED on
+ *      save, so a control the editor offers whose key the server discards
+ *      is a silent no-op too (the #1565/#1581 failure class, applied to
+ *      print). Extracted out of manage/print-templates.php in the #1767
+ *      remainder's P3 commit so manage/print-pdf.php (the new server-PDF
+ *      endpoint) can require the SAME allow-list instead of forking a third
+ *      copy (rule #35) — this guard's anchor moved with it.
  *
  * The guard derives all three sets FROM THE TREE (rule #34 — never a list
  * typed here) and asserts:
@@ -45,20 +49,47 @@ declare(strict_types=1);
  * @see .claude/CLAUDE.md rule #34 (tree-derived, mutation-proven guards)
  */
 
-$repoRoot  = dirname(__DIR__, 2);
-$printJs   = $repoRoot . '/appWeb/public_html/js/modules/print.js';
-$adminPhp  = $repoRoot . '/appWeb/public_html/manage/print-templates.php';
+$repoRoot   = dirname(__DIR__, 2);
+$printJs    = $repoRoot . '/appWeb/public_html/js/modules/print.js';
+$adminPhp   = $repoRoot . '/appWeb/public_html/manage/print-templates.php';
+$schemaPhp  = $repoRoot . '/appWeb/public_html/includes/print_template_schema.php';
+$pdfPhp     = $repoRoot . '/appWeb/public_html/manage/print-pdf.php';
 
 $fail = [];
-foreach (['print.js' => $printJs, 'print-templates.php' => $adminPhp] as $label => $path) {
+foreach ([
+    'print.js' => $printJs,
+    'print-templates.php' => $adminPhp,
+    'print_template_schema.php' => $schemaPhp,
+] as $label => $path) {
     if (!is_file($path)) {
         fwrite(STDERR, "FATAL: $label not found at $path\n");
         exit(1);
     }
 }
 
-$jsSrc  = (string)file_get_contents($printJs);
-$phpSrc = (string)file_get_contents($adminPhp);
+$jsSrc     = (string)file_get_contents($printJs);
+$adminSrc  = (string)file_get_contents($adminPhp);
+/* The block/page-option/showIf allow-lists themselves now live in
+   includes/print_template_schema.php (#1767 remainder P3) — extracted out of
+   manage/print-templates.php so manage/print-pdf.php can require the SAME
+   copy instead of forking a third one (rule #35). $phpSrc is what every
+   region-extraction below parses, so re-anchoring it here is the whole of
+   the "re-prove after the move" step rule #34 calls for. */
+$phpSrc = (string)file_get_contents($schemaPhp);
+
+/* Lockstep check: the admin editor must still be the one requiring the
+   shared schema file (not a re-inlined copy) — a silent revert back to two
+   copies would leave this guard parsing a file nothing actually uses. */
+if (!str_contains($adminSrc, 'print_template_schema.php')) {
+    $fail[] = 'manage/print-templates.php no longer requires includes/print_template_schema.php — '
+             . 'has the shared schema been re-forked back into the page?';
+}
+/* Same check for the PDF endpoint, once it exists (it lands later in the
+   same P3 commit as this guard update — see .claude/print-templates-1767-remainder-plan.md §3.1). */
+if (is_file($pdfPhp) && !str_contains((string)file_get_contents($pdfPhp), 'print_template_schema.php')) {
+    $fail[] = 'manage/print-pdf.php exists but does not require includes/print_template_schema.php — '
+             . 'the PDF endpoint must re-validate pageOptions against the SAME allow-list as the editor.';
+}
 
 /**
  * Extract the body of a delimited block, e.g. the `{ ... }` after
