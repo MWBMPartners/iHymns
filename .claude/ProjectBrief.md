@@ -4,6 +4,97 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-11 (#1800 musician merge/dedup follow-ups, BUILD pass done, NOT YET PUSHED)
+
+**#1800 (musician merge/dedup follow-ups to #1785/#1796) — three of four items BUILT, on branch
+`claude/issue-sweep-fixes-89`, NOT YET PUSHED (stopped after build + guards + docs per the build-pass
+brief). Fourth item assessed and deliberately DEFERRED — see below.**
+
+- **C1 — `credit_search`'s third table list, collapsed.** `manage/editor/api2.php`'s `credit_search`
+  autocomplete carried its own hand-typed six-table `$kindToTable` map — a THIRD copy of the same
+  fact alongside `ED2_CREDIT_TABLES` (same file) and `MUSICIAN_CREDIT_ROLE_TABLES`
+  (`includes/musician_helpers.php`), flagged as "discovered, not fixed here" in
+  `tests/php/test-musician-credit-tables-single-list.php`'s own doc-block since #1785. Now reads
+  `MUSICIAN_CREDIT_ROLE_TABLES` directly — its singular keys already match this endpoint's `kind=`
+  query convention byte-for-byte, so no transform was needed (unlike `ED2_CREDIT_TABLES`'s plural
+  keys, which would have). The guard gained a PART C that isolates the `credit_search` case block by
+  source position (next `case '...'` at the same indentation — brace-balancing would over-match the
+  block's own internal `foreach` loops) and asserts no bare six-table-name literal remains AND the
+  shared constant IS referenced. Mutation-proven both directions (literal list restored → red;
+  restored → green).
+- **C2 — COALESCE-fill on merge.** `musicianMergeExecute()` used to silently drop every biographical
+  fact recorded ONLY on the losing side of a merge — a source's `Biography`/`MusicBrainzArtistMBID`/
+  `Disambiguation`/birth-death dates vanished the moment its row was deleted, even when the target had
+  nothing there at all. Now backfills the survivor's EMPTY `Biography` / `MusicBrainzArtistMBID` /
+  `Disambiguation` / `BirthDate`+`BirthDatePrecision` / `DeathDate`+`DeathDatePrecision` from the
+  source — **never** overwrites a non-empty target value (the survivor's own data always wins). New
+  `musicianMbidColumnExists()` gate (mirrors `musicianMaidenSurnameColumnExists()`'s pattern) joins the
+  existing `musicianProfileColumnsExist()`/`musicianDatePrecisionColumnsExist()` probes (rule #9) —
+  `MusicBrainzArtistMBID` was added by ALTER (`migrate-identifier-media-hardening.php`), not part of
+  the table's original definition. **Ordering is load-bearing**: the fill runs AFTER the source row's
+  `DELETE`, inside the SAME transaction the function already owns — `MusicBrainzArtistMBID` carries a
+  UNIQUE key (`uq_MbArtist`), so filling the target's copy BEFORE the source row is gone would collide
+  with the source's own still-live value. Identity-shaped columns (`FirstNames`/`Surname`/`Suffix`/
+  `MaidenSurname`) are deliberately excluded (not asked for, riskier to silently fill); ISNI/IPI are
+  NOT single-value columns on `tblMusicians` at all — they're multi-row children in
+  `tblMusicianIdentifiers`, already covered by the existing `keepIpiIds` carry-over. The report gains
+  an additive `fieldsFilled` key, surfaced in all three call sites' activity-log payloads
+  (`manage/musicians.php`, `manage/musician-duplicates.php`, `api.php`'s `admin_musician_merge`) plus
+  `musicians.php`'s success banner and `api.php`'s JSON response. **Runtime-verified** against the live
+  `ihymns_live` scratch DB — 17 checks across three disposable-row scenarios (empty target fills from a
+  populated source; non-empty target keeps its own values untouched; a partially-empty target fills
+  only its own empty fields), all passed, cleanup left zero residual rows.
+  `musicianMergeExecute()` owns its own transaction (asserted by the brief NOT to nest one around it —
+  `mysqli`'s `START TRANSACTION` implicitly commits any already-open one, so an outer wrap would not
+  actually achieve a rollback), so verification used explicit `DELETE`s of the disposable rows instead
+  of a literal SQL `ROLLBACK`.
+- **C3 — create-time fold-match hint.** The `/manage/musicians` "Add person" drawer's Name field now
+  debounce-checks a new `musicianFindFoldMatches()` helper — reusing the SAME
+  `ihymns_sim_name_normalise()` exact-fold test the duplicate-review page's Bucket A already uses
+  (rule #22, `includes/musician_duplicates.php`) — via a new read-only GET `?action=name_fold_check`
+  endpoint on `manage/musicians.php` (mirrors the existing `merge_target_search` endpoint's shape). A
+  soft, non-blocking "possible duplicate of X (view)" hint appears below the field — linking to the
+  matched person's public `/musician/<slug>` page in a new tab — and NEVER disables Save. The check
+  only ever fires while the Name field is editable: Edit mode locks it (renames go through the
+  separate Rename action instead), so there's nothing to debounce there — no extra readOnly guard was
+  even needed, since a locked `<input>` never fires user-driven `input` events. New guard
+  `tests/php/test-musician-name-fold-check.php`: Part A (source scan, always runs) asserts the route
+  is wired and the drawer renders the hint element; Part B (behavioural, runs against a reachable DB
+  inside a rolled-back transaction — `musicianFindFoldMatches()` is READ-ONLY, so unlike C2's merge
+  core this WAS safe to wrap in an outer transaction) asserts an exact whitespace/case/apostrophe-style
+  variant IS found, a genuinely different name is NOT (no false positives), `exclude_id` is honoured,
+  and blank/punctuation-only input never throws. Mutation-proven in three ways (fold comparison
+  short-circuited → red; `exclude_id`'s SQL operator inverted → red; the route's action string renamed
+  → red on Part A specifically), each restored before committing.
+- **C4 (assessed, DEFERRED) — unifying `/manage/musician-duplicates` with
+  `/manage/musicians-bulk-promote`.** Weighed against the `#1215` precedent
+  (`duplicate-songs` absorbing `song-link-suggestions`) and judged NOT a clean, contained merge —
+  reported as a scoped follow-up rather than forced. The two pages' own in-repo comments already draw
+  the line explicitly (`manage/musicians.php` around the two CTA banners): bulk-promote's candidate
+  universe is song-credit NAMES with no registry row yet (per-NAME `register`/`merge`/`skip` actions);
+  musician-duplicates' candidate universe is PAIRS of EXISTING registry rows that look like the same
+  person (per-ID-PAIR `merge`/`dismiss` actions). Unlike `song-link-suggestions`, which was the SAME
+  "compare two songs" concern as `duplicate-songs` with a different data source (precomputed batch
+  table vs. adhoc), there is no natural absorption here — the two pages don't share a candidate shape
+  to unify around. A real merge would need a design pass reconciling the two action vocabularies
+  across ~1,650 combined lines of actively-used, independently-tested bulk POST logic FIRST, before
+  any code moves — real regression risk to two currently-working surfaces for a "balloons" outcome the
+  build brief explicitly said not to force. Left as a follow-up recommendation (not filed as a GitHub
+  issue per this session's instructions — the calling agent owns issue-tracker actions).
+- **Suites: 145 PHP (144 baseline + this session's two new guard files, `test-musician-name-fold-
+  check.php` new + `test-musician-credit-tables-single-list.php` extended with Part C) / 54 node**
+  (the +1 over the 53 baseline is unrelated concurrent `#1789` work landed mid-session by a sibling
+  session sharing this container — see the "concurrent session" note below), all green after every
+  commit.
+- **Concurrent session note**: this branch was being worked simultaneously, in the SAME container, by
+  a sibling session on unrelated `#1789`/`#1791` set-list print/share work (commits `83d45a68`,
+  `2eff4be1`, `50a9e6bd` landed interleaved with this session's three). Only this session's own
+  explicit file paths were ever `git add`ed — never `-A` — so the two bodies of work stayed cleanly
+  separated in the history despite sharing one working tree. One accidental collision surfaced and was
+  fixed: a doc-comment for the new `musicianMbidColumnExists()` gate initially wrote out the pre-#1741
+  table name literally, tripping `test-musician-rename-guard.php`'s count-exact old-name-token
+  allowlist — reworded to avoid the banned token rather than widening the allowlist.
+
 ## 📌 Continuation note — 2026-08-10 (later still — #1798 Live Follow session-length + extend, BUILD pass done, NOT YET PUSHED)
 
 **#1798 (follow-on to #1770/#1792) — declare a Quick session's length at "Go Live" + extend a
