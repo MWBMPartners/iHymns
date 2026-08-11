@@ -221,7 +221,7 @@ function ihymnsSanitizeHtml(string $html, string $profile): string
 
     $doc = new \DOMDocument('1.0', 'UTF-8');
     $prevErrorState = libxml_use_internal_errors(true);
-    /* The `<?xml encoding="UTF-8">` prefix is the standard trick that makes
+    /* The XML encoding prologue prepended below is the standard trick that makes
        DOMDocument::loadHTML() honour UTF-8 input without libxml's default
        Latin-1 mis-detection mangling multi-byte characters; it never
        survives into the parsed tree as a real node, so nothing downstream
