@@ -6,16 +6,27 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-07-30._
+_Last updated: 2026-08-11 (#91 final docs sweep + version bump)._
 
 ## Where things stand
-- **Version:** `0.4001.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
+- **Version:** `1.5000.0` (alpha) — authoritative source is `includes/infoAppVer.php`
   (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
-  hardcode a version rot within days — point at the file.
-  ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. That is
-  how 98 commits shipped under one version string; the bump had to be done by hand (`bad5ca4f`,
-  PR #1592) using the workflow's own arithmetic (`MINOR+1`, `PATCH=0`) so the two don't drift.
-  **Expect to repeat this after any large alpha batch.**
+  hardcode a version rot within days — point at the file. The old "v1.x = local-JSON phase" comment
+  was retired (DB-direct since epic #1010; the major digit no longer encodes a phase).
+  ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. **Two worked
+  examples now:** the 98-commit consolidation bumped by hand (`bad5ca4f`, PR #1592), and the
+  214-commit `claude/issue-sweep-fixes-89` batch bumped by hand `0.4100.0 → 1.5000.0` (owner-directed
+  major, #91). **Expect to repeat this after any large alpha batch.**
+- **Current batch — `claude/issue-sweep-fixes-89` (PUSHED; single PR pending the owner):** 214 commits
+  landing the #89 issue-sweep + several epics. One line per family: **#1765**+**#93** songbook/
+  catalogue enhancements + Publishers registry; **#1769/#1778** content-gating program + `/manage/gating`
+  hub (dormant); **#1767** print-templates / server-PDF remainder; **#94** IA-reconcile Phase 1
+  (read-only); **#1770/#1792/#1798** Live-Follow (host bar, idle auto-close, session length + extend,
+  driver keys); **#1791/#1790/#1789** set-list share-by-link; **#1786** public multi-level list sort;
+  **#1785/#1800** musicians dedup; **#1783** duplicate-song; **#1788** ProPresenter CSP-safe export;
+  **QR → CueRCode** (`/qr.php`). **11 migration cards** pending on each env (operator runs via
+  `/manage/setup-database`); QR dormant until a CueRCode key is pasted on `/manage/configuration`;
+  `content_gating_enabled` stays `'0'`.
 - **`beta` is frozen at v0.1254.1** (~2026-06-25, PR #1369) and predates the entire Live Follow fix
   train (#1375/#1377/#1386/#1405). The promotion PR #1580 was **closed unmerged** — alpha and beta
   have **unrelated histories**, so it needs a tree-replacement, not a merge. Before any future
@@ -41,10 +52,18 @@ _Last updated: 2026-07-30._
   scope item 2, `/manage/editor/` now 302-redirects to the **v2 Song Editor** by default (`?legacy=1`
   or `tblAppSettings.editor_v2_default='0'` reverts to v1, which is deliberately NOT retired). See
   "Recent landings — wave 3" below; do not assume any branch name above still describes HEAD.
-- **Verified counts** (re-derived **2026-08-01**; the 07-28 figures had already drifted, which is the
-  point — derive, never quote): **136** tables in `schema.sql`
-  (`grep -c '^CREATE TABLE' appWeb/.sql/schema.sql`; the old "142" was wrong); **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
-  **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
+- **Verified counts** (re-derived **2026-08-11**; derive, never quote — the figures drift every batch):
+  **152** `CREATE TABLE` in `schema.sql` (`grep -c 'CREATE TABLE' appWeb/.sql/schema.sql`; 150 distinct
+  `tbl*` names); **46** admin nav destinations in `admin-links.php` (Dashboard + 6 groups); **8** guides
+  in `help/`; **~294 dispatched API actions / 275 documented OpenAPI paths** across the 4 dispatchers
+  (was "≈195"). The 20 legacy `manage/editor/api.php` actions are **knowingly undocumented** in
+  `api-docs.yaml` (a pre-existing hole since merge-base; filed for consideration under #91 —
+  "document or retire the legacy editor API surface").
+- **Gotchas from this batch worth memory:** `manage/print-pdf.php` is **auth-gated but deliberately NOT
+  entitlement-gated** (its own doc-block explains why — the editor pages carry the `manage_songbooks`
+  gate; a second narrower entitlement here would just be a copy that can drift, so `test-admin-gate-parity`
+  correctly has nothing to check for it). **The wiki is IN-REPO at `wiki/`** — an older ProjectBrief note
+  claiming it needs a separate clone is stale; edit `wiki/*.md` directly.
 - **Apple programme:** Phase-2 code-complete but **never compiled as a merged whole** — the
   consolidation was done in a Linux container with no Swift toolchain. Audit-B security gate, device
   matrices and APNs provisioning remain outstanding; all hardware/owner-gated.

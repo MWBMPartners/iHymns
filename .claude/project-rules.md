@@ -521,3 +521,32 @@ The validator is the shared `includes/arrangement.php`; the write side (`_saniti
 gate G4 both call it. Its int-vs-digit-string asymmetry is deliberate: `arrangementSanitise()`
 coerces because it handles INPUT, `arrangementViolations()` is strict because it judges data already
 STORED, where a digit-string means the writer was bypassed.
+
+## 21. Conventions from the `claude/issue-sweep-fixes-89` batch (2026-08, #89/#91)
+
+### 21.1 Public list-sort persistence — a saved layout is a wish, not a contract (#1786)
+
+The public multi-level Sort ▾ control (`js/modules/list-sort.js` + the pure comparators in
+`js/utils/sort-compare.js`, shared with `js/modules/admin-table-sort.js`; server partial
+`includes/partials/list-sort-control.php`) persists a per-surface sort spec. **The spec is validated
+against the keys a control CURRENTLY offers on every read** (`normalizeSortSpec()`: validate / cap at
+3 levels / dedupe) — a persisted level whose key a surface no longer offers is dropped, not honoured
+blindly. Persistence rides the EXISTING namespaced `user_settings` endpoint (#1671 F5), namespace
+`list_sorts` — **never a new endpoint, table, or migration for a per-user preference the
+`user_settings` namespaces already carry.** Anonymous/offline is device-`localStorage`-only;
+signed-in additionally syncs (account wins per surface on read; the namespaced POST branch carries
+`validateCsrfRequest()`). Known pre-existing exposure carried, not silently absorbed: `settings.js`'s
+legacy whole-blob `user_settings` push still clobbers every namespace (the same hazard `cardLayouts`
+already lives with) — filed, not hidden.
+
+### 21.2 The outbound-HTTP client house pattern — now three instances (#1725 / #38 / #94)
+
+Every server-side call OUT to a third party copies the ONE shape: `includes/intapps_client.php`
+(MWBM-IntAppsAPI, #1725), `includes/cuercode_client.php` (QR, rule #38), and `includes/ia_client.php`
+(archive.org OCR, #94). The shared contract — **SSRF-hardened host-bound URL** (the target host is
+fixed, never user-supplied), a **size-capped aborting write-callback**, **no redirects**, **SSL verify
+on**, house-band timeouts, **returns null on ANY failure (never throws)**, and **dormant until keyed**
+where a secret is involved (config null with no key; the key registered in `secretSettingKeys()` so
+it's encrypted at rest). A 4th outbound integration copies this shape — never a bare `file_get_contents($url)`
+or an un-host-bound cURL. The two secret-bearing ones (`cuercode`, and any IntApps key) stay dormant
+until an admin pastes the key on `/manage/configuration`.

@@ -4,6 +4,68 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-11 (#91 FINAL docs-consistency sweep + version bump — supersedes all "NOT YET PUSHED" claims below)
+
+**The `claude/issue-sweep-fixes-89` branch is PUSHED and up-to-date with origin.** Every earlier
+2026-08-xx continuation note below that says "BUILD pass done, NOT YET PUSHED" (the #1786, #1800,
+#1798, #1786-admin-sweep, #1785, #1770 notes) is **superseded on that point** — the branch has since
+been pushed; the code descriptions in those notes remain accurate. A single PR for the whole branch is
+pending the owner (the one-PR rule).
+
+**#91 was the final documentation-consistency sweep — DONE.** Five atomic commits reconciled help,
+wiki, OpenAPI, the top-level markdown, and these `.claude/` docs with what actually shipped on the
+214-commit branch:
+
+- **C1 `docs(help)`** — public `help.php` (Printing & PDF #1767, Sorting Lists #1786, theme chips
+  #288, set-list print cross-link), `help/exporting.md` (fixed the false "no separate download" line;
+  Download PDF now exists), `help/searching-songs.md`, and admin `manage/help.php` (IA Reconcile #94,
+  Publishers #93, Licence Types + Gating Hub #1769, extended Print Templates / My Organisations /
+  Service Mode).
+- **C2 `docs(wiki)`** — 7 wiki pages (Database, API-Reference, Setlists, Live-Follow, PWA-Features,
+  Architecture, Security).
+- **C3 `docs(api)+chore(version)`** — added `?page=publisher` to `api-docs.yaml`; **version bump
+  0.4100.0 → 1.5000.0** (owner-directed major) in lockstep across `infoAppVer.php`, `api-docs.yaml`,
+  `manifest.json`, `README.md`, `PROJECT_STATUS.md`, `appWeb/CHANGELOG.md`. The dead "v1.x =
+  local-JSON phase" comment was retired.
+- **C4 `docs(changelog,md)`** — a consolidated `[1.5000.0]` CHANGELOG header + the 3 deferred family
+  entries (#1767 remainder, #94, #1765 core) + #1791 server-half + gating P0/P1; README /
+  PROJECT_STATUS / DEV_NOTES / SECURITY updated.
+- **C5 `docs(claude)`** — this note; MEMORY.md; CLAUDE.md rules #39/#40 + the #28 patch;
+  project-rules.md notes; a fresh HANDOFF.
+
+**The batch (§0 families, with the design doc to cite — do NOT re-derive design):** #1765 songbook/
+catalogue epic + #93 Publishers (`.claude/songbook-catalogue-enhancements-plan.md`); #1769/#1778
+gating program (`.claude/gating-model-review-1769-plan.md`); #1767 print/PDF remainder
+(`.claude/print-templates-1767-remainder-plan.md`); #94 IA-reconcile Phase 1 (`.claude/ia-ocr-94-plan.md`);
+#1770/#1792/#1798 Live-Follow (`.claude/live-follow-1770-plan.md`); #1791/#1790/#1789 set-list sharing
+(`.claude/setlist-sharing-1790-1791-plan.md`); #1786 public list-sort (`.claude/public-list-sort-1786-plan.md`);
+#1785 musicians dedup (`.claude/musicians-dedup-1785-plan.md`); #1783 duplicate-song; #1788
+ProPresenter CSP-safe export; QR → CueRCode (`.claude/qr-cuercode-integration-plan.md`). Full sweep
+spec: `.claude/final-docs-sweep-91-plan.md`.
+
+**Header-fact refresh (2026-06-21 "fact-refresh" precedent — counted from live source this date):**
+- `schema.sql` now has **152** `CREATE TABLE` statements (was "~131"/"142") — 150 distinct `tbl*` names.
+- API surface: **~294 dispatched actions / 275 documented OpenAPI paths** across the 4 dispatchers
+  (was "70+"/"195"). The 19-path gap is exactly the 20 legacy `manage/editor/api.php` actions,
+  undocumented since merge-base — a pre-existing hole, not a branch regression (filed for
+  consideration under #91: "document or retire the legacy editor API surface").
+- **11 new migration cards** pending on each environment; the operator runs them via
+  `/manage/setup-database`: `migrate-publication-metadata`, `migrate-publishers-entity`,
+  `migrate-reconcile-credit-name-bytes`, `migrate-musician-duplicates-dismissed`,
+  `migrate-add-gating-facts-and-licence-types`, `migrate-derive-rights-facts`,
+  `migrate-consolidate-org-licences`, `migrate-live-follow-quick-capable`,
+  `migrate-setlist-share-scope`, `migrate-print-template-layouts`, `migrate-ia-reconcile`.
+- **Deploy-time blocker (non-blocking to build):** QR is dormant until an iHymns→CueRCode API key is
+  pasted on `/manage/configuration` (rule #38). `content_gating_enabled` stays `'0'`.
+
+**Suites at sweep close: 153 PHP / 56 node, all green** (docs don't move the counts).
+
+**Version is now `1.5000.0`** (owner-directed major bump; supersedes the `0.4001.0` claims still
+written at the historical §"What Is iHymns?" and the 07-30 consolidation note below — read
+`includes/infoAppVer.php` as the authority, per the fact-refresh precedent).
+
+---
+
 ## 📌 Continuation note — 2026-08-11 (#1786 Option B — public multi-level list-sort, BUILD pass done, NOT YET PUSHED)
 
 **#1786 Option B (the PUBLIC-app half of "every table/list should be user-sortable, multi-level") —
