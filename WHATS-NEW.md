@@ -10,6 +10,18 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 0.5150.0 — 12 August 2026
+
+- **Your church's logo on printed song sheets** — Organisations can now upload
+  their logo in several shapes (a main version, wide and stacked layouts, a
+  symbol on its own, and more) and add it to a print template, so your printed
+  song sheets and PDFs can carry your own branding.
+- **Missing Numbers now highlights hidden songs** — When you check a songbook
+  for gaps, any number whose only song has been deleted is now flagged, with a
+  quick link to review it — so a number isn't quietly held by a hidden song.
+- **Clearer, safer help** — The in-app Help &amp; Guides have been rewritten in
+  plain, everyday language, with less behind-the-scenes technical detail.
+
 ## 0.5100.0 — 12 August 2026
 
 - **A clearer admin area** — If you help look after songs, songbooks or live

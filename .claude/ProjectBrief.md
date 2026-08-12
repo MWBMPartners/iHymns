@@ -113,7 +113,7 @@ spec: `.claude/final-docs-sweep-91-plan.md`.
 
 **Suites at sweep close: 153 PHP / 56 node, all green** (docs don't move the counts).
 
-**Version is now `0.5100.0`** (owner-directed significant minor bump; supersedes the `0.4001.0` claims still
+**Version is now `0.5150.0`** (owner-directed minor bump; supersedes the `0.4001.0` claims still
 written at the historical §"What Is iHymns?" and the 07-30 consolidation note below — read
 `includes/infoAppVer.php` as the authority, per the fact-refresh precedent).
 

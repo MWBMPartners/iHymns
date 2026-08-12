@@ -94,11 +94,18 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      renamed-docroot migration hotfix #1816, three post-merge CI fixes, the
      plain-language What's New rework #1818, and the admin sidebar reorg +
      plain-English relabel of the Manage area #1822) — a modest minor bump for
-     a smaller but real amount of further work. */
+     a smaller but real amount of further work.
+   - 0.5100.0 -> 0.5150.0 for the org-branding round on the same branch (#1830
+     per-organisation logos for Print Templates — a brand-asset store, a
+     dedicated hardened SVG sanitiser, a public image endpoint, and a print
+     `logo` block that also renders in the server PDF — plus the #1829 Missing
+     Numbers hidden-held highlight and an owner-directed plain-English +
+     minimal-disclosure rewrite of the in-app Help/Guides) — a minor bump sized
+     to a real feature plus the docs pass. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5100.0";
+$app["Application"]["Version"]["Number"] = "0.5150.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
