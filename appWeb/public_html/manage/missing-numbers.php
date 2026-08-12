@@ -55,12 +55,16 @@ try {
 
         $result = $songData->getMissingSongNumbers($id);
         $reports[] = [
-            'id'             => $id,
-            'name'           => $name,
-            'max_number'     => (int)($result['maxNumber']     ?? 0),
-            'total_existing' => (int)($result['totalExisting'] ?? 0),
-            'missing'        => array_map('intval', $result['missing'] ?? []),
-            'missing_count'  => count($result['missing'] ?? []),
+            'id'                => $id,
+            'name'              => $name,
+            'max_number'        => (int)($result['maxNumber']     ?? 0),
+            'total_existing'    => (int)($result['totalExisting'] ?? 0),
+            'missing'           => array_map('intval', $result['missing'] ?? []),
+            'missing_count'     => count($result['missing'] ?? []),
+            /* #1829 — numbers that look present but whose only song is hidden
+               (soft-deleted); surfaced so a curator can restore or purge. */
+            'hidden_held'       => array_map('intval', $result['hiddenHeld'] ?? []),
+            'hidden_held_count' => (int)($result['hiddenHeldCount'] ?? 0),
         ];
     }
 } catch (\Throwable $e) {
@@ -93,9 +97,11 @@ function groupGapRuns(array $nums): array
 $requestedBook = $_GET['songbook'] ?? '';
 $grandMissing  = 0;
 $grandPresent  = 0;
+$grandHidden   = 0;   // #1829 — numbers held only by a hidden (deleted) song
 foreach ($reports as $r) {
     $grandMissing += $r['missing_count'];
     $grandPresent += $r['total_existing'];
+    $grandHidden  += $r['hidden_held_count'];
 }
 
 ?>
@@ -129,23 +135,34 @@ foreach ($reports as $r) {
 
         <!-- Summary cards -->
         <div class="row g-3 mb-4">
-            <div class="col-sm-4">
+            <div class="col-6 col-lg-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Songbooks audited</div>
                     <div class="h4 mb-0"><?= number_format(count($reports)) ?></div>
                 </div>
             </div>
-            <div class="col-sm-4">
+            <div class="col-6 col-lg-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Total songs present</div>
                     <div class="h4 mb-0"><?= number_format($grandPresent) ?></div>
                 </div>
             </div>
-            <div class="col-sm-4">
+            <div class="col-6 col-lg-3">
                 <div class="card-admin">
                     <div class="text-muted text-uppercase small">Total gaps</div>
                     <div class="h4 mb-0 <?= $grandMissing > 0 ? 'text-warning' : 'text-success' ?>">
                         <?= number_format($grandMissing) ?>
+                    </div>
+                </div>
+            </div>
+            <!-- #1829 — numbers that look present but are held only by a hidden
+                 (deleted) song; a curator should review whether to restore or
+                 purge each so its number is genuinely free. -->
+            <div class="col-6 col-lg-3">
+                <div class="card-admin">
+                    <div class="text-muted text-uppercase small">Held by hidden songs</div>
+                    <div class="h4 mb-0 <?= $grandHidden > 0 ? 'text-warning-emphasis' : '' ?>">
+                        <?= number_format($grandHidden) ?>
                     </div>
                 </div>
             </div>
@@ -186,6 +203,13 @@ foreach ($reports as $r) {
                                     <?= number_format($r['total_existing']) ?> present ·
                                     highest #<?= number_format($r['max_number']) ?>
                                 </span>
+                                <?php if ($r['hidden_held_count'] > 0): ?>
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle me-2"
+                                          title="Numbers held only by a hidden (deleted) song">
+                                        <i class="bi bi-eye-slash me-1" aria-hidden="true"></i>
+                                        <?= number_format($r['hidden_held_count']) ?> hidden
+                                    </span>
+                                <?php endif; ?>
                                 <span class="badge <?= $r['missing_count'] > 0 ? 'bg-warning text-dark' : 'bg-success' ?>">
                                     <?= $r['missing_count'] > 0
                                         ? number_format($r['missing_count']) . ' missing'
@@ -246,6 +270,38 @@ foreach ($reports as $r) {
                                                 <?php endforeach; ?>
                                             </tbody>
                                         </table>
+                                    </div>
+                                <?php endif; ?>
+
+                                <?php /* #1829 — numbers held only by a hidden (deleted) song. Shown
+                                         whether or not the book has gaps: a book can be "complete"
+                                         yet still have a number quietly occupied by a hidden song. */ ?>
+                                <?php if (!empty($r['hidden_held'])): ?>
+                                    <div class="rounded border border-warning-subtle bg-warning-subtle text-warning-emphasis p-3 small mt-3 mb-0 d-flex flex-wrap gap-2 justify-content-between align-items-start" role="status">
+                                        <div>
+                                            <i class="bi bi-eye-slash me-1" aria-hidden="true"></i>
+                                            <strong>Held by hidden songs.</strong>
+                                            These numbers look present, but the only song on each has
+                                            been deleted (hidden), so the number isn't offered as a
+                                            gap. Restore the song, or purge it to genuinely free the
+                                            number.
+                                            <div class="mt-2">
+                                                <?php foreach (groupGapRuns($r['hidden_held']) as $hRun):
+                                                    $hFirst = $hRun[0];
+                                                    $hLast  = $hRun[count($hRun) - 1];
+                                                    $hLabel = ($hFirst === $hLast)
+                                                        ? '#' . $hFirst
+                                                        : '#' . $hFirst . '–#' . $hLast;
+                                                ?>
+                                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle me-1 mb-1"><?= htmlspecialchars($hLabel) ?></span>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                        <a class="btn btn-sm btn-outline-warning flex-shrink-0"
+                                           href="/manage/deleted-songs">
+                                            <i class="bi bi-trash me-1" aria-hidden="true"></i>
+                                            Review in Deleted Songs
+                                        </a>
                                     </div>
                                 <?php endif; ?>
                             </div>

@@ -4004,58 +4004,87 @@ class SongData
            occupancy is likewise PHYSICAL regardless of whether the book is
            disabled — the same reasoning as the soft-delete marker
            immediately above, one predicate over. */
+        /* Classify each occupied number as live vs hidden-only (#1829). A
+           soft-deleted song still OCCUPIES its slot (so it is never offered as
+           a gap — see the note above), but a curator can't otherwise SEE that a
+           "present" number is really held by a hidden song. So per number we
+           also count how many songs on it are LIVE (not soft-deleted).
+
+           `songVisibleSql($db, '')` is the ONE gated soft-delete predicate
+           (#1694): `IsDeleted = 0` once migrated, a harmless `1=1` before then —
+           so on an un-migrated docroot every song counts as live and NOTHING is
+           wrongly flagged as hidden-held (fail-safe: never invent a "hidden"
+           claim we can't prove; rule #28-C shape). It is a hardcoded constant
+           from PHP source (rule #5 clause a), safe to embed. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $liveExpr = songVisibleSql($this->db, '');
+
         $stmt = $this->db->prepare(
-            "SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
+            "SELECT Number,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN {$liveExpr} THEN 1 ELSE 0 END) AS live
+             FROM tblSongs
+             WHERE SongbookAbbr = ?
+             GROUP BY Number
+             ORDER BY Number"
         );
         $stmt->bind_param('s', $songbookId);
         $stmt->execute();
         $result = $stmt->get_result();
 
-        $existing = [];
+        /* Raw `(int)` on Number (NOT normaliseSongNumber()) — we only care which
+           numbered slots are taken, so an unnumbered song (NULL) becomes a
+           harmless 0 the gap scan ignores (it starts at 1). `totalExisting`
+           counts ROWS (physical occupancy, soft-deleted included), matching the
+           long-standing "present" figure on the admin page. */
+        $occupied   = [];   // one entry per DISTINCT occupied number
+        $totalRows  = 0;    // physical row count (== the old totalExisting)
+        $hiddenHeld = [];   // numbers occupied ONLY by soft-deleted song(s)
         while ($row = $result->fetch_assoc()) {
-            /* Raw `(int)` here, NOT normaliseSongNumber() — the one place in
-               this file that is right to differ.
-
-               ELI5: we only care which numbered slots are taken, so a song
-               with no number just becomes a harmless 0.
-
-               `Number` is nullable and NULL casts to 0, which the gap scan
-               below ignores because it starts at 1. Using the null-preserving
-               helper would mean handling null inside max()/array_flip() for no
-               gain. The visible side effect: `totalExisting` counts ROWS, so a
-               book with unnumbered entries reports more "present" than it has
-               occupied slots — and, because this query is deliberately
-               unfiltered, soft-deleted songs count too. Both are consistent
-               with what this method measures (physical occupancy), but neither
-               is what "present" sounds like on the admin page. */
-            $existing[] = (int)$row['Number'];
+            $num   = (int)$row['Number'];
+            $total = (int)$row['total'];
+            $live  = (int)$row['live'];
+            $totalRows += $total;
+            $occupied[] = $num;
+            /* Held-by-hidden ONLY when EVERY song on the number is soft-deleted
+               (live === 0). One live song on the same number keeps it an
+               ordinary present slot — never flagged. Slot 0 (unnumbered) is not
+               a real number and is excluded. */
+            if ($num >= 1 && $live === 0) {
+                $hiddenHeld[] = $num;
+            }
         }
         $stmt->close();
 
-        if (empty($existing)) {
+        if (empty($occupied)) {
             return [
-                'missing'       => [],
-                'maxNumber'     => 0,
-                'totalExisting' => 0,
-                'songbook'      => $songbookId,
+                'missing'         => [],
+                'maxNumber'       => 0,
+                'totalExisting'   => 0,
+                'hiddenHeld'      => [],
+                'hiddenHeldCount' => 0,
+                'songbook'        => $songbookId,
             ];
         }
 
-        $maxNumber = max($existing);
-        $existingSet = array_flip($existing);
-        $missing = [];
+        $maxNumber   = max($occupied);
+        $occupiedSet = array_flip($occupied);
+        $missing     = [];
 
         for ($i = 1; $i <= $maxNumber; $i++) {
-            if (!isset($existingSet[$i])) {
+            if (!isset($occupiedSet[$i])) {
                 $missing[] = $i;
             }
         }
+        sort($hiddenHeld);
 
         return [
-            'missing'       => $missing,
-            'maxNumber'     => $maxNumber,
-            'totalExisting' => count($existing),
-            'songbook'      => $songbookId,
+            'missing'         => $missing,
+            'maxNumber'       => $maxNumber,
+            'totalExisting'   => $totalRows,
+            'hiddenHeld'      => $hiddenHeld,
+            'hiddenHeldCount' => count($hiddenHeld),
+            'songbook'        => $songbookId,
         ];
     }
 
