@@ -194,6 +194,23 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
         return true;
     }
 
+    /* 4. ANONYMOUS home-route load: the client optimistically fetches the
+       signed-in user's saved preferences (`list_sorts` via the user_settings
+       endpoint), and the server CORRECTLY answers 401 for a visitor with no
+       session — expected, not a defect. The app catches it and falls back to
+       device-local defaults; window.iHymnsApp still constructs and no
+       pageerror is thrown (the browser logs the 401 as a resource-load
+       console error regardless of the app catching it). This smoke is ALWAYS
+       anonymous — it never logs in — so user_settings will ALWAYS 401 here;
+       allow-listing it hides no regression THIS smoke could otherwise catch
+       (a future authenticated smoke would be its own test). Scoped to the
+       user_settings endpoint AND status 401 specifically, so a 401 on any
+       OTHER endpoint — a genuine auth/session regression — still fails.
+       https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401 */
+    if (/Failed to load resource:.*\b401\b/.test(text) && /[?&]action=user_settings\b/.test(url)) {
+        return true;
+    }
+
     return false;
 }
 
