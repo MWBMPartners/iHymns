@@ -28,6 +28,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    leader-idle precedence chain (LiveIdleTimeoutMins / EnforceIdleTimeout);
    same column-existence-tolerant posture as placeColumnExists() above. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+/* #1830 — the ONE org-logo core (kind registry + reads + the shared admin
+   card renderer); org_logo_admin.php (validate/stage/upsert/delete) is
+   required transitively for the logo_upload/_remove/_toggle POST actions. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -421,6 +425,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'user_id' => $userId,
                 ]);
                 $success = 'Member removed.';
+                break;
+            }
+
+            /* #1830 — organisation logos. Same field-name shape as the
+               member cases above (org_id/kind hidden fields), a classic
+               full-page form POST under this page's own validateCsrf()
+               gate (rule #29 doesn't apply — no long-lived AJAX here). */
+            case 'logo_upload': {
+                $orgId = (int)($_POST['org_id'] ?? 0);
+                $kind  = (string)($_POST['kind'] ?? '');
+                if ($orgId <= 0 || !in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
+                $file    = $_FILES['logo_file'] ?? null;
+                $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+                if ($fileErr !== UPLOAD_ERR_OK) {
+                    $error = in_array($fileErr, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                        ? 'That file is too large for a logo.'
+                        : 'Please choose a logo file to upload.';
+                    break;
+                }
+                try {
+                    $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
+                    orgLogoUpsert($db, $orgId, $kind, 'default', $staged, $altText, (int)($currentUser['id'] ?? 0));
+                    logActivity('org.logo_upload', 'organisation', (string)$orgId, [
+                        'kind' => $kind, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                    ]);
+                    $success = 'Logo uploaded.';
+                } catch (\RuntimeException $e) {
+                    $error = $e->getMessage(); // plain-English, safe to show verbatim (§4.4)
+                }
+                break;
+            }
+
+            case 'logo_remove': {
+                $orgId = (int)($_POST['org_id'] ?? 0);
+                $kind  = (string)($_POST['kind'] ?? '');
+                if ($orgId <= 0 || !in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                orgLogoDelete($db, $orgId, $kind, 'default');
+                logActivity('org.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind]);
+                $success = 'Logo removed.';
+                break;
+            }
+
+            case 'logo_toggle': {
+                $orgId = (int)($_POST['org_id'] ?? 0);
+                $kind  = (string)($_POST['kind'] ?? '');
+                if ($orgId <= 0 || !in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                $active = !empty($_POST['active']);
+                orgLogoSetActive($db, $orgId, $kind, 'default', $active);
+                logActivity('org.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
+                $success = $active ? 'Logo shown again.' : 'Logo hidden.';
                 break;
             }
 
@@ -843,6 +907,9 @@ $csrf = csrfToken();
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>
             </form>
+
+            <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
+                  echo orgLogoRenderAdminCard($db, (int)$editOrg['Id'], $csrf); ?>
 
             <div class="row g-3">
                 <div class="col-md-7">

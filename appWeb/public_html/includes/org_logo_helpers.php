@@ -260,3 +260,143 @@ function orgLogoListForOrg(\mysqli $db, int $orgId): array
     $stmt->close();
     return $rows;
 }
+
+/**
+ * Render the "Organisation logos" admin card — ONE markup source shared by
+ * `manage/organisations.php` (system admins) and `manage/my-organisations.php`
+ * (org admins), §7.1 of the plan: "the way `organisation_validation.php`
+ * already serves both" pages. Both callers already gated the CURRENT
+ * viewer's right to act on `$orgId` before calling this (`manage_organisations`
+ * / `manage_own_organisation` + the row-level `$canActOnOrg()` closure) — this
+ * function renders unconditional upload/remove/toggle CONTROLS, it does not
+ * re-check permission itself.
+ *
+ * Renders '' (nothing) when `orgLogoTableExists()` is false — the same
+ * `placeColumnExists()`-style dormancy posture both pages already use for
+ * other optional schema (rule #19): a pre-migration install shows no card
+ * at all, never a broken one.
+ *
+ * A row WITHOUT an upload renders collapsed (label + description + Add);
+ * a row WITH one expands to a preview (through `/org-logo.php…` — the
+ * never-inline rule applies to the ADMIN PREVIEW too, no `<svg>` markup and
+ * no data-URI from the DB bytes is ever printed into this admin page) plus
+ * Replace / Show-Hide / Remove controls. Copy is the plan's §7.2 quotes
+ * verbatim (`.claude/admin-plain-english.md` — plain English, minimal
+ * disclosure, no table/endpoint/sanitiser talk beyond the one upload hint).
+ *
+ * All three POST actions this card's forms submit — `logo_upload` /
+ * `logo_remove` / `logo_toggle` — share the SAME field names on both pages:
+ * `csrf_token`, `action`, `org_id`, `kind` (+ `logo_file`/`alt_text` for
+ * upload, `active` for toggle). Each page's own handler validates `$kind`
+ * against `ihymnsOrgLogoKindKeys()` again server-side before touching the
+ * database (rule #5 — never trust a hidden form field alone).
+ *
+ * @param  string $csrfToken  The page's own `csrfToken()` value.
+ */
+function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): string
+{
+    if (!orgLogoTableExists($db) || $orgId <= 0) {
+        return '';
+    }
+
+    /* Bare, standalone string literals (never embedded inside a larger HTML
+       string) — tests/php/test-orphan-inventory.php's dispatch-caller scan
+       matches a PHP string literal's FULL content against the known action
+       names it discovered from the two pages' `switch ($action)` blocks;
+       an action name baked into a longer literal like
+       `'<input … value="logo_upload">'` is invisible to that scan (its
+       token content is the whole tag, not the bare name), which is exactly
+       what an EARLIER version of this function did and which the guard
+       correctly flagged as three caller-less actions. Keeping these as
+       their own assignment is what makes the emitted forms discoverable. */
+    $actUpload = 'logo_upload';
+    $actRemove = 'logo_remove';
+    $actToggle = 'logo_toggle';
+
+    $existingByKind = [];
+    foreach (orgLogoListForOrg($db, $orgId) as $row) {
+        if ($row['Variant'] === 'default') {
+            $existingByKind[$row['Kind']] = $row;
+        }
+    }
+
+    $csrfEsc = htmlspecialchars($csrfToken, ENT_QUOTES);
+    $rowsHtml = '';
+
+    foreach (IHYMNS_ORG_LOGO_KINDS as $kind => $def) {
+        [$label, $description] = $def;
+        $kindEsc  = htmlspecialchars($kind, ENT_QUOTES);
+        $labelEsc = htmlspecialchars($label, ENT_QUOTES);
+        $descEsc  = htmlspecialchars($description, ENT_QUOTES);
+        $existing = $existingByKind[$kind] ?? null;
+
+        $hiddenFields = '<input type="hidden" name="csrf_token" value="' . $csrfEsc . '">'
+            . '<input type="hidden" name="org_id" value="' . $orgId . '">'
+            . '<input type="hidden" name="kind" value="' . $kindEsc . '">';
+
+        if ($existing === null) {
+            /* Collapsed row — label + description + a single "Add" upload form. */
+            $rowsHtml .= '<div class="org-logo-row border rounded p-2 mb-2">'
+                . '<div class="d-flex justify-content-between align-items-center flex-wrap gap-2">'
+                . '<div><span class="fw-semibold small">' . $labelEsc . '</span>'
+                . '<span class="text-muted small ms-1">— ' . $descEsc . '</span></div>'
+                . '<form method="POST" enctype="multipart/form-data" class="d-flex gap-2 align-items-center flex-wrap">'
+                . $hiddenFields
+                . '<input type="hidden" name="action" value="' . $actUpload . '">'
+                . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+                . ' class="form-control form-control-sm" style="max-width:220px;" required>'
+                . '<button type="submit" class="btn btn-sm btn-amber-solid">Add</button>'
+                . '</form></div></div>';
+            continue;
+        }
+
+        /* Expanded row — preview (through the ONE serving endpoint — never
+           inlined) + alt text + Replace / Show-Hide / Remove. */
+        $sha       = (string)$existing['Sha256'];
+        $preview   = '/org-logo.php?org=' . $orgId . '&kind=' . rawurlencode($kind) . '&v=' . rawurlencode($sha);
+        $previewEsc = htmlspecialchars($preview, ENT_QUOTES);
+        $altEsc    = htmlspecialchars((string)($existing['AltText'] ?? ''), ENT_QUOTES);
+        $isActive  = ((int)$existing['IsActive'] === 1);
+        $toggleTo  = $isActive ? '0' : '1';
+        $toggleLabel = $isActive ? 'Hide' : 'Show';
+        $confirmRemove = "Remove the {$labelEsc} logo?";
+
+        $rowsHtml .= '<div class="org-logo-row border rounded p-2 mb-2">'
+            . '<div class="d-flex align-items-start gap-3 flex-wrap">'
+            . '<img src="' . $previewEsc . '" alt="' . $labelEsc . ' preview"'
+            . ' style="max-height:60px;max-width:120px;object-fit:contain;background:#fff;border-radius:4px;padding:4px;">'
+            . '<div class="flex-grow-1">'
+            . '<div class="fw-semibold small">' . $labelEsc . ($isActive ? '' : ' <span class="badge bg-secondary">hidden</span>') . '</div>'
+            . '<div class="text-muted small mb-1">' . $descEsc . '</div>'
+            . '<form method="POST" enctype="multipart/form-data" class="d-flex flex-wrap gap-2 align-items-center mb-1">'
+            . $hiddenFields
+            . '<input type="hidden" name="action" value="' . $actUpload . '">'
+            . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+            . ' class="form-control form-control-sm" style="max-width:200px;" required>'
+            . '<input type="text" name="alt_text" value="' . $altEsc . '" placeholder="Alt text (optional)"'
+            . ' class="form-control form-control-sm" style="max-width:180px;">'
+            . '<button type="submit" class="btn btn-sm btn-outline-secondary">Replace</button>'
+            . '</form>'
+            . '<div class="d-flex gap-2">'
+            . '<form method="POST" class="d-inline">' . $hiddenFields
+            . '<input type="hidden" name="action" value="' . $actToggle . '">'
+            . '<input type="hidden" name="active" value="' . $toggleTo . '">'
+            . '<button type="submit" class="btn btn-sm btn-outline-secondary">' . $toggleLabel . '</button></form>'
+            . '<form method="POST" class="d-inline" onsubmit="return confirm(' . json_encode($confirmRemove) . ');">' . $hiddenFields
+            . '<input type="hidden" name="action" value="' . $actRemove . '">'
+            . '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>'
+            . '</div></div></div></div>';
+    }
+
+    return '<div class="card-admin p-3 mb-3 org-logo-card">'
+        . '<h3 class="h6 mb-2"><i class="bi bi-image me-2"></i>Organisation logos</h3>'
+        . '<p class="text-muted small mb-2">Upload your organisation\'s logo so printed song sheets '
+        . 'can carry your branding. You can add several shapes — a main logo, wide and stacked layouts, '
+        . 'a symbol on its own, single-colour and light-on-dark versions — and printouts will use the '
+        . 'best one available.</p>'
+        . '<p class="text-muted small mb-3">SVG files look sharpest in print; PNG also works. For your '
+        . 'safety we tidy SVG files on upload, so decorative effects like animation or embedded pictures '
+        . "won't be kept.</p>"
+        . $rowsHtml
+        . '</div>';
+}

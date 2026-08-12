@@ -6,26 +6,38 @@ declare(strict_types=1);
  * iHymns — Organisation-logo surfaces wiring guard (#1830)
  *
  * ELI5: derives EVERY file in the tree that talks about organisation logos
- * (mentions `org-logo.php` or `tblOrganisationLogos`) and checks the
- * load-bearing safety rules from `.claude/org-logos-1830-plan.md` §9.2 hold
- * across every one of them — never a typed list of "the files to check"
- * (rule #34), so a NEW file that starts touching logos is covered for free.
+ * and checks the load-bearing safety rules from
+ * `.claude/org-logos-1830-plan.md` §9.2 hold across every one of them —
+ * never a typed list of "the files to check" (rule #34), so a NEW file that
+ * starts touching logos is covered for free.
+ *
+ * DERIVATION FINGERPRINT — CAUGHT ITS OWN UNDER-REPORT BEFORE COMMITTING
+ * (rule #34's "a scanner that under-reports is worse than no scanner"): the
+ * first draft anchored ONLY on the two literal strings `org-logo.php` and
+ * `tblOrganisationLogos`. `manage/organisations.php`/`manage/my-
+ * organisations.php` (commit 5's admin UI) call `orgLogoRenderAdminCard()`/
+ * `orgLogoValidateAndStage()`/`ihymnsOrgLogoKindKeys()` — but never spell
+ * out either literal string anywhere in their own source. Actually counting
+ * `$mentioning` (not just eyeballing that the guard passed) showed 5 files
+ * where a healthy commit 5 should show 7 — both admin pages were SILENTLY
+ * never scanned. Fixed by ALSO matching the `orgLogo`/`OrgLogo` camelCase
+ * function-name family and the `ORG_LOGO_` constant-name family, which
+ * catches every symbol this feature exports regardless of which literal
+ * string a given caller happens to spell out.
  *
  * GROWS ACROSS TWO COMMITS (by design, per the plan's §11 commit table):
- * this file lands here (commit 4, alongside `org-logo.php`) with every
- * check that's ALREADY meaningful — (a) never-inline-SVG, (b) the serving
- * endpoint's own header/delegation shape, (d) the sanitiser is actually
- * wired into the write core. Checks (c) upload-handler wiring, (e) the
- * sanitiser-profile + PDF-resolver PAIR, and (f) the kind-registry
- * PHP<->JS lockstep name surfaces that don't exist until commits 5/6 — each
- * is written so it is a VACUOUS PASS today (nothing to check yet) but
- * SELF-ACTIVATES the moment the later commit adds the file it looks for,
- * rather than needing a second guard bolted on later. Commit 7 adds this
- * file's own mutation-proof notes for (c)/(e)/(f) once there is something
- * real to mutate.
+ * this file landed in commit 4 (alongside `org-logo.php`) with checks
+ * (a) never-inline-SVG, (b) the serving endpoint's own header/delegation
+ * shape, and (d) the sanitiser wired into the write core — all provable
+ * then. Checks (c) upload-handler wiring, (e) the sanitiser-profile +
+ * PDF-resolver PAIR, and (f) the kind-registry PHP<->JS lockstep are
+ * written to be a VACUOUS PASS until the file they look for exists, then
+ * SELF-ACTIVATE — (c) started firing for real the moment commit 5 added a
+ * `logo_upload` POST action, proven below; (e)/(f) remain vacuous until
+ * commit 6.
  *
- * MUTATION-PROVEN (rule #34) for every check active as of commit 4 — each
- * was broken on purpose in a scratch copy, confirmed red, reverted:
+ * MUTATION-PROVEN (rule #34) — each broken on purpose in a scratch copy,
+ * confirmed red, reverted:
  *   - Added a raw `echo $row['ContentOriginal']`-shaped line to org-logo.php
  *     -> RED ("org-logo.php never reads ContentOriginal").
  *   - Removed the `Content-Security-Policy` header line from org-logo.php
@@ -37,6 +49,11 @@ declare(strict_types=1);
  *     org_logo_admin.php -> RED ("org_logo_admin.php requires svg_sanitizer.php").
  *   - Removed the `ihymnsSanitizeSvg(` call from org_logo_admin.php ->
  *     RED ("org_logo_admin.php calls ihymnsSanitizeSvg() on the SVG branch").
+ *   - (commit 5) Replaced `manage/organisations.php`'s `logo_upload` case's
+ *     `orgLogoValidateAndStage()` call with a hand-built staged array
+ *     (bypassing validation entirely) -> RED ("has a 'logo_upload' action
+ *     that doesn't call orgLogoValidateAndStage()… a second, unvalidated
+ *     upload path").
  *   Each restored -> green.
  *
  *   php tests/php/test-org-logo-surfaces.php
@@ -92,16 +109,31 @@ if (count($allFiles) < 50) {
     exit(1);
 }
 
-/* ---- Derive every file mentioning org-logo.php or tblOrganisationLogos (never a typed list) ---- */
+/* ---- Derive every file that touches organisation logos AT ALL (never a
+   typed list of "the files to check"). Four independent fingerprints, ORed
+   — a file can mention the feature WITHOUT ever spelling out the endpoint
+   URL or the table name: manage/organisations.php and
+   manage/my-organisations.php (the admin UI, commit 5) call
+   `orgLogoRenderAdminCard()`/`orgLogoValidateAndStage()`/… and validate
+   against `ihymnsOrgLogoKindKeys()`, but never literally write
+   'org-logo.php' or 'tblOrganisationLogos' anywhere in their own source —
+   an early draft of this guard anchored on only those two strings and
+   would have silently never scanned either admin page (caught by actually
+   grep'ing for them before trusting the anchor, per rule #34's "prove a
+   scanner isn't under-reporting" lesson). `orgLogo`/`OrgLogo` catches every
+   camelCase function name in this family (orgLogoUpsert, orgLogoDelete,
+   ihymnsOrgLogoResolveKind, …); `ORG_LOGO_` catches every UPPER_SNAKE
+   constant (IHYMNS_ORG_LOGO_KINDS, …). */
 $mentioning = [];
 foreach ($allFiles as $path) {
     $raw = (string)file_get_contents($path);
-    if (str_contains($raw, 'org-logo.php') || str_contains($raw, 'tblOrganisationLogos')) {
+    if (str_contains($raw, 'org-logo.php') || str_contains($raw, 'tblOrganisationLogos')
+        || str_contains($raw, 'orgLogo') || str_contains($raw, 'OrgLogo') || str_contains($raw, 'ORG_LOGO_')) {
         $mentioning[$path] = $raw;
     }
 }
 if (count($mentioning) < 3) {
-    fwrite(STDERR, "FATAL: only " . count($mentioning) . " file(s) mention org-logo.php/tblOrganisationLogos — parser anchor moved, or the feature's own files are missing.\n");
+    fwrite(STDERR, "FATAL: only " . count($mentioning) . " file(s) mention the organisation-logo feature — parser anchor moved, or the feature's own files are missing.\n");
     exit(1);
 }
 
