@@ -322,6 +322,13 @@ body:has(.navbar-admin) {
     letter-spacing: 0.04em;
     text-decoration: none;
     color: var(--text-secondary);
+    /* Bootstrap's base `.btn` sets `text-align: center`. It is invisible on the
+       single-line group headings (the label <span> shrinks to fit its one line),
+       but a heading long enough to WRAP — e.g. "Access & Permissions" — then
+       centres its two lines and reads as misaligned next to every other group.
+       Force left alignment so wrapped and single-line headings match. (#1828)
+       https://getbootstrap.com/docs/5.3/components/buttons/ */
+    text-align: left;
 }
 .admin-sidebar-group-toggle:hover,
 .admin-sidebar-group-toggle:focus,
