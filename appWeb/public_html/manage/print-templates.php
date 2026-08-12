@@ -806,7 +806,7 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, renderTemplateBodyHtml, printCss, applyCustomLayout }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, ORG_LOGO_KINDS, renderTemplateBodyHtml, printCss, applyCustomLayout }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
@@ -997,6 +997,13 @@ if ($hasSchema) {
             if (key === 'align') {   // #1767 A — text alignment select
                 const aligns = [['left', 'Left'], ['center', 'Centre'], ['right', 'Right']];
                 const opts = aligns.map(([v, t]) => `<option value="${v}"${value === v ? ' selected' : ''}>${t}</option>`).join('');
+                return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
+                    + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
+            }
+            if (key === 'kind' && type === 'logo') {   // #1830 — which logo shape to render
+                const choices = [['auto', 'Automatic (best available)']]
+                    .concat(Object.entries(ORG_LOGO_KINDS));
+                const opts = choices.map(([v, t]) => `<option value="${esc(v)}"${value === v ? ' selected' : ''}>${esc(t)}</option>`).join('');
                 return `<div class="col-auto"><label class="form-label small mb-0" for="${id}">${esc(lbl)}</label>`
                     + `<select class="form-select form-select-sm" id="${id}" data-opt="${esc(key)}">${opts}</select></div>`;
             }

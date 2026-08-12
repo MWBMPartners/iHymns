@@ -25,16 +25,18 @@ declare(strict_types=1);
  * catches every symbol this feature exports regardless of which literal
  * string a given caller happens to spell out.
  *
- * GROWS ACROSS TWO COMMITS (by design, per the plan's §11 commit table):
+ * GROWS ACROSS THREE COMMITS (by design, per the plan's §11 commit table):
  * this file landed in commit 4 (alongside `org-logo.php`) with checks
  * (a) never-inline-SVG, (b) the serving endpoint's own header/delegation
  * shape, and (d) the sanitiser wired into the write core — all provable
  * then. Checks (c) upload-handler wiring, (e) the sanitiser-profile +
- * PDF-resolver PAIR, and (f) the kind-registry PHP<->JS lockstep are
+ * PDF-resolver PAIR, and (f) the kind-registry PHP<->JS lockstep were
  * written to be a VACUOUS PASS until the file they look for exists, then
- * SELF-ACTIVATE — (c) started firing for real the moment commit 5 added a
- * `logo_upload` POST action, proven below; (e)/(f) remain vacuous until
- * commit 6.
+ * SELF-ACTIVATE: (c) started firing for real the moment commit 5 added a
+ * `logo_upload` POST action; (e) and (f) started firing for real the
+ * moment commit 6 added the `logo` print block (the sanitiser-pattern +
+ * PDF-resolver pair, and the `ORG_LOGO_KINDS` client mirror) — all proven
+ * below, no assertion here has EVER shipped unproven.
  *
  * MUTATION-PROVEN (rule #34) — each broken on purpose in a scratch copy,
  * confirmed red, reverted:
@@ -54,6 +56,19 @@ declare(strict_types=1);
  *     (bypassing validation entirely) -> RED ("has a 'logo_upload' action
  *     that doesn't call orgLogoValidateAndStage()… a second, unvalidated
  *     upload path").
+ *   - (commit 6, check e) Renamed every occurrence of `_pdfInlineOrgLogo`
+ *     in pdf_renderer.php to a name NOT containing that substring (so it
+ *     is genuinely ABSENT, not merely disguised — an earlier attempt that
+ *     renamed it to `_pdfInlineOrgLogoDISABLED` stayed GREEN, because that
+ *     new name still CONTAINS the original as a substring; caught by
+ *     actually re-reading the "red" output instead of trusting the label)
+ *     -> RED ("landed HALF a pair"). Restored -> green. Same mutation in
+ *     the OTHER direction — stripped `/org-logo.php` from BOTH
+ *     html_sanitizer.php profiles while leaving the PDF resolver intact ->
+ *     RED (same message, other half missing). Restored -> green.
+ *   - (commit 6, check f) Reordered `ORG_LOGO_KINDS`' first two keys in
+ *     print.js (`primary`/`full` swapped) -> RED ("Kind-registry drift…
+ *     order drift is ladder drift"). Restored -> green.
  *   Each restored -> green.
  *
  *   php tests/php/test-org-logo-surfaces.php

@@ -62,13 +62,19 @@ declare(strict_types=1);
  * @link https://www.php.net/manual/en/function.require-once.php  top-level require = "pasted in place"
  */
 
+/* #1830 — the ONE kind registry (org_logo_helpers.php is side-effect-free
+   to require, per its own file doc-block's §4.1 contract) so the `logo`
+   block's `kind` option validates against the SAME map the admin card and
+   the serving endpoint use, rather than a second typed kind list here. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
+
 /* The CANONICAL block-type allow-list — mirrors PRINT_BLOCK_TYPES in
    js/modules/print.js. A POSTed block whose `type` isn't here is
    dropped, and only the option keys declared here are kept (so a
    crafted POST cannot persist arbitrary JSON). The value is the
    per-type option schema: key => coercion kind. Keeping this beside
    the JS registry is deliberate — the JS drives the editor UI, this
-   drives the server-side gate; both enumerate the same 9 types. */
+   drives the server-side gate; both enumerate the same 10 types. */
 $BLOCK_SCHEMA = [
     'title'       => [],
     'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool', 'bookAbbr' => 'bool'],   // #1767 B
@@ -82,6 +88,7 @@ $BLOCK_SCHEMA = [
     'text'        => ['content' => 'str'],
     'permalink'   => [],
     'qr'          => ['size' => 'size'],          // #1767 R
+    'logo'        => ['kind' => 'logokind', 'size' => 'size', 'align' => 'align'],  // #1830
     'spacer'      => ['size' => 'size'],
     'pagebreak'   => [],
 ];
@@ -163,6 +170,14 @@ function ptSanitiseBlocks(array $raw, array $schema, array $showIfConditions = [
                     break;
                 case 'align':                                    // #1767 A
                     $row[$key] = in_array($v, ['left', 'center', 'right'], true) ? $v : 'left';
+                    break;
+                case 'logokind':                                  // #1830
+                    /* 'auto' (the default) resolves via the ladder at render
+                       time (§6.3); an explicit kind must be in the ONE
+                       registry or it coerces to 'auto' — never persisted
+                       unvalidated, so a crafted POST can't smuggle a kind
+                       past ihymnsOrgLogoKindKeys(). */
+                    $row[$key] = ($v === 'auto' || in_array($v, ihymnsOrgLogoKindKeys(), true)) ? $v : 'auto';
                     break;
                 case 'str':
                 default:

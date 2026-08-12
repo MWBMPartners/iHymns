@@ -35,8 +35,28 @@ export const PRINT_BLOCK_TYPES = {
     text:        { label: 'Custom text',     options: { content: '' } },
     permalink:   { label: 'Permalink (URL)', options: {} },
     qr:          { label: 'QR code',         options: { size: 'md' } },            /* #1767 R — QR of the permalink, rendered as an <img> to the CueRCode-backed /qr.php */
+    logo:        { label: 'Organisation logo', options: { kind: 'auto', size: 'md', align: 'center' } },  /* #1830 — the org's uploaded branding, rendered as an <img> to /org-logo.php */
     spacer:      { label: 'Spacer',          options: { size: 'md' } },
     pagebreak:   { label: 'Page break',      options: {} },
+};
+
+/* #1830 — client mirror of IHYMNS_ORG_LOGO_KINDS (includes/org_logo_helpers.php).
+   Key order IS the 'auto' fallback ladder (§4.1/§6.3 of the plan) — kept in
+   lockstep with the PHP registry by tests/php/test-org-logo-surfaces.php
+   (order drift is ladder drift, rule #35: a mechanism, not a comment). Only
+   the label is needed client-side (the editor's `kind` picker); the
+   one-line description lives server-side only. */
+export const ORG_LOGO_KINDS = {
+    primary: 'Primary logo',
+    full: 'Combined logo',
+    horizontal: 'Wide layout',
+    stacked: 'Stacked layout',
+    emblem: 'Symbol only',
+    logotype: 'Name only',
+    secondary: 'Alternative logo',
+    monochrome: 'Single-colour',
+    reversed: 'Light-on-dark',
+    favicon: 'App icon',
 };
 
 /* Page-level option registry (#1767 G/V/AB/AM/F) — the SAME pattern as
@@ -357,6 +377,46 @@ function renderBlock(song, block) {
                 + ` onerror="this.style.display='none'">`
                 + `<div class="print-qr-caption">${esc(url)}</div></div>`;
         }
+        case 'logo': {
+            /* #1830 — the organisation's uploaded branding, resolved from the
+               `_printOrgLogos` stash `fetchSong()` attaches (session-cached
+               my_organisations lookup, §6.3). Absent stash (anonymous user,
+               no org, no logos, or the lookup itself failed) -> renders
+               NOTHING, same "graceful absence" principle as subtitle/
+               copyright/identifiers — never a broken-image glyph on a
+               printed handout. */
+            const stash = song._printOrgLogos;
+            if (!stash || !stash.byKind) { return ''; }
+            const available = Object.keys(stash.byKind);
+            const requested = block.kind || 'auto';
+            let kind = null;
+            if (requested === 'auto') {
+                /* The SAME ladder order as ORG_LOGO_KINDS/IHYMNS_ORG_LOGO_KINDS
+                   (rule #35 lockstep, tests/php/test-org-logo-surfaces.php) —
+                   prefer the most complete asset the org actually uploaded. */
+                for (const k of Object.keys(ORG_LOGO_KINDS)) {
+                    if (available.includes(k)) { kind = k; break; }
+                }
+            } else if (available.includes(requested)) {
+                /* An explicit kind resolves to itself or nothing — NEVER a
+                   substituted kind (the author asked for something specific;
+                   silently swapping a different asset behind their back is
+                   worse than absence). */
+                kind = requested;
+            }
+            if (!kind) { return ''; }
+            const meta  = stash.byKind[kind];
+            const align = (block.align === 'left' || block.align === 'right') ? block.align : 'center';
+            const px    = block.size === 'lg' ? 220 : block.size === 'sm' ? 90 : 150;
+            const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+            const src = origin + '/org-logo.php?org=' + encodeURIComponent(stash.orgId)
+                + '&kind=' + encodeURIComponent(kind) + '&v=' + encodeURIComponent(meta.v || '');
+            const alt = meta.alt || (stash.name ? stash.name + ' logo' : 'Organisation logo');
+            return `<div class="print-logo" style="text-align:${align}">`
+                + `<img class="print-logo-img" src="${esc(src)}" alt="${esc(alt)}"`
+                + ` style="max-height:${px}px;max-width:100%"`
+                + ` onerror="this.style.display='none'"></div>`;
+        }
         case 'spacer': {
             const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
             return `<div style="height:${h}"></div>`;
@@ -417,6 +477,8 @@ export function printCss(pageOptions) {
     .print-qr { margin: 0.9em 0; text-align: center; break-inside: avoid; }
     .print-qr-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
     .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cMuted2}; margin-top: 0.3em; word-break: break-all; }
+    .print-logo { margin: 0.9em 0; break-inside: avoid; }
+    .print-logo-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
     .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: ${cFaint}; }
     .print-ccli-notice { margin-top: 1em; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cFaint}; text-align: center; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
@@ -478,6 +540,52 @@ function printDoc(html) {
     return true;
 }
 
+/* #1830 §6.3 — session-cached my_organisations lookup feeding the print
+   `logo` block. Resolves the FIRST org (my_organisations' own `ORDER BY
+   Name ASC`) that has at least one ACTIVE logo, shaped exactly as
+   renderBlock('logo') reads it: `{ orgId, name, byKind: { <kind>: {kind,
+   variant, v, alt, width, height} } }`. A single in-flight/settled promise
+   is shared across every song a print session fetches (single-song print,
+   or a whole set-list/songbook batch) — my_organisations is a small,
+   rarely-changing list, the SAME "effectively static per session" treatment
+   printUsageContextFor() already gives its own per-song lookups (there,
+   keyed per song; here, there is only ever ONE relevant answer per session,
+   so a single shared promise is simpler and cheaper than a Map). Anonymous
+   user / no org / no org with an active logo / a failed fetch all resolve
+   to `null` — renderBlock('logo') then renders nothing (§6.3), never a
+   broken image. NOT reset between print sessions on purpose: the org list a
+   signed-in user belongs to does not change mid-session in any way stale
+   data here could meaningfully harm (worst case: one stale/missing logo
+   until the next full page load, mirroring printUsageContextFor()'s
+   identical trade-off note). */
+let _printOrgLogosPromise = null;
+async function fetchPrintOrgLogos(app) {
+    if (_printOrgLogosPromise) { return _printOrgLogosPromise; }
+    _printOrgLogosPromise = (async () => {
+        try {
+            const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+            const res = await apiFetch(`${base}?action=my_organisations`,
+                { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', auth: true });
+            if (!res.ok) { return null; }
+            const json = await res.json();
+            const orgs = Array.isArray(json.organisations) ? json.organisations : [];
+            for (const org of orgs) {
+                const logos = Array.isArray(org.logos) ? org.logos : [];
+                if (!logos.length) { continue; }
+                const byKind = {};
+                logos.forEach((l) => { if (l && l.kind) { byKind[l.kind] = l; } });
+                if (Object.keys(byKind).length) {
+                    return { orgId: org.id, name: org.name || '', byKind };
+                }
+            }
+            return null; // signed in, but no org (or no org with an active logo)
+        } catch (_e) {
+            return null; // anonymous (401) or any network/parse failure — fail to "no logo"
+        }
+    })();
+    return _printOrgLogosPromise;
+}
+
 export async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
@@ -489,7 +597,13 @@ export async function fetchSong(app, songId) {
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (!res.ok) { return null; }
         const json = await res.json();
-        return json.song || null;
+        const song = json.song || null;
+        if (song) {
+            /* #1830 — stash for renderBlock('logo'); absent when the lookup
+               resolves to null (see fetchPrintOrgLogos()'s doc-block). */
+            song._printOrgLogos = await fetchPrintOrgLogos(app);
+        }
+        return song;
     } catch (_e) { return null; }
 }
 

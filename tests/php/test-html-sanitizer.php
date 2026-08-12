@@ -162,6 +162,36 @@ check('ihymnsSanitizeStyleAttr(): background-image:url(/song-media/123) is ALSO 
     ihymnsSanitizeStyleAttr('color:red;background-image:url(/song-media/123);font-weight:bold') === 'color:red;font-weight:bold');
 
 /* =============================================================================
+ * 5b. #1830 — /org-logo.php?… is the print `logo` block's ONE admitted src
+ *     shape, in BOTH profiles (v1 -> v2 widening). Positive: the exact shape
+ *     print.js's `case 'logo'` emits survives. Negative: a lookalike path
+ *     that merely STARTS the same (an attacker's own endpoint hosted at a
+ *     path prefixed with "org-logo.php" but not actually matching the
+ *     anchored `^/org-logo\.php\?` pattern) does NOT survive, and neither
+ *     does the gated `/song-media/<id>` shape via this new pattern.
+ * ============================================================================= */
+
+foreach (['print', 'layout'] as $profile) {
+    $logoOut = ihymnsSanitizeHtml(
+        '<img src="/org-logo.php?org=7&kind=primary&v=abc123" alt="Church logo" onerror="alert(1)">',
+        $profile
+    );
+    check("[$profile] /org-logo.php?… survives as an <img src> (the ONE new admitted shape, #1830)",
+        str_contains($logoOut, '/org-logo.php?org=7&amp;kind=primary&amp;v=abc123')
+        || str_contains($logoOut, '/org-logo.php?org=7&kind=primary&v=abc123'));
+    check("[$profile] onerror= is still stripped from the logo <img> (unconditional ban unaffected by the new pattern)",
+        !str_contains(strtolower($logoOut), 'onerror'));
+
+    $lookalike = ihymnsSanitizeHtml('<img src="/org-logo.phpEVIL?x=1" alt="x">', $profile);
+    check("[$profile] a lookalike '/org-logo.phpEVIL?…' path (NOT the anchored shape) is dropped",
+        !str_contains($lookalike, 'org-logo.phpEVIL'));
+
+    $gatedOut = ihymnsSanitizeHtml('<img src="/song-media/123" alt="gated">', $profile);
+    check("[$profile] /song-media/123 STILL never matches the widened img_src allow-list (rule M unaffected by #1830)",
+        !str_contains($gatedOut, '/song-media/123'));
+}
+
+/* =============================================================================
  * 6. BLOCKS every mPDF-proprietary tag (default-deny — none of these are in
  *    EITHER profile's allow-list).
  * ============================================================================= */
