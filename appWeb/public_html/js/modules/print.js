@@ -860,6 +860,50 @@ function triggerBlobDownload(blob, filename) {
 }
 
 /**
+ * #1830 §6.4 — relativise the two SERVER-INLINED image endpoints' `<img src>`
+ * in a PDF-bound document's bodyHtml.
+ *
+ * WHY: the print `logo` block (and the #1767 R `qr` block) emit an ABSOLUTE
+ * same-origin src (`window.location.origin + '/org-logo.php?…'`) because the
+ * browser-Print path writes into an `about:blank` popup that has no base URL
+ * for a root-relative path to resolve against. The server-PDF path, though,
+ * re-sanitises the POSTed bodyHtml with `includes/html_sanitizer.php`'s
+ * 'layout' profile, whose `img_src` allow-list admits ONLY root-relative
+ * `#^/qr\.php\?#` / `#^/org-logo\.php\?#` (an absolute URL matches neither and
+ * is dropped) — and `pdf_renderer.php`'s `_pdfInlineQrImage()` /
+ * `_pdfInlineOrgLogo()` key on those same `^/…\.php\?` prefixes. So an
+ * absolute-src block image is stripped BEFORE the inliners ever run, and the
+ * `logo`/`qr` block silently vanishes from the downloaded PDF (it renders only
+ * in browser Print). Rewriting just these two endpoints' same-origin absolute
+ * srcs back to root-relative is exactly the shape both the sanitiser and the
+ * inliners already expect — it makes the already-built `_pdfInline*` resolvers
+ * reachable for block images, which is what §6.4 of the plan intends.
+ *
+ * TARGETED, never a blanket `origin` strip: a `permalink` block and the `qr`
+ * caption show the FULL absolute URL as visible TEXT (not an `src`), and that
+ * must stay untouched — so the match is anchored on `src="` + the exact origin
+ * + one of the two endpoint paths only.
+ *
+ * Pure + exported for `tests/test-print-pdf-img-src.js` (rule #34 — a mutation-
+ * proven guard, not a comment). Browser Print keeps absolute URLs; only the
+ * PDF payload is rewritten (in `downloadPrintPdf()` below, the single choke
+ * point both PDF builders funnel through).
+ *
+ * @param {string} html    A document's bodyHtml (as the browser rendered it).
+ * @param {string} origin  `window.location.origin` for this session.
+ * @returns {string} The bodyHtml with same-origin /qr.php + /org-logo.php img
+ *          srcs relativised; unchanged when `html`/`origin` is empty.
+ */
+export function pdfRelativiseServerImgSrc(html, origin) {
+    if (typeof html !== 'string' || !origin) { return html; }
+    const escOrigin = origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return html.replace(
+        new RegExp('(src=")' + escOrigin + '(/(?:qr|org-logo)\\.php\\?)', 'g'),
+        '$1$2'
+    );
+}
+
+/**
  * #1767 remainder P4/P6 — POST a print-pdf.php request body (`mode`,
  * `documents`, `css`, `pageOptions`, `filename`, `copies?`) to the
  * server-PDF endpoint and download the resulting file. THE ONE POST +
@@ -882,6 +926,23 @@ function triggerBlobDownload(blob, filename) {
  *          failure (the caller has already been toasted either way).
  */
 export async function downloadPrintPdf(app, payload) {
+    /* #1830 §6.4 — relativise the server-inlined image endpoints' srcs in the
+       PDF payload so a `logo`/`qr` block survives the 'layout' sanitiser and
+       reaches the PDF inliners (see pdfRelativiseServerImgSrc()'s doc-block).
+       Done HERE — the one choke point both PDF builders (downloadSongPdf,
+       SetList._downloadSetListPdf) funnel through — so neither can forget it. */
+    const _origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+    if (_origin && payload && Array.isArray(payload.documents)) {
+        payload = {
+            ...payload,
+            documents: payload.documents.map((d) => (
+                d && typeof d.bodyHtml === 'string'
+                    ? { ...d, bodyHtml: pdfRelativiseServerImgSrc(d.bodyHtml, _origin) }
+                    : d
+            )),
+        };
+    }
+
     app.showToast?.('Building PDF…', 'info', 2500);
 
     let res;

@@ -59,7 +59,11 @@ migration deploy-path hotfix, three post-merge CI fixes, a plain-language rewrit
   (the schema, endpoint and alt text already carry everything they'll need). Ships with a
   mutation-proven functional truth table for the sanitiser (`tests/php/test-svg-sanitizer.php`) and a
   tree-derived wiring guard (`tests/php/test-org-logo-surfaces.php`) that bans any surface from
-  inlining SVG or reading the dormant unsanitised original.
+  inlining SVG or reading the dormant unsanitised original. The `logo` block renders in **both** the
+  browser Print dialog **and** the downloadable server PDF — the PDF payload relativises the block's
+  same-origin image address so it survives the server's HTML safety filter and is inlined as bytes
+  (this also fixes the same latent gap for the #1767 QR block); guarded by
+  `tests/test-print-pdf-img-src.js`.
 
 - chore(version): **bump 0.5050.0 → 0.5100.0** (owner-directed minor). Lockstep across
   `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `WHATS-NEW.md`,
