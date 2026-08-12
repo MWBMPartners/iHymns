@@ -78,6 +78,15 @@ build/
 *.local
 
 # ----------------------------------------------------------------------------
+# Playwright (tests/browser — browser smoke test, #1831)
+# Browser binaries themselves live outside the repo entirely (PLAYWRIGHT_BROWSERS_PATH
+# locally; downloaded fresh into the runner's cache in CI) — never committed.
+# ----------------------------------------------------------------------------
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+# ----------------------------------------------------------------------------
 # VS Code
 # ----------------------------------------------------------------------------
 .vscode/*

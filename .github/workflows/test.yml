@@ -827,3 +827,71 @@ jobs:
 
       - name: Live Activities push bridge (#1429)
         run: php tests/php/test-apns-live-activity-push.php
+
+  # ===========================================================================
+  # Browser smoke test — the ONE runtime safety net none of the jobs above
+  # provide. `php -l` / ESLint / the PHP+jsdom suites above are ALL static or
+  # simulated-DOM; none of them boots the real appWeb/public_html/index.php
+  # output in a real browser, so none of them can see a CSP header actually
+  # refuse a script, or a real ES-module loader 404 on an import. That is
+  # exactly the failure class rule #30 documents (#1565: the enforcing CSP
+  # silently killed Export + Present for ~7 weeks — console-only, no error the
+  # user or CI ever saw). tests/browser/smoke.spec.js is the first cut: it
+  # loads `/` in headless Chromium and fails on any uncaught pageerror or
+  # unexpected console error. See that file's own header for exactly what it
+  # does and does not cover, and why it needs no database (investigated, not
+  # assumed).
+  #
+  # Deliberately a SEPARATE, NEW job — never folded into `lint` (whose name
+  # "Lint & Validate" is a required branch-protection status check; see the
+  # `php-compat` job's box comment above for why a rename/matrix there would
+  # orphan that check) or into `php-compat` (Chromium has nothing to do with
+  # the PHP-version matrix). Non-required for now, same bootstrap posture as
+  # `php-compat` when it was added.
+  #
+  # No MariaDB service here — see smoke.spec.js's "DB DEPENDENCY" note: the
+  # SPA shell + its JS module graph boot independently of the database
+  # (every DB-touching call in index.php's bootstrap is try/catch-wrapped
+  # with a safe fallback), so provisioning one would only add CI time without
+  # strengthening this specific assertion. A later smoke that asserts real
+  # song/songbook DATA rendered will need one — tracked as a follow-up in
+  # that file's header, not silently assumed away.
+  # ===========================================================================
+  browser-smoke:
+    name: Browser smoke (home route)
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # The sandbox this test suite was AUTHORED in ships a pre-installed
+      # Chromium at a pinned path (see playwright.config.js's
+      # resolvePreinstalledChromium()) specifically so `playwright install`
+      # never has to run there. GitHub Actions runners carry no such
+      # pre-install, so this step is what makes the job self-sufficient here.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: npm run test:browser
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

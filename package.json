@@ -21,6 +21,7 @@
     "test:php": "find appWeb -name '*.php' -exec php -l {} \\;",
     "test:js": "find appWeb -name '*.js' -not -path '*/node_modules/*' -exec node --check {} \\;",
     "test:export": "node tests/test-propresenter-export.js && node tests/test-export-ui.js",
+    "test:browser": "playwright test",
     "test:all": "npm test && npm run test:php && npm run test:js"
   },
   "repository": {
@@ -38,6 +39,7 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "eslint": "^10.1.0",
     "jsdom": "^30.0.1",
     "protobufjs": "^8.7.2",
