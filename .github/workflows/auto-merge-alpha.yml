@@ -121,21 +121,44 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          set -euo pipefail
+          # NOTE: `-u` and `pipefail` but deliberately NOT `-e`. A single
+          # transient `gh` API failure inside this 60-min poll loop must NOT
+          # abort the whole job — that is exactly the regression this step hit:
+          # `gh pr merge` (step 1) succeeded, then the very next `gh pr view`
+          # died on a one-off `api.github.com` TLS handshake error
+          # ("certificate is not valid for any names"), and `-e` turned that
+          # blip into a failed job that ALSO never dispatched the deploy. Each
+          # gh call is now guarded and retried on the next poll instead.
+          set -uo pipefail
           for i in $(seq 1 120); do
-              STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state -q .state)
+              # A failed `gh pr view` (network/TLS/rate-limit blip) is not a
+              # terminal state — warn and re-poll rather than aborting.
+              if ! STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state -q .state 2>&1); then
+                  echo "::warning::gh pr view failed on poll $i/120 ($STATE) — retrying next poll"
+                  sleep 30
+                  continue
+              fi
               case "$STATE" in
                   MERGED)
                       echo "PR #$PR_NUMBER merged — dispatching deploy.yml on alpha."
-                      gh workflow run deploy.yml --repo "$REPO" --ref alpha
-                      exit 0
+                      # Retry the dispatch too, so a transient blip here does
+                      # not silently drop the post-merge deploy (#849 shape).
+                      for d in 1 2 3 4 5; do
+                          if gh workflow run deploy.yml --repo "$REPO" --ref alpha; then
+                              exit 0
+                          fi
+                          echo "::warning::deploy dispatch attempt $d/5 failed — retrying in 10 s"
+                          sleep 10
+                      done
+                      echo "::error::merged, but could not dispatch deploy.yml after 5 attempts."
+                      exit 1
                       ;;
                   CLOSED)
                       echo "PR #$PR_NUMBER closed without merging — skipping deploy."
                       exit 0
                       ;;
               esac
-              echo "PR #$PR_NUMBER state=$STATE (poll $i/120) — sleeping 30 s"
+              echo "PR #$PR_NUMBER state=${STATE:-unknown} (poll $i/120) — sleeping 30 s"
               sleep 30
           done
           echo "::error::Timed out waiting for PR #$PR_NUMBER to reach a terminal state."
