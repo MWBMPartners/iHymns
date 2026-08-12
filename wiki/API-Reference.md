@@ -87,6 +87,7 @@ A few notes on this batch's additions:
 - **`user_settings`** gained a `list_sorts` namespace for syncing a signed-in user's per-surface sort choices (returns 403 for anonymous callers).
 - The **IA-reconcile** tool exposes **no public API** — it is deliberately admin-page-local (actions on `/manage/ia-reconcile` only), never an `api.php` action.
 - **QR generation** is `/qr.php` (CueRCode-backed), not an `api.php` action — see [[Architecture]].
+- **Organisation logo bytes** are `/org-logo.php` (#1830 — mirrors `/qr.php`'s standalone-image-endpoint shape), not an `api.php` action. `my_organisations` gains an additive, migration-gated `logos` field (meta only — kind/variant/Sha256/alt/dimensions, never blob bytes) that the print `logo` block resolves through the endpoint.
 
 ---
 

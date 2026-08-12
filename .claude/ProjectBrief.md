@@ -4,6 +4,59 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-12 (#1830 organisation logos — BUILD pass done, NOT YET PUSHED)
+
+**8 atomic commits on `claude/issue-sweep-fixes-89`, built exactly to the authoritative plan
+`.claude/org-logos-1830-plan.md` (owner decisions locked: DB `MEDIUMBLOB` storage, print-templates-only
+scope, the plan's stricter-v1 SVG rules, public og-image-style serving, monochrome/reversed as KINDS not
+Variant values).** NOT YET PUSHED — the owner will review the sanitiser, migration and guard, then push
++ PR themselves (do not push on their behalf).
+
+**What shipped, in commit order:**
+1. `tblOrganisationLogos` migration + byte-identical `schema.sql` mirror + the ONE `migration-registry.php`
+   entry (real `!tableExists` probe). Verified against local MariaDB — table creates, probe flips pending
+   → applied.
+2. `includes/svg_sanitizer.php` — the crux. A NEW, stricter sibling of `includes/html_sanitizer.php`
+   (which keeps blocking `<svg>` outright — untouched): `DOMDocument::loadXML()` + `LIBXML_NONET`, never
+   `LIBXML_NOENT`, entity loader nulled, a pre-parse `<!DOCTYPE`/`<!ENTITY` byte reject PLUS a post-parse
+   doctype check (two independent XXE layers), a 10 000-node/64-depth render-bomb budget, a 19-element
+   allow-list that DROPS (never unwraps) anything else, and the ONLY surviving `url()` shape anywhere
+   (attribute or `style=`) is a same-document `url(#id)`. `tests/php/test-svg-sanitizer.php` is the
+   mutation-proven functional truth table — every mutation actually run (scripted patch → confirmed red
+   → reverted), not asserted from memory.
+3. `includes/org_logo_helpers.php` (the ONE `IHYMNS_ORG_LOGO_KINDS` 10-kind registry + reads) +
+   `includes/org_logo_admin.php` (validate/stage/upsert/delete/toggle — mirrors the `publisher_admin.php`
+   / `publisher_helpers.php` split, rule #37).
+4. `org-logo.php` — the public serving endpoint (mirrors `qr.php`/`og-image.php`); `tests/php/
+   test-org-logo-surfaces.php`, a tree-derived (never a typed file list) wiring guard, lands here and
+   grows self-activating checks through commits 5-7.
+5. Admin UI — a shared "Organisation logos" card (`orgLogoRenderAdminCard()`) on BOTH
+   `/manage/organisations` and `/manage/my-organisations`. Caught and fixed a real pre-existing-guard
+   regression before it shipped: `tests/php/test-orphan-inventory.php` flagged the 3 new POST actions as
+   caller-less because the action name was buried inside a larger concatenated HTML literal, invisible to
+   that guard's token scan — fixed by assigning each action name to its own bare string literal.
+6. The print `logo` block — chooseable kind ("Automatic" walks the ladder primary → full → horizontal →
+   … or an explicit kind, never a substituted one) + registries + `renderBlock('logo')` + the
+   `html_sanitizer.php` img_src widening (version 1 → 2) + `pdf_renderer.php`'s `_pdfInlineOrgLogo()`.
+   Two deliberate, documented simplifications: no template-`OrgId` override (the column is genuinely
+   dormant — nothing writes or exposes it yet) and no live sample-logo fetch in the admin editor's
+   preview (that page authenticates via the `/manage/*` session-cookie mechanism, not the PWA Bearer
+   token `my_organisations` requires, so a live fetch would 401 for most admins).
+7. Finished the surfaces guard: two rule-#34 anti-under-report floors (a `logo_upload` site-count floor,
+   a kind-registry parsed-key-count floor), each mutation-proven, plus one full consolidated re-run.
+8. This note + wiki (`Database & Migrations`, `Security`, `Architecture`, `API Reference`) + CHANGELOG
+   (root + `appWeb/`) + CLAUDE.md rule #42.
+
+**App header / projector / OG-image logo surfaces are explicitly OUT OF SCOPE for this PR** (owner
+decision) — file as a follow-up issue at PR time, per standing-tasks §2.
+
+**Suites at close: 155 PHP / 57 node — all green except the two pre-existing, unrelated local-DB-only
+failures already present on this branch before this work started** (`test-song-external-ids-backfill.php`,
+`test-song-external-ids-reconcile.php` — fail only because the local `ihymns_live` seed data was emptied,
+confirmed identical on a stash of this feature's changes).
+
+---
+
 ## 📌 Continuation note — 2026-08-11 (#91 FINAL docs-consistency sweep + version bump — supersedes all "NOT YET PUSHED" claims below)
 
 **The `claude/issue-sweep-fixes-89` branch is PUSHED and up-to-date with origin.** Every earlier

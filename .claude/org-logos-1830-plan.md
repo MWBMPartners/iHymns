@@ -1,8 +1,17 @@
 # Organisation logos (#1830) — implementation plan
 
-**Status:** PLAN ONLY — nothing implemented. Written 2026-08-12 on branch
+**Status: IMPLEMENTED (2026-08-12)** — all 8 commits in §11 landed on branch
+`claude/issue-sweep-fixes-89`, built to this plan exactly. Not yet pushed;
+the owner reviews the sanitiser, migration and guard, then pushes + opens the
+PR themselves. App header / projector / OG-image surfaces remain deferred
+per §12(b), as planned — the schema/endpoint/alt-text already carry what
+they'll need. See the top-of-branch continuation note in
+`.claude/ProjectBrief.md` (2026-08-12) for the commit-by-commit summary and
+suite results.
+
+~~**Status:** PLAN ONLY — nothing implemented. Written 2026-08-12 on branch
 `claude/issue-sweep-fixes-89` after a full read of the conventions this feature
-must honour. One PR, atomic commits (§11).
+must honour. One PR, atomic commits (§11).~~
 
 **The feature:** an organisation uploads/publishes its brand assets — a full
 professional taxonomy of logo **kinds** (primary, secondary, mark, wordmark,

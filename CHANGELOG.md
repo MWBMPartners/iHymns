@@ -42,6 +42,25 @@ migration deploy-path hotfix, three post-merge CI fixes, a plain-language rewrit
   description on 36 jargon-heavy `/manage/*` pages rewritten to plain English (display copy only; no
   logic, gates or structure touched). House style captured in `.claude/admin-plain-english.md`.
 
+- feat(org-logos): **per-organisation logo uploads for Print Templates** (#1830). A church can now
+  upload its logo (SVG preferred, PNG/APNG also accepted) in any of ten brand-guide shapes — primary,
+  combined, wide, stacked, symbol-only, name-only, alternative, single-colour, light-on-dark, and app
+  icon — from `/manage/organisations` (system admins) or `/manage/my-organisations` (org admins). SVG
+  uploads pass through a brand-new, dedicated hardened sanitiser (`includes/svg_sanitizer.php`) —
+  default-deny XML rebuild, XXE-safe (entity loader nulled, DOCTYPE rejected twice, no entity
+  substitution), a 19-element allow-list that drops (never unwraps) anything not on it, and a
+  render-bomb node/depth budget — before ever being stored; logos are served by a new standalone
+  `org-logo.php` endpoint (mirrors `qr.php`/`og-image.php`, `default-src 'none'; sandbox` CSP) and are
+  **never inlined** into any page, always a plain `<img src>`. A new `logo` block in the Print Template
+  editor lets a curator choose which brand shape to print, or leave it on "Automatic" to walk a
+  ladder (primary → combined → wide → stacked → …) and use the best one the org has actually
+  uploaded — an explicit choice with nothing uploaded renders nothing, never a broken image. Scope for
+  this PR is print only; the app header, projector and OG-image surfaces are deferred to a follow-up
+  (the schema, endpoint and alt text already carry everything they'll need). Ships with a
+  mutation-proven functional truth table for the sanitiser (`tests/php/test-svg-sanitizer.php`) and a
+  tree-derived wiring guard (`tests/php/test-org-logo-surfaces.php`) that bans any surface from
+  inlining SVG or reading the dormant unsanitised original.
+
 - chore(version): **bump 0.5050.0 → 0.5100.0** (owner-directed minor). Lockstep across
   `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `WHATS-NEW.md`,
   `PROJECT_STATUS.md` and the `.claude/` docs. The `infoAppVer.php` comment now records why alpha
