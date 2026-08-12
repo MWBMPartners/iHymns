@@ -1,4 +1,31 @@
-# Manage (admin) plain-English house style
+# Plain-English + minimal-disclosure house style (user-facing copy & docs)
+
+## Standing scope (owner directive 2026-08-12) — applies to ALL user-facing writing
+
+This house style is **not just the Manage sidebar/headers**. It governs **every
+word a non-developer reads**: in-app Help/Guides (`help/*.md`, `help.php` topics),
+the public site copy, `WHATS-NEW.md`, README/user-facing docs, tooltips, empty
+states, error toasts — anything a **worshipper, curator/moderator, or a
+non-technical admin** might see. Two rules, always together:
+
+1. **Plain English.** Describe what a person can *do* and *why*, in everyday words.
+   No jargon, no file/table/function names, no issue numbers, no version internals.
+   If someone who has never seen the code can't follow it, rewrite it.
+2. **Minimal disclosure (security).** User-facing copy MUST NOT reveal the
+   *inner workings* — internal page routes, admin-only URLs, function/endpoint/
+   table/column names, config flags, file paths, or "how the check/gate is
+   implemented". That detail is a **map for a bad actor** (recon for an attack)
+   and belongs only in developer docs (`CHANGELOG.md`, `.claude/`, code comments,
+   the private Wiki). Describe the *benefit/behaviour*, never the mechanism.
+   When unsure whether a detail helps a user or only helps an attacker, leave it out.
+
+Reflect renamed things by their **new plain label** (e.g. "Find Duplicates",
+"Edit History", "Role Permissions") — never the old internal name, and never the
+underlying route/table.
+
+---
+
+## Manage (admin) plain-English house style
 
 Owner directive (2026-08-11): **every label and description in `/manage/*` must be
 plain English.** Even admins are not all technically minded. "Gating No-Op Verify"
