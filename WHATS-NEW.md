@@ -10,6 +10,17 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 0.5100.0 — 12 August 2026
+
+- **A clearer admin area** — If you help look after songs, songbooks or live
+  services, the Manage menu and its pages now use plain, everyday language
+  instead of technical terms, and related tools are grouped together so they're
+  easier to find.
+- **Plain-language What's New** — This very page now describes updates in simple
+  terms, focused on what you can do rather than how it works behind the scenes.
+- **Reliability fixes** — A round of behind-the-scenes fixes so updates install
+  cleanly and the site keeps running smoothly.
+
 ## 0.5050.0 — 11 August 2026
 
 - **Print and PDF** — Print a single song or a whole set list with a clean,

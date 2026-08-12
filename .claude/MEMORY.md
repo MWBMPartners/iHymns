@@ -9,14 +9,19 @@
 _Last updated: 2026-08-11 (#91 final docs sweep + version bump)._
 
 ## Where things stand
-- **Version:** `0.5050.0` (alpha) — authoritative source is `includes/infoAppVer.php`
+- **Version:** `0.5100.0` (alpha) — authoritative source is `includes/infoAppVer.php`
   (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
   hardcode a version rot within days — point at the file. The old "v1.x = local-JSON phase" comment
   was retired (DB-direct since epic #1010; the major digit no longer encodes a phase).
-  ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. **Two worked
-  examples now:** the 98-commit consolidation bumped by hand (`bad5ca4f`, PR #1592), and the
-  214-commit `claude/issue-sweep-fixes-89` batch bumped by hand `0.4100.0 → 0.5050.0` (owner-directed
-  significant minor, #91). **Expect to repeat this after any large alpha batch.**
+  ⚠️ **`version-bump.yml` never bumps an `alpha` merge in practice — bump BY HAND.** The workflow is
+  *configured* for alpha+beta (#1596), but our alpha PRs are auto-merged by a bot that pushes with
+  `GITHUB_TOKEN`, and GitHub does not re-trigger workflows on a `GITHUB_TOKEN` push — so the bumper
+  simply never runs on alpha (confirmed empirically: 7 merges after the last batch, no
+  `chore: bump version` commit, number stood still). **Three worked hand-bumps now:** the 98-commit
+  consolidation (`bad5ca4f`, PR #1592); the 214-commit `claude/issue-sweep-fixes-89` batch
+  `0.4100.0 → 0.5050.0` (owner-directed significant minor, #91); and its follow-up round
+  `0.5050.0 → 0.5100.0` (migration hotfix #1816 + CI fixes + What's New #1818 + admin plain-English
+  #1822). **Expect to repeat this after any alpha batch.**
 - **Current batch — `claude/issue-sweep-fixes-89` (PUSHED; single PR pending the owner):** 214 commits
   landing the #89 issue-sweep + several epics. One line per family: **#1765**+**#93** songbook/
   catalogue enhancements + Publishers registry; **#1769/#1778** content-gating program + `/manage/gating`

@@ -1,3 +1,54 @@
+## [0.5100.0] — 2026-08-12 (alpha)
+
+Follow-up round on the `claude/issue-sweep-fixes-89` branch after the 0.5050.0 batch merged: a
+migration deploy-path hotfix, three post-merge CI fixes, a plain-language rewrite of the user-facing
+**What's New** page, and an owner-directed plain-English overhaul of the whole **Manage** admin area
+(sidebar reorganisation + relabel, and every page header). Owner-directed **minor version bump**
+(0.5050.0 → 0.5100.0) reflecting a smaller but real amount of further work.
+
+- fix(migrations): **resolve shared includes via `IHYMNS_INCLUDES_DIR`, not a hardcoded
+  `/public_html/` literal** (#1816, `1c73110f`). The deployed docroot is renamed per channel
+  (alpha → `public_html_dev`, beta → `public_html_beta`, main → `public_html`), so six migrations that
+  did `require_once dirname(__DIR__).'/public_html/includes/X.php'` fatally failed on alpha/beta — a
+  bare "HTTP error" / "Failed opening required …" that stopped the whole *Apply all* batch on
+  `/manage/setup-database`. The runner now defines `IHYMNS_INCLUDES_DIR` (= the real docroot's
+  `includes`); each migration resolves shared includes through it, with the literal kept only as a
+  standalone/CLI repo fallback. `tests/php/test-deploy-paths.php` now scans `.sql/` too and bans the
+  column-0 literal-path require (block-comment-stripped, mutation-proven). Documented as CLAUDE.md
+  rule #41.
+
+- fix(ci): **three post-merge CI reds cleared** — a `html_sanitizer.php` doc-comment reworded so a
+  backticked `<?xml` no longer trips the §9 embedded-PHP grep (#1811, `b31ec51f`); the dead
+  `makeCompare` import dropped from `admin-table-sort.js` (ESLint `no-unused-vars`, #1814,
+  `7b65d0c4`); and `protobufjs` pinned to `^8.7.2` (matching the ProPresenter static encoder) plus
+  `protobufjs-cli` added so `build:proto-static` runs again — fixes the ProPresenter static-CSP byte
+  mismatch (#1820, `25efa63f`).
+
+- feat(whats-new): **plain-language user release notes from a dedicated `WHATS-NEW.md`, not the
+  developer changelog** (#1818, `5d60c0c1`). The in-app What's New page was rendering raw
+  `CHANGELOG.md` — file names, table names, issue numbers and jargon, a genuine information-leak
+  concern (owner-reported). `deploy.yml` now prefers `WHATS-NEW.md` (hand-written, "average Joe"
+  wording per `.claude/whats-new-style.md`) and falls back to `CHANGELOG.md` only if it is absent;
+  `tests/test-whats-new-extraction.js` gained a no-internals scan over the extracted output.
+
+- feat(admin): **plain-English overhaul of the whole Manage admin area** (#1822, `da371f6c` +
+  `9035a5a7`). Part 1 — the sidebar was reorganised (live-service surfaces moved out of *People* into
+  a new *Live Services* group; new *Songs / Song Library / Access & Permissions / System & Reports*
+  groups) and relabelled in plain words (e.g. *Duplicates & Links* → *Find Duplicates*,
+  *Entitlements* → *Role Permissions*, *Schema Audit* → *Database Structure Check*, *Gating No-op
+  Verify* → *Content Lock Safety Check*), and a blank icon was fixed (`bi-git-compare`, a GitHub
+  Octicon, → `bi-files`). All 46 `(id / href / entitlement)` tuples are byte-preserved, so the #1587
+  nav-gate parity guard and every deep link still hold. Part 2 — the visible title + intro
+  description on 36 jargon-heavy `/manage/*` pages rewritten to plain English (display copy only; no
+  logic, gates or structure touched). House style captured in `.claude/admin-plain-english.md`.
+
+- chore(version): **bump 0.5050.0 → 0.5100.0** (owner-directed minor). Lockstep across
+  `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `WHATS-NEW.md`,
+  `PROJECT_STATUS.md` and the `.claude/` docs. The `infoAppVer.php` comment now records why alpha
+  batches must be hand-bumped: the version-bump Action is configured for alpha but never fires there,
+  because auto-merged alpha PRs push via `GITHUB_TOKEN` and GitHub does not re-trigger workflows on a
+  `GITHUB_TOKEN` push.
+
 ## [0.5050.0] — 2026-08-11 (alpha)
 
 The consolidated `claude/issue-sweep-fixes-89` batch — 214 commits, one PR — landing the #89
