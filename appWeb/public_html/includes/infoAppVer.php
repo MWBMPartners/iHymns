@@ -77,20 +77,28 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * ========================================================================= */
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
-/* Auto-bumped by the version-bump GitHub Action on push to alpha/beta.
-   Manually jumped 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch
-   (the 214-commit `claude/issue-sweep-fixes-89` branch: the #1765 songbook/
-   catalogue epic + #93 Publishers, the #1769/#1778 gating program, the #1767
-   print/PDF remainder, #94 IA-reconcile, #1770/#1792/#1798 Live-Follow, #1791
-   set-list sharing, #1786 public list-sort, #1785 musicians dedup, et al.) —
-   an owner-directed significant minor bump reflecting the scope of the batch
-   (a large jump within the 0.x line, not the +1 the auto-bumper applies per
-   merge). The alpha auto-bumper will still apply its standard +1 minor on
-   merge. */
+/* Bumped BY HAND after every large alpha batch. The version-bump GitHub Action
+   is configured for alpha+beta (#1596), but auto-merged alpha PRs push via
+   GITHUB_TOKEN, and GitHub does NOT re-trigger workflows on a GITHUB_TOKEN push
+   — so in practice the bumper never fires on alpha and the number stands still
+   until bumped manually. Do not rely on a "+1 on merge" happening here.
+
+   History:
+   - 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch (the 214-commit
+     `claude/issue-sweep-fixes-89` branch: the #1765 songbook/catalogue epic +
+     #93 Publishers, the #1769/#1778 gating program, the #1767 print/PDF
+     remainder, #94 IA-reconcile, #1770/#1792/#1798 Live-Follow, #1791 set-list
+     sharing, #1786 public list-sort, #1785 musicians dedup, et al.) — an
+     owner-directed significant minor bump reflecting the scope of the batch.
+   - 0.5050.0 -> 0.5100.0 for the follow-up round on the same branch (the
+     renamed-docroot migration hotfix #1816, three post-merge CI fixes, the
+     plain-language What's New rework #1818, and the admin sidebar reorg +
+     plain-English relabel of the Manage area #1822) — a modest minor bump for
+     a smaller but real amount of further work. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5050.0";
+$app["Application"]["Version"]["Number"] = "0.5100.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

@@ -2,8 +2,9 @@
 
 ## [unreleased] — alpha
 
-Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.5050.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
+Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.5100.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
 
+- **Follow-up round + version bump 0.5050.0 → 0.5100.0** (owner-directed minor) — a migration deploy-path hotfix (renamed docroot, #1816), three post-merge CI fixes (#1811/#1814/#1820), a plain-language rewrite of the user-facing **What's New** page from a dedicated `WHATS-NEW.md` (#1818), and a plain-English overhaul of the whole **Manage** admin area — sidebar reorganisation + relabel, and every page header rewritten (#1822).
 - **Version bump 0.4100.0 → 0.5050.0** (#91, owner-directed significant minor) — the consolidated `claude/issue-sweep-fixes-89` batch (214 commits, one PR).
 - **Songbook/catalogue enhancements + Publishers registry** (#1765 / #93) — songbook disable + public-domain flags, ARK/OpenLibrary/ISBN/ISSN identifiers, a Google Books external-link provider, MARCXML import/export, and the free-text publisher promoted to a first-class `tblPublishers` registry (persons + companies, imprint grouping, aliases, public `/publisher/<slug>` page at `/manage/publishers`).
 - **Content-gating program + hub** (#1769 / #1778) — one viewer resolver + one enforcement pipeline (`access_context.php`/`access_resolver.php`/`licence_registry.php`), a `tblLicenceTypes` registry with `/manage/licence-types` CRUD, and a `/manage/gating` readiness hub. Entirely dormant behind `content_gating_enabled='0'`.

@@ -274,20 +274,40 @@ const current = runExtractor(script, { srcName: 'CHANGELOG.md' });
 assertExcerpt(current, 'current extractor', record);
 
 /* 4b. Sanity on the *source*: this test is only meaningful while the real
-   CHANGELOG.md is bigger than the cap. If the changelog ever shrinks below
-   it, every assertion above becomes trivially satisfiable and this suite
-   would start protecting nothing — fail loudly instead of quietly passing. */
-const changelogSection1Bytes = (() => {
-    const raw = readFileSync(CHANGELOG);
-    const text = raw.toString('utf8');
-    const start = text.indexOf('## ');
-    const next = text.indexOf('\n## ', start + 1);
-    return Buffer.byteLength(text.slice(start, next === -1 ? undefined : next + 1), 'utf8');
+   CHANGELOG.md contains a single section bigger than the cap — that is the
+   exact #1589 shape (one `## ` section whose bytes alone overflow `head -c`,
+   cutting mid-section). If no section is that big, the truncation assertions
+   above become trivially satisfiable and this suite would protect nothing —
+   fail loudly instead of quietly passing.
+
+   Measured over the LARGEST section, NOT section 1: the top of CHANGELOG.md is
+   whatever release was cut most recently, which may be a small follow-up entry
+   (e.g. a version-bump-only release), while the reproducing bulk sits lower in
+   the file. Keying this on position once made the guard fail the moment a small
+   release landed on top (rule #34 — derive the check from the tree, not from an
+   assumed ordering). */
+const { largestSectionBytes, largestSectionHeading } = (() => {
+    const text = readFileSync(CHANGELOG).toString('utf8');
+    const starts = [];
+    const re = /^## /gm;
+    let m;
+    while ((m = re.exec(text)) !== null) starts.push(m.index);
+    let maxBytes = 0;
+    let maxHeading = '(none)';
+    for (let i = 0; i < starts.length; i++) {
+        const end = i + 1 < starts.length ? starts[i + 1] : text.length;
+        const bytes = Buffer.byteLength(text.slice(starts[i], end), 'utf8');
+        if (bytes > maxBytes) {
+            maxBytes = bytes;
+            maxHeading = text.slice(starts[i], text.indexOf('\n', starts[i]));
+        }
+    }
+    return { largestSectionBytes: maxBytes, largestSectionHeading: maxHeading };
 })();
-record(`CHANGELOG.md section 1 is ${changelogSection1Bytes} bytes`);
-ok('CHANGELOG.md section 1 still exceeds the cap (so this test is not vacuous)',
-    changelogSection1Bytes > MAX_BYTES,
-    `section 1 is only ${changelogSection1Bytes} bytes — the #1589 scenario can no longer be reproduced from this fixture`);
+record(`CHANGELOG.md largest section is ${largestSectionBytes} bytes (${largestSectionHeading})`);
+ok('CHANGELOG.md still has a section that exceeds the cap (so this test is not vacuous)',
+    largestSectionBytes > MAX_BYTES,
+    `largest section is only ${largestSectionBytes} bytes — the #1589 scenario can no longer be reproduced from this fixture`);
 
 /* ------------------------------------------------------------------------
    4c. The REAL user-facing source — WHATS-NEW.md, through the SAME lifted step
