@@ -660,7 +660,7 @@ declare(strict_types=1);
                     </ul>
                     <p class="small text-muted mb-0">
                         Leading the service? Start and project the code from
-                        <a href="/manage/service-projection">Service Projection</a>, or drive it from
+                        <a href="/manage/service-projection">Projector Screen</a>, or drive it from
                         your phone at <a href="/manage/service-lead">Lead a Service</a> — both in the
                         admin console under Venues.
                     </p>
@@ -1123,24 +1123,24 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>If you're a <em>Curator/Editor</em>, <em>Admin</em>, or <em>Global Admin</em>, you have access to the portal at <a href="/manage/">/manage/</a> (or the alias <a href="/admin/">/admin/</a>).</p>
                     <ul class="mb-2">
-                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk verify and tag; auto-saves as you go. Deleting a song is <strong>Admin</strong> / <strong>Global Admin</strong> only — it's permanent, so a Curator/Editor can't do it.</li>
+                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk verify and tag; auto-saves as you go. A <em>Curator/Editor</em> and above can delete a song; deleting is recoverable — the song moves to a review queue and can be restored, and only an <strong>Admin</strong> can then remove it permanently.</li>
                         <li><strong>User Management</strong> — create, edit roles, deactivate.</li>
                         <li><strong>Analytics</strong> — top songs / searches / logins over 7, 30, 90 days; CSV export.</li>
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
-                        <li><strong>Entitlements</strong> — grant/revoke per-capability permissions by role.</li>
+                        <li><strong>Role Permissions</strong> — grant/revoke individual capabilities by role.</li>
                         <li><strong>Database Setup</strong> — install schema, migrate, backup, restore.</li>
-                        <li><strong>Help &amp; Guides</strong> — a plain-English reference at <a href="/manage/help">/manage/help</a> covering the admin surfaces, including the org-admin area, the activity log error capture, the bulk migration runner, and the public REST API.</li>
+                        <li><strong>Help &amp; Guides</strong> — a plain-English reference at <a href="/manage/help">/manage/help</a> covering the admin surfaces, including the org-admin area, the activity log, the bulk migration runner, and the public API.</li>
                     </ul>
                     <p class="small text-muted mb-2">
-                        Permissions use <strong>entitlements</strong>. Each feature is gated by a
-                        named capability (e.g. <code>edit_songs</code>, <code>view_analytics</code>)
-                        assigned to roles. A global-admin can reassign capabilities at
-                        <a href="/manage/entitlements">/manage/entitlements</a>.
+                        Permissions are assigned by role. Each feature is unlocked for the roles that
+                        need it (for example, editing songs or viewing analytics), and a global admin
+                        can adjust which role holds which permission at
+                        <a href="/manage/entitlements">Role Permissions</a>.
                     </p>
                     <p class="small text-muted mb-0">
-                        The public REST API is documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a>,
-                        with the same validation rules and audit-log trail as the web admin. The native
-                        clients (Apple, Android, Fire OS) are in-progress scaffolds that will consume the
+                        The public API is documented in <a href="/api-docs.yaml">a single reference file</a>,
+                        with the same validation rules and audit trail as the web admin. The native
+                        clients (Apple, Android, Fire OS) are in-progress and will consume the
                         same API as they mature.
                     </p>
                 </div>
