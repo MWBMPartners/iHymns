@@ -25,7 +25,7 @@ declare(strict_types=1);
  * catches every symbol this feature exports regardless of which literal
  * string a given caller happens to spell out.
  *
- * GROWS ACROSS THREE COMMITS (by design, per the plan's §11 commit table):
+ * GROWS ACROSS FOUR COMMITS (by design, per the plan's §11 commit table):
  * this file landed in commit 4 (alongside `org-logo.php`) with checks
  * (a) never-inline-SVG, (b) the serving endpoint's own header/delegation
  * shape, and (d) the sanitiser wired into the write core — all provable
@@ -36,7 +36,14 @@ declare(strict_types=1);
  * `logo_upload` POST action; (e) and (f) started firing for real the
  * moment commit 6 added the `logo` print block (the sanitiser-pattern +
  * PDF-resolver pair, and the `ORG_LOGO_KINDS` client mirror) — all proven
- * below, no assertion here has EVER shipped unproven.
+ * below, no assertion here has EVER shipped unproven. Commit 7 (this
+ * revision) is the plan's designated "finish the guard" commit: by then
+ * every self-activating check had ALREADY fired for real in the commit
+ * that first made it meaningful (recorded below as it happened, not
+ * deferred), so this pass's own job was to close the two anti-under-report
+ * gaps rule #34 calls for — a floor under check (c)'s site COUNT and under
+ * check (f)'s parsed KEY count — and re-verify the WHOLE guard end-to-end
+ * one more time as a single consolidated pass.
  *
  * MUTATION-PROVEN (rule #34) — each broken on purpose in a scratch copy,
  * confirmed red, reverted:
@@ -69,6 +76,19 @@ declare(strict_types=1);
  *   - (commit 6, check f) Reordered `ORG_LOGO_KINDS`' first two keys in
  *     print.js (`primary`/`full` swapped) -> RED ("Kind-registry drift…
  *     order drift is ladder drift"). Restored -> green.
+ *   - (commit 7, check c floor) Renamed ONE of the two `logo_upload` case
+ *     labels — `manage/my-organisations.php` only — to
+ *     `logo_upload_DISABLED` -> RED ("Found only 1 'logo_upload' handler
+ *     site(s)… one of them may have silently lost its case label").
+ *     Restored -> green.
+ *   - (commit 7, check f floor) Truncated `ORG_LOGO_KINDS` in print.js to
+ *     its first 3 entries -> RED, TWO assertions at once: the min-count
+ *     floor ("parsed only 3 kind(s) (< 8)") AND the equality check itself
+ *     ("Kind-registry drift" — 3 keys no longer equal 10). Restored ->
+ *     green. (Confirms the floor adds real, INDEPENDENT coverage rather
+ *     than being redundant with the equality check: a floor breach is
+ *     reported with its OWN message even though the equality check would
+ *     already have failed on the same input.)
  *   Each restored -> green.
  *
  *   php tests/php/test-org-logo-surfaces.php
@@ -268,6 +288,16 @@ foreach ($mentioning as $path => $raw) {
         }
     }
 }
+/* Commit 7 anti-under-report floor (rule #34): once ANY 'logo_upload' site
+   exists at all, there must be AT LEAST the two known admin pages
+   (manage/organisations.php + manage/my-organisations.php, §7 of the plan)
+   — `< 2` (not `!== 2`) so a legitimate future THIRD site using the same
+   action name is never flagged as wrong, while a regex that only matched
+   ONE of the two real handlers (e.g. a brace-tracking edge case on just
+   the second file) still fails loud instead of silently under-reporting. */
+if ($logoUploadSites > 0 && $logoUploadSites < 2) {
+    orgLogoFail($failures, "Found only {$logoUploadSites} 'logo_upload' handler site(s) — the plan wires TWO (manage/organisations.php AND manage/my-organisations.php); one of them may have silently lost its case label or its own scan may be failing.");
+}
 
 /* =============================================================================
  * (e) sanitiser-profile img_src pattern + pdf_renderer.php resolver — a PAIR
@@ -298,6 +328,18 @@ if (is_file($printJsPath)) {
             $jsKeys = [];
         }
         $phpKeys = ihymnsOrgLogoKindKeysForGuard($helpersPhp);
+        /* Commit 7 anti-under-report floor (rule #34, mirrors
+           test-print-block-registry.php's PT_MIN_TYPES): the real taxonomy
+           is 10 kinds; a parser that silently matched only a handful on
+           BOTH sides could otherwise agree-by-coincidence on a truncated
+           subset and report a false "lockstep". */
+        $orgLogoKindMinCount = 8;
+        if (count($jsKeys) > 0 && count($jsKeys) < $orgLogoKindMinCount) {
+            orgLogoFail($failures, sprintf('ORG_LOGO_KINDS (print.js) parsed only %d kind(s) (< %d) — parser anchor moved or the map was emptied.', count($jsKeys), $orgLogoKindMinCount));
+        }
+        if (count($phpKeys) > 0 && count($phpKeys) < $orgLogoKindMinCount) {
+            orgLogoFail($failures, sprintf('IHYMNS_ORG_LOGO_KINDS (org_logo_helpers.php) parsed only %d kind(s) (< %d) — parser anchor moved or the map was emptied.', count($phpKeys), $orgLogoKindMinCount));
+        }
         if ($jsKeys === [] || $phpKeys === []) {
             orgLogoFail($failures, 'Could not parse ORG_LOGO_KINDS (print.js) and/or IHYMNS_ORG_LOGO_KINDS (org_logo_helpers.php) — parser anchor moved.');
         } elseif ($jsKeys !== $phpKeys) {
