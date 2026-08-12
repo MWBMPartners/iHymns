@@ -1,3 +1,30 @@
+## [0.5160.0] — 2026-08-12 (alpha)
+
+Song-of-the-Day lyric-preview fix (#1841) plus the matching minor version bump.
+
+- feat(song-of-the-day): **the lyric preview is a complete-thought phrase, not
+  just the first line** (#1841). A hymn's lyric lines break where the song is
+  sung, so its first sung line is very often identical to the title — which made
+  the Song-of-the-Day snippet read as the title again (e.g. `"Restore, O Lord,"`).
+  A new shared, pure heuristic `lyricLinesJoinPreview()` (on the ONE lyric-line
+  read path `includes/lyric_lines_read.php`, rule #25) joins the opening lines
+  into one flowing phrase, stopping at the first real sentence end (`. ! ?`) past
+  a minimum length, or a character/line cap — never a mid-word cut. `SongOfTheDay`
+  now sources its snippet from `lyricLinesPreviewPhrase()` (mirror path) / the
+  same joiner (un-migrated LinesJson fallback); the `song_of_the_day` API keeps
+  its `firstLine` field name (contract stable, a strict content improvement for
+  every consumer, native apps included). The client (`song-of-the-day.js` +
+  `.sotd-quote` in `app.css`) renders it on ONE line and truncates to the card
+  width with an ellipsis (`text-overflow: ellipsis`), with a `title` attribute
+  carrying the full phrase. Guard: `tests/php/test-sotd-preview-phrase.php`
+  (mutation-proven — comma-as-boundary, dropped min-floor, and neutered budget
+  each reddens a specific case).
+
+- chore(version): **bump 0.5150.0 → 0.5160.0** (owner-directed minor). Lockstep
+  across `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`,
+  `WHATS-NEW.md`, `PROJECT_STATUS.md` and the `.claude/` docs. A small,
+  single-feature bump.
+
 ## [0.5150.0] — 2026-08-12 (alpha)
 
 Org-branding round on the `claude/issue-sweep-fixes-89` branch: per-organisation logos for Print
