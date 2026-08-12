@@ -849,22 +849,67 @@ jobs:
   # the PHP-version matrix). Non-required for now, same bootstrap posture as
   # `php-compat` when it was added.
   #
-  # No MariaDB service here — see smoke.spec.js's "DB DEPENDENCY" note: the
-  # SPA shell + its JS module graph boot independently of the database
-  # (every DB-touching call in index.php's bootstrap is try/catch-wrapped
-  # with a safe fallback), so provisioning one would only add CI time without
-  # strengthening this specific assertion. A later smoke that asserts real
-  # song/songbook DATA rendered will need one — tracked as a follow-up in
-  # that file's header, not silently assumed away.
+  # A MariaDB service IS provisioned — the first cut assumed the shell being
+  # DB-independent meant no DB was needed, but that was only half true: the
+  # server-rendered SHELL does boot without a database (index.php's bootstrap
+  # try/catches every DB call), yet the CLIENT then immediately calls /api
+  # (app_status, page=home, songbooks, user_settings) and those return HTTP
+  # 500 when no DB is reachable — which the JS modules log as console errors,
+  # failing the smoke. Rather than allow-list our own API's 500s (that would
+  # blind the guard to real API failures — rule #34), we give the app a real,
+  # schema-loaded DB so the whole boot path returns 200 and any future /api
+  # 500 is a genuine failure the smoke will catch. The credentials file is
+  # written below (gitignored; never committed).
   # ===========================================================================
   browser-smoke:
     name: Browser smoke (home route)
     runs-on: ubuntu-latest
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
 
+    # Same MariaDB service the `lint` job uses (root, empty password, 3306) —
+    # mirror it so the app the smoke boots has a real backend to answer /api.
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 'yes'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Give the running app a real, schema-loaded database + the credentials
+      # file getDbMysqli() reads (appWeb/.auth/db_credentials.php, gitignored).
+      # Schema only, no data seed — an empty-but-present schema is enough for
+      # /api?action=songbooks / page=home / app_status / user_settings to
+      # return 200 (empty results) instead of 500, which is all the home-route
+      # boot smoke needs. schema.sql is proven installable into mariadb:11 by
+      # tests/php/test-schema-installs.php in the `lint` job.
+      - name: Provision the app database
+        run: |
+          mysql --host=127.0.0.1 --port=3306 --user=root \
+            -e "CREATE DATABASE IF NOT EXISTS ihymns_live CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          mysql --host=127.0.0.1 --port=3306 --user=root ihymns_live < appWeb/.sql/schema.sql
+          mkdir -p appWeb/.auth
+          cat > appWeb/.auth/db_credentials.php <<'PHP'
+          <?php
+          // CI browser-smoke credentials (gitignored) — points getDbMysqli() at
+          // the workflow's MariaDB service. Never committed; written per-run.
+          define('DB_HOST',    '127.0.0.1');
+          define('DB_PORT',    3306);
+          define('DB_NAME',    'ihymns_live');
+          define('DB_USER',    'root');
+          define('DB_PASS',    '');
+          define('DB_CHARSET', 'utf8mb4');
+          define('DB_PREFIX',  '');
+          PHP
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
