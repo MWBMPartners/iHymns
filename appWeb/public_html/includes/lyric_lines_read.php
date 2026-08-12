@@ -359,6 +359,92 @@ function lyricLinesFirstLineMap(\mysqli $db, array $songIds): array
 }
 
 /**
+ * PURE — join preview lines into ONE single-line "complete thought" phrase for
+ * a lyric snippet (#1841).
+ *
+ * WHY: a hymn's lyric lines break where the song is SUNG, so the first sung
+ * line is very often identical to the title (e.g. "Restore, O Lord,"), which
+ * made the Song-of-the-Day snippet read as just the title again. Concatenating
+ * the first few lines into one flowing line gives a fuller, more inspiring
+ * phrase; the caller displays it single-line and lets CSS truncate it to the
+ * viewport with an ellipsis.
+ *
+ * Heuristic (kept pure + testable): append whole lines (whitespace-collapsed,
+ * joined by a space) and STOP after the first line that ENDS a sentence
+ * (`. ! ?`, optionally + a closing quote) once we are past `$minChars` — so the
+ * result is a natural, complete thought rather than a mid-clause fragment. Also
+ * stops when the next whole line would exceed `$maxChars` (never a mid-word cut
+ * — the ellipsis is the client's job), or when lines run out. A single line
+ * that alone exceeds `$maxChars` is still returned (a snippet is better than
+ * none). Line-end punctuation is checked, never mid-line punctuation, so
+ * "Amazing grace! how sweet the sound" is treated as continuing, not complete.
+ *
+ * @param  list<string> $lines     Preview lines in sung order (blanks tolerated).
+ * @param  int          $maxChars  Soft character budget for the joined phrase.
+ * @param  int          $minChars  Floor before a sentence-end may stop the join.
+ * @return string|null  The joined phrase, or null when there is no usable line.
+ */
+function lyricLinesJoinPreview(array $lines, int $maxChars = 140, int $minChars = 20): ?string
+{
+    $phrase = '';
+    foreach ($lines as $raw) {
+        $line = trim((string)preg_replace('/\s+/u', ' ', (string)$raw));
+        if ($line === '') {
+            continue;
+        }
+        $candidate = $phrase === '' ? $line : $phrase . ' ' . $line;
+        /* Adding this whole line would blow the budget and we already have
+           something usable — stop at the previous whole-line boundary. */
+        if ($phrase !== '' && mb_strlen($candidate) > $maxChars) {
+            break;
+        }
+        $phrase = $candidate;
+        /* Natural stop: a line that ends a sentence, once we have enough to be
+           a meaningful thought (not a one-word "Rejoice!"). */
+        if (mb_strlen($phrase) >= $minChars
+            && preg_match('/[.!?]["\'\x{2019}\x{201D}]?$/u', $line) === 1) {
+            break;
+        }
+        if (mb_strlen($phrase) >= $maxChars) {
+            break;
+        }
+    }
+    return $phrase !== '' ? $phrase : null;
+}
+
+/**
+ * The single-line "complete thought" lyric preview for a song (#1841) — the
+ * DB-reading sibling of the pure `lyricLinesJoinPreview()` above. Reads the
+ * first `$maxLines` non-empty lines from the authoritative `tblLyricLines`
+ * mirror (same Source='ihymns' + blank-line rule + SortOrder/Id order as
+ * `lyricLinesFirstLine()`, the ONE read path — rule #25) and joins them into
+ * one phrase. Returns null when the song has no usable line, so a caller can
+ * fall back (e.g. to a pre-mirror LinesJson read on an un-migrated install).
+ *
+ * @return string|null
+ */
+function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 140, int $maxLines = 8): ?string
+{
+    $stmt = $db->prepare(
+        "SELECT ll.LineText
+           FROM tblLyricLines ll
+           JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+          WHERE ly.SongId = ? AND ly.Source = 'ihymns' AND TRIM(ll.LineText) <> ''
+          ORDER BY ll.SortOrder, ll.Id
+          LIMIT ?"
+    );
+    $stmt->bind_param('si', $songId, $maxLines);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $lines = [];
+    while ($row = $res->fetch_row()) {
+        $lines[] = (string)$row[0];
+    }
+    $stmt->close();
+    return lyricLinesJoinPreview($lines, $maxChars);
+}
+
+/**
  * Assemble one song's components in the EDITOR/SNAPSHOT shape
  * `[{id,type,number,sortOrder,lines,chords,language,languages}]` — the shape the v2
  * editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak. Sourced from the
