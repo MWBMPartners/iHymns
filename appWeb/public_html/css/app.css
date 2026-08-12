@@ -2760,6 +2760,22 @@ body.reduce-motion .song-list-item.alphabet-highlight {
     color: var(--bs-primary, #6366f1);
 }
 
+/* #1841 — the Song-of-the-Day lyric preview is a single-line "complete thought"
+   snippet (several sung lines joined server-side). Keep it to ONE line and let
+   it truncate to the card width with an ellipsis instead of wrapping. The flex
+   text column needs min-width:0 so it can shrink below its content width and
+   actually engage the ellipsis (a flex item defaults to min-width:auto).
+   https://developer.mozilla.org/en-US/docs/Web/CSS/text-overflow */
+.card-song-of-the-day .flex-grow-1 {
+    min-width: 0;
+}
+
+.sotd-quote {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* ==========================================================================
    OFFLINE STATUS INDICATOR (#112)
    ========================================================================== */

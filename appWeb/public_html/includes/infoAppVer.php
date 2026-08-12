@@ -101,11 +101,16 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      `logo` block that also renders in the server PDF — plus the #1829 Missing
      Numbers hidden-held highlight and an owner-directed plain-English +
      minimal-disclosure rewrite of the in-app Help/Guides) — a minor bump sized
-     to a real feature plus the docs pass. */
+     to a real feature plus the docs pass.
+   - 0.5150.0 -> 0.5160.0 for the Song-of-the-Day lyric-preview fix (#1841): the
+     snippet now joins the opening lines into one "complete thought" phrase
+     instead of showing just the first line (which is very often identical to
+     the title), displayed single-line and truncated to the viewport with an
+     ellipsis. A small, single-feature minor bump. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5150.0";
+$app["Application"]["Version"]["Number"] = "0.5160.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

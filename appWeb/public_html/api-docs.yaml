@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.5150.0"
+  version: "0.5160.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -1239,8 +1239,13 @@ paths:
                     example: Christmas Song of the Day
                   firstLine:
                     type: string
-                    description: First lyric line, shown as a teaser
-                    example: "Hark! the herald angels sing"
+                    description: >-
+                      A short single-line lyric preview shown as a teaser. The
+                      opening sung lines are joined into one flowing
+                      "complete thought" phrase (a hymn's first line alone is
+                      often just the title), for the client to display on one
+                      line and truncate to the viewport with an ellipsis.
+                    example: "Amazing grace! how sweet the sound that saved a wretch like me!"
               example:
                 song:
                   id: CP-0202
@@ -1250,7 +1255,7 @@ paths:
                   songbookName: Christian Praise
                   verified: true
                 themeLabel: Song of the Day
-                firstLine: "Amazing grace! how sweet the sound"
+                firstLine: "Amazing grace! how sweet the sound that saved a wretch like me!"
 
   /api.php?action=stats:
     get:

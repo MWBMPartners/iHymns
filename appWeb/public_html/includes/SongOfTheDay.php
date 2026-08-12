@@ -284,28 +284,37 @@ final class SongOfTheDay
         return [
             'song'       => $song,
             'themeLabel' => $themeLabel,
-            'firstLine'  => $this->firstLine($songId),
+            'firstLine'  => $this->previewSnippet($songId),
         ];
     }
 
     /**
-     * First non-empty lyric line of the song (its preview line).
+     * A short single-line "complete thought" lyric preview for the card (#1841).
      *
-     * #1235 P4 (read switch) — the normalised tblLyricLines mirror is the authoritative
-     * line source, so the preview line comes from the shared assembler
-     * (lyricLinesFirstLine), never from tblSongComponents.LinesJson. The LinesJson read
-     * survives ONLY as the un-migrated-install fallback below (no mirror table yet), so
-     * the home card never breaks on a fresh install (the #1228/#1229 lesson).
+     * A hymn's first sung line is very often identical to its title (lyric lines
+     * break where the song is sung), which made this snippet read as just the
+     * title again — e.g. "Restore, O Lord,". So instead of the single first line
+     * it now joins the opening lines into one flowing phrase via the shared
+     * `lyricLinesJoinPreview()` heuristic (the client displays it single-line and
+     * truncates to the viewport with an ellipsis).
+     *
+     * #1235 P4 (read switch) — the normalised tblLyricLines mirror is the
+     * authoritative line source, so the preview comes from the shared reader
+     * (`lyricLinesPreviewPhrase`), never from tblSongComponents.LinesJson. The
+     * LinesJson read survives ONLY as the un-migrated-install fallback below (no
+     * mirror table yet) and joins with the SAME pure heuristic, so the home card
+     * never breaks on a fresh install (the #1228/#1229 lesson).
      */
-    private function firstLine(string $songId): string
+    private function previewSnippet(string $songId): string
     {
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
         if (lyricLinesMirrorPresent($this->db)) {
-            return (string)(lyricLinesFirstLine($this->db, $songId) ?? '');
+            return (string)(lyricLinesPreviewPhrase($this->db, $songId) ?? '');
         }
 
         /* lines-json-fallback (#1235 P4): un-migrated install with no tblLyricLines
-           mirror — read the first component's LinesJson directly. */
+           mirror — read the first component's LinesJson and join its lines with
+           the SAME pure heuristic the mirror path uses (#1841). */
         $stmt = $this->db->prepare(
             "SELECT LinesJson FROM tblSongComponents
               WHERE SongId = ? AND LinesJson IS NOT NULL
@@ -320,16 +329,12 @@ final class SongOfTheDay
             return '';
         }
 
-        $lines = json_decode((string)$row[0], true);
-        if (is_array($lines)) {
-            foreach ($lines as $line) {
-                $line = trim((string)$line);
-                if ($line !== '') {
-                    return $line;
-                }
-            }
+        $decoded = json_decode((string)$row[0], true);
+        if (!is_array($decoded)) {
+            return '';
         }
-        return '';
+        $lines = array_map(static fn($l): string => (string)$l, $decoded);
+        return (string)(lyricLinesJoinPreview($lines) ?? '');
     }
 
     /* =====================================================================

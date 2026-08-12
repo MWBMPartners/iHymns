@@ -172,7 +172,7 @@ export class SongOfTheDay {
                                 <span class="badge bg-body-secondary" data-songbook="${escapeHtml(song.songbook || '')}">${escapeHtml(song.songbook || '')}</span>
                                 ${song.number ? '#' + escapeHtml(String(song.number)) + ' &middot; ' : ''}${escapeHtml(song.songbookName || '')}
                             </p>
-                            ${firstLine ? `<p class="fst-italic text-muted small mb-0">&ldquo;${escapeHtml(firstLine)}&rdquo;</p>` : ''}
+                            ${firstLine ? `<p class="fst-italic text-muted small mb-0 sotd-quote" title="${escapeHtml(firstLine)}">&ldquo;${escapeHtml(firstLine)}&rdquo;</p>` : ''}
                         </div>
                     </div>
                 </div>

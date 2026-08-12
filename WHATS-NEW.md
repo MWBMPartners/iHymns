@@ -10,6 +10,13 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 0.5160.0 — 12 August 2026
+
+- **A more inspiring Song of the Day** — The little lyric taster on the home
+  page now shows a fuller opening phrase instead of just the first line (which
+  is often the same as the song's title), so the daily quote reads as a complete
+  thought. On smaller screens it trims neatly with a "…" rather than wrapping.
+
 ## 0.5150.0 — 12 August 2026
 
 - **Your church's logo on printed song sheets** — Organisations can now upload

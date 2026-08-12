@@ -49,7 +49,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, existsSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -134,7 +134,7 @@ function extractRunBlock(workflowPath, stepName) {
    doing so would test a stricter shell than the one that actually deploys.
    https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#defaultsrunshell
    ------------------------------------------------------------------------ */
-function runExtractor(script, { srcName } = {}) {
+function runExtractor(script, { srcName, changelogText } = {}) {
     const scratch = mkdtempSync(join(tmpdir(), 'whats-new-'));
     try {
         /* When a specific source is requested, place ONLY that file in the
@@ -146,6 +146,14 @@ function runExtractor(script, { srcName } = {}) {
         if (srcName) {
             copyFileSync(join(REPO_ROOT, srcName), join(scratch, srcName));
         }
+        /* An inline CHANGELOG.md — used by the legacy control (section 5) to feed
+           the historical extractor a deterministic #1589 shape (a first section
+           that alone overflows the cap) regardless of where the live CHANGELOG's
+           bulk currently sits, mirroring 4b's largest-section robustness. */
+        if (changelogText !== undefined) {
+            writeFileSync(join(scratch, 'CHANGELOG.md'), changelogText);
+        }
+        const runInScratch = srcName !== undefined || changelogText !== undefined;
         const shell = script.replace(
             /\$\{\{\s*steps\.target\.outputs\.source_dir\s*\}\}/g,
             `${scratch}/`,
@@ -154,7 +162,7 @@ function runExtractor(script, { srcName } = {}) {
             throw new Error(`unsubstituted workflow expression remains: ${shell.match(/\$\{\{[^}]*\}\}/)[0]}`);
         }
         const stdout = execFileSync('bash', ['-e', '-c', shell], {
-            cwd: srcName ? scratch : REPO_ROOT,
+            cwd: runInScratch ? scratch : REPO_ROOT,
             encoding: 'utf8',
             env: { ...process.env, GITHUB_OUTPUT: join(scratch, 'gh-output') },
         });
@@ -286,7 +294,7 @@ assertExcerpt(current, 'current extractor', record);
    the file. Keying this on position once made the guard fail the moment a small
    release landed on top (rule #34 — derive the check from the tree, not from an
    assumed ordering). */
-const { largestSectionBytes, largestSectionHeading } = (() => {
+const { largestSectionBytes, largestSectionHeading, largestSectionStart } = (() => {
     const text = readFileSync(CHANGELOG).toString('utf8');
     const starts = [];
     const re = /^## /gm;
@@ -294,15 +302,17 @@ const { largestSectionBytes, largestSectionHeading } = (() => {
     while ((m = re.exec(text)) !== null) starts.push(m.index);
     let maxBytes = 0;
     let maxHeading = '(none)';
+    let maxStart = 0;
     for (let i = 0; i < starts.length; i++) {
         const end = i + 1 < starts.length ? starts[i + 1] : text.length;
         const bytes = Buffer.byteLength(text.slice(starts[i], end), 'utf8');
         if (bytes > maxBytes) {
             maxBytes = bytes;
             maxHeading = text.slice(starts[i], text.indexOf('\n', starts[i]));
+            maxStart = starts[i];
         }
     }
-    return { largestSectionBytes: maxBytes, largestSectionHeading: maxHeading };
+    return { largestSectionBytes: maxBytes, largestSectionHeading: maxHeading, largestSectionStart: maxStart };
 })();
 record(`CHANGELOG.md largest section is ${largestSectionBytes} bytes (${largestSectionHeading})`);
 ok('CHANGELOG.md still has a section that exceeds the cap (so this test is not vacuous)',
@@ -389,7 +399,21 @@ let legacyFailures;
 let legacyChecks;
 try {
     console.error = () => {};
-    legacyFailures = assertExcerpt(runExtractor(LEGACY_STEP), 'legacy 3-section extractor', m => legacyNotes.push(m));
+    /* Feed the historical extractor the CHANGELOG FROM ITS LARGEST SECTION
+       onward, so that section is section 1 for the legacy `head -c` and alone
+       overflows the cap — the exact #1589 shape (a mid-section byte cut) — no
+       matter where that bulk currently sits in the file. A small release
+       landing on top must not silently push the reproducing section past the
+       legacy extractor's 3-section window and make this control stop failing
+       (rule #34 — the same section-ordering robustness 4b above already uses;
+       the slice is real CHANGELOG text, so the emitted lines are genuine lines
+       and the failure is a true truncation, not a foreign-line artefact). */
+    const legacyChangelog = readFileSync(CHANGELOG, 'utf8').slice(largestSectionStart);
+    legacyFailures = assertExcerpt(
+        runExtractor(LEGACY_STEP, { changelogText: legacyChangelog }),
+        'legacy 3-section extractor',
+        m => legacyNotes.push(m),
+    );
     legacyChecks = passed + failed;
 } finally {
     console.error = realConsoleError;
