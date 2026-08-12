@@ -4153,4 +4153,17 @@ return [
                !_migProbe_tableExists($db, 'tblPrintTemplateCustomLayout')
             || !_migProbe_columnExists($db, 'tblPrintTemplates', 'OrgId'),
     ],
+
+    'organisation-logos' => [
+        'script' => 'migrate-organisation-logos.php',
+        'card' => [
+            'title'  => 'Organisation Logos (#1830)',
+            'body'   => 'Creates <code>tblOrganisationLogos</code> so a church can'
+                      . ' upload its logo (mark, wordmark, combined) for printed'
+                      . ' song sheets and future screens. Idempotent — safe to re-run.',
+            'button' => 'Run Organisation Logos Migration',
+        ],
+        /* Single-object existence probe (real, never `=> true`) — rule #19. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLogos'),
+    ],
 ];

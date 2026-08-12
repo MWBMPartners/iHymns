@@ -1275,6 +1275,51 @@ CREATE TABLE IF NOT EXISTS tblOrganisationLicences (
 
 
 -- ----------------------------------------------------------------------------
+-- tblOrganisationLogos (#1830) — per-organisation branding images for Print
+-- Templates (and later the app header / projector / OG images). One row per
+-- (OrgId, Kind, Variant); a re-upload replaces the row. SVG rows store the
+-- OUTPUT of includes/svg_sanitizer.php in ContentSanitised — the ONLY bytes
+-- any serving path may read — plus the upload as received in ContentOriginal
+-- (dormant; sole source for re-sanitising after an allow-list change; never
+-- served). PNG/APNG rows store the validated original bytes in
+-- ContentSanitised with SanitiserVersion = 0 (not applicable).
+-- Mirrors appWeb/.sql/migrate-organisation-logos.php (rule #19).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrganisationLogos (
+    Id               INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    OrgId            INT UNSIGNED    NOT NULL COMMENT 'FK tblOrganisations.Id — whose branding this is',
+    Kind             VARCHAR(20)     NOT NULL COMMENT 'Brand-asset kind vocabulary token -- registry: IHYMNS_ORG_LOGO_KINDS (includes/org_logo_helpers.php, #1830). primary | secondary | emblem | logotype | full | horizontal | stacked | monochrome | reversed | favicon. VARCHAR not ENUM (rule #20) — a new kind is one map line, no ALTER',
+    Variant          VARCHAR(10)     NOT NULL DEFAULT 'default' COMMENT 'default | light | dark (reserved multiplicity, rule #20 — v1 only ever writes ''default'')',
+    Mime             VARCHAR(127)    NOT NULL COMMENT 'image/svg+xml | image/png — sniffed from the bytes at upload, never taken from the client',
+    Width            SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Intrinsic pixel width (PNG) or viewBox-derived width (SVG); NULL when underivable',
+    Height           SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Intrinsic pixel height — see Width',
+    ByteSize         INT UNSIGNED    NOT NULL COMMENT 'LENGTH(ContentSanitised) at save — cheap cap/audit read without pulling the blob',
+    Sha256           CHAR(64)        NOT NULL COMMENT 'sha256 of ContentSanitised — the ETag and the &v= cache-bust token',
+    StorageBackend   VARCHAR(20)     NOT NULL DEFAULT 'database' COMMENT 'database | filesystem | object-store (VARCHAR not ENUM, rule #20 — v1 only ever writes ''database''; the row wins on read, SongMediaStorage precedent)',
+    ContentSanitised MEDIUMBLOB      NULL COMMENT 'The ONLY serve-readable bytes: svg_sanitizer.php output for SVG, validated original bytes for PNG/APNG',
+    ContentOriginal  MEDIUMBLOB      NULL COMMENT 'SVG upload as received (dormant) — sole source for re-sanitising after an allow-list change; guard-banned from serving paths; NULL for raster rows',
+    StoragePath      VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Dormant (rule #20) — relative path for a future non-database StorageBackend',
+    SanitiserVersion INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'IHYMNS_SVG_SANITISER_VERSION that produced ContentSanitised (0 = raster, not applicable); a bump flags SVG rows for re-sanitise',
+    AltText          VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Accessible label for the rendered <img>; NULL = "<Org name> logo"',
+    MetaJson         JSON            NULL DEFAULT NULL COMMENT 'Dormant grab-bag for future surface hints (focal point, background, padding) — growable vocabulary is JSON, never new columns (rule #20/#28)',
+    IsActive         TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = hidden from every surface without deleting the upload',
+    UploadedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — who uploaded it',
+    CreatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_OrgKindVariant (OrgId, Kind, Variant),
+    INDEX idx_UploadedBy (UploadedBy),
+
+    CONSTRAINT fk_OrgLogo_Org
+        FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_OrgLogo_User
+        FOREIGN KEY (UploadedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblContentLicences
 -- Licences that grant access to specific songbooks/features.
 -- Can be attached to an org OR a user (or both).
