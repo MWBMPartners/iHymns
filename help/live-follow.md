@@ -103,7 +103,7 @@ No account needed — just:
 
 Codes rotate roughly every 30 seconds, so if one is refused, just read the **current** code off the screen and try again — the latest one on the screen always works.
 
-**For church leaders:** before your congregation can use Service Mode, your site administrator needs to run a one-off setup step (a couple of buttons under Database Setup — this only needs doing once per site), and your church needs a venue set up in the admin console. Once that's done, an administrator starts and projects the code from Service Projection, or drives it from a phone with Lead a Service. If you start an ad-hoc (unscheduled) service in the evening and it shows as finished right away, pick a real scheduled service time that covers now instead — ad-hoc services are only reliable in the morning for now.
+**For church leaders:** before your congregation can use Service Mode, your site administrator needs to run a one-off setup step (a couple of buttons under Database Setup — this only needs doing once per site), and your church needs a venue set up in the admin console. Once that's done, an administrator starts and projects the code from Projector Screen, or drives it from a phone with Lead a Service. If you start an ad-hoc (unscheduled) service in the evening and it shows as finished right away, pick a real scheduled service time that covers now instead — ad-hoc services are only reliable in the morning for now.
 
 ---
 

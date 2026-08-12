@@ -1,3 +1,57 @@
+## [0.5150.0] — 2026-08-12 (alpha)
+
+Org-branding round on the `claude/issue-sweep-fixes-89` branch: per-organisation logos for Print
+Templates (#1830), the Missing Numbers hidden-held highlight (#1829), and an owner-directed
+plain-English + minimal-disclosure rewrite of the in-app Help/Guides. Owner-directed **minor version
+bump** (0.5100.0 → 0.5150.0) sized to a real feature plus the docs pass.
+
+- feat(org-logos): **per-organisation logo uploads for Print Templates** (#1830). A church can now
+  upload its logo (SVG preferred, PNG/APNG also accepted) in any of ten brand-guide shapes — primary,
+  combined, wide, stacked, symbol-only, name-only, alternative, single-colour, light-on-dark, and app
+  icon — from `/manage/organisations` (system admins) or `/manage/my-organisations` (org admins). SVG
+  uploads pass through a brand-new, dedicated hardened sanitiser (`includes/svg_sanitizer.php`) —
+  default-deny XML rebuild, XXE-safe (entity loader nulled, DOCTYPE rejected twice, no entity
+  substitution), a 19-element allow-list that drops (never unwraps) anything not on it, and a
+  render-bomb node/depth budget — before ever being stored; logos are served by a new standalone
+  `org-logo.php` endpoint (mirrors `qr.php`/`og-image.php`, `default-src 'none'; sandbox` CSP) and are
+  **never inlined** into any page, always a plain `<img src>`. A new `logo` block in the Print Template
+  editor lets a curator choose which brand shape to print, or leave it on "Automatic" to walk a
+  ladder (primary → combined → wide → stacked → …) and use the best one the org has actually
+  uploaded — an explicit choice with nothing uploaded renders nothing, never a broken image. Scope for
+  this PR is print only; the app header, projector and OG-image surfaces are deferred to a follow-up
+  (the schema, endpoint and alt text already carry everything they'll need). Ships with a
+  mutation-proven functional truth table for the sanitiser (`tests/php/test-svg-sanitizer.php`) and a
+  tree-derived wiring guard (`tests/php/test-org-logo-surfaces.php`) that bans any surface from
+  inlining SVG or reading the dormant unsanitised original. The `logo` block renders in **both** the
+  browser Print dialog **and** the downloadable server PDF — the PDF payload relativises the block's
+  same-origin image address so it survives the server's HTML safety filter and is inlined as bytes
+  (this also fixes the same latent gap for the #1767 QR block); guarded by
+  `tests/test-print-pdf-img-src.js`.
+
+- feat(missing-numbers): **Missing Numbers flags numbers held only by a hidden (deleted) song** (#1829,
+  merged as #1837). The report still counts a soft-deleted song's number as PRESENT (filling the gap
+  and later restoring the original would mint a duplicate number — the #1694 non-unique-index trap),
+  but now ALSO surfaces the numbers whose ONLY song is hidden: a "Held by hidden songs" panel, a count
+  tile, a per-songbook badge and a link straight to Deleted Songs, so a curator can restore or purge
+  them. A number with even one visible song is never flagged. Classified through the ONE gated
+  `songVisibleSql()` predicate (degrades to a live-only count on an un-migrated docroot). Guarded by
+  `tests/php/test-missing-numbers-hidden.php` (source-scan + transactional behavioural).
+
+- docs(help): **plain-English + minimal-disclosure pass on the in-app Help/Guides** (owner-directed).
+  The admin `manage/help.php` and public `includes/pages/help.php` carried GitHub issue-number
+  citations, database table names, internal config-flag names and raw permission keys in copy that
+  curators, moderators and non-technical admins read. This pass strips ~98 issue-number citations from
+  the admin help's visible copy (kept only in the required developer-annotation comments), rephrases
+  internal identifiers into plain English, applies the renamed Manage items (Edit History, Find
+  Duplicates, Membership Tiers, Role Permissions, Content Access, …), documents the new Missing Numbers
+  highlight and the organisation-logo feature, and corrects a stale public-help claim that only admins
+  could delete a song (it is available to editors and above, and is recoverable). Display copy only —
+  no section anchors, links or logic changed; `php -l` clean.
+
+- chore(version): **bump 0.5100.0 → 0.5150.0** (owner-directed minor). Lockstep across
+  `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `WHATS-NEW.md`,
+  `PROJECT_STATUS.md` and the `.claude/` docs.
+
 ## [0.5100.0] — 2026-08-12 (alpha)
 
 Follow-up round on the `claude/issue-sweep-fixes-89` branch after the 0.5050.0 batch merged: a
@@ -42,28 +96,6 @@ migration deploy-path hotfix, three post-merge CI fixes, a plain-language rewrit
   description on 36 jargon-heavy `/manage/*` pages rewritten to plain English (display copy only; no
   logic, gates or structure touched). House style captured in `.claude/admin-plain-english.md`.
 
-- feat(org-logos): **per-organisation logo uploads for Print Templates** (#1830). A church can now
-  upload its logo (SVG preferred, PNG/APNG also accepted) in any of ten brand-guide shapes — primary,
-  combined, wide, stacked, symbol-only, name-only, alternative, single-colour, light-on-dark, and app
-  icon — from `/manage/organisations` (system admins) or `/manage/my-organisations` (org admins). SVG
-  uploads pass through a brand-new, dedicated hardened sanitiser (`includes/svg_sanitizer.php`) —
-  default-deny XML rebuild, XXE-safe (entity loader nulled, DOCTYPE rejected twice, no entity
-  substitution), a 19-element allow-list that drops (never unwraps) anything not on it, and a
-  render-bomb node/depth budget — before ever being stored; logos are served by a new standalone
-  `org-logo.php` endpoint (mirrors `qr.php`/`og-image.php`, `default-src 'none'; sandbox` CSP) and are
-  **never inlined** into any page, always a plain `<img src>`. A new `logo` block in the Print Template
-  editor lets a curator choose which brand shape to print, or leave it on "Automatic" to walk a
-  ladder (primary → combined → wide → stacked → …) and use the best one the org has actually
-  uploaded — an explicit choice with nothing uploaded renders nothing, never a broken image. Scope for
-  this PR is print only; the app header, projector and OG-image surfaces are deferred to a follow-up
-  (the schema, endpoint and alt text already carry everything they'll need). Ships with a
-  mutation-proven functional truth table for the sanitiser (`tests/php/test-svg-sanitizer.php`) and a
-  tree-derived wiring guard (`tests/php/test-org-logo-surfaces.php`) that bans any surface from
-  inlining SVG or reading the dormant unsanitised original. The `logo` block renders in **both** the
-  browser Print dialog **and** the downloadable server PDF — the PDF payload relativises the block's
-  same-origin image address so it survives the server's HTML safety filter and is inlined as bytes
-  (this also fixes the same latent gap for the #1767 QR block); guarded by
-  `tests/test-print-pdf-img-src.js`.
 
 - chore(version): **bump 0.5050.0 → 0.5100.0** (owner-directed minor). Lockstep across
   `includes/infoAppVer.php`, `api-docs.yaml`, `manifest.json`, `README.md`, `WHATS-NEW.md`,
