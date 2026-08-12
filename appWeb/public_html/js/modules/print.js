@@ -35,8 +35,28 @@ export const PRINT_BLOCK_TYPES = {
     text:        { label: 'Custom text',     options: { content: '' } },
     permalink:   { label: 'Permalink (URL)', options: {} },
     qr:          { label: 'QR code',         options: { size: 'md' } },            /* #1767 R — QR of the permalink, rendered as an <img> to the CueRCode-backed /qr.php */
+    logo:        { label: 'Organisation logo', options: { kind: 'auto', size: 'md', align: 'center' } },  /* #1830 — the org's uploaded branding, rendered as an <img> to /org-logo.php */
     spacer:      { label: 'Spacer',          options: { size: 'md' } },
     pagebreak:   { label: 'Page break',      options: {} },
+};
+
+/* #1830 — client mirror of IHYMNS_ORG_LOGO_KINDS (includes/org_logo_helpers.php).
+   Key order IS the 'auto' fallback ladder (§4.1/§6.3 of the plan) — kept in
+   lockstep with the PHP registry by tests/php/test-org-logo-surfaces.php
+   (order drift is ladder drift, rule #35: a mechanism, not a comment). Only
+   the label is needed client-side (the editor's `kind` picker); the
+   one-line description lives server-side only. */
+export const ORG_LOGO_KINDS = {
+    primary: 'Primary logo',
+    full: 'Combined logo',
+    horizontal: 'Wide layout',
+    stacked: 'Stacked layout',
+    emblem: 'Symbol only',
+    logotype: 'Name only',
+    secondary: 'Alternative logo',
+    monochrome: 'Single-colour',
+    reversed: 'Light-on-dark',
+    favicon: 'App icon',
 };
 
 /* Page-level option registry (#1767 G/V/AB/AM/F) — the SAME pattern as
@@ -357,6 +377,46 @@ function renderBlock(song, block) {
                 + ` onerror="this.style.display='none'">`
                 + `<div class="print-qr-caption">${esc(url)}</div></div>`;
         }
+        case 'logo': {
+            /* #1830 — the organisation's uploaded branding, resolved from the
+               `_printOrgLogos` stash `fetchSong()` attaches (session-cached
+               my_organisations lookup, §6.3). Absent stash (anonymous user,
+               no org, no logos, or the lookup itself failed) -> renders
+               NOTHING, same "graceful absence" principle as subtitle/
+               copyright/identifiers — never a broken-image glyph on a
+               printed handout. */
+            const stash = song._printOrgLogos;
+            if (!stash || !stash.byKind) { return ''; }
+            const available = Object.keys(stash.byKind);
+            const requested = block.kind || 'auto';
+            let kind = null;
+            if (requested === 'auto') {
+                /* The SAME ladder order as ORG_LOGO_KINDS/IHYMNS_ORG_LOGO_KINDS
+                   (rule #35 lockstep, tests/php/test-org-logo-surfaces.php) —
+                   prefer the most complete asset the org actually uploaded. */
+                for (const k of Object.keys(ORG_LOGO_KINDS)) {
+                    if (available.includes(k)) { kind = k; break; }
+                }
+            } else if (available.includes(requested)) {
+                /* An explicit kind resolves to itself or nothing — NEVER a
+                   substituted kind (the author asked for something specific;
+                   silently swapping a different asset behind their back is
+                   worse than absence). */
+                kind = requested;
+            }
+            if (!kind) { return ''; }
+            const meta  = stash.byKind[kind];
+            const align = (block.align === 'left' || block.align === 'right') ? block.align : 'center';
+            const px    = block.size === 'lg' ? 220 : block.size === 'sm' ? 90 : 150;
+            const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+            const src = origin + '/org-logo.php?org=' + encodeURIComponent(stash.orgId)
+                + '&kind=' + encodeURIComponent(kind) + '&v=' + encodeURIComponent(meta.v || '');
+            const alt = meta.alt || (stash.name ? stash.name + ' logo' : 'Organisation logo');
+            return `<div class="print-logo" style="text-align:${align}">`
+                + `<img class="print-logo-img" src="${esc(src)}" alt="${esc(alt)}"`
+                + ` style="max-height:${px}px;max-width:100%"`
+                + ` onerror="this.style.display='none'"></div>`;
+        }
         case 'spacer': {
             const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
             return `<div style="height:${h}"></div>`;
@@ -417,6 +477,8 @@ export function printCss(pageOptions) {
     .print-qr { margin: 0.9em 0; text-align: center; break-inside: avoid; }
     .print-qr-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
     .print-qr-caption { font-family: 'Courier New', monospace; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cMuted2}; margin-top: 0.3em; word-break: break-all; }
+    .print-logo { margin: 0.9em 0; break-inside: avoid; }
+    .print-logo-img { display: inline-block; max-width: 100%; height: auto;${inkSaver ? ' filter: grayscale(1);' : ''} }
     .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: ${cFaint}; }
     .print-ccli-notice { margin-top: 1em; font-size: ${Math.max(8, fontPt - 4)}pt; color: ${cFaint}; text-align: center; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
@@ -478,6 +540,52 @@ function printDoc(html) {
     return true;
 }
 
+/* #1830 §6.3 — session-cached my_organisations lookup feeding the print
+   `logo` block. Resolves the FIRST org (my_organisations' own `ORDER BY
+   Name ASC`) that has at least one ACTIVE logo, shaped exactly as
+   renderBlock('logo') reads it: `{ orgId, name, byKind: { <kind>: {kind,
+   variant, v, alt, width, height} } }`. A single in-flight/settled promise
+   is shared across every song a print session fetches (single-song print,
+   or a whole set-list/songbook batch) — my_organisations is a small,
+   rarely-changing list, the SAME "effectively static per session" treatment
+   printUsageContextFor() already gives its own per-song lookups (there,
+   keyed per song; here, there is only ever ONE relevant answer per session,
+   so a single shared promise is simpler and cheaper than a Map). Anonymous
+   user / no org / no org with an active logo / a failed fetch all resolve
+   to `null` — renderBlock('logo') then renders nothing (§6.3), never a
+   broken image. NOT reset between print sessions on purpose: the org list a
+   signed-in user belongs to does not change mid-session in any way stale
+   data here could meaningfully harm (worst case: one stale/missing logo
+   until the next full page load, mirroring printUsageContextFor()'s
+   identical trade-off note). */
+let _printOrgLogosPromise = null;
+async function fetchPrintOrgLogos(app) {
+    if (_printOrgLogosPromise) { return _printOrgLogosPromise; }
+    _printOrgLogosPromise = (async () => {
+        try {
+            const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+            const res = await apiFetch(`${base}?action=my_organisations`,
+                { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', auth: true });
+            if (!res.ok) { return null; }
+            const json = await res.json();
+            const orgs = Array.isArray(json.organisations) ? json.organisations : [];
+            for (const org of orgs) {
+                const logos = Array.isArray(org.logos) ? org.logos : [];
+                if (!logos.length) { continue; }
+                const byKind = {};
+                logos.forEach((l) => { if (l && l.kind) { byKind[l.kind] = l; } });
+                if (Object.keys(byKind).length) {
+                    return { orgId: org.id, name: org.name || '', byKind };
+                }
+            }
+            return null; // signed in, but no org (or no org with an active logo)
+        } catch (_e) {
+            return null; // anonymous (401) or any network/parse failure — fail to "no logo"
+        }
+    })();
+    return _printOrgLogosPromise;
+}
+
 export async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
@@ -489,7 +597,13 @@ export async function fetchSong(app, songId) {
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (!res.ok) { return null; }
         const json = await res.json();
-        return json.song || null;
+        const song = json.song || null;
+        if (song) {
+            /* #1830 — stash for renderBlock('logo'); absent when the lookup
+               resolves to null (see fetchPrintOrgLogos()'s doc-block). */
+            song._printOrgLogos = await fetchPrintOrgLogos(app);
+        }
+        return song;
     } catch (_e) { return null; }
 }
 
@@ -746,6 +860,50 @@ function triggerBlobDownload(blob, filename) {
 }
 
 /**
+ * #1830 §6.4 — relativise the two SERVER-INLINED image endpoints' `<img src>`
+ * in a PDF-bound document's bodyHtml.
+ *
+ * WHY: the print `logo` block (and the #1767 R `qr` block) emit an ABSOLUTE
+ * same-origin src (`window.location.origin + '/org-logo.php?…'`) because the
+ * browser-Print path writes into an `about:blank` popup that has no base URL
+ * for a root-relative path to resolve against. The server-PDF path, though,
+ * re-sanitises the POSTed bodyHtml with `includes/html_sanitizer.php`'s
+ * 'layout' profile, whose `img_src` allow-list admits ONLY root-relative
+ * `#^/qr\.php\?#` / `#^/org-logo\.php\?#` (an absolute URL matches neither and
+ * is dropped) — and `pdf_renderer.php`'s `_pdfInlineQrImage()` /
+ * `_pdfInlineOrgLogo()` key on those same `^/…\.php\?` prefixes. So an
+ * absolute-src block image is stripped BEFORE the inliners ever run, and the
+ * `logo`/`qr` block silently vanishes from the downloaded PDF (it renders only
+ * in browser Print). Rewriting just these two endpoints' same-origin absolute
+ * srcs back to root-relative is exactly the shape both the sanitiser and the
+ * inliners already expect — it makes the already-built `_pdfInline*` resolvers
+ * reachable for block images, which is what §6.4 of the plan intends.
+ *
+ * TARGETED, never a blanket `origin` strip: a `permalink` block and the `qr`
+ * caption show the FULL absolute URL as visible TEXT (not an `src`), and that
+ * must stay untouched — so the match is anchored on `src="` + the exact origin
+ * + one of the two endpoint paths only.
+ *
+ * Pure + exported for `tests/test-print-pdf-img-src.js` (rule #34 — a mutation-
+ * proven guard, not a comment). Browser Print keeps absolute URLs; only the
+ * PDF payload is rewritten (in `downloadPrintPdf()` below, the single choke
+ * point both PDF builders funnel through).
+ *
+ * @param {string} html    A document's bodyHtml (as the browser rendered it).
+ * @param {string} origin  `window.location.origin` for this session.
+ * @returns {string} The bodyHtml with same-origin /qr.php + /org-logo.php img
+ *          srcs relativised; unchanged when `html`/`origin` is empty.
+ */
+export function pdfRelativiseServerImgSrc(html, origin) {
+    if (typeof html !== 'string' || !origin) { return html; }
+    const escOrigin = origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return html.replace(
+        new RegExp('(src=")' + escOrigin + '(/(?:qr|org-logo)\\.php\\?)', 'g'),
+        '$1$2'
+    );
+}
+
+/**
  * #1767 remainder P4/P6 — POST a print-pdf.php request body (`mode`,
  * `documents`, `css`, `pageOptions`, `filename`, `copies?`) to the
  * server-PDF endpoint and download the resulting file. THE ONE POST +
@@ -768,6 +926,23 @@ function triggerBlobDownload(blob, filename) {
  *          failure (the caller has already been toasted either way).
  */
 export async function downloadPrintPdf(app, payload) {
+    /* #1830 §6.4 — relativise the server-inlined image endpoints' srcs in the
+       PDF payload so a `logo`/`qr` block survives the 'layout' sanitiser and
+       reaches the PDF inliners (see pdfRelativiseServerImgSrc()'s doc-block).
+       Done HERE — the one choke point both PDF builders (downloadSongPdf,
+       SetList._downloadSetListPdf) funnel through — so neither can forget it. */
+    const _origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+    if (_origin && payload && Array.isArray(payload.documents)) {
+        payload = {
+            ...payload,
+            documents: payload.documents.map((d) => (
+                d && typeof d.bodyHtml === 'string'
+                    ? { ...d, bodyHtml: pdfRelativiseServerImgSrc(d.bodyHtml, _origin) }
+                    : d
+            )),
+        };
+    }
+
     app.showToast?.('Building PDF…', 'info', 2500);
 
     let res;

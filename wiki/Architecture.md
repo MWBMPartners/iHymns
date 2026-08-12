@@ -185,6 +185,8 @@ Each family below lands as a small set of single-home modules; a new caller reus
 
 **QR (#1767 R / owner directive).** QR images are generated server-side by the CueRCode service via `includes/cuercode_client.php` and served by the same-origin `/qr.php` endpoint — no client-side QR library. See CLAUDE.md rule #38.
 
+**Organisation logos (#1830, `.claude/org-logos-1830-plan.md`).** `includes/org_logo_helpers.php` (the ONE `IHYMNS_ORG_LOGO_KINDS` 10-kind registry, ladder order = the `'auto'` fallback ladder + reads) + `includes/org_logo_admin.php` (validate/stage/upsert/delete/toggle — the SVG branch's ONLY path into `includes/svg_sanitizer.php`, a NEW, separate, STRICTER sibling of `html_sanitizer.php` built specifically for turning an untrusted SVG upload into safe bytes to store; see [[Security]]). Served by the standalone `org-logo.php` (mirrors `qr.php`/`og-image.php`) — always `<img src>`, never inlined. Wired into Print Templates only (v1 scope): `includes/print_template_schema.php`'s `logo` block + `js/modules/print.js`'s `renderBlock('logo')`, `ORG_LOGO_KINDS` client mirror, and `pdf_renderer.php`'s `_pdfInlineOrgLogo()` (mirrors `_pdfInlineQrImage()`'s "never mPDF self-request over HTTP" doctrine). App header / projector / OG-image surfaces are deferred — the schema, endpoint, alt text and dormant `Variant` (light/dark) column already carry everything they need. `tests/php/test-svg-sanitizer.php` and `tests/php/test-org-logo-surfaces.php` (a tree-derived wiring guard, never a typed file list) are both mutation-proven.
+
 ---
 
 ## Native App Architecture

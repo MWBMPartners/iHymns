@@ -279,6 +279,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
    slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+/* #1830 — orgLogoTableExists()/orgLogoListForOrg() for my_organisations'
+   additive `logos` field (§6.3 of the plan). Side-effect-free to require. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
 /* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
@@ -8145,10 +8148,32 @@ if ($action !== null) {
             $orgs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
+            /* #1830 §6.3 — additive `logos` field, gated dormant on an
+               un-migrated install (rule #19: probed ONCE, not per-org). Meta
+               only (no blobs) — the print block resolves the actual bytes
+               through org-logo.php using this row's `kind`/`v` (Sha256). */
+            $orgLogosGated = orgLogoTableExists($db);
+
             foreach ($orgs as &$org) {
                 $org['id'] = (int)$org['id'];
                 $org['parentOrgId'] = $org['parentOrgId'] ? (int)$org['parentOrgId'] : null;
                 $org['isActive'] = (bool)$org['isActive'];
+                if ($orgLogosGated) {
+                    $org['logos'] = array_map(
+                        static fn(array $l): array => [
+                            'kind'    => (string)$l['Kind'],
+                            'variant' => (string)$l['Variant'],
+                            'v'       => (string)$l['Sha256'],
+                            'alt'     => $l['AltText'] !== null ? (string)$l['AltText'] : null,
+                            'width'   => $l['Width'] !== null ? (int)$l['Width'] : null,
+                            'height'  => $l['Height'] !== null ? (int)$l['Height'] : null,
+                        ],
+                        array_values(array_filter(
+                            orgLogoListForOrg($db, $org['id']),
+                            static fn(array $l): bool => (int)$l['IsActive'] === 1
+                        ))
+                    );
+                }
             }
             unset($org);
 

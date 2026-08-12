@@ -70,6 +70,12 @@ declare(strict_types=1);
    once, inside ihymnsPdfEngineAvailable(). getAppSetting()/cuercodeGenerate()
    (the QR-inlining adapter's one dependency, §4.5) come along for free. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'cuercode_client.php';
+/* #1830 — orgLogoFetchServeRow()/ihymnsOrgLogoKindKeys()/IHYMNS_ORG_LOGO_VARIANTS
+   for _pdfInlineOrgLogo() below. db_mysql.php for getDbMysqli() — side-effect-free
+   to require (mirrors this file's own cuercode_client.php discipline; no
+   connection is opened until _pdfInlineOrgLogo() actually calls it). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
 /* =============================================================================
  * ENGINE AVAILABILITY (dormant-503 discipline)
@@ -305,6 +311,62 @@ function _pdfInlineQrImage(string $src): ?string
 }
 
 /**
+ * §6.4 of the plan — inline an `/org-logo.php?org=…&kind=…[&variant=…]`
+ * `<img src>` (the print `logo` block's own emission) as a `data:` URI,
+ * mirroring `_pdfInlineQrImage()`'s "never mPDF self-requesting over HTTP"
+ * doctrine exactly: this calls `orgLogoFetchServeRow()` DIRECTLY rather than
+ * having mPDF fetch the URL itself — a needless SSRF-shaped surface, and
+ * mPDF has no base URL configured for this render anyway. `kind`/`variant`
+ * are re-validated against the ONE registry here (never trusted from the
+ * query string alone — a crafted POST cannot probe an unvalidated column
+ * value through this path any more than through `org-logo.php` itself). No
+ * server-side KIND CHOICE happens here: the client's `renderBlock('logo')`
+ * ladder resolution already baked the chosen kind into the src BEFORE the
+ * HTML was POSTed (§6.3) — this function only resolves BYTES for a src the
+ * client already decided on.
+ *
+ * @param  string $src The sanitised `<img src>` value (must already match `^/org-logo\.php\?`).
+ * @return string|null A `data:<mime>;base64,<bytes>` URI, or null on ANY failure
+ *                       (pre-migration install, no active logo, DB unreachable,
+ *                       malformed query) — the caller then DROPS the `<img>`
+ *                       entirely, same "absence renders as absence" principle
+ *                       as the QR adapter and `org-logo.php` itself.
+ */
+function _pdfInlineOrgLogo(string $src): ?string
+{
+    if (preg_match('#^/org-logo\.php\?#', $src) !== 1) {
+        return null; // defensive floor — see _pdfInlineQrImage()'s identical comment
+    }
+    $query = parse_url($src, PHP_URL_QUERY);
+    if (!is_string($query) || $query === '') {
+        return null;
+    }
+    parse_str($query, $params);
+    $orgId   = isset($params['org']) ? (int)$params['org'] : 0;
+    $kind    = isset($params['kind']) ? (string)$params['kind'] : '';
+    $variant = isset($params['variant']) ? (string)$params['variant'] : 'default';
+    if ($orgId <= 0
+        || !in_array($kind, ihymnsOrgLogoKindKeys(), true)
+        || !in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+        return null;
+    }
+
+    try {
+        $db = getDbMysqli();
+    } catch (\Throwable $e) {
+        return null; // DB unreachable — degrade like a dormant install
+    }
+    if (!orgLogoTableExists($db)) {
+        return null;
+    }
+    $row = orgLogoFetchServeRow($db, $orgId, $kind, $variant);
+    if ($row === null || empty($row['ContentSanitised']) || empty($row['Mime'])) {
+        return null; // no active logo for this (org, kind[, variant]) — caller drops the <img>
+    }
+    return 'data:' . $row['Mime'] . ';base64,' . base64_encode((string)$row['ContentSanitised']);
+}
+
+/**
  * Adapt ALREADY-SANITISED print HTML for mPDF (§4.2 point 2, §4.5, and
  * #1767 remainder P7 §7.1 point 4) — a SINGLE DOM pass performing three
  * deterministic, documented rewrites:
@@ -422,7 +484,17 @@ function _pdfAdaptHtml(string $html): string
             if (str_starts_with($src, 'data:image/')) {
                 continue;
             }
-            $dataUri = _pdfInlineQrImage($src);
+            /* #1830 §6.4 — /org-logo.php?… srcs go through the org-logo
+               resolver BEFORE the QR resolver (the two prefixes are
+               mutually exclusive, so order is not load-bearing for
+               correctness — kept in the plan's stated order for
+               readability). Either resolver returning null means "no
+               bytes for this src", and the shared fallthrough below drops
+               the <img> — never a broken image in a PDF. */
+            $dataUri = _pdfInlineOrgLogo($src);
+            if ($dataUri === null) {
+                $dataUri = _pdfInlineQrImage($src);
+            }
             if ($dataUri !== null) {
                 $img->setAttribute('src', $dataUri);
             } else {

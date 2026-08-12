@@ -80,8 +80,15 @@ declare(strict_types=1);
  * looser version — see the plan's §5.4. Not read by this file itself; the
  * caller (the save/re-sanitise path, a later commit) is responsible for
  * stamping it.
+ *
+ * v1 -> v2 (#1830): both profiles' `img_src.patterns` widened to also admit
+ * `/org-logo.php?...` (the print `logo` block's image source) alongside the
+ * existing `/qr.php?...` pattern — a PURE WIDENING (no tag/attribute/class
+ * tightened or removed), so existing stored `tblPrintTemplateCustomLayout`
+ * rows need no urgent re-sanitise, but the version must still tell the
+ * truth about what changed.
  */
-const IHYMNS_HTML_SANITISER_VERSION = 1;
+const IHYMNS_HTML_SANITISER_VERSION = 2;
 
 /**
  * Tags ALWAYS unwrapped (never allow-listed by either profile), named here
@@ -134,10 +141,11 @@ const IHYMNS_SANITIZER_PROFILES = [
            per-verse/chorus/bridge/etc. type class (print.js L196). */
         'class_pattern' => '/^(?:print|lyric)-[a-z0-9]+(?:-[a-z0-9]+)*$/',
         'img_src' => [
-            /* The ONLY src shape print.js ever emits (the CueRCode-backed
-               QR image, print.js L335) — structurally excludes
+            /* The ONLY two src shapes print.js ever emits — the CueRCode-backed
+               QR image (print.js L335) and, since #1830, the org-logo image
+               (print.js's `case 'logo'`) — structurally excludes
                /song-media/<id> (rule M) and any javascript:/data: scheme. */
-            'patterns' => ['#^/qr\.php\?#'],
+            'patterns' => ['#^/qr\.php\?#', '#^/org-logo\.php\?#'],
         ],
     ],
     'layout' => [
@@ -159,8 +167,9 @@ const IHYMNS_SANITIZER_PROFILES = [
            can ride in via a class value). */
         'class_pattern' => '/^[A-Za-z0-9_-]+$/',
         'img_src' => [
-            /* A layout may also emit its own QR image via the same helper. */
-            'patterns' => ['#^/qr\.php\?#'],
+            /* A layout may also emit its own QR / org-logo image via the
+               same helpers (#1830). */
+            'patterns' => ['#^/qr\.php\?#', '#^/org-logo\.php\?#'],
             /* Self-contained only — no network fetch, no SVG (SVG is a
                script vector: <svg><script>…</script></svg> is valid SVG).
                200 KiB decoded cap keeps a curator's logo/background small

@@ -221,7 +221,9 @@ return [
         'person_by_identifier'  => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7; #1741 P2-B back-compat alias for musician_by_identifier',
         'musician_by_identifier'=> 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7; #1741 P2-B canonical name (renamed from person_by_identifier)',
         'songs_list'            => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
-        'my_organisations'     => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
+        /* my_organisations REMOVED from this allowlist (#1830) — it now has a
+           genuine web caller: js/modules/print.js's fetchPrintOrgLogos()
+           (the print `logo` block's org/logo resolution, §6.3 of the plan). */
         'songs_by_tag'         => 'deliberate API parity; superseded for the web by ?page=tag (#1637); X7 adds the yaml note',
         'song_revisions'       => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
         'regions'              => 'deliberate API/native parity read of the seed-only tblRegions. Found by THIS guard, not by the 2026-07-30 inventory',

@@ -95,6 +95,18 @@ These are enforced conventions; new code must follow them (see
   host-bound to archive.org, size-capped with an aborting write-callback, follows
   no redirects, and keeps SSL verification on (the same house pattern as
   `intapps_client.php` / `cuercode_client.php`).
+- **Organisation-logo SVG uploads are sanitised by a dedicated, stricter module**
+  (#1830) — `includes/svg_sanitizer.php`, separate from and stricter than the
+  print-layout sanitiser above (which correctly keeps blocking `<svg>` outright).
+  `DOMDocument::loadXML()` with `LIBXML_NONET`, never `LIBXML_NOENT`, the entity
+  loader nulled, a pre-parse `<!DOCTYPE`/`<!ENTITY` byte reject **plus** a
+  post-parse doctype check (two independent XXE layers), a 10 000-node/64-level
+  render-bomb budget, and a 19-element allow-list that **drops** (never unwraps)
+  `<script>`, `<style>`, `<foreignObject>`, `<use>`, `<image>`, `<a>`, every SMIL
+  element and every filter/mask/pattern element. The only `url()` shape that
+  survives anywhere is a same-document `url(#id)`. Logos are served by the
+  standalone `org-logo.php` (`default-src 'none'; sandbox` CSP) and are
+  **never inlined** — always a plain `<img src>`.
 - **Content access** — gated centrally via
   `includes/content_access.php::checkContentAccess()` against
   `tblContentRestrictions` + access tiers + organisation licences (never queried

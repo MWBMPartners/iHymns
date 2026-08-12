@@ -44,6 +44,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    $orgIdleColsExist above verbatim (rule #19 / CLAUDE.md rule: reuse a
    shape, don't re-fork it). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+/* #1830 — the ONE org-logo core (kind registry + reads + the shared admin
+   card renderer, also used by manage/organisations.php); org_logo_admin.php
+   pulls in org_logo_helpers.php transitively. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -401,6 +405,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'enforce_setlist_edit_audience' => (bool)$enforceVal,
                 ]);
                 $success = 'Set-list edit-link preference saved.';
+                break;
+            }
+
+            /* #1830 — organisation logos, editable by the org's OWN admin.
+               $orgId here is ALREADY the row-level-gated global (the
+               $canActOnOrg() check above ran before this switch), unlike
+               manage/organisations.php's per-case re-parse. */
+            case 'logo_upload': {
+                $kind = (string)($_POST['kind'] ?? '');
+                if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
+                $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
+                $file    = $_FILES['logo_file'] ?? null;
+                $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+                if ($fileErr !== UPLOAD_ERR_OK) {
+                    $error = in_array($fileErr, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                        ? 'That file is too large for a logo.'
+                        : 'Please choose a logo file to upload.';
+                    break;
+                }
+                try {
+                    $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
+                    orgLogoUpsert($db, $orgId, $kind, 'default', $staged, $altText, $userId);
+                    logActivity('org_admin.logo_upload', 'organisation', (string)$orgId, [
+                        'kind' => $kind, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                    ]);
+                    $success = 'Logo uploaded.';
+                } catch (\RuntimeException $e) {
+                    $error = $e->getMessage(); // plain-English, safe to show verbatim (§4.4)
+                }
+                break;
+            }
+
+            case 'logo_remove': {
+                $kind = (string)($_POST['kind'] ?? '');
+                if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
+                orgLogoDelete($db, $orgId, $kind, 'default');
+                logActivity('org_admin.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind]);
+                $success = 'Logo removed.';
+                break;
+            }
+
+            case 'logo_toggle': {
+                $kind = (string)($_POST['kind'] ?? '');
+                if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
+                $active = !empty($_POST['active']);
+                orgLogoSetActive($db, $orgId, $kind, 'default', $active);
+                logActivity('org_admin.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
+                $success = $active ? 'Logo shown again.' : 'Logo hidden.';
                 break;
             }
 
@@ -961,6 +1013,9 @@ $csrf = csrfToken();
                     </div>
                 </form>
                 <?php endif; ?>
+
+                <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
+                      echo orgLogoRenderAdminCard($db, $orgId, $csrf); ?>
             </div>
         <?php endforeach; ?>
     <?php endif; ?>
