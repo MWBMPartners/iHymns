@@ -1,3 +1,54 @@
+## [Unreleased] — branch `claude/musician-profile-migration-8n15p1`
+
+Musician-profile migration + editor bug cluster. Not yet released — awaiting the owner's PR-to-`alpha`
+decision and the matching (owner-directed) version bump; entries move under a version header at release.
+
+- fix(migrations): **musician-profile P1 migration no longer errors once the #1741 P2 rename has
+  landed** (#1824). #1741 P2 renamed the seven `tblCreditPe*`/`tblCreditPerson*` BASE TABLES to
+  `tblMusician*` and left UPDATABLE VIEWS under the old names, so the P1 `migrate-musician-profile.php`
+  `ALTER TABLE tblCreditPersonMembers ADD UNIQUE KEY …` hit MySQL error 1347 ("not BASE TABLE") on every
+  env P2 had reached — and the registry probe read a view's absent index as "missing", pinning the card
+  pending forever so "Apply all" retried the failing ALTER each run. Both the script and the probe now
+  short-circuit to clean success when `tblMusicians` exists (⟹ P1 already applied on the renamed base
+  tables), mirroring P2's own Step-0 idiom. No schema change; `test-migration-registry.php` stays green.
+
+- fix(editor): **credit autosave no longer mints junk `tblMusicians` rows on every keystroke pause**
+  (#1843). The Credits tab's per-keystroke debounced `credit_upsert` find-or-created a registry musician
+  by exact name, so typing "J" → "Jo" → "John" left two orphan rows behind the real one. `credit_upsert`
+  and `credit_delete` now reap the orphaned auto-minted previous-name row post-commit (own transaction,
+  best-effort, same-row guard by Id not name), and the debounce rose 500ms → 1000ms to cut churn. Shared
+  `musicianReapOrphanedAutoRow()` + `musicianCreditUsageCount()` (extracted from two inline copies);
+  guarded for un-migrated installs; new `test-musician-orphan-reap.php`, reap added to the merge-core
+  singleness allow-list.
+
+- feat(editor): **v2 Song Editor is now usable on phones and tablets** (#1845). The song-list `<aside>`
+  became a Bootstrap 5.3 responsive offcanvas (`.offcanvas-lg`) — unchanged two-pane layout at ≥992px, a
+  slide-in drawer below it opened by a `d-lg-none` hamburger; picking a song closes it, and the eight
+  tabs became one horizontally-scrollable row instead of wrapping to three. `mountSidebar()` untouched.
+
+- feat(editor): **manual Save button that flushes pending autosaves** (#1846). Autosave is unchanged;
+  the new header Save button fires every tab's pending debounced write immediately and confirms
+  ("Saving…" → "All changes saved."), via a `ctx.registerFlush(fn)` registry (a plain injected callback,
+  not a DOM event — rule #35) that each of the five autosaving tabs (metadata/structure/credits/links/
+  media) hands a `flushPending()`; same rebuilt-per-mount / reset-on-teardown lifecycle as `teardowns`.
+
+- feat(editor): **the Language field is once again the IETF BCP 47 live-search picker** (#1849). The
+  #1200 v2 rewrite had left it a plain text box; it now re-mounts the shared `ietf-language-picker.js`
+  (#681) — the Language/Script/Region typeahead v1 and `/manage/songbooks` already use — seeded from the
+  song's current tag and saved through the tab's normal debounced field-save. Reused, not re-forked.
+
+- feat(editor): **single-line song rows in the v2 sidebar with a songbook-coloured stub** (#1850). Each
+  row is now `#<number> - <title>` on one line (title ellipsis-truncates) with the songbook abbreviation
+  as a right-aligned pill coloured from the app's `--songbook-*` palette; the full title stays in the
+  button's accessible name so screen readers always get it (WCAG 1.4.13 / 2.5.3) — the `title` hover
+  tooltip is a mouse-only enhancement.
+
+- fix(editor): **the metadata-save error is now two self-explaining messages instead of one ambiguous
+  400** (#1847). "songId and at least one known field are required" split into a missing-songId message
+  and a no-known-field message, so the real cause (a stale/behind editor build mounting the tab with an
+  empty songId) is legible; the underlying fix for such a client is a hard refresh / fresh deploy. Issue
+  left open pending the owner's verification.
+
 ## [0.5160.0] — 2026-08-12 (alpha)
 
 Song-of-the-Day lyric-preview fix (#1841) plus the matching minor version bump.
