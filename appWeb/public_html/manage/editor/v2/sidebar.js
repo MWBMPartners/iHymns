@@ -205,8 +205,51 @@ export function mountSidebar(container, opts) {
         bookSel.value = bookFilter;
     }
 
-    function refLabel(s) {
-        return [s.songbook, (s.number != null && s.number !== '' ? s.number : null)].filter((x) => x != null && x !== '').join(' ');
+    /* #1850 — one song row is a single line: "#<number> - <title>" left-aligned
+       (the title truncates with an ellipsis) plus a right-aligned songbook
+       abbreviation pill coloured from the app's songbook scheme — matching the
+       old editor's sidebar. Built by two shared helpers so the normal (button)
+       row and the Select-mode (checkbox) row can't drift apart. */
+
+    /* The left block. `text-truncate` clips the title VISUALLY only — the full
+       title stays in the DOM text node, so the row's accessible name (derived
+       from its text content) always announces the untruncated title. The hover
+       `title` below is a MOUSE-only bonus, never the sole means of reading it
+       (a native tooltip never reaches keyboard or touch users — WCAG 1.4.13 /
+       2.5.3). The number sits in a non-shrinking, tabular-figures column. */
+    function songRowLabel(s) {
+        const hasNum = s.number != null && String(s.number).trim() !== '';
+        const label = document.createElement('span');
+        label.className = 'd-flex align-items-baseline gap-1 text-truncate';
+        label.style.cssText = 'flex:1 1 auto; min-width:0;';
+        if (hasNum) {
+            const num = document.createElement('span');
+            num.className = 'text-muted flex-shrink-0';
+            num.style.fontVariantNumeric = 'tabular-nums';
+            num.textContent = '#' + s.number;
+            const dash = document.createElement('span');
+            dash.className = 'text-muted flex-shrink-0';
+            dash.textContent = '-';
+            label.append(num, dash);
+        }
+        const title = document.createElement('span');
+        title.className = 'text-truncate';
+        title.textContent = s.title || '(untitled)';
+        if (s.title) { title.title = s.title; }   // mouse hover only (see note above)
+        label.appendChild(title);
+        return label;
+    }
+
+    /* The right-aligned songbook stub. `data-songbook` drives the colour via
+       admin.css's `.editor-song-abbr[data-songbook="…"]` rules, which reuse the
+       app's `--songbook-*-solid` / `-text` palette (CP/JP/MP/SDAH/CH/Misc) and
+       fall back to a neutral, theme-aware pill for every other book. */
+    function songRowAbbr(s) {
+        const abbr = document.createElement('span');
+        abbr.className = 'editor-song-abbr badge rounded-pill flex-shrink-0';
+        if (s.songbook) { abbr.dataset.songbook = s.songbook; }
+        abbr.textContent = s.songbook || '';
+        return abbr;
     }
 
     function renderList() {
@@ -227,7 +270,7 @@ export function mountSidebar(container, opts) {
             if (selectMode) {
                 /* Select mode: a label + checkbox (valid interactive markup; no row-load). */
                 const item = document.createElement('label');
-                item.className = 'list-group-item d-flex align-items-center gap-2 py-1';
+                item.className = 'list-group-item d-flex align-items-center gap-2 py-1 px-2';
                 const cb = document.createElement('input');
                 cb.type = 'checkbox';
                 cb.className = 'form-check-input mt-0 flex-shrink-0';
@@ -237,22 +280,19 @@ export function mountSidebar(container, opts) {
                     notifySelection();
                     updateCount(list, shown.length);
                 });
-                const text = document.createElement('div');
-                text.className = 'min-width-0';
-                const ref = document.createElement('div'); ref.className = 'small text-muted'; ref.textContent = refLabel(s);
-                const title = document.createElement('div'); title.className = 'text-truncate'; title.textContent = s.title || '(untitled)';
-                text.append(ref, title);
-                item.append(cb, text);
+                /* #1850 — same single-line "#num - title […abbr]" as the normal
+                   row; the checkbox sits at the leading edge. */
+                item.append(cb, songRowLabel(s), songRowAbbr(s));
                 listEl.appendChild(item);
             } else {
                 const item = document.createElement('button');
                 item.type = 'button';
-                item.className = 'list-group-item list-group-item-action py-1 px-2';
+                /* #1850 — single-line flex row: number+title left (title
+                   truncates), songbook stub right (justify-content-between). */
+                item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-2 py-1 px-2';
                 if (s.id === activeId) { item.classList.add('active'); }
                 item.dataset.id = s.id;
-                const ref = document.createElement('div'); ref.className = 'small text-muted'; ref.textContent = refLabel(s);
-                const title = document.createElement('div'); title.className = 'text-truncate'; title.textContent = s.title || '(untitled)';
-                item.append(ref, title);
+                item.append(songRowLabel(s), songRowAbbr(s));
                 item.addEventListener('click', () => onSelect(s.id));
                 listEl.appendChild(item);
             }

@@ -1287,3 +1287,32 @@ body:has(.navbar-admin) .modal-content.bg-dark {
     overflow-wrap: anywhere;
     word-break: break-word;
 }
+
+/* ============================================================================
+   v2 SONG EDITOR SIDEBAR — song-row songbook stub (#1850)
+
+   Each sidebar row (manage/editor/v2/sidebar.js) is a single line:
+   "#<number> - <title>" left, a songbook abbreviation pill right. The pill
+   reuses the app's songbook colour scheme — the `--songbook-*-solid` /
+   `-text` custom properties defined in css/app.css (which the editor already
+   loads), theme-aware (app.css redefines them under the dark/high-contrast
+   roots) — for the six palette'd books, and a neutral Bootstrap token pill for
+   every other book so a mixed list still reads cleanly. Scoped to
+   `.editor-song-abbr` so it can never collide with the public
+   `.song-number-badge` it borrows the palette from.
+============================================================================ */
+.editor-song-abbr {
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    /* Neutral, theme-aware default for the ~thousands of books with no palette
+       entry (Bootstrap 5.3 subtle tokens track data-bs-theme automatically). */
+    background-color: var(--bs-secondary-bg);
+    color: var(--bs-secondary-color);
+}
+.editor-song-abbr[data-songbook="CP"]   { background: var(--songbook-CP-solid);   color: var(--songbook-CP-text); }
+.editor-song-abbr[data-songbook="JP"]   { background: var(--songbook-JP-solid);   color: var(--songbook-JP-text); }
+.editor-song-abbr[data-songbook="MP"]   { background: var(--songbook-MP-solid);   color: var(--songbook-MP-text); }
+.editor-song-abbr[data-songbook="SDAH"] { background: var(--songbook-SDAH-solid); color: var(--songbook-SDAH-text); }
+.editor-song-abbr[data-songbook="CH"]   { background: var(--songbook-CH-solid);   color: var(--songbook-CH-text); }
+.editor-song-abbr[data-songbook="Misc"] { background: var(--songbook-Misc-solid); color: var(--songbook-Misc-text); }
