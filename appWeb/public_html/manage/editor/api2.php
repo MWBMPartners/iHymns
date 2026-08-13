@@ -1881,8 +1881,19 @@ try {
     case 'metadata_field_update': {
         $songId = trim((string)($body['songId'] ?? ''));
         $field  = (string)($body['field'] ?? '');
-        if ($songId === '' || !isset(ED2_META_FIELDS[$field])) {
-            ed2_respond(['ok' => false, 'error' => 'songId + a known field are required.'], 400);
+        /* #1847 — split the old combined "songId + a known field are required"
+           400 into two DISTINCT, self-explaining messages so a future
+           occurrence is diagnosable at a glance (rule #35: the message is a
+           real diagnostic, not decoration). An EMPTY songId reaching here is
+           the confusing one — the current editor shell can never send it (every
+           metadata_field_update carries the loaded song's id), so if a client
+           does, it is running a build behind this one or a stale-cached editor
+           module; the message tells the curator how to self-recover. */
+        if ($songId === '') {
+            ed2_respond(['ok' => false, 'error' => 'No song id was sent — reload the song (hard-refresh: Ctrl/Cmd+Shift+R) and try again.'], 400);
+        }
+        if (!isset(ED2_META_FIELDS[$field])) {
+            ed2_respond(['ok' => false, 'error' => 'That field is not editable here (unrecognised metadata field).'], 400);
         }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
 
