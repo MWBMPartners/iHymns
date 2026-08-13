@@ -6,7 +6,7 @@
  *  First names, Surname, Suffix — instead of one big "Name" box, because
  *  splitting the name lets the rest of the app sort by surname, spot the same
  *  person spelled two ways, and build a real "who wrote this" page. When you
- *  stop typing for half a second the row saves itself; you never press Save.
+ *  stop typing for about a second the row saves itself; you never press Save.
  *
  *  DETAILED / WHY (#960): the ORIGINAL v2 rewrite (#1200) shipped this tab
  *  with a single flat "Name" input and a `credit_upsert` endpoint that wrote
@@ -63,7 +63,12 @@ const ROLES = [
     ['translators', 'Translators'],
     ['artists',     'Artists'],
 ];
-const SAVE_DEBOUNCE_MS = 500;
+/* #1843 — raised 500 → 1000 ms so a mid-word pause is far less likely to fire
+   a save on a partial name ("Joh", "John") and auto-mint a junk tblMusicians
+   registry row. The server-side reap janitor (musicianReapOrphanedAutoRow(),
+   credit_upsert/credit_delete in api2.php) is the real fix; this just widens
+   the window so fewer junk rows are minted in the first place. */
+const SAVE_DEBOUNCE_MS = 1000;
 
 const SEARCH_DEBOUNCE_MS = 180;
 
