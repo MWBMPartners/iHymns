@@ -14,9 +14,12 @@
  *  shared module's DOM + field naming verbatim. A failed save surfaces a real
  *  error; the typed rows stay in the DOM for retry.
  *
- *  mountLinksTab(container, { store, api, songId, toast }) -> teardown fn
+ *  mountLinksTab(container, { store, api, songId, toast, registerFlush }) -> teardown fn
  *  Hydrates from the store's `links` slice: [{ typeId, url, note, verified, sortOrder }, ...].
  *  Link TYPES come from window._iHymnsLinkTypes (emitted by editor2.php, like index.php).
+ *
+ *  registerFlush(fn) — #1846: hands the shell a "flush my pending debounced
+ *  save now" function for its manual Save button. See flushPending() below.
  * ========================================================================== */
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -24,6 +27,11 @@ const SAVE_DEBOUNCE_MS = 600;
 export function mountLinksTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (a plain injected callback, not a DOM event — rule #35/#1581). Defaults
+       to a no-op so the tab still mounts standalone in a test harness that
+       doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
 
     container.innerHTML = '';
 
@@ -74,6 +82,10 @@ export function mountLinksTab(container, opts) {
     }
 
     let saveTimer = null;
+    /* #1846 — true whenever a debounced save is currently pending (the whole
+       reconciled row-list is the payload, so unlike the other four tabs there
+       is no per-field key space to track — a single boolean is enough). */
+    let pendingSave = false;
     async function save() {
         try {
             const res = await api.saveLinks(songId, captureRows());
@@ -87,8 +99,32 @@ export function mountLinksTab(container, opts) {
     }
     function debouncedSave() {
         if (saveTimer) { clearTimeout(saveTimer); }
-        saveTimer = setTimeout(save, SAVE_DEBOUNCE_MS);
+        pendingSave = true;   // #1846 — recorded so flushPending() can fire it early
+        saveTimer = setTimeout(() => { pendingSave = false; save(); }, SAVE_DEBOUNCE_MS);
     }
+
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel the
+     * pending debounce timer (if any) and reconcile the whole row-list
+     * immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you just edited a link and paused for less than 600ms,
+     * clicking Save shouldn't make you wait for the timer — this sends it
+     * right now.
+     *
+     * @returns {Promise} Resolves once the flushed save has settled (success
+     *   OR failure) — save() already catches its own rejection into a toast
+     *   and resolves rather than rethrowing, so the `.catch(() => {})` here
+     *   is belt-and-braces, not the normal path. Resolves immediately, doing
+     *   nothing, when there is no pending save.
+     */
+    function flushPending() {
+        if (!pendingSave) { return Promise.resolve(); }
+        if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+        pendingSave = false;
+        return Promise.resolve(save()).catch(() => {});
+    }
+    registerFlush(flushPending);
 
     /* input/change bubble up from every field (incl. the auto-detect's
        programmatic select change). A remove click bubbles AFTER the shared
@@ -104,6 +140,7 @@ export function mountLinksTab(container, opts) {
 
     return function teardown() {
         if (saveTimer) { clearTimeout(saveTimer); }
+        pendingSave = false;   // #1846 — no lingering pending-flush state once the tab is gone
         rowsEl.removeEventListener('input', onEdit);
         rowsEl.removeEventListener('change', onEdit);
         rowsEl.removeEventListener('click', onClick);

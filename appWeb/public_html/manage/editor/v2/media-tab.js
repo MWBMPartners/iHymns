@@ -8,9 +8,13 @@
  *  delete (with confirm). Every mutation is its own atomic, server-confirmed
  *  write; playback links go to the gated /song-media/<id> stream route (#853).
  *
- *  mountMediaTab(container, { store, api, songId, toast }) -> teardown fn
+ *  mountMediaTab(container, { store, api, songId, toast, registerFlush }) -> teardown fn
  *  Hydrates from the store's `media` slice: [{ id, kind, fileName, mimeType,
  *  sizeBytes, annotation, sortOrder, storageBackend, uploadedAt, streamUrl }, ...].
+ *
+ *  registerFlush(fn) — #1846: hands the shell a "flush my pending debounced
+ *  annotation saves now" function for its manual Save button. See
+ *  flushPending() below.
  * ========================================================================== */
 
 const SAVE_DEBOUNCE_MS = 500;
@@ -38,7 +42,16 @@ function fmtBytes(n) {
 export function mountMediaTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (a plain injected callback, not a DOM event — rule #35/#1581). Defaults
+       to a no-op so the tab still mounts standalone in a test harness that
+       doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
     const annoTimers = new Map();   // mediaId -> debounce timer for annotation saves
+    /* #1846 — mediaId -> { item, value } not yet fired, the SAME key space as
+       annoTimers above. Lets the shell's manual Save button fire a pending
+       debounced annotation write early via flushPending() below. */
+    const annoPending = new Map();
 
     function getMedia() {
         const m = store.get('media');
@@ -84,8 +97,12 @@ export function mountMediaTab(container, opts) {
            store rows. Update the LIVE store row by id (not the possibly-stale
            captured `item`) so the model stays consistent; no re-render (keeps
            input focus). NB: we deliberately do NOT clear the debounce timers in
-           render() — that would drop an in-flight save (data loss). */
-        api.updateMedia(item.id, value)
+           render() — that would drop an in-flight save (data loss).
+           #1846 — returned so flushPending() (below) can await this specific
+           save's completion; no existing caller used the return value before
+           (debouncedAnnotation's setTimeout fires it and moves on), so this
+           changes nothing for them. */
+        return api.updateMedia(item.id, value)
             .then(() => {
                 const live = getMedia().find((m) => m.id === item.id);
                 if (live) { live.annotation = value; }
@@ -94,8 +111,36 @@ export function mountMediaTab(container, opts) {
     }
     function debouncedAnnotation(item, value) {
         if (annoTimers.has(item.id)) { clearTimeout(annoTimers.get(item.id)); }
-        annoTimers.set(item.id, setTimeout(() => saveAnnotation(item, value), SAVE_DEBOUNCE_MS));
+        annoPending.set(item.id, { item, value });   // #1846 — recorded so flushPending() can fire it early
+        annoTimers.set(item.id, setTimeout(() => { annoPending.delete(item.id); saveAnnotation(item, value); }, SAVE_DEBOUNCE_MS));
     }
+
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending per-file annotation debounce timer and fire each
+     * recorded (item, value) save immediately instead of waiting out
+     * SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you just typed an annotation and paused for less than half a
+     * second, clicking Save shouldn't make you wait for the timer — this
+     * sends it right now.
+     *
+     * @returns {Promise} Resolves once every flushed save has settled
+     *   (success OR failure) — saveAnnotation() already catches its own
+     *   rejection into a toast and resolves rather than rethrowing, so the
+     *   `.catch(() => {})` here is belt-and-braces, not the normal path.
+     */
+    function flushPending() {
+        annoTimers.forEach((t) => clearTimeout(t));
+        annoTimers.clear();
+        const proms = [];
+        annoPending.forEach(({ item, value }) => {
+            proms.push(Promise.resolve(saveAnnotation(item, value)).catch(() => {}));
+        });
+        annoPending.clear();
+        return Promise.all(proms);
+    }
+    registerFlush(flushPending);
 
     async function remove(item) {
         if (!window.confirm('Remove "' + item.fileName + '"? This cannot be undone.')) { return; }
@@ -248,6 +293,7 @@ export function mountMediaTab(container, opts) {
         off();
         annoTimers.forEach((t) => clearTimeout(t));
         annoTimers.clear();
+        annoPending.clear();   // #1846 — no lingering references once the tab is gone
         container.innerHTML = '';
     };
 }

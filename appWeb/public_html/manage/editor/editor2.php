@@ -223,6 +223,13 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 <button type="button" class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#v2-sidebar-panel" aria-controls="v2-sidebar-panel"><i class="bi bi-list" aria-hidden="true"></i><span class="ms-1">Songs</span></button>
                 <h1 class="h5 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
                 <div class="ms-auto d-flex gap-2 flex-wrap">
+                    <?php /* #1846 — manual Save: flushes every tab's pending DEBOUNCED
+                             writes early + confirms once they've settled. Autosave keeps
+                             working unchanged underneath — this is additive, not a
+                             replacement. Starts disabled: it's meaningless with no song
+                             loaded, and is enabled in loadSong() alongside the Duplicate
+                             button reveal a few lines below. */ ?>
+                    <button id="v2-save-btn" type="button" class="btn btn-sm btn-outline-success" disabled><i class="bi bi-check2-all me-1" aria-hidden="true"></i>Save</button>
                     <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>New</button>
                     <!-- #1783 — Duplicate the open song as a starting point for a new
                          songbook. Hidden until a song is loaded (shown in loadSong). -->
@@ -410,12 +417,22 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
            slices directly. */
         const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], songbookRightsDefaults: null, pendingDuplicate: false });
         let teardowns = [];
+        /* #1846 — flush functions registered by whichever mounted tabs hold a
+           pending DEBOUNCED save (metadata / structure / credits / links /
+           media — see each tab's own registerFlush() call). Same lifecycle as
+           `teardowns` immediately above: rebuilt fresh by mountTabs() on every
+           song switch, reset to empty by teardownTabs() so a remount can never
+           flush a torn-down tab's stale timers. A plain injected callback
+           (ctx.registerFlush), not a DOM event — rule #35/#1581 bans a new
+           event-name literal for something a function reference already does. */
+        let flushers = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
 
         function teardownTabs() {
             teardowns.forEach((fn) => { try { if (typeof fn === 'function') { fn(); } } catch (_e) {} });
             teardowns = [];
+            flushers = [];   // #1846 — same reset-on-remount lifecycle as teardowns above
         }
         /* #1679 — a songbook change re-keys the SongId server-side, so the id the
            tabs, the ?song= URL and the sidebar hold is dead the instant the move
@@ -457,6 +474,13 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                    its own copy (mirrors getSongbooks() above; sidebar.js's
                    getAllSongs() is the read-only accessor). */
                 getSongs: () => sidebar.getAllSongs(),
+                /* #1846 — a tab with a pending debounced save calls this ONCE at
+                   mount time to hand back a "flush me now" function; the Save
+                   button's click handler (below, wired once — not inside
+                   mountTabs()) awaits every registered flusher. Pushes onto the
+                   CURRENT `flushers` array by closure, so it's always the live
+                   array for whichever song is presently mounted. */
+                registerFlush: (fn) => { if (typeof fn === 'function') { flushers.push(fn); } },
             };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
@@ -518,6 +542,9 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 sidebar.setActive(id);
                 /* #1783 — the Duplicate button acts on the open song, so reveal it now. */
                 { const dupBtn = byId('v2-duplicate-btn'); if (dupBtn) { dupBtn.classList.remove('d-none'); } }
+                /* #1846 — the Save button acts on the open song too; enable it now
+                   (it starts `disabled` — meaningless with nothing loaded). */
+                { const saveBtn = byId('v2-save-btn'); if (saveBtn) { saveBtn.disabled = false; } }
                 if (data.isPendingDuplicate) {
                     status('Duplicated song — assign it a songbook and number (both are empty) on the Metadata tab, then it becomes a new song. Edit anything first.', 'success');
                 } else {
@@ -693,6 +720,37 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             }
         }
         byId('v2-duplicate-btn').addEventListener('click', () => { runDuplicate(currentSongId); });
+
+        /* ---- Manual Save (#1846) ----
+           ELI5: autosave already saves every field a second or so after you
+           stop typing; this button says "don't make me wait — save what's
+           pending right now, and tell me when it's done."
+
+           Wired ONCE here (not inside mountTabs()) so the listener survives a
+           song switch — it reads the CURRENT `flushers` array by closure on
+           every click, which mountTabs()/teardownTabs() keep pointed at
+           whichever song is presently mounted. Each registered flusher already
+           settles (resolve, never reject — see each tab's own flushPending()),
+           so the outer try/catch is a belt-and-braces guard against a flusher
+           that somehow still throws, not the normal path. */
+        {
+            const saveBtn = byId('v2-save-btn');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', async () => {
+                    if (!currentSongId) { return; }
+                    saveBtn.disabled = true;
+                    status('Saving…');
+                    try {
+                        await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => {})));
+                        status('All changes saved.', 'success');
+                    } catch (e) {
+                        status('Save failed: ' + (e && e.message ? e.message : e), 'danger');
+                    } finally {
+                        saveBtn.disabled = false;
+                    }
+                });
+            }
+        }
 
         /* ---- Delete current song ---- */
         byId('v2-delete-btn').addEventListener('click', async () => {

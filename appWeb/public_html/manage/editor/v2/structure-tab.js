@@ -8,11 +8,14 @@
  *  Every edit is an atomic granular save to api2.php — no whole-song save, no
  *  race. A failed save throws → a real error toast, local state untouched.
  *
- *  mountStructureTab(container, { store, api, songId, toast }) -> teardown fn
- *    store : reactive store with a `components` slice (array of component rows)
- *    api   : editorApi from api-client.js
- *    songId: the server SongId
- *    toast : (message, type) => void   (optional)
+ *  mountStructureTab(container, { store, api, songId, toast, registerFlush }) -> teardown fn
+ *    store        : reactive store with a `components` slice (array of component rows)
+ *    api          : editorApi from api-client.js
+ *    songId       : the server SongId
+ *    toast        : (message, type) => void   (optional)
+ *    registerFlush: (fn) => void   (optional; #1846 — hands the shell a "flush
+ *                   my pending debounced saves now" function for its manual
+ *                   Save button — see flushPending() below)
  *
  *  #1627 items 1+3 — chords UI + per-line enrichment panel. Both extend
  *  buildCard(), which is why they land in one PR: a chords textarea (ABOVE
@@ -52,15 +55,52 @@ function componentChordsToText(comp) {
 export function mountStructureTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (a plain injected callback, not a DOM event — rule #35/#1581). Defaults
+       to a no-op so the tab still mounts standalone in a test harness that
+       doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
 
     /* Per-component debounce timers for lyric/chord saves. */
     const saveTimers = new Map();
+    /* #1846 — comp._key -> the pending comp, same key space as saveTimers
+       above. Lets the shell's manual Save button fire a pending debounced
+       write early via flushPending() below. Structural ops (move/remove/add)
+       call saveComponent()/the API directly and never touch this map — only
+       a lyric/chord textarea's debouncedSave() does. */
+    const pendingSaves = new Map();
 
     function debouncedSave(comp) {
         const key = comp._key;
         if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); }
-        saveTimers.set(key, setTimeout(() => { saveComponent(comp); }, SAVE_DEBOUNCE_MS));
+        pendingSaves.set(key, comp);
+        saveTimers.set(key, setTimeout(() => { pendingSaves.delete(key); saveComponent(comp); }, SAVE_DEBOUNCE_MS));
     }
+
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending per-component debounce timer and fire each recorded
+     * component's save immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you were mid-typing a lyric or chord line, clicking Save
+     * shouldn't make you wait for the pause-timer — this sends it right now.
+     *
+     * @returns {Promise} Resolves once every flushed save has settled
+     *   (success OR failure) — saveComponent() already catches its own
+     *   rejection into a toast and resolves rather than rethrowing, so the
+     *   `.catch(() => {})` here is belt-and-braces, not the normal path.
+     */
+    function flushPending() {
+        saveTimers.forEach((t) => clearTimeout(t));
+        saveTimers.clear();
+        const proms = [];
+        pendingSaves.forEach((comp) => {
+            proms.push(Promise.resolve(saveComponent(comp)).catch(() => {}));
+        });
+        pendingSaves.clear();
+        return Promise.all(proms);
+    }
+    registerFlush(flushPending);
 
     /** Persist one component (create or update) atomically. On a CREATE, adopt
      *  the server-assigned componentId so later edits UPDATE in place. */
@@ -298,6 +338,7 @@ export function mountStructureTab(container, opts) {
         off();
         saveTimers.forEach((t) => clearTimeout(t));
         saveTimers.clear();
+        pendingSaves.clear();   // #1846 — no lingering references once the tab is gone
         container.innerHTML = '';
     };
 }

@@ -7,7 +7,9 @@
  *  and the field keeps the typed value for retry.
  *
  *  mountMetadataTab(container, { store, api, songId, toast, onSongIdChange,
- *                                getSongbooks, whenSongbooksReady }) -> teardown fn
+ *                                getSongbooks, whenSongbooksReady, registerFlush }) -> teardown fn
+ *  registerFlush(fn) — #1846: hands the shell a "flush my pending debounced
+ *  saves now" function for its manual Save button. See flushPending() below.
  *  Reads initial values from the store's `song` slice (the tblSongs row, as
  *  returned by api2.php load_song — note the columns are PascalCase).
  * ========================================================================== */
@@ -120,6 +122,19 @@ export function mountMetadataTab(container, opts) {
        the default resolves immediately so the tab still mounts standalone. */
     const whenSongbooksReady = opts.whenSongbooksReady || function () { return Promise.resolve(); };
     const timers = new Map();
+    /* #1846 — field -> value not yet fired by its debounce timer, the SAME key
+       space as `timers` above. Lets the shell's manual Save button fire a
+       pending debounced write early via flushPending() below, instead of
+       making the curator wait out SAVE_DEBOUNCE_MS. Only debounced (text/
+       number) fields ever land here — the checkbox/select/immediate saves a
+       few lines down call save() directly and never touch this map. */
+    const pending = new Map();
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (mirrors how onSongIdChange/getSongbooks/whenSongbooksReady above are
+       ALL plain injected callbacks, never DOM events — rule #35/#1581).
+       Defaults to a no-op so the tab still mounts standalone in a test
+       harness that doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
     let disposed = false;     // set by teardown, so a late list can't touch a dead tab
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
     /* #1741 P5c — teardown for the tune typeahead (the SAME shared
@@ -164,7 +179,11 @@ export function mountMetadataTab(container, opts) {
      *                              rejected (the songbook select) can revert.
      */
     function save(field, value, onError) {
-        api.updateMetadata(songId, field, value).then((res) => {
+        /* #1846 — returned so flushPending() (below) can await this specific
+           save's completion. Nothing else in this file used the return value
+           before (every existing caller fires save() and moves on), so
+           returning it here changes nothing for them. */
+        return api.updateMetadata(songId, field, value).then((res) => {
             /* #1679 — changing the songbook RE-KEYS the SongId server-side
                (`tblSongbooks.Abbreviation` IS the id prefix, rule #27). Every id
                this tab captured at mount — and the shell's ?song= URL, the
@@ -201,8 +220,36 @@ export function mountMetadataTab(container, opts) {
     }
     function debouncedSave(field, value) {
         if (timers.has(field)) { clearTimeout(timers.get(field)); }
-        timers.set(field, setTimeout(() => save(field, value), SAVE_DEBOUNCE_MS));
+        pending.set(field, value);   // #1846 — recorded so flushPending() can fire it early
+        timers.set(field, setTimeout(() => { pending.delete(field); save(field, value); }, SAVE_DEBOUNCE_MS));
     }
+
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending debounce timer and fire each recorded (field, value) save
+     * immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you just typed something and paused for less than half a
+     * second, clicking Save shouldn't make you wait for the timer to catch up
+     * — this sends it right now.
+     *
+     * @returns {Promise} Resolves once every flushed save has settled
+     *   (success OR failure) — save() already turns a rejection into a toast
+     *   and resolves rather than rethrowing, so the `.catch(() => {})` here is
+     *   belt-and-braces, not the normal path. Never rejects, so one field's
+     *   failure can't stop the Save button from re-enabling.
+     */
+    function flushPending() {
+        timers.forEach((t) => clearTimeout(t));
+        timers.clear();
+        const proms = [];
+        pending.forEach((value, field) => {
+            proms.push(Promise.resolve(save(field, value)).catch(() => {}));
+        });
+        pending.clear();
+        return Promise.all(proms);
+    }
+    registerFlush(flushPending);
 
     /**
      * The songbook control (#1679 H1) — a closed list, saved immediately on
@@ -753,6 +800,7 @@ export function mountMetadataTab(container, opts) {
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
+        pending.clear();   // #1846 — no lingering references once the tab is gone
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
