@@ -44,7 +44,7 @@ declare(strict_types=1);
  * Anything NOT on the allow-list — a brand new inline cascade, or an old
  * one resurrected — fails the build.
  *
- * THE PINNED ALLOW-LIST (why each of these 7 sites, and only these):
+ * THE PINNED ALLOW-LIST (why each of these 8 sites, and only these):
  *
  *   - musician_helpers.php / musicianMergeExecute()        — the ONE merge
  *     core (#1785 C4/C5). Contributes BOTH statement shapes (the cascade
@@ -55,6 +55,18 @@ declare(strict_types=1);
  *     (no registry row is ever deleted here — see rule #1785's plan §3.1:
  *     it is explicitly IDENTITY-PRESERVING, never a merge of two distinct
  *     people), so it does not delegate to musicianMergeExecute().
+ *   - musician_helpers.php / musicianReapOrphanedAutoRow() — the #1843
+ *     promote-then-reap janitor. A NARROWER operation than a merge: it
+ *     removes ONE registry row that the v2 Credits-tab auto-promote minted
+ *     from a partial keystroke ("Joh"/"John") and that is now provably an
+ *     orphan (no song credit, no satellite/child row, no curation signal,
+ *     and NOT the row the current name resolved to). There is no SECOND
+ *     registry row and no credit-rename CASCADE at all — the song credits
+ *     already cite the new name, which is exactly WHY the old row is
+ *     reapable — so nothing about musicianMergeExecute() (looking up two
+ *     rows, re-pointing credits, deleting the source) applies. Its ONLY
+ *     overlap with the allow-listed sites is the `DELETE FROM tblMusicians`
+ *     shape, contributed once here.
  *   - manage/musicians.php / case 'rename'                 — the page's
  *     single-registry-row rename (old spelling -> new spelling, same
  *     person, no second row involved — structurally not a merge).
@@ -149,6 +161,7 @@ $allowed = [
     'includes/musician_helpers.php|function musicianMergeExecute()|credit-rename-cascade'             => true,
     'includes/musician_helpers.php|function musicianMergeExecute()|musicians-delete'                   => true,
     'includes/musician_helpers.php|function musicianReconcileCreditNameBytes()|credit-rename-cascade'  => true,
+    'includes/musician_helpers.php|function musicianReapOrphanedAutoRow()|musicians-delete'             => true,
     'manage/musicians.php|case \'rename\'|credit-rename-cascade'                                       => true,
     'manage/musicians.php|case \'delete_from_registry\'|musicians-delete'                               => true,
     'api.php|case \'admin_musician_rename\'|credit-rename-cascade'                                     => true,
