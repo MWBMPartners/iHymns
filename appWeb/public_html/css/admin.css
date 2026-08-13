@@ -1316,3 +1316,23 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 .editor-song-abbr[data-songbook="SDAH"] { background: var(--songbook-SDAH-solid); color: var(--songbook-SDAH-text); }
 .editor-song-abbr[data-songbook="CH"]   { background: var(--songbook-CH-solid);   color: var(--songbook-CH-text); }
 .editor-song-abbr[data-songbook="Misc"] { background: var(--songbook-Misc-solid); color: var(--songbook-Misc-text); }
+
+/* ============================================================================
+   v2 SONG EDITOR SHELL — responsive layout (#1845)
+   >=lg (992px): [song-list aside | drag grip | main] two-pane, as before.
+   <lg: .offcanvas-lg turns the aside into a slide-in drawer (hamburger opens
+   it); the grip is hidden (d-none d-lg-block) and <main> takes the full width.
+   Only #v2-* is targeted here. lg matches the admin hamburger breakpoint.
+============================================================================ */
+#v2-shell { height: 100vh; height: 100dvh; }  /* dvh tracks the visible viewport on iOS Safari (MDN: length#dynamic_viewport_units); vh is the fallback */
+#v2-grip { flex: 0 0 5px; cursor: col-resize; }
+#v2-sidebar-panel {
+    --bs-offcanvas-width: min(85vw, 360px);   /* drawer width on phones; leaves a sliver so it reads as an overlay */
+    background-color: var(--bs-tertiary-bg) !important;  /* !important beats Bootstrap's own `.offcanvas-lg{background:transparent!important}` at >=lg; the CSS var stays theme-aware */
+}
+#v2-sidebar-panel .offcanvas-body { display: flex; flex-direction: column; padding: 0; min-height: 0; }  /* out-specifies Bootstrap's >=lg offcanvas-body restyle so there's ONE layout at all widths */
+#v2-sidebar { flex: 1 1 auto; min-height: 0; min-width: 0; }
+@media (min-width: 992px) {
+    #v2-sidebar-panel { flex: 0 0 300px; min-width: 200px; }  /* the former inline aside size — in CSS so the <lg fixed-position branch never fights an inline style; the grip's saved-width still wins via its INLINE flex-basis */
+    #v2-sidebar-panel .offcanvas-body { height: 100%; }        /* the >=lg offcanvas-header is display:none, so 100% is exact — lets the list scroll internally */
+}
