@@ -510,6 +510,18 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
            from load_song, remount for the new song. No full page reload. */
         async function loadSong(id) {
             if (!id) { return; }
+            /* #1851 FIX #1 — flush every CURRENTLY-mounted tab's pending
+               debounced save BEFORE tearing them down for the switch.
+               teardownTabs() (called a few lines below, inside the try)
+               clears each tab's debounce timers + resets `flushers` to [] —
+               an edit still sitting inside its debounce window at the
+               moment of a song switch was silently discarded with no
+               warning. `flushers` is [] on the very first load (nothing
+               mounted yet), so this is a harmless no-op then. Each flusher
+               already resolves rather than rejects (see FIX #6's contract
+               above every tab's flushPending()), so `.catch(() => {})` here
+               is belt-and-braces, not the normal path. */
+            await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => {})));
             const seq = ++loadSeq;
             status('Loading…');
             try {
@@ -732,7 +744,17 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
            whichever song is presently mounted. Each registered flusher already
            settles (resolve, never reject — see each tab's own flushPending()),
            so the outer try/catch is a belt-and-braces guard against a flusher
-           that somehow still throws, not the normal path. */
+           that somehow still throws, not the normal path.
+
+           #1851 — flushPending() used to be fired purely for its side effect
+           (`.catch(() => {})` swallowed EVERY outcome, success or failure)
+           and this handler then reported "All changes saved." unconditionally
+           — even when a flusher's inner save had already toasted a failure.
+           The toast scrolled past unnoticed and the status bar lied. Each
+           tab's flushPending() now RESOLVES TO THE COUNT of saves that
+           failed during that flush (0 = all ok; see each tab's contract
+           doc-comment on its own flushPending()), so this sums those counts
+           and reports the real outcome instead of a fixed success string. */
         {
             const saveBtn = byId('v2-save-btn');
             if (saveBtn) {
@@ -741,8 +763,14 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                     saveBtn.disabled = true;
                     status('Saving…');
                     try {
-                        await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => {})));
-                        status('All changes saved.', 'success');
+                        const results = await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => 1)));
+                        const failed = results.reduce((n, r) => n + (Number(r) || 0), 0);
+                        status(
+                            failed
+                                ? ('Saved — but ' + failed + ' change' + (failed > 1 ? 's' : '') + ' could not be saved (see messages above)')
+                                : 'All changes saved.',
+                            failed ? 'danger' : 'success'
+                        );
                     } catch (e) {
                         status('Save failed: ' + (e && e.message ? e.message : e), 'danger');
                     } finally {
@@ -764,11 +792,26 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             loadSeq++;   // invalidate any in-flight loadSong so it can't repaint the deleted song
             try {
                 await editorApi.deleteSong(gone);
+                /* #1851 FIX #1 — discard (not flush) the deleted song's
+                   pending edits: teardownTabs() runs BEFORE the next-song
+                   load or the empty-list branch, so loadSong()'s own
+                   top-of-function flush (see FIX #1's comment there) finds
+                   `flushers` already reset to [] and has nothing stale left
+                   to fire against a song that no longer exists. */
+                teardownTabs();
                 sidebar.removeSong(gone);
                 currentSongId = null;
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
-                else { teardownTabs(); status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success'); }
+                else {
+                    status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success');
+                    /* #1851 FIX #7 — loadSong() enables Save + reveals
+                       Duplicate for the song it loads, but nothing reversed
+                       that after deleting the LAST song: both stayed
+                       active/visible with no song open to act on. */
+                    { const b = byId('v2-save-btn'); if (b) { b.disabled = true; } }
+                    { const d = byId('v2-duplicate-btn'); if (d) { d.classList.add('d-none'); } }
+                }
             } catch (e) {
                 status('Delete failed: ' + e.message, 'danger');
             }

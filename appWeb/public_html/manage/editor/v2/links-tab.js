@@ -86,6 +86,9 @@ export function mountLinksTab(container, opts) {
        reconciled row-list is the payload, so unlike the other four tabs there
        is no per-field key space to track — a single boolean is enough). */
     let pendingSave = false;
+    /* #1851 — resolves TRUE on success, FALSE on failure (never rejects);
+       flushPending() below turns FALSE into the 1-failure count the shell's
+       Save button expects (see its @returns doc). */
     async function save() {
         try {
             const res = await api.saveLinks(songId, captureRows());
@@ -93,8 +96,10 @@ export function mountLinksTab(container, opts) {
                tab — the DOM is authoritative while mounted — so this is safe
                bookkeeping that keeps the slice fresh for re-mount/preview). */
             store.set('links', res.links || []);
+            return true;
         } catch (e) {
             toast('Could not save links: ' + e.message, 'danger');
+            return false;
         }
     }
     function debouncedSave() {
@@ -112,17 +117,21 @@ export function mountLinksTab(container, opts) {
      * clicking Save shouldn't make you wait for the timer — this sends it
      * right now.
      *
-     * @returns {Promise} Resolves once the flushed save has settled (success
-     *   OR failure) — save() already catches its own rejection into a toast
-     *   and resolves rather than rethrowing, so the `.catch(() => {})` here
-     *   is belt-and-braces, not the normal path. Resolves immediately, doing
+     * @returns {Promise<number>} Resolves once the flushed save has settled
+     *   to the COUNT of saves that FAILED — 0 (all ok, or nothing was
+     *   pending) or 1 (this tab's single reconciled save failed). The
+     *   shell's Save button (#1846/#1851) sums this across every tab to
+     *   decide between "All changes saved." and a real failure report.
+     *   save() already catches its own rejection into a toast and resolves
+     *   a boolean rather than rethrowing, so the `.catch(() => 1)` here is
+     *   belt-and-braces, not the normal path. Resolves 0 immediately, doing
      *   nothing, when there is no pending save.
      */
     function flushPending() {
-        if (!pendingSave) { return Promise.resolve(); }
+        if (!pendingSave) { return Promise.resolve(0); }
         if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
         pendingSave = false;
-        return Promise.resolve(save()).catch(() => {});
+        return Promise.resolve(save()).then((ok) => (ok === false ? 1 : 0)).catch(() => 1);
     }
     registerFlush(flushPending);
 

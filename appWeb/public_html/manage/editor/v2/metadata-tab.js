@@ -182,7 +182,10 @@ export function mountMetadataTab(container, opts) {
         /* #1846 — returned so flushPending() (below) can await this specific
            save's completion. Nothing else in this file used the return value
            before (every existing caller fires save() and moves on), so
-           returning it here changes nothing for them. */
+           returning it here changes nothing for them.
+           #1851 — resolves TRUE on success, FALSE on failure (never
+           rejects); flushPending() sums the FALSEs into a failure count for
+           the shell's Save-button outcome report. */
         return api.updateMetadata(songId, field, value).then((res) => {
             /* #1679 — changing the songbook RE-KEYS the SongId server-side
                (`tblSongbooks.Abbreviation` IS the id prefix, rule #27). Every id
@@ -213,9 +216,11 @@ export function mountMetadataTab(container, opts) {
                     isrcInput.value = res.value == null ? '' : String(res.value);
                 }
             }
+            return true;
         }).catch((e) => {
             toast('Could not save ' + field + ': ' + e.message, 'danger');
             if (typeof onError === 'function') { try { onError(e); } catch (_e) {} }
+            return false;
         });
     }
     function debouncedSave(field, value) {
@@ -233,9 +238,12 @@ export function mountMetadataTab(container, opts) {
      * second, clicking Save shouldn't make you wait for the timer to catch up
      * — this sends it right now.
      *
-     * @returns {Promise} Resolves once every flushed save has settled
-     *   (success OR failure) — save() already turns a rejection into a toast
-     *   and resolves rather than rethrowing, so the `.catch(() => {})` here is
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report. save()
+     *   already turns a rejection into a toast and resolves a boolean
+     *   rather than rethrowing, so the `.catch(() => false)` here is
      *   belt-and-braces, not the normal path. Never rejects, so one field's
      *   failure can't stop the Save button from re-enabling.
      */
@@ -244,10 +252,10 @@ export function mountMetadataTab(container, opts) {
         timers.clear();
         const proms = [];
         pending.forEach((value, field) => {
-            proms.push(Promise.resolve(save(field, value)).catch(() => {}));
+            proms.push(Promise.resolve(save(field, value)).catch(() => false));
         });
         pending.clear();
-        return Promise.all(proms);
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
     }
     registerFlush(flushPending);
 
@@ -665,14 +673,44 @@ export function mountMetadataTab(container, opts) {
            changes, so reading one edit stale here would persist the WRONG
            tag on every keystroke. */
         if (langTagOutput) {
-            let lastSavedTag = langTagOutput.value;
-            lwrap.addEventListener('input', () => {
+            /* #1851 FIX #4 — seed from the SAME expression that seeds the
+               picker itself (`data-initial-tag` above), not from
+               `langTagOutput.value`. The picker hydrates ASYNCHRONOUSLY
+               (bootIetfLanguagePicker() below awaits the languages/script/
+               region lookups before it fills the hidden output), so reading
+               `langTagOutput.value` here — synchronously, before that await
+               resolves — captured '' even for a song WITH a Language. Once
+               hydration later wrote the real tag into the hidden output, the
+               very next genuine clear-the-field edit composed '' again,
+               which now matched the WRONG baseline ('' still) and produced a
+               no-op: the field visibly emptied but the stale Language value
+               resurrected on reload. Reading `song.Language` matches the
+               picker's own seed and is available synchronously. */
+            let lastSavedTag = (song.Language != null ? String(song.Language) : '');
+            /* #1851 FIX #5 — one shared handler for both events (factored so
+               'input' and 'focusout' can never drift into two different save
+               conditions). 'input' catches ordinary typing; 'focusout' is
+               ALSO needed because the picker module rewrites
+               `.ietf-tag-output` on the subtag inputs' own non-bubbling
+               'blur' listener (canonicalising typed text like
+               "en-UNITED KINGDOM" -> "en-GB") — a canonicalisation with no
+               accompanying 'input' event of its own, so without a bubbling
+               listener the canonical tag was silently never saved.
+               'focusout' bubbles (unlike 'blur') and, per this file's own
+               capture-vs-bubble note a few lines above, fires AFTER the
+               module's at-target 'blur' listener has already finished
+               rewriting the hidden output — so by the time this delegated
+               listener reads `langTagOutput.value` here, it is reading the
+               canonicalised value, not one edit stale. */
+            const onLanguageChangeEvent = function () {
                 const val = langTagOutput.value;
                 if (val === lastSavedTag) { return; }
                 lastSavedTag = val;
                 song.Language = val;
                 debouncedSave('language', val);   // matches every other text FIELDS row's save timing
-            });
+            };
+            lwrap.addEventListener('input', onLanguageChangeEvent);
+            lwrap.addEventListener('focusout', onLanguageChangeEvent);
         }
 
         /* Attach the geocoder typeahead (best-effort — no-op if the module didn't load). */

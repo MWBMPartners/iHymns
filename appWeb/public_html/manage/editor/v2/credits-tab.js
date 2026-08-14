@@ -272,6 +272,13 @@ export function mountCreditsTab(container, opts) {
         refreshDeleteAffordance(role, credit);
     }
 
+    /**
+     * #1846/#1851 — resolves TRUE on success, FALSE on failure (never
+     * rejects). The boolean is how flushPending() below counts real failures
+     * for the shell's Save-button outcome report (rule #35 — a caller counts
+     * OUTCOMES, not re-parses a toast string) instead of reporting "All
+     * changes saved." when a save actually failed silently in the background.
+     */
     async function saveCredit(role, credit, payloadOverride, opts) {
         const payload = payloadOverride || {
             id:      credit.id || 0,
@@ -282,6 +289,7 @@ export function mountCreditsTab(container, opts) {
         try {
             const res = await api.upsertCredit(songId, role, payload);
             adoptServerCredit(role, credit, res, opts);
+            return true;
         } catch (e) {
             /* Rule #35 — nothing here branches on e.message's wording; the
                only thing this tab does with a failure is show it. A future
@@ -289,6 +297,7 @@ export function mountCreditsTab(container, opts) {
                e.status (api-client.js's unwrap() attaches it), never the
                sentence. */
             toast('Could not save credit: ' + e.message, 'danger');
+            return false;
         }
     }
     function debouncedSave(role, credit) {
@@ -307,24 +316,45 @@ export function mountCreditsTab(container, opts) {
      * clicking Save shouldn't make you wait for the timer — this sends it
      * right now.
      *
-     * @returns {Promise} Resolves once every flushed save has settled
-     *   (success OR failure) — saveCredit() already catches its own rejection
-     *   into a toast and resolves rather than rethrowing, so the
-     *   `.catch(() => {})` here is belt-and-braces, not the normal path.
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report, instead of
+     *   the old unconditional success message. saveCredit() already catches
+     *   its own rejection into a toast and resolves a boolean rather than
+     *   rethrowing, so the `.catch(() => false)` here is belt-and-braces,
+     *   not the normal path — this function itself must still never reject.
      */
     function flushPending() {
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
         const proms = [];
         pending.forEach(({ role, credit }) => {
-            proms.push(Promise.resolve(saveCredit(role, credit)).catch(() => {}));
+            proms.push(Promise.resolve(saveCredit(role, credit)).catch(() => false));
         });
         pending.clear();
-        return Promise.all(proms);
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
     }
     registerFlush(flushPending);
 
+    /**
+     * #1843/#1851 — cancel this row's pending debounced autosave FIRST. A
+     * name edit followed by an immediate Delete (within SAVE_DEBOUNCE_MS)
+     * used to leave the debounce timer armed: it fired credit_upsert AFTER
+     * credit_delete had already removed the row, re-promoting the junk
+     * tblMusicians row the #1843 reap janitor had just cleaned up. Mirrors
+     * the existing cancel pattern used elsewhere in this file (the
+     * suggestion-pick handler above, and the "all fields emptied" branch in
+     * render()'s input listener below): clear the timer, then drop the
+     * `pending` entry so flushPending() can't fire it either. Also covers an
+     * UNSAVED row (credit.id === 0) — without this, an armed debounce on a
+     * brand-new blank-then-typed-then-deleted row would INSERT a phantom
+     * credit after the row was already gone from the UI.
+     */
     async function removeCredit(role, credit) {
+        const key = role + ':' + credit._key;
+        if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); }
+        pending.delete(key);
         const credits = getCredits();
         credits[role] = credits[role].filter((c) => c !== credit);
         store.set('credits', credits);   // re-renders

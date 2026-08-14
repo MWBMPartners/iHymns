@@ -101,13 +101,17 @@ export function mountMediaTab(container, opts) {
            #1846 — returned so flushPending() (below) can await this specific
            save's completion; no existing caller used the return value before
            (debouncedAnnotation's setTimeout fires it and moves on), so this
-           changes nothing for them. */
+           changes nothing for them.
+           #1851 — resolves TRUE on success, FALSE on failure (never rejects);
+           flushPending() sums the FALSEs into a failure count for the
+           shell's Save-button outcome report. */
         return api.updateMedia(item.id, value)
             .then(() => {
                 const live = getMedia().find((m) => m.id === item.id);
                 if (live) { live.annotation = value; }
+                return true;
             })
-            .catch((e) => toast('Could not save note: ' + e.message, 'danger'));
+            .catch((e) => { toast('Could not save note: ' + e.message, 'danger'); return false; });
     }
     function debouncedAnnotation(item, value) {
         if (annoTimers.has(item.id)) { clearTimeout(annoTimers.get(item.id)); }
@@ -125,25 +129,39 @@ export function mountMediaTab(container, opts) {
      * second, clicking Save shouldn't make you wait for the timer — this
      * sends it right now.
      *
-     * @returns {Promise} Resolves once every flushed save has settled
-     *   (success OR failure) — saveAnnotation() already catches its own
-     *   rejection into a toast and resolves rather than rethrowing, so the
-     *   `.catch(() => {})` here is belt-and-braces, not the normal path.
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report.
+     *   saveAnnotation() already catches its own rejection into a toast and
+     *   resolves a boolean rather than rethrowing, so the
+     *   `.catch(() => false)` here is belt-and-braces, not the normal path
+     *   — this function itself must still never reject.
      */
     function flushPending() {
         annoTimers.forEach((t) => clearTimeout(t));
         annoTimers.clear();
         const proms = [];
         annoPending.forEach(({ item, value }) => {
-            proms.push(Promise.resolve(saveAnnotation(item, value)).catch(() => {}));
+            proms.push(Promise.resolve(saveAnnotation(item, value)).catch(() => false));
         });
         annoPending.clear();
-        return Promise.all(proms);
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
     }
     registerFlush(flushPending);
 
+    /**
+     * #1851 — cancel this file's pending debounced annotation autosave
+     * FIRST, mirroring structure-tab.js's removeComponent()/credits-tab.js's
+     * removeCredit(). Milder here than the other two (a stale annotation
+     * save after delete just 404s the toast, no resurrection — updateMedia
+     * has nothing to re-append) but there is no reason to let a doomed
+     * request fire at all.
+     */
     async function remove(item) {
         if (!window.confirm('Remove "' + item.fileName + '"? This cannot be undone.')) { return; }
+        if (annoTimers.has(item.id)) { clearTimeout(annoTimers.get(item.id)); annoTimers.delete(item.id); }
+        annoPending.delete(item.id);
         const before = getMedia();
         store.set('media', before.filter((m) => m.id !== item.id));   // optimistic
         try {

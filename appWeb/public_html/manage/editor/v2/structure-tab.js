@@ -85,25 +85,32 @@ export function mountStructureTab(container, opts) {
      * ELI5: if you were mid-typing a lyric or chord line, clicking Save
      * shouldn't make you wait for the pause-timer — this sends it right now.
      *
-     * @returns {Promise} Resolves once every flushed save has settled
-     *   (success OR failure) — saveComponent() already catches its own
-     *   rejection into a toast and resolves rather than rethrowing, so the
-     *   `.catch(() => {})` here is belt-and-braces, not the normal path.
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report. saveComponent()
+     *   already catches its own rejection into a toast and resolves a
+     *   boolean rather than rethrowing, so the `.catch(() => false)` here is
+     *   belt-and-braces, not the normal path — this function itself must
+     *   still never reject.
      */
     function flushPending() {
         saveTimers.forEach((t) => clearTimeout(t));
         saveTimers.clear();
         const proms = [];
         pendingSaves.forEach((comp) => {
-            proms.push(Promise.resolve(saveComponent(comp)).catch(() => {}));
+            proms.push(Promise.resolve(saveComponent(comp)).catch(() => false));
         });
         pendingSaves.clear();
-        return Promise.all(proms);
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
     }
     registerFlush(flushPending);
 
     /** Persist one component (create or update) atomically. On a CREATE, adopt
-     *  the server-assigned componentId so later edits UPDATE in place. */
+     *  the server-assigned componentId so later edits UPDATE in place.
+     *  #1846/#1851 — resolves TRUE on success, FALSE on failure (never
+     *  rejects); flushPending() below sums the FALSEs into a failure count
+     *  for the shell's Save-button outcome report. */
     async function saveComponent(comp) {
         try {
             const payload = {
@@ -126,8 +133,10 @@ export function mountStructureTab(container, opts) {
             };
             const res = await api.upsertComponent(songId, payload);
             if (!comp.id && res.componentId) { comp.id = res.componentId; }
+            return true;
         } catch (e) {
             toast('Could not save section: ' + e.message, 'danger');
+            return false;
         }
     }
 
@@ -295,7 +304,19 @@ export function mountStructureTab(container, opts) {
         } catch (e) { toast('Could not reorder: ' + e.message, 'danger'); }
     }
 
+    /**
+     * #1851 — cancel this component's pending debounced lyric/chord autosave
+     * FIRST. Without this, an edit-then-immediate-delete (within
+     * SAVE_DEBOUNCE_MS) left the debounce timer armed: it fired
+     * component_upsert AFTER deleteComponent had already removed the row,
+     * and api2.php's upsert re-APPENDS a component whose id no longer
+     * exists — the section resurrects itself right after being deleted.
+     * Same key space as debouncedSave() above (comp._key).
+     */
     async function removeComponent(comp) {
+        const key = comp._key;
+        if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); saveTimers.delete(key); }
+        pendingSaves.delete(key);
         const comps = store.get('components').filter((c) => c !== comp);
         comps.forEach((c, i) => { c.sortOrder = i; });
         store.set('components', comps);   // re-renders immediately
