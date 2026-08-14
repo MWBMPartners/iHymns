@@ -4249,8 +4249,15 @@ try {
             'ok'       => true,
             'async'    => true,
             'job_id'   => $jobId,
+            /* #1855: extensionless — this value becomes the browser's
+               actual GET poll target (bulk-import-progress.js / import2.php
+               read it as `data.poll_url`). A literal .php URL here is 301'd
+               by .htaccess; GET survives a 301 so this was only a wasted
+               redirect hop, not a data-loss bug, but the sibling v1 handler
+               (api.php's bulk_import_status poll_url) already emits the
+               extensionless form — this brings api2.php in line with it. */
             'status'   => 'queued',
-            'poll_url' => '/manage/editor/api2.php?action=import_zip_status&job_id=' . $jobId,
+            'poll_url' => '/manage/editor/api2?action=import_zip_status&job_id=' . $jobId,
         ], JSON_UNESCAPED_UNICODE);
         @session_write_close();
         @ignore_user_abort(true);
@@ -4358,8 +4365,13 @@ try {
             'errors'                 => $decode($row['ErrorsJson'])            ?? [],
             'per_songbook'           => $decode($row['PerSongbookJson'])       ?? null,
             'skip_reason'            => 'existing-in-db',
+            /* #1855: extensionless — this becomes an <a href> the browser
+               navigates to as a plain GET download. Survives a 301 either way,
+               but the sibling v1 handler (api.php's bulk_import_skipped_csv
+               skipped_csv_url) already emits the extensionless form; this
+               brings api2.php in line with it and drops the wasted hop. */
             'skipped_csv_url'        => (int)$row['SongsSkippedExisting'] > 0
-                ? '/manage/editor/api2.php?action=import_zip_skipped_csv&job_id=' . (int)$row['Id'] : '',
+                ? '/manage/editor/api2?action=import_zip_skipped_csv&job_id=' . (int)$row['Id'] : '',
             'phase_label'            => $row['PhaseLabel'] ?? null,
             'started_at'             => $row['StartedAt'],
             'completed_at'           => $row['CompletedAt'],

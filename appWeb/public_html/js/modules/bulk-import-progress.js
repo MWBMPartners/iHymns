@@ -470,8 +470,11 @@ function pollOnce() {
        skipped_csv_url/filename/errors/total_entries/processed_entries/
        songs_created/songs_failed/songs_skipped_existing) exists in both
        handlers' output. */
+    // #1855: extensionless — matches api-client.js's ENDPOINT; this GET
+    // would survive the .htaccess 301, but skips the wasted redirect hop on
+    // every poll tick.
     const url = activeJob.pollUrl
-        || ('/manage/editor/api2.php?action=import_zip_status&job_id=' + activeJob.jobId);
+        || ('/manage/editor/api2?action=import_zip_status&job_id=' + activeJob.jobId);
     apiFetch(url, { credentials: 'same-origin' })
         .then(r => r.json().then(data => ({ ok: r.ok, data })))
         .then(out => {

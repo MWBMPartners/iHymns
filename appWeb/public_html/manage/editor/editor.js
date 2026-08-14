@@ -3212,7 +3212,11 @@ function renderSongExternalLinks(song) {
  * /api?action=get_song_links and invokes cb({groupId, links}).
  */
 function fetchSongLinks(songId, cb) {
-    fetch('api.php?action=get_song_links&id=' + encodeURIComponent(songId))
+    // #1855: extensionless — resolves to /manage/editor/api (not
+    // api.php), which the generic clean-URL rewrite serves internally with
+    // no redirect; the literal .php form only cost a wasted 301 on GET here,
+    // but the sibling POST call sites below would have their body dropped.
+    fetch('api?action=get_song_links&id=' + encodeURIComponent(songId))
         .then(function (r) { return r.json(); })
         .then(function (data) {
             if (data && data.error) { cb({ groupId: 0, links: [] }); return; }
@@ -3357,7 +3361,10 @@ function addSongLinkClickHandler() {
         return;
     }
 
-    fetch('api.php?action=add_song_link', {
+    // #1855: extensionless — the literal api.php URL is 301'd by
+    // .htaccess, and a browser replays a 301'd POST as a body-less GET,
+    // which would silently drop this write's body.
+    fetch('api?action=add_song_link', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ sourceSongId: currentSongId, targetSongId: targetId }),
@@ -3387,7 +3394,9 @@ function addSongLinkClickHandler() {
  * also drops the remaining row if removing leaves a singleton group.
  */
 function removeSongLink(currentId, targetSongId) {
-    fetch('api.php?action=remove_song_link', {
+    // #1855: extensionless — see addSongLink() above; a literal .php
+    // URL here would 301 and silently strip this POST's body.
+    fetch('api?action=remove_song_link', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ songId: targetSongId }),
@@ -3422,7 +3431,8 @@ function renderSongLinkSuggestions(song) {
     var list  = document.getElementById('song-link-suggestions-list');
     if (!box || !list) return;
 
-    fetch('api.php?action=suggest_song_links&id=' + encodeURIComponent(song.id))
+    // #1855: extensionless — see fetchSongLinks() above.
+    fetch('api?action=suggest_song_links&id=' + encodeURIComponent(song.id))
         .then(function (r) { return r.json(); })
         .then(function (data) {
             if (currentSongId !== song.id) return;
@@ -3462,7 +3472,10 @@ function renderSongLinkSuggestions(song) {
                 linkBtn.title = 'Link as the same hymn';
                 linkBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
                 linkBtn.addEventListener('click', function () {
-                    fetch('api.php?action=add_song_link', {
+                    // #1855: extensionless — see addSongLink() above; a
+                    // literal .php URL here would 301 and silently strip
+                    // this POST's body.
+                    fetch('api?action=add_song_link', {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({
@@ -3492,7 +3505,10 @@ function renderSongLinkSuggestions(song) {
                 dismissBtn.title = 'Dismiss — different hymns';
                 dismissBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
                 dismissBtn.addEventListener('click', function () {
-                    fetch('api.php?action=dismiss_song_link_suggestion', {
+                    // #1855: extensionless — see addSongLink() above; a
+                    // literal .php URL here would 301 and silently strip
+                    // this POST's body.
+                    fetch('api?action=dismiss_song_link_suggestion', {
                         method:  'POST',
                         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({

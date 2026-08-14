@@ -82,11 +82,14 @@
             },
         },
         user: {
-            url: function (q) { return '/manage/editor/api2.php?action=user_search&q=' + encodeURIComponent(q); },
+            // #1855: extensionless — matches api-client.js's ENDPOINT;
+            // these GETs would survive the .htaccess 301, but going straight
+            // to the clean URL skips the redirect hop on every keystroke.
+            url: function (q) { return '/manage/editor/api2?action=user_search&q=' + encodeURIComponent(q); },
             extract: function (data) { return data.suggestions || []; },
         },
         organisation: {
-            url: function (q) { return '/manage/editor/api2.php?action=org_search&q=' + encodeURIComponent(q); },
+            url: function (q) { return '/manage/editor/api2?action=org_search&q=' + encodeURIComponent(q); },
             extract: function (data) { return data.suggestions || []; },
         },
     };

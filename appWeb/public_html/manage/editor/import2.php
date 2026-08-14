@@ -195,7 +195,10 @@ $formats = [
             fd.append('dedupeMode', dedupeEl.checked ? 'skip-title' : 'off');
             startUploadTracking({ filename: file.name, sizeBytes: file.size });
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/manage/editor/api2.php?action=import_zip', true);
+            /* #1855: extensionless — the literal .php URL is 301'd by
+               .htaccess, and a browser replays a 301'd POST as a body-less GET,
+               which would silently drop this whole upload. */
+            xhr.open('POST', '/manage/editor/api2?action=import_zip', true);
             xhr.withCredentials = true;
             /* api2.php gates EVERY POST on this header and has no X-CSRF-Token
                fallback (#1677), so without it the upload 403s before any import
@@ -241,7 +244,9 @@ $formats = [
             fd.append('file', file);
             fd.append('format', fmtEl.value);
             fd.append('dedupeMode', dedupeEl.checked ? 'skip-title' : 'off');
-            fetch('/manage/editor/api2.php?action=import_file', {
+            /* #1855: extensionless — see the XHR above; a literal .php URL
+               here would 301 and silently strip this POST's body. */
+            fetch('/manage/editor/api2?action=import_file', {
                 method: 'POST',
                 credentials: 'same-origin',
                 /* X-Requested-With is what api2.php actually gates on (#1677);

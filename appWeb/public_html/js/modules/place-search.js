@@ -152,7 +152,13 @@
     'use strict';
 
     const DEFAULTS = {
-        endpoint:   '/manage/places-api.php',
+        // #1855: extensionless — this endpoint serves both the GET
+        // ?action=search typeahead (line ~172) and the POST ?action=upsert
+        // write (line ~698). A literal .php URL is 301'd by .htaccess, and
+        // a browser replays a 301'd POST as a body-less GET, which would
+        // silently drop the upsert payload; the GET typeahead only paid a
+        // wasted redirect hop, but both now go straight to the endpoint.
+        endpoint:   '/manage/places-api',
         minChars:   3,
         debounceMs: 250,
         maxResults: 8,

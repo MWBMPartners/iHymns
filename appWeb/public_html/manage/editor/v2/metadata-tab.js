@@ -732,7 +732,10 @@ export function mountMetadataTab(container, opts) {
                 minChars: 2,
                 pickMode: 'value',
                 noun: { singular: 'tune', plural: 'tunes' },
-                searchUrl: (q) => '/manage/editor/api2.php?action=tune_search&q=' + encodeURIComponent(q)
+                // #1855: extensionless — matches api-client.js's ENDPOINT;
+                // this GET would survive the .htaccess 301, but goes straight
+                // to the clean URL to skip the redirect hop.
+                searchUrl: (q) => '/manage/editor/api2?action=tune_search&q=' + encodeURIComponent(q)
                     + '&limit=10' + (tmeterCheck.checked && currentMeter ? '&meter=' + encodeURIComponent(currentMeter) : ''),
                 parseResults: (d) => (d.suggestions || []).map((s) => ({
                     id: s.id,
