@@ -368,11 +368,107 @@ ok('a 1213 during a reference probe does NOT propagate out of the janitor', $thr
 ok('…it returns false and deletes nothing', $res === false && !$db->deletedMusician());
 ok('…and it rolled the janitor transaction back', $db->lastTx() === 'rollback');
 
+/* --------------------------------------------------------------- *
+ * (f) TREE-DERIVED $refProbes COVERAGE — rule #34 (#10 fix, #1843).
+ * $refProbes (musician_helpers.php) is a hand-typed 11-table map of
+ * every table with a free-text/FK reference to tblMusicians, and the
+ * (b3) mutation matrix above is a SECOND hand-typed copy of that same
+ * list — appWeb/.sql/schema.sql is a THIRD. If a future table grows a
+ * `REFERENCES tblMusicians(...)` FK (inline in a CREATE TABLE, or via
+ * a later ALTER TABLE ... ADD CONSTRAINT) and nobody remembers to add
+ * it to $refProbes, the reap's reference-probe loop no longer checks
+ * that table — the janitor's DELETE proceeds unblocked and the FK's
+ * own ON DELETE CASCADE/SET NULL silently mutates or deletes that
+ * table's child rows out from under a curator, with nothing red
+ * anywhere (exactly rule #30/#35's silent-no-op shape, applied to a
+ * schema guard instead of a script one).
+ *
+ * BOTH sides here are derived from the tree, never typed literally:
+ *   - the schema side walks schema.sql tracking the most recent
+ *     CREATE TABLE / ALTER TABLE name and records it whenever a
+ *     "REFERENCES tblMusicians" line appears while that table is the
+ *     current one — this catches the FK however it was declared;
+ *   - the $refProbes side regexes the array literal straight out of
+ *     musician_helpers.php's live source.
+ * The schema-derived set must be a SUBSET of (or equal to) the
+ * $refProbes keys; anything schema.sql knows about that $refProbes
+ * doesn't is reported by name so the fix is a one-line map addition,
+ * not a hunt. See this file's mutation-proof note below the guard.
+ * --------------------------------------------------------------- */
+echo "\n(f) \$refProbes covers every schema.sql FK to tblMusicians (rule #34)\n";
+
+$schemaPath = $root . '/appWeb/.sql/schema.sql';
+$schemaSrc  = file_get_contents($schemaPath);
+ok('schema.sql is readable', $schemaSrc !== false, $schemaPath);
+
+/* Walk the file tracking the CURRENT owning table — the most recent
+   CREATE TABLE / ALTER TABLE name seen — and record it whenever a
+   "REFERENCES tblMusicians" line appears while that table is current.
+   This catches an FK declared either inline in a CREATE TABLE's
+   column/constraint block, or bolted on later via ALTER TABLE, without
+   needing to parse full SQL statement boundaries. */
+$schemaOwningTables = [];
+$currentTable = null;
+foreach (preg_split('/\R/', (string)$schemaSrc) as $line) {
+    if (preg_match('/^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i', $line, $m)) {
+        $currentTable = $m[1];
+        continue;
+    }
+    if (preg_match('/^\s*ALTER\s+TABLE\s+`?(\w+)`?/i', $line, $m)) {
+        $currentTable = $m[1];
+        continue;
+    }
+    if ($currentTable !== null && preg_match('/REFERENCES\s+`?tblMusicians`?\b/i', $line)) {
+        $schemaOwningTables[$currentTable] = true;
+    }
+}
+$schemaOwningTables = array_keys($schemaOwningTables);
+sort($schemaOwningTables);
+ok('the schema.sql extractor found at least one owning table (sanity-checks the walker itself)',
+   count($schemaOwningTables) > 0,
+   'found: ' . implode(', ', $schemaOwningTables));
+
+/* Extract $refProbes' table keys straight from musician_helpers.php's
+   live source — the array literal between "$refProbes = [" and its
+   closing "];" — rather than retyping the list a fourth time. */
+$helpersPath = $pubDir . '/includes/musician_helpers.php';
+$helpersSrc  = file_get_contents($helpersPath);
+ok('musician_helpers.php is readable', $helpersSrc !== false, $helpersPath);
+
+$refProbesKeys = [];
+if (preg_match('/\$refProbes\s*=\s*\[(.*?)\n\s*\];/s', (string)$helpersSrc, $m)) {
+    if (preg_match_all('/[\'"](\w+)[\'"]\s*=>/', $m[1], $km)) {
+        $refProbesKeys = $km[1];
+    }
+}
+sort($refProbesKeys);
+ok('the $refProbes array literal was found and parsed out of musician_helpers.php',
+   count($refProbesKeys) > 0,
+   'source path: ' . $helpersPath);
+
+$missingFromRefProbes = array_values(array_diff($schemaOwningTables, $refProbesKeys));
+ok('every schema.sql table with a tblMusicians FK is covered by $refProbes',
+   $missingFromRefProbes === [],
+   $missingFromRefProbes === []
+       ? ''
+       : 'MISSING from $refProbes: ' . implode(', ', $missingFromRefProbes)
+           . ' — schema-derived set: [' . implode(', ', $schemaOwningTables) . ']'
+           . '; $refProbes keys: [' . implode(', ', $refProbesKeys) . ']');
+
+/* MUTATION-PROOF (manual, done once while authoring this assertion,
+   not re-run automatically on every CI pass): temporarily delete one
+   entry (e.g. 'tblVocalParts' => 'MusicianId = ?',) from $refProbes in
+   includes/musician_helpers.php, rerun this file, confirm assertion
+   (f) goes RED and names exactly 'tblVocalParts' in the detail line,
+   then restore the entry and confirm green again. Recorded result:
+   see the session report — the assertion behaved as designed. */
+
 /* ================================================================= */
 if ($fail === 0) {
     echo "\nmusician-orphan-reap: every guard held (" . "happy path, "
        . count($signalMutations) . " signals, orphan check, "
-       . count($refTables) . " reference tables, same-row-by-Id, 1146-skip, error-bail).\n";
+       . count($refTables) . " reference tables, same-row-by-Id, 1146-skip, "
+       . "error-bail, tree-derived \$refProbes/schema.sql coverage).\n";
     exit(0);
 }
 fwrite(STDERR, "\n{$fail} assertion(s) failed.\n");
