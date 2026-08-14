@@ -26,9 +26,14 @@ Shipped, in commit order:
   still open).
 
 Issues #1845/#1846/#1849/#1850 stay **open** until this branch merges (close on merge, not on commit).
-Separately, a focused evidence-based sweep **closed 9** already-live issues (#1811/#1814/#1816/#1818/
-#1820/#1828/#1829/#1831/#1835) — all verified `closed` on GitHub. Next-session bug candidates left open:
-#1832 (CSP `onerror` vendor-fallback), #1799 / #1796 (both `/manage/musicians`), #1798 (service_drive
+Separately, a focused evidence-based sweep **closed 11** already-live issues — the CI/feature cluster
+(#1811/#1814/#1816/#1818/#1820/#1828/#1829/#1831/#1835) plus, after line-by-line verification, the two
+musician bugs the owner asked me to "fold in": **#1799** (per-row `$p['Id']` warning + dead sort) and
+**#1796** (lossy merge — `tblSongArtists` + cascade-deleted aliases/relations). Both #1799/#1796 were
+**already fixed + shipped on alpha** (`0b7d8ec`, #1810 via #1785 C4/C5 + #1786) — verified (no `$p['Id']`,
+`cp-sortable`+boot wired, `musicianMergeExecute()` 6-table + aliases/relations carried, 3 CI guards green)
+and closed; **no code change on this branch**. Still-open candidates NOT line-verified (could also be
+already-fixed — check the tree first): #1832 (CSP `onerror` vendor-fallback), #1798 (service_drive
 sectionRef). CHANGELOG has an Unreleased entry (`f238bd0`); no version bump this session.
 
 ---
