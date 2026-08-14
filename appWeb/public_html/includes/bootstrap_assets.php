@@ -202,18 +202,6 @@ if (!function_exists('ihymns_bootstrap_js_script')) {
      */
     function ihymns_bootstrap_js_script(): string
     {
-        /* `defined()` first, not just `?? null`: APP_CONFIG is a CONSTANT, and
-           `UNDEFINED_CONST['k'] ?? null` raises Error in PHP 8 rather than
-           yielding null — the null-coalescing operator suppresses undefined
-           *index*, never undefined *constant*. Every caller happens to load
-           config.php transitively today, but this helper is now reached from a
-           public page (channel_gate.php) as well as admin, and a fatal on the
-           sign-in gate would lock people out of alpha entirely.
-           https://www.php.net/manual/en/language.constants.php */
-        if (!defined('APP_CONFIG')) {
-            return $out;
-        }
-
         /* See the note in ihymns_bootstrap_css_links(): undefined CONSTANT, not
            undefined index, so `??` alone would not save us. */
         if (!defined('APP_CONFIG')) {
