@@ -4,11 +4,14 @@
 
 ---
 
-## 📌 Continuation note — 2026-08-13 (editor bug cluster + musician-profile migration fix — PUSHED, no PR yet)
+## 📌 Continuation note — 2026-08-13→14 (musician migration + v2 editor + hardening + CSP/privacy — MERGED, v0.5200.0)
 
-**Branch `claude/musician-profile-migration-8n15p1` (off `alpha`) — PUSHED, up-to-date with origin.
-9 substantive commits ahead of `alpha`, no PR yet (one-PR rule; owner has not asked).** Full
-session record: `.claude/sessions/2026-08-13-HANDOFF.md`.
+**Branch `claude/musician-profile-migration-8n15p1` — ✅ MERGED to `alpha` in PR #1853 (2026-08-14),
+all CI green + deployed (SFTP run #525). Version bumped `0.5160.0 → 0.5200.0` (owner-directed minor).**
+Closed by the merge: #1832/#1845/#1846/#1849/#1850/#1851 (10-fix hardening epic)/#1852 (Clarity-DNT);
+#1824/#1843/#1796/#1798/#1799 + 9 sweep issues closed earlier. Still open: #1847 (needs an owner
+hard-refresh on alpha to confirm). Full session record: `.claude/sessions/2026-08-13-HANDOFF.md` (now the
+SINGLE handoff document — older dated handoffs removed from the tree, preserved in git history).
 
 Shipped, in commit order:
 - `990d27e` **#1824** — musician-profile P1 migration no-ops (not error 1347 "not BASE TABLE") once the
@@ -147,7 +150,7 @@ spec: `.claude/final-docs-sweep-91-plan.md`.
 
 **Suites at sweep close: 153 PHP / 56 node, all green** (docs don't move the counts).
 
-**Version is now `0.5160.0`** (owner-directed minor bump; supersedes the `0.4001.0` claims still
+**Version is now `0.5200.0`** (owner-directed minor bump; supersedes the `0.4001.0` claims still
 written at the historical §"What Is iHymns?" and the 07-30 consolidation note below — read
 `includes/infoAppVer.php` as the authority, per the fact-refresh precedent).
 
