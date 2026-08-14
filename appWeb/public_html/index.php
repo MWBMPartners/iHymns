@@ -1031,12 +1031,22 @@ if (!empty($breadcrumbItems)) {
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
-    <!-- Microsoft Clarity — deferred until consent is granted -->
+    <!-- Microsoft Clarity — SESSION RECORDING (clicks, pointer movement, scroll,
+         page interaction). #1852 — loads ONLY on explicit consent, and is
+         suppressed entirely under Do-Not-Track. This deliberately DIFFERS from
+         the GA4/Matomo loaders above, which load under Do-Not-Track in a
+         privacy-safe mode (IP-anonymised / setDoNotTrack): Clarity has no
+         comparable anonymised mode — it records the actual session — so a
+         Do-Not-Track signal must switch it off rather than merely soften it. The
+         gate therefore requires consent-granted and excludes Do-Not-Track (which
+         also covers a Do-Not-Track user carrying a stale prior consent). -->
     <script nonce="<?= $cspNonce ?>">
         (function() {
             var consent = localStorage.getItem('ihymns_analytics_consent');
             var dnt = <?= json_encode(USER_DNT) ?>;
-            if (consent === 'granted' || dnt) {
+            /* #1852 — consent granted AND Do-Not-Track absent. Session recording
+               has no privacy-safe fallback, so Do-Not-Track always wins here. */
+            if (consent === 'granted' && !dnt) {
                 (function(c,l,a,r,i,t,y){
                     c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
                     t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
