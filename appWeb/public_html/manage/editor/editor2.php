@@ -189,14 +189,47 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
     ?>
 </head>
 <body class="p-0">
-    <div class="d-flex" style="height: 100vh;">
-        <aside id="v2-sidebar" class="bg-body-tertiary" style="flex: 0 0 300px; min-width: 200px;"></aside>
-        <div id="v2-grip" class="border-end border-start" title="Drag to resize" style="flex: 0 0 5px; cursor: col-resize;"></div>
+    <?php
+    /* #1845 — the song-list aside becomes a Bootstrap 5.3 responsive
+       offcanvas (`.offcanvas-lg`): in-flow content at >=992px (unchanged from
+       before), a slide-in drawer below it (opened by the hamburger button in
+       the header rail, see below). The MOUNT target for sidebar.js stays the
+       INNER `#v2-sidebar` div, not the offcanvas panel itself — sidebar.js
+       does `container.className = 'd-flex flex-column h-100'`, which would
+       strip the `.offcanvas-lg`/`.offcanvas-start` classes right back off if
+       it ran on the panel node. Sizing/background/cursor that used to be
+       inline style="" here now live in admin.css's `#v2-shell`/`#v2-sidebar-
+       panel`/`#v2-grip` rules (search "v2 SONG EDITOR SHELL"). */
+    ?>
+    <div id="v2-shell" class="d-flex">
+        <aside id="v2-sidebar-panel" class="offcanvas-lg offcanvas-start" tabindex="-1" aria-labelledby="v2-sidebar-title">
+            <div class="offcanvas-header border-bottom">
+                <h2 class="offcanvas-title h6" id="v2-sidebar-title"><i class="bi bi-music-note-list me-1" aria-hidden="true"></i>Songs</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="offcanvas" data-bs-target="#v2-sidebar-panel" aria-label="Close song list"></button>
+            </div>
+            <div class="offcanvas-body">
+                <div id="v2-sidebar"></div>
+            </div>
+        </aside>
+        <div id="v2-grip" class="border-end border-start d-none d-lg-block" title="Drag to resize"></div>
 
         <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;">
             <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                <?php /* #1845 — below lg the song list is the offcanvas drawer above,
+                         not in-flow content; this is its only way in. Bootstrap's own
+                         data-bs-toggle/data-bs-target wiring (no custom JS needed to
+                         OPEN it — only to close it programmatically, see the boot
+                         script's hideSidebarPanel() below). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#v2-sidebar-panel" aria-controls="v2-sidebar-panel"><i class="bi bi-list" aria-hidden="true"></i><span class="ms-1">Songs</span></button>
                 <h1 class="h5 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
                 <div class="ms-auto d-flex gap-2 flex-wrap">
+                    <?php /* #1846 — manual Save: flushes every tab's pending DEBOUNCED
+                             writes early + confirms once they've settled. Autosave keeps
+                             working unchanged underneath — this is additive, not a
+                             replacement. Starts disabled: it's meaningless with no song
+                             loaded, and is enabled in loadSong() alongside the Duplicate
+                             button reveal a few lines below. */ ?>
+                    <button id="v2-save-btn" type="button" class="btn btn-sm btn-outline-success" disabled><i class="bi bi-check2-all me-1" aria-hidden="true"></i>Save</button>
                     <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>New</button>
                     <!-- #1783 — Duplicate the open song as a starting point for a new
                          songbook. Hidden until a song is loaded (shown in loadSong). -->
@@ -225,7 +258,10 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
-            <ul class="nav nav-tabs mb-3" role="tablist">
+            <?php /* #1845 — flex-nowrap + overflow-x-auto: eight icon+label tabs
+                     wrapped to 3 rows on a phone-width nav-tabs before this;
+                     now they're one horizontally-scrollable row instead. */ ?>
+            <ul class="nav nav-tabs mb-3 flex-nowrap overflow-x-auto" role="tablist">
                 <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i class="bi bi-info-circle me-1"></i>Metadata</button></li>
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
@@ -381,12 +417,22 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
            slices directly. */
         const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], songbookRightsDefaults: null, pendingDuplicate: false });
         let teardowns = [];
+        /* #1846 — flush functions registered by whichever mounted tabs hold a
+           pending DEBOUNCED save (metadata / structure / credits / links /
+           media — see each tab's own registerFlush() call). Same lifecycle as
+           `teardowns` immediately above: rebuilt fresh by mountTabs() on every
+           song switch, reset to empty by teardownTabs() so a remount can never
+           flush a torn-down tab's stale timers. A plain injected callback
+           (ctx.registerFlush), not a DOM event — rule #35/#1581 bans a new
+           event-name literal for something a function reference already does. */
+        let flushers = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
 
         function teardownTabs() {
             teardowns.forEach((fn) => { try { if (typeof fn === 'function') { fn(); } } catch (_e) {} });
             teardowns = [];
+            flushers = [];   // #1846 — same reset-on-remount lifecycle as teardowns above
         }
         /* #1679 — a songbook change re-keys the SongId server-side, so the id the
            tabs, the ?song= URL and the sidebar hold is dead the instant the move
@@ -428,6 +474,13 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                    its own copy (mirrors getSongbooks() above; sidebar.js's
                    getAllSongs() is the read-only accessor). */
                 getSongs: () => sidebar.getAllSongs(),
+                /* #1846 — a tab with a pending debounced save calls this ONCE at
+                   mount time to hand back a "flush me now" function; the Save
+                   button's click handler (below, wired once — not inside
+                   mountTabs()) awaits every registered flusher. Pushes onto the
+                   CURRENT `flushers` array by closure, so it's always the live
+                   array for whichever song is presently mounted. */
+                registerFlush: (fn) => { if (typeof fn === 'function') { flushers.push(fn); } },
             };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
@@ -457,6 +510,18 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
            from load_song, remount for the new song. No full page reload. */
         async function loadSong(id) {
             if (!id) { return; }
+            /* #1851 FIX #1 — flush every CURRENTLY-mounted tab's pending
+               debounced save BEFORE tearing them down for the switch.
+               teardownTabs() (called a few lines below, inside the try)
+               clears each tab's debounce timers + resets `flushers` to [] —
+               an edit still sitting inside its debounce window at the
+               moment of a song switch was silently discarded with no
+               warning. `flushers` is [] on the very first load (nothing
+               mounted yet), so this is a harmless no-op then. Each flusher
+               already resolves rather than rejects (see FIX #6's contract
+               above every tab's flushPending()), so `.catch(() => {})` here
+               is belt-and-braces, not the normal path. */
+            await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => {})));
             const seq = ++loadSeq;
             status('Loading…');
             try {
@@ -489,6 +554,9 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 sidebar.setActive(id);
                 /* #1783 — the Duplicate button acts on the open song, so reveal it now. */
                 { const dupBtn = byId('v2-duplicate-btn'); if (dupBtn) { dupBtn.classList.remove('d-none'); } }
+                /* #1846 — the Save button acts on the open song too; enable it now
+                   (it starts `disabled` — meaningless with nothing loaded). */
+                { const saveBtn = byId('v2-save-btn'); if (saveBtn) { saveBtn.disabled = false; } }
                 if (data.isPendingDuplicate) {
                     status('Duplicated song — assign it a songbook and number (both are empty) on the Metadata tab, then it becomes a new song. Edit anything first.', 'success');
                 } else {
@@ -507,7 +575,24 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             bulkBar.classList.toggle('d-none', n === 0);
             bulkCount.textContent = n + ' song' + (n === 1 ? '' : 's') + ' selected';
         }
-        const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: loadSong, onSelectionChange: onSelChange });
+        /* #1845 — below lg the song list is a responsive-offcanvas drawer;
+           picking a song must dismiss it or the editor stays hidden behind it.
+           Gated on .show so it's a no-op on desktop (or when the drawer is
+           already closed). Global window.bootstrap, same as the Tab/Modal usage
+           elsewhere on this page — never a module import. */
+        function hideSidebarPanel() {
+            const el = byId('v2-sidebar-panel');
+            if (!el || !el.classList.contains('show')) { return; }
+            if (window.bootstrap && window.bootstrap.Offcanvas) {
+                window.bootstrap.Offcanvas.getOrCreateInstance(el).hide();
+            }
+        }
+        /* Rotating a tablet from portrait (<992px, drawer open) to landscape
+           (>=992px) can strand Bootstrap's JS-inserted backdrop; hide-on-cross
+           cleans it up. The 992 MUST match the .offcanvas-lg breakpoint. */
+        try { window.matchMedia('(min-width: 992px)').addEventListener('change', (e) => { if (e.matches) { hideSidebarPanel(); } }); } catch (_e) {}
+
+        const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: (id) => { hideSidebarPanel(); loadSong(id); }, onSelectionChange: onSelChange });
 
         /* ---- bulk actions (multi-select) ---- */
         byId('v2-bulk-clear').addEventListener('click', () => sidebar.clearSelection());
@@ -558,9 +643,17 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             } catch (e) { status('Bulk untag failed: ' + e.message, 'danger'); }
         });
 
-        /* ---- resizable sidebar (#1193) — drag the grip; width persists ---- */
+        /* ---- resizable sidebar (#1193) — drag the grip; width persists ----
+           #1845 — retargeted from #v2-sidebar (the inner mount div, now sized
+           by its offcanvas-body flex parent) to #v2-sidebar-panel (the actual
+           flex item in #v2-shell). The saved width still lands as an INLINE
+           flex-basis on that item, which wins over admin.css's `flex: 0 0
+           300px` default at >=lg (inline style beats a stylesheet rule of
+           equal specificity) — and is simply inert below lg, where the grip
+           itself is `d-none` so these listeners can never fire in the first
+           place (verified: grip has zero hit-area while hidden). */
         (function () {
-            const aside = byId('v2-sidebar');
+            const aside = byId('v2-sidebar-panel');
             const grip = byId('v2-grip');
             const KEY = 'ihymns_editor_sidebar_w';
             const clampW = (w) => Math.max(200, Math.min(w, Math.round(window.innerWidth * 0.6)));
@@ -640,6 +733,53 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
         }
         byId('v2-duplicate-btn').addEventListener('click', () => { runDuplicate(currentSongId); });
 
+        /* ---- Manual Save (#1846) ----
+           ELI5: autosave already saves every field a second or so after you
+           stop typing; this button says "don't make me wait — save what's
+           pending right now, and tell me when it's done."
+
+           Wired ONCE here (not inside mountTabs()) so the listener survives a
+           song switch — it reads the CURRENT `flushers` array by closure on
+           every click, which mountTabs()/teardownTabs() keep pointed at
+           whichever song is presently mounted. Each registered flusher already
+           settles (resolve, never reject — see each tab's own flushPending()),
+           so the outer try/catch is a belt-and-braces guard against a flusher
+           that somehow still throws, not the normal path.
+
+           #1851 — flushPending() used to be fired purely for its side effect
+           (`.catch(() => {})` swallowed EVERY outcome, success or failure)
+           and this handler then reported "All changes saved." unconditionally
+           — even when a flusher's inner save had already toasted a failure.
+           The toast scrolled past unnoticed and the status bar lied. Each
+           tab's flushPending() now RESOLVES TO THE COUNT of saves that
+           failed during that flush (0 = all ok; see each tab's contract
+           doc-comment on its own flushPending()), so this sums those counts
+           and reports the real outcome instead of a fixed success string. */
+        {
+            const saveBtn = byId('v2-save-btn');
+            if (saveBtn) {
+                saveBtn.addEventListener('click', async () => {
+                    if (!currentSongId) { return; }
+                    saveBtn.disabled = true;
+                    status('Saving…');
+                    try {
+                        const results = await Promise.all(flushers.map((fn) => Promise.resolve(fn()).catch(() => 1)));
+                        const failed = results.reduce((n, r) => n + (Number(r) || 0), 0);
+                        status(
+                            failed
+                                ? ('Saved — but ' + failed + ' change' + (failed > 1 ? 's' : '') + ' could not be saved (see messages above)')
+                                : 'All changes saved.',
+                            failed ? 'danger' : 'success'
+                        );
+                    } catch (e) {
+                        status('Save failed: ' + (e && e.message ? e.message : e), 'danger');
+                    } finally {
+                        saveBtn.disabled = false;
+                    }
+                });
+            }
+        }
+
         /* ---- Delete current song ---- */
         byId('v2-delete-btn').addEventListener('click', async () => {
             if (!currentSongId) { status('No song open to delete.', 'danger'); return; }
@@ -652,11 +792,26 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             loadSeq++;   // invalidate any in-flight loadSong so it can't repaint the deleted song
             try {
                 await editorApi.deleteSong(gone);
+                /* #1851 FIX #1 — discard (not flush) the deleted song's
+                   pending edits: teardownTabs() runs BEFORE the next-song
+                   load or the empty-list branch, so loadSong()'s own
+                   top-of-function flush (see FIX #1's comment there) finds
+                   `flushers` already reset to [] and has nothing stale left
+                   to fire against a song that no longer exists. */
+                teardownTabs();
                 sidebar.removeSong(gone);
                 currentSongId = null;
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
-                else { teardownTabs(); status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success'); }
+                else {
+                    status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success');
+                    /* #1851 FIX #7 — loadSong() enables Save + reveals
+                       Duplicate for the song it loads, but nothing reversed
+                       that after deleting the LAST song: both stayed
+                       active/visible with no song open to act on. */
+                    { const b = byId('v2-save-btn'); if (b) { b.disabled = true; } }
+                    { const d = byId('v2-duplicate-btn'); if (d) { d.classList.add('d-none'); } }
+                }
             } catch (e) {
                 status('Delete failed: ' + e.message, 'danger');
             }

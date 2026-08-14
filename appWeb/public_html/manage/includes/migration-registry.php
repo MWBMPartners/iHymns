@@ -1975,21 +1975,32 @@ return [
         ],
         /* Multi-object OR-probe (rule #19): pending until every column, the
            re-keyed UNIQUE (new one present AND old one gone), and the
-           widened alias Type all agree the migration fully landed. */
+           widened alias Type all agree the migration fully landed.
+           #1741 P2 supersession: post-rename (and on every fresh schema.sql
+           install) tblCreditPersonMembers is a VIEW — no INFORMATION_SCHEMA.STATISTICS
+           rows — so the uq_group_member_rel index check reads "missing" forever
+           (the index now lives on tblMusicianRelations as uq_subject_object_rel),
+           wrongly pinning this card "pending" and making "Apply all" retry an
+           ALTER that 1347s on a view. tblMusicians is never a view; its existence
+           proves P1 fully applied (P2's precondition gate ran it first) — report
+           applied. Mirrors the migration script's own short-circuit + P2 Step 0
+           (rule #35). See #1824. */
         'probe' => static fn(\mysqli $db) =>
-               !_migProbe_columnExists($db, 'tblCreditPeople', 'Type')
-            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Disambiguation')
-            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Biography')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'RelationType')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFrom')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFromPrecision')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateTo')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateToPrecision')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'Note')
-            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'UpdatedAt')
-            || !_migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member_rel')
-            || _migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member')
-            || _migProbe_columnDataType($db, 'tblCreditPersonAliases', 'Type') !== 'varchar',
+            !_migProbe_tableExists($db, 'tblMusicians') && (
+                   !_migProbe_columnExists($db, 'tblCreditPeople', 'Type')
+                || !_migProbe_columnExists($db, 'tblCreditPeople', 'Disambiguation')
+                || !_migProbe_columnExists($db, 'tblCreditPeople', 'Biography')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'RelationType')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFrom')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFromPrecision')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateTo')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateToPrecision')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'Note')
+                || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'UpdatedAt')
+                || !_migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member_rel')
+                || _migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member')
+                || _migProbe_columnDataType($db, 'tblCreditPersonAliases', 'Type') !== 'varchar'
+            ),
     ],
 
     'works-identity' => [

@@ -159,6 +159,36 @@ RewriteCond %{REQUEST_FILENAME} -d
 RewriteRule ^ - [L]
 
 # ==========================================================================
+# STATIC-ASSET-DIRECTORY 404 (#1832 / rule #1566 class, issue #9 of this pass)
+#
+# ELI5: if a CSS/JS fallback (e.g. a #1832 vendor-CDN-down fallback) points at
+# a /vendor/... file that was never actually deployed, the block above does
+# NOT match (the file doesn't exist), so without this rule the request would
+# fall through to the SPA catch-all below and get index.php's HTML back with
+# an HTTP 200. A <link>/<script> tag doesn't care that the body is HTML, not
+# CSS/JS — it just fails to apply/execute with NO console error, because as
+# far as the browser is concerned the request "succeeded". That's the same
+# silent-failure shape rule #1566 documents for relative-URL fetch() calls.
+#
+# DETAILED: this rule sits AFTER the real-file/-directory passthrough above
+# (so any file that genuinely exists under these prefixes already L-stopped
+# there and never reaches this line) and BEFORE the SPA catch-all below, and
+# matches by PATH PREFIX rather than file extension: no SPA client route
+# starts with vendor/, css/, js/, or fonts/ (verified against the route set —
+# home, song, songbook, search, settings, favorites, help, terms, privacy,
+# etc. — none of them do), so this can never intercept a legitimate SPA
+# navigation. A missing asset under one of these prefixes now gets a real
+# HTTP 404 instead of masquerading as a 200'd HTML page — loud failure
+# instead of silent. `ErrorDocument 404 /index.php` below still serves the
+# themed SPA 404 *body* for a human hitting the URL directly; the fix here is
+# the STATUS CODE a script/stylesheet loader actually inspects, not the body.
+# Mirrored in tests/browser/router.php's dev-server routing so the two agree
+# (rule #35 — cross-file agreement needs a mechanism, not a comment).
+# ==========================================================================
+
+RewriteRule ^(vendor|css|js|fonts)/ - [R=404,L]
+
+# ==========================================================================
 # SPA CATCH-ALL — Rewrite all other requests to index.php
 #
 # This handles all clean URL navigation:

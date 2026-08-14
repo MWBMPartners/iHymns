@@ -1652,6 +1652,231 @@ const MUSICIAN_CREDIT_ROLE_TABLES = [
 ];
 
 /**
+ * iHymns — how many song-credit rows still cite a name, across all six
+ * role tables (#1843, rule #22).
+ *
+ * ELI5: given a person's name, count every place a song credits it — as a
+ * writer, composer, arranger, adaptor, translator OR performing artist —
+ * and hand back the single total. If the total is zero, no song points at
+ * that name any more.
+ *
+ * DETAILED / WHY EXTRACTED: this exact 6-table count was inlined
+ * IDENTICALLY in two registry-delete paths — /manage/musicians.php's
+ * `delete_from_registry` case ("can I safely remove this registry row?")
+ * and api.php's `admin_musician_delete` ("same question, over the API").
+ * #1843's promote-then-reap janitor (musicianReapOrphanedAutoRow() below)
+ * needs the SAME question answered a THIRD time ("is the auto-minted row
+ * still cited anywhere, or is it a true orphan?"), so rather than paste the
+ * loop a third time (rule #35's cross-file-agreement trap — three copies
+ * that must never drift) it is extracted here and both original sites are
+ * re-pointed at it. Table names come from the hardcoded
+ * MUSICIAN_CREDIT_ROLE_TABLES constant (#1785 C5), so interpolating them
+ * into the SQL is rule #5's carve-out; the repeated `?` placeholders all
+ * bind the SAME $name VALUE, never the identifier.
+ *
+ * A single `SELECT (sub) + (sub) + …` keeps the round-trip to one query.
+ * The six credit tables are core (never optional), so no existence gate is
+ * needed here — an absent one would be a broken install, not a partial
+ * migration.
+ *
+ * @param \mysqli $db   Live connection (see includes/db_mysql.php::getDbMysqli()).
+ * @param string  $name The credited display-name string to count (matched
+ *                       case-insensitively via each column's collation).
+ * @return int Total song-credit rows citing $name across the six tables.
+ */
+function musicianCreditUsageCount(\mysqli $db, string $name): int
+{
+    $countSql = implode(' + ', array_map(
+        static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
+        MUSICIAN_CREDIT_ROLE_TABLES
+    ));
+    $stmt = $db->prepare("SELECT ({$countSql}) AS total");
+    $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
+    $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
+    $stmt->execute();
+    $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+    $stmt->close();
+    return $usage;
+}
+
+/**
+ * iHymns — reap a junk auto-minted registry row after a credit rename (#1843).
+ *
+ * ELI5: the v2 Credits tab saves on every debounced keystroke, and each save
+ * promotes the CURRENT partial name into the tblMusicians registry. So typing
+ * "Joh" → "John" → "John Newton" leaves two junk rows behind ("Joh", "John")
+ * that no song credits and no curator ever touched. This is the janitor that,
+ * right AFTER a credit row's real save has committed, quietly deletes the
+ * left-behind row for the OLD spelling — but ONLY when it is provably a
+ * throw-away auto-row: nobody has curated it, nothing else cites it, and it is
+ * not the very row the new name just resolved to.
+ *
+ * DETAILED / WHY best-effort, post-commit, in its OWN transaction: this is a
+ * cleanup, never part of the user's save. It runs AFTER the caller has already
+ * committed the credit write, opens its own short transaction, and its ENTIRE
+ * body is wrapped so any throw (a deadlock against a concurrent
+ * /manage/musicians edit, an un-migrated optional table, anything) rolls back
+ * and returns false WITHOUT propagating — a janitor hiccup must never roll
+ * back or fail the curator's already-committed save (rule #9: mysqli throws
+ * under STRICT, so every DB call here can throw and must be contained). The
+ * fix deliberately REAPS the orphan rather than RENAMES it: a rename would
+ * race the concurrent promote of the new name and could clobber a real row,
+ * whereas an orphan delete is safe under the guards below and self-heals — a
+ * lost race just leaves ≤1 junk row, reaped on the next edit.
+ *
+ * The guard ladder (any bail = rollback + return false, delete nothing):
+ *   - the row for $oldName is taken FOR UPDATE (closes the TOCTOU window
+ *     against a concurrent /manage/musicians edit of the same row);
+ *   - SAME-ROW-BY-ID: a case/accent-only retype ("john" → "John") resolves
+ *     the promote to the SAME row under utf8mb4_unicode_ci, so we compare
+ *     Ids (never names) and never delete the row the save just kept;
+ *   - CURATION SIGNALS: any special-case/group flag, a non-'person' Type, or
+ *     any curator-entered profile field (disambiguation / notes / biography /
+ *     MBID / maiden surname / birth+death place / birth+death date) means a
+ *     human has touched it — leave it alone. FirstNames/Surname/Suffix and
+ *     Slug are deliberately NOT signals: the auto-promote itself writes the
+ *     name parts and the Slug is machine-derived, so their presence proves
+ *     nothing about curation;
+ *   - ORPHAN: musicianCreditUsageCount($oldName) must be 0 (after the
+ *     caller's write the live credit cites the NEW name, so the old name is
+ *     excluded; ci-collation matching only ever OVER-counts, so this stays
+ *     conservative-safe — two credits at the same old name keep the row until
+ *     the last citer moves on);
+ *   - NO REFERENCES: no satellite/child row (aliases, identifiers, IPI,
+ *     links, external links, relations, duplicate-dismissals, songbook
+ *     compilers, tune credits, publisher person-link, vocal parts) may point
+ *     at it. An absent optional table (errno 1146) can't hold a reference, so
+ *     it is skipped; ANY OTHER DB error rethrows to the outer catch and bails
+ *     (never delete on an unverified state).
+ *
+ * @param \mysqli $db             Live connection.
+ * @param string  $oldName        The spelling the credit held BEFORE this save
+ *                                (the row we may reap). Trimmed; '' → no-op.
+ * @param int     $keepRegistryId The Id the CURRENT name resolved to
+ *                                (musicianPromote()'s return; 0 for a delete
+ *                                with no successor). Its row is never reaped.
+ * @return bool true only when a row was actually deleted; false on any bail.
+ */
+function musicianReapOrphanedAutoRow(\mysqli $db, string $oldName, int $keepRegistryId): bool
+{
+    $oldName = musTrimmed($oldName);
+    if ($oldName === '') { return false; }
+
+    try {
+        $db->begin_transaction();
+
+        /* Step 2 — look up the candidate row FOR UPDATE, building the SELECT
+           list from the base columns plus only the OPTIONAL profile columns
+           whose existence gate passes (an un-migrated install simply doesn't
+           read them — and if a gated column is genuinely absent the SELECT
+           would throw 1146, caught by the outer catch → safe no-op). */
+        $cols    = ['Id', 'IsSpecialCase', 'IsGroup', 'Notes',
+                    'BirthPlace', 'BirthPlaceId', 'BirthDate',
+                    'DeathPlace', 'DeathPlaceId', 'DeathDate'];
+        $profile = musicianProfileColumnsExist($db);              // Type / Disambiguation / Biography (#1741 P1)
+        if ($profile['Type'])           { $cols[] = 'Type'; }
+        if ($profile['Disambiguation']) { $cols[] = 'Disambiguation'; }
+        if ($profile['Biography'])      { $cols[] = 'Biography'; }
+        if (musicianMbidColumnExists($db))          { $cols[] = 'MusicBrainzArtistMBID'; }   // #1090 P6
+        if (musicianMaidenSurnameColumnExists($db)) { $cols[] = 'MaidenSurname'; }           // #1501
+
+        /* Column names come from the hardcoded PHP list above (rule #5's
+           carve-out); $oldName is bound. */
+        $sql  = 'SELECT ' . implode(', ', $cols)
+              . ' FROM tblMusicians WHERE Name = ? LIMIT 1 FOR UPDATE';
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('s', $oldName);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) { $db->rollback(); return false; }             // nothing to reap
+
+        /* Step 3 — SAME-ROW GUARD BY ID. A case/accent-only retype resolves
+           the new name to the SAME row under utf8mb4_unicode_ci; comparing
+           NAMES would delete the row the save just promoted. Compare Ids. */
+        $rowId = (int)$row['Id'];
+        if ($rowId === $keepRegistryId) { $db->rollback(); return false; }
+
+        /* Step 4 — curation signals. Any one of these means a human curated
+           this row; never reap it. */
+        if ((int)($row['IsSpecialCase'] ?? 0) !== 0) { $db->rollback(); return false; }
+        if ((int)($row['IsGroup'] ?? 0) !== 0)       { $db->rollback(); return false; }
+        if (array_key_exists('Type', $row)) {
+            $type = musTrimmed($row['Type']);
+            if ($type !== '' && $type !== 'person') { $db->rollback(); return false; }
+        }
+        foreach (['Disambiguation', 'Notes', 'Biography', 'MusicBrainzArtistMBID',
+                  'MaidenSurname', 'BirthPlace', 'DeathPlace'] as $textCol) {
+            if (array_key_exists($textCol, $row) && musTrimmed($row[$textCol]) !== '') {
+                $db->rollback(); return false;
+            }
+        }
+        foreach (['BirthPlaceId', 'BirthDate', 'DeathPlaceId', 'DeathDate'] as $nullCol) {
+            if (array_key_exists($nullCol, $row) && $row[$nullCol] !== null) {
+                $db->rollback(); return false;
+            }
+        }
+
+        /* Step 5 — ORPHAN check. After the caller's write the current credit
+           cites the NEW name, so it is excluded from this count. */
+        if (musicianCreditUsageCount($db, $oldName) > 0) { $db->rollback(); return false; }
+
+        /* Step 6 — reference / child check. One existence probe per table that
+           FKs tblMusicians(Id) (derived from schema.sql's `REFERENCES
+           tblMusicians` sites). The table name + WHERE clause come from the
+           hardcoded map below (rule #5's carve-out); $rowId is bound. An
+           optional table absent on this install throws errno 1146 at prepare
+           — an absent table can't hold a reference, so skip it; any OTHER
+           error rethrows to the outer catch (never delete on an unverified
+           state, rule #9). */
+        $refProbes = [
+            'tblMusicianAliases'             => 'MusicianId = ?',
+            'tblMusicianIdentifiers'         => 'MusicianId = ?',
+            'tblMusicianIPI'                 => 'MusicianId = ?',
+            'tblMusicianLinks'               => 'MusicianId = ?',
+            'tblMusicianExternalLinks'       => 'MusicianId = ?',
+            'tblMusicianRelations'           => 'SubjectMusicianId = ? OR ObjectMusicianId = ?',
+            'tblMusicianDuplicatesDismissed' => 'MusicianIdA = ? OR MusicianIdB = ?',
+            'tblSongbookCompilers'           => 'MusicianId = ?',
+            'tblTuneCredits'                 => 'MusicianId = ?',
+            'tblPublishers'                  => 'MusicianId = ?',
+            'tblVocalParts'                  => 'MusicianId = ?',
+        ];
+        foreach ($refProbes as $tbl => $where) {
+            try {
+                $probe    = $db->prepare("SELECT 1 FROM {$tbl} WHERE {$where} LIMIT 1");
+                $twoBinds = substr_count($where, '?') === 2;
+                if ($twoBinds) {
+                    $probe->bind_param('ii', $rowId, $rowId);
+                } else {
+                    $probe->bind_param('i', $rowId);
+                }
+                $probe->execute();
+                $hit = $probe->get_result()->fetch_row();
+                $probe->close();
+                if ($hit) { $db->rollback(); return false; }      // still referenced
+            } catch (\mysqli_sql_exception $e) {
+                if ((int)$e->getCode() === 1146) { continue; }    // table absent → no reference possible
+                throw $e;                                          // any other error → bail via outer catch
+            }
+        }
+
+        /* Step 7 — all clear: delete the orphan and commit. */
+        $del = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
+        $del->bind_param('i', $rowId);
+        $del->execute();
+        $db->commit();
+        return true;
+    } catch (\Throwable $e) {
+        /* Best-effort janitor: swallow everything. The credit save already
+           committed; a reap failure must never surface to the curator. */
+        try { $db->rollback(); } catch (\Throwable $_ignored) { /* already closed */ }
+        error_log('[musicianReapOrphanedAutoRow] ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
  * iHymns — human-readable label for each musicianNameVariantClass()
  * outcome (#1785). ONE copy consumed by every surface that renders the
  * variant badge (the future /manage/musician-duplicates review page, the

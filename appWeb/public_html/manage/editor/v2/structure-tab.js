@@ -8,11 +8,14 @@
  *  Every edit is an atomic granular save to api2.php — no whole-song save, no
  *  race. A failed save throws → a real error toast, local state untouched.
  *
- *  mountStructureTab(container, { store, api, songId, toast }) -> teardown fn
- *    store : reactive store with a `components` slice (array of component rows)
- *    api   : editorApi from api-client.js
- *    songId: the server SongId
- *    toast : (message, type) => void   (optional)
+ *  mountStructureTab(container, { store, api, songId, toast, registerFlush }) -> teardown fn
+ *    store        : reactive store with a `components` slice (array of component rows)
+ *    api          : editorApi from api-client.js
+ *    songId       : the server SongId
+ *    toast        : (message, type) => void   (optional)
+ *    registerFlush: (fn) => void   (optional; #1846 — hands the shell a "flush
+ *                   my pending debounced saves now" function for its manual
+ *                   Save button — see flushPending() below)
  *
  *  #1627 items 1+3 — chords UI + per-line enrichment panel. Both extend
  *  buildCard(), which is why they land in one PR: a chords textarea (ABOVE
@@ -52,18 +55,62 @@ function componentChordsToText(comp) {
 export function mountStructureTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (a plain injected callback, not a DOM event — rule #35/#1581). Defaults
+       to a no-op so the tab still mounts standalone in a test harness that
+       doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
 
     /* Per-component debounce timers for lyric/chord saves. */
     const saveTimers = new Map();
+    /* #1846 — comp._key -> the pending comp, same key space as saveTimers
+       above. Lets the shell's manual Save button fire a pending debounced
+       write early via flushPending() below. Structural ops (move/remove/add)
+       call saveComponent()/the API directly and never touch this map — only
+       a lyric/chord textarea's debouncedSave() does. */
+    const pendingSaves = new Map();
 
     function debouncedSave(comp) {
         const key = comp._key;
         if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); }
-        saveTimers.set(key, setTimeout(() => { saveComponent(comp); }, SAVE_DEBOUNCE_MS));
+        pendingSaves.set(key, comp);
+        saveTimers.set(key, setTimeout(() => { pendingSaves.delete(key); saveComponent(comp); }, SAVE_DEBOUNCE_MS));
     }
 
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending per-component debounce timer and fire each recorded
+     * component's save immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you were mid-typing a lyric or chord line, clicking Save
+     * shouldn't make you wait for the pause-timer — this sends it right now.
+     *
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report. saveComponent()
+     *   already catches its own rejection into a toast and resolves a
+     *   boolean rather than rethrowing, so the `.catch(() => false)` here is
+     *   belt-and-braces, not the normal path — this function itself must
+     *   still never reject.
+     */
+    function flushPending() {
+        saveTimers.forEach((t) => clearTimeout(t));
+        saveTimers.clear();
+        const proms = [];
+        pendingSaves.forEach((comp) => {
+            proms.push(Promise.resolve(saveComponent(comp)).catch(() => false));
+        });
+        pendingSaves.clear();
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
+    }
+    registerFlush(flushPending);
+
     /** Persist one component (create or update) atomically. On a CREATE, adopt
-     *  the server-assigned componentId so later edits UPDATE in place. */
+     *  the server-assigned componentId so later edits UPDATE in place.
+     *  #1846/#1851 — resolves TRUE on success, FALSE on failure (never
+     *  rejects); flushPending() below sums the FALSEs into a failure count
+     *  for the shell's Save-button outcome report. */
     async function saveComponent(comp) {
         try {
             const payload = {
@@ -86,8 +133,10 @@ export function mountStructureTab(container, opts) {
             };
             const res = await api.upsertComponent(songId, payload);
             if (!comp.id && res.componentId) { comp.id = res.componentId; }
+            return true;
         } catch (e) {
             toast('Could not save section: ' + e.message, 'danger');
+            return false;
         }
     }
 
@@ -255,7 +304,19 @@ export function mountStructureTab(container, opts) {
         } catch (e) { toast('Could not reorder: ' + e.message, 'danger'); }
     }
 
+    /**
+     * #1851 — cancel this component's pending debounced lyric/chord autosave
+     * FIRST. Without this, an edit-then-immediate-delete (within
+     * SAVE_DEBOUNCE_MS) left the debounce timer armed: it fired
+     * component_upsert AFTER deleteComponent had already removed the row,
+     * and api2.php's upsert re-APPENDS a component whose id no longer
+     * exists — the section resurrects itself right after being deleted.
+     * Same key space as debouncedSave() above (comp._key).
+     */
     async function removeComponent(comp) {
+        const key = comp._key;
+        if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); saveTimers.delete(key); }
+        pendingSaves.delete(key);
         const comps = store.get('components').filter((c) => c !== comp);
         comps.forEach((c, i) => { c.sortOrder = i; });
         store.set('components', comps);   // re-renders immediately
@@ -298,6 +359,7 @@ export function mountStructureTab(container, opts) {
         off();
         saveTimers.forEach((t) => clearTimeout(t));
         saveTimers.clear();
+        pendingSaves.clear();   // #1846 — no lingering references once the tab is gone
         container.innerHTML = '';
     };
 }

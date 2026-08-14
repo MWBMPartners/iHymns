@@ -152,6 +152,30 @@ try {
 }
 _migMusProf_output("Connected to MySQL: " . DB_NAME);
 
+/* ELI5: has the #1741 P2 "Musicians rename" already run (or is this a fresh
+   schema.sql install)? If so, tblCreditPeople / tblCreditPersonMembers /
+   tblCreditPersonAliases are now UPDATABLE VIEWS over the renamed tblMusician*
+   base tables, which already carry every column and index this P1 batch adds.
+   WHY we MUST bail before touching them: SHOW INDEX / ALTER TABLE against a VIEW
+   throws MySQL error 1347 "not BASE TABLE" (the exact false-negative
+   migrate-musicians-rename.php's own Step-0 doc-block predicted for this probe
+   shape), so re-running P1 post-rename errors even though there is nothing to do.
+   tblMusicians is never a view, so its existence is the unambiguous
+   already-renamed signal — the SAME check P2 uses in its Step 0, and the sibling
+   probe uses in migration-registry.php (rule #35: one signal, kept in lockstep).
+   See GitHub #1824. */
+if (_migMusProf_tableExists($mysql, 'tblMusicians')) {
+    _migMusProf_output("--- Superseded by #1741 P2 (Musicians rename) ---");
+    _migMusProf_output("  [SKIP] tblMusicians base table exists — the tblCreditPe* names are now compat");
+    _migMusProf_output("         VIEWS over the renamed tblMusician* base tables, which already carry every");
+    _migMusProf_output("         column and index this P1 batch adds. Nothing to do (SHOW INDEX / ALTER on a");
+    _migMusProf_output("         view would throw 1347 'not BASE TABLE').");
+    _migMusProf_output("");
+    _migMusProf_output("Migration complete (no-op: superseded by #1741 P2).");
+    $mysql->close();
+    return;
+}
+
 try {
     /* ---- tblCreditPeople: Type / Disambiguation / Biography ---- */
     _migMusProf_output("--- tblCreditPeople ---");

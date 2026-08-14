@@ -1566,25 +1566,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 $name = (string)($row[0] ?? '');
                 if ($name === '') { $error = 'Person not found.'; break; }
 
-                /* Count how many song-credit rows still cite this name
-                   across the six tables (#1785 C5 —
-                   MUSICIAN_CREDIT_ROLE_TABLES; was five, missing
-                   tblSongArtists — a person deletable-because-"unused"
-                   could actually still be cited as a performing artist) —
-                   a single query keeps the round-trip count to one. Table
-                   names come from the hardcoded PHP constant (rule #5's
-                   carve-out); the six repeated `?` placeholders all bind
-                   the same $name value. */
-                $countSql = implode(' + ', array_map(
-                    static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
-                    MUSICIAN_CREDIT_ROLE_TABLES
-                ));
-                $stmt = $db->prepare("SELECT ({$countSql}) AS total");
-                $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
-                $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
-                $stmt->execute();
-                $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
-                $stmt->close();
+                /* Count how many song-credit rows still cite this name across
+                   the six role tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES;
+                   was five, missing tblSongArtists — a person deletable-
+                   because-"unused" could actually still be cited as a
+                   performing artist). Extracted into musicianCreditUsageCount()
+                   (#1843, rule #22) so this, api.php's admin_musician_delete
+                   sibling, and the reap janitor share ONE copy of the count. */
+                $usage = musicianCreditUsageCount($db, $name);
 
                 if ($usage > 0 && !$force) {
                     $error = "Cannot delete '{$name}': {$usage} song-credit row(s) still cite this name. Tick the override box to delete anyway (the song credits stay — only the registry row is removed).";

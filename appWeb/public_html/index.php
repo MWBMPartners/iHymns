@@ -892,21 +892,21 @@ if (!empty($breadcrumbItems)) {
          STYLESHEETS — CDN with local fallback
          ================================================================ -->
 
-    <!-- Bootstrap CSS — CDN with local fallback for offline PWA -->
+    <!-- Bootstrap CSS — CDN with local fallback for offline PWA. The CDN→/vendor
+         fallback is wired by the nonce'd script below, NOT an inline onerror=
+         (which the enforcing nonce CSP refuses — #1832). -->
     <link rel="stylesheet"
           href="<?= $libs['bootstrap']['css_cdn'] ?>"
           integrity="<?= $libs['bootstrap']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="bootstrap-css"
-          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['bootstrap']['css_local'] ?>';">
+          id="bootstrap-css">
 
-    <!-- Font Awesome CSS — CDN with local fallback for offline PWA -->
+    <!-- Font Awesome CSS — CDN with local fallback (see the nonce'd script below, #1832) -->
     <link rel="stylesheet"
           href="<?= $libs['fontawesome']['css_cdn'] ?>"
           integrity="<?= $libs['fontawesome']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="fontawesome-css"
-          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
+          id="fontawesome-css">
 
     <!-- Bootstrap Icons (#1347) — the external-link registry (tblExternalLinkTypes.IconClass)
          seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
@@ -917,16 +917,17 @@ if (!empty($breadcrumbItems)) {
          and the only one with no `integrity`. Its neighbours (Font Awesome above,
          Animate.css below) were already pinned + hashed + fallback-backed, which is
          exactly why nobody spotted this line: it sits in a block that looks handled.
-         Now emitted by the shared helper, same registry, same onerror fallback. -->
-    <?= ihymns_bootstrap_icons_css_link() ?>
+         Now emitted by the shared helper, same registry. #1832 — passes false so
+         the helper does NOT emit its inline onerror= fallback (the enforcing nonce
+         CSP would refuse it); the nonce'd script below covers #bootstrap-icons-css. -->
+    <?= ihymns_bootstrap_icons_css_link(false) ?>
 
-    <!-- Animate.css — CDN with local fallback for offline PWA -->
+    <!-- Animate.css — CDN with local fallback (see the nonce'd script below, #1832) -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
           integrity="<?= $libs['animatecss']['css_sri'] ?>"
           crossorigin="anonymous"
-          id="animatecss"
-          onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['animatecss']['css_local'] ?>';">
+          id="animatecss">
 
     <!-- iHymns Application Stylesheet -->
     <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
@@ -936,6 +937,45 @@ if (!empty($breadcrumbItems)) {
 
     <!-- Print Stylesheet -->
     <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" media="print">
+
+    <!-- ================================================================
+         #1832 — CSP-SAFE CDN → /vendor STYLESHEET FALLBACK
+         The enforcing nonce CSP (script-src 'self' 'nonce-…', no
+         'unsafe-inline'/'unsafe-hashes') REFUSES inline `onerror=` handlers, so
+         the old per-<link> onerror fallback silently never fired when a CDN was
+         down — the /vendor copy never loaded. A render-blocking
+         <link rel="stylesheet"> blocks the following <script> until it has
+         loaded or failed, so by the time THIS runs each CDN sheet is resolved:
+         link.sheet is a CSSStyleSheet on success and null on failure (404 /
+         network / SRI mismatch). This mirrors the jQuery / Bootstrap-JS
+         `typeof … === 'undefined'` fallback already used lower in this file.
+         https://developer.mozilla.org/docs/Web/API/HTMLLinkElement/sheet
+         ================================================================ -->
+    <script nonce="<?= $cspNonce ?>">
+        (function () {
+            /* Local paths come straight from APP_CONFIG['libraries'] (server
+               source, never user input) — same values the removed onerror=
+               attributes used. */
+            var fb = [
+                { id: 'bootstrap-css',       local: '/<?= $libs['bootstrap']['css_local'] ?>' },
+                { id: 'fontawesome-css',     local: '/<?= $libs['fontawesome']['css_local'] ?>' },
+                { id: 'bootstrap-icons-css', local: '/<?= $libs['bootstrap_icons']['css_local'] ?? '' ?>' },
+                { id: 'animatecss',          local: '/<?= $libs['animatecss']['css_local'] ?>' }
+            ];
+            for (var i = 0; i < fb.length; i++) {
+                var el = document.getElementById(fb[i].id);
+                /* Skip when the <link> is absent, no vendored copy is configured
+                   (local resolves to a bare '/'), or the CDN sheet loaded fine. */
+                if (!el || fb[i].local === '/' || el.sheet) { continue; }
+                /* The same-origin copy has no CORS headers and a different
+                   byte-for-byte build, so its own hash would fail — strip both
+                   before re-pointing (same as the old onerror did). */
+                el.removeAttribute('integrity');
+                el.removeAttribute('crossorigin');
+                el.href = fb[i].local;
+            }
+        })();
+    </script>
 
     <!-- ================================================================
          PRECONNECT — Speed up CDN resource loading
@@ -991,12 +1031,22 @@ if (!empty($breadcrumbItems)) {
     <?php endif; ?>
 
     <?php if (!empty(APP_CONFIG['analytics']['clarity_id'])): ?>
-    <!-- Microsoft Clarity — deferred until consent is granted -->
+    <!-- Microsoft Clarity — SESSION RECORDING (clicks, pointer movement, scroll,
+         page interaction). #1852 — loads ONLY on explicit consent, and is
+         suppressed entirely under Do-Not-Track. This deliberately DIFFERS from
+         the GA4/Matomo loaders above, which load under Do-Not-Track in a
+         privacy-safe mode (IP-anonymised / setDoNotTrack): Clarity has no
+         comparable anonymised mode — it records the actual session — so a
+         Do-Not-Track signal must switch it off rather than merely soften it. The
+         gate therefore requires consent-granted and excludes Do-Not-Track (which
+         also covers a Do-Not-Track user carrying a stale prior consent). -->
     <script nonce="<?= $cspNonce ?>">
         (function() {
             var consent = localStorage.getItem('ihymns_analytics_consent');
             var dnt = <?= json_encode(USER_DNT) ?>;
-            if (consent === 'granted' || dnt) {
+            /* #1852 — consent granted AND Do-Not-Track absent. Session recording
+               has no privacy-safe fallback, so Do-Not-Track always wins here. */
+            if (consent === 'granted' && !dnt) {
                 (function(c,l,a,r,i,t,y){
                     c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
                     t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;

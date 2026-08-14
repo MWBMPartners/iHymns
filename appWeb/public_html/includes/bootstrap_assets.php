@@ -142,9 +142,16 @@ if (!function_exists('ihymns_bootstrap_icons_css_link')) {
      * `this.onerror=null` first, so a missing vendored copy cannot loop.
      * https://developer.mozilla.org/docs/Web/Security/Subresource_Integrity
      *
+     * @param bool $inlineFallback  true (default) emits the inline `onerror=`
+     *        fallback, which is correct for /manage/* pages — they send NO CSP,
+     *        so inline event handlers run. A caller under the public shell's
+     *        enforcing nonce CSP (index.php, whose script-src has no
+     *        'unsafe-inline'/'unsafe-hashes') passes false and wires the
+     *        CDN→/vendor fallback itself via a nonce'd <script>, because that CSP
+     *        refuses inline event handlers outright (#1832).
      * @return string HTML, already escaped, safe to echo.
      */
-    function ihymns_bootstrap_icons_css_link(): string
+    function ihymns_bootstrap_icons_css_link(bool $inlineFallback = true): string
     {
         if (!defined('APP_CONFIG')) {
             return '';
@@ -156,11 +163,16 @@ if (!function_exists('ihymns_bootstrap_icons_css_link')) {
         }
 
         $local = (string)($ic['css_local'] ?? '');
-        $onerr = $local === ''
-            ? ''
-            : ' onerror="this.onerror=null;this.removeAttribute(\'integrity\');'
+        /* #1832 — only emit the inline `onerror=` when the caller wants it AND a
+           vendored copy exists. On the public index.php shell the caller passes
+           $inlineFallback=false (the enforcing nonce CSP would refuse this
+           handler); index.php's own nonce'd <script> covers #bootstrap-icons-css
+           instead. On CSP-less /manage/* it stays the inline fallback as before. */
+        $onerr = ($inlineFallback && $local !== '')
+            ? ' onerror="this.onerror=null;this.removeAttribute(\'integrity\');'
               . 'this.removeAttribute(\'crossorigin\');'
-              . 'this.href=\'/' . htmlspecialchars($local, ENT_QUOTES) . '\';"';
+              . 'this.href=\'/' . htmlspecialchars($local, ENT_QUOTES) . '\';"'
+            : '';
 
         return '    <link rel="stylesheet" id="bootstrap-icons-css"'
             . ' href="' . htmlspecialchars((string)$ic['css_cdn'], ENT_QUOTES) . '"'
@@ -190,18 +202,6 @@ if (!function_exists('ihymns_bootstrap_js_script')) {
      */
     function ihymns_bootstrap_js_script(): string
     {
-        /* `defined()` first, not just `?? null`: APP_CONFIG is a CONSTANT, and
-           `UNDEFINED_CONST['k'] ?? null` raises Error in PHP 8 rather than
-           yielding null — the null-coalescing operator suppresses undefined
-           *index*, never undefined *constant*. Every caller happens to load
-           config.php transitively today, but this helper is now reached from a
-           public page (channel_gate.php) as well as admin, and a fatal on the
-           sign-in gate would lock people out of alpha entirely.
-           https://www.php.net/manual/en/language.constants.php */
-        if (!defined('APP_CONFIG')) {
-            return $out;
-        }
-
         /* See the note in ihymns_bootstrap_css_links(): undefined CONSTANT, not
            undefined index, so `??` alone would not save us. */
         if (!defined('APP_CONFIG')) {

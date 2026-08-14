@@ -6,7 +6,7 @@
  *  First names, Surname, Suffix — instead of one big "Name" box, because
  *  splitting the name lets the rest of the app sort by surname, spot the same
  *  person spelled two ways, and build a real "who wrote this" page. When you
- *  stop typing for half a second the row saves itself; you never press Save.
+ *  stop typing for about a second the row saves itself; you never press Save.
  *
  *  DETAILED / WHY (#960): the ORIGINAL v2 rewrite (#1200) shipped this tab
  *  with a single flat "Name" input and a `credit_upsert` endpoint that wrote
@@ -48,11 +48,14 @@
  *  overwritten by an in-flight response, however it disagrees — see
  *  adoptServerCredit() below.
  *
- *  mountCreditsTab(container, { store, api, songId, toast }) -> teardown fn
+ *  mountCreditsTab(container, { store, api, songId, toast, registerFlush }) -> teardown fn
  *  Reads the store's `credits` slice: { writers:[{id,name,first,surname,
  *  suffix}], composers:[…], … } — first/surname/suffix are present whenever
  *  the server has them (gated on the #935 columns existing; see
  *  ed2_buildSongSnapshot()'s doc-block in api2.php).
+ *
+ *  registerFlush(fn) — #1846: hands the shell a "flush my pending debounced
+ *  saves now" function for its manual Save button. See flushPending() below.
  * ========================================================================== */
 
 const ROLES = [
@@ -63,7 +66,12 @@ const ROLES = [
     ['translators', 'Translators'],
     ['artists',     'Artists'],
 ];
-const SAVE_DEBOUNCE_MS = 500;
+/* #1843 — raised 500 → 1000 ms so a mid-word pause is far less likely to fire
+   a save on a partial name ("Joh", "John") and auto-mint a junk tblMusicians
+   registry row. The server-side reap janitor (musicianReapOrphanedAutoRow(),
+   credit_upsert/credit_delete in api2.php) is the real fix; this just widens
+   the window so fewer junk rows are minted in the first place. */
+const SAVE_DEBOUNCE_MS = 1000;
 
 const SEARCH_DEBOUNCE_MS = 180;
 
@@ -84,6 +92,18 @@ export function mountCreditsTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
     const timers = new Map();
+    /* #1846 — `role:credit._key` -> { role, credit } not yet fired, the SAME
+       key space as `timers` above. Lets the shell's manual Save button fire a
+       pending debounced write early via flushPending() below. Cleared
+       wherever `timers` is cleared outside of debouncedSave() too (the D11
+       "all fields emptied" branch and the suggestion-pick handler both cancel
+       a pending timer directly), so it never outlives the timer it shadows. */
+    const pending = new Map();
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (a plain injected callback, not a DOM event — rule #35/#1581). Defaults
+       to a no-op so the tab still mounts standalone in a test harness that
+       doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
 
     /* credit._key -> { firstEl, surnameEl, suffixEl, del, hint }. Populated
        fresh by render() every time the `credits` slice changes (add/remove
@@ -144,6 +164,7 @@ export function mountCreditsTab(container, opts) {
                 hideDropdown();
                 const key = role + ':' + credit._key;
                 if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); }
+                pending.delete(key);   // #1846 — this explicit save supersedes any debounced one
                 saveCredit(role, credit, { id: credit.id || 0, name: s.name }, { force: true });
             });
             dropdown.appendChild(item);
@@ -251,6 +272,13 @@ export function mountCreditsTab(container, opts) {
         refreshDeleteAffordance(role, credit);
     }
 
+    /**
+     * #1846/#1851 — resolves TRUE on success, FALSE on failure (never
+     * rejects). The boolean is how flushPending() below counts real failures
+     * for the shell's Save-button outcome report (rule #35 — a caller counts
+     * OUTCOMES, not re-parses a toast string) instead of reporting "All
+     * changes saved." when a save actually failed silently in the background.
+     */
     async function saveCredit(role, credit, payloadOverride, opts) {
         const payload = payloadOverride || {
             id:      credit.id || 0,
@@ -261,6 +289,7 @@ export function mountCreditsTab(container, opts) {
         try {
             const res = await api.upsertCredit(songId, role, payload);
             adoptServerCredit(role, credit, res, opts);
+            return true;
         } catch (e) {
             /* Rule #35 — nothing here branches on e.message's wording; the
                only thing this tab does with a failure is show it. A future
@@ -268,15 +297,64 @@ export function mountCreditsTab(container, opts) {
                e.status (api-client.js's unwrap() attaches it), never the
                sentence. */
             toast('Could not save credit: ' + e.message, 'danger');
+            return false;
         }
     }
     function debouncedSave(role, credit) {
         const key = role + ':' + credit._key;
         if (timers.has(key)) { clearTimeout(timers.get(key)); }
-        timers.set(key, setTimeout(() => saveCredit(role, credit), SAVE_DEBOUNCE_MS));
+        pending.set(key, { role, credit });   // #1846 — recorded so flushPending() can fire it early
+        timers.set(key, setTimeout(() => { pending.delete(key); saveCredit(role, credit); }, SAVE_DEBOUNCE_MS));
     }
 
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending per-row debounce timer and fire each recorded (role,
+     * credit) save immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you were mid-typing a name and paused for less than a second,
+     * clicking Save shouldn't make you wait for the timer — this sends it
+     * right now.
+     *
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report, instead of
+     *   the old unconditional success message. saveCredit() already catches
+     *   its own rejection into a toast and resolves a boolean rather than
+     *   rethrowing, so the `.catch(() => false)` here is belt-and-braces,
+     *   not the normal path — this function itself must still never reject.
+     */
+    function flushPending() {
+        timers.forEach((t) => clearTimeout(t));
+        timers.clear();
+        const proms = [];
+        pending.forEach(({ role, credit }) => {
+            proms.push(Promise.resolve(saveCredit(role, credit)).catch(() => false));
+        });
+        pending.clear();
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
+    }
+    registerFlush(flushPending);
+
+    /**
+     * #1843/#1851 — cancel this row's pending debounced autosave FIRST. A
+     * name edit followed by an immediate Delete (within SAVE_DEBOUNCE_MS)
+     * used to leave the debounce timer armed: it fired credit_upsert AFTER
+     * credit_delete had already removed the row, re-promoting the junk
+     * tblMusicians row the #1843 reap janitor had just cleaned up. Mirrors
+     * the existing cancel pattern used elsewhere in this file (the
+     * suggestion-pick handler above, and the "all fields emptied" branch in
+     * render()'s input listener below): clear the timer, then drop the
+     * `pending` entry so flushPending() can't fire it either. Also covers an
+     * UNSAVED row (credit.id === 0) — without this, an armed debounce on a
+     * brand-new blank-then-typed-then-deleted row would INSERT a phantom
+     * credit after the row was already gone from the UI.
+     */
     async function removeCredit(role, credit) {
+        const key = role + ':' + credit._key;
+        if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); }
+        pending.delete(key);
         const credits = getCredits();
         credits[role] = credits[role].filter((c) => c !== credit);
         store.set('credits', credits);   // re-renders
@@ -341,6 +419,7 @@ export function mountCreditsTab(container, opts) {
                                D11 — but don't just go quiet either. */
                             const key = role + ':' + credit._key;
                             if (timers.has(key)) { clearTimeout(timers.get(key)); timers.delete(key); }
+                            pending.delete(key);   // #1846 — nothing left to flush for this row
                         } else {
                             debouncedSave(role, credit);
                         }
@@ -412,6 +491,7 @@ export function mountCreditsTab(container, opts) {
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
+        pending.clear();   // #1846 — no lingering references once the tab is gone
         if (searchTimer) { clearTimeout(searchTimer); }
         dropdown.remove();
         rowEls.clear();

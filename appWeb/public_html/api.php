@@ -16424,22 +16424,14 @@ if ($action !== null) {
                     break;
                 }
 
-                /* Single round-trip count across all six song-credit
-                   tables (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was
-                   five, missing tblSongArtists — an artist-only-credited
-                   person could be force-deleted with a wrongly-zero
-                   usage count). Table names come from the hardcoded PHP
-                   constant (rule #5's carve-out). */
-                $countSql = implode(' + ', array_map(
-                    static fn(string $t): string => "(SELECT COUNT(*) FROM {$t} WHERE Name = ?)",
-                    MUSICIAN_CREDIT_ROLE_TABLES
-                ));
-                $stmt = $db->prepare("SELECT ({$countSql}) AS total");
-                $nameBinds = array_fill(0, count(MUSICIAN_CREDIT_ROLE_TABLES), $name);
-                $stmt->bind_param(str_repeat('s', count($nameBinds)), ...$nameBinds);
-                $stmt->execute();
-                $usage = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
-                $stmt->close();
+                /* Single round-trip count across all six song-credit tables
+                   (#1785 C5 — MUSICIAN_CREDIT_ROLE_TABLES; was five, missing
+                   tblSongArtists — an artist-only-credited person could be
+                   force-deleted with a wrongly-zero usage count). Extracted
+                   into musicianCreditUsageCount() (#1843, rule #22) so this,
+                   /manage/musicians.php's delete_from_registry sibling, and
+                   the reap janitor share ONE copy of the count. */
+                $usage = musicianCreditUsageCount($db, $name);
 
                 if ($usage > 0 && !$force) {
                     sendJson([

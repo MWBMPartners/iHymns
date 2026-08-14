@@ -7,10 +7,23 @@
  *  and the field keeps the typed value for retry.
  *
  *  mountMetadataTab(container, { store, api, songId, toast, onSongIdChange,
- *                                getSongbooks, whenSongbooksReady }) -> teardown fn
+ *                                getSongbooks, whenSongbooksReady, registerFlush }) -> teardown fn
+ *  registerFlush(fn) — #1846: hands the shell a "flush my pending debounced
+ *  saves now" function for its manual Save button. See flushPending() below.
  *  Reads initial values from the store's `song` slice (the tblSongs row, as
  *  returned by api2.php load_song — note the columns are PascalCase).
  * ========================================================================== */
+
+/* #1849 — the Language field is the shared IETF BCP 47 live-search picker
+   (js/modules/ietf-language-picker.js, #681), NOT a plain FIELDS text row —
+   see the FIELDS comment below for why, and the render()-time block near
+   "Composition origin" for where it actually mounts. Reused, not re-forked
+   (v1's editor + /manage/songbooks already mount the same module). Only
+   `bootIetfLanguagePicker` is imported: seeding uses the module's OWN
+   `data-initial-tag` hydration path (see that render()-time block), so
+   `decomposeTag` is never called directly here — importing it unused would
+   also fail this repo's `no-unused-vars` ESLint rule. */
+import { bootIetfLanguagePicker } from '../../../js/modules/ietf-language-picker.js';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -36,7 +49,16 @@ const FIELDS = [
     ['disambiguation',     'Disambiguation (short parenthetical)', 'Disambiguation', 'text'],
     ['number',             'Song Number',       'Number',             'number'],
     ['songbook',           'Songbook',          'SongbookAbbr',       'select'],
-    ['language',           'Language (BCP 47)', 'Language',           'text'],
+    /* #1849 — 'language' DELETED from this list. A plain FIELDS text row made
+       curators type/paste a raw BCP 47 tag ("pt-BR") by hand; the rich
+       live-search Language/Script/Region picker this field needs already
+       exists and is mounted by BOTH v1's editor and /manage/songbooks
+       (js/modules/ietf-language-picker.js, #681) — v2 just never adopted it.
+       Rendered as a BESPOKE control after the grid below instead (mirrors
+       'tuneName's #1741 P5c removal for the identical reason: a generic
+       metadata_field_update row only ever saves ONE column, and the picker
+       module already owns the compose/decompose logic — reusing it beats
+       re-typing that logic a third time, rule "extract first, use second"). */
     ['ccli',               'CCLI Number',       'Ccli',               'text'],
     ['iswc',               'ISWC',              'Iswc',               'text'],
     ['isrc',               'ISRC',              'Isrc',               'text'],
@@ -100,6 +122,19 @@ export function mountMetadataTab(container, opts) {
        the default resolves immediately so the tab still mounts standalone. */
     const whenSongbooksReady = opts.whenSongbooksReady || function () { return Promise.resolve(); };
     const timers = new Map();
+    /* #1846 — field -> value not yet fired by its debounce timer, the SAME key
+       space as `timers` above. Lets the shell's manual Save button fire a
+       pending debounced write early via flushPending() below, instead of
+       making the curator wait out SAVE_DEBOUNCE_MS. Only debounced (text/
+       number) fields ever land here — the checkbox/select/immediate saves a
+       few lines down call save() directly and never touch this map. */
+    const pending = new Map();
+    /* #1846 — hand the shell a "flush me now" function once, at mount time
+       (mirrors how onSongIdChange/getSongbooks/whenSongbooksReady above are
+       ALL plain injected callbacks, never DOM events — rule #35/#1581).
+       Defaults to a no-op so the tab still mounts standalone in a test
+       harness that doesn't pass registerFlush. */
+    const registerFlush = opts.registerFlush || function () {};
     let disposed = false;     // set by teardown, so a late list can't touch a dead tab
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
     /* #1741 P5c — teardown for the tune typeahead (the SAME shared
@@ -108,6 +143,19 @@ export function mountMetadataTab(container, opts) {
        render()-wipes-the-container reason as placeDetach immediately
        above: a fresh attach() happens on every `song`-slice change. */
     let tuneDetach = null;
+    /* #1849 — teardown for the language picker (js/modules/ietf-language-
+       picker.js). Same render()-wipes-the-container reason as placeDetach/
+       tuneDetach immediately above — BUT the module itself returns no
+       detach/unbind function (unlike place-search.js's `attach()`): every
+       listener it wires is registered directly on elements INSIDE the
+       picker's own wrapper node, and that whole node is discarded by
+       `container.innerHTML = ''` below, so there is nothing left to leak
+       once it's gone. This var exists anyway, set to a no-op, so the
+       picker's cleanup stays in the SAME shape as its neighbours rather
+       than being the one bespoke control on this tab with no listed
+       teardown at all — and so a future version of the module that DOES
+       start returning a real detach fn has an obvious place to wire it in. */
+    let langPickerDetach = null;
     /* #1671 F3 — teardown for the "Musical key" fieldset. render() wipes the
        container on every `song`-slice change, so the panel is torn down and
        re-mounted with it; without this its in-flight fetch would resolve into a
@@ -131,7 +179,14 @@ export function mountMetadataTab(container, opts) {
      *                              rejected (the songbook select) can revert.
      */
     function save(field, value, onError) {
-        api.updateMetadata(songId, field, value).then((res) => {
+        /* #1846 — returned so flushPending() (below) can await this specific
+           save's completion. Nothing else in this file used the return value
+           before (every existing caller fires save() and moves on), so
+           returning it here changes nothing for them.
+           #1851 — resolves TRUE on success, FALSE on failure (never
+           rejects); flushPending() sums the FALSEs into a failure count for
+           the shell's Save-button outcome report. */
+        return api.updateMetadata(songId, field, value).then((res) => {
             /* #1679 — changing the songbook RE-KEYS the SongId server-side
                (`tblSongbooks.Abbreviation` IS the id prefix, rule #27). Every id
                this tab captured at mount — and the shell's ?song= URL, the
@@ -161,15 +216,48 @@ export function mountMetadataTab(container, opts) {
                     isrcInput.value = res.value == null ? '' : String(res.value);
                 }
             }
+            return true;
         }).catch((e) => {
             toast('Could not save ' + field + ': ' + e.message, 'danger');
             if (typeof onError === 'function') { try { onError(e); } catch (_e) {} }
+            return false;
         });
     }
     function debouncedSave(field, value) {
         if (timers.has(field)) { clearTimeout(timers.get(field)); }
-        timers.set(field, setTimeout(() => save(field, value), SAVE_DEBOUNCE_MS));
+        pending.set(field, value);   // #1846 — recorded so flushPending() can fire it early
+        timers.set(field, setTimeout(() => { pending.delete(field); save(field, value); }, SAVE_DEBOUNCE_MS));
     }
+
+    /**
+     * #1846 — the shell's manual Save button's hook into this tab: cancel
+     * every pending debounce timer and fire each recorded (field, value) save
+     * immediately instead of waiting out SAVE_DEBOUNCE_MS.
+     *
+     * ELI5: if you just typed something and paused for less than half a
+     * second, clicking Save shouldn't make you wait for the timer to catch up
+     * — this sends it right now.
+     *
+     * @returns {Promise<number>} Resolves once every flushed save has
+     *   settled to the COUNT of saves that FAILED (0 = all ok) — the shell's
+     *   Save button (#1846/#1851) sums this across every tab to decide
+     *   between "All changes saved." and a real failure report. save()
+     *   already turns a rejection into a toast and resolves a boolean
+     *   rather than rethrowing, so the `.catch(() => false)` here is
+     *   belt-and-braces, not the normal path. Never rejects, so one field's
+     *   failure can't stop the Save button from re-enabling.
+     */
+    function flushPending() {
+        timers.forEach((t) => clearTimeout(t));
+        timers.clear();
+        const proms = [];
+        pending.forEach((value, field) => {
+            proms.push(Promise.resolve(save(field, value)).catch(() => false));
+        });
+        pending.clear();
+        return Promise.all(proms).then((results) => results.reduce((n, ok) => n + (ok === false ? 1 : 0), 0));
+    }
+    registerFlush(flushPending);
 
     /**
      * The songbook control (#1679 H1) — a closed list, saved immediately on
@@ -302,6 +390,7 @@ export function mountMetadataTab(container, opts) {
         const song = store.get('song') || {};
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
+        if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }
@@ -355,6 +444,61 @@ export function mountMetadataTab(container, opts) {
             }
             row.appendChild(col);
         });
+
+        /* Language (#1849) — the shared IETF BCP 47 live-search picker
+           (js/modules/ietf-language-picker.js, #681), rendered as a BESPOKE
+           control for the same reason Tune is below: the FIELDS loop above
+           only knows how to save one plain scalar per row, and this picker
+           already owns the compose/decompose logic v1's editor and
+           /manage/songbooks both rely on — reusing it beats re-forking that
+           logic a third time (rule "extract first, use second"; the FIELDS
+           array comment above has the full story of why 'language' isn't in
+           that list any more). */
+        const lcol = document.createElement('div');
+        lcol.className = 'col-12 col-md-6';
+        const llab = document.createElement('label');
+        llab.className = 'form-label small mb-1';
+        llab.htmlFor = 'meta-language-lang';
+        llab.textContent = 'Language (IETF BCP 47)';
+        const lwrap = document.createElement('div');
+        lwrap.className = 'ietf-picker';
+        lwrap.setAttribute('data-ietf-picker-id', 'ed2');
+        /* Seed via the module's OWN hydration path: bootIetfLanguagePicker()
+           reads `data-initial-tag` off the root element and calls its
+           internal setTag() itself (which decomposes the tag, awaits the
+           languages/script/region lookups, then fills the three inputs) —
+           the SAME attribute manage/includes/partials/ietf-language-
+           picker.php sets server-side for v1. Setting it here, rather than
+           calling decomposeTag()/setTag() by hand, avoids a second,
+           parallel way to seed the one picker the module already knows how
+           to hydrate on every page that mounts it today. */
+        lwrap.setAttribute('data-initial-tag', song.Language != null ? String(song.Language) : '');
+        /* Static structure mirroring the module's own doc-comment markup
+           contract (js/modules/ietf-language-picker.js header): three
+           labelled inputs, a live tag preview, a hidden composed-tag output,
+           and one <datalist> per input. The only interpolation is the
+           literal 'ed2' picker id above (never user data), so this innerHTML
+           is not an XSS surface — the same shape v2/enrichment-panel.js's
+           buildIetfPicker() already builds for its own inline per-line
+           picker, and the same reasoning for why THAT innerHTML is safe. */
+        lwrap.innerHTML =
+            '<div class="row g-1">'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" id="meta-language-lang" list="ietf-lang-list-ed2" autocomplete="off" placeholder="English"></div>'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-ed2" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-ed2" autocomplete="off" placeholder="Region"></div>'
+          + '</div>'
+          + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
+          + '<input type="hidden" class="ietf-tag-output" value="">'
+          + '<datalist id="ietf-lang-list-ed2"></datalist>'
+          + '<datalist id="ietf-script-list-ed2"></datalist>'
+          + '<datalist id="ietf-region-list-ed2"></datalist>';
+        /* Grabbed now (querySelector walks lwrap's own subtree regardless of
+           whether lwrap is connected to the document yet) but not USED until
+           after `container.appendChild(row)` below — see the comment there
+           for why booting the picker itself has to wait that long. */
+        const langTagOutput = lwrap.querySelector('.ietf-tag-output');
+        lcol.append(llab, lwrap);
+        row.appendChild(lcol);
 
         /* Composition origin — a geocoded place picker (visible text + hidden id),
            reusing the shared window.iHymnsPlaceSearch (places-api.php). Free-typing
@@ -490,6 +634,85 @@ export function mountMetadataTab(container, opts) {
 
         container.appendChild(row);
 
+        /* #1849 — boot the language picker only NOW, after `lwrap` is
+           actually attached to the live document via the `container.
+           appendChild(row)` immediately above — not right after building its
+           markup earlier. bootIetfLanguagePicker() resolves its three
+           <datalist>s via `document.getElementById(input.getAttribute(
+           'list'))`, which searches the WHOLE DOCUMENT: a <datalist> that
+           exists only inside a detached `document.createElement()` subtree
+           is invisible to that lookup, and the null it gets back is
+           captured ONCE into a closure the module never re-queries later.
+           Booting too early would silently strand the typeahead — free
+           typing would still work (the module's own resolveCode() falls
+           through to whatever was typed when no matching option exists), so
+           this would misread as "the picker works, it just never suggests
+           anything" rather than fail loudly. Mirrors why the geocoder
+           `attach()` calls just below ALSO wait for this exact same
+           `container.appendChild(row)` — place-search.js needs live
+           `getBoundingClientRect()` geometry, the same live-DOM
+           requirement in a different guise. */
+        bootIetfLanguagePicker(lwrap);
+        langPickerDetach = function () { /* see the langPickerDetach declaration above — nothing to detach */ };
+
+        /* The module exposes no "tag changed" hook — its own listeners write
+           the composed tag straight into `.ietf-tag-output` via
+           `input.addEventListener('input' | 'blur', refreshTag)` on the
+           three subtag inputs, never via `.dispatchEvent()`, so a listener
+           bound to the HIDDEN output itself would never fire (a script-set
+           `.value` raises no DOM event of its own). Delegating `input` at
+           the WRAPPER instead works correctly, because 'input' bubbles: the
+           subtag input's own listener runs first, at the AT_TARGET phase
+           (registered directly on it by the module), and has already
+           finished updating `.ietf-tag-output` by the time the event
+           reaches this bubble-phase wrapper listener. This is DELIBERATELY
+           NOT v1's version of the same wiring (editor.js ~L916-929), which
+           listens on the CAPTURE phase and therefore reads the tag ONE edit
+           stale — harmless there, because v1 only saves the whole song
+           later on an explicit action; v2 saves every field the instant it
+           changes, so reading one edit stale here would persist the WRONG
+           tag on every keystroke. */
+        if (langTagOutput) {
+            /* #1851 FIX #4 — seed from the SAME expression that seeds the
+               picker itself (`data-initial-tag` above), not from
+               `langTagOutput.value`. The picker hydrates ASYNCHRONOUSLY
+               (bootIetfLanguagePicker() below awaits the languages/script/
+               region lookups before it fills the hidden output), so reading
+               `langTagOutput.value` here — synchronously, before that await
+               resolves — captured '' even for a song WITH a Language. Once
+               hydration later wrote the real tag into the hidden output, the
+               very next genuine clear-the-field edit composed '' again,
+               which now matched the WRONG baseline ('' still) and produced a
+               no-op: the field visibly emptied but the stale Language value
+               resurrected on reload. Reading `song.Language` matches the
+               picker's own seed and is available synchronously. */
+            let lastSavedTag = (song.Language != null ? String(song.Language) : '');
+            /* #1851 FIX #5 — one shared handler for both events (factored so
+               'input' and 'focusout' can never drift into two different save
+               conditions). 'input' catches ordinary typing; 'focusout' is
+               ALSO needed because the picker module rewrites
+               `.ietf-tag-output` on the subtag inputs' own non-bubbling
+               'blur' listener (canonicalising typed text like
+               "en-UNITED KINGDOM" -> "en-GB") — a canonicalisation with no
+               accompanying 'input' event of its own, so without a bubbling
+               listener the canonical tag was silently never saved.
+               'focusout' bubbles (unlike 'blur') and, per this file's own
+               capture-vs-bubble note a few lines above, fires AFTER the
+               module's at-target 'blur' listener has already finished
+               rewriting the hidden output — so by the time this delegated
+               listener reads `langTagOutput.value` here, it is reading the
+               canonicalised value, not one edit stale. */
+            const onLanguageChangeEvent = function () {
+                const val = langTagOutput.value;
+                if (val === lastSavedTag) { return; }
+                lastSavedTag = val;
+                song.Language = val;
+                debouncedSave('language', val);   // matches every other text FIELDS row's save timing
+            };
+            lwrap.addEventListener('input', onLanguageChangeEvent);
+            lwrap.addEventListener('focusout', onLanguageChangeEvent);
+        }
+
         /* Attach the geocoder typeahead (best-effort — no-op if the module didn't load). */
         if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
             placeDetach = window.iHymnsPlaceSearch.attach(pinput, { hiddenIdInput: phidden }) || null;
@@ -615,8 +838,10 @@ export function mountMetadataTab(container, opts) {
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
+        pending.clear();   // #1846 — no lingering references once the tab is gone
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
+        if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }

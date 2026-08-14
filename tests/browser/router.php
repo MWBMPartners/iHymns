@@ -82,6 +82,34 @@ if (isset($rewrites[$uri])) {
     return true;
 }
 
+/* Static-asset-directory 404 (#1832 / rule #1566 class, issue #9 of this
+ * pass) — mirrors .htaccess's
+ *   RewriteRule ^(vendor|css|js|fonts)/ - [R=404,L]
+ * ELI5: a CSS/JS fallback that points at a /vendor/... file which was never
+ * actually deployed here must 404, not silently get index.php's HTML back
+ * with a 200 — a stylesheet/script tag doesn't care that the body isn't
+ * CSS/JS, it just fails to apply with no console error (rule #1566's
+ * silent-failure shape). This block already ran the real-file/-dir
+ * passthrough above, so anything that genuinely exists under these prefixes
+ * already returned false (served directly) before reaching here; only a
+ * MISSING asset under one of these prefixes falls through to this check.
+ * DETAILED: matches by path PREFIX (not extension) so it can never
+ * intercept an SPA client route — no route (home/song/songbook/search/
+ * settings/favorites/...) starts with vendor/, css/, js/, or fonts/, same
+ * as the .htaccess rule it mirrors. Keep both in lockstep (rule #35 —
+ * cross-file agreement needs a mechanism, not a comment): this dev-server
+ * router only fires for local `php -S` test runs, so it must reproduce the
+ * production 404 or the browser smoke test would pass locally against a
+ * quietly-broken production behaviour.
+ * TODO(smoke test): a future browser smoke assertion belongs here too —
+ * fetch /vendor/nonexistent.css against this router and assert a 404, so a
+ * regression in either this file or the .htaccess rule it mirrors is
+ * caught automatically instead of relying on manual review. */
+if (preg_match('#^/(vendor|css|js|fonts)/#', $uri) === 1) {
+    http_response_code(404);
+    return true;
+}
+
 /* SPA catch-all — everything else that isn't a real file falls to
  * index.php, mirroring .htaccess's final `RewriteRule ^ index.php`. */
 chdir($docroot);

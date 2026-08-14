@@ -1881,8 +1881,19 @@ try {
     case 'metadata_field_update': {
         $songId = trim((string)($body['songId'] ?? ''));
         $field  = (string)($body['field'] ?? '');
-        if ($songId === '' || !isset(ED2_META_FIELDS[$field])) {
-            ed2_respond(['ok' => false, 'error' => 'songId + a known field are required.'], 400);
+        /* #1847 — split the old combined "songId + a known field are required"
+           400 into two DISTINCT, self-explaining messages so a future
+           occurrence is diagnosable at a glance (rule #35: the message is a
+           real diagnostic, not decoration). An EMPTY songId reaching here is
+           the confusing one — the current editor shell can never send it (every
+           metadata_field_update carries the loaded song's id), so if a client
+           does, it is running a build behind this one or a stale-cached editor
+           module; the message tells the curator how to self-recover. */
+        if ($songId === '') {
+            ed2_respond(['ok' => false, 'error' => 'No song id was sent — reload the song (hard-refresh: Ctrl/Cmd+Shift+R) and try again.'], 400);
+        }
+        if (!isset(ED2_META_FIELDS[$field])) {
+            ed2_respond(['ok' => false, 'error' => 'That field is not editable here (unrecognised metadata field).'], 400);
         }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
 
@@ -2548,7 +2559,20 @@ try {
 
         $db->begin_transaction();
         try {
+            $oldName = '';
             if ($creditId > 0) {
+                /* #1843 — capture the spelling this credit row held BEFORE the
+                   edit, FOR UPDATE (serialises overlapping debounced upserts on
+                   the same row), so the post-commit reap can clean up the junk
+                   registry row an earlier partial keystroke ("Joh" → "John")
+                   minted. */
+                $old = $db->prepare("SELECT Name FROM `{$table}` WHERE Id = ? AND SongId = ? FOR UPDATE");
+                $old->bind_param('is', $creditId, $songId);
+                $old->execute();
+                $oldRow = $old->get_result()->fetch_row();
+                $old->close();
+                $oldName = $oldRow ? (string)$oldRow[0] : '';
+
                 $u = $db->prepare("UPDATE `{$table}` SET Name = ? WHERE Id = ? AND SongId = ?");
                 $u->bind_param('sis', $name, $creditId, $songId);
                 $u->execute();
@@ -2572,6 +2596,18 @@ try {
             ]);
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
+
+            /* #1843 — post-commit best-effort janitor. If this save RENAMED the
+               credit (the old spelling differs from the new one), the old
+               partial name may have auto-minted a junk uncurated registry row
+               during earlier debounced keystrokes. Reap it — only if it is
+               orphaned + uncurated + not $registryPersonId's own row (the
+               step-3 same-row-by-Id guard), so the D2 read-back below can never
+               lose the row it echoes. Runs in its OWN transaction and never
+               throws, so a janitor hiccup can't roll back the committed save. */
+            if ($oldName !== '' && $oldName !== $name) {
+                musicianReapOrphanedAutoRow($db, $oldName, $registryPersonId);
+            }
         } catch (\Throwable $e) {
             $db->rollback();
             throw $e;
@@ -2628,6 +2664,15 @@ try {
         $table = ED2_CREDIT_TABLES[$role];
         $db->begin_transaction();
         try {
+            /* #1843 — capture the credited name before deleting the row so the
+               post-commit reap can clean up the junk registry row it minted. */
+            $nameSel = $db->prepare("SELECT Name FROM `{$table}` WHERE Id = ? AND SongId = ?");
+            $nameSel->bind_param('is', $creditId, $songId);
+            $nameSel->execute();
+            $nameRow = $nameSel->get_result()->fetch_row();
+            $nameSel->close();
+            $oldName = $nameRow ? (string)$nameRow[0] : '';
+
             $d = $db->prepare("DELETE FROM `{$table}` WHERE Id = ? AND SongId = ?");
             $d->bind_param('is', $creditId, $songId);
             $d->execute();
@@ -2635,6 +2680,14 @@ try {
             $d->close();
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
+
+            /* #1843 — post-commit best-effort janitor. A delete has no
+               successor name, so keepRegistryId = 0: reap the removed credit's
+               registry row iff it is now orphaned + uncurated. Own transaction,
+               never throws. */
+            if ($oldName !== '') {
+                musicianReapOrphanedAutoRow($db, $oldName, 0);
+            }
         } catch (\Throwable $e) {
             $db->rollback();
             throw $e;

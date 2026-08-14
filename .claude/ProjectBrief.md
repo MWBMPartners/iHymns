@@ -4,6 +4,40 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-13 (editor bug cluster + musician-profile migration fix — PUSHED, no PR yet)
+
+**Branch `claude/musician-profile-migration-8n15p1` (off `alpha`) — PUSHED, up-to-date with origin.
+9 substantive commits ahead of `alpha`, no PR yet (one-PR rule; owner has not asked).** Full
+session record: `.claude/sessions/2026-08-13-HANDOFF.md`.
+
+Shipped, in commit order:
+- `990d27e` **#1824** — musician-profile P1 migration no-ops (not error 1347 "not BASE TABLE") once the
+  #1741 P2 rename has turned `tblCreditPersonMembers` into a VIEW; probe short-circuits to "applied"
+  when `tblMusicians` base table exists. No schema.sql change.
+- `1148faf`+`f0cc1f8` **#1843** — editor Credits autosave stopped minting junk `tblMusicians` rows:
+  server-side reap of the orphaned auto-minted row after a credit rename (by Id, not name) + debounce
+  500→1000ms.
+- `9a7ff35` **#1845** — responsive v2 Song Editor shell (offcanvas sidebar + hamburger < lg).
+- `63a0ef4` **#1846** — manual Save button that flushes pending autosaves (ctx.registerFlush registry).
+- `46219ec` **#1849** — restored the shared IETF BCP 47 live-search Language picker in the v2 metadata tab.
+- `13c62ce` **#1850** — single-line v2 sidebar rows + songbook-coloured stub.
+- `b84268c` **#1847** — split the metadata_field_update 400 into two self-explaining errors (clarity fix;
+  root cause is a stale build/SW behind alpha — **awaiting the owner's hard-refresh to confirm**, issue
+  still open).
+
+Issues #1845/#1846/#1849/#1850 stay **open** until this branch merges (close on merge, not on commit).
+Separately, a focused evidence-based sweep **closed 11** already-live issues — the CI/feature cluster
+(#1811/#1814/#1816/#1818/#1820/#1828/#1829/#1831/#1835) plus, after line-by-line verification, the two
+musician bugs the owner asked me to "fold in": **#1799** (per-row `$p['Id']` warning + dead sort) and
+**#1796** (lossy merge — `tblSongArtists` + cascade-deleted aliases/relations). Both #1799/#1796 were
+**already fixed + shipped on alpha** (`0b7d8ec`, #1810 via #1785 C4/C5 + #1786) — verified (no `$p['Id']`,
+`cp-sortable`+boot wired, `musicianMergeExecute()` 6-table + aliases/relations carried, 3 CI guards green)
+and closed; **no code change on this branch**. Still-open candidates NOT line-verified (could also be
+already-fixed — check the tree first): #1832 (CSP `onerror` vendor-fallback), #1798 (service_drive
+sectionRef). CHANGELOG has an Unreleased entry (`f238bd0`); no version bump this session.
+
+---
+
 ## 📌 Continuation note — 2026-08-12 (#1830 organisation logos — BUILD pass done, NOT YET PUSHED)
 
 **8 atomic commits on `claude/issue-sweep-fixes-89`, built exactly to the authoritative plan
