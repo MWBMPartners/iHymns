@@ -90,17 +90,19 @@
 //
 // A pre-existing, separate finding surfaced during this investigation: the
 // CDN `<link>`/`<script>` `onerror="…"` fallback attributes in index.php
-// have no CSP nonce, so the enforcing CSP (rule #117) refuses to run them
-// whenever the primary CDN resource fails — meaning the offline/CDN-down
-// fallback rule #36 documents is itself currently silent-broken in that
-// exact scenario (the #1565-shaped failure mode: no error the user sees,
-// console-only). Deliberately NOT fixed here (out of scope for "add a smoke
-// test") — flagged in this PR's summary as a follow-up.
+// had no CSP nonce, so the enforcing CSP (rule #117) refused to run them
+// whenever the primary CDN resource failed — the offline/CDN-down fallback
+// rule #36 documents was itself silent-broken in that exact scenario (the
+// #1565-shaped failure mode: no error the user sees, console-only). Filed as
+// #1832 and NOW FIXED: index.php's CSS fallbacks are a nonce'd <script> that
+// checks each <link>'s `.sheet` and swaps to /vendor/ (the jQuery/Bootstrap
+// JS fallbacks were already CSP-safe). Branch 3 of isKnownBenignConsoleError()
+// below is kept defensively but should no longer match.
 //
 // FOLLOW-UPS (suggested, not filed by this change)
 //   - Seed a minimal DB and assert a real song/songbook renders end-to-end.
 //   - Cover /songbooks and one /song/<id> route.
-//   - File the onerror-CSP-nonce gap above as its own issue.
+//   - [DONE] the onerror-CSP-nonce gap above was filed as #1832 and fixed.
 // ============================================================================
 
 import { test, expect } from '@playwright/test';
@@ -178,16 +180,17 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
         return true;
     }
 
-    /* 3. A KNOWN, PRE-EXISTING, narrow CSP gap — see the "A pre-existing,
-       separate finding" paragraph above. index.php's CDN <link>/<script>
-       tags carry a plain `onerror="…"` attribute with no CSP nonce; the
-       enforcing CSP refuses to RUN that inline handler whenever the
-       PRIMARY resource failed (i.e. reachable only via case #1 — never
-       fires when the CDN loaded, the normal case in real CI). Matched
-       NARROWLY to the document itself (not a /js/ script URL), so a CSP
-       violation actually blocking our own module graph is never swallowed
-       by this branch. Deliberately not fixed here — flagged as a
-       follow-up, not silently absorbed. */
+    /* 3. A now-FIXED, narrow CSP gap — see the "A pre-existing, separate
+       finding" paragraph above. index.php's CDN <link>/<script> tags USED
+       TO carry a plain `onerror="…"` attribute with no CSP nonce; the
+       enforcing CSP refused to RUN that inline handler whenever the PRIMARY
+       resource failed. That was filed as #1832 and fixed — the CSS
+       fallbacks are now a nonce'd <script> (see index.php +
+       tests/test-index-csp-safe-fallback.js), so this violation should no
+       longer occur. Kept DEFENSIVELY (dormant): still matched NARROWLY to
+       the document itself (not a /js/ script URL), so a transient variant in
+       a network-restricted env stays benign, while a CSP violation actually
+       blocking our own module graph is never swallowed by this branch. */
     if (text.includes('Refused to execute inline event handler')
         && text.includes('Content Security Policy')
         && !url.includes('/js/')) {
