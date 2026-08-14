@@ -1,3 +1,43 @@
+## [0.5250.0] — 2026-08-14 (alpha)
+
+Site-wide transport-routing fix (every browser POST to a literal `/manage/**.php` silently lost its
+request body) + a v2 Song Editor "confidence" pass that restored the admin chrome, adopted the shared
+toast, and compacted the arrangement editor. Issues #1855 (closes #1847), #1856, #1857; follow-up
+#1858 filed. Owner-directed minor bump `0.5200.0 → 0.5250.0`.
+
+- fix(routing): **every browser POST to a literal `/manage/**.php` URL was silently lobotomised**
+  (#1855, closes #1847). `manage/.htaccess` 301-redirects the `.php` form of every `/manage` URL to its
+  extensionless sibling for cosmetic URL-hiding — but a browser replays a 301'd POST/PUT/PATCH/DELETE as
+  a **body-less GET** (only 307/308 preserve method + body, RFC 7231 §6.4). So every write aimed at a
+  literal `.php` URL reached PHP with an empty `$body`: the v2 editor's metadata saves and the ENTIRE
+  arrangement editor (empty `songId` → 400), plus server-PDF download, bulk import, activity-log geo
+  enrichment and place/city upsert. Reads (GET) survived the redirect untouched, so the song loaded
+  fully and the failure masqueraded as a client bug for months, driving the #1846/#1847/#1851
+  symptom-chasing. Fixed at **both layers**: (a) `manage/.htaccess` gains
+  `RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$` so a write is never redirected; (b) every browser call
+  site is normalised to the extensionless URL (v1's proven, years-live convention) — `api-client.js`
+  (the headline), `import2.php`, `print.js`, `print-templates.php`, `editor.js` song-links,
+  `activity-log.php`, `place-search.js`, plus five tree-derived extras (`metadata-tab.js` tune search,
+  `renderEntityPicker.js`, `setup-bulk-runner.js`, `bulk-import-progress.js`, `api2.php` poll URLs).
+  Guarded by a new mutation-proven `tests/test-manage-php-urls.js` (tree-derived; bans any browser
+  request to `/manage/**.php`), and `tests/browser/router.php` now mirrors the 301 so browser-smoke
+  reproduces live Apache semantics (CI's `php -S` router previously did not, which is why this was never
+  caught).
+- fix(editor2): **restored the shared admin chrome** the v2 rewrite had dropped (#1856). Added the slim
+  editor navbar (brand → `/manage/`, Dashboard, Home, Logout — a real way to *exit* Song Editor mode),
+  included `admin-footer.php` (the footer copyright/version **and** the shared bottom-right
+  `window.iHymnsToast` — transient editor errors/success now surface there instead of the top-of-page
+  alert that was invisible when scrolled), and de-double-loaded Bootstrap in the same pass. `#v2-shell`
+  now subtracts the navbar + footer heights, so the tabs pane no longer renders as a stray window-edge
+  scrollbar.
+- fix(editor2): **compacted the arrangement editor** (#1857) — the five presets fold into one dropdown,
+  the two stacked labels become inline captions, and the move/remove controls shrink (~100px shorter) —
+  while keeping the accessible move-**buttons** (never drag: a full revert to v1's SortableJS would
+  regress both SRI #1587/#1647 and WCAG 2.5.7 #1644). The pool/strip chips also gained real styling
+  (they had had none). No behaviour removed.
+- docs: filed #1858 — the *legacy* editor (`editor/index.php`) double-loads Bootstrap the same way
+  (its own emit plus `admin-footer.php`'s); out of scope for this PR, tracked separately.
+
 ## [0.5200.0] — 2026-08-14 (alpha)
 
 Musician-profile migration fix + v2 Song Editor cluster + editor/shell hardening + public-shell CSP &
