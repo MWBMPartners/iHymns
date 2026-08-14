@@ -163,6 +163,13 @@ a.btn:active {
     box-shadow: var(--card-shadow);
 }
 
+/* The editor navbar is in-flow (not fixed). Give it the reserved height the
+   layout calcs subtract (--admin-navbar-height) so #v2-shell's height formula
+   (Issue C) is exact. Harmless on the legacy editor (assumes 56px already). */
+.navbar-editor {
+    min-height: var(--admin-navbar-height);
+}
+
 .navbar-admin {
     position: fixed;
     top: 0;
@@ -1324,7 +1331,15 @@ body:has(.navbar-admin) .modal-content.bg-dark {
    it); the grip is hidden (d-none d-lg-block) and <main> takes the full width.
    Only #v2-* is targeted here. lg matches the admin hamburger breakpoint.
 ============================================================================ */
-#v2-shell { height: 100vh; height: 100dvh; }  /* dvh tracks the visible viewport on iOS Safari (MDN: length#dynamic_viewport_units); vh is the fallback */
+/* Viewport height MINUS the in-flow .navbar-editor above and the fixed admin
+   footer below (Issues A/B) — same formula .editor-wrapper uses for the legacy
+   editor, minus its 36px status bar (v2's #v2-status scrolls INSIDE <main>, so
+   do NOT subtract it). Both tokens responsive; --footer-info-height grows
+   28->40px under 576px and the calc follows. dvh tracks iOS Safari; vh fallback. */
+#v2-shell {
+    height: calc(100vh  - var(--admin-navbar-height) - var(--footer-info-height));
+    height: calc(100dvh - var(--admin-navbar-height) - var(--footer-info-height));
+}
 #v2-grip { flex: 0 0 5px; cursor: col-resize; }
 #v2-sidebar-panel {
     --bs-offcanvas-width: min(85vw, 360px);   /* drawer width on phones; leaves a sliver so it reads as an overlay */
@@ -1335,4 +1350,43 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 @media (min-width: 992px) {
     #v2-sidebar-panel { flex: 0 0 300px; min-width: 200px; }  /* the former inline aside size — in CSS so the <lg fixed-position branch never fights an inline style; the grip's saved-width still wins via its INLINE flex-basis */
     #v2-sidebar-panel .offcanvas-body { height: 100%; }        /* the >=lg offcanvas-header is display:none, so 100% is exact — lets the list scroll internally */
+}
+
+/* ============================================================================
+   v2 ARRANGEMENT EDITOR — compact pool/strip chips + controls (#1857)
+   The .arr-chip rules further up are the LEGACY editor's SortableJS-era
+   styling scoped to #arrangement-strip; these are the button-based v2
+   equivalents (no drag — WCAG 2.5.7 #1644 + SRI #1587, see
+   manage/editor/v2/arrangement-editor.js's header). Until this block,
+   .arr-pool-chip/.arr-strip-chip had NO styling — a bare .badge is
+   transparent, so the pool rendered as loose text.
+============================================================================ */
+.arr-editor .arr-pool-chip,
+.arr-editor .arr-strip-chip {
+    background-color: var(--bs-secondary-bg);
+    color: var(--bs-body-color);
+    font-weight: 600;
+    padding: 0.3rem 0.55rem;
+}
+.arr-editor .arr-pool-chip {
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.arr-editor .arr-pool-chip:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.arr-editor .arr-pool-chip:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: 1px;
+}
+.arr-editor .arr-btn {
+    --bs-btn-padding-y: 0.125rem;
+    --bs-btn-padding-x: 0.3rem;
+    --bs-btn-font-size: 0.78rem;
+    line-height: 1.2;
+}
+.arr-editor .arr-strip-item {
+    background-color: var(--bs-tertiary-bg);
+    border-radius: 0.375rem;
+    padding: 0.125rem;
 }

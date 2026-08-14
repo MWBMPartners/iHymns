@@ -187,8 +187,43 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }
     ?>
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body class="p-0">
+    <?php
+    /* Slim editor navbar (Issue A, #1856) — adapted from the legacy editor's
+       (manage/editor/index.php:170-269) minus its Save/Revisions/Import
+       actions, which live in the v2 toolbar inside <main> instead.
+       Deliberately NOT admin-nav.php: the editor is a focused full-screen
+       tool (same call the legacy editor made); .navbar-editor is the shared
+       class the admin.css narrow-viewport rules (<576px) already compact. */
+    ?>
+    <nav class="navbar navbar-editor d-flex align-items-center">
+        <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
+           title="Back to Admin Dashboard">
+            <i class="bi bi-music-note-beamed"></i>
+            <span class="navbar-brand-text">iHymns Song Editor</span>
+        </a>
+        <div class="d-flex align-items-center gap-2 me-auto ms-2">
+            <a href="/manage/" class="btn btn-sm btn-outline-secondary" title="Back to Admin Dashboard">
+                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+            </a>
+            <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to the iHymns app home">
+                <i class="bi bi-house me-1"></i>Home
+            </a>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+            <?php if (hasRole((string)($u['role'] ?? ''), 'admin')): ?>
+            <a href="/manage/users" class="btn btn-sm btn-outline-secondary me-1" title="User management">
+                <i class="bi bi-people me-1"></i>Users
+            </a>
+            <?php endif; ?>
+            <span class="text-muted small d-none d-md-inline me-1"><?= htmlspecialchars((string)($u['display_name'] ?? $u['username'] ?? '')) ?></span>
+            <a href="/manage/logout" class="btn btn-sm btn-outline-secondary" title="Sign out">
+                <i class="bi bi-box-arrow-right me-1"></i>Logout
+            </a>
+        </div>
+    </nav>
     <?php
     /* #1845 — the song-list aside becomes a Bootstrap 5.3 responsive
        offcanvas (`.offcanvas-lg`): in-flow content at >=992px (unchanged from
@@ -272,7 +307,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
             </ul>
             <div class="tab-content">
-                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-4"></div></div>
+                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-3"></div></div>
                 <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
                 <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
                 <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div><div id="v2-counterparts" class="mt-4"></div></div>
@@ -312,8 +347,9 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
         </div>
     </div>
 
-    <?php /* #1676 — Bootstrap JS from the shared emitter (pinned + SRI), was hardcoded 5.3.3 with no integrity. */ ?>
-    <?= ihymns_bootstrap_js_script() ?>
+    <?php /* Bootstrap JS is emitted ONCE, by admin-footer.php below (#1676's
+             shared emitter) — re-emitting here would double-load the bundle
+             and double-register its delegated data-API listeners (#1856). */ ?>
 
     <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses. -->
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
@@ -406,7 +442,19 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             statusEl.className = 'alert py-2 small alert-' +
                 (kind === 'danger' ? 'danger' : (kind === 'success' ? 'success' : 'secondary'));
         }
-        const toast = (msg, type) => status(msg, type);
+        /* Transient outcome notifications ride the app-standard bottom-right
+           toast (window.iHymnsToast, loaded by admin-footer.php below); the
+           #v2-status strip stays the PERSISTENT editor-state line (Loading… /
+           Editing "X" / Saving…). Tab-module type vocab (danger|success|
+           warning|info) maps 1:1 onto toast.js — no translation. Falls back to
+           the status strip if toast.js failed to load (#1856). */
+        const toast = (msg, type) => {
+            if (window.iHymnsToast && typeof window.iHymnsToast.show === 'function') {
+                window.iHymnsToast.show(msg, type);
+            } else {
+                status(msg, type);
+            }
+        };
 
         /* One store for the whole shell; slices are replaced on each song switch.
            lineTranslations / lineAnnotations (#1627 item 3) hold api2.php
@@ -603,7 +651,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 await editorApi.bulkVerify(ids, true);
                 toast('Marked ' + ids.length + ' song(s) verified.', 'success');
                 sidebar.clearSelection();
-            } catch (e) { status('Bulk verify failed: ' + e.message, 'danger'); }
+            } catch (e) { toast('Bulk verify failed: ' + e.message, 'danger'); }
         });
         byId('v2-bulk-tag').addEventListener('click', async () => {
             const ids = sidebar.getSelectedIds();
@@ -614,7 +662,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 const r = await editorApi.bulkTagAttach(ids, name.trim());
                 toast('Tagged ' + (r.attached || 0) + ' of ' + ids.length + ' song(s) with "' + (r.tag ? r.tag.name : name.trim()) + '".', 'success');
                 sidebar.clearSelection();
-            } catch (e) { status('Bulk tag failed: ' + e.message, 'danger'); }
+            } catch (e) { toast('Bulk tag failed: ' + e.message, 'danger'); }
         });
 
         /* Remove a tag from the selection — the other half of bulk tagging.
@@ -640,7 +688,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                     : 'Removed "' + label + '" from ' + n + ' of ' + ids.length + ' song(s).',
                     n === 0 ? 'info' : 'success');
                 sidebar.clearSelection();
-            } catch (e) { status('Bulk untag failed: ' + e.message, 'danger'); }
+            } catch (e) { toast('Bulk untag failed: ' + e.message, 'danger'); }
         });
 
         /* ---- resizable sidebar (#1193) — drag the grip; width persists ----
@@ -782,7 +830,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
 
         /* ---- Delete current song ---- */
         byId('v2-delete-btn').addEventListener('click', async () => {
-            if (!currentSongId) { status('No song open to delete.', 'danger'); return; }
+            if (!currentSongId) { toast('No song open to delete.', 'danger'); return; }
             const name = (store.get('song') && store.get('song').Title) || currentSongId;
             /* SOFT delete since #1694 — honest copy: the song is hidden and
                restorable; only the admin-only Purge on /manage/deleted-songs
@@ -813,7 +861,7 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                     { const d = byId('v2-duplicate-btn'); if (d) { d.classList.add('d-none'); } }
                 }
             } catch (e) {
-                status('Delete failed: ' + e.message, 'danger');
+                toast('Delete failed: ' + e.message, 'danger');
             }
         });
 
@@ -896,5 +944,6 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
             status('Pick a song from the list, or create a New one.');
         }
     </script>
+    <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
 </html>

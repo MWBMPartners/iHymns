@@ -204,7 +204,7 @@ function isEmptySections(err) {
 function iconBtn(icon, title, disabled, onClick) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn btn-outline-secondary';
+    b.className = 'btn btn-sm btn-outline-secondary arr-btn';
     b.title = title;
     b.disabled = !!disabled;
     b.innerHTML = '<i class="bi ' + icon + '"></i>';
@@ -362,10 +362,17 @@ export function mountArrangementEditor(container, ctx) {
         const wrap = document.createElement('div');
         wrap.className = 'arr-editor';
 
+        /* Compact header row: title left; Presets dropdown + Sequential/clear
+           share the SAME row (right) instead of a fifth stacked row. Actions
+           appended after the early-returns (a preset can't apply in those
+           states). */
+        const headerRow = document.createElement('div');
+        headerRow.className = 'd-flex align-items-center flex-wrap gap-2 mb-1';
         const heading = document.createElement('h3');
-        heading.className = 'h6 mb-2';
+        heading.className = 'h6 mb-0';
         heading.innerHTML = '<i class="bi bi-arrow-left-right me-1" aria-hidden="true"></i>Arrangement';
-        wrap.appendChild(heading);
+        headerRow.appendChild(heading);
+        wrap.appendChild(headerRow);
 
         if (blockedReason === 'migration') {
             const note = document.createElement('div');
@@ -403,14 +410,57 @@ export function mountArrangementEditor(container, ctx) {
             return;
         }
 
-        /* ---- pool (click to add) — ported from v1's renderArrangementPool() ---- */
-        const poolLabel = document.createElement('div');
-        poolLabel.className = 'form-label small fw-semibold text-uppercase mb-1';
-        poolLabel.textContent = 'Sections — click to add';
-        wrap.appendChild(poolLabel);
+        /* ---- presets dropdown + Sequential/clear (right of heading) — same 5
+           ARRANGEMENT_PRESETS + clear, one dropdown instead of a wrap-row.
+           Bootstrap's dropdown data-API is delegated on document, so a
+           dynamically-injected data-bs-toggle needs no manual init. An
+           unavailable preset = disabled item with the same explanatory title. */
+        const headerActions = document.createElement('div');
+        headerActions.className = 'ms-auto d-flex align-items-center gap-1';
 
+        const presetsDrop = document.createElement('div');
+        presetsDrop.className = 'dropdown';
+        const presetsBtn = document.createElement('button');
+        presetsBtn.type = 'button';
+        presetsBtn.className = 'btn btn-sm btn-outline-primary dropdown-toggle';
+        presetsBtn.setAttribute('data-bs-toggle', 'dropdown');
+        presetsBtn.setAttribute('aria-expanded', 'false');
+        presetsBtn.innerHTML = '<i class="bi bi-stars me-1" aria-hidden="true"></i>Presets';
+        const presetsMenu = document.createElement('ul');
+        presetsMenu.className = 'dropdown-menu dropdown-menu-end';
+        Object.keys(ARRANGEMENT_PRESETS).forEach((name) => {
+            const available = ARRANGEMENT_PRESETS[name](comps) !== null;
+            const li = document.createElement('li');
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'dropdown-item';
+            item.textContent = presetLabel(name);
+            item.disabled = !available;
+            item.title = available ? '' : 'This song is missing a section type needed for that pattern.';
+            item.addEventListener('click', () => applyPreset(name));
+            li.appendChild(item);
+            presetsMenu.appendChild(li);
+        });
+        presetsDrop.append(presetsBtn, presetsMenu);
+
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'btn btn-sm btn-outline-secondary';
+        clearBtn.textContent = 'Sequential / clear';
+        clearBtn.title = 'Clear the custom arrangement — falls back to section order.';
+        clearBtn.addEventListener('click', clearArrangement);
+
+        headerActions.append(presetsDrop, clearBtn);
+        headerRow.appendChild(headerActions);
+
+        /* ---- pool (click to add) — one row, inline caption. ---- */
         const pool = document.createElement('div');
-        pool.className = 'd-flex flex-wrap gap-1 mb-2';
+        pool.className = 'd-flex flex-wrap align-items-center gap-1 mb-1';
+        const poolLabel = document.createElement('span');
+        poolLabel.className = 'small text-body-secondary fw-semibold me-1';
+        poolLabel.textContent = 'Add:';
+        poolLabel.title = 'Click a section to append it to the running order';
+        pool.appendChild(poolLabel);
         comps.forEach((comp, idx) => {
             const label = getComponentLabel(comp);
             const chip = document.createElement('button');
@@ -424,19 +474,16 @@ export function mountArrangementEditor(container, ctx) {
         });
         wrap.appendChild(pool);
 
-        /* ---- strip (running order) — ported from v1's renderArrangementStrip(),
-           minus SortableJS: move-left/move-right/remove buttons only (see the
-           file header for why). Four flat siblings per entry, never one
-           control nested inside another (WCAG 4.1.2 Name, Role, Value — the
-           same shape setlist.js's #1644 fix uses). ---- */
-        const stripLabel = document.createElement('div');
-        stripLabel.className = 'form-label small fw-semibold text-uppercase mb-1';
-        stripLabel.textContent = 'Running order';
-        wrap.appendChild(stripLabel);
-
+        /* ---- strip (running order) — inline caption INSIDE the box;
+           move-left/move-right/remove buttons only (never drag — file header).
+           Four flat siblings per entry (WCAG 4.1.2). ---- */
         const strip = document.createElement('div');
-        strip.className = 'd-flex flex-wrap gap-2 p-2 rounded border arr-strip';
+        strip.className = 'd-flex flex-wrap align-items-center gap-1 p-1 rounded border arr-strip';
         strip.setAttribute('aria-label', "Current arrangement order. Use each item's move and remove buttons to reorder.");
+        const stripLabel = document.createElement('span');
+        stripLabel.className = 'small text-body-secondary fw-semibold ms-1 me-1';
+        stripLabel.textContent = 'Order:';
+        strip.appendChild(stripLabel);
 
         const arr = effectiveArrangement();
         if (arr.length === 0) {
@@ -477,30 +524,6 @@ export function mountArrangementEditor(container, ctx) {
             });
         }
         wrap.appendChild(strip);
-
-        /* ---- presets + sequential/clear — ported from v1's ARRANGEMENT_PRESETS
-           button row + its Sequential/clear button (editor.js ~2298). ---- */
-        const actions = document.createElement('div');
-        actions.className = 'd-flex flex-wrap gap-1 mt-2';
-        Object.keys(ARRANGEMENT_PRESETS).forEach((name) => {
-            const available = ARRANGEMENT_PRESETS[name](comps) !== null;
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-sm btn-outline-primary';
-            btn.textContent = presetLabel(name);
-            btn.disabled = !available;
-            btn.title = available ? '' : 'This song is missing a section type needed for that pattern.';
-            btn.addEventListener('click', () => applyPreset(name));
-            actions.appendChild(btn);
-        });
-        const clearBtn = document.createElement('button');
-        clearBtn.type = 'button';
-        clearBtn.className = 'btn btn-sm btn-outline-secondary';
-        clearBtn.textContent = 'Sequential / clear';
-        clearBtn.title = 'Clear the custom arrangement — falls back to section order.';
-        clearBtn.addEventListener('click', clearArrangement);
-        actions.appendChild(clearBtn);
-        wrap.appendChild(actions);
 
         container.appendChild(wrap);
     }
