@@ -106,11 +106,19 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      snippet now joins the opening lines into one "complete thought" phrase
      instead of showing just the first line (which is very often identical to
      the title), displayed single-line and truncated to the viewport with an
-     ellipsis. A small, single-feature minor bump. */
+     ellipsis. A small, single-feature minor bump.
+   - 0.5160.0 -> 0.5200.0 for the #1853 batch (merged to alpha 2026-08-14): the
+     musician-profile migration fix (#1824), the v2 Song Editor cluster (#1845
+     mobile shell / #1846 manual Save / #1849 IETF language picker / #1850
+     single-line sidebar rows / #1847 clearer metadata-save error), the
+     editor/shell hardening pass (#1851, ten fold-in fixes), the CSP-safe
+     CDN->/vendor fallback (#1832) and the Microsoft Clarity Do-Not-Track
+     privacy fix (#1852). A minor bump sized to a large feature + hardening
+     batch. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5160.0";
+$app["Application"]["Version"]["Number"] = "0.5200.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

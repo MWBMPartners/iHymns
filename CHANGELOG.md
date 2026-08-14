@@ -1,7 +1,8 @@
-## [Unreleased] — branch `claude/musician-profile-migration-8n15p1`
+## [0.5200.0] — 2026-08-14 (alpha)
 
-Musician-profile migration + editor bug cluster. Not yet released — awaiting the owner's PR-to-`alpha`
-decision and the matching (owner-directed) version bump; entries move under a version header at release.
+Musician-profile migration fix + v2 Song Editor cluster + editor/shell hardening + public-shell CSP &
+privacy fixes. Merged to `alpha` in #1853; owner-directed minor bump `0.5160.0 → 0.5200.0` sized to a
+large feature + hardening batch.
 
 - fix(migrations): **musician-profile P1 migration no longer errors once the #1741 P2 rename has
   landed** (#1824). #1741 P2 renamed the seven `tblCreditPe*`/`tblCreditPerson*` BASE TABLES to
@@ -48,6 +49,25 @@ decision and the matching (owner-directed) version bump; entries move under a ve
   and a no-known-field message, so the real cause (a stale/behind editor build mounting the tab with an
   empty songId) is legible; the underlying fix for such a client is a hard refresh / fresh deploy. Issue
   left open pending the owner's verification.
+
+- fix(csp): **the public shell's CDN→`/vendor` stylesheet fallback is CSP-safe** (#1832). The enforcing
+  nonce CSP refused the inline `onerror=` fallback on the Bootstrap / Font-Awesome / Bootstrap-Icons /
+  Animate `<link>`s, so a CDN outage silently loaded no local copy. Replaced with one nonce'd `<script>`
+  that swaps each `<link>` to its `/vendor` copy when `link.sheet` is null (mutation-proven guard).
+
+- fix(editor) + fix(routing) + fix(bootstrap) + test: **editor/shell hardening — ten fold-in fixes**
+  (#1851), most of them regressions this batch's own new features introduced, fixed before first release:
+  silent edit loss on song-switch/delete; section/credit "resurrection" from a stale debounced save after
+  delete; the language picker's clear-noop and blur-not-saved; the manual Save button's unconditional "All
+  changes saved." (now a per-tab failure count); dead controls after deleting the last song; a
+  `$out` TypeError guard in `ihymns_bootstrap_js_script()`; a `/vendor` 404 so a missing asset fails loudly
+  instead of masquerading as HTTP 200 (rule #1566 class); and a tree-derived reap FK-coverage guard.
+
+- fix(privacy): **Microsoft Clarity session-recording no longer loads under Do-Not-Track** (#1852). The
+  shared analytics gate loaded Clarity under DNT with no mitigation (unlike GA4's IP-anonymise / Matomo's
+  `setDoNotTrack`); the Clarity gate is now `consent === 'granted' && !dnt` — DNT switches session
+  recording off entirely, since it has no privacy-safe mode. Dormant unless a Clarity id is configured;
+  mutation-proven guard.
 
 ## [0.5160.0] — 2026-08-12 (alpha)
 
