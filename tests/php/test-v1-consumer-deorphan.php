@@ -263,13 +263,13 @@ check(
 );
 check(
     'renderEntityPicker.js targets api2.php for user_search',
-    strpos($pickerJs, "/manage/editor/api2.php?action=user_search") !== false,
-    'expected a "/manage/editor/api2.php?action=user_search" URL literal in the "user" picker source'
+    strpos($pickerJs, "/manage/editor/api2?action=user_search") !== false,
+    'expected a "/manage/editor/api2?action=user_search" URL literal (extensionless — #1855) in the "user" picker source'
 );
 check(
     'renderEntityPicker.js targets api2.php for org_search',
-    strpos($pickerJs, "/manage/editor/api2.php?action=org_search") !== false,
-    'expected a "/manage/editor/api2.php?action=org_search" URL literal in the "organisation" picker source'
+    strpos($pickerJs, "/manage/editor/api2?action=org_search") !== false,
+    'expected a "/manage/editor/api2?action=org_search" URL literal (extensionless — #1855) in the "organisation" picker source'
 );
 check(
     "api2.php now has a 'user_search' case",
@@ -323,9 +323,9 @@ check(
     'expected the fallback poll URL to target api2.php?action=import_zip_status'
 );
 check(
-    'bulk-import-progress.js targets api2.php (not the bare v1 /manage/editor/api path)',
-    strpos($bulkImportJs, '/manage/editor/api2.php?action=import_zip_status') !== false,
-    'expected the literal "/manage/editor/api2.php?action=import_zip_status" URL'
+    'bulk-import-progress.js targets api2 (extensionless — #1855; not the bare v1 /manage/editor/api path)',
+    strpos($bulkImportJs, '/manage/editor/api2?action=import_zip_status') !== false,
+    'expected the literal "/manage/editor/api2?action=import_zip_status" URL'
 );
 
 /* ======================================================================
@@ -433,13 +433,13 @@ check(
     'found a "/manage/editor/api.php" reference in export.js — the retiring v1 endpoint is still targeted'
 );
 check(
-    'export.js targets api2.php for the EasyWorship export',
+    'export.js targets api2 for the EasyWorship export (extensionless — #1855)',
     /* Anchored on a `&` or the closing quote after the action name — a bare
        strpos() substring match would be fooled by e.g.
        "action=easyworship_export_wrong", which contains the wanted string
        as a prefix but names a different (nonexistent) action entirely. */
-    (bool)preg_match("/\\/manage\\/editor\\/api2\\.php\\?action=easyworship_export(?:&|')/", $exportJs),
-    'expected a "/manage/editor/api2.php?action=easyworship_export" URL literal (action name exact, not just a prefix) in export.js'
+    (bool)preg_match("/\\/manage\\/editor\\/api2\\?action=easyworship_export(?:&|')/", $exportJs),
+    'expected a "/manage/editor/api2?action=easyworship_export" URL literal (action name exact, not just a prefix) in export.js'
 );
 
 /* ======================================================================
