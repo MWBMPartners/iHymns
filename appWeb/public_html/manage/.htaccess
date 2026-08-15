@@ -49,8 +49,24 @@ RewriteRule ^(.+?)/?$ $1.php [QSA,L]
 # Hide .php extensions — redirect direct /manage/foo.php to /manage/foo.
 # Uses THE_REQUEST so the check sees the original browser request, not
 # the internal rewrite produced by the rule above.
+#
+# #1855: GET/HEAD ONLY. A 301 changes the URL but not the method —
+# except a browser is SPECIFIED (RFC 7231 §6.4.2/§6.4.3) to replay a
+# 301'd POST/PUT/PATCH/DELETE as a body-less GET on the new URL, because
+# only 307/308 promise to preserve method+body across a redirect. A write
+# aimed at a literal /manage/foo.php therefore arrived at foo.php's PHP
+# with an EMPTY body — no crash, no error, just silently-missing POST
+# fields (e.g. the v2 editor's metadata_field_update/arrangement_update
+# read an empty songId and 400). Cosmetic URL-hiding only makes sense for
+# safe, idempotent reads, so this redirect must never fire for a request
+# that carries a body Apache can't safely resend. Clients should also
+# request the extensionless URL directly to avoid the redirect hop
+# entirely (see #1855 client-side fix) — this condition is the
+# backstop that makes the class of bug impossible even if a call site
+# regresses back to a literal .php URL.
 # ==========================================================================
 
 RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
 RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
+RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
 RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]

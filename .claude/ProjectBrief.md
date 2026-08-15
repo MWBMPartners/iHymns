@@ -4,6 +4,32 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-14 (P0 transport-routing fix + Editor2 confidence pass — v0.5250.0)
+
+**Branch `claude/musician-profile-migration-8n15p1` (re-based onto latest `alpha` da3973d after #1854 merged).
+Version `0.5200.0 → 0.5250.0`. Issues #1855 (closes #1847), #1856, #1857 filed; #1858 filed as follow-up.**
+
+**Root cause found (the big one).** #1847 was NOT a stale build/SW as the previous note guessed — it is a
+LIVE, site-wide server-routing bug: `manage/.htaccess` 301-redirects the `.php` form of every `/manage`
+URL to its extensionless sibling with **no method guard**, and a browser replays a 301'd POST as a
+**body-less GET** (RFC 7231 §6.4; only 307/308 preserve method+body). So every browser POST to a literal
+`/manage/**.php` reached PHP with an empty `$body`: the v2 editor's metadata saves + the WHOLE arrangement
+editor (empty `songId`), and also server-PDF, bulk import, activity geo, place upsert. Reads (GET) survived,
+so it masqueraded as a client bug — and #1846/#1847/#1851 were downstream symptom-chasing. v1's editor was
+immune because it already posts to the extensionless `/manage/editor/api2`.
+
+**Fixed both layers** (owner chose site-wide): (a) `manage/.htaccess` gains `RewriteCond %{REQUEST_METHOD}
+^(GET|HEAD)$`; (b) every browser call site normalised to the extensionless URL (`api-client.js`,
+`import2.php`, `print.js`, `print-templates.php`, `editor.js`, `activity-log.php`, `place-search.js` + 5
+tree-derived extras). Guards: mutation-proven `tests/test-manage-php-urls.js` + `tests/browser/router.php`
+now mirrors the 301 (CI's `php -S` router never did → why it was missed). Editor2 also regained its admin
+chrome — slim navbar (exit), `admin-footer.php` (footer + shared `window.iHymnsToast`, Bootstrap de-doubled),
+`#v2-shell` height subtracts the chrome (kills the stray-scrollbar look) (#1856) — and a compacted,
+still-accessible-buttons (never drag) arrangement editor (#1857). All syntax + key CI guards green
+(test-manage-php-urls, test-v2-arrangement-ui 26/0, test-vendor-sri 19/0, test-editor-deep-links 21/0).
+
+Discovery/planning done with sequential Fable-5 agents; implementation with Sonnet (owner model directive).
+
 ## 📌 Continuation note — 2026-08-13→14 (musician migration + v2 editor + hardening + CSP/privacy — MERGED, v0.5200.0)
 
 **Branch `claude/musician-profile-migration-8n15p1` — ✅ MERGED to `alpha` in PR #1853 (2026-08-14),

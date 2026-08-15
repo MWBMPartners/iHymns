@@ -41,7 +41,10 @@
 
 import { apiFetch } from '../utils/api-client.js';
 
-const ENDPOINT = '/manage/setup-database.php';
+// #1855: extensionless — a literal .php URL is 301'd by .htaccess; both
+// uses below are GET (a page navigation and a read-only migration-run poll)
+// so they would have survived, but the redirect hop was pure waste.
+const ENDPOINT = '/manage/setup-database';
 
 /**
  * Boot the bulk runner. Idempotent — re-calling on the same DOM is

@@ -26,15 +26,28 @@ declare(strict_types=1);
  *
  * This mirrors ONLY the subset of `.htaccess` the home-route smoke actually
  * exercises. It is not a full re-implementation (no gzip/cache/security
- * headers, no PHP-direct-access blocking, no `/manage` special-casing beyond
- * "let the file server handle it since those are real files") — real
- * deploys never run through this file; only local `php -S` testing does.
+ * headers, no PHP-direct-access blocking) — real deploys never run through
+ * this file; only local `php -S` testing does.
+ *
+ * #1855 (manage/.htaccess) — the one piece of `/manage` special-casing
+ * this file DOES carry: manage/.htaccess hides `.php` from every
+ * `/manage/**` URL with a THE_REQUEST-based 301, and a browser replays a
+ * 301'd POST/PUT/PATCH/DELETE as a body-less GET (only 307/308 preserve
+ * method+body) — so a write aimed at a literal `/manage/foo.php` URL
+ * silently loses its whole body. `php -S`'s default behaviour (serve any
+ * real file directly, ignore method entirely) would mask that class of bug
+ * rather than reproduce it, so a browser-smoke run against the raw
+ * built-in server could pass locally against a redirect production would
+ * apply and lose the request body. The two blocks below teach this dev
+ * router manage/.htaccess's actual method-scoped semantics — see their own
+ * doc comments for the mechanism.
  *
  * Usage: php -S 127.0.0.1:PORT tests/browser/router.php
  * (the docroot is derived below, not passed via -t, so the router's own
  * relative path resolution stays correct regardless of cwd).
  *
  * @see appWeb/public_html/.htaccess
+ * @see appWeb/public_html/manage/.htaccess
  * @link https://www.php.net/manual/en/features.commandline.webserver.php
  */
 
@@ -48,6 +61,80 @@ if ($docroot === false) {
 $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 if (!is_string($uri) || $uri === '') {
     $uri = '/';
+}
+
+/* ==========================================================================
+ * #1855 — /manage/**.php .php-hiding redirect, GET/HEAD ONLY.
+ * Mirrors manage/.htaccess:69-72:
+ *   RewriteCond %{THE_REQUEST} \.php[\s?/] [NC]
+ *   RewriteCond %{REQUEST_URI} !^/manage/includes/ [NC]
+ *   RewriteCond %{REQUEST_METHOD} ^(GET|HEAD)$
+ *   RewriteRule ^(.+)\.php$ /manage/$1 [R=301,L]
+ *
+ * ELI5: production hides ".php" from every /manage/ URL by redirecting a
+ * literal .php request to its clean form — but ONLY for GET/HEAD, because a
+ * browser replays a 301'd write as a body-less GET, silently dropping the
+ * whole request body. This block reproduces exactly that, and MUST run
+ * BEFORE the static-file passthrough below: on live Apache, mod_rewrite
+ * sees THE_REQUEST before the file is served statically, so the redirect
+ * fires even though the .php file genuinely exists on disk — the passthrough
+ * would otherwise short-circuit this block on every real .php file (which
+ * is all of them) and the redirect would never be reachable here at all.
+ *
+ * A non-GET/HEAD request intentionally does NOTHING in this block — it
+ * falls through unredirected to the static-file passthrough below, which
+ * serves the literal .php file directly with its original method and body
+ * intact, exactly as production does once manage/.htaccess's method-scoped
+ * RewriteCond keeps the redirect rule from firing for a write.
+ */
+if (str_starts_with($uri, '/manage/')
+    && !str_starts_with($uri, '/manage/includes/')
+    && str_ends_with($uri, '.php')
+) {
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if ($method === 'GET' || $method === 'HEAD') {
+        $extensionless = substr($uri, 0, -strlen('.php'));
+        $qs = $_SERVER['QUERY_STRING'] ?? '';
+        header('Location: ' . $extensionless . ($qs !== '' ? '?' . $qs : ''), true, 301);
+        return true;
+    }
+    /* Not GET/HEAD — deliberately no return here; fall through. */
+}
+
+/* ==========================================================================
+ * /manage/<name> -> /manage/<name>.php clean-URL resolution, ALL methods.
+ * Mirrors manage/.htaccess:43-46:
+ *   RewriteCond %{REQUEST_FILENAME} !-f
+ *   RewriteCond %{REQUEST_FILENAME} !-d
+ *   RewriteCond %{REQUEST_FILENAME}.php -f
+ *   RewriteRule ^(.+?)/?$ $1.php [QSA,L]
+ *
+ * This is an INTERNAL rewrite (no redirect, no [R=…] flag on the mirrored
+ * rule), so unlike the block above it applies to every HTTP method and
+ * preserves the request body untouched — it is what makes an already-
+ * extensionless request (every v2 editor write after #1855, and v1's
+ * long-standing /manage/editor/api convention) actually reach real PHP
+ * here, instead of falling through to the SPA catch-all further down and
+ * getting index.php's HTML shell back where an admin page or a JSON API
+ * response was expected — the exact silent shape-mismatch this whole file
+ * exists to prevent (see the file-level doc-block). Placed after the block
+ * above but the relative order does not matter: the two target disjoint
+ * URI shapes (this one only ever fires for a URI that does NOT already end
+ * in `.php`).
+ */
+if (str_starts_with($uri, '/manage/')) {
+    $already = realpath($docroot . $uri);
+    if ($already === false || !(is_file($already) || is_dir($already))) {
+        $phpCandidate = realpath($docroot . rtrim($uri, '/') . '.php');
+        if ($phpCandidate !== false
+            && str_starts_with($phpCandidate, $docroot . DIRECTORY_SEPARATOR)
+            && is_file($phpCandidate)
+        ) {
+            chdir(dirname($phpCandidate));
+            require $phpCandidate;
+            return true;
+        }
+    }
 }
 
 /* Static-asset / real-file passthrough — mirrors .htaccess's

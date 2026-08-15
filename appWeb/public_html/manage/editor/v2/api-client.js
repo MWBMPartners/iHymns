@@ -14,7 +14,12 @@
  *  leaves the local state untouched — never an optimistic mutation.
  * ========================================================================== */
 
-const ENDPOINT = '/manage/editor/api2.php';
+// #1855: extensionless — a literal /manage/editor/api2.php gets 301'd by
+// .htaccess (cosmetic URL-hiding), and a browser replays a 301'd POST as a
+// body-less GET, which silently drops every write's payload. Requesting the
+// clean URL directly (the same convention v1's editor already uses) sends
+// writes straight to the endpoint with no redirect at all.
+const ENDPOINT = '/manage/editor/api2';
 
 /** The CSRF token the editor head emits as <meta name="csrf-token" content="…">. */
 function csrfToken() {

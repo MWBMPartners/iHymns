@@ -729,7 +729,10 @@ export function applyCustomLayout(layoutHtml, song, contentHtml) {
 let _pdfPingPromise = null;
 function pdfEndpointAvailable() {
     if (!_pdfPingPromise) {
-        _pdfPingPromise = apiFetch('/manage/print-pdf.php?ping=1', {
+        /* #1855: extensionless — see the POST below; this GET would
+           survive the .htaccess 301 fine, but going straight to the clean
+           URL skips a wasteful redirect round trip on every ping. */
+        _pdfPingPromise = apiFetch('/manage/print-pdf?ping=1', {
             method: 'GET',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
@@ -947,7 +950,10 @@ export async function downloadPrintPdf(app, payload) {
 
     let res;
     try {
-        res = await apiFetch('/manage/print-pdf.php', {
+        /* #1855: extensionless — a literal .php URL here is 301'd by
+           .htaccess, and a browser replays a 301'd POST as a body-less GET,
+           which would silently drop this whole print payload. */
+        res = await apiFetch('/manage/print-pdf', {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
             credentials: 'same-origin',

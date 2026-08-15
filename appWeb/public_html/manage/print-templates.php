@@ -1297,7 +1297,10 @@ if ($hasSchema) {
                     ? applyCustomLayout(working.layoutHtml, PRINT_SAMPLE_SONG, contentHtml)
                     : contentHtml;
                 const css = printCss(working.pageOptions);
-                const res = await fetch('/manage/print-pdf.php', {
+                // #1855: extensionless — a literal .php URL is 301'd by
+                // .htaccess, and a browser replays a 301'd POST as a body-less
+                // GET, which would silently drop this preview payload.
+                const res = await fetch('/manage/print-pdf', {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: {

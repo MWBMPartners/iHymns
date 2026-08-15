@@ -114,11 +114,22 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      editor/shell hardening pass (#1851, ten fold-in fixes), the CSP-safe
      CDN->/vendor fallback (#1832) and the Microsoft Clarity Do-Not-Track
      privacy fix (#1852). A minor bump sized to a large feature + hardening
-     batch. */
+     batch.
+   - 0.5200.0 -> 0.5250.0 for the #1855 transport-routing fix + the Editor2
+     confidence pass (2026-08-14): manage/.htaccess 301-redirected `.php` to
+     the extensionless URL on EVERY method, so a browser replayed each write
+     POST as a body-less GET — v2 editor saves and the whole arrangement
+     editor, plus server-PDF / bulk import / activity geo / place upsert, all
+     silently lost their request body (#1855, closes #1847). Fixed at both
+     layers (a GET/HEAD-only redirect condition + extensionless client URLs)
+     with a mutation-proven CI guard and a browser-router mirror. Editor2 also
+     regained its admin chrome — navbar/exit, footer, and the shared
+     bottom-right toast (#1856) — and a compacted, still-accessible (buttons,
+     never drag) arrangement editor (#1857). */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5200.0";
+$app["Application"]["Version"]["Number"] = "0.5250.0";
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;

@@ -1065,7 +1065,10 @@ try {
                 });
                 ips = ips.slice(0, 25);   /* server caps at 25/call too */
                 if (!ips.length) { return; }
-                fetch('/manage/activity-log.php?action=geo', {
+                // #1855: extensionless — a literal .php URL here is
+                // 301'd by .htaccess, and a browser replays a 301'd POST as
+                // a body-less GET, which would silently drop the ips list.
+                fetch('/manage/activity-log?action=geo', {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: {

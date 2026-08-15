@@ -146,8 +146,11 @@ export function mountExportMenu(menuEl, opts) {
         /* Same setting as the client-side formats (#1628 item 5) — EasyWorship is
            generated server-side, so it travels as a query param instead of an
            options object, but it must honour the same number or the one
-           server-rendered format would quietly ignore the operator's choice. */
-        const url = '/manage/editor/api2.php?action=easyworship_export&id=' + encodeURIComponent(songId)
+           server-rendered format would quietly ignore the operator's choice.
+           #1855: extensionless URL — the literal .php form is 301'd by
+           .htaccess; this is a GET so it would still work, but going straight
+           to the clean URL skips the redirect hop (matches api-client.js). */
+        const url = '/manage/editor/api2?action=easyworship_export&id=' + encodeURIComponent(songId)
             + '&maxLinesPerSlide=' + encodeURIComponent(String(linesPerSlide()));
         const a = document.createElement('a');
         a.href = url;
