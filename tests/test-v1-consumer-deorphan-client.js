@@ -139,14 +139,14 @@ console.log('1. renderEntityPicker.js PICKER_SOURCES (user / organisation):');
 const pickerJs = readStripped('manage/includes/renderEntityPicker.js');
 
 check(
-    "PICKER_SOURCES.user's url() builds an api2.php user_search URL",
-    /user\s*:\s*\{[\s\S]{0,200}?\/manage\/editor\/api2\.php\?action=user_search/.test(pickerJs),
-    "expected the 'user' source's url() function body to reference '/manage/editor/api2.php?action=user_search' within ~200 chars of its 'user:' key"
+    "PICKER_SOURCES.user's url() builds an api2 user_search URL (extensionless — #1855)",
+    /user\s*:\s*\{[\s\S]{0,400}?\/manage\/editor\/api2\?action=user_search/.test(pickerJs),
+    "expected the 'user' source's url() function body to reference '/manage/editor/api2?action=user_search' within ~200 chars of its 'user:' key"
 );
 check(
-    "PICKER_SOURCES.organisation's url() builds an api2.php org_search URL",
-    /organisation\s*:\s*\{[\s\S]{0,200}?\/manage\/editor\/api2\.php\?action=org_search/.test(pickerJs),
-    "expected the 'organisation' source's url() function body to reference '/manage/editor/api2.php?action=org_search' within ~200 chars of its 'organisation:' key"
+    "PICKER_SOURCES.organisation's url() builds an api2 org_search URL (extensionless — #1855)",
+    /organisation\s*:\s*\{[\s\S]{0,400}?\/manage\/editor\/api2\?action=org_search/.test(pickerJs),
+    "expected the 'organisation' source's url() function body to reference '/manage/editor/api2?action=org_search' within ~200 chars of its 'organisation:' key"
 );
 check(
     'no PICKER_SOURCES entry still targets the bare (v1) /manage/editor/api path',
@@ -162,9 +162,9 @@ console.log('\n2. bulk-import-progress.js pollOnce() fallback URL:');
 const bulkImportJs = readStripped('js/modules/bulk-import-progress.js');
 
 check(
-    'pollOnce() fallback URL template targets api2.php import_zip_status with a job_id param',
-    /activeJob\.pollUrl[\s\S]{0,200}?\/manage\/editor\/api2\.php\?action=import_zip_status&job_id=/.test(bulkImportJs),
-    "expected the `activeJob.pollUrl || (...)` fallback expression to build '/manage/editor/api2.php?action=import_zip_status&job_id=' + activeJob.jobId"
+    'pollOnce() fallback URL template targets api2 import_zip_status with a job_id param (extensionless — #1855)',
+    /activeJob\.pollUrl[\s\S]{0,200}?\/manage\/editor\/api2\?action=import_zip_status&job_id=/.test(bulkImportJs),
+    "expected the `activeJob.pollUrl || (...)` fallback expression to build '/manage/editor/api2?action=import_zip_status&job_id=' + activeJob.jobId"
 );
 check(
     'the retired v1 action name is not reachable from code (comments stripped)',

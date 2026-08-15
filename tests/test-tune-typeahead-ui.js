@@ -116,8 +116,8 @@ if (defaultsMatch) {
        (Credit People, Works, Venues, Organisations, this tab's own
        origin-city picker) that passes NO options must get IDENTICAL
        behaviour to before this phase. */
-    check("DEFAULTS.endpoint is unchanged ('/manage/places-api.php')",
-        /endpoint\s*:\s*'\/manage\/places-api\.php'/.test(body));
+    check("DEFAULTS.endpoint is the extensionless '/manage/places-api' (#1855 — a literal .php is 301'd, stripping the POST-upsert body)",
+        /endpoint\s*:\s*'\/manage\/places-api'/.test(body));
     check('DEFAULTS.minChars is unchanged (3)', /minChars\s*:\s*3\s*,/.test(body));
     check('DEFAULTS.debounceMs is unchanged (250)', /debounceMs\s*:\s*250\s*,/.test(body));
     check('DEFAULTS.maxResults is unchanged (8)', /maxResults\s*:\s*8\s*,/.test(body));
