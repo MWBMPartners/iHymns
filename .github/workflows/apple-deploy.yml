@@ -113,7 +113,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Select Xcode 26
         run: |
@@ -179,7 +179,7 @@ jobs:
 
       - name: Upload build artifacts (.ipa)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apple-${{ steps.lane.outputs.lane }}-${{ github.sha }}
           path: appApple/fastlane/builds/
