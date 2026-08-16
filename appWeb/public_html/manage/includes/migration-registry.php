@@ -4177,4 +4177,40 @@ return [
         /* Single-object existence probe (real, never `=> true`) — rule #19. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLogos'),
     ],
+
+    'ilyrics-internal-ids' => [
+        'script' => 'migrate-ilyrics-internal-ids.php',
+        'card' => [
+            'title'  => 'iLyrics Internal IDs (#1860)',
+            'body'   => 'Creates <code>tblIlyricsIdSequence</code> (the per-entity-type'
+                      . ' allocator for the sequential <code>IL*</code> internal ids,'
+                      . ' seeded one row per entity family) and adds the'
+                      . ' <code>IlId VARCHAR(16) NULL</code> column +'
+                      . ' <code>uq_IlId</code> UNIQUE key to <code>tblSongs</code>,'
+                      . ' <code>tblWorks</code>, <code>tblMusicians</code>,'
+                      . ' <code>tblTunes</code>, <code>tblPublishers</code>,'
+                      . ' <code>tblCatalogues</code>, <code>tblSongbooks</code> and'
+                      . ' <code>tblSongMedia</code> (format <code>ILS0000012345</code> —'
+                      . ' no separator, provably disjoint from the public'
+                      . ' <code>MP-1008</code> SongId grammar). Additive, idempotent,'
+                      . ' DORMANT — nothing reads or mints any of it until the Phase-2'
+                      . ' backfill/mint lands. Safe to re-run.',
+            'button' => 'Run iLyrics Internal IDs Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. PENDING until the
+           allocator table AND every one of the eight IlId columns exist; the
+           migration creates+seeds the table BEFORE the ALTERs, so any partial
+           apply (including a failed seed) leaves at least one column absent and
+           the card correctly stays pending. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblIlyricsIdSequence')
+            || !_migProbe_columnExists($db, 'tblSongs', 'IlId')
+            || !_migProbe_columnExists($db, 'tblWorks', 'IlId')
+            || !_migProbe_columnExists($db, 'tblMusicians', 'IlId')
+            || !_migProbe_columnExists($db, 'tblTunes', 'IlId')
+            || !_migProbe_columnExists($db, 'tblPublishers', 'IlId')
+            || !_migProbe_columnExists($db, 'tblCatalogues', 'IlId')
+            || !_migProbe_columnExists($db, 'tblSongbooks', 'IlId')
+            || !_migProbe_columnExists($db, 'tblSongMedia', 'IlId'),
+    ],
 ];

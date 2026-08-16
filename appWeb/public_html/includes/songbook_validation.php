@@ -29,6 +29,12 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #1860 — same-directory include (app code, not a migration; rule #41's
+   docroot-rename concern only applies to appWeb/.sql/ scripts reaching
+   back INTO a docroot, not to two files that already live in it
+   together). Side-effect-free: constants + functions only. */
+require_once __DIR__ . '/ilyrics_id.php';
+
 /**
  * Validate a songbook abbreviation. The natural key on tblSongs
  * (every song carries SongbookAbbr); renaming has cascade implications
@@ -52,6 +58,19 @@ function validateSongbookAbbr(string $abbr): ?string
     if (!preg_match('/^[A-Za-z0-9]+$/', $abbr)) {
         return 'Abbreviation must be letters/numbers only (no spaces or punctuation).';
     }
+
+    /* #1860 — the IL* internal-id namespace reservation (design doc §2.2).
+       ELI5: two-or-three-letter names starting IL are kept for the catalogue's
+       own permanent IDs, so a book can never look like one.
+       Detail: an IL id is hyphen-less (ILS0000012345), so a book "ILS" cannot
+       collide in the GRAMMAR — but a human who habit-types the hyphen
+       (ILS-0000012345, mirroring MP-1008) lands in the songbook grammar, and
+       if a book ILS existed, getSongById() strategy 4 could answer 200 with
+       the WRONG song. Narrow on purpose (rule #34): longer IL… names stay legal. */
+    if (ilidAbbrIsReserved($abbr)) {
+        return 'Abbreviations "IL" and "IL" plus one letter are reserved for iLyrics internal IDs (e.g. ILS0000012345).';
+    }
+
     return null;
 }
 

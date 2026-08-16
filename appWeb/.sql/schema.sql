@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS tblPlaces (
 CREATE TABLE IF NOT EXISTS tblSongbooks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Abbreviation    VARCHAR(10)     NOT NULL UNIQUE,
+    IlId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILB + 10 zero-padded digits, e.g. ILB0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     DisplayAbbr     VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Optional free-text display label shown in place of Abbreviation (any chars incl. - _ :); Abbreviation stays the alphanumeric SongId prefix. NULL = show Abbreviation (#1332).',
     Name            VARCHAR(255)    NOT NULL,
     SongCount       INT UNSIGNED    NOT NULL DEFAULT 0,
@@ -226,6 +227,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_DisplayOrder (DisplayOrder),
     INDEX idx_ParentSongbook (ParentSongbookId),
     INDEX idx_PublicationCityId (PublicationCityId),
@@ -267,6 +269,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SongId              VARCHAR(20)     NOT NULL UNIQUE COMMENT 'Canonical ID, e.g. CP-0001',
     PublicId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'Opaque stable permalink id (IHUID, #1343-B); Crockford base32, uppercase, no I/L/O/U/0/1. Location-independent — survives songbook move/renumber. SongId stays the PK; this is additive.',
+    IlId                VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILS + 10 zero-padded digits, e.g. ILS0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
     NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title (iconv ASCII//TRANSLIT + mb_strtolower + unicode-property strip via ihymns_normalize_title()) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL 8 cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
@@ -331,6 +334,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_MusicRightsLicence  (MusicRightsLicenceKey),
     INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
+    UNIQUE KEY uq_IlId          (IlId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
@@ -536,6 +540,7 @@ CREATE TABLE IF NOT EXISTS tblMusicians (
        numeric suffixes so two "John Smith" rows still map to two
        distinct slugs. Used for the public /people/<slug> page. */
     Slug            VARCHAR(255)    NULL UNIQUE,
+    IlId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILM + 10 zero-padded digits, e.g. ILM0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     MusicBrainzArtistMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Artist MBID (#1090 P6) — typed home for artist dedup/enrichment, vs a parsed external-link URL',
     /* Special-case + Group flags (#584 / #585) — distinguish
        Anonymous / Traditional / Public Domain / Unknown ("special
@@ -581,6 +586,7 @@ CREATE TABLE IF NOT EXISTS tblMusicians (
 
     UNIQUE KEY uk_Name (Name),
     UNIQUE KEY uq_MbArtist (MusicBrainzArtistMBID),
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_Name (Name),
     INDEX idx_Slug (Slug),
     INDEX idx_BirthPlaceId (BirthPlaceId),
@@ -2537,6 +2543,7 @@ CREATE TABLE IF NOT EXISTS tblSearchQueries (
 CREATE TABLE IF NOT EXISTS tblCatalogues (
     Id           INT UNSIGNED      AUTO_INCREMENT PRIMARY KEY,
     Slug         VARCHAR(255)      NOT NULL,
+    IlId         VARCHAR(16)       NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILC + 10 zero-padded digits, e.g. ILC0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Title        VARCHAR(255)      NOT NULL,
     Description  TEXT              NULL,
     SortOrder    SMALLINT          NOT NULL DEFAULT 0,
@@ -2550,6 +2557,7 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the collection, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
     OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the collection, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     UNIQUE KEY uk_Slug (Slug),
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -3085,6 +3093,7 @@ CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongMedia (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    IlId            VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILD + 10 zero-padded digits, e.g. ILD0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     SongId          VARCHAR(20)  NOT NULL,
     Kind            VARCHAR(20)  NOT NULL COMMENT 'audio | sheet-music | midi | musicxml | notation-source | pdf (app-validated via SongMediaStorage::allKinds(); widened from ENUM #1090 so new media kinds — e.g. Forte .fnf notation-source — need no ALTER)',
     StorageBackend  ENUM('filesystem','database') NOT NULL,
@@ -3100,6 +3109,7 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     UploadedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    UNIQUE KEY uq_IlId  (IlId),
     INDEX idx_song_kind (SongId, Kind, SortOrder),
     INDEX idx_kind      (Kind),
     INDEX idx_sha256    (Sha256),
@@ -3136,6 +3146,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     MusicBrainzWorkMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID (composition identity). Lives on the work, NOT the recording-level identity map, so work-dedup has one home (#1066 Theme D / stress-C2)',
     Title         VARCHAR(255) NOT NULL,
     Slug          VARCHAR(80)  NOT NULL,
+    IlId          VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILW + 10 zero-padded digits, e.g. ILW0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     /* Identity + descriptive fields (#1741 P1 §2.2). Ccli is NULL (not '')
        so absent values coexist under uq_ccli — every NULL is distinct.
        TuneName/TuneId mirror the tblSongs pair; fk_Works_Tune is a
@@ -3161,6 +3172,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_mbwork (MusicBrainzWorkMBID),
     UNIQUE KEY uq_ccli   (Ccli),
     UNIQUE KEY uq_bowi   (Bowi),
+    UNIQUE KEY uq_IlId   (IlId),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
@@ -3739,6 +3751,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     Id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Name                VARCHAR(120) NOT NULL COMMENT 'Canonical tune name, e.g. HYFRYDOL',
     Slug                VARCHAR(140) NOT NULL COMMENT 'URL-safe handle',
+    IlId                VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILT + 10 zero-padded digits, e.g. ILT0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Subtitle            VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional tune subtitle (#1741 P1)',
     Disambiguation      VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named tunes (#1741 P1)',
     MeterCode           VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Hymn metre, e.g. 87.87 D | CM | LM | 86.86 (VARCHAR not ENUM)',
@@ -3751,6 +3764,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     UNIQUE KEY uq_Name   (Name),
     UNIQUE KEY uq_Slug   (Slug),
     UNIQUE KEY uq_MbWork (MusicBrainzWorkMBID),
+    UNIQUE KEY uq_IlId   (IlId),
     INDEX      idx_Meter (MeterCode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Hymn tunes as first-class entities (#1090 P4).';
@@ -3876,6 +3890,7 @@ CREATE TABLE IF NOT EXISTS tblPublishers (
     ParentId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'Self-FK: imprint / catalogue grouping — an imprint points to its parent publisher (mirrors tblWorks.ParentWorkId / tblSongTags.ParentId). NULL = top-level. (#93)',
     Name           VARCHAR(255) NOT NULL COMMENT 'Publisher display name (company name, or the person''s name for a person-publisher).',
     Slug           VARCHAR(120) NOT NULL COMMENT 'URL-safe handle, unique.',
+    IlId           VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILP + 10 zero-padded digits, e.g. ILP0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Kind           VARCHAR(20)  NOT NULL DEFAULT 'company' COMMENT 'Publisher kind — app-validated vocabulary, VARCHAR not ENUM (rule #20): company | person | imprint | society | other.',
     MusicianId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional FK to tblMusicians for a person-publisher, so a musician who also publishes is not duplicated. NULL for a pure company. (#93)',
     Subtitle       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional publisher subtitle / tagline.',
@@ -3892,6 +3907,7 @@ CREATE TABLE IF NOT EXISTS tblPublishers (
     UNIQUE KEY uq_Slug     (Slug),
     UNIQUE KEY uq_Ipi      (Ipi),
     UNIQUE KEY uq_Isni     (Isni),
+    UNIQUE KEY uq_IlId     (IlId),
     INDEX      idx_Parent   (ParentId),
     INDEX      idx_Kind     (Kind),
     INDEX      idx_Musician (MusicianId),
@@ -5339,6 +5355,21 @@ CREATE TABLE IF NOT EXISTS tblIaImportCandidates (
     INDEX idx_Item_Run (Identifier, RunSha)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Segmented OCR candidates + reconcile verdicts for the #94 audit; Phase-2 import queue (dormant).';
+
+-- ----------------------------------------------------------------------------
+-- tblIlyricsIdSequence (#1860) — per-entity-type allocator for the sequential
+-- IL* internal ids. Created + seeded by migrate-ilyrics-internal-ids.php;
+-- DORMANT until Phase 2.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIlyricsIdSequence (
+    EntityType VARCHAR(20)     NOT NULL COMMENT 'song | work | musician | tune | publisher | catalogue | songbook | document — app-validated against IHYMNS_ILID_TYPES in includes/ilyrics_id.php (VARCHAR not ENUM, rule #20; the internal type stays catalogue, never collection — rule #24)',
+    Prefix     VARCHAR(4)      NOT NULL COMMENT 'ILS | ILW | ILM | ILT | ILP | ILC | ILB | ILD — informational denorm of IHYMNS_ILID_TYPES; the map is the source of truth',
+    NextValue  BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Next candidate number for this type. The counter is a SEED, not the claim set — ilidAllocate() claim-checks the entity table''s uq_IlId before returning (restore-safety, #1860 §6)',
+    UpdatedAt  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (EntityType)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-entity-type allocator for the sequential IL* internal ids (#1860 §2.3). One row per entity family; row-level FOR UPDATE serialises same-type mints only. Seeded by migrate-ilyrics-internal-ids.php; read/written ONLY by ilidAllocate().';
+
 
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)
