@@ -148,6 +148,7 @@ function publisherSlugEnsureUnique(\mysqli $db, string $base, ?int $excludeId = 
  */
 function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
 {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
     $name = mb_substr(trim($name), 0, 255);
     if ($name === '') { return null; }
     try {
@@ -167,6 +168,8 @@ function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
         $ins->execute();
         $newId = (int)$db->insert_id;
         $ins->close();
+        /* #1860 go-live — mint this publisher's permanent IL-id (ILP…). */
+        ilidStampNewRow($db, 'publisher', $newId);
         return $newId;
     } catch (\Throwable $e) {
         error_log('[publisherFindOrCreateByName] ' . $e->getMessage());

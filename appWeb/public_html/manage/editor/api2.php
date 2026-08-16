@@ -322,6 +322,11 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    core (rule #22, mirrors the tune_helpers.php require immediately above).
    Consumers below: work_search, song_work_autolink, song_work_set. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+/* #1860 go-live — ilidStampNewRow() for create_song / duplicate_song /
+   media_upload / the pending-duplicates songbook ensure below; work_admin.php
+   already pulls this in transitively, but every mint call site requires it
+   explicitly (rule #22 — never rely on an implicit transitive load). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -580,7 +585,12 @@ function ed2_ensurePendingSongbook(\mysqli $db): void {
     }
     $ins->bind_param('ss', $abbr, $name);
     $ins->execute();
+    $newSongbookId = (int)$db->insert_id;
     $ins->close();
+    /* #1860 go-live — mint this fixture songbook's permanent IL-id (ILB…);
+       autocommit here (no open transaction — see the comment above this
+       function's call site), which ilidStampNewRow() tolerates. */
+    ilidStampNewRow($db, 'songbook', $newSongbookId);
     $done = true;
 }
 
@@ -1659,6 +1669,8 @@ try {
             }
             $ins->execute();
             $ins->close();
+            /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
+            ilidStampNewRow($db, 'song', $songId, 'SongId');
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
             $db->commit();
         } catch (\Throwable $e) {
@@ -1743,6 +1755,9 @@ try {
             }
             $ins->execute();
             $ins->close();
+            /* #1860 go-live — mint the duplicate's OWN permanent IL-id (ILS…),
+               never copied from the source (a duplicate is a distinct row). */
+            ilidStampNewRow($db, 'song', $newId, 'SongId');
 
             /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
                flags reset above), components + lyric lines + per-line chords,
@@ -4071,6 +4086,8 @@ try {
                 $ins->execute();
                 $newId = (int)$db->insert_id;
                 $ins->close();
+                /* #1860 go-live — mint this media row's permanent IL-id (ILD…). */
+                ilidStampNewRow($db, 'document', $newId);
 
                 ed2_touchRevision($db, $songId, $ed2UserId, 'media');
                 $db->commit();

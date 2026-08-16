@@ -1362,6 +1362,7 @@ function registerMusicianByName(
     string  $name,
     ?array  $parts = null
 ): int {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
     $name = musTrimmed($name); // #trim
     if ($name === '') return 0;
 
@@ -1407,6 +1408,9 @@ function registerMusicianByName(
     $stmt->execute();
     $newId = (int)$db->insert_id;
     $stmt->close();
+    /* #1860 go-live — mint this person's permanent IL-id (ILM…). No open
+       transaction assumed here — ilidStampNewRow() tolerates autocommit. */
+    ilidStampNewRow($db, 'musician', $newId);
     return $newId;
 }
 

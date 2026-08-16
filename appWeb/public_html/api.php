@@ -285,6 +285,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1860 go-live — ilidStampNewRow() for admin_musician_add / admin_songbook_create below. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
 /* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
@@ -12828,6 +12830,8 @@ if ($action !== null) {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newId);
 
                 logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
@@ -15870,6 +15874,9 @@ if ($action !== null) {
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+                    /* #1860 go-live — mint this person's permanent IL-id
+                       (ILM…). One stamp covers both INSERT shapes above. */
+                    ilidStampNewRow($db, 'musician', $newId);
 
                     /* #1741 P4a — THE ONE flags/Type write funnel (rule
                        guard: tests/php/test-musician-profile-fields.php's

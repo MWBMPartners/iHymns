@@ -55,6 +55,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -638,6 +639,17 @@ function editorSaveSongCore(): array
             }
             $upsert->execute();
             $upsert->close();
+
+            /* #1860 go-live — mint this song's permanent IL-id (ILS…) right
+               after the row is safely committed-to. Called UNCONDITIONALLY
+               on both create AND edit — ilidStampNewRow()'s own idempotency
+               (a non-NULL IlId is returned as-is, no allocation) is what
+               makes that safe, and it self-heals a pre-#1860 row's missing
+               IlId the next time a curator saves it. Fail-safe: swallows
+               everything except a transaction-fatal deadlock/lock-timeout,
+               which it re-throws so this save's own catch below rolls back
+               honestly instead of committing a partially-written row. */
+            ilidStampNewRow($db, 'song', $songId, 'SongId');
 
             /* Places adoption — write the composition-origin
                columns in a separate small UPDATE so the carefully-
@@ -1316,6 +1328,8 @@ function editorSaveSongCore(): array
                             $slugCheck->close();
 
                             $notes = sprintf('Auto-created from ISWC %s when song %s was saved.', $iswc, $songId);
+                            /* ilid-exempt: legacy fork, deleted whole in #1860 commit B
+                               (work_admin.php mints tblWorks rows itself). */
                             $wIns  = $db->prepare(
                                 'INSERT INTO tblWorks (Iswc, Title, Slug, Notes) VALUES (?, ?, ?, ?)'
                             );

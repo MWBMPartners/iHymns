@@ -110,6 +110,7 @@ require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRE
    same reasoning as song_importers.php just above: the functions must exist
    before any handler runs, not merely before this file's own text position. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the legacy media-upload case below */
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -3163,6 +3164,8 @@ switch ($action) {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this media row's permanent IL-id (ILD…). */
+                ilidStampNewRow($db, 'document', $newId);
             } catch (\Throwable $insertErr) {
                 /* Roll back the staged file so it doesn't orphan. */
                 if ($staged['backend'] === 'filesystem' && $staged['path'] !== null) {

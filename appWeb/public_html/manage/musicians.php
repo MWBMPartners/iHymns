@@ -59,6 +59,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    legacy BirthPlace / DeathPlace display strings. Schema-tolerant —
    no-ops on installs that haven't run migrate-places.php yet. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the add-person create below */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -917,6 +918,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+                    /* #1860 go-live — mint this person's permanent IL-id
+                       (ILM…). One stamp covers all four INSERT shapes above
+                       since they share the same $newId. */
+                    ilidStampNewRow($db, 'musician', $newId);
 
                     /* #1741 P4a — THE ONE flags/Type write funnel (rule
                        guard: tests/php/test-musician-profile-fields.php's

@@ -40,6 +40,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the legacy PublicationCity display string only when the
    places-adoption migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the create + quick-create (MARCXML) actions below */
 /* Licence vocabulary (#1769 P4 Commit C) — the ONE registry the songbook
    default rights-key pickers draw from + validate against (rule #35, no second
    list). Falls back to the byte-exact P1 seeds on an un-migrated install. */
@@ -1179,6 +1180,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newId);
                 /* Place columns — schema-tolerant separate UPDATE
                    so the carefully-tuned 23-bind INSERT above stays
                    untouched. Skipped on pre-adoption-migration
@@ -1359,7 +1362,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour) VALUES (?, ?, 0, ?)');
                 $ins->bind_param('sss', $abbr, $name, $colour);
                 $ins->execute();
+                $newSongbookId = (int)$db->insert_id;
                 $ins->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newSongbookId);
 
                 /* Bibliographic columns (all pre-#1765, present wherever the
                    create form's own binds are — same assumption as 'create'). */

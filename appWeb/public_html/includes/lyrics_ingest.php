@@ -615,6 +615,7 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
     $isrc     = ihymns_canonical_isrc((string)($payload['isrc'] ?? '')) ?: null;
     $upc      = trim((string)($payload['upc'] ?? '')) ?: null;
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
 
     $db->begin_transaction();
     try {
@@ -681,6 +682,12 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         }
         $ins->execute();
         $ins->close();
+        /* #1860 go-live — mint this song's permanent IL-id (ILS…). This
+           INSERT carries no Ccli/Iswc column (lyrics-ingest songs arrive
+           with no such identifiers), so there is nothing for
+           workAutolinkSafe() to link here — the mint is independent of that
+           and still applies. */
+        ilidStampNewRow($db, 'song', $songId, 'SongId');
 
         /* #1751 — ELI5: tell the external-IDs store about the ISRC we just
            saved, right after we save it, so the two never fall out of sync.

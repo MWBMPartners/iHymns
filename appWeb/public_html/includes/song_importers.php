@@ -5,6 +5,7 @@ declare(strict_types=1);
 /* #1694 — songVisibleSql() for the SongCount recomputes below (degrades to
    '1=1' on an un-migrated install, so every funnel stays byte-identical). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the song + songbook create funnels below */
 
 /**
  * iHymns - Shared song importers (#1200 Phase 4b)
@@ -532,6 +533,8 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         $insert->bind_param($types, ...$vals);
         $insert->execute();
         $insert->close();
+        /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
+        ilidStampNewRow($db, 'song', $songId, 'SongId');
 
         /* #1741 P5c — TuneName<->TuneId lockstep, the bulk-import-side mirror
          * of manage/works.php's :307-313 Work-side block and
@@ -859,7 +862,10 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
         $ins->bind_param('sss', $abbr, $name, $colour);
     }
     $ins->execute();
+    $newSongbookId = (int)$db->insert_id;
     $ins->close();
+    /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+    ilidStampNewRow($db, 'songbook', $newSongbookId);
     return 'created';
 }
 

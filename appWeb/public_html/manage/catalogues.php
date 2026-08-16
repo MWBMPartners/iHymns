@@ -29,6 +29,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';   /* #1765 — mediaIdentifierPublicationClean(), the ONE validator */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';             /* #1765 — placeColumnExists() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the create + marcxml_import actions below */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -228,6 +229,8 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this Collection's permanent IL-id (ILC…). */
+                ilidStampNewRow($db, 'catalogue', $newId);
 
                 if ($hasPubIdCols) {
                     $stmt = $db->prepare(
@@ -286,6 +289,8 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ins->execute();
                 $newId = (int)$db->insert_id;
                 $ins->close();
+                /* #1860 go-live — mint this Collection's permanent IL-id (ILC…). */
+                ilidStampNewRow($db, 'catalogue', $newId);
 
                 if ($hasPubIdCols) {
                     $upd = $db->prepare('UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?');

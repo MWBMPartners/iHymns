@@ -347,3 +347,178 @@ function ilidAllocate(\mysqli $db, string $entityType): string
     $claimStmt->close();
     throw new \RuntimeException("Could not allocate a unique {$entityType} IL id.");
 }
+
+/**
+ * ELI5: "does THIS entity type's table already have its `IlId` column?" —
+ * asked once per entity type per request and remembered, so a hundred saves
+ * of the same request don't each pay an INFORMATION_SCHEMA round-trip.
+ *
+ * DETAILED: generalises the `_workAdminIlIdColumnExists()` idiom
+ * (`includes/work_admin.php:178-196`, itself Phase-3's copy of the same
+ * probe for `tblWorks` only) to ANY of the 8 `IHYMNS_ILID_TYPES` tables, so
+ * `ilidStampNewRow()` below has one shared gate instead of every future
+ * mint-funnel file growing its own static-cached probe. Phase 1
+ * (`migrate-ilyrics-internal-ids.php`) and this file's callers are
+ * independent migration cards — an install can have `tblSongs` without its
+ * `IlId` column yet, so this can never be assumed from `ilidSequenceReady()`
+ * alone (that only proves the SEED table exists).
+ *
+ * `static array $cached = []` keyed by entity type — per-request memoisation
+ * (PHP's request-scoped `static`, https://www.php.net/manual/en/language.variables.scope.php),
+ * mirroring `ilidSequenceReady()`'s single-value cache immediately above.
+ * try/catch swallows to false on any DB hiccup — a dormant-by-design surface
+ * never throws.
+ *
+ * @param \mysqli $db
+ * @param string  $entityType One of IHYMNS_ILID_TYPES's keys.
+ * @return bool
+ * @throws \InvalidArgumentException if $entityType is unknown (via ilidTableForType()).
+ */
+function ilidColumnReady(\mysqli $db, string $entityType): bool
+{
+    static $cached = [];
+    if (isset($cached[$entityType])) {
+        return $cached[$entityType];
+    }
+    $table = ilidTableForType($entityType); // throws on an unknown type — a typo'd caller fails loud
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $stmt->bind_param('s', $table);
+        $stmt->execute();
+        $ready = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $e) {
+        $ready = false;
+    }
+    $cached[$entityType] = $ready;
+    return $ready;
+}
+
+/**
+ * ELI5: "give this brand-new (or pre-backfill-existing) row its permanent
+ * catalogue number, unless it already has one." Called right after an
+ * INSERT commits its primary key, on every create funnel in the app
+ * (#1860 Phase 2 go-live) — never before the INSERT, and never in place of
+ * `ilidAllocate()` itself (that stays the ONE mint; this is the ONE
+ * fail-safe wrapper every funnel calls instead of the bare mint).
+ *
+ * DETAILED — CONTRACT (design doc §4 Phase 2; build spec §1.1):
+ *   1. GATE: `ilidColumnReady()` AND `ilidSequenceReady()` — an install
+ *      missing either migration card degrades to a silent no-op (`null`),
+ *      never a throw. This is what lets Phase 1 and Phase 3's migration
+ *      cards land in EITHER order (rule #41/#19 posture) without a mint
+ *      funnel ever seeing a half-migrated install as an error.
+ *   2. IDEMPOTENT: `SELECT IlId FROM {table} WHERE {pkColumn} = ? LIMIT 1`
+ *      first — a non-NULL value already there is returned AS-IS with NO
+ *      further allocation. This is deliberate, not just an optimisation: it
+ *      is what makes calling this on EVERY save (not only a create) safe —
+ *      an edit-save of a row that predates this feature self-heals its
+ *      missing IlId the next time a curator touches it, and a second call
+ *      racing the first one never double-mints. Row not found (a caller
+ *      passed a stale pk) → `null`.
+ *   3. MINT + STAMP: `ilidAllocate($db, $entityType)` (the ONE mint, never
+ *      re-forked here), then
+ *      `UPDATE {table} SET IlId = ? WHERE {pkColumn} = ? AND IlId IS NULL`
+ *      — the `IS NULL` guard is the concurrency safety net: if two requests
+ *      raced into step 2 and both saw NULL, both mint a DIFFERENT valid id
+ *      (`ilidAllocate()` is itself race-safe via its own `FOR UPDATE` seed
+ *      read), but only the FIRST `UPDATE` to land wins the row — the loser's
+ *      freshly-minted id is simply discarded (never written, never an
+ *      error), which is why point 4 doesn't need to treat "somebody else
+ *      already stamped it" as a failure mode at all.
+ *   4. FAIL-SAFE: everything after the gate runs inside a `try/catch
+ *      (\Throwable $e)`. `songRelocateIsTransactionFatal($e)` — the ONE
+ *      predicate (`includes/song_relocate.php:249-274`) — decides the
+ *      outcome: a caught 1213/1205 (deadlock / lock-wait-timeout) means the
+ *      CALLER's transaction has already been rolled back by MySQL, so this
+ *      function RE-THROWS rather than returning null — swallowing it here
+ *      would let the caller's `commit()` succeed trivially and report
+ *      `ok:true` for a save that wrote nothing (the exact false-success
+ *      class that predicate's own doc-block names). Every OTHER throwable
+ *      (a missing sequence row, a transient hiccup, a 1062 the concurrent-
+ *      create race above didn't quite dodge) is logged and swallowed — a
+ *      missing IL id must NEVER fail an entity's create or save; the #1872
+ *      backfill mops up any NULL this leaves behind.
+ *   5. `$pkColumn` and the table name (via `ilidTableForType()`) are always
+ *      hardcoded PHP-source constants — the ONE legitimate interpolation
+ *      class into SQL (checkpoint #5 / rule #19's "never string-interpolate
+ *      a value" carve-out for column/table identifiers a caller cannot
+ *      influence). `$pk` is always BOUND, its type chosen from PHP's own
+ *      `is_int()` (never inferred from caller-controlled shape).
+ *   6. TRANSACTION POSTURE: correct and race-free when called inside the
+ *      caller's own open transaction (fully serialised end-to-end via
+ *      `ilidAllocate()`'s `FOR UPDATE` seed read — every mint funnel in this
+ *      codebase calls it this way). Also TOLERATED in autocommit (no open
+ *      transaction) for the handful of funnels that create outside one: a
+ *      genuinely concurrent same-entity-type create can then race the seed
+ *      read across two autocommit statements, but the claim-check inside
+ *      `ilidAllocate()` still prevents a DUPLICATE id — the only possible
+ *      outcome is the LOSER's stamp UPDATE affecting zero rows (point 3's
+ *      `IS NULL` guard) and that row staying `IlId = NULL` until the #1872
+ *      backfill (or its own next save, via point 2) catches it. Never a
+ *      thrown error, never a wrong id.
+ *
+ * NEVER extend an INSERT's own column list to carry `IlId` pre-write (the
+ * `PublicId` two-branch INSERT pattern elsewhere in this codebase) — a
+ * raced pre-INSERT mint would collide the INSERT itself on `uq_IlId` and
+ * kill the create outright. This function exists precisely so the mint
+ * happens AFTER the row is safely committed-to (its PK known), with
+ * "NULL, backfilled later" as the only failure mode.
+ *
+ * @param \mysqli    $db
+ * @param string     $entityType One of IHYMNS_ILID_TYPES's keys.
+ * @param int|string $pk         The row's primary-key value (tblSongs uses the
+ *                                string SongId; every other mapped table uses
+ *                                its integer auto-increment Id).
+ * @param string     $pkColumn   The primary-key column name — a hardcoded
+ *                                PHP-source constant at every call site, never
+ *                                caller/request-controlled. Defaults to 'Id'.
+ * @return ?string The row's IlId (freshly minted, or the one already there),
+ *                  or null on a dormant install / not-found row / swallowed failure.
+ * @throws \Throwable Only a transaction-fatal MySQL error
+ *         (`songRelocateIsTransactionFatal()` true) — every other failure is
+ *         logged and swallowed.
+ */
+function ilidStampNewRow(\mysqli $db, string $entityType, int|string $pk, string $pkColumn = 'Id'): ?string
+{
+    if (!ilidColumnReady($db, $entityType) || !ilidSequenceReady($db)) {
+        return null; // dormant install — no migration card applied yet
+    }
+
+    $table = ilidTableForType($entityType);
+    $bindType = is_int($pk) ? 'i' : 's';
+
+    try {
+        $sel = $db->prepare("SELECT IlId FROM {$table} WHERE {$pkColumn} = ? LIMIT 1");
+        $sel->bind_param($bindType, $pk);
+        $sel->execute();
+        $row = $sel->get_result()->fetch_assoc();
+        $sel->close();
+
+        if ($row === null) {
+            return null; // caller passed a pk that doesn't (or no longer) exist
+        }
+        if ($row['IlId'] !== null) {
+            return (string)$row['IlId']; // already stamped — idempotent no-op, no allocation
+        }
+
+        $ilId = ilidAllocate($db, $entityType);
+
+        $upd = $db->prepare("UPDATE {$table} SET IlId = ? WHERE {$pkColumn} = ? AND IlId IS NULL");
+        $upd->bind_param('s' . $bindType, $ilId, $pk);
+        $upd->execute();
+        $upd->close();
+
+        return $ilId;
+    } catch (\Throwable $e) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        if (songRelocateIsTransactionFatal($e)) {
+            throw $e; // caller's transaction is already dead — must propagate, never swallow
+        }
+        error_log('[ilid stamp] ' . $entityType . ': ' . $e->getMessage());
+        return null;
+    }
+}

@@ -188,6 +188,7 @@ function tuneTunesTableExists(\mysqli $db): bool
  */
 function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
 {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
     $name = trim($name);
     if ($name === '') return null;
     if (!tuneTunesTableExists($db)) return null;
@@ -218,6 +219,11 @@ function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
         $ins->execute();
         $newId = (int)$db->insert_id;
         $ins->close();
+        /* #1860 go-live — mint this tune's permanent IL-id (ILT…). Runs
+           inside this function's OWN try/catch, which already degrades any
+           throwable to a logged null — ilidStampNewRow() shares that same
+           fail-safe posture internally, so nesting it here is harmless. */
+        ilidStampNewRow($db, 'tune', $newId);
         return $newId;
     } catch (\Throwable $e) {
         error_log('[tuneFindOrCreateByName] ' . $e->getMessage());

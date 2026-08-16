@@ -53,6 +53,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    Work created by hand through this page land on byte-identical slugs for
    identical titles. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the manual create below */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -550,6 +551,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+
+                /* #1860 go-live — mint this Work's permanent IL-id (ILW…).
+                   No open transaction here (matches the rest of this create
+                   action) — ilidStampNewRow() tolerates autocommit; see its
+                   own doc-block point 6. */
+                ilidStampNewRow($db, 'work', $newId);
 
                 /* Place columns — schema-tolerant separate UPDATE. */
                 if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
