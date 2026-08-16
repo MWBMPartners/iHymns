@@ -47,6 +47,17 @@ declare(strict_types=1);
  * publisher is currently chosen as Source, so a self-merge is unreachable
  * through the UI, not merely rejected after the fact.
  *
+ * §H below extends the same guard to #1866's `manage/catalogues.php`
+ * "Add a song" picker — ANOTHER search-select-ONLY surface (songs are
+ * authored in the editor, never minted from a catalogue form), the same
+ * shape as §G: it proves the PRESENCE of a server-side SongId existence
+ * check BEFORE the `tblCatalogueSongs` write, the ABSENCE of any
+ * `INSERT INTO tblSongs`/find-or-create call on that path, that the old
+ * free-text `pattern="[A-Za-z]+-\d+"` box is gone in favour of the picker's
+ * hidden id, and that the client wiring reuses catalogues.php's OWN
+ * pre-existing `?action=song_search` handler (which existed as an unwired
+ * scaffold before #1866) rather than a second local fork.
+ *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
  * §1 (declaration count) and §4 (INSERT confinement) scan the actual source
@@ -97,12 +108,14 @@ declare(strict_types=1);
  *
  * @see appWeb/public_html/includes/publisher_helpers.php  publisherSearchRows(), publisherResolvePickedOrCreate()
  * @see appWeb/public_html/manage/works.php                 the create+edit form, the two hidden-id pairs, the attach() wiring
- * @see appWeb/public_html/manage/publishers.php             delegates to publisherSearchRows() (was the superset fork)
+ * @see appWeb/public_html/manage/publishers.php             delegates to publisherSearchRows() (was the superset fork); §G: merge-target picker
  * @see appWeb/public_html/manage/songbooks.php              delegates to publisherSearchRows(); §F: the 'create' case's Publisher picker + tblSongbookPublishers seed (#1865)
  * @see appWeb/public_html/manage/includes/songbook-form-fields.php  the create-only Publisher picker markup (#1865)
+ * @see appWeb/public_html/manage/groups.php                 §G: add-a-member picker, search-select only (#1868)
+ * @see appWeb/public_html/manage/catalogues.php             §H: "Add a song" picker, search-select only (#1866)
  * @see tests/php/test-tune-lockstep.php                     the sibling guard this mirrors in shape
  * @see /tmp/.../pickers-1864-spec.md                        the implementation spec this proves
- * @see #1864, #1865, epic #1863
+ * @see #1864, #1865, #1868, #1866, epic #1863
  */
 
 $repoRoot = dirname(__DIR__, 2);
@@ -488,18 +501,26 @@ if (!is_readable($groupsFile)) {
     exit(1);
 }
 
+/* #1866 §H — the catalogues.php "Add a song" search-select-only surface. */
+$cataloguesFile = $web . '/manage/catalogues.php';
+if (!is_readable($cataloguesFile)) {
+    fwrite(STDERR, "FATAL: could not read manage/catalogues.php at {$cataloguesFile}\n");
+    exit(1);
+}
+
 $helpersRaw = (string)file_get_contents($helpersFile);
 $worksRaw   = (string)file_get_contents($worksFile);
 $songbooksRaw      = (string)file_get_contents($songbooksFile);
 $sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
 $groupsRaw         = (string)file_get_contents($groupsFile);
 $publishersRaw     = (string)file_get_contents($publishersFile);
+$cataloguesRaw     = (string)file_get_contents($cataloguesFile);
 
 /* Two independently-tested views of works.php (see the file-level
    doc-block's "stripper trap" section) — never conflate them. Same pattern
-   applied to songbooks.php for §F, and to groups.php/publishers.php for §G
-   (all three have picker wiring living inside a plain <script> tag — the
-   identical T_INLINE_HTML trap). */
+   applied to songbooks.php for §F, to groups.php/publishers.php for §G, and
+   to catalogues.php for §H (all have picker wiring living inside a plain
+   <script> tag — the identical T_INLINE_HTML trap). */
 $helpersPhpView = wrpStripPhpComments($helpersRaw);
 $worksPhpView   = wrpStripPhpComments($worksRaw);
 $worksAllView   = wrpStripAllComments($worksRaw);
@@ -509,6 +530,8 @@ $groupsPhpView     = wrpStripPhpComments($groupsRaw);
 $groupsAllView     = wrpStripAllComments($groupsRaw);
 $publishersPhpView = wrpStripPhpComments($publishersRaw);
 $publishersAllView = wrpStripAllComments($publishersRaw);
+$cataloguesPhpView = wrpStripPhpComments($cataloguesRaw);
+$cataloguesAllView = wrpStripAllComments($cataloguesRaw);
 
 /* ---- A1: publisherSearchRows() is declared EXACTLY ONCE, and only in
    includes/publisher_helpers.php. Tree-derived — a second copy anywhere
@@ -851,6 +874,88 @@ if ($publishersMergeBlock === '') {
 }
 
 /* =========================================================================
+ * §H — #1866: catalogues.php "Add a song" picker (search-select ONLY —
+ * no create arm; songs are authored in the editor, never minted here)
+ * ========================================================================= */
+
+$cataloguesAddMemberBlock = wrpSliceCaseBlock($cataloguesPhpView, 'add_member');
+
+/* ---- H1: catalogues.php's add_member handler verifies the submitted
+   song_id names a REAL tblSongs row (a SELECT ... FROM tblSongs WHERE
+   SongId = ?) BEFORE the INSERT that writes tblCatalogueSongs — "resolve to
+   a real existing SongId" (#1866's explicit server-side requirement).
+   Position-based (not just presence): a verify-AFTER-the-INSERT would
+   already be too late to matter. Same shape as G1's groups.php check. ---- */
+if ($cataloguesAddMemberBlock === '') {
+    $failures[] = "could not locate case 'add_member': { ... } in manage/catalogues.php (slicer or file shape changed)";
+} else {
+    $selectPos = -1;
+    if (preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $cataloguesAddMemberBlock, $m, PREG_OFFSET_CAPTURE)) {
+        $selectPos = $m[0][1];
+    }
+    $insertPos = strpos($cataloguesAddMemberBlock, 'INSERT IGNORE INTO tblCatalogueSongs');
+    if ($selectPos < 0) {
+        $failures[] = "catalogues.php's add_member handler no longer verifies the submitted song_id against tblSongs before use (#1866, rule #43 — 'the server MUST verify the id exists')";
+    } elseif ($insertPos === false) {
+        $failures[] = "catalogues.php's add_member handler no longer writes INSERT IGNORE INTO tblCatalogueSongs — the write itself is missing";
+    } elseif (!($selectPos < $insertPos)) {
+        $failures[] = "catalogues.php's add_member handler's existence check does not run BEFORE the INSERT that uses the id — a check that runs after the write is too late to prevent it";
+    }
+}
+
+/* ---- H2: catalogues.php's add_member handler never mints a song row —
+   this surface is search-select ONLY, unlike #1864's Tune/Publisher fields
+   which deliberately DO fall back to a create funnel. ---- */
+if ($cataloguesAddMemberBlock !== '' && strpos($cataloguesAddMemberBlock, 'INSERT INTO tblSongs') !== false) {
+    $failures[] = "catalogues.php's add_member handler contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1866's explicit no-create-arm scope; songs are authored in the editor)";
+}
+
+/* ---- H3: the "Add a song" markup was actually converted from the old
+   free-text `pattern="[A-Za-z]+-\d+"` box to the picker's hidden id + search
+   input, and the client wiring attaches it with pickMode:'value' against
+   catalogues.php's OWN pre-existing ?action=song_search action. ---- */
+if (strpos($cataloguesRaw, 'pattern="[A-Za-z]+-\d+"') !== false) {
+    $failures[] = 'catalogues.php still renders the old pattern="[A-Za-z]+-\\d+" free-text song id box — the #1866 "Add a song" picker did not replace it';
+}
+foreach (['cat-add-song-id', 'cat-add-song-name'] as $needle) {
+    if (strpos($cataloguesRaw, $needle) === false) {
+        $failures[] = "catalogues.php no longer emits an element carrying class \"{$needle}\" — the #1866 \"Add a song\" picker's markup is missing";
+    }
+}
+if (strpos($cataloguesAllView, 'iHymnsPlaceSearch.attach') === false) {
+    $failures[] = 'catalogues.php no longer calls window.iHymnsPlaceSearch.attach(...) for the "Add a song" picker';
+}
+if (strpos($cataloguesAllView, "pickMode: 'value'") === false) {
+    $failures[] = "catalogues.php's \"Add a song\" picker no longer sets pickMode: 'value'";
+}
+if (strpos($cataloguesAllView, 'action=song_search') === false) {
+    $failures[] = "catalogues.php's \"Add a song\" picker no longer points at ?action=song_search";
+}
+
+/* ---- H4: catalogues.php declares exactly ONE ?action=song_search gate —
+   the handler already existed as an unwired scaffold before #1866; the
+   picker must reuse it, never add a second local fork (rule #22). This is
+   the §H analogue of C2/D1/G3's "reuse, don't fork" checks, but the fork
+   risk here is a SECOND gate in the SAME file rather than a competing
+   endpoint elsewhere, since the handler was already page-local. ---- */
+$songSearchGateCount = substr_count($cataloguesPhpView, "=== 'song_search'");
+if ($songSearchGateCount !== 1) {
+    $failures[] = "catalogues.php declares {$songSearchGateCount} \"=== 'song_search'\" action gate(s) — expected exactly 1 (the pre-existing handler the #1866 picker reuses; a second gate would be a duplicate fork, rule #22)";
+}
+
+/* ---- H5: the song_id wire contract is honoured at BOTH ends (rule #33) —
+   the markup EMITS name="song_id" on the hidden input and the add_member
+   handler READS $_POST['song_id']. Raw markup (an HTML attribute is never
+   inside a comment in the real file) + the sliced add_member block for the
+   read side. ---- */
+if (strpos($cataloguesRaw, 'name="song_id"') === false) {
+    $failures[] = 'catalogues.php no longer emits name="song_id" — the "Add a song" picker\'s hidden id is not wired into the form';
+}
+if ($cataloguesAddMemberBlock === '' || !preg_match('/\$_POST\[\s*\'song_id\'\s*\]/', $cataloguesAddMemberBlock)) {
+    $failures[] = 'catalogues.php\'s add_member handler never reads $_POST[\'song_id\'] — the markup emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+}
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -861,14 +966,14 @@ if ($failures || $mutationFailures) {
         fwrite(STDERR, "\nA guard that cannot be proven to fail is not trustworthy (rule #34).\n\n");
     }
     if ($failures) {
-        fwrite(STDERR, "FAIL: Works + Songbook + Groups/Publishers registry-picker guard (#1864/#1865/#1868):\n\n");
+        fwrite(STDERR, "FAIL: Works + Songbook + Groups/Publishers/Catalogues registry-picker guard (#1864/#1865/#1868/#1866):\n\n");
         foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
         fwrite(STDERR, "\n");
     }
     exit(1);
 }
 
-echo "PASS: Works + Songbook + Groups/Publishers registry-picker guard — publisherSearchRows() declared "
+echo "PASS: Works + Songbook + Groups/Publishers/Catalogues registry-picker guard — publisherSearchRows() declared "
    . "exactly once in includes/publisher_helpers.php; all {$gateHandlerCount} manage/*.php "
    . "publisher_search handlers delegate to it with no re-inlined fork; \$persistWorkExtraFields writes "
    . "CopyrightHolder + CopyrightHolderId in lockstep via publisherResolvePickedOrCreate(), which falls "
@@ -887,6 +992,10 @@ echo "PASS: Works + Songbook + Groups/Publishers registry-picker guard — publi
    . "pickMode:'value' against this page's own publisher_search with a dynamic exclude= bound to the "
    . "source select (a self-merge is unreachable through the UI); its merge handler never mints/forks and "
    . "still flows through the ONE publisherAdminMerge() core. Both #1868 surfaces are confirmed "
-   . "search-select ONLY — no create arm on either path. All mutation self-tests went red/green as "
-   . "expected.\n";
+   . "search-select ONLY — no create arm on either path. "
+   . "§H (#1866): catalogues.php's add_member handler verifies the submitted song_id against tblSongs "
+   . "BEFORE the tblCatalogueSongs write and never mints a song; the old free-text SongId box is gone in "
+   . "favour of the picker's hidden id, wired with pickMode:'value' against this page's OWN pre-existing "
+   . "?action=song_search handler (exactly 1 gate found — no duplicate local fork); the song_id wire "
+   . "contract is honoured at both ends. All mutation self-tests went red/green as expected.\n";
 exit(0);

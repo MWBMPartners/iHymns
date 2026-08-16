@@ -78,8 +78,11 @@ $hasPubIdCols = $hasSchema
     && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryEditionId');
 
 /* ---- GET ?action=song_search ----
- * JSON typeahead used by the manage-members panel. Returns matching
- * songs from tblSongs ranked by title. Optional `exclude_ids` keeps
+ * JSON typeahead for the "Add a song" picker on the members panel
+ * (#1866, epic #1863, rule #43 — wired to window.iHymnsPlaceSearch
+ * below; this handler already existed as a scaffold but was never
+ * actually attached to any input until now). Returns matching songs
+ * from tblSongs ranked by title. Optional `exclude_ids` keeps
  * already-added members out of the suggestion list. */
 if ($hasSchema
     && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
@@ -386,6 +389,43 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($catalogueId <= 0 || $songId === '') {
                     $error = 'catalogue_id and song_id required.'; break;
                 }
+
+                /* #1866 (epic #1863, rule #43) — SEARCH-SELECT ONLY: the
+                   picker below (the members panel's "Add a song" box)
+                   resolves to a SongId, but that id arrives over POST
+                   like any other client-supplied value, so it is
+                   untrusted until checked. Free-typing in place-search.js
+                   clears the hidden id, so a mismatched/forged id here is
+                   the exception rather than the rule — but this endpoint
+                   must still verify it names a REAL tblSongs row before
+                   writing it. There is deliberately NO find-or-create
+                   fallback: songs are authored in the editor, never
+                   minted from a catalogue form (unlike the Tune/Publisher
+                   pickers in #1864, which fall back to a create funnel
+                   when nothing matches). Without this check, a bad id
+                   would fall through to tblCatalogueSongs' FK + INSERT
+                   IGNORE below and silently affect 0 rows while still
+                   reporting the misleading "already in the catalogue"
+                   message — mirrors #1868's groups.php add_member fix. */
+                $stmt = $db->prepare(
+                    'SELECT Title FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '')
+                    /* #1694 — a soft-deleted song must not be addable via a
+                       forged SongId either; matches the song_search picker's
+                       own songVisibleSql() filter above, so a hidden song is
+                       neither offered NOR accepted.
+                       @disabled-visible: admin surface (#1765) — same owner
+                       decision as the song_search handler above: disabled
+                       songbooks stay fully visible/editable in /manage, so
+                       a curator can still add a song from a disabled book
+                       into a Collection; this existence check deliberately
+                       does NOT filter on songServableSql(). */
+                );
+                $stmt->bind_param('s', $songId);
+                $stmt->execute();
+                $foundSong = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$foundSong) { $error = 'That song could not be found — pick one from the search results.'; break; }
+
                 $userId = (int)($currentUser['id'] ?? 0) ?: null;
                 $stmt = $db->prepare(
                     'INSERT IGNORE INTO tblCatalogueSongs
@@ -400,7 +440,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     'song_id' => $songId, 'added' => $added,
                 ]);
                 $success = $added
-                    ? "Added {$songId} to catalogue."
+                    ? "Added \"{$foundSong['Title']}\" ({$songId}) to catalogue."
                     : "{$songId} was already in the catalogue.";
                 break;
             }
@@ -774,14 +814,25 @@ if ($hasSchema && !empty($catalogues)) {
                                             <?php endforeach; ?>
                                         </ul>
                                     <?php endif; ?>
-                                    <form method="POST" class="row g-2 align-items-end small">
+                                    <form method="POST" class="row g-2 align-items-end small cat-add-song-form">
                                         <input type="hidden" name="csrf_token"   value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action"       value="add_member">
                                         <input type="hidden" name="catalogue_id" value="<?= (int)$c['Id'] ?>">
+                                        <!-- #1866 (epic #1863, rule #43) — search-select ONLY: the
+                                             visible box below is a live search over tblSongs (reusing
+                                             the ?action=song_search handler above, wired via the
+                                             shared window.iHymnsPlaceSearch typeahead — see the script
+                                             block near the end of this page). Picking a candidate fills
+                                             this hidden song_id with the REAL tblSongs.SongId, which
+                                             add_member (above) re-verifies server-side before the
+                                             insert — a free-typed name never submits (no create arm;
+                                             songs are authored in the editor, never minted here). -->
+                                        <input type="hidden" name="song_id" class="cat-add-song-id" value="">
                                         <div class="col-md-4">
-                                            <label class="form-label small mb-0">Add a song (paste a song id, e.g. <code>CP-0001</code>)</label>
-                                            <input type="text" name="song_id" class="form-control form-control-sm"
-                                                   placeholder="CP-0001" pattern="[A-Za-z]+-\d+" required>
+                                            <label class="form-label small mb-0">Add a song</label>
+                                            <input type="text" class="form-control form-control-sm cat-add-song-name"
+                                                   placeholder="Search by title or song id…" autocomplete="off" required
+                                                   aria-label="Search for a song to add to this collection">
                                         </div>
                                         <div class="col-md-2">
                                             <button type="submit" class="btn btn-sm btn-info">
@@ -807,6 +858,59 @@ if ($hasSchema && !empty($catalogues)) {
     import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
     bootSortableTables();
 </script>
+
+<?php if ($hasSchema && !empty($catalogues)): ?>
+<!-- Live song search for the "Add a song" picker (#1866, epic #1863, rule #43). -->
+<script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+<script>
+    (function () {
+        if (!window.iHymnsPlaceSearch) return;
+        /* #1866 — one attach() per catalogue's "Add a song" form. Every
+           catalogue row's members panel is in the DOM at load (Bootstrap
+           .collapse only hides the inactive ones via CSS), so this loops
+           over all of them rather than hardcoding one catalogue's ids.
+           pickMode:'value': the pick fills the input + hidden id with NO
+           network call of its own — the form's own POST is the ONE
+           commit, and add_member (server-side, above) VERIFIES the id
+           names a real tblSongs row before writing it. Reuses the
+           EXISTING ?action=song_search handler on THIS page (rule #22)
+           — no new search endpoint was written for this picker. */
+        document.querySelectorAll('form.cat-add-song-form').forEach((form) => {
+            const nameInput = form.querySelector('.cat-add-song-name');
+            const hiddenId  = form.querySelector('.cat-add-song-id');
+            if (!nameInput || !hiddenId) return;
+
+            window.iHymnsPlaceSearch.attach(nameInput, {
+                hiddenIdInput: hiddenId,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'song', plural: 'songs' },
+                searchUrl: (q) => '/manage/catalogues?action=song_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.rows || []).map((r) => ({
+                    id: r.id,
+                    display_name: r.title,
+                    hint: [r.songbook || '', r.number ? '#' + r.number : ''].filter(Boolean).join(' '),
+                })),
+            });
+
+            /* Require an actual resolved pick before submit — search-select
+               ONLY; there is no create-on-submit funnel for this field to
+               fall back to (songs are authored in the editor, never minted
+               from a catalogue form). This is a UX guard only — the
+               server-side existence check in add_member above is the real
+               guarantee. */
+            form.addEventListener('submit', (ev) => {
+                if (!hiddenId.value) {
+                    ev.preventDefault();
+                    nameInput.setCustomValidity('Pick a song from the search results first.');
+                    nameInput.reportValidity();
+                }
+            });
+            nameInput.addEventListener('input', () => nameInput.setCustomValidity(''));
+        });
+    })();
+</script>
+<?php endif; ?>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>
