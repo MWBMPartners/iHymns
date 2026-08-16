@@ -58,6 +58,14 @@
 
 import { offlineQueue } from './offline-queue.js';
 import { apiFetch } from '../utils/api-client.js';
+/* #1867 (epic #1863, rule #43) — side-effect import for the Songbook
+   field's combobox keyboard/ARIA handling. `combobox-a11y.js` deliberately
+   contains no import/export (see its own doc-block), so it attaches
+   `window.iHymnsComboboxA11y` whether loaded as a classic <script src>
+   (every /manage/* consumer) or, as here, imported by an ES module for
+   its side effect — the exact same pattern search.js/compare.js/
+   service-broadcast.js already use for the public bundle. */
+import './combobox-a11y.js';
 
 /** Queue bucket name. MUST match the SW's `ihymns-queue-song-requests`
  *  Background Sync tag (offline-queue.js builds the tag from this). */
@@ -282,6 +290,280 @@ function applyPrefill(root, form, params) {
     if (number && titleEl && !titleEl.value) titleEl.value = number;
 }
 
+/* =========================================================================
+ * SONGBOOK PICKER (#1867, epic #1863, rule #43)
+ * =========================================================================
+ *
+ * ELI5: as you type in the Songbook box, a short list of real songbook
+ * names appears underneath so you can click (or arrow-key + Enter) the one
+ * you mean, instead of typing it from memory and hoping you spelled it the
+ * way our catalogue does.
+ *
+ * DETAILED — why this is NOT `window.iHymnsPlaceSearch`: that shared
+ * admin picker (js/modules/place-search.js) is loaded only on `/manage/*`
+ * pages via a classic `<script src>` tag — every one of its ~15 consumers
+ * lives under manage/, and it is never shipped in the public bundle.
+ * `/request` is a PUBLIC, anonymous-reachable page, so reusing it here
+ * would mean adding a second, public copy of an admin-only script for one
+ * field. Instead this reuses the SAME two building blocks place-search.js
+ * is itself built from:
+ *   - keyboard + ARIA come from `combobox-a11y.js` (imported above for its
+ *     side effect) — the #1594 part-2 module extracted so a bespoke
+ *     typeahead like this one doesn't hand-roll Arrow/Home/End/Tab-commit/
+ *     Escape-stopPropagation itself. @see combobox-a11y.js's own doc-block.
+ *   - the data source is the EXISTING public `/api?action=songbooks` read
+ *     (`SongData::getSongbooks()`), fetched via `apiFetch` (rule #31) —
+ *     the SAME endpoint `js/constants.js`'s `loadSongbookRegistry()`,
+ *     `numpad.js` and `shuffle.js` already fetch WHOLESALE and filter or
+ *     render client-side. There is no per-keystroke server search action
+ *     for songbooks; this mirrors that established "fetch once, filter
+ *     locally" shape (the full list is a few dozen–low-hundreds of rows —
+ *     the same shape `numpad.js`'s dropdown and `shuffle.js`'s button list
+ *     already pull down) rather than inventing a new endpoint for a list
+ *     that comfortably fits in memory.
+ *
+ * The field STAYS free text — `tblSongRequests.Songbook` is, and always
+ * has been, "Songbook name or abbreviation (if known)" (schema.sql), not
+ * a foreign key, and this form is asking a visitor what they THINK a
+ * missing song's book is called, so the true answer may legitimately not
+ * be in the catalogue at all (that is, after all, why they're asking us to
+ * add it). This picker never blocks submission and never requires a pick;
+ * it only helps a visitor land on the catalogue's EXACT spelling when the
+ * book they mean already exists, which is the whole of what rule #43
+ * exists to buy here — cutting the typo/variant class — without turning an
+ * optional field into a hard-required one the way the /manage pickers'
+ * "must pick from the list" guards do for a value that gets a real FK.
+ */
+
+/** Matches to show at once — mirrors place-search.js's DEFAULTS.maxResults. */
+const SONGBOOK_MAX_RESULTS = 8;
+/** Debounce for the (client-side, no network per keystroke) filter. */
+const SONGBOOK_DEBOUNCE_MS = 120;
+/** Fixed id: at most one instance of this field exists on the page, so
+ *  (unlike place-search.js's per-instance counter, built for N fields on
+ *  one page) a single well-known id is enough — and it lets init() find
+ *  and remove a STALE panel from a previous visit to /request before
+ *  building a fresh one (see initSongbookPicker()'s first lines). */
+const SONGBOOK_PANEL_ID = 'request-songbook-picker-panel';
+
+/**
+ * Cached promise resolving to the public songbook list as
+ * `[{id /* Abbreviation *\/, name}]`, or `[]` on ANY failure — this is
+ * search-ASSIST only and must never block or break the form. Module-scoped
+ * so repeat visits to /request within one page session reuse one network
+ * round trip rather than re-fetching per attach().
+ *
+ * @type {Promise<Array<{id: string, name: string}>>|null}
+ */
+let _songbookListPromise = null;
+
+/** Fetch (once) + shape the public songbook registry for the picker. */
+async function loadSongbookList() {
+    if (_songbookListPromise) return _songbookListPromise;
+    _songbookListPromise = (async () => {
+        try {
+            const res = await apiFetch('/api?action=songbooks');
+            if (!res.ok) return [];
+            const data = await res.json();
+            const books = Array.isArray(data.songbooks) ? data.songbooks : [];
+            return books
+                .filter((b) => b && b.id && b.name)
+                .map((b) => ({ id: String(b.id), name: String(b.name) }));
+        } catch (_e) {
+            /* Offline / server hiccup — the field still works as plain
+               free text; the visitor just doesn't get suggestions. */
+            return [];
+        }
+    })();
+    return _songbookListPromise;
+}
+
+/**
+ * Wire `#request-songbook` as a lightweight, accessible combobox over the
+ * public songbook registry. No-ops if the field is absent (a trimmed or
+ * stale-cached fragment) or already wired (re-navigation guard).
+ *
+ * @param {HTMLElement} root `.page-request-a-song`
+ */
+function initSongbookPicker(root) {
+    const input = root.querySelector('#request-songbook');
+    if (!input || input.dataset.songbookPickerBound === '1') return;
+    input.dataset.songbookPickerBound = '1';
+
+    /* Start the fetch now — by the time a visitor has typed enough to
+       filter, the (usually small, already-cached-by-a-prior-page) list has
+       normally already arrived. Never blocks anything if it's slow: the
+       filter below simply attaches its `.then()` to whatever promise this
+       returns, resolved or not. */
+    const listPromise = loadSongbookList();
+
+    /* Tear down any panel a PREVIOUS visit to /request left behind. This
+       page is reached via the SPA router (afterPageLoad() re-runs
+       initRequestASong() on every navigation to /request, each time
+       against a FRESH fragment node — rule #32's "a widget appended
+       outside the swapped page content must clean up its own prior
+       instance" applies here in miniature: without this, the picker
+       would leave one orphaned, empty, display:none panel <div> on
+       <body> per visit for the life of the SPA session (never many, but
+       never zero either) rather than the exact one this instance owns. */
+    document.getElementById(SONGBOOK_PANEL_ID)?.remove();
+
+    const panel = document.createElement('div');
+    panel.id = SONGBOOK_PANEL_ID;
+    panel.className = 'ihymns-songbook-picker-panel';
+    panel.setAttribute('role', 'listbox');
+    panel.style.position = 'absolute';
+    panel.style.zIndex = '20000';
+    panel.style.minWidth = '16rem';
+    panel.style.maxHeight = '16rem';
+    panel.style.overflowY = 'auto';
+    panel.style.background = 'var(--bs-body-bg, #1a1a1a)';
+    panel.style.color = 'var(--bs-body-color, #e8e8e8)';
+    panel.style.border = '1px solid var(--bs-border-color, #444)';
+    panel.style.borderRadius = '0.375rem';
+    panel.style.boxShadow = '0 0.5rem 1rem rgba(0,0,0,0.45)';
+    panel.style.display = 'none';
+    panel.style.fontSize = '0.875rem';
+    document.body.appendChild(panel);
+
+    let items = [];        /* current candidate {id, name} rows */
+    let activeIndex = -1;
+    let debounceTimer = null;
+
+    /* Position is recomputed only when the panel (re-)opens, deliberately
+       WITHOUT a `window` scroll/resize listener: place-search.js adds one
+       per instance, which is safe there only because its host pages are
+       classic full page loads (not SPA routing) — the listener dies with
+       the page. Here, a `window`-level listener would close over THIS
+       instance's `input`/`panel` and — because nothing ever removes a
+       `window` listener on SPA navigation — accumulate one extra listener
+       (and keep one extra detached `input` node alive) per /request visit
+       for the rest of the session. The panel auto-closes on blur anyway,
+       so continuous repositioning while merely scrolling the page past an
+       already-blurred field buys nothing. */
+    function positionPanel() {
+        const rect = input.getBoundingClientRect();
+        panel.style.left  = (window.scrollX + rect.left) + 'px';
+        panel.style.top   = (window.scrollY + rect.bottom + 2) + 'px';
+        panel.style.width = Math.max(rect.width, 220) + 'px';
+    }
+
+    function closePanel() {
+        items = [];
+        activeIndex = -1;
+        panel.style.display = 'none';
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
+    }
+
+    /** Commit candidate `index` — fills the SAME free-text field the form
+     *  already submits (see the module doc-block: there is no hidden FK
+     *  id, because there is no FK column to put one in). */
+    function pick(index) {
+        const b = items[index];
+        if (!b) return;
+        input.value = b.name;
+        closePanel();
+    }
+
+    function renderPanel() {
+        if (!items.length) {
+            panel.style.display = 'none';
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+            return;
+        }
+        panel.innerHTML = '';
+        items.forEach((b, i) => {
+            const row = document.createElement('div');
+            row.textContent = `${b.name} (${b.id})`;
+            row.style.padding = '0.4rem 0.6rem';
+            row.style.cursor = 'pointer';
+            row.style.whiteSpace = 'nowrap';
+            row.style.overflow = 'hidden';
+            row.style.textOverflow = 'ellipsis';
+            if (i === activeIndex) {
+                row.style.background = 'var(--bs-primary-bg-subtle, rgba(255, 193, 7, 0.18))';
+            }
+            /* mousedown, not click: fires before the input's blur handler
+               (below) tears the panel down — matches place-search.js's
+               own reasoning at its identical listener. */
+            row.addEventListener('mousedown', (ev) => {
+                ev.preventDefault();
+                pick(i);
+            });
+            panel.appendChild(row);
+        });
+        positionPanel();
+        panel.style.display = 'block';
+        window.iHymnsComboboxA11y?.applyComboboxAria({
+            input,
+            panel,
+            items: Array.from(panel.children),
+            activeIndex,
+            idPrefix: 'request-songbook-opt',
+        });
+    }
+
+    /** Filter the (already-fetched-or-pending) list against the current
+     *  input value and (re-)render. */
+    function runFilter() {
+        const q = input.value.trim().toLowerCase();
+        if (!q) { closePanel(); return; }
+        listPromise.then((list) => {
+            /* Superseded by a newer keystroke while the list promise was
+               pending (normally already resolved by the time anyone
+               types) — drop this stale result rather than clobber
+               whatever the visitor has typed since. */
+            if (input.value.trim().toLowerCase() !== q) return;
+            const out = [];
+            for (const b of list) {
+                if (b.name.toLowerCase().includes(q) || b.id.toLowerCase().includes(q)) {
+                    out.push(b);
+                    if (out.length >= SONGBOOK_MAX_RESULTS) break;
+                }
+            }
+            items = out;
+            activeIndex = items.length ? 0 : -1;
+            renderPanel();
+        });
+    }
+
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    /* #1594's `autocomplete="off"` caveat (see place-search.js) is about
+       ADDRESS-shaped fields specifically triggering Chrome's own
+       autofill dropdown; a "Songbook" field has no such heuristic match,
+       so the standard token is sufficient here (no unrecognised-token
+       workaround needed). */
+    input.setAttribute('autocomplete', 'off');
+
+    input.addEventListener('input', () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runFilter, SONGBOOK_DEBOUNCE_MS);
+    });
+
+    input.addEventListener('keydown', (ev) => {
+        if (!window.iHymnsComboboxA11y) return;
+        window.iHymnsComboboxA11y.handleComboboxKeydown(ev, {
+            isOpen: () => panel.style.display !== 'none',
+            getItems: () => Array.from(panel.children),
+            getActiveIndex: () => activeIndex,
+            setActiveIndex: (i) => { activeIndex = i; },
+            render: renderPanel,
+            onCommit: (i) => pick(i),
+            onClose: closePanel,
+        });
+    });
+
+    input.addEventListener('blur', () => {
+        /* Delay so a mousedown pick on a panel row (above) registers
+           before the panel disappears — matches place-search.js. */
+        setTimeout(closePanel, 150);
+    });
+}
+
 /** Read the form into the JSON payload shape the endpoint expects. */
 function readPayload(form) {
     const val = (name) => (form.elements[name]?.value ?? '');
@@ -326,6 +608,12 @@ export function initRequestASong(params = {}) {
 
     const ui = collectUi(root);
     applyPrefill(root, form, params);
+    /* #1867 — Songbook search-assist (see the module's own doc-block above
+       initSongbookPicker() for why this is a bespoke combobox rather than
+       window.iHymnsPlaceSearch). Runs after applyPrefill() so a deep-link
+       prefilled value is already in the box; the picker itself doesn't
+       care either way — it only reacts to future input. */
+    initSongbookPicker(root);
 
     form.addEventListener('submit', async (e) => {
         /* Suppress the native form POST — the #711 `action="…"` attribute is

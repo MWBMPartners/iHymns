@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Works + Songbook + Groups/Publishers registry-picker guard
- * (#1864/#1865/#1868, epic #1863 / rule #43)
+ * iHymns — Works + Songbook + Groups/Publishers/Catalogues/Requests
+ * registry-picker guard (#1864/#1865/#1868/#1866/#1867, epic #1863 / rule #43)
  * =============================================================================
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
@@ -57,6 +57,35 @@ declare(strict_types=1);
  * hidden id, and that the client wiring reuses catalogues.php's OWN
  * pre-existing `?action=song_search` handler (which existed as an unwired
  * scaffold before #1866) rather than a second local fork.
+ *
+ * §I below covers #1867's ADMIN surface — `manage/requests.php`'s
+ * "Resolved SongId" picker — the same search-select-ONLY shape as §G/§H: a
+ * server-side SongId existence check BEFORE the `tblSongRequests` UPDATE
+ * (position-checked, same as G1/H1), no `INSERT INTO tblSongs`, a NEW
+ * page-local `?action=song_search` handler (this page had none before —
+ * unlike §H's catalogues.php, which reused a pre-existing one) declared
+ * exactly once, and the picker's `validateCsrfRequest()` CSRF gate
+ * (rule #29) rather than the bare `validateCsrf()` this page carried before.
+ *
+ * §J below covers #1867's PUBLIC surface — the `/request` page's Songbook
+ * field, wired entirely inside `js/modules/request-a-song.js` — structurally
+ * different from every picker before it, so §J does NOT reuse §A-I's
+ * "attach() + pickMode:'value'" assertions at all. This field is
+ * deliberately NOT `window.iHymnsPlaceSearch` (an admin-only script never
+ * shipped to the public bundle — CLAUDE.md rule #30/#31's territory, not
+ * rule #43's), so §J instead proves: the module imports `combobox-a11y.js`
+ * for its side effect and never references `iHymnsPlaceSearch`; every
+ * network read goes through `apiFetch(`, never a bare `fetch(` (rule #31 —
+ * proven by a literal, case-sensitive `'fetch('` scan that cannot
+ * false-positive on `apiFetch(`, verified against a fixture below); the
+ * songbook data source is the PUBLIC `/api?action=songbooks` read, and the
+ * file never mentions a `/manage/` path at all (an admin, auth-gated
+ * endpoint would 401/403 for the anonymous visitors this page serves); the
+ * picker is actually invoked from the page's entry point
+ * (`initRequestASong()`); and the page fragment it decorates
+ * (`includes/pages/request-a-song.php`) still carries no `<script>` tag —
+ * this feature adds ZERO PHP/markup surface, confirming
+ * `test-fragment-inline-scripts.php` has nothing new to catch here.
  *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
@@ -113,9 +142,12 @@ declare(strict_types=1);
  * @see appWeb/public_html/manage/includes/songbook-form-fields.php  the create-only Publisher picker markup (#1865)
  * @see appWeb/public_html/manage/groups.php                 §G: add-a-member picker, search-select only (#1868)
  * @see appWeb/public_html/manage/catalogues.php             §H: "Add a song" picker, search-select only (#1866)
+ * @see appWeb/public_html/manage/requests.php                §I: admin "Resolved SongId" picker, search-select only (#1867)
+ * @see appWeb/public_html/js/modules/request-a-song.js      §J: public Songbook field combobox (#1867)
+ * @see appWeb/public_html/includes/pages/request-a-song.php §J: the fragment the module decorates — no <script> added
  * @see tests/php/test-tune-lockstep.php                     the sibling guard this mirrors in shape
  * @see /tmp/.../pickers-1864-spec.md                        the implementation spec this proves
- * @see #1864, #1865, #1868, #1866, epic #1863
+ * @see #1864, #1865, #1868, #1866, #1867, epic #1863
  */
 
 $repoRoot = dirname(__DIR__, 2);
@@ -508,6 +540,26 @@ if (!is_readable($cataloguesFile)) {
     exit(1);
 }
 
+/* #1867 §I — manage/requests.php's admin "Resolved SongId" picker. */
+$requestsFile = $web . '/manage/requests.php';
+if (!is_readable($requestsFile)) {
+    fwrite(STDERR, "FATAL: could not read manage/requests.php at {$requestsFile}\n");
+    exit(1);
+}
+
+/* #1867 §J — the PUBLIC surface: the picker lives entirely in the ES module,
+   not in the PHP fragment it decorates (rule #30 — no inline <script> in a
+   fragment). Both are read so §J can prove the module is wired AND that the
+   fragment stayed script-free. */
+$reqJsFile  = $web . '/js/modules/request-a-song.js';
+$reqPhpFile = $web . '/includes/pages/request-a-song.php';
+foreach (['js/modules/request-a-song.js' => $reqJsFile, 'includes/pages/request-a-song.php' => $reqPhpFile] as $label => $path) {
+    if (!is_readable($path)) {
+        fwrite(STDERR, "FATAL: could not read {$label} at {$path}\n");
+        exit(1);
+    }
+}
+
 $helpersRaw = (string)file_get_contents($helpersFile);
 $worksRaw   = (string)file_get_contents($worksFile);
 $songbooksRaw      = (string)file_get_contents($songbooksFile);
@@ -515,6 +567,9 @@ $sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
 $groupsRaw         = (string)file_get_contents($groupsFile);
 $publishersRaw     = (string)file_get_contents($publishersFile);
 $cataloguesRaw     = (string)file_get_contents($cataloguesFile);
+$requestsRaw       = (string)file_get_contents($requestsFile);
+$reqJsRaw          = (string)file_get_contents($reqJsFile);
+$reqPhpRaw         = (string)file_get_contents($reqPhpFile);
 
 /* Two independently-tested views of works.php (see the file-level
    doc-block's "stripper trap" section) — never conflate them. Same pattern
@@ -532,6 +587,16 @@ $publishersPhpView = wrpStripPhpComments($publishersRaw);
 $publishersAllView = wrpStripAllComments($publishersRaw);
 $cataloguesPhpView = wrpStripPhpComments($cataloguesRaw);
 $cataloguesAllView = wrpStripAllComments($cataloguesRaw);
+$requestsPhpView   = wrpStripPhpComments($requestsRaw);
+$requestsAllView   = wrpStripAllComments($requestsRaw);
+/* request-a-song.js is JS, not PHP — token_get_all() is PHP-syntax-specific,
+   so only the language-agnostic wrpStripAllComments() view applies to it
+   (the SAME regex stripper §C/§F/§G/§H already use on the JS living inside
+   works.php/songbooks.php/groups.php/publishers.php/catalogues.php's
+   <script> blocks — proven safe there by this file's own mutation
+   self-test above, "JsCommentNeedle"/"JsCodeNeedle"). */
+$reqJsAllView  = wrpStripAllComments($reqJsRaw);
+$reqPhpAllView = wrpStripAllComments($reqPhpRaw);
 
 /* ---- A1: publisherSearchRows() is declared EXACTLY ONCE, and only in
    includes/publisher_helpers.php. Tree-derived — a second copy anywhere
@@ -956,6 +1021,188 @@ if ($cataloguesAddMemberBlock === '' || !preg_match('/\$_POST\[\s*\'song_id\'\s*
 }
 
 /* =========================================================================
+ * §I — #1867 ADMIN surface: manage/requests.php "Resolved SongId" picker
+ * (search-select ONLY — no create arm; curators link an existing song)
+ * ========================================================================= */
+
+$requestsPostBlock = wrpSliceIfBlockByCondition($requestsPhpView, "'POST'");
+
+/* ---- I1: requests.php's POST handler verifies the submitted
+   resolved_song_id names a REAL, visible tblSongs row (a SELECT ... FROM
+   tblSongs WHERE SongId = ?) BEFORE the UPDATE that writes ResolvedSongId —
+   "resolve to a real existing SongId" (#1867's explicit server-side
+   requirement, same shape as G1/H1). Position-based: a verify-AFTER-the-
+   UPDATE would already be too late to matter. ---- */
+if ($requestsPostBlock === '') {
+    $failures[] = "could not locate if (\$_SERVER['REQUEST_METHOD'] === 'POST') { ... } in manage/requests.php (slicer or file shape changed)";
+} else {
+    $selectPos = -1;
+    if (preg_match('/SELECT\s+SongId\s+FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $requestsPostBlock, $m, PREG_OFFSET_CAPTURE)) {
+        $selectPos = $m[0][1];
+    }
+    $updatePos = strpos($requestsPostBlock, 'UPDATE tblSongRequests');
+    if ($selectPos < 0) {
+        $failures[] = "requests.php's POST handler no longer verifies the submitted resolved_song_id against tblSongs before use (#1867, rule #43 — 'the server MUST verify the id exists')";
+    } elseif ($updatePos === false) {
+        $failures[] = "requests.php's POST handler no longer writes UPDATE tblSongRequests — the write itself is missing";
+    } elseif (!($selectPos < $updatePos)) {
+        $failures[] = "requests.php's POST handler's existence check does not run BEFORE the UPDATE that uses the id — a check that runs after the write is too late to prevent it";
+    }
+
+    /* ---- I2: no create arm — this surface must never mint a song. ---- */
+    if (strpos($requestsPostBlock, 'INSERT INTO tblSongs') !== false) {
+        $failures[] = "requests.php's POST handler contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1867's explicit no-create-arm scope; songs are authored in the editor)";
+    }
+
+    /* ---- I3: rule #29 — the POST handler's CSRF gate is
+       validateCsrfRequest(), not the bare validateCsrf() this page used to
+       rely on alone. */
+    if (strpos($requestsPostBlock, 'validateCsrfRequest(') === false) {
+        $failures[] = "requests.php's POST handler no longer calls validateCsrfRequest() — reverted to the bare validateCsrf()-only CSRF gate rule #29 replaced";
+    }
+}
+
+/* ---- I4: the "Resolved SongId" markup was actually converted from the old
+   plain free-text `name="resolved_song_id"` box to the picker's hidden id +
+   search input — the OLD shape (a *visible, typed* input carrying that
+   `name`) must be gone, while the hidden id itself still carries the name
+   (rule #33 — the write side still needs a POST key to read). ---- */
+if (preg_match('/type="text"[^>]*name="resolved_song_id"/', $requestsRaw)) {
+    $failures[] = 'requests.php still renders a visible type="text" input with name="resolved_song_id" — the #1867 picker did not replace the old free-text box (the hidden hand-off must carry the name now, not the visible search box)';
+}
+/* A `class="…"` ATTRIBUTE containing the token, not a bare substring: the
+   adjoining doc-comment in the real file explains the wiring in prose using
+   these SAME words ("fills the hidden req-resolved-song-id below") — a bare
+   substring scan would stay green even if the real class attribute were
+   renamed or deleted, exactly the stripper-trap class this file's own
+   doc-block (§H3/G3 precedent) warns about. The regex requires the token
+   inside `class="…"` (word-bounded, so `req-resolved-song-id` can't
+   false-match inside a longer class like `req-resolved-song-id-extra`) but
+   tolerates OTHER classes sharing the attribute (the real markup is
+   `class="form-control form-control-sm req-resolved-song-name"`) — a bare
+   `class="req-resolved-song-name"` equality check would itself be
+   wrong-but-red against the real file; caught by mutation below. */
+foreach (['req-resolved-song-name', 'req-resolved-song-id'] as $cls) {
+    if (!preg_match('/\bclass="[^"]*\b' . preg_quote($cls, '/') . '\b[^"]*"/', $requestsRaw)) {
+        $failures[] = "requests.php no longer emits an element carrying class=\"…{$cls}…\" — the #1867 \"Resolved SongId\" picker's markup is missing";
+    }
+}
+if (strpos($requestsRaw, 'name="resolved_song_id"') === false) {
+    $failures[] = 'requests.php no longer emits name="resolved_song_id" anywhere — the picker\'s hidden id is not wired into the form (rule #33)';
+}
+
+/* ---- I5: the client wiring attaches the picker with pickMode:'value'
+   against THIS page's own ?action=song_search (never api2's, never a
+   fabricated endpoint) — same reasoning as C1/C2/G3/H3. ---- */
+if (strpos($requestsAllView, 'iHymnsPlaceSearch.attach') === false) {
+    $failures[] = 'requests.php no longer calls window.iHymnsPlaceSearch.attach(...) for the "Resolved SongId" picker';
+}
+if (strpos($requestsAllView, "pickMode: 'value'") === false) {
+    $failures[] = "requests.php's \"Resolved SongId\" picker no longer sets pickMode: 'value'";
+}
+if (strpos($requestsAllView, 'action=song_search') === false || strpos($requestsAllView, '/manage/requests') === false) {
+    $failures[] = "requests.php's picker no longer points at THIS page's own /manage/requests?action=song_search — it must reuse its own handler, not api2's or a fabricated one";
+}
+
+/* ---- I6: requests.php declares exactly ONE ?action=song_search gate — this
+   page had NO pre-existing handler (unlike §H's catalogues.php), so #1867
+   added the ONE new handler; a second gate would be a duplicate fork. ---- */
+$requestsSongSearchGateCount = substr_count($requestsPhpView, "=== 'song_search'");
+if ($requestsSongSearchGateCount !== 1) {
+    $failures[] = "requests.php declares {$requestsSongSearchGateCount} \"=== 'song_search'\" action gate(s) — expected exactly 1 (rule #22 — reuse the one handler, never fork a second)";
+}
+
+/* =========================================================================
+ * §J — #1867 PUBLIC surface: the /request page's Songbook field
+ * (js/modules/request-a-song.js — NOT window.iHymnsPlaceSearch, which is
+ * admin-only and never ships in the public bundle; NOT an FK picker either
+ * — tblSongRequests.Songbook stays free text, rule #44 — so §J's shape is
+ * deliberately different from §A-I: no pickMode/hidden-id assertions here)
+ * ========================================================================= */
+
+/* ---- J1: the module imports combobox-a11y.js for its side effect (the
+   #1594 part-2 keyboard/ARIA helper) and NEVER references
+   window.iHymnsPlaceSearch — the admin-only script this public module must
+   not depend on (it is loaded only via a classic <script src> on /manage/*
+   pages and is not part of the public bundle). ---- */
+if (strpos($reqJsAllView, "import './combobox-a11y.js'") === false) {
+    $failures[] = "js/modules/request-a-song.js no longer imports './combobox-a11y.js' for its side effect — the Songbook picker's keyboard/ARIA handling is missing its dependency";
+}
+if (strpos($reqJsAllView, 'iHymnsPlaceSearch') !== false) {
+    $failures[] = 'js/modules/request-a-song.js references iHymnsPlaceSearch — that module is admin-only (/manage/* classic <script src>) and is never shipped to the public bundle; the public Songbook picker must use combobox-a11y.js + apiFetch instead';
+}
+if (strpos($reqJsAllView, 'handleComboboxKeydown') === false || strpos($reqJsAllView, 'applyComboboxAria') === false) {
+    $failures[] = 'js/modules/request-a-song.js no longer calls both window.iHymnsComboboxA11y.handleComboboxKeydown() and .applyComboboxAria() — the Songbook picker\'s keyboard/ARIA wiring is incomplete';
+}
+
+/* ---- J2: rule #31 — every network read goes through apiFetch(, never a
+   bare fetch(. A literal, CASE-SENSITIVE substring scan for 'fetch(' is
+   deliberately used instead of a word-boundary regex: 'apiFetch(' does NOT
+   contain the lowercase substring 'fetch(' (its 6th character is capital
+   'F', not 'f'), so this cannot false-positive on the module's own
+   legitimate apiFetch(...) calls — verified against a fixture pair
+   immediately below, not asserted on faith. ---- */
+if (strpos($reqJsAllView, 'fetch(') !== false) {
+    $failures[] = "js/modules/request-a-song.js contains a bare fetch(...) call (rule #31 — same-origin reads must go through apiFetch()/apiFetchJson() from js/utils/api-client.js, never bare fetch or a fetch override)";
+}
+/* Fixture proof for the J2 mechanism itself (not a mutation self-test up
+   front, since it depends on nothing this file declares — inlined here,
+   beside the assertion it backs, so the "why is this safe" reasoning and
+   its proof stay together). */
+if (strpos('await apiFetch(url)', 'fetch(') !== false) {
+    $failures[] = 'INTERNAL: the J2 case-sensitive fetch( scan false-positives on apiFetch( — the mechanism itself is broken, not the file being scanned';
+}
+if (strpos('await fetch(url)', 'fetch(') === false) {
+    $failures[] = 'INTERNAL: the J2 case-sensitive fetch( scan fails to catch a genuine bare fetch( call — the mechanism itself is broken, not the file being scanned';
+}
+
+/* ---- J3: the songbook data source is the PUBLIC /api?action=songbooks
+   read, and the file never mentions a /manage/ path at all — an admin,
+   auth-gated endpoint would 401/403 for the anonymous visitors /request
+   serves (the whole point of this investigation step, per the task's
+   "MUST use public api.php reads" constraint). ---- */
+if (strpos($reqJsAllView, 'action=songbooks') === false) {
+    $failures[] = "js/modules/request-a-song.js no longer fetches the public /api?action=songbooks read — the Songbook picker's data source is missing";
+}
+if (strpos($reqJsAllView, '/manage/') !== false) {
+    $failures[] = 'js/modules/request-a-song.js references a /manage/ path — this module runs on the PUBLIC, anonymous-reachable /request page and must never call an auth-gated /manage/* endpoint';
+}
+
+/* ---- J4: the picker is actually invoked from the page's entry point,
+   initRequestASong() — a helper function that exists but is never called is
+   the exact "looks alive, does nothing" shape rule #30's own failure class
+   warns about, just via a different mechanism (an unwired function instead
+   of a CSP-blocked script). Windowed proximity match (same technique as
+   G4/H-style checks) rather than a bare substring-anywhere check, so this
+   actually proves the call happens INSIDE initRequestASong(), not merely
+   somewhere else in the file. ---- */
+if (!preg_match('/function\s+initRequestASong[\s\S]{0,3000}initSongbookPicker\(root\)/', $reqJsAllView)) {
+    $failures[] = 'js/modules/request-a-song.js declares initSongbookPicker() but never calls it from initRequestASong() — the picker is dead code, unreachable from the page\'s own entry point';
+}
+
+/* ---- J5: the field STAYS free text (rule #44 — no vanity FK for a value
+   that has no registry row to point at until a curator resolves the
+   request). Locks in the "no hidden id, no pickMode" design decision so a
+   future edit can't silently re-fork the admin FK-picker shape onto a field
+   that was deliberately kept simpler — a hidden `songbook_id`/`songbook_abbr`
+   field appearing here would be an unread param (rule #33) since
+   tblSongRequests.Songbook has no such column to receive it. ---- */
+if (preg_match('/name="songbook_(id|abbr)"/', $reqPhpRaw) || preg_match('/name="songbook_(id|abbr)"/', $reqJsAllView)) {
+    $failures[] = 'a songbook_id/songbook_abbr field was added to the public request form or its module — tblSongRequests.Songbook has no such column; #1867\'s public surface deliberately fills the SAME free-text field, it does not add a parallel hidden FK (rule #33/#44)';
+}
+
+/* ---- J6: the fragment this module decorates carries NO <script> tag —
+   #1867 adds zero PHP/markup surface to includes/pages/request-a-song.php,
+   so test-fragment-inline-scripts.php has nothing new to catch here; this
+   is a light, redundant confirmation of that fact scoped to just this one
+   file (all-comments-stripped, since the fragment's own doc-block prose
+   literally contains the string "<script>" inside a comment — the exact
+   D1/§7 stripper-trap this file's doc-block already warns about). ---- */
+if (strpos($reqPhpAllView, '<script') !== false) {
+    $failures[] = 'includes/pages/request-a-song.php now contains a <script> tag — #1867\'s public Songbook picker must be wired entirely from js/modules/request-a-song.js (rule #30); an inline <script> in a $_cacheablePages fragment is CSP-dead and fails silently';
+}
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -966,14 +1213,14 @@ if ($failures || $mutationFailures) {
         fwrite(STDERR, "\nA guard that cannot be proven to fail is not trustworthy (rule #34).\n\n");
     }
     if ($failures) {
-        fwrite(STDERR, "FAIL: Works + Songbook + Groups/Publishers/Catalogues registry-picker guard (#1864/#1865/#1868/#1866):\n\n");
+        fwrite(STDERR, "FAIL: Works + Songbook + Groups/Publishers/Catalogues/Requests registry-picker guard (#1864/#1865/#1868/#1866/#1867):\n\n");
         foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
         fwrite(STDERR, "\n");
     }
     exit(1);
 }
 
-echo "PASS: Works + Songbook + Groups/Publishers/Catalogues registry-picker guard — publisherSearchRows() declared "
+echo "PASS: Works + Songbook + Groups/Publishers/Catalogues/Requests registry-picker guard — publisherSearchRows() declared "
    . "exactly once in includes/publisher_helpers.php; all {$gateHandlerCount} manage/*.php "
    . "publisher_search handlers delegate to it with no re-inlined fork; \$persistWorkExtraFields writes "
    . "CopyrightHolder + CopyrightHolderId in lockstep via publisherResolvePickedOrCreate(), which falls "
@@ -997,5 +1244,16 @@ echo "PASS: Works + Songbook + Groups/Publishers/Catalogues registry-picker guar
    . "BEFORE the tblCatalogueSongs write and never mints a song; the old free-text SongId box is gone in "
    . "favour of the picker's hidden id, wired with pickMode:'value' against this page's OWN pre-existing "
    . "?action=song_search handler (exactly 1 gate found — no duplicate local fork); the song_id wire "
-   . "contract is honoured at both ends. All mutation self-tests went red/green as expected.\n";
+   . "contract is honoured at both ends. "
+   . "§I (#1867 admin): requests.php's POST handler verifies the submitted resolved_song_id against tblSongs "
+   . "BEFORE the tblSongRequests UPDATE, never mints a song, and its CSRF gate is validateCsrfRequest() "
+   . "(rule #29); the old free-text box is gone in favour of the picker's hidden id, wired with "
+   . "pickMode:'value' against this page's OWN NEW ?action=song_search handler ({$requestsSongSearchGateCount} "
+   . "gate found — no duplicate fork); the resolved_song_id wire contract is honoured at both ends. "
+   . "§J (#1867 public): js/modules/request-a-song.js's Songbook field imports combobox-a11y.js (never "
+   . "iHymnsPlaceSearch, which is admin-only), wires both handleComboboxKeydown()/applyComboboxAria(), reads "
+   . "exclusively via apiFetch() (zero bare fetch( calls, rule #31) against the PUBLIC /api?action=songbooks "
+   . "read (zero /manage/ references), is actually invoked from initRequestASong(), keeps the field free "
+   . "text with no vanity FK field (rule #44), and adds no <script> to the fragment it decorates (rule #30). "
+   . "All mutation self-tests went red/green as expected.\n";
 exit(0);
