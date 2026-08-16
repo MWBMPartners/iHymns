@@ -3,7 +3,8 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Works + Songbook registry-picker guard (#1864/#1865, epic #1863 / rule #43)
+ * iHymns — Works + Songbook + Groups/Publishers registry-picker guard
+ * (#1864/#1865/#1868, epic #1863 / rule #43)
  * =============================================================================
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
@@ -33,6 +34,18 @@ declare(strict_types=1);
  * path), and the `publisher_id` hidden field is honoured at both ends
  * (rule #33). Reuses this file's EXISTING `wrp*` helpers rather than
  * duplicating them into a new file — one guard mechanism, two features.
+ *
+ * §G below extends the same guard to #1868's TWO search-select-ONLY
+ * surfaces — `manage/groups.php`'s add-a-member picker and
+ * `manage/publishers.php`'s merge-target picker. Unlike #1864/#1865, NEITHER
+ * of these has a create arm (rule #43's spec explicitly forbids one here —
+ * this workflow must never invent a user or a merge target), so §G's shape
+ * is the mirror image of §A-F: it proves the ABSENCE of a create/find-or-
+ * create call on both paths, the PRESENCE of a server-side existence check
+ * before the id is used, and — for the merge-target specifically — that its
+ * search reuses `publisherSearchRows()`'s `excludeId` arm bound to whichever
+ * publisher is currently chosen as Source, so a self-merge is unreachable
+ * through the UI, not merely rejected after the fact.
  *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
@@ -466,20 +479,36 @@ if (!is_readable($sbFormFieldsFile)) {
     exit(1);
 }
 
+/* #1868 §G — the two search-select-only surfaces. manage/publishers.php is
+   already read via $publishersFile above (declared for §A/§B's tree sweep);
+   groups.php is new to this file. */
+$groupsFile = $web . '/manage/groups.php';
+if (!is_readable($groupsFile)) {
+    fwrite(STDERR, "FATAL: could not read manage/groups.php at {$groupsFile}\n");
+    exit(1);
+}
+
 $helpersRaw = (string)file_get_contents($helpersFile);
 $worksRaw   = (string)file_get_contents($worksFile);
 $songbooksRaw      = (string)file_get_contents($songbooksFile);
 $sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
+$groupsRaw         = (string)file_get_contents($groupsFile);
+$publishersRaw     = (string)file_get_contents($publishersFile);
 
 /* Two independently-tested views of works.php (see the file-level
    doc-block's "stripper trap" section) — never conflate them. Same pattern
-   applied to songbooks.php for §F (its picker wiring also lives inside a
-   plain <script> tag — the identical T_INLINE_HTML trap). */
+   applied to songbooks.php for §F, and to groups.php/publishers.php for §G
+   (all three have picker wiring living inside a plain <script> tag — the
+   identical T_INLINE_HTML trap). */
 $helpersPhpView = wrpStripPhpComments($helpersRaw);
 $worksPhpView   = wrpStripPhpComments($worksRaw);
 $worksAllView   = wrpStripAllComments($worksRaw);
 $songbooksPhpView = wrpStripPhpComments($songbooksRaw);
 $songbooksAllView = wrpStripAllComments($songbooksRaw);
+$groupsPhpView     = wrpStripPhpComments($groupsRaw);
+$groupsAllView     = wrpStripAllComments($groupsRaw);
+$publishersPhpView = wrpStripPhpComments($publishersRaw);
+$publishersAllView = wrpStripAllComments($publishersRaw);
 
 /* ---- A1: publisherSearchRows() is declared EXACTLY ONCE, and only in
    includes/publisher_helpers.php. Tree-derived — a second copy anywhere
@@ -723,6 +752,105 @@ foreach (['name="publisher_ids[]"', 'name="publisher_roles[]"', 'name="publisher
 }
 
 /* =========================================================================
+ * §G — #1868: groups.php add-a-member + publishers.php merge-target
+ * (search-select ONLY — no create arm on either surface)
+ * ========================================================================= */
+
+$groupsAddMemberBlock = wrpSliceCaseBlock($groupsPhpView, 'add_member');
+
+/* ---- G1: groups.php's add_member handler verifies the submitted user_id
+   names a REAL tblUsers row (a SELECT ... WHERE Id = ?) BEFORE the UPDATE
+   that writes GroupId — "resolve to a real existing user id" (#1868's
+   explicit server-side requirement). Position-based (not just presence): a
+   verify-AFTER-the-UPDATE would already be too late to matter. ---- */
+if ($groupsAddMemberBlock === '') {
+    $failures[] = "could not locate case 'add_member': { ... } in manage/groups.php (slicer or file shape changed)";
+} else {
+    $selectPos = -1;
+    if (preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblUsers\s+WHERE\s+Id\s*=\s*\?/', $groupsAddMemberBlock, $m, PREG_OFFSET_CAPTURE)) {
+        $selectPos = $m[0][1];
+    }
+    $updatePos = strpos($groupsAddMemberBlock, 'UPDATE tblUsers SET GroupId');
+    if ($selectPos < 0) {
+        $failures[] = "groups.php's add_member handler no longer verifies the submitted user_id against tblUsers before use (#1868, rule #43 — 'the server MUST verify the id exists')";
+    } elseif ($updatePos === false) {
+        $failures[] = "groups.php's add_member handler no longer writes UPDATE tblUsers SET GroupId — the write itself is missing";
+    } elseif (!($selectPos < $updatePos)) {
+        $failures[] = "groups.php's add_member handler's existence check does not run BEFORE the UPDATE that uses the id — a check that runs after the write is too late to prevent it";
+    }
+}
+
+/* ---- G2: groups.php's add_member handler never mints a user row — this
+   surface is search-select ONLY, unlike #1864's Tune/Publisher fields which
+   deliberately DO fall back to a create funnel. ---- */
+if ($groupsAddMemberBlock !== '' && strpos($groupsAddMemberBlock, 'INSERT INTO tblUsers') !== false) {
+    $failures[] = "groups.php's add_member handler contains \"INSERT INTO tblUsers\" — this surface must never invent a user (#1868's explicit no-create-arm scope)";
+}
+
+/* ---- G3: the add-a-member markup was actually converted from the old
+   `LIMIT 500` <select> to the picker's hidden id + search input, and the
+   client wiring attaches it with pickMode:'value' against the EXISTING api2
+   user_search action (never a new local search route on groups.php). ---- */
+if (strpos($groupsRaw, '<select name="user_id"') !== false) {
+    $failures[] = "groups.php still renders <select name=\"user_id\"> — the #1868 add-a-member picker did not replace the old LIMIT-500 dropdown";
+}
+foreach (['id="add-member-user-id"', 'id="add-member-user-name"'] as $needle) {
+    if (strpos($groupsRaw, $needle) === false) {
+        $failures[] = "groups.php no longer emits {$needle} — the #1868 add-a-member picker's markup is missing";
+    }
+}
+if (strpos($groupsAllView, 'iHymnsPlaceSearch.attach') === false) {
+    $failures[] = 'groups.php no longer calls window.iHymnsPlaceSearch.attach(...) for the add-a-member picker';
+}
+if (strpos($groupsAllView, "pickMode: 'value'") === false) {
+    $failures[] = "groups.php's add-a-member picker no longer sets pickMode: 'value'";
+}
+if (strpos($groupsAllView, 'action=user_search') === false || strpos($groupsAllView, '/manage/editor/api2') === false) {
+    $failures[] = "groups.php's add-a-member picker no longer points at the EXISTING /manage/editor/api2?action=user_search endpoint (rule #22 — it must reuse it, not fork a local one)";
+}
+if (preg_match('/case\s+\'user_search\'\s*:/', $groupsAllView)) {
+    $failures[] = "groups.php declares its own case 'user_search': — a local fork of api2's user search (rule #22 forbids this)";
+}
+
+/* ---- G4: publishers.php's merge-target field was converted from a second
+   `<select>` (rendering EVERY publisher) to a search input + hidden id, and
+   is attached with pickMode:'value' + a dynamic `exclude=` bound to the
+   Source select's live value — the mechanism that makes "merge a publisher
+   into itself" unreachable through the UI. Windowed proximity match (not a
+   file-wide strpos) so this actually proves the EXCLUDE is wired to THIS
+   specific attach() call, not merely present somewhere else on the page. ---- */
+if (strpos($publishersRaw, '<select name="target_id"') !== false) {
+    $failures[] = 'publishers.php still renders <select name="target_id"> — the #1868 merge-target picker did not replace the old all-publishers dropdown';
+}
+foreach (['id="merge-target-id"', 'id="merge-target-name"', 'id="merge-source-id"'] as $needle) {
+    if (strpos($publishersRaw, $needle) === false) {
+        $failures[] = "publishers.php no longer emits {$needle} — the #1868 merge-target picker's markup is missing";
+    }
+}
+if (!preg_match("/attach\\(mergeTargetName[\\s\\S]{0,600}pickMode:\\s*'value'[\\s\\S]{0,600}action=publisher_search[\\s\\S]{0,300}exclude=[\\s\\S]{0,200}mergeSourceSel/", $publishersAllView)) {
+    $failures[] = "publishers.php's merge-target attach() call is not wired to search ?action=publisher_search with an exclude= bound to the source select's live value (#1868 — the excludeId arm that keeps a publisher from being merged into itself)";
+}
+
+/* ---- G5: publishers.php's merge handler never mints or forks — search-
+   select ONLY (no publisherFindOrCreateByName()/INSERT), and the merge
+   itself still flows through the ONE existing publisherAdminMerge() core
+   (rule #22 — "do not fork the merge"). ---- */
+$publishersMergeBlock = wrpSliceCaseBlock($publishersPhpView, 'merge');
+if ($publishersMergeBlock === '') {
+    $failures[] = "could not locate case 'merge': { ... } in manage/publishers.php (slicer or file shape changed)";
+} else {
+    if (strpos($publishersMergeBlock, 'publisherFindOrCreateByName(') !== false) {
+        $failures[] = "publishers.php's merge handler calls publisherFindOrCreateByName() — this surface must never invent a merge target (#1868's explicit no-create-arm scope)";
+    }
+    if (strpos($publishersMergeBlock, 'INSERT INTO tblPublishers') !== false) {
+        $failures[] = "publishers.php's merge handler contains \"INSERT INTO tblPublishers\" — this surface must never invent a merge target (#1868's explicit no-create-arm scope)";
+    }
+    if (strpos($publishersMergeBlock, 'publisherAdminMerge(') === false) {
+        $failures[] = "publishers.php's merge handler no longer calls publisherAdminMerge() — the ONE shared merge core (rule #22) must not be forked or bypassed";
+    }
+}
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -733,25 +861,32 @@ if ($failures || $mutationFailures) {
         fwrite(STDERR, "\nA guard that cannot be proven to fail is not trustworthy (rule #34).\n\n");
     }
     if ($failures) {
-        fwrite(STDERR, "FAIL: Works + Songbook registry-picker guard (#1864/#1865):\n\n");
+        fwrite(STDERR, "FAIL: Works + Songbook + Groups/Publishers registry-picker guard (#1864/#1865/#1868):\n\n");
         foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
         fwrite(STDERR, "\n");
     }
     exit(1);
 }
 
-echo "PASS: Works + Songbook registry-picker guard — publisherSearchRows() declared exactly once in "
-   . "includes/publisher_helpers.php; all {$gateHandlerCount} manage/*.php publisher_search handlers "
-   . "delegate to it with no re-inlined fork; \$persistWorkExtraFields writes CopyrightHolder + "
-   . "CopyrightHolderId in lockstep via publisherResolvePickedOrCreate(), which falls back to "
-   . "publisherFindOrCreateByName(); \"INSERT INTO tblPublishers\" is confined to the two funnel files ("
-   . count($insertSites) . " site(s) found); works.php's client wiring attaches all 4 #1864 pickers "
-   . "with pickMode:'value', reuses api2's tune_search (no local fork) and this page's own "
+echo "PASS: Works + Songbook + Groups/Publishers registry-picker guard — publisherSearchRows() declared "
+   . "exactly once in includes/publisher_helpers.php; all {$gateHandlerCount} manage/*.php "
+   . "publisher_search handlers delegate to it with no re-inlined fork; \$persistWorkExtraFields writes "
+   . "CopyrightHolder + CopyrightHolderId in lockstep via publisherResolvePickedOrCreate(), which falls "
+   . "back to publisherFindOrCreateByName(); \"INSERT INTO tblPublishers\" is confined to the two funnel "
+   . "files (" . count($insertSites) . " site(s) found); works.php's client wiring attaches all 4 #1864 "
+   . "pickers with pickMode:'value', reuses api2's tune_search (no local fork) and this page's own "
    . "publisher_search; the copyright_holder_id wire contract is honoured at both ends. "
    . "§F (#1865): songbooks.php's 'create' case resolves the Publisher field via "
    . "publisherResolvePickedOrCreate() (never a direct publisherFindOrCreateByName() bypass) and seeds "
    . "tblSongbookPublishers; the publisher_id wire contract is honoured at both ends; the create-only "
    . "picker is wired with pickMode:'value' against this page's own publisher_search; the Edit arm's "
-   . "quick field + richer multi-publisher picker are unchanged. All mutation self-tests went red/green "
-   . "as expected.\n";
+   . "quick field + richer multi-publisher picker are unchanged. "
+   . "§G (#1868): groups.php's add_member handler verifies the submitted user_id against tblUsers BEFORE "
+   . "the write and never mints a user; its picker reuses the EXISTING api2 user_search action (no local "
+   . "fork). publishers.php's merge-target picker replaced the old all-publishers <select>, is wired with "
+   . "pickMode:'value' against this page's own publisher_search with a dynamic exclude= bound to the "
+   . "source select (a self-merge is unreachable through the UI); its merge handler never mints/forks and "
+   . "still flows through the ONE publisherAdminMerge() core. Both #1868 surfaces are confirmed "
+   . "search-select ONLY — no create arm on either path. All mutation self-tests went red/green as "
+   . "expected.\n";
 exit(0);

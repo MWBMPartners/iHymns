@@ -132,11 +132,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $groupId = (int)($_POST['group_id'] ?? 0);
                 $userId  = (int)($_POST['user_id']  ?? 0);
                 if ($groupId <= 0 || $userId <= 0) { $error = 'Invalid request.'; break; }
+
+                /* #1868 (epic #1863, rule #43) — SEARCH-SELECT ONLY: the
+                   picker below resolves to an id, but that id arrives over
+                   POST like any other client-supplied value, so it is
+                   untrusted until checked. Free-typing in place-search.js
+                   clears the hidden id, so a mismatched/forged id here is
+                   the exception rather than the rule — but this endpoint
+                   must still verify it names a REAL row before writing it.
+                   There is deliberately NO find-or-create fallback: this
+                   surface never invents a user (unlike the Tune/Publisher
+                   pickers in #1864, which fall back to a create funnel when
+                   nothing matches). Without this check, a bad id would
+                   silently affect 0 rows in the UPDATE below while still
+                   reporting "Member added." — worse than a clear error. */
+                $stmt = $db->prepare('SELECT Username FROM tblUsers WHERE Id = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $foundUser = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$foundUser) { $error = 'That user could not be found — pick one from the search results.'; break; }
+
                 $stmt = $db->prepare('UPDATE tblUsers SET GroupId = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
                 $stmt->bind_param('ii', $groupId, $userId);
                 $stmt->execute();
                 $stmt->close();
-                $success = 'Member added.';
+                $success = 'Added ' . $foundUser['Username'] . ' to the group.';
                 break;
             }
 
@@ -185,10 +206,15 @@ try {
     $error = $error ?: 'Could not load groups.';
 }
 
-/* If ?edit=<id>, pull the editing group + members + candidates */
+/* If ?edit=<id>, pull the editing group + members. #1868 (rule #43) — the
+   "add a member" candidate list used to be a `LIMIT 500` SELECT rendered
+   into one giant <select>: it doesn't scale past a few hundred users, and
+   (being capped) could silently omit a real candidate near the tail of the
+   alphabet. Replaced with a live-search picker (below) that reuses the
+   EXISTING api2 user_search action, so there is no candidate list to
+   precompute here any more. */
 $editGroup = null;
 $editMembers = [];
-$candidates  = [];
 $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
     try {
@@ -206,18 +232,6 @@ if ($editId > 0) {
             $stmt->bind_param('i', $editId);
             $stmt->execute();
             $editMembers = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            $stmt = $db->prepare(
-                'SELECT Id, Username, DisplayName, Role
-                   FROM tblUsers
-                  WHERE (GroupId IS NULL OR GroupId <> ?) AND IsActive = 1
-                  ORDER BY Username ASC
-                  LIMIT 500'
-            );
-            $stmt->bind_param('i', $editId);
-            $stmt->execute();
-            $candidates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
         }
     } catch (\Throwable $e) {
@@ -422,32 +436,29 @@ $csrf = csrfToken();
                     </div>
                 </div>
 
-                <!-- Add candidates -->
+                <!-- Add a member: live-search picker (#1868, rule #43) — search-select
+                     ONLY, no create arm (this surface never invents a user). The
+                     picked id is submitted and add_member (above) verifies it names
+                     a real tblUsers row before writing it. -->
                 <div class="col-md-6">
                     <div class="card-admin p-3 h-100">
                         <h2 class="h6 mb-3"><i class="bi bi-person-plus me-2"></i>Add a member</h2>
-                        <?php if (!$candidates): ?>
-                            <p class="text-muted small mb-0">Every active user is already in this group.</p>
-                        <?php else: ?>
-                            <form method="POST" class="d-flex gap-2">
-                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
-                                <input type="hidden" name="action"     value="add_member">
-                                <input type="hidden" name="group_id"   value="<?= (int)$editGroup['Id'] ?>">
-                                <select name="user_id" class="form-select form-select-sm" required>
-                                    <option value="">— pick a user —</option>
-                                    <?php foreach ($candidates as $u): ?>
-                                        <option value="<?= (int)$u['Id'] ?>">
-                                            <?= htmlspecialchars($u['Username']) ?>
-                                            <?php if ($u['DisplayName']): ?> — <?= htmlspecialchars($u['DisplayName']) ?><?php endif; ?>
-                                            (<?= htmlspecialchars($u['Role']) ?>)
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <button type="submit" class="btn btn-sm btn-amber-solid" aria-label="Add selected user to this group">
-                                    <i class="bi bi-plus" aria-hidden="true"></i>
-                                </button>
-                            </form>
-                        <?php endif; ?>
+                        <form method="POST" class="d-flex gap-2" id="add-member-form">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                            <input type="hidden" name="action"     value="add_member">
+                            <input type="hidden" name="group_id"   value="<?= (int)$editGroup['Id'] ?>">
+                            <input type="hidden" name="user_id" id="add-member-user-id" value="">
+                            <input type="text" id="add-member-user-name" class="form-control form-control-sm"
+                                   placeholder="Search by username or display name…" autocomplete="off" required
+                                   aria-label="Search for a user to add to this group">
+                            <button type="submit" class="btn btn-sm btn-amber-solid" aria-label="Add selected user to this group">
+                                <i class="bi bi-plus" aria-hidden="true"></i>
+                            </button>
+                        </form>
+                        <p class="form-text small mt-2 mb-0">
+                            Type at least 2 characters and pick a match — the account behind your pick is what's
+                            saved, not the typed text.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -456,6 +467,64 @@ $csrf = csrfToken();
 
     </div>
 
+    <?php if ($editGroup): ?>
+    <!-- Live user search for the Add-a-member picker (#1868, rule #43). -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+    <script>
+        (function () {
+            if (!window.iHymnsPlaceSearch) return;
+            const nameInput = document.getElementById('add-member-user-name');
+            const hiddenId  = document.getElementById('add-member-user-id');
+            if (!nameInput || !hiddenId) return;
+
+            /* #1868 — pickMode:'value': the pick fills the input + hidden id
+               with NO network call of its own; the form's own POST is the
+               ONE commit, and add_member (server-side, above) VERIFIES the
+               id names a real tblUsers row before writing it. Reuses the
+               EXISTING api2 user_search action (rule #22) — this page adds
+               no local search handler. That endpoint's own gate is
+               hasRole(..., 'editor'); manage_user_groups defaults to
+               admin/global_admin (both above editor level), so every
+               default-config curator of this page passes it. If a custom
+               install ever grants manage_user_groups below editor level,
+               the picker degrades to "User lookup unavailable (HTTP 403).
+               Your text is saved as typed." — but since this field is
+               search-select ONLY (no create-on-submit funnel), the
+               submit-guard below still blocks an unresolved pick, and the
+               server's own existence check is the final backstop either way. */
+            window.iHymnsPlaceSearch.attach(nameInput, {
+                hiddenIdInput: hiddenId,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'user', plural: 'users' },
+                searchUrl: (q) => '/manage/editor/api2?action=user_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.label,
+                    hint: s.hint || '',
+                })),
+            });
+
+            /* Require an actual resolved pick before submit — a free-typed
+               name with no hidden id must never submit (search-select only;
+               there is no create-on-submit funnel for this field to fall
+               back to, unlike the Tune/Publisher pickers in #1864). This is
+               a UX guard only — the server-side existence check above is
+               the real guarantee. */
+            const form = document.getElementById('add-member-form');
+            if (form) {
+                form.addEventListener('submit', (ev) => {
+                    if (!hiddenId.value) {
+                        ev.preventDefault();
+                        nameInput.setCustomValidity('Pick a user from the search results first.');
+                        nameInput.reportValidity();
+                    }
+                });
+                nameInput.addEventListener('input', () => nameInput.setCustomValidity(''));
+            }
+        })();
+    </script>
+    <?php endif; ?>
 
     <!-- Sortable table headers (#644). -->
     <script type="module">

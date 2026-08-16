@@ -689,21 +689,32 @@ if ($hasSchema) {
                             </p>
                             <div class="mb-3">
                                 <label class="form-label small">Source (merged away)</label>
-                                <select name="source_id" class="form-select form-select-sm" required>
+                                <select name="source_id" id="merge-source-id" class="form-select form-select-sm" required>
                                     <option value="">— choose —</option>
                                     <?php foreach ($rows as $r): ?>
                                         <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Name']) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                             </div>
+                            <!-- #1868 (rule #43) — the target used to be a second
+                                 `<select>` rendering EVERY publisher (doesn't scale, and
+                                 nothing stopped picking the same row as source until
+                                 submit). Now a live-search picker over the shared
+                                 publisherSearchRows() core (rule #22), with its
+                                 `excludeId` arm bound to whichever publisher is
+                                 currently chosen as Source — the source can never
+                                 appear as a target candidate, so "merge a publisher
+                                 into itself" is unreachable through this UI, not just
+                                 server-rejected. Search-select ONLY: no create arm,
+                                 the merge continues through the EXISTING
+                                 publisherAdminMerge() unchanged (below). -->
                             <div class="mb-3">
                                 <label class="form-label small">Target (survives)</label>
-                                <select name="target_id" class="form-select form-select-sm" required>
-                                    <option value="">— choose —</option>
-                                    <?php foreach ($rows as $r): ?>
-                                        <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
+                                <input type="hidden" name="target_id" id="merge-target-id" value="">
+                                <input type="text" id="merge-target-name" class="form-control form-control-sm"
+                                       placeholder="Search publishers by name…" autocomplete="off" required
+                                       aria-label="Search for the target publisher this merge keeps">
+                                <div class="form-text small">Excludes the source publisher chosen above.</div>
                             </div>
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
@@ -774,6 +785,49 @@ if ($hasSchema) {
         wireTypeahead('edit-publisher-musician-name', 'edit-publisher-musician-id', 'edit-publisher-musician-datalist', '?action=musician_search');
         <?php endif; ?>
         wireTypeahead('edit-publisher-parent-name', 'edit-publisher-parent-id', 'edit-publisher-parent-datalist', '?action=publisher_search');
+
+        /* #1868 (rule #43) — Merge-target picker: search-select ONLY, no
+           create arm. Reuses THIS page's own ?action=publisher_search
+           (which delegates to publisherSearchRows(), rule #22) with its
+           `exclude` arm bound to the Source select's LIVE value — read
+           inside the searchUrl callback on every keystroke (not snapshotted
+           at attach() time), so changing Source mid-search still excludes
+           correctly. pickMode:'value': the pick fills the input + hidden id
+           with no network call of its own; the merge form's own POST is the
+           ONE commit, and publisherAdminMerge() (unchanged, server-side)
+           re-verifies both ids exist before doing anything destructive. */
+        if (window.iHymnsPlaceSearch) {
+            const mergeSourceSel  = document.getElementById('merge-source-id');
+            const mergeTargetName = document.getElementById('merge-target-name');
+            const mergeTargetId   = document.getElementById('merge-target-id');
+            if (mergeSourceSel && mergeTargetName && mergeTargetId) {
+                window.iHymnsPlaceSearch.attach(mergeTargetName, {
+                    hiddenIdInput: mergeTargetId,
+                    minChars: 2,
+                    pickMode: 'value',
+                    noun: { singular: 'publisher', plural: 'publishers' },
+                    searchUrl: (q) => '?action=publisher_search&q=' + encodeURIComponent(q)
+                        + '&limit=10'
+                        + (mergeSourceSel.value ? '&exclude=' + encodeURIComponent(mergeSourceSel.value) : ''),
+                    parseResults: (d) => (d.suggestions || []).map((s) => ({
+                        id: s.id,
+                        display_name: s.name,
+                        hint: s.kind || '',
+                    })),
+                });
+                /* Changing Source after a Target was already picked could
+                   leave a stale pick now equal to the new Source — the
+                   server still rejects sourceId === targetId, but clear the
+                   target proactively so the UI never shows a doomed pick. */
+                mergeSourceSel.addEventListener('change', () => {
+                    if (mergeTargetId.value && mergeTargetId.value === mergeSourceSel.value) {
+                        mergeTargetName.value = '';
+                        mergeTargetId.value = '';
+                        mergeTargetId.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                });
+            }
+        }
 
         <?php if ($gates['hasPlaces']): ?>
         if (window.iHymnsPlaceSearch) {
