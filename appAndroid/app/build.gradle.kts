@@ -227,10 +227,10 @@ dependencies {
     // =========================================================================
 
     // Core KTX — Kotlin extensions for Android framework APIs
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.core:core-ktx:1.19.0")
 
     // Activity Compose — ComponentActivity integration with Compose setContent
-    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.activity:activity-compose:1.13.0")
 
     // Lifecycle Runtime Compose — collectAsStateWithLifecycle for StateFlow
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
@@ -245,7 +245,7 @@ dependencies {
     // classes. This is a compile-time code generation approach (no reflection)
     // which provides excellent performance and small APK size.
     // =========================================================================
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
     // =========================================================================
     // ANDROID TV — Leanback Library
@@ -264,7 +264,7 @@ dependencies {
     // =========================================================================
     // TESTING — Instrumented / Device Tests
     // =========================================================================
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
