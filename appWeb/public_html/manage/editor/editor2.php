@@ -155,6 +155,18 @@ $recordingIdTypesForJs = array_map(
    seeds (licence_registry.php), so the pickers still populate. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
+
+/* #1869 (epic #1863, rule #43's LAST item — registry SOURCING, not a
+   typeahead) — the song-part type vocabulary for the Structure tab's section
+   <select> (structure-tab.js), shipped the SAME "server-derive the vocab"
+   convention as the three registries above. songPartTypesForPicker() is
+   existence-gated (rule #19/#20) and returns [] — never throws — on an
+   un-migrated install, in which case structure-tab.js falls back to its own
+   small built-in list rather than this file carrying a second copy of it
+   (see includes/song_part_type_helpers.php's header for why the fallback
+   lives client-side only). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_part_type_helpers.php';
+$songPartTypesForJs = songPartTypesForPicker(getDbMysqli());
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -367,6 +379,14 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
          rights-panel.js pickers. Same emit shape + flags + "classic global registry map"
          convention as the two above. -->
     <script>window._iHymnsLicenceTypes = <?= json_encode($licenceTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
+    <!-- #1869 — song-part type vocabulary (list of {slug,name}, SortOrder-ordered) for
+         the Structure tab's section-type <select> (structure-tab.js). Same emit shape +
+         flags + "classic global registry map" convention as the three above. Emitted
+         BEFORE the `<script type="module">` block below (structure-tab.js reads this at
+         module-evaluation time, top-level) — [] on an un-migrated install, which
+         structure-tab.js treats as "use my own built-in fallback list", never an error. -->
+    <script>window._iHymnsSongPartTypes = <?= json_encode($songPartTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file

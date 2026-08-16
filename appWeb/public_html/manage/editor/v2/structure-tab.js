@@ -29,7 +29,55 @@
 
 import { buildEnrichmentPanel } from './enrichment-panel.js';
 
+/* #1869 (epic #1863, CLAUDE.md rule #43's LAST picker item — registry
+   SOURCING, not a typeahead). This was the whole section-type vocabulary
+   until #1869: 10 types, hand-typed, requiring a code change + redeploy to
+   grow. It now survives ONLY as the MINIMAL BUILT-IN FALLBACK — used when
+   editor2.php's bootstrap payload (window._iHymnsSongPartTypes, sourced from
+   the tblSongPartTypes registry via includes/song_part_type_helpers.php) is
+   missing or empty, which happens on an un-migrated install (rule #19/#20:
+   the migration is web-run, not automatic on deploy) or a test harness that
+   never set the global. NEVER delete this const — it is what keeps the
+   Structure tab usable on a database that hasn't run the #1138 migration. */
 const COMPONENT_TYPES = ['verse', 'chorus', 'refrain', 'bridge', 'pre-chorus', 'tag', 'coda', 'intro', 'outro', 'interlude'];
+
+/**
+ * resolvePartTypes() — the section-type vocabulary the "Structure" tab's type
+ * <select> renders (#1869). PREFERS the live `tblSongPartTypes` registry, shipped
+ * by editor2.php as `window._iHymnsSongPartTypes` (a list of `{slug, name}`,
+ * already ordered by the registry's own SortOrder — see
+ * includes/song_part_type_helpers.php::songPartTypesForPicker()); FALLS BACK to
+ * the hardcoded COMPONENT_TYPES list above only when that global is absent, not
+ * an array, or empty (an un-migrated `tblSongPartTypes`, or this module running
+ * outside editor2.php, e.g. a future standalone test harness).
+ *
+ * ELI5: normally the dropdown's choices come from the database, so a curator can
+ * add "Vamp" or "Ad-Lib" without anyone touching this file — but if the database
+ * hasn't been updated yet, the dropdown still shows the original 10 choices
+ * instead of going blank.
+ *
+ * Computed ONCE at module-evaluation time (top-level `const` below), matching
+ * every other classic-global vocab this page ships (window._iHymnsLinkTypes,
+ * window._iHymnsRecordingIdTypes, window._iHymnsLicenceTypes — external-ids-panel.js
+ * / rights-panel.js read theirs the same "read once, module scope" way).
+ *
+ * @returns {Array<{value:string, label:string}>}
+ */
+function resolvePartTypes() {
+    const served = (typeof window !== 'undefined') ? window._iHymnsSongPartTypes : undefined;
+    if (Array.isArray(served) && served.length > 0) {
+        const mapped = served
+            .filter((t) => t && typeof t.slug === 'string' && t.slug !== '')
+            .map((t) => ({ value: t.slug, label: (typeof t.name === 'string' && t.name !== '') ? t.name : t.slug }));
+        if (mapped.length > 0) { return mapped; }
+    }
+    return COMPONENT_TYPES.map((t) => ({ value: t, label: t.replace(/^\w/, (c) => c.toUpperCase()) }));
+}
+
+/* The resolved vocabulary — a list of {value, label} pairs, DB-sourced when
+   available. buildCard() below is the ONE consumer (the type <select>). */
+const PART_TYPES = resolvePartTypes();
+
 const SAVE_DEBOUNCE_MS = 500;
 
 /**
@@ -156,11 +204,18 @@ export function mountStructureTab(container, opts) {
         const typeSel = document.createElement('select');
         typeSel.className = 'form-select form-select-sm';
         typeSel.style.width = '150px';
-        COMPONENT_TYPES.forEach((t) => {
+        /* #1869 — PART_TYPES (module scope, resolved once above), not the raw
+           COMPONENT_TYPES fallback const directly: DB-sourced when
+           window._iHymnsSongPartTypes was served, hardcoded-fallback
+           otherwise. If the currently-loaded component's type isn't in the
+           resolved list (e.g. free-text data older than the registry), no
+           option is marked selected — the same pre-existing behaviour as
+           before #1869, unchanged here. */
+        PART_TYPES.forEach((t) => {
             const o = document.createElement('option');
-            o.value = t;
-            o.textContent = t.replace(/^\w/, (c) => c.toUpperCase());
-            if (t === comp.type) { o.selected = true; }
+            o.value = t.value;
+            o.textContent = t.label;
+            if (t.value === comp.type) { o.selected = true; }
             typeSel.appendChild(o);
         });
         typeSel.addEventListener('change', () => {
