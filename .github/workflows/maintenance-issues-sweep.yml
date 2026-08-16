@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out alpha (last 300 commits)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: alpha
           # 300 commits matches the local sweep depth used in the
