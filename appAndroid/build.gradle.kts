@@ -27,7 +27,7 @@ plugins {
     // Android Application Plugin — provides the 'android' block for app modules
     // Version must match the AGP version declared in settings.gradle.kts
     // -------------------------------------------------------------------------
-    id("com.android.application") version "8.7.3" apply false
+    id("com.android.application") version "9.3.1" apply false
 
     // -------------------------------------------------------------------------
     // Kotlin Android Plugin — enables Kotlin compilation for Android targets
