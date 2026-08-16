@@ -33,18 +33,18 @@ plugins {
     // Kotlin Android Plugin — enables Kotlin compilation for Android targets
     // Version 2.1.x provides K2 compiler support and improved build performance
     // -------------------------------------------------------------------------
-    id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+    id("org.jetbrains.kotlin.android") version "2.4.10" apply false
 
     // -------------------------------------------------------------------------
     // Kotlin Compose Compiler Plugin — required for Jetpack Compose in Kotlin 2.0+
     // Replaces the old compose compiler version pinning; now a standalone plugin
     // that automatically matches the Kotlin version
     // -------------------------------------------------------------------------
-    id("org.jetbrains.kotlin.plugin.compose") version "2.1.0" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10" apply false
 
     // -------------------------------------------------------------------------
     // Kotlinx Serialization Plugin — enables @Serializable annotations and
     // compile-time code generation for JSON parsing of songs.json data
     // -------------------------------------------------------------------------
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.1.0" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.4.10" apply false
 }
