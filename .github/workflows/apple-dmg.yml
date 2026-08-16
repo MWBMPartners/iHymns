@@ -169,7 +169,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Select Xcode 26
         run: |
@@ -362,7 +362,7 @@ jobs:
 
       - name: Upload DMG as a workflow artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: iHymns-macos-dmg-${{ github.sha }}
           path: ${{ runner.temp }}/iHymns.dmg
@@ -381,7 +381,7 @@ jobs:
           fi
 
       - name: Publish GitHub Release asset
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: iHymns macOS ${{ steps.tag.outputs.tag }}
