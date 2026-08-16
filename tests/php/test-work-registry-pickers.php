@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Works registry-picker guard (#1864, epic #1863 / rule #43)
+ * iHymns — Works + Songbook registry-picker guard (#1864/#1865, epic #1863 / rule #43)
  * =============================================================================
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
@@ -24,6 +24,15 @@ declare(strict_types=1);
  *     `pickMode: 'value'`, reuses the EXISTING api2 tune_search endpoint
  *     (never a local fork), and the `copyright_holder_id` field is both
  *     emitted by the markup AND read by the PHP handler (rule #33).
+ *
+ * §F below extends the same guard to #1865's Songbook Publisher picker (the
+ * create form's quick Publisher field): the create-save path resolves it
+ * through the SAME `publisherResolvePickedOrCreate()` funnel #1864 built
+ * (never a raw client id, never a direct `publisherFindOrCreateByName()`
+ * bypass), seeds `tblSongbookPublishers` (never a second registry-create
+ * path), and the `publisher_id` hidden field is honoured at both ends
+ * (rule #33). Reuses this file's EXISTING `wrp*` helpers rather than
+ * duplicating them into a new file — one guard mechanism, two features.
  *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
@@ -76,10 +85,11 @@ declare(strict_types=1);
  * @see appWeb/public_html/includes/publisher_helpers.php  publisherSearchRows(), publisherResolvePickedOrCreate()
  * @see appWeb/public_html/manage/works.php                 the create+edit form, the two hidden-id pairs, the attach() wiring
  * @see appWeb/public_html/manage/publishers.php             delegates to publisherSearchRows() (was the superset fork)
- * @see appWeb/public_html/manage/songbooks.php              delegates to publisherSearchRows() (kept its pre-migration note)
+ * @see appWeb/public_html/manage/songbooks.php              delegates to publisherSearchRows(); §F: the 'create' case's Publisher picker + tblSongbookPublishers seed (#1865)
+ * @see appWeb/public_html/manage/includes/songbook-form-fields.php  the create-only Publisher picker markup (#1865)
  * @see tests/php/test-tune-lockstep.php                     the sibling guard this mirrors in shape
  * @see /tmp/.../pickers-1864-spec.md                        the implementation spec this proves
- * @see #1864, epic #1863
+ * @see #1864, #1865, epic #1863
  */
 
 $repoRoot = dirname(__DIR__, 2);
@@ -181,6 +191,41 @@ function wrpSliceIfBlockByCondition(string $src, string $conditionNeedle): strin
 function wrpSliceAssignedClosure(string $src, string $varName): string
 {
     $pos = strpos($src, '$' . $varName . ' = static function');
+    if ($pos === false) { return ''; }
+
+    $bracePos = strpos($src, '{', $pos);
+    if ($bracePos === false) { return ''; }
+
+    $depth = 0;
+    $len   = strlen($src);
+    for ($j = $bracePos; $j < $len; $j++) {
+        if ($src[$j] === '{') {
+            $depth++;
+        } elseif ($src[$j] === '}') {
+            $depth--;
+            if ($depth === 0) {
+                return substr($src, $pos, $j - $pos + 1);
+            }
+        }
+    }
+    return substr($src, $pos);
+}
+
+/**
+ * Slice a `case 'LABEL': { ... }` block (#1865, §F) — same brace-counting
+ * approach as `wrpSliceIfBlockByCondition()`/`wrpSliceAssignedClosure()`,
+ * anchored on a `switch`/`case` label instead of an `if` condition or a
+ * closure assignment. `manage/songbooks.php`'s POST handler is one big
+ * `switch ($action) { case 'create': { ... } case 'update': { ... } ... }`,
+ * so this is what lets §F bound its assertions to the 'create' arm ONLY —
+ * without it, a substring check against the whole file could not tell "the
+ * create path resolves the picker" apart from "the file contains this text
+ * somewhere, possibly in the unrelated update path".
+ */
+function wrpSliceCaseBlock(string $src, string $label): string
+{
+    $needle = "case '" . $label . "':";
+    $pos = strpos($src, $needle);
     if ($pos === false) { return ''; }
 
     $bracePos = strpos($src, '{', $pos);
@@ -323,6 +368,33 @@ if (strpos($sliceD, 'NeedleInBar') !== false) {
     $mutationFailures[] = "wrpSliceAssignedClosure() FAILS-LOW self-test: \$foo's slice bled into \$bar's closure";
 }
 
+/* --- wrpSliceCaseBlock() (#1865, §F): finds the 'create' case block only,
+   brace-counts through a nested if, and does not bleed into the sibling
+   'update' case. --- */
+$fixtureF = "switch (\$action) {\n"
+  . "    case 'create': {\n"
+  . "        if (true) { echo 'InnerCreateNeedle'; }\n"
+  . "        echo 'OuterCreateNeedle';\n"
+  . "        break;\n"
+  . "    }\n"
+  . "    case 'update': {\n"
+  . "        echo 'UpdateNeedle';\n"
+  . "        break;\n"
+  . "    }\n"
+  . "}\n";
+$sliceF = wrpSliceCaseBlock($fixtureF, 'create');
+foreach (['InnerCreateNeedle', 'OuterCreateNeedle'] as $needle) {
+    if (strpos($sliceF, $needle) === false) {
+        $mutationFailures[] = "wrpSliceCaseBlock() FAILS-HIGH self-test did not find '{$needle}' inside its own fixture 'create' block (nested-brace handling)";
+    }
+}
+if (strpos($sliceF, 'UpdateNeedle') !== false) {
+    $mutationFailures[] = "wrpSliceCaseBlock() FAILS-LOW self-test: 'create' slice bled into the sibling 'update' case";
+}
+if (wrpSliceCaseBlock($fixtureF, 'no_such_case') !== '') {
+    $mutationFailures[] = 'wrpSliceCaseBlock() FAILS-LOW self-test: a non-existent case label should return an empty slice';
+}
+
 /* --- wrpSliceFunctionDecl(): same alpha/beta shape as test-tune-lockstep.php. --- */
 $fixtureE = "function alpha(): array\n{\n    \$cols = ['NeedleInAlpha'];\n    return \$cols;\n}\n\nfunction beta(): array\n{\n    \$cols = ['NeedleInBeta'];\n    return \$cols;\n}\n";
 $sliceE = wrpSliceFunctionDecl($fixtureE, 'alpha');
@@ -386,14 +458,28 @@ foreach ([
     }
 }
 
+/* #1865 §F — the create-form Publisher picker's markup lives in the shared
+   partial, not songbooks.php itself (rule #22 — one field, one partial). */
+$sbFormFieldsFile = $web . '/manage/includes/songbook-form-fields.php';
+if (!is_readable($sbFormFieldsFile)) {
+    fwrite(STDERR, "FATAL: could not read manage/includes/songbook-form-fields.php at {$sbFormFieldsFile}\n");
+    exit(1);
+}
+
 $helpersRaw = (string)file_get_contents($helpersFile);
 $worksRaw   = (string)file_get_contents($worksFile);
+$songbooksRaw      = (string)file_get_contents($songbooksFile);
+$sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
 
 /* Two independently-tested views of works.php (see the file-level
-   doc-block's "stripper trap" section) — never conflate them. */
+   doc-block's "stripper trap" section) — never conflate them. Same pattern
+   applied to songbooks.php for §F (its picker wiring also lives inside a
+   plain <script> tag — the identical T_INLINE_HTML trap). */
 $helpersPhpView = wrpStripPhpComments($helpersRaw);
 $worksPhpView   = wrpStripPhpComments($worksRaw);
 $worksAllView   = wrpStripAllComments($worksRaw);
+$songbooksPhpView = wrpStripPhpComments($songbooksRaw);
+$songbooksAllView = wrpStripAllComments($songbooksRaw);
 
 /* ---- A1: publisherSearchRows() is declared EXACTLY ONCE, and only in
    includes/publisher_helpers.php. Tree-derived — a second copy anywhere
@@ -549,6 +635,94 @@ if (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $worksPhp
 }
 
 /* =========================================================================
+ * §F — #1865: the Songbook create-form Publisher picker
+ * ========================================================================= */
+
+/* ---- F1: the songbooks.php 'create' case resolves the Publisher field
+   through publisherResolvePickedOrCreate() (never a raw client-supplied id,
+   never a direct publisherFindOrCreateByName() bypass — the trust-but-verify
+   contract rule #37/#43 requires) and seeds tblSongbookPublishers — the SAME
+   funnel + the SAME table the Edit arm's own richer multi-publisher
+   reconciliation writes, so there is exactly one write path per table
+   (rule #37's "never a second sync path"). Bounded to the 'create' case ONLY
+   via wrpSliceCaseBlock() — the sibling 'update' case legitimately contains
+   neither of these (it goes through the multi-publisher picker instead), so
+   an unbounded whole-file scan could not tell "the create arm is wired"
+   apart from "this text appears somewhere in a 5000-line file". ---- */
+$sbCreateBlock = wrpSliceCaseBlock($songbooksPhpView, 'create');
+if ($sbCreateBlock === '') {
+    $failures[] = "could not locate case 'create': { ... } in manage/songbooks.php (slicer or file shape changed)";
+} else {
+    if (strpos($sbCreateBlock, 'publisherResolvePickedOrCreate(') === false) {
+        $failures[] = "songbooks.php's 'create' case never calls publisherResolvePickedOrCreate() — the Publisher field's find-or-create-on-commit is broken (#1865, rule #37/#43)";
+    }
+    /* Word-boundary, not strpos: rule #34's own documented trap —
+       'tblSongbookPublishersXXX' still contains 'tblSongbookPublishers' as
+       a bare substring, so a table-name typo/rename would stay wrong-but-
+       green under a plain strpos() (see test-publisher-registry.php's
+       pubHas() doc-comment for the identical lesson, applied here). */
+    if (!preg_match('/INSERT INTO tblSongbookPublishers\b/', $sbCreateBlock)) {
+        $failures[] = "songbooks.php's 'create' case never writes INSERT INTO tblSongbookPublishers — a brand-new songbook's Publisher field stops short of the registry link (#1865, rule #37)";
+    }
+    if (strpos($sbCreateBlock, 'publisherFindOrCreateByName(') !== false) {
+        $failures[] = "songbooks.php's 'create' case calls publisherFindOrCreateByName() directly — it must go through publisherResolvePickedOrCreate() so a verified picker claim is trusted over a blind name resolve (rule #37/#43)";
+    }
+}
+
+/* ---- F2: no bare free-text write becomes authoritative over the registry
+   — the create INSERT's Publisher column is fed by $publisher (the typed
+   string) as always, but the SAME case must ALSO resolve+link it; F1 above
+   already proves the link exists. This assertion additionally locks in that
+   the resolver call is gated on $hasPublishersSchema (pre-migration safety —
+   rule #9), so an un-migrated install degrades to "display-string-only"
+   instead of a fatal on a missing table. ---- */
+if ($sbCreateBlock !== '' && !preg_match('/hasPublishersSchema[\s\S]{0,400}publisherResolvePickedOrCreate\(/', $sbCreateBlock)) {
+    $failures[] = "songbooks.php's 'create' case calls publisherResolvePickedOrCreate() without gating it on \$hasPublishersSchema first — a pre-migration install (no tblSongbookPublishers yet) would risk a fatal instead of degrading gracefully (rule #9)";
+}
+
+/* ---- F3: the publisher_id wire contract is honoured at BOTH ends
+   (rule #33) — the shared form-fields partial EMITS name="publisher_id" and
+   the songbooks.php 'create' case READS $_POST['publisher_id']. Raw markup
+   (an HTML attribute is never inside a comment in the real file) + the
+   PHP-comment-stripped create-block view for the read side. ---- */
+if (strpos($sbFormFieldsRaw, 'name="publisher_id"') === false) {
+    $failures[] = 'manage/includes/songbook-form-fields.php no longer emits name="publisher_id" — the create-form Publisher picker\'s hidden id is not wired';
+}
+if ($sbCreateBlock === '' || !preg_match('/\$_POST\[\s*\'publisher_id\'\s*\]/', $sbCreateBlock)) {
+    $failures[] = 'songbooks.php\'s \'create\' case never reads $_POST[\'publisher_id\'] — the partial emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+}
+
+/* ---- F4: the client wiring actually attaches the create-only picker with
+   pickMode:'value', and reuses THIS page's own ?action=publisher_search
+   (never a fabricated endpoint). All-comments-stripped view, same reasoning
+   as C1/C2 above. ---- */
+if (!preg_match("/'create-publisher'[\\s\\S]{0,200}'create-publisher-id'/", $songbooksAllView)) {
+    $failures[] = "songbooks.php's attach() wiring is missing the ['create-publisher', 'create-publisher-id'] pair — the #1865 picker is not wired";
+}
+if (strpos($songbooksAllView, 'iHymnsPlaceSearch.attach') === false) {
+    $failures[] = 'songbooks.php no longer calls window.iHymnsPlaceSearch.attach(...) for the create-form Publisher picker';
+}
+if (strpos($songbooksAllView, "pickMode: 'value'") === false) {
+    $failures[] = "songbooks.php's create-publisher picker no longer sets pickMode: 'value' — a picker default that isn't 'value' would try to network-upsert on pick, which the #1865 field does not want (persistence is the form POST, not a pick-time write)";
+}
+
+/* ---- F5: the Edit arm's pre-existing quick Publisher field (datalist
+   convenience) and its richer multi-publisher picker are UNCHANGED by
+   #1865 — this locks in the "create-arm only" scope decision so a future
+   edit can't silently regress the Edit modal's own working path while
+   touching the shared partial. ---- */
+foreach (['id="edit-publisher"', 'list="edit-publisher-datalist"'] as $needle) {
+    if (strpos($sbFormFieldsRaw, $needle) === false) {
+        $failures[] = "manage/includes/songbook-form-fields.php no longer emits {$needle} — the Edit modal's quick Publisher field regressed (#1865 was scoped to leave it as-is)";
+    }
+}
+foreach (['name="publisher_ids[]"', 'name="publisher_roles[]"', 'name="publisher_notes[]"'] as $needle) {
+    if (strpos($songbooksRaw, $needle) === false) {
+        $failures[] = "songbooks.php no longer emits {$needle} — the Edit arm's richer multi-publisher picker regressed (#1865 was scoped to leave it as-is)";
+    }
+}
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -559,20 +733,25 @@ if ($failures || $mutationFailures) {
         fwrite(STDERR, "\nA guard that cannot be proven to fail is not trustworthy (rule #34).\n\n");
     }
     if ($failures) {
-        fwrite(STDERR, "FAIL: Works registry-picker guard (#1864):\n\n");
+        fwrite(STDERR, "FAIL: Works + Songbook registry-picker guard (#1864/#1865):\n\n");
         foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
         fwrite(STDERR, "\n");
     }
     exit(1);
 }
 
-echo "PASS: Works registry-picker guard — publisherSearchRows() declared exactly once in "
+echo "PASS: Works + Songbook registry-picker guard — publisherSearchRows() declared exactly once in "
    . "includes/publisher_helpers.php; all {$gateHandlerCount} manage/*.php publisher_search handlers "
    . "delegate to it with no re-inlined fork; \$persistWorkExtraFields writes CopyrightHolder + "
    . "CopyrightHolderId in lockstep via publisherResolvePickedOrCreate(), which falls back to "
    . "publisherFindOrCreateByName(); \"INSERT INTO tblPublishers\" is confined to the two funnel files ("
    . count($insertSites) . " site(s) found); works.php's client wiring attaches all 4 #1864 pickers "
    . "with pickMode:'value', reuses api2's tune_search (no local fork) and this page's own "
-   . "publisher_search; the copyright_holder_id wire contract is honoured at both ends. All mutation "
-   . "self-tests went red/green as expected.\n";
+   . "publisher_search; the copyright_holder_id wire contract is honoured at both ends. "
+   . "§F (#1865): songbooks.php's 'create' case resolves the Publisher field via "
+   . "publisherResolvePickedOrCreate() (never a direct publisherFindOrCreateByName() bypass) and seeds "
+   . "tblSongbookPublishers; the publisher_id wire contract is honoured at both ends; the create-only "
+   . "picker is wired with pickMode:'value' against this page's own publisher_search; the Edit arm's "
+   . "quick field + richer multi-publisher picker are unchanged. All mutation self-tests went red/green "
+   . "as expected.\n";
 exit(0);

@@ -184,16 +184,40 @@ $sbfHasOpenLibraryCols = isset($sbfHasOpenLibraryCols) ? (bool)$sbfHasOpenLibrar
 </div>
 <div class="mb-3">
     <label class="form-label<?= $sbfMode === 'create' ? ' small' : '' ?>" for="<?= $sbfMode ?>-publisher">Publisher</label>
+    <?php if ($sbfMode === 'create'): ?>
+    <!-- #1865 (rule #37/#43) — CREATE only: wired to the shared
+         iHymnsPlaceSearch typeahead (pickMode:'value'; wiring lives in
+         songbooks.php's own <script>, next to the origin-city attach()
+         calls) instead of the old plain-suggestion <datalist>. A picked
+         candidate echoes its own registry Name into this input and its Id
+         into the sibling hidden publisher_id; free-typing over a pick
+         clears the hidden id (place-search.js's own contract — #1507/#1594
+         a11y come built in). The 'create' POST handler resolves whichever
+         the curator left behind — a verified pick or a typed name — through
+         publisherResolvePickedOrCreate() (includes/publisher_helpers.php),
+         seeding BOTH tblSongbookPublishers (the primary/only publisher on a
+         brand-new book, which has no Edit modal yet to use the richer
+         picker below) and the Publisher denorm mirror in one step — a new
+         songbook no longer starts with an unlinked free-text publisher. -->
+    <input type="text" class="form-control form-control-sm"
+           name="publisher" id="create-publisher" maxlength="255"
+           placeholder="e.g. Praise Trust" autocomplete="off">
+    <input type="hidden" name="publisher_id" id="create-publisher-id" value="">
+    <?php else: ?>
     <?php /* #93 — registry-backed typeahead: the datalist is populated from
-             ?action=publisher_search by the boot script below (both create +
-             edit). This is the "quick" path; the Edit modal's richer
-             multi-publisher picker (with roles) supersedes it on save when
-             used. A pre-migration install returns no suggestions, so the field
-             degrades to a plain text box. */ ?>
-    <input type="text" class="form-control<?= $sbfMode === 'create' ? ' form-control-sm' : '' ?> js-publisher-search"
-           name="publisher" id="<?= $sbfMode ?>-publisher" maxlength="255" placeholder="e.g. Praise Trust"
-           list="<?= $sbfMode ?>-publisher-datalist" autocomplete="off">
-    <datalist id="<?= $sbfMode ?>-publisher-datalist"></datalist>
+             ?action=publisher_search by the boot script below. This is the
+             "quick" path; the Edit modal's richer multi-publisher picker
+             (with roles, further down this form) is the structured-link
+             surface here and supersedes it on save when used — #1865 left
+             this Edit instance as a plain search-assist convenience rather
+             than layering a second write path onto an already-working
+             reconciliation (rule #22/#37). A pre-migration install returns
+             no suggestions, so the field degrades to a plain text box. */ ?>
+    <input type="text" class="form-control js-publisher-search"
+           name="publisher" id="edit-publisher" maxlength="255" placeholder="e.g. Praise Trust"
+           list="edit-publisher-datalist" autocomplete="off">
+    <datalist id="edit-publisher-datalist"></datalist>
+    <?php endif; ?>
 </div>
 <div class="mb-3">
     <label class="form-label<?= $sbfMode === 'create' ? ' small' : '' ?>" for="<?= $sbfMode ?>-publication-year">Publication year / edition</label>
