@@ -178,7 +178,7 @@ dependencies {
     // When using the BOM, individual Compose dependencies do not specify
     // a version — the BOM provides it automatically.
     // =========================================================================
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
