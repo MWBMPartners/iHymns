@@ -41,6 +41,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    need. Neither existed before P4b. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1860 Phase 3 — $slugFor below delegates to workSlugify() (the exact
+   $validateIswc -> ihymns_canonical_iswc() precedent a few lines up, rule
+   #22) so a Work minted by the auto-linker (includes/work_admin.php) and a
+   Work created by hand through this page land on byte-identical slugs for
+   identical titles. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -65,10 +71,14 @@ $csrf    = csrfToken();
  * URL-safe lowercase slug from a free-text title. ASCII-only —
  * non-ASCII characters drop. Multiple separators collapse to one
  * hyphen; leading/trailing hyphens are stripped.
+ *
+ * #1860 Phase 3 — delegates to the shared workSlugify() (includes/
+ * work_admin.php) rather than owning its own copy (rule #22 — one fold,
+ * not two; the exact $validateIswc -> ihymns_canonical_iswc() precedent
+ * above). Behaviour is byte-identical to the closure this replaces.
  */
 $slugFor = static function (string $name): string {
-    $ascii = (string)preg_replace('/[^A-Za-z0-9]+/u', '-', $name);
-    return trim(strtolower($ascii), '-');
+    return workSlugify($name);
 };
 
 /**

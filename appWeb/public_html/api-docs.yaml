@@ -14824,6 +14824,166 @@ paths:
                         matchedAlias: { type: string, nullable: true }
                   tableMissing: { type: boolean }
 
+  /manage/editor/api2.php?action=work_search:
+    get:
+      operationId: editorWorkSearch
+      tags: [Editor API v2]
+      summary: Typeahead over the Works registry (#1860 Phase 3)
+      description: |
+        GET, editor role only. Mirrors `tune_search`'s shape.
+        `tableMissing:true` (empty list, not a 500) on an install without
+        `tblWorks`. `ccli` is included only when `tblWorks.Ccli` exists — a
+        pre-works-identity install still returns ISWC-based rows rather than
+        degrading to `tableMissing`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [work_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 20 }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        title: { type: string }
+                        slug: { type: string }
+                        disambiguation: { type: string }
+                        iswc: { type: string, nullable: true }
+                        ccli: { type: string, nullable: true }
+                        parentWorkId: { type: integer, nullable: true }
+                        usage: { type: integer }
+                  tableMissing: { type: boolean }
+
+  /manage/editor/api2.php?action=song_work_autolink:
+    post:
+      operationId: editorSongWorkAutolink
+      tags: [Editor API v2]
+      summary: Auto find-or-link a song's Work by its stored CCLI/ISWC (#1860 Phase 3)
+      description: |
+        POST, editor role only. The commit-time hook Editor2 fires after a
+        CCLI/ISWC field save lands (design §3.7 — the client wiring itself
+        is a tracked follow-up build). Server-authoritative: reads the
+        song's STORED `Ccli`/`Iswc` from `tblSongs`, never a client-sent
+        identifier value. A work-link CONFLICT is a field on the 200 body,
+        never an HTTP failure — a work-link ambiguity must never fail the
+        song save.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+      responses:
+        "200":
+          description: Work-link plan applied (or a no-op)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  linked: { type: boolean }
+                  workId: { type: integer, nullable: true }
+                  workTitle: { type: string, nullable: true }
+                  workSlug: { type: string, nullable: true }
+                  songCount: { type: integer }
+                  created: { type: boolean }
+                  createdParent: { type: boolean }
+                  rehomed: { type: boolean }
+                  refined: { type: boolean }
+                  conflict: { type: string, nullable: true }
+                  iswcInvalid: { type: boolean }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The work-identity migration cards have not all been applied yet (run them at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_work_set:
+    post:
+      operationId: editorSongWorkSet
+      tags: [Editor API v2]
+      summary: Manual "Part of work" picker — link, create-by-title, or unlink (#1860 Phase 3)
+      description: |
+        POST, editor role only. Exactly one mode per request: `{songId,
+        workId}` links to an existing Work (404 if it doesn't exist);
+        `{songId, title}` is the manual picker's find-or-create for
+        identifier-less hymns (design §3.7.2), 400 on an empty/whitespace
+        title; `{songId, workId, unlink:true}` drops that one membership —
+        the ONLY manual-unlink surface (design §3.3.1 reserves unlink to
+        humans). An already-gone unlink returns `{ok:true, unlinked:true,
+        deleted:0}`, not an error (idempotent double-click).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+                workId: { type: integer, description: "Link/unlink mode." }
+                title: { type: string, description: "Find-or-create mode." }
+                unlink: { type: boolean, description: "With workId, deletes that one membership." }
+      responses:
+        "200":
+          description: Link / create-by-title applied, or unlinked
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      ok: { type: boolean, example: true }
+                      linked: { type: boolean, example: true }
+                      workId: { type: integer }
+                      workTitle: { type: string, nullable: true }
+                      workSlug: { type: string, nullable: true }
+                      songCount: { type: integer }
+                      created: { type: boolean }
+                      createdParent: { type: boolean, example: false }
+                      rehomed: { type: boolean, example: false }
+                      refined: { type: boolean, example: false }
+                      conflict: { type: string, nullable: true, example: null }
+                      iswcInvalid: { type: boolean, example: false }
+                  - type: object
+                    properties:
+                      ok: { type: boolean, example: true }
+                      unlinked: { type: boolean, example: true }
+                      deleted: { type: integer }
+        "400":
+          description: Missing songId, an empty/whitespace title, or neither/both of workId and title supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song or Work not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The work-identity migration cards have not all been applied yet (run them at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=song_tune_set:
     post:
       operationId: editorSongTuneSet

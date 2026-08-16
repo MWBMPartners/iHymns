@@ -309,6 +309,24 @@ return [
          * file's history already proves out.
          * --------------------------------------------------------------- */
         'service_drive'                         => 'deliberate API-first surface #1770 C4; out-of-repo driver-shim consumer (curl/Companion/ProPresenter-class automation), invisible to an in-repo scan by construction — same posture as the admin/org API-parity family',
+
+        /* ---------------------------------------------------------------
+         * 1h. #1860 Phase 3 — the work-identity find-or-link server core
+         * landed AHEAD of its Editor2 client (deliberately — the build
+         * spec's own §7 scopes the client wiring as a SEPARATE follow-up
+         * build, the same "schema/core now, UI next" shape as 1g's
+         * service_drive family above). All three delegate entirely to
+         * includes/work_admin.php's workFindOrLinkByIdentifier() /
+         * workLinkPlan() — no decision logic lives in api2.php itself.
+         *
+         * Self-cleaning expected the moment the Editor2 follow-up wires
+         * metadata-tab.js's CCLI/ISWC commit listener + the "Part of work"
+         * picker (design §3.7) — the same F5/F6/1g pattern this file's
+         * history already proves out.
+         * --------------------------------------------------------------- */
+        'song_work_autolink'                    => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 1) is a tracked follow-up build',
+        'song_work_set'                         => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
+        'work_search'                           => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
     ],
 
     /* =====================================================================

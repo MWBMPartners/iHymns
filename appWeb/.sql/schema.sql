@@ -723,13 +723,18 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     Number      INT UNSIGNED    NOT NULL COMMENT 'Component number (e.g., verse 1, verse 2)',
     SortOrder   INT UNSIGNED    NOT NULL COMMENT 'Display order within the song',
     Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
+    SourceWorkId INT UNSIGNED   NULL DEFAULT NULL COMMENT 'Optional provenance: the Work this section excerpts (medley stitching, #1860 §3.6b). Links the WORK, not a songbook song, so it survives songbook re-keys (#1679). NULL = whole-song default (the song''s own tblWorkSongs membership). DORMANT until Phase 5 wires component_upsert',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),
+    INDEX idx_SourceWork    (SourceWorkId),
 
     CONSTRAINT fk_Components_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE
+    -- fk_Component_SourceWork is a TRAILING ALTER further down this file
+    -- (tblWorks is declared ~2400 lines later) — see fk_Works_Tune's
+    -- neighbouring comment for why.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -3232,6 +3237,60 @@ CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ----------------------------------------------------------------------------
+-- tblWorkExternalIds (#1860 §3.5) — extensible work-grain external-ID
+-- overflow. Mirrors tblSongExternalIds with two deliberate deltas: the
+-- UNIQUE is TABLE-WIDE (IdType, IdValue) — a work identifier maps to at
+-- most ONE work globally, unlike recording ids which repeat per song —
+-- and there is no IdScope column (everything here is work-grain by
+-- construction). DORMANT until a WORK_IDENTIFIER_TYPES storage entry
+-- flips to this table (migrate-work-identity-model.php).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkExternalIds (
+    Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    WorkId    INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — the composition this identifier belongs to (#1860 §3.5)',
+    IdType    VARCHAR(40)  NOT NULL COMMENT 'Registry/society identifier key, e.g. ascap | bmi | prs | … — app-validated against includes/media_identifiers.php WORK_IDENTIFIER_TYPES (VARCHAR not ENUM, rule #20). The four column-backed keys (iswc/ccli/bowi/musicbrainz-work) stay on tblWorks'' own uq_* columns — this table is the extensible overflow, never their replacement',
+    IdValue   VARCHAR(191) NOT NULL COMMENT 'The identifier value as issued by the authority. VARCHAR(191) keeps the utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit (mirrors tblSongExternalIds.IdValue)',
+    Source    VARCHAR(40)  NULL DEFAULT NULL COMMENT 'Provenance system that supplied this row, e.g. manual | musicbrainz | luminate (free text, mirrors tblSongExternalIds.Source)',
+    SourceRef VARCHAR(191) NULL DEFAULT NULL COMMENT 'External primary id from Source for idempotent re-import / dedup; NULL for manual entry — the (Source, SourceRef) pattern, rule #20',
+    CreatedAt TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Type_Value (IdType, IdValue),
+    INDEX      idx_Work      (WorkId),
+
+    CONSTRAINT fk_WorkExtIds_Work
+        FOREIGN KEY (WorkId) REFERENCES tblWorks(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Key/value work-grain external-ID overflow (#1860 §3.5). Two deliberate deltas from tblSongExternalIds: the UNIQUE is TABLE-WIDE (IdType, IdValue) — a work identifier maps to at most ONE work globally, unlike recording ids which repeat per song — and there is no IdScope column (everything here is work-grain by construction). DORMANT until a WORK_IDENTIFIER_TYPES storage entry flips to this table.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorkComponents (#1860 §3.6) — medley composition. A medley Work (with
+-- its OWN CCLI) CONTAINS independent constituent Works — many-to-many,
+-- deliberately NOT ParentWorkId (which means is-a-variant-of, §3.2). App-
+-- level guards (MedleyWorkId <> ComponentWorkId, bounded-depth cycle
+-- reject) live in the write core, the DB cannot express them. DORMANT
+-- until the /manage/works constituent editor lands (Phase 5).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkComponents (
+    MedleyWorkId    INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — the medley (a Work with its OWN CCLI) that CONTAINS the constituent works (#1860 §3.6). M:N contains — deliberately NOT ParentWorkId, which means is-a-variant-of (§3.2)',
+    ComponentWorkId INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — an independent constituent work; keeps its own tblWorkSongs memberships and identity untouched',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Order of the constituent inside the medley (mirrors tblWorkSongs.SortOrder)',
+    Note            VARCHAR(255) NULL COMMENT 'Optional curator note (mirrors tblWorkSongs.Note)',
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (MedleyWorkId, ComponentWorkId),
+    INDEX idx_component (ComponentWorkId),
+
+    CONSTRAINT fk_medley_work
+        FOREIGN KEY (MedleyWorkId)    REFERENCES tblWorks(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_component_work
+        FOREIGN KEY (ComponentWorkId) REFERENCES tblWorks(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Medley composition (#1860 §3.6): a medley Work CONTAINS independent constituent Works (M:N). App-level guards live in the write core, the DB cannot express them: MedleyWorkId <> ComponentWorkId, bounded-depth cycle reject. DORMANT until the /manage/works constituent editor lands (Phase 5).';
+
+
 -- ============================================================================
 -- INTERCHANGE FIDELITY + INGEST HARDENING + IDENTITY MAP (#1066)
 -- One-pass forward-looking schema for the multi-format interchange, the
@@ -3856,6 +3915,16 @@ ALTER TABLE tblSongs
 ALTER TABLE tblWorks
     ADD CONSTRAINT fk_Works_Tune
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Back-reference FK from tblSongComponents.SourceWorkId -> tblWorks (#1860
+-- §3.6b; added here for the same reason as fk_Works_Tune immediately above:
+-- tblSongComponents is declared before tblWorks in this file, so the FK
+-- cannot be inline. The column + index are declared inline in the
+-- tblSongComponents block above). ON DELETE SET NULL, never CASCADE —
+-- deleting a Work must never delete a song's section.
+ALTER TABLE tblSongComponents
+    ADD CONSTRAINT fk_Component_SourceWork
+        FOREIGN KEY (SourceWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL;
 
 -- Back-reference FK from tblSongs.DeletedBy -> tblUsers (added here rather than
 -- inline for the same reason as fk_Songs_Tune: tblSongs is created before

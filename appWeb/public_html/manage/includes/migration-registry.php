@@ -4213,4 +4213,36 @@ return [
             || !_migProbe_columnExists($db, 'tblSongbooks', 'IlId')
             || !_migProbe_columnExists($db, 'tblSongMedia', 'IlId'),
     ],
+
+    'work-identity-model' => [
+        'script' => 'migrate-work-identity-model.php',
+        'card' => [
+            'title'  => 'Work identity model (#1860 Phase 3)',
+            'body'   => 'Creates <code>tblWorkExternalIds</code> (extensible work-grain'
+                      . ' external-ID overflow, table-wide <code>(IdType, IdValue)</code>'
+                      . ' UNIQUE) and <code>tblWorkComponents</code> (medley composition'
+                      . ' — a Work with its own CCLI CONTAINS independent constituent'
+                      . ' Works, M:N, distinct from the <code>ParentWorkId</code> variant'
+                      . ' hierarchy), and adds <code>tblSongComponents.SourceWorkId</code>'
+                      . ' (nullable FK — per-section medley source provenance,'
+                      . ' <code>ON DELETE SET NULL</code>). Requires <code>tblWorks</code>'
+                      . ' — run &ldquo;Works&rdquo; above first if this card warns about'
+                      . ' it. Additive, idempotent, DORMANT — nothing reads or writes any'
+                      . ' of it until the work-link write core and Phase-5 editors land.'
+                      . ' Safe to re-run.',
+            'button' => 'Run Work Identity Model Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. Every object this
+           script creates must exist before the card shows green; a partial apply
+           (e.g. tables created but the SourceWorkId FK step failed) correctly
+           stays pending. All FKs need tblWorks, so — like 'works-identity' — this
+           stays pending on an install that hasn't run 'works' yet; registry ORDER
+           resolves that for "Apply all pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblWorkExternalIds')
+            || !_migProbe_tableExists($db, 'tblWorkComponents')
+            || !_migProbe_columnExists($db, 'tblSongComponents', 'SourceWorkId')
+            || !_migProbe_indexExists($db, 'tblSongComponents', 'idx_SourceWork')
+            || !_migProbe_constraintExists($db, 'tblSongComponents', 'fk_Component_SourceWork'),
+    ],
 ];

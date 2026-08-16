@@ -191,6 +191,42 @@ declare(strict_types=1);
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
  *   POST revision_restore       { revisionId }                -> { ok, songId }
+ *   GET  work_search?q=&limit=                                -> { ok, suggestions, tableMissing? }
+ *                               #1860 Phase 3 — typeahead over the tblWorks registry (mirror of
+ *                               tune_search above). tableMissing:true on an un-migrated (no
+ *                               tblWorks) install, never a 500. `ccli` is included only when the
+ *                               column exists (boolean-gated SQL fragment, rule #5 carve-out) —
+ *                               a pre-works-identity install still returns ISWC-based rows.
+ *   POST song_work_autolink     { songId }                    -> { ok, linked, workId, workTitle,
+ *                               workSlug, songCount, created, createdParent, rehomed, refined,
+ *                               conflict, iswcInvalid }
+ *                               #1860 Phase 3 — the commit-time hook Editor2 fires after a
+ *                               CCLI/ISWC field save lands (§7, a FOLLOW-UP build). Server-
+ *                               authoritative: reads the song's STORED Ccli/Iswc from tblSongs,
+ *                               never a client-sent value (rule #35's read-back posture). A
+ *                               work-link CONFLICT is a field on the 200 body, never an HTTP
+ *                               failure (a work-link ambiguity must never fail the song save).
+ *                               404 unknown song; 409 when the work-identity migration cards
+ *                               (`works` + `works-identity` + `work-identity-model`) haven't
+ *                               all been applied yet. Delegates entirely to
+ *                               workFindOrLinkByIdentifier() (includes/work_admin.php) — no
+ *                               decision logic lives here.
+ *   POST song_work_set          { songId, workId } -> link to an existing work
+ *                               { songId, title }  -> the manual picker's find-or-create for
+ *                                                     identifier-less hymns (§3.7.2)
+ *                               { songId, workId, unlink:true } -> the ONLY manual-unlink
+ *                                                     surface (§3.3.1 reserves unlink to humans)
+ *                               -> { ok, linked, workId, workTitle, workSlug, songCount, created,
+ *                                    createdParent:false, rehomed:false, refined:false,
+ *                                    conflict:null, iswcInvalid:false } (link / create-by-title)
+ *                               -> { ok, unlinked:true, deleted } (unlink; already-gone -> deleted:0,
+ *                                    the idempotent-double-click posture of song_link_remove above)
+ *                               #1860 Phase 3 — exactly one mode per request (400 otherwise);
+ *                               empty/whitespace title -> 400. 404 unknown song, or an unknown
+ *                               workId on the link/unlink modes. 409 un-migrated install. All
+ *                               writes delegate to includes/work_admin.php (workExists() /
+ *                               workFindOrCreateByTitle() / workLinkSongRow() /
+ *                               workUnlinkSongRow()) — never a second inline INSERT/DELETE.
  *
  * tblSongRevisions NewData is the FULL hydrated record (ed2_buildSongSnapshot) —
  * the same shape load_song returns (minus media) — so a revision restores in full.
@@ -280,6 +316,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    tune_search AND ed2_applySongSnapshot()'s revision-restore all reach the one
    tune write core (ed2_songTuneApply()) from different points in this file. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1860 Phase 3 — workFindOrLinkByIdentifier() / workLinkPlan() / workAdminReady()
+   / workSlugify() / workExists() / workSnapshot() / workFindOrCreateByTitle() /
+   workLinkSongRow() / workUnlinkSongRow() — the ONE shared work-identity write
+   core (rule #22, mirrors the tune_helpers.php require immediately above).
+   Consumers below: work_search, song_work_autolink, song_work_set. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -707,6 +749,54 @@ function ed2_tuneAliasesTableExists(\mysqli $db): bool {
         $r = $db->query(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTuneAliases' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * Memoised probe: does `tblWorks` exist at all (#1860 Phase 3)? Deliberately
+ * NOT `workAdminReady()` (which also requires `tblWorks.Ccli` + `tblWorkSongs`
+ * and answers a different question — "is the WRITE core usable") — a
+ * pre-works-identity install still has plain `tblWorks` with `Iswc` only, and
+ * `work_search` should keep returning ISWC-based results on such an install
+ * rather than degrading to `tableMissing`. Same `static`-memoised idiom as
+ * `ed2_tuneAliasesTableExists()` immediately above.
+ */
+function ed2_worksTableExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * Memoised probe: does `tblWorks.Ccli` exist (the 'works-identity' card,
+ * #1741 P1)? `work_search` gates its `Ccli` SELECT fragment on this — the
+ * same boolean-gated-SQL-fragment shape `tune_search` uses for
+ * `tblTuneAliases` (rule #5 carve-out: the interpolated text is a hardcoded
+ * literal chosen by a boolean, never request input).
+ */
+function ed2_worksCcliColumnExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' AND COLUMN_NAME = 'Ccli' LIMIT 1"
         );
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
@@ -2200,6 +2290,157 @@ try {
         break;
     }
 
+    /* ---- song_work_autolink (POST) — Editor2's post-save CCLI/ISWC commit
+           hook (#1860 Phase 3, design §3.3/§3.7; the client wiring itself is
+           a FOLLOW-UP build — this endpoint exists now so that build has a
+           contract to code against). Server-authoritative: reads the song's
+           STORED Ccli/Iswc from tblSongs, never a client-sent identifier
+           value (rule #35's read-back posture) — the request carries only
+           songId. A work-link CONFLICT is a field on the 200 body, never an
+           HTTP failure (design §3.3 preamble — a work-link ambiguity must
+           never cost a curator their song save). No ed2_touchRevision() —
+           work membership sits outside the content snapshot, the same
+           posture as tblSongLinks / song_external_id_add above. ---- */
+    case 'song_work_autolink': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!workAdminReady($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the work-identity migration cards yet (run them at /manage/setup-database).'], 409);
+        }
+
+        /* @deleted-visible: identifier read (#1860) — ed2_songExists() just
+           above already confirmed this SongId exists (deliberately visible
+           to a soft-deleted row, by that function's own reasoning); reading
+           its CCLI/ISWC to plan a work link is the same editor-write-path
+           posture, never a public listing.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in a publicly-disabled book is still fully editable here. */
+        $idStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $idStmt->bind_param('s', $songId);
+        $idStmt->execute();
+        $idRow = $idStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $idStmt->close();
+
+        $db->begin_transaction();
+        try {
+            $result = workFindOrLinkByIdentifier(
+                $db,
+                $songId,
+                (string)($idRow['Ccli'] ?? ''),
+                (string)($idRow['Iswc'] ?? '')
+            );
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.work_autolink', 'song', $songId, [
+            'workId'   => $result['workId'],
+            'created'  => $result['created'],
+            'rehomed'  => $result['rehomed'],
+            'conflict' => $result['conflict'],
+        ]);
+        ed2_respond([
+            'ok'            => true,
+            'linked'        => $result['linked'],
+            'workId'        => $result['workId'],
+            'workTitle'     => $result['workTitle'],
+            'workSlug'      => $result['workSlug'],
+            'songCount'     => $result['songCount'],
+            'created'       => $result['created'],
+            'createdParent' => $result['createdParent'],
+            'rehomed'       => $result['rehomed'],
+            'refined'       => $result['refined'],
+            'conflict'      => $result['conflict'],
+            'iswcInvalid'   => $result['iswcInvalid'],
+        ]);
+        break;
+    }
+
+    /* ---- song_work_set (POST) — manual "Part of work" picker (#1860 Phase
+           3, design §3.7.2). Exactly one mode per request: link to an
+           existing work ({songId, workId}), find-or-create by title for
+           identifier-less hymns ({songId, title}), or unlink ({songId,
+           workId, unlink:true} — the ONLY manual-unlink surface, §3.3.1
+           reserves unlink to humans). No ed2_touchRevision() — same posture
+           as song_work_autolink above. ---- */
+    case 'song_work_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!workAdminReady($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the work-identity migration cards yet (run them at /manage/setup-database).'], 409);
+        }
+
+        $hasWorkId = array_key_exists('workId', $body) && (int)$body['workId'] > 0;
+        $hasTitle  = array_key_exists('title', $body) && trim((string)$body['title']) !== '';
+        $unlink    = !empty($body['unlink']);
+
+        if ($unlink) {
+            if (!$hasWorkId) { ed2_respond(['ok' => false, 'error' => 'workId is required to unlink.'], 400); }
+            $workId = (int)$body['workId'];
+            $db->begin_transaction();
+            try {
+                $deleted = workUnlinkSongRow($db, $workId, $songId);
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.work_unlink', 'song', $songId, ['workId' => $workId, 'deleted' => $deleted]);
+            ed2_respond(['ok' => true, 'unlinked' => true, 'deleted' => $deleted]);
+            break;
+        }
+
+        if ($hasWorkId === $hasTitle) {
+            /* Neither, or both, supplied — exactly one mode is required. */
+            ed2_respond(['ok' => false, 'error' => 'Provide exactly one of workId or title.'], 400);
+        }
+
+        $created = false;
+        $db->begin_transaction();
+        try {
+            if ($hasWorkId) {
+                $workId = (int)$body['workId'];
+                if (!workExists($db, $workId)) {
+                    $db->rollback();
+                    ed2_respond(['ok' => false, 'error' => 'Work not found.'], 404);
+                }
+            } else {
+                $found = workFindOrCreateByTitle($db, (string)$body['title']);
+                /* $found is never null here — $hasTitle already proved the
+                   trimmed title is non-empty. */
+                $workId  = $found['id'];
+                $created = $found['created'];
+            }
+            workLinkSongRow($db, $workId, $songId);
+            $snap = workSnapshot($db, $workId);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.work_set', 'song', $songId, ['workId' => $workId, 'created' => $created]);
+        ed2_respond([
+            'ok'            => true,
+            'linked'        => true,
+            'workId'        => $snap['workId']    ?? $workId,
+            'workTitle'     => $snap['workTitle'] ?? null,
+            'workSlug'      => $snap['workSlug']  ?? null,
+            'songCount'     => $snap['songCount'] ?? 0,
+            'created'       => $created,
+            'createdParent' => false,
+            'rehomed'       => false,
+            'refined'       => false,
+            'conflict'      => null,
+            'iswcInvalid'   => false,
+        ]);
+        break;
+    }
+
     /* ---- component_upsert (POST) ---- */
     case 'component_upsert': {
         $songId = trim((string)($body['songId'] ?? ''));
@@ -2853,6 +3094,64 @@ try {
             }
             $rows = array_slice($rows, 0, $limit);
         }
+
+        ed2_respond(['ok' => true, 'suggestions' => $rows]);
+        break;
+    }
+
+    /* ---- work_search (GET) — typeahead over the tblWorks registry (#1860
+           Phase 3), mirrors tune_search above in posture. ---- */
+    case 'work_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 20) { $limit = 20; }
+
+        if (!ed2_worksTableExists($db)) {
+            ed2_respond(['ok' => true, 'suggestions' => [], 'tableMissing' => true]);
+        }
+
+        /* Ccli is a rule-#5 boolean-gated SQL fragment — a hardcoded literal
+           chosen by a schema probe, never request input. Iswc is always
+           selected: it predates the works-identity migration entirely. */
+        $hasCcli       = ed2_worksCcliColumnExists($db);
+        $ccliSelectSql = $hasCcli ? 'w.Ccli' : 'NULL';
+        $ccliGroupSql  = $hasCcli ? ', w.Ccli' : '';
+
+        $sql = "SELECT w.Id, w.Title, w.Slug, w.Disambiguation, w.ParentWorkId, w.Iswc,
+                       {$ccliSelectSql} AS Ccli, COUNT(DISTINCT ws.SongId) AS UsageCount
+                  FROM tblWorks w
+                  LEFT JOIN tblWorkSongs ws ON ws.WorkId = w.Id";
+        $types  = '';
+        $params = [];
+        if ($term !== '') {
+            $sql .= ' WHERE w.Title LIKE ?';
+            $types .= 's';
+            $params[] = '%' . $term . '%';
+        }
+        $sql .= " GROUP BY w.Id, w.Title, w.Slug, w.Disambiguation, w.ParentWorkId, w.Iswc{$ccliGroupSql}"
+              . ' ORDER BY UsageCount DESC, w.Title ASC LIMIT ?';
+        $types .= 'i';
+        $params[] = $limit;
+
+        $q = $db->prepare($sql);
+        $q->bind_param($types, ...$params);
+        $q->execute();
+        $r = $q->get_result();
+        $rows = [];
+        while ($row = $r->fetch_assoc()) {
+            $rows[] = [
+                'id'             => (int)$row['Id'],
+                'title'          => (string)$row['Title'],
+                'slug'           => (string)$row['Slug'],
+                'disambiguation' => (string)$row['Disambiguation'],
+                'iswc'           => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+                'ccli'           => $row['Ccli'] !== null ? (string)$row['Ccli'] : null,
+                'parentWorkId'   => $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null,
+                'usage'          => (int)$row['UsageCount'],
+            ];
+        }
+        $q->close();
 
         ed2_respond(['ok' => true, 'suggestions' => $rows]);
         break;
