@@ -468,7 +468,139 @@ golive_check(
 );
 
 /* ==============================================================================
- * (Section C is appended by commit C.)
+ * SECTION C — §5.3 dual-addressing resolver wiring (commit C)
+ * ==============================================================================
+ *
+ * Scope: ILS (song) + ILW/ILM/ILT/ILP (slug pages) + ILB (songbook) + ILD
+ * (media). ILC (catalogue) stays mint-only — no public catalogue page exists
+ * (design §2.5 "dormant-until-consumed"), so C2 below carries catalogue as
+ * an EXPLICIT dormant allow-entry rather than a silent gap: adding a 9th
+ * `IHYMNS_ILID_TYPES` entity type with neither a real resolver file NOR an
+ * allow-entry citing this design note fails C2, by construction.
+ * ============================================================================== */
+
+$songDataFile = $repo . '/appWeb/public_html/includes/SongData.php';
+$songDataRaw  = (string)file_get_contents($songDataFile);
+$songDataStripped = golive_stripPhpComments($songDataRaw);
+
+/* C1 — getSongById() strategy-1.5 ordering (the ordering IS the design —
+   an ILS id matches the PublicId branch's own ^[0-9A-Z]{6,32}$ shape too,
+   so the IL branch MUST run first, by construction, not by charset luck).
+   Isolated to JUST this function's body (brace-balanced) so a mention
+   anywhere else in this 5000+-line file can't satisfy it.
+   (Mutation: move the IL block below the PublicId branch -> RED.) */
+$getSongByIdBody = golive_extractFunctionBody($songDataStripped, 'getSongById');
+golive_check($getSongByIdBody !== null, 'C1-pre getSongById() function body located in SongData.php');
+
+if ($getSongByIdBody !== null) {
+    $fetchPos    = strpos($getSongByIdBody, '_fetchSongRow($id)');
+    $ilIdGatePos = strpos($getSongByIdBody, '_hasIlIdColumn()');
+    $ilParsePos  = strpos($getSongByIdBody, 'ilidParse(');
+    $publicIdPos = strpos($getSongByIdBody, '_hasPublicIdColumn()');
+
+    golive_check(
+        $fetchPos !== false && $ilIdGatePos !== false && $ilParsePos !== false && $publicIdPos !== false
+            && $fetchPos < $ilIdGatePos && $ilIdGatePos < $publicIdPos && $ilParsePos < $publicIdPos,
+        'C1a getSongById(): the _hasIlIdColumn()/ilidParse() branch sits AFTER the exact-match _fetchSongRow($id) call and BEFORE the _hasPublicIdColumn() branch'
+    );
+    golive_check(
+        (bool)preg_match('/\$ilParsed\s*\[\s*[\'"]entityType[\'"]\s*\]\s*===\s*[\'"]song[\'"]/', $getSongByIdBody),
+        'C1b getSongById() checks the parsed entityType === "song" before resolving (rejects a non-song IL id like ILW…)'
+    );
+}
+
+/* C2 — registry-derived surface coverage: for EVERY IHYMNS_ILID_TYPES
+   entry, its resolver file must reference ilidParse — derived from the
+   LIVE map (rule #34), never a hand-typed list, so a 9th entity type added
+   later fails this test until it either gets a real resolver or an
+   explicit dormant allow-entry (catalogue's shape below) citing WHY.
+   (Mutation: remove the tune pre-step from pages/tune.php -> RED; add a
+   9th IHYMNS_ILID_TYPES entry with neither a resolver nor an allow-entry
+   -> RED.) */
+$resolverFileFor = [
+    'song'      => $repo . '/appWeb/public_html/includes/SongData.php',
+    'work'      => $repo . '/appWeb/public_html/includes/SongData.php',
+    'musician'  => $repo . '/appWeb/public_html/includes/pages/musician.php',
+    'tune'      => $repo . '/appWeb/public_html/includes/pages/tune.php',
+    'publisher' => $repo . '/appWeb/public_html/includes/pages/publisher.php',
+    'songbook'  => $repo . '/appWeb/public_html/includes/pages/songbook.php',
+    'document'  => $repo . '/appWeb/public_html/song-media.php',
+];
+/* Dormant allow-list — the ONLY exemption mechanism for this section, mirrors
+   A2/A3's ilid-exempt marker in spirit (an explicit, reviewed, cited
+   exception, never a silent gap). Each entry MUST cite the design note that
+   makes it legitimately dormant. */
+$dormantAllow = [
+    'catalogue' => 'design §2.5 "dormant-until-consumed" — no public catalogue page exists (includes/pages/ has none)',
+];
+
+$missingResolverCoverage = [];
+foreach (array_keys(IHYMNS_ILID_TYPES) as $entityType) {
+    if (isset($dormantAllow[$entityType])) {
+        continue; // explicit, cited, reviewed exemption
+    }
+    if (!isset($resolverFileFor[$entityType])) {
+        $missingResolverCoverage[] = "{$entityType}: no resolver file registered AND no dormant allow-entry";
+        continue;
+    }
+    $rf = $resolverFileFor[$entityType];
+    if (!is_readable($rf)) {
+        $missingResolverCoverage[] = "{$entityType}: registered resolver file not readable: {$rf}";
+        continue;
+    }
+    $rfStripped = golive_stripPhpComments((string)file_get_contents($rf));
+    if (!str_contains($rfStripped, 'ilidParse(')) {
+        $missingResolverCoverage[] = "{$entityType}: {$rf} has no ilidParse( reference";
+    }
+}
+golive_check(
+    count($missingResolverCoverage) === 0,
+    'C2 every IHYMNS_ILID_TYPES entry has a resolver referencing ilidParse(, or an explicit cited dormant allow-entry'
+);
+foreach ($missingResolverCoverage as $m) {
+    fwrite(STDERR, "  ($m)\n");
+}
+/* Belt-and-braces: the allow-list itself must be non-empty-reasoned and the
+   two lists together must cover the WHOLE live map — a typo'd entity-type
+   key in either list would otherwise silently under-count above. */
+golive_check(
+    count($resolverFileFor) + count($dormantAllow) === count(IHYMNS_ILID_TYPES),
+    'C2b resolverFileFor + dormantAllow together name exactly the live IHYMNS_ILID_TYPES entity count (no stray or mistyped key)'
+);
+
+/* C3 — loose-form executed check (already covered in test-ilyrics-ids.php;
+   re-asserting here is cheap and pins the exact input contract every
+   resolver pre-step above depends on). */
+golive_check(
+    ($p = ilidParse('ILS12345')) !== null && $p['canonical'] === 'ILS0000012345',
+    "C3a ilidParse('ILS12345')['canonical'] === 'ILS0000012345'"
+);
+golive_check(
+    ilidParse('MP-1008') === null,
+    "C3b ilidParse('MP-1008') === null (hyphen is the namespace discriminator)"
+);
+
+/* C4 — client contract: normalizeSongId() (router.js) requires a hyphen to
+   match anything, so a hyphen-less IL id passes through UNCHANGED — no
+   client JS change is needed. Executed against the REAL file text (not
+   re-implemented), scoped to the function body so a same-named helper
+   elsewhere can't satisfy it.
+   (Mutation: widen the regex to also match hyphen-less input -> RED.) */
+$routerFile = $repo . '/appWeb/public_html/js/modules/router.js';
+golive_check(is_readable($routerFile), 'C4-pre router.js is readable');
+if (is_readable($routerFile)) {
+    $routerRaw = (string)file_get_contents($routerFile);
+    $nsPos = strpos($routerRaw, 'normalizeSongId(id)');
+    $bodyEnd = $nsPos !== false ? strpos($routerRaw, "\n    }\n", $nsPos) : false;
+    $nsBody = ($nsPos !== false && $bodyEnd !== false) ? substr($routerRaw, $nsPos, $bodyEnd - $nsPos) : '';
+    golive_check(
+        str_contains($nsBody, "match(/^([A-Za-z]+)-0*(\\d+)$/)") && str_contains($nsBody, 'if (!match) return id;'),
+        'C4a normalizeSongId() requires a hyphen to match and returns non-matching input UNCHANGED (an ILS… id passes through untouched)'
+    );
+}
+
+/* ==============================================================================
+ * (End of the three-commit sequence.)
  * ============================================================================== */
 
 echo "\n";

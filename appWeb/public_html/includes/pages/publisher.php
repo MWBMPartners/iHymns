@@ -47,6 +47,46 @@ if (!defined('IHYMNS_PUBLISHER_KINDS')) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 }
 
+/* #1860 Phase 4 — dual-addressing pre-step, rung 0 of the ladder, BEFORE
+   the lowercasing fold immediately below (run ilidParse() on the RAW
+   $publisherSlug — the fold is irrelevant to an IL id's shape, but running
+   before it keeps this rung's contract independent of whatever that fold
+   does next, matching rule #37's exact->name-fold->alias-fold ordering
+   with the IL match as the earliest, most specific rung). An IL internal
+   id ('ILP…') resolves to the registry's real Slug, which then flows into
+   $pubSlug below exactly as if the curator had typed it. A miss (not an IL
+   id, the column doesn't exist yet, or no row carries it) leaves
+   $publisherSlug UNCHANGED — the fold + ladder still get their turn.
+   try/catch-swallowed + column-probe-gated so this page can never
+   white-screen on an un-migrated install (the #1228 lesson). */
+try {
+    if (!function_exists('ilidParse')) {
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    }
+    $_ilParsed = ilidParse((string)($publisherSlug ?? ''));
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'publisher') {
+        $_ilDb = getDbMysqli();
+        $_ilColProbe = $_ilDb->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPublishers' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $_ilDb->prepare('SELECT Slug FROM tblPublishers WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
+                $publisherSlug = (string)$_ilRow['Slug'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through to the fold + ladder unchanged
+}
+
 /* Same fold the admin slug + song.php-style link builders use, so a
    name-derived URL resolves (rule #33). */
 $pubSlug = isset($publisherSlug) ? (string)$publisherSlug : '';

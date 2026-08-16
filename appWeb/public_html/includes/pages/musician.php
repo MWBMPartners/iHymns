@@ -94,6 +94,40 @@ $db = getDbMysqli();
  * @see includes/musician_helpers.php musicianResolveLegacySlugDb()
  * @link .claude/catalogue-1741-P4a3-plan.md §1.2 the ladder's design
  */
+/* #1860 Phase 4 — dual-addressing pre-step, ahead of the legacy-slug ladder
+   below: an IL internal id ('ILM…') resolves to the registry's real Slug
+   and $personSlug is replaced with it, so every rung after this one (incl.
+   the legacy-slug ladder and the name-based fallback) sees a canonical
+   value exactly as if the curator had typed the real slug. A miss (not an
+   IL id, or the column doesn't exist yet) leaves $personSlug UNCHANGED —
+   never rejects, never errors. try/catch-swallowed + column-probe-gated so
+   this page can never white-screen on an un-migrated install (the #1228
+   lesson). */
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    $_ilParsed = ilidParse((string)($personSlug ?? ''));
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'musician') {
+        $_ilColProbe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $db->prepare('SELECT Slug FROM tblMusicians WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
+                $personSlug = (string)$_ilRow['Slug'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through to the legacy-slug ladder unchanged
+}
+
 if (!function_exists('musicianResolveLegacySlugDb')) {
     require_once dirname(__DIR__) . '/musician_helpers.php';
 }

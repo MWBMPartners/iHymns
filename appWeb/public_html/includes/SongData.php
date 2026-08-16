@@ -212,6 +212,9 @@ class SongData
     /** #1343-B — single-flight probe for tblSongs.PublicId (permalink id). */
     private bool $_publicIdColumn = false;
     private bool $_publicIdColumnChecked = false;
+    /** #1860 Phase 4 — single-flight probe for tblSongs.IlId (dual-addressing). */
+    private bool $_ilIdColumn = false;
+    private bool $_ilIdColumnChecked = false;
     /* Places adoption — single-flight probe for tblSongs.OriginCityId.
        Mirrors the ArrangementJson pattern so a pre-adoption install
        keeps the legacy SELECT shape (no extra columns) without a
@@ -2709,6 +2712,30 @@ class SongData
            legacy /song/<SongId> resolves even if every PublicId path below failed. */
         $song = $this->_fetchSongRow($id);
 
+        /* #1860 Phase 4 — IL internal id (strategy 1.5). MUST run BEFORE the
+           PublicId branch below: an ILS id matches that branch's
+           ^[0-9A-Z]{6,32}$ shape too, and ordering the SPECIFIC grammar
+           first is correct BY CONSTRUCTION (an IL id parses to a known
+           entity type) rather than by the Crockford-excludes-I/L charset
+           accident that happens to keep the two forms from colliding today
+           (design doc §2.5). ilidParse() gives the tolerant human form for
+           free ('ILS12345' -> canonical 'ILS0000012345',
+           includes/ilyrics_id.php :184-216); a non-song IL id ('ILW…')
+           parses but fails the entityType check and falls through to the
+           PublicId branch unchanged. This ONE branch lights up
+           `/song/ILS…`, `song_detail`, `song_data` and every other
+           getSongById() consumer at once. */
+        if ($song === null && strpos($id, '-') === false && $this->_hasIlIdColumn()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+            $ilParsed = ilidParse($id);
+            if ($ilParsed !== null && $ilParsed['entityType'] === 'song') {
+                $resolvedSongId = $this->_songIdForIlId($ilParsed['canonical']);
+                if ($resolvedSongId !== null) {
+                    $song = $this->_fetchSongRow($resolvedSongId);
+                }
+            }
+        }
+
         /* #1343-B — opaque PublicId (IHUID) permalink: uppercase, hyphen-less, not a
            SongId. Gated on the column existing (un-migrated env skips it cleanly). */
         if ($song === null
@@ -4514,6 +4541,52 @@ class SongData
         return $row !== null ? (string)$row['SongId'] : null;
     }
 
+    /** #1860 Phase 4 — single-flight probe for tblSongs.IlId (gated reads/STRICT),
+     *  byte-pattern clone of _hasPublicIdColumn() immediately above. */
+    private function _hasIlIdColumn(): bool
+    {
+        if ($this->_ilIdColumnChecked) {
+            return $this->_ilIdColumn;
+        }
+        $this->_ilIdColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'IlId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_ilIdColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_ilIdColumn = false;
+        }
+        return $this->_ilIdColumn;
+    }
+
+    /** #1860 Phase 4 — resolve a canonical IL internal id (ILS…) to its
+     *  SongId (PK), or null. Bound; caller has already gated on
+     *  _hasIlIdColumn(). Clone of _songIdForPublicId() immediately above. */
+    private function _songIdForIlId(string $ilId): ?string
+    {
+        /* @deleted-visible: pure id RESOLVER (#1860, mirrors #1694's
+           _songIdForPublicId() reasoning) — the follow-up _fetchSongRow()
+           applies the visibility filter, and a deleted song's IL id must
+           still resolve here or songSoftDeletedHolds() could never
+           recognise it (and the 410 answer would decay to a 404).
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           an IL id belonging to a song in a disabled songbook must still
+           resolve to a SongId here; _fetchSongRow()'s `_visible()` call is
+           what actually hides it from the public response. */
+        $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE IlId = ? LIMIT 1');
+        $stmt->bind_param('s', $ilId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null ? (string)$row['SongId'] : null;
+    }
+
     /**
      * Places adoption — single-flight probe for tblSongs.OriginCityId.
      * Mirrors _hasArrangementColumn() so the SELECT path can gate the
@@ -5159,6 +5232,30 @@ class SongData
     /** @var bool|null cached probe result */
     private ?bool $_hasWorksSchemaCache = null;
 
+    /** #1860 Phase 4 — single-flight probe for tblWorks.IlId (dual-addressing
+     *  pre-step in getWork() above). Phase 1 and Phase 3's migration cards
+     *  are independent and can land in EITHER order, so this can never be
+     *  assumed from _hasWorksSchema() passing alone. */
+    private ?bool $_hasWorkIlIdColumnCache = null;
+    private function _hasWorkIlIdColumn(): bool
+    {
+        if (isset($this->_hasWorkIlIdColumnCache)) {
+            return $this->_hasWorkIlIdColumnCache;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' AND COLUMN_NAME = 'IlId' LIMIT 1"
+            );
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $this->_hasWorkIlIdColumnCache = $exists;
+        } catch (\Throwable $_e) {
+            return $this->_hasWorkIlIdColumnCache = false;
+        }
+    }
+
     /**
      * Cached per-column presence probe over the 9 #1741 P1/D5 tblWorks
      * "extra" columns (Ccli/Bowi/Subtitle/Disambiguation/TuneName/TuneId/
@@ -5518,6 +5615,33 @@ class SongData
     public function getWork(string|int $slugOrId): ?array
     {
         if (!$this->_hasWorksSchema()) return null;
+
+        /* #1860 Phase 4 — dual-addressing pre-step: an IL internal id
+           ('ILW…') resolves to its numeric tblWorks.Id and continues down
+           the SAME integer-Id path below — never a second resolver. A
+           REAL slug that happens to look like 'ilw123' still resolves
+           unchanged on a miss (design §2.5) — this pre-step only ever
+           REPLACES $slugOrId with a resolved Id, it never rejects the
+           input. try/catch-swallowed + column-probe-gated so a fragment
+           never white-screens on an un-migrated install (the #1228
+           lesson) — a column that doesn't exist yet degrades to "keep
+           trying the slug ladder", never an error. */
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+            $ilParsed = ilidParse((string)$slugOrId);
+            if ($ilParsed !== null && $ilParsed['entityType'] === 'work' && $this->_hasWorkIlIdColumn()) {
+                $ilStmt = $this->db->prepare('SELECT Id FROM tblWorks WHERE IlId = ? LIMIT 1');
+                $ilStmt->bind_param('s', $ilParsed['canonical']);
+                $ilStmt->execute();
+                $ilRow = $ilStmt->get_result()->fetch_assoc();
+                $ilStmt->close();
+                if ($ilRow !== null) {
+                    $slugOrId = (int)$ilRow['Id'];
+                }
+            }
+        } catch (\Throwable $_e) {
+            // dormant-by-design — fall through to the slug/Id ladder unchanged
+        }
 
         /* One parameter, two lookup columns — an all-digit string is treated as
            an Id, not a Slug.

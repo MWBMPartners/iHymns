@@ -20,6 +20,43 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 /* #1786 — ihymns_title_sort_key() for the song list's Title sort key. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
+/* #1860 Phase 4 — dual-addressing pre-step: an IL internal id ('ILB…')
+   resolves to the songbook's real Abbreviation, and $bookId is replaced
+   with it, so getSongbook() below (and the canonical-URL rendering that
+   follows) behaves exactly as if the curator had typed the real
+   abbreviation. No ambiguity with a real abbreviation: Abbreviation is
+   <=10 chars (rule #27) while an ILB id is always 13. A miss (not an IL
+   id, the column doesn't exist yet, or no row carries it) leaves $bookId
+   UNCHANGED. try/catch-swallowed + column-probe-gated so this fragment can
+   never white-screen on an un-migrated install (the #1228 lesson). The
+   canonical URL stays the Abbreviation form — this pre-step only resolves
+   the LOOKUP, it does not change what getSongbook() returns or renders. */
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    $_ilParsed = ilidParse((string)($bookId ?? ''));
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'songbook') {
+        $_ilDb = getDbMysqli();
+        $_ilColProbe = $_ilDb->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $_ilDb->prepare('SELECT Abbreviation FROM tblSongbooks WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Abbreviation'] ?? '') !== '') {
+                $bookId = (string)$_ilRow['Abbreviation'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through with $bookId unchanged
+}
+
 /* Fetch songbook. */
 $book = $songData->getSongbook($bookId);
 
