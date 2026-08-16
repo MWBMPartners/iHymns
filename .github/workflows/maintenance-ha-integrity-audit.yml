@@ -92,7 +92,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out alpha
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: alpha
           # Fetch the full history so the new branch we'll push has
@@ -107,7 +107,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
