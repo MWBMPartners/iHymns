@@ -625,34 +625,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     try {
-        $probe = $db->query(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPublishers' LIMIT 1"
-        );
-        if (!$probe || $probe->fetch_row() === null) {
+        /* #1864 — pre-check kept (rather than folded into the shared core's
+           own silent [] degradation) so this page's distinct "run
+           /manage/setup-database" CTA note survives the refactor; the row
+           SELECT itself now delegates to the ONE shared query core
+           (rule #22) instead of a second inline copy. */
+        if (!publisherTableExists($db)) {
             echo json_encode(['suggestions' => [], 'note' => 'tblPublishers not yet created — run /manage/setup-database']);
             exit;
         }
-        if ($q === '') {
-            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 ORDER BY Name ASC LIMIT ?');
-            $stmt->bind_param('i', $limit);
-        } else {
-            $like = '%' . $q . '%';
-            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
-            $stmt->bind_param('si', $like, $limit);
-        }
-        $stmt->execute();
-        $res  = $stmt->get_result();
-        $sugg = [];
-        while ($row = $res->fetch_assoc()) {
-            $sugg[] = [
-                'id'   => (int)$row['Id'],
-                'name' => (string)$row['Name'],
-                'slug' => (string)($row['Slug'] ?? ''),
-                'kind' => (string)($row['Kind'] ?? ''),
-            ];
-        }
-        $stmt->close();
+        $sugg = publisherSearchRows($db, $q, $limit);
         echo json_encode(['suggestions' => $sugg], JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[publisher_search] ' . $e->getMessage());

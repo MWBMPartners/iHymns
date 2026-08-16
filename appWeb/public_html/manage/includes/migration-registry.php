@@ -3931,6 +3931,39 @@ return [
             || !_migProbe_tableExists($db, 'tblPublisherExternalLinks'),
     ],
 
+    'copyright-holder-registry' => [
+        'script' => 'migrate-copyright-holder-registry.php',
+        'card' => [
+            'title'  => 'Copyright Holder registry link (#1864)',
+            'body'   => 'Adds <code>tblWorks.CopyrightHolderId</code> (+ <code>idx_CopyrightHolderId</code>'
+                      . ' and the trailing <code>fk_Works_CopyrightHolder</code> FK) so the Works Copyright'
+                      . ' Holder picker can link to a real <code>tblPublishers</code> row, plus the DORMANT'
+                      . ' <code>tblSongs.CopyrightHolderId</code> sibling (+ index + FK) for the future'
+                      . ' Editor2 song-level field (#1862) — one-pass batch, rule #20. Both'
+                      . ' <code>CopyrightHolder</code> free-text columns are UNCHANGED and stay the'
+                      . ' JOIN-free denorm display mirror. The FKs need <code>tblPublishers</code> to exist'
+                      . ' first (run &ldquo;Publishers registry&rdquo; above if this card warns about it);'
+                      . ' both columns apply regardless. No backfill — existing free-text holders resolve'
+                      . ' lazily on next save. Additive, idempotent, dormant on tblSongs — safe to re-run.',
+            'button' => 'Run Copyright Holder Registry Migration',
+        ],
+        /* Multi-object OR-probe (rule #19 — a partial apply never shows
+           green). The FK clauses are conditioned on tblPublishers existing
+           (the 'publication-metadata' idiom) so this card doesn't stay
+           permanently pending on an install that deliberately hasn't run
+           'publishers-entity' yet — the registry ORDER (this entry right
+           after 'publishers-entity') is what resolves that for "Apply all
+           pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'CopyrightHolderId')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightHolderId')
+            || !_migProbe_indexExists($db, 'tblWorks', 'idx_CopyrightHolderId')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_CopyrightHolderId')
+            || (_migProbe_tableExists($db, 'tblPublishers')
+                && (!_migProbe_constraintExists($db, 'tblWorks', 'fk_Works_CopyrightHolder')
+                 || !_migProbe_constraintExists($db, 'tblSongs', 'fk_Songs_CopyrightHolder'))),
+    ],
+
     'consolidate-org-licences' => [
         'script' => 'migrate-consolidate-org-licences.php',
         'card' => [

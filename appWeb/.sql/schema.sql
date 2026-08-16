@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
     CopyrightYears      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1); Copyright stays as the legacy as-printed denorm string and is NOT auto-parsed into this + CopyrightHolder',
     CopyrightHolder     VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1); see CopyrightYears comment re: the legacy Copyright column',
+    CopyrightHolderId   INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblPublishers.Id (#1864 one-pass rider for the #1862 family, rule #20); DORMANT — no reader/writer yet. CopyrightHolder stays the JOIN-free denorm display mirror. FK added via trailing ALTER — tblPublishers is defined later in this file',
     FirstPublishedYear  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymns predate it. Same column added to tblWorks in the same P1 batch (Song AND Work editors both need it, rule #20)',
     /* Composition / first-performance origin (places sweep #2). The
        VARCHAR mirror keeps reads JOIN-free; the FK lets the future
@@ -325,6 +326,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_NormalizedTitle   (NormalizedTitle),
     INDEX idx_TuneName          (TuneName),
     INDEX idx_TuneId            (TuneId),
+    INDEX idx_CopyrightHolderId (CopyrightHolderId),
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
@@ -3165,6 +3167,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     FirstPublishedYear SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymn works predate it. Same column added to tblSongs in the same P1 batch (Song AND Work editors both need it, rule #20)',
     CopyrightYears VARCHAR(100) NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1)',
     CopyrightHolder VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1)',
+    CopyrightHolderId INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblPublishers.Id (#1864); mirrors TuneId — CopyrightHolder stays the JOIN-free denorm display mirror, written in lockstep by publisherResolvePickedOrCreate(). FK added via trailing ALTER — tblPublishers is defined later in this file',
     Notes         TEXT         NULL,
     /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
     OriginCity    VARCHAR(255) NULL,
@@ -3182,6 +3185,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
     INDEX      idx_TuneId (TuneId),
+    INDEX      idx_CopyrightHolderId (CopyrightHolderId),
 
     CONSTRAINT fk_work_parent
         FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
@@ -4068,6 +4072,21 @@ CREATE TABLE IF NOT EXISTS tblPublisherExternalLinks (
         FOREIGN KEY (LinkTypeId)  REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-publisher external-link rows (#93), mirroring tblTuneExternalLinks.';
+
+-- Back-reference FKs from tblWorks.CopyrightHolderId / tblSongs.CopyrightHolderId
+-- -> tblPublishers (#1864; added here for the same reason as fk_Works_Tune /
+-- fk_Publisher_Parent above: both tblWorks and tblSongs are declared before
+-- tblPublishers in this file, so neither FK can be inline. The columns +
+-- indexes are declared inline in their respective CREATE TABLE blocks
+-- above). ON DELETE SET NULL, never CASCADE — deleting a publisher must
+-- never delete a Work or a Song.
+ALTER TABLE tblWorks
+    ADD CONSTRAINT fk_Works_CopyrightHolder
+        FOREIGN KEY (CopyrightHolderId) REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+ALTER TABLE tblSongs
+    ADD CONSTRAINT fk_Songs_CopyrightHolder
+        FOREIGN KEY (CopyrightHolderId) REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on

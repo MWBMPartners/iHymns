@@ -113,21 +113,10 @@ if ($hasSchema
     $limit   = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     $exclude = (int)($_GET['exclude'] ?? 0);
     try {
-        $sql = 'SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1';
-        $params = [];
-        $types  = '';
-        if ($q !== '') { $sql .= ' AND Name LIKE ?'; $params[] = '%' . $q . '%'; $types .= 's'; }
-        if ($exclude > 0) { $sql .= ' AND Id <> ?'; $params[] = $exclude; $types .= 'i'; }
-        $sql .= ' ORDER BY Name ASC LIMIT ?'; $params[] = $limit; $types .= 'i';
-        $stmt = $db->prepare($sql);
-        $stmt->bind_param($types, ...$params);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $out = [];
-        while ($row = $res->fetch_assoc()) {
-            $out[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'slug' => (string)$row['Slug'], 'kind' => (string)$row['Kind']];
-        }
-        $stmt->close();
+        /* #1864 — delegates to the ONE shared query core (rule #22); this
+           page's own inline SQL (the superset the core was extracted from)
+           is gone. */
+        $out = publisherSearchRows($db, $q, $limit, $exclude > 0 ? $exclude : null);
         echo json_encode(['suggestions' => $out], JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[publishers publisher_search] ' . $e->getMessage());

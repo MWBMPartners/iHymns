@@ -41,6 +41,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    need. Neither existed before P4b. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1864 — the shared publisher search core (publisherSearchRows()) and the
+   picked-id-or-name resolver (publisherResolvePickedOrCreate()) the new
+   Copyright Holder picker below needs; neither belongs on this page a
+   second time (rule #22 — one core, reused by manage/publishers.php and
+   manage/songbooks.php too). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 /* #1860 Phase 3 — $slugFor below delegates to workSlugify() (the exact
    $validateIswc -> ihymns_canonical_iswc() precedent a few lines up, rule
    #22) so a Work minted by the auto-linker (includes/work_admin.php) and a
@@ -128,6 +134,7 @@ if ($hasSchema) {
         $extraColNames = [
             'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
             'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
         ];
         $ph    = implode(',', array_fill(0, count($extraColNames), '?'));
         $stmt  = $db->prepare(
@@ -175,6 +182,11 @@ $parseWorkExtraFields = static function (array $post): array {
     $firstPubIn      = trim((string)($post['first_published_year'] ?? ''));
     $copyrightYears  = mb_substr(trim((string)($post['copyright_years'] ?? '')), 0, 100);
     $copyrightHolder = mb_substr(trim((string)($post['copyright_holder'] ?? '')), 0, 255);
+    /* #1864 — the Copyright Holder picker's hidden id, same "cast-or-null"
+       idiom as origin_city_id (:454/:541) — 0/absent means "nothing was
+       picked", not "picked publisher #0". Verified server-side by
+       publisherResolvePickedOrCreate() before being trusted (rule #37). */
+    $copyrightHolderIdIn = (int)($post['copyright_holder_id'] ?? 0) ?: null;
     $mbWorkIn        = trim((string)($post['musicbrainz_work_mbid'] ?? ''));
 
     if ($ccliIn !== '' && !mediaIdentifierWorkValidate('ccli', $ccliIn)) {
@@ -204,6 +216,7 @@ $parseWorkExtraFields = static function (array $post): array {
         'firstPublishedYear'  => $firstPublishedYear,
         'copyrightYears'      => $copyrightYears,
         'copyrightHolder'     => $copyrightHolder,
+        'copyrightHolderId'   => $copyrightHolderIdIn,
         'musicBrainzWorkMbid' => $mbWorkIn,
     ], null];
 };
@@ -309,6 +322,19 @@ $persistWorkExtraFields = static function (\mysqli $db, array $worksExtraCols, i
     if (isset($worksExtraCols['CopyrightHolder'])) {
         $sets[] = 'CopyrightHolder = ?'; $types .= 's';
         $vals[] = $fields['copyrightHolder'];
+        /* #1864 — CopyrightHolder + CopyrightHolderId are ALWAYS written
+           TOGETHER, the exact TuneName/TuneId lockstep shape a few lines
+           below applied to the publisher registry (rule #37/#43):
+           publisherResolvePickedOrCreate() trusts the picker's claimed id
+           only after verifying it against the typed name, else falls back
+           to publisherFindOrCreateByName() — never a raw client-supplied
+           id written unverified. Column-gated: an un-migrated install
+           keeps writing the bare string only, same as TuneName without
+           TuneId above it. */
+        if (isset($worksExtraCols['CopyrightHolderId'])) {
+            $sets[] = 'CopyrightHolderId = ?'; $types .= 'i';
+            $vals[] = publisherResolvePickedOrCreate($db, $fields['copyrightHolder'], $fields['copyrightHolderId'] ?? null);
+        }
     }
     if (isset($worksExtraCols['MusicBrainzWorkMBID'])) {
         $sets[] = 'MusicBrainzWorkMBID = ?'; $types .= 's';
@@ -407,9 +433,35 @@ if ($hasSchema
     exit;
 }
 
+/* ---- GET ?action=publisher_search&q= — typeahead for the Copyright
+   Holder picker (#1864). Delegates to the ONE shared core (rule #22);
+   pre-migration safe — [] when tblPublishers hasn't been created. ---- */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'publisher_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
+    try {
+        echo json_encode(['suggestions' => publisherSearchRows($db, $q, $limit)], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[works publisher_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1864 — validateCsrfRequest() (rule #29): a strict superset of the
+       old validateCsrf() check (arm (a) still accepts the form's baked
+       session token; arm (b) same-origin X-Requested-With/Origin check
+       fixes the stale-token class of "CSRF error" on a long-lived page).
+       manage/publishers.php:142 is the precedent. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -757,6 +809,7 @@ if ($hasSchema) {
         $extraColNames = [
             'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
             'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
         ];
         $extraSelectParts = [];
         foreach ($extraColNames as $extraCol) {
@@ -926,9 +979,16 @@ if ($hasSchema) {
                                 'ccli'                  => (string)($r['Ccli'] ?? ''),
                                 'bowi'                  => (string)($r['Bowi'] ?? ''),
                                 'tune_name'             => (string)($r['TuneName'] ?? ''),
+                                /* #1864 — TuneId was already in the gated
+                                   SELECT (it drives fk_Works_Tune) but never
+                                   reached the edit modal until now; the
+                                   picker's `change`-dispatch pre-fill needs
+                                   it to show the "confirmed" checkmark. */
+                                'tune_id'               => isset($r['TuneId']) && $r['TuneId'] !== null ? (int)$r['TuneId'] : null,
                                 'first_published_year'  => isset($r['FirstPublishedYear']) && $r['FirstPublishedYear'] !== null ? (int)$r['FirstPublishedYear'] : null,
                                 'copyright_years'       => (string)($r['CopyrightYears'] ?? ''),
                                 'copyright_holder'      => (string)($r['CopyrightHolder'] ?? ''),
+                                'copyright_holder_id'   => isset($r['CopyrightHolderId']) && $r['CopyrightHolderId'] !== null ? (int)$r['CopyrightHolderId'] : null,
                                 'musicbrainz_work_mbid' => (string)($r['MusicBrainzWorkMBID'] ?? ''),
                                 'members'    => $workMembersMap[$wid] ?? [],
                                 'links'      => $workLinksMap[$wid]   ?? [],
@@ -1089,10 +1149,16 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">Tune name <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="tune_name"
+                    <input type="text" name="tune_name" id="create-work-tune-name"
                            class="form-control form-control-sm"
                            maxlength="120"
                            placeholder="e.g. HYFRYDOL">
+                    <!-- #1864 — UI-state only, deliberately no name=: the
+                         pick is never submitted as an id — tblTunes.Name is
+                         UNIQUE, so the server's tuneFindOrCreateByName()
+                         funnel resolves the typed name deterministically on
+                         save (rule #43's "commit is the form POST"). -->
+                    <input type="hidden" id="create-work-tune-id" value="">
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">First published <small class="text-muted">(year, optional)</small></label>
@@ -1112,9 +1178,15 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-6">
                     <label class="form-label small">Copyright holder <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="copyright_holder"
+                    <input type="text" name="copyright_holder" id="create-work-copyright-holder"
                            class="form-control form-control-sm"
                            maxlength="255">
+                    <!-- #1864 — submitted alongside the typed name: rule #37,
+                         tblPublishers has no uq_Name, so the server needs
+                         the picker's claimed Id to disambiguate two
+                         same-named publishers. publisherResolvePickedOrCreate()
+                         verifies it server-side before trusting it. -->
+                    <input type="hidden" id="create-work-copyright-holder-id" name="copyright_holder_id" value="">
                 </div>
             </div>
             <div class="row g-2 mt-2">
@@ -1228,6 +1300,8 @@ if ($hasSchema) {
                                     <label class="form-label">Tune name <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="tune_name" id="edit-work-tune-name"
                                            class="form-control" maxlength="120" placeholder="e.g. HYFRYDOL">
+                                    <!-- #1864 — UI-state only, no name= (see the create-form twin above). -->
+                                    <input type="hidden" id="edit-work-tune-id" value="">
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label">First published <small class="text-muted">(year, opt.)</small></label>
@@ -1245,6 +1319,8 @@ if ($hasSchema) {
                                     <label class="form-label">Copyright holder <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="copyright_holder" id="edit-work-copyright-holder"
                                            class="form-control" maxlength="255">
+                                    <!-- #1864 — see the create-form twin above for why the id is submitted. -->
+                                    <input type="hidden" id="edit-work-copyright-holder-id" name="copyright_holder_id" value="">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
@@ -1578,9 +1654,19 @@ if ($hasSchema) {
             document.getElementById('edit-work-ccli').value                 = row.ccli || '';
             document.getElementById('edit-work-bowi').value                 = row.bowi || '';
             document.getElementById('edit-work-tune-name').value            = row.tune_name || '';
+            /* #1864 — seed the pickers' hidden ids from the row payload and
+               dispatch 'change' so place-search.js's #1507 confirmed-state
+               checkmark reflects a pre-existing link, exactly as its own
+               doc-block documents for an external pre-fill. */
+            const tuneIdEl = document.getElementById('edit-work-tune-id');
+            tuneIdEl.value = row.tune_id ? String(row.tune_id) : '';
+            tuneIdEl.dispatchEvent(new Event('change', { bubbles: true }));
             document.getElementById('edit-work-first-published-year').value = row.first_published_year ? String(row.first_published_year) : '';
             document.getElementById('edit-work-copyright-years').value      = row.copyright_years || '';
             document.getElementById('edit-work-copyright-holder').value     = row.copyright_holder || '';
+            const chIdEl = document.getElementById('edit-work-copyright-holder-id');
+            chIdEl.value = row.copyright_holder_id ? String(row.copyright_holder_id) : '';
+            chIdEl.dispatchEvent(new Event('change', { bubbles: true }));
             document.getElementById('edit-work-musicbrainz-work-mbid').value = row.musicbrainz_work_mbid || '';
             const psel = document.getElementById('edit-work-parent');
             psel.value = row.parent_id ? String(row.parent_id) : '';
@@ -1629,6 +1715,58 @@ if ($hasSchema) {
                 if (visible && hidden) {
                     window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
                 }
+            });
+
+            /* #1864 — Tune + Copyright Holder pickers (rule #43). Both use
+               pickMode:'value': the pick fills the input + hidden id and
+               does NO network call of its own — the form's own POST is the
+               ONE commit, and the server's find-or-create funnels
+               (tuneFindOrCreateByName() / publisherResolvePickedOrCreate())
+               run there, never from the client (the #1679 anti-pattern —
+               a side-effectful mint on a typing pause — is impossible by
+               construction: nothing here writes to the database). */
+            const tuneOpts = (hiddenId) => ({
+                hiddenIdInput: document.getElementById(hiddenId),
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'tune', plural: 'tunes' },
+                /* Reuses the EXISTING api2 tune_search action (rule #22) —
+                   no local `FROM tblTunes` search is ever added here. Mirrors
+                   manage/editor/v2/metadata-tab.js's own attach() call minus
+                   the meter-filter leg (the Works form has no metre context). */
+                searchUrl: (q) => '/manage/editor/api2?action=tune_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: [
+                        s.meterCode ? 'Metre ' + s.meterCode : '',
+                        s.matchedAlias ? 'aka ' + s.matchedAlias : '',
+                        s.usage ? s.usage + ' song' + (s.usage === 1 ? '' : 's') : '',
+                    ].filter(Boolean).join(' · '),
+                })),
+            });
+            const pubOpts = (hiddenId) => ({
+                hiddenIdInput: document.getElementById(hiddenId),
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'publisher', plural: 'publishers' },
+                /* This page's own ?action=publisher_search (delegates to the
+                   shared publisherSearchRows() core, rule #22). */
+                searchUrl: (q) => '/manage/works?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: s.kind || '',
+                })),
+            });
+            [
+                ['create-work-tune-name', 'create-work-tune-id', tuneOpts],
+                ['edit-work-tune-name',   'edit-work-tune-id',   tuneOpts],
+                ['create-work-copyright-holder', 'create-work-copyright-holder-id', pubOpts],
+                ['edit-work-copyright-holder',   'edit-work-copyright-holder-id',   pubOpts],
+            ].forEach(([inputId, hiddenId, mk]) => {
+                const el = document.getElementById(inputId);
+                if (el) window.iHymnsPlaceSearch.attach(el, mk(hiddenId));
             });
         })();
     </script>
