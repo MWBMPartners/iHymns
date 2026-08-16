@@ -496,6 +496,20 @@ function workLinkPlan(?array $byIswc, ?array $byCcli, string $ccli, string $iswc
  * `song_work_set` "link to an existing work" path (api2.php) call this,
  * never a second copy.
  *
+ * #1860 go-live — ALSO the ONE place canonical-member promotion happens:
+ * the first member of a canonical-less work becomes `IsCanonical = 1`.
+ * Extracted from the legacy save-path block (pre-#1860 `save_song_core.php`,
+ * which did this inline for its ISWC-only fork and nowhere else) into this
+ * shared writer so EVERY route that links a song to a Work — the auto-linker
+ * via `workLinkPlan()`, AND the manual `song_work_set` picker — gets the
+ * same sensible default: a one-member work always has a canonical member.
+ * Real readers ORDER BY `IsCanonical` (`SongData.php` :5366/:5412/
+ * :5650-5656`, `manage/works.php` :844-859`) for "Part of work" display
+ * order — losing this would regress that ordering. Promoting only on ONE
+ * entry route (the save path, as the legacy block did) would leave a
+ * manually-linked work with no canonical member at all; an invariant either
+ * holds at the ONE writer or it isn't an invariant.
+ *
  * @param \mysqli $db
  * @param int     $workId
  * @param string  $songId
@@ -509,6 +523,24 @@ function workLinkSongRow(\mysqli $db, int $workId, string $songId): void
     $ins->bind_param('is', $workId, $songId);
     $ins->execute();
     $ins->close();
+
+    /* First member of a canonical-less work becomes canonical (#1860
+       go-live — readers ORDER BY IsCanonical, see this function's
+       doc-block). A membership row for THIS song already exists by this
+       point (the INSERT above, idempotent on a re-link) — the promotion
+       only fires when NO row on the work is canonical yet, so a work that
+       already has a canonical member (however it got one) is left alone. */
+    $canon = $db->prepare('SELECT 1 FROM tblWorkSongs WHERE WorkId = ? AND IsCanonical = 1 LIMIT 1');
+    $canon->bind_param('i', $workId);
+    $canon->execute();
+    $hasCanon = $canon->get_result()->fetch_row() !== null;
+    $canon->close();
+    if (!$hasCanon) {
+        $promote = $db->prepare('UPDATE tblWorkSongs SET IsCanonical = 1 WHERE WorkId = ? AND SongId = ?');
+        $promote->bind_param('is', $workId, $songId);
+        $promote->execute();
+        $promote->close();
+    }
 }
 
 /**
@@ -929,6 +961,106 @@ function workFindOrLinkByIdentifier(\mysqli $db, string $songId, string $ccliRaw
     $result['ready']       = true;
     $result['iswcInvalid'] = $iswcInvalid;
     return $result;
+}
+
+/**
+ * THE ONE fail-safe wrapper every save/import funnel calls instead of the
+ * bare `workFindOrLinkByIdentifier()` (#1860 go-live). The two `song_work_*`
+ * API endpoints keep their own explicit txn + rethrow shape — an ENDPOINT
+ * should 500 honestly on a genuine failure. A SAVE FUNNEL must not: this
+ * wrapper is what makes an auto-link failure invisible to the curator saving
+ * a song, the P0 contract this whole increment exists to protect.
+ *
+ * ELI5: "try to link this song's Work by its CCLI/ISWC, but if ANYTHING goes
+ * wrong, just quietly give up — never let a Works-linking hiccup cost
+ * someone their song save." The one exception: if the database says the
+ * whole transaction is already dead (a deadlock), this function has to say
+ * so loudly, because staying quiet there would make the caller falsely
+ * report success.
+ *
+ * DETAILED — CONTRACT (build spec §2.1):
+ *   1. FAST NO-OP: both identifiers empty after `trim()` -> `null`,
+ *      WITHOUT touching the database at all (design §3.3.1 — the auto-
+ *      linker never auto-unlinks on cleared identifiers, and this keeps a
+ *      zero-identifier save at literally zero added cost).
+ *   2. `$ownTransaction === true` (the funnel's OWN write already committed
+ *      — metadata_field_update's per-field save, duplicate_song,
+ *      revision_restore): opens its OWN `begin_transaction()` /
+ *      `workFindOrLinkByIdentifier()` / `commit()`. `catch (\Throwable $e)`
+ *      -> `rollback()` (itself try/catch-swallowed — a rollback failing on
+ *      an already-dead connection must not throw OUT of this "never
+ *      rethrows" mode), `error_log`, return `null`. This mode NEVER
+ *      rethrows — its rollback is self-contained, so there is nothing for a
+ *      caller to catch even if it wanted to.
+ *   3. `$ownTransaction === false` (the DEFAULT — inside a save/import
+ *      funnel's ALREADY-OPEN transaction, e.g. `editorSaveSongCore()`):
+ *      calls `workFindOrLinkByIdentifier()` directly, no txn of its own.
+ *      `catch (\Throwable $e)` -> `songRelocateIsTransactionFatal($e)`
+ *      (`includes/song_relocate.php`) decides: a transaction-fatal
+ *      deadlock/lock-wait-timeout (1213/1205, cause-chain-walking) means the
+ *      CALLER's transaction is already rolled back by MySQL, so this
+ *      RE-THROWS — swallowing it here would let the caller's `commit()`
+ *      succeed trivially and report `ok:true` for a save that wrote
+ *      nothing, the exact false-success class that predicate's own
+ *      doc-block names. Every other throwable is logged and swallowed.
+ *      This is BYTE-IDENTICAL policy to the legacy inline block's own catch
+ *      (`save_song_core.php`, pre-#1860) — extracted here, not reinvented.
+ *   4. Every logged failure carries the fixed, greppable tag
+ *      `'[work autolink] '`.
+ *   5. Adds NO schema probes of its own — `workFindOrLinkByIdentifier()`
+ *      already degrades to the typed not-ready shape on an un-migrated
+ *      install (`workAdminReady()` gate, above).
+ *
+ * @param \mysqli $db
+ * @param string  $songId         Must already exist in tblSongs — the same
+ *                                 precondition `workFindOrLinkByIdentifier()`
+ *                                 documents; a funnel calling this has
+ *                                 already inserted/confirmed the row.
+ * @param string  $ccliRaw        Curator/importer-typed CCLI, any formatting.
+ * @param string  $iswcRaw        Curator/importer-typed ISWC, any formatting.
+ * @param bool    $ownTransaction false (default) = run inside the caller's
+ *                                 already-open transaction; true = open/
+ *                                 commit/rollback its own small one.
+ * @return ?array The workFindOrLinkByIdentifier() result, or null when the
+ *                link attempt was swallowed (empty identifiers, or a
+ *                non-fatal failure) — the save must never notice either way.
+ * @throws \Throwable Only in `$ownTransaction === false` mode, and only when
+ *         `songRelocateIsTransactionFatal()` says the caller's transaction
+ *         is already dead.
+ */
+function workAutolinkSafe(\mysqli $db, string $songId, string $ccliRaw, string $iswcRaw, bool $ownTransaction = false): ?array
+{
+    if (trim($ccliRaw) === '' && trim($iswcRaw) === '') {
+        return null; // nothing to link — zero DB cost (design §3.3.1)
+    }
+
+    if ($ownTransaction) {
+        $db->begin_transaction();
+        try {
+            $result = workFindOrLinkByIdentifier($db, $songId, $ccliRaw, $iswcRaw);
+            $db->commit();
+            return $result;
+        } catch (\Throwable $e) {
+            try {
+                $db->rollback();
+            } catch (\Throwable $_rollbackErr) {
+                // already-dead connection — nothing more to do; this mode never rethrows
+            }
+            error_log('[work autolink] ' . $songId . ': ' . $e->getMessage());
+            return null;
+        }
+    }
+
+    try {
+        return workFindOrLinkByIdentifier($db, $songId, $ccliRaw, $iswcRaw);
+    } catch (\Throwable $e) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        if (songRelocateIsTransactionFatal($e)) {
+            throw $e; // caller's transaction is already dead — must propagate, never swallow
+        }
+        error_log('[work autolink] ' . $songId . ': ' . $e->getMessage());
+        return null;
+    }
 }
 
 /* ============================================================================

@@ -569,6 +569,17 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $tuneStmt->close();
         }
 
+        /* #1860 go-live — Works auto-link, same shared core the editor save
+           path uses (rule #22). Inside this import's own transaction
+           (ownTransaction=false); fail-safe — a link failure never aborts
+           the import (transaction-fatal rethrows so the surrounding catch
+           rolls back honestly; everything else is logged and swallowed).
+           This function is INSERT-ONLY (an existing SongId returns
+           'skipped' above, before the transaction even opens), so this
+           only ever fires for a brand-new song. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+        workAutolinkSafe($db, $songId, (string)$ccli, (string)$iswc, false);
+
         /* #1235 P4/C5 — write inversion. When the tblLyricLines mirror exists, the
            shared write path makes the normalised lines authoritative and shadow-writes
            the (still-present) JSON columns from the same payload — so this import keeps

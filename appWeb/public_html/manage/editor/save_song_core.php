@@ -56,6 +56,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -1267,123 +1268,28 @@ function editorSaveSongCore(): array
                 );
             }
 
-            /* ISWC auto-link to tblWorks (admin audit follow-up).
-               When this song carries an ISWC the editor expects a
-               matching Work row to exist so the public /song page
-               can show the "Part of work X" panel and so the Works
-               admin reflects every catalogued composition. The
-               batch backfill-works-from-iswc migration handles
-               existing rows; this block keeps the invariant on
-               every NEW save. Schema-tolerant: silently skips when
-               tblWorks isn't present yet (pre-migration installs). */
-            if ($iswc !== null && $iswc !== '') {
-                try {
-                    /* Probe schema once per request. */
-                    static $hasWorksSchema = null;
-                    if ($hasWorksSchema === null) {
-                        $probe = $db->prepare(
-                            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                              WHERE TABLE_SCHEMA = DATABASE()
-                                AND TABLE_NAME   IN ('tblWorks', 'tblWorkSongs')"
-                        );
-                        $probe->execute();
-                        $hasWorksSchema = count($probe->get_result()->fetch_all()) === 2;
-                        $probe->close();
-                    }
-                    if ($hasWorksSchema) {
-                        /* Look for an existing Work keyed on this ISWC. */
-                        $wStmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? LIMIT 1');
-                        $wStmt->bind_param('s', $iswc);
-                        $wStmt->execute();
-                        $wRow = $wStmt->get_result()->fetch_row();
-                        $wStmt->close();
-
-                        if ($wRow) {
-                            $workId = (int)$wRow[0];
-                        } else {
-                            /* Create a new Work — Title mirrors this song's
-                               title; Slug derived from Title with
-                               collision suffix to satisfy uq_slug. */
-                            $slugBase = mb_strtolower(trim((string)$title));
-                            if (class_exists('Normalizer')) {
-                                $slugBase = \Normalizer::normalize($slugBase, \Normalizer::FORM_KD);
-                                $slugBase = preg_replace('/\p{M}+/u', '', $slugBase) ?? '';
-                            }
-                            $slugBase = preg_replace('/[^\p{L}\p{N}]+/u', '-', $slugBase) ?? '';
-                            $slugBase = trim((string)$slugBase, '-');
-                            if ($slugBase === '') $slugBase = 'work';
-                            if (mb_strlen($slugBase) > 76) $slugBase = mb_substr($slugBase, 0, 76);
-
-                            $slug      = $slugBase;
-                            $slugCheck = $db->prepare('SELECT 1 FROM tblWorks WHERE Slug = ? LIMIT 1');
-                            $suffix    = 1;
-                            while (true) {
-                                $slugCheck->bind_param('s', $slug);
-                                $slugCheck->execute();
-                                $taken = $slugCheck->get_result()->fetch_row() !== null;
-                                if (!$taken) break;
-                                $suffix++;
-                                $slug = $slugBase . '-' . $suffix;
-                            }
-                            $slugCheck->close();
-
-                            $notes = sprintf('Auto-created from ISWC %s when song %s was saved.', $iswc, $songId);
-                            /* ilid-exempt: legacy fork, deleted whole in #1860 commit B
-                               (work_admin.php mints tblWorks rows itself). */
-                            $wIns  = $db->prepare(
-                                'INSERT INTO tblWorks (Iswc, Title, Slug, Notes) VALUES (?, ?, ?, ?)'
-                            );
-                            $wIns->bind_param('ssss', $iswc, $title, $slug, $notes);
-                            $wIns->execute();
-                            $workId = (int)$db->insert_id;
-                            $wIns->close();
-
-                            if (function_exists('logActivity')) {
-                                logActivity('work.auto_create', 'work', (string)$workId, [
-                                    'iswc'      => $iswc,
-                                    'title'     => $title,
-                                    'slug'      => $slug,
-                                    'source'    => 'song_editor.save_song',
-                                    'song_id'   => $songId,
-                                ]);
-                            }
-                        }
-
-                        /* Idempotent membership. IsCanonical defaults to 0
-                           — the first member of a brand-new Work is
-                           promoted to canonical inline via a follow-up
-                           UPDATE only when no canonical member exists. */
-                        $linkStmt = $db->prepare(
-                            'INSERT IGNORE INTO tblWorkSongs (WorkId, SongId, IsCanonical, SortOrder)
-                             VALUES (?, ?, 0, 0)'
-                        );
-                        $linkStmt->bind_param('is', $workId, $songId);
-                        $linkStmt->execute();
-                        $linkStmt->close();
-
-                        $canonStmt = $db->prepare(
-                            'SELECT 1 FROM tblWorkSongs WHERE WorkId = ? AND IsCanonical = 1 LIMIT 1'
-                        );
-                        $canonStmt->bind_param('i', $workId);
-                        $canonStmt->execute();
-                        $hasCanon = $canonStmt->get_result()->fetch_row() !== null;
-                        $canonStmt->close();
-                        if (!$hasCanon) {
-                            $upd = $db->prepare(
-                                'UPDATE tblWorkSongs SET IsCanonical = 1 WHERE WorkId = ? AND SongId = ?'
-                            );
-                            $upd->bind_param('is', $workId, $songId);
-                            $upd->execute();
-                            $upd->close();
-                        }
-                    }
-                } catch (\Throwable $_e) {
-                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
-                    /* Best-effort — Works linkage must never block the
-                       core song save. The user's edit is already
-                       captured in tblSongs + tblSongRevisions. */
-                    error_log('[editor save_song] Works auto-link failed: ' . $_e->getMessage());
-                }
+            /* Works auto-link (#1860 go-live) — delegates to the ONE shared
+               core (rule #22; this REPLACES the pre-#1860 inline ISWC-only
+               fork above — CCLI now participates too: a CCLI-only save
+               creates/links a standalone CCLI-keyed work, and ISWC+CCLI
+               together create the parent/child pair per workLinkPlan()
+               §3.3 — this is the feature, not a side effect). Inside this
+               save's own transaction (ownTransaction=false); fail-safe: a
+               link failure NEVER costs the curator their save
+               (transaction-fatal deadlock/lock-timeout rethrows via the
+               wrapper so this save's own catch below rolls back honestly;
+               everything else is logged and swallowed). Canonical-member
+               promotion is PRESERVED — it now lives in the ONE membership
+               writer, workLinkSongRow(), so every entry route gets it. */
+            $workAutolink = workAutolinkSafe($db, $songId, (string)$ccli, (string)($iswc ?? ''), false);
+            if ($workAutolink !== null && $workAutolink['linked'] && function_exists('logActivity')) {
+                logActivity('song.work_autolink', 'song', $songId, [
+                    'workId'   => $workAutolink['workId'],
+                    'created'  => $workAutolink['created'],
+                    'rehomed'  => $workAutolink['rehomed'],
+                    'conflict' => $workAutolink['conflict'],
+                    'source'   => 'save_song',
+                ]);
             }
 
             /* ------------------------------------------------------------------

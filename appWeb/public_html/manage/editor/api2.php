@@ -1926,6 +1926,26 @@ try {
             throw $e;
         }
 
+        /* #1860 go-live — Works auto-link for the duplicate's OWN row.
+           Post-commit (ownTransaction=true — the duplicate itself is
+           already safely committed above); re-READ the stored Ccli/Iswc
+           rather than trusting $snap (rule #35's read-back posture — the
+           snapshot is the INPUT to ed2_applySongSnapshot(), not proof of
+           what actually landed). Linking the duplicate to the SAME work as
+           its source is correct — two renderings of one work.
+           @deleted-visible: identifier read (#1860) — $newId is the row this
+           very request just inserted and committed above; it cannot be
+           soft-deleted, but the read is by direct SongId (editor-write-path
+           posture), not a listing, so no filter is needed either way.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in the hidden staging book is still fully editable here. */
+        $dupIdStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $dupIdStmt->bind_param('s', $newId);
+        $dupIdStmt->execute();
+        $dupIdRow = $dupIdStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $dupIdStmt->close();
+        workAutolinkSafe($db, $newId, (string)($dupIdRow['Ccli'] ?? ''), (string)($dupIdRow['Iswc'] ?? ''), true);
+
         /* Post-commit, best-effort (parity with create_song, #1742). */
         try { songbookRecomputeSongCount($db, $pendingAbbr); }
         catch (\Throwable $_e) { error_log('[editor duplicate_song] SongCount recompute failed: ' . $_e->getMessage()); }
@@ -2259,6 +2279,39 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1860 go-live — a committed CCLI/ISWC write re-runs the work
+           auto-link server-side (fail-safe, own txn, additive response
+           key). Without this hook go-live would only cover the legacy
+           whole-song save; Editor2 saves these fields per-field via THIS
+           action, so its songs would stay unlinked until the Phase-5 client
+           badge ships (rule #35 — the invariant must not depend on future
+           client wiring). The Phase-5 badge will call song_work_autolink
+           for the same result; both routes hit the ONE core
+           (workAutolinkSafe -> workFindOrLinkByIdentifier) so they cannot
+           diverge. own-transaction mode (true): THIS field's own txn is
+           already committed above, so a swallowed link failure here still
+           leaves the field save fully intact. */
+        $workAutolink = null;
+        if ($column === 'Ccli' || $column === 'Iswc') {
+            /* @deleted-visible / @disabled-visible: identifier read (#1860)
+               — the exact SELECT song_work_autolink uses (this action has
+               already confirmed the song exists, via ed2_songExists() near
+               the top of this case), same editor-write-path posture. */
+            $idStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $idStmt->bind_param('s', $songId);
+            $idStmt->execute();
+            $idRow = $idStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+            $idStmt->close();
+            $workAutolink = workAutolinkSafe(
+                $db,
+                $songId,
+                (string)($idRow['Ccli'] ?? ''),
+                (string)($idRow['Iswc'] ?? ''),
+                true
+            );
+        }
+
         logActivity('song.metadata', 'song', $songId, ['field' => $field]);
         /* #1749 — for field=isrc, echo the STORE's projected value (never
            the caller's raw $value): a clear-with-manual promotion (§2.1) is
@@ -2267,7 +2320,8 @@ try {
            OTHER field, so `?? $value` degrades to exactly the pre-#1749
            echo — additive-only, no response-shape change for non-isrc
            fields. */
-        ed2_respond(['ok' => true, 'field' => $field, 'value' => $isrcFinal ?? $value]);
+        ed2_respond(['ok' => true, 'field' => $field, 'value' => $isrcFinal ?? $value]
+            + ($workAutolink !== null ? ['workAutolink' => $workAutolink] : []));
         break;
     }
 
@@ -5206,6 +5260,28 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1860 go-live — a restore can reintroduce identifiers a later
+           save had cleared, or clear ones a linked work still reflects;
+           re-run the Works auto-link so tblWorkSongs agrees with whatever
+           the restore actually wrote. Post-commit (ownTransaction=true);
+           re-READ the stored Ccli/Iswc rather than trusting $snap (rule
+           #35 — the snapshot is INPUT to ed2_applySongSnapshot(), not proof
+           of what landed).
+           @deleted-visible: identifier read (#1860) — ed2_songExists($db,
+           $songId) just above already confirmed this SongId exists
+           (deliberately visible to a soft-deleted row, by that function's
+           own reasoning); reading CCLI/ISWC by direct SongId to re-run the
+           work link is the same editor-write-path posture, never a listing.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in a publicly-disabled book is still fully editable here. */
+        $restoreIdStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $restoreIdStmt->bind_param('s', $songId);
+        $restoreIdStmt->execute();
+        $restoreIdRow = $restoreIdStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $restoreIdStmt->close();
+        workAutolinkSafe($db, $songId, (string)($restoreIdRow['Ccli'] ?? ''), (string)($restoreIdRow['Iswc'] ?? ''), true);
+
         logActivity('song.revision.restore', 'song', $songId, ['fromRevisionId' => $revisionId]);
         ed2_respond(['ok' => true, 'songId' => $songId]);
         break;
