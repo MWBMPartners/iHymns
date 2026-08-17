@@ -38,9 +38,10 @@ declare(strict_types=1);
  *       the org page is INCAPABLE of the unscoped/all-orgs query, and there
  *       is no org-scoped "Views" (decision O3).
  *   A2. The page derives scope from membership: it calls `userIsOrgAdminOf(`
- *       and `ccliReportResolveOrgScope(`, and the string `$_GET['org']`
- *       appears ONLY as an argument to the resolver (never fed to a query
- *       builder directly).
+ *       and `ccliReportResolveOrgScope(`; `$_GET['org']` is read ONCE, into
+ *       `$rawOrg`, which — after an `is_array` guard (a non-scalar `?org[]=`
+ *       is a graceful denial, not a strict_types TypeError → 500) — is the
+ *       only value fed to the resolver (never to a query builder directly).
  *   A3. In `includes/ccli_report.php`, `ccliReportOrgRows` early-returns on
  *       `$orgIds === []` BEFORE any `prepare(`; its SQL contains `OrgId IN (`
  *       with placeholders built from `array_fill(0, count($orgIds), '?')`
@@ -195,12 +196,20 @@ cros(str_contains($orgPageSrc, 'userIsOrgAdminOf('),
     'A2.1 my-ccli-report.php derives scope from userIsOrgAdminOf() (the membership lookup)');
 cros(str_contains($orgPageSrc, 'ccliReportResolveOrgScope('),
     'A2.2 my-ccli-report.php validates the requested org via ccliReportResolveOrgScope()');
-$getOrgCount      = preg_match_all('/\$_GET\[[\'"]org[\'"]\]/', $orgPageSrc);
-$getOrgToResolver = preg_match_all('/ccliReportResolveOrgScope\(\s*\$_GET\[[\'"]org[\'"]\]/', $orgPageSrc);
+/* $_GET['org'] is read exactly once, captured into $rawOrg; only $rawOrg —
+   after an is_array guard — reaches the validating resolver, so a raw ?org=
+   never flows to a query builder directly (A2.3). A non-scalar ?org[]= is a
+   graceful denial rather than a strict_types TypeError -> HTTP 500 (A2.4). */
+$getOrgCount   = preg_match_all('/\$_GET\[[\'"]org[\'"]\]/', $orgPageSrc);
+$rawOrgCapture = preg_match('/\$rawOrg\s*=\s*\$_GET\[[\'"]org[\'"]\]/', $orgPageSrc);
 cros(
-    $getOrgCount >= 1 && $getOrgCount === $getOrgToResolver,
-    "A2.3 every \$_GET['org'] occurrence ({$getOrgCount}) is an argument to ccliReportResolveOrgScope() "
-        . "({$getOrgToResolver}) — a raw ?org= never reaches a query builder directly"
+    $getOrgCount === 1 && $rawOrgCapture === 1,
+    "A2.3 \$_GET['org'] is read exactly once ({$getOrgCount}), captured into \$rawOrg — a raw ?org= never reaches a query builder directly"
+);
+cros(
+    (bool)preg_match('/is_array\(\s*\$rawOrg\s*\)/', $orgPageSrc)
+        && (bool)preg_match('/ccliReportResolveOrgScope\(\s*\$rawOrg\b/', $orgPageSrc),
+    'A2.4 a non-scalar ?org[]= is guarded (is_array($rawOrg) → denial) before $rawOrg reaches the ?string resolver — a malformed selector 403s, never TypeErrors to a 500'
 );
 
 /* ---- A3: the core's structural refusal + rule-#5 placeholders ------------- */

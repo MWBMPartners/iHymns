@@ -101,8 +101,18 @@ if ($allowedOrgIds === []) {
 /* Turn "what did the URL ask for" + "what is this user actually allowed to
    see" into exactly one safe org id, or a denial. A forged/mistyped ?org=
    that isn't one of THIS user's orgs is refused outright — never silently
-   substituted for one they DO administer. */
-$scope = ccliReportResolveOrgScope($_GET['org'] ?? null, $allowedOrgIds);
+   substituted for one they DO administer.
+
+   A non-scalar ?org[]= (an array under $_GET) is a malformed/forged request:
+   treat it as an invalid explicit selection (denied), the same as a scalar
+   org the caller can't administer. Guarding here keeps a raw array from
+   reaching the resolver's ?string parameter, which under declare(strict_types=1)
+   would TypeError to a bare HTTP 500 instead of the graceful 403. Fail-closed
+   either way — this only makes the failure a clean denial. */
+$rawOrg = $_GET['org'] ?? null;
+$scope = is_array($rawOrg)
+    ? ['orgIds' => [], 'denied' => true]
+    : ccliReportResolveOrgScope($rawOrg, $allowedOrgIds);
 if ($scope['denied']) {
     http_response_code(403);
     exit('Access denied. That organisation is not one you administer.');
