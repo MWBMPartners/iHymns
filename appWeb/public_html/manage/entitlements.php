@@ -90,7 +90,7 @@ $groups = [
        the surfaces they sit beside in the admin nav. */
     'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_publishers', 'manage_external_link_types', 'manage_duplicate_songs'],
     'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_licence_types', 'manage_feature_gating'],
-    'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
+    'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report', 'view_org_ccli_report'],
     'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
     'Personalisation'    => ['manage_default_card_layout', 'customise_own_card_layout'],
     'Channel access'     => ['access_alpha', 'access_beta'],
@@ -192,6 +192,7 @@ $ENTITLEMENT_LABELS = [
     'manage_user_licences'      => ['Manage user licences',           'Attach or remove a licence held by an individual user'],
     'view_licence_audit'        => ['View licence audit',             'See how a user\'s effective licences were worked out'],
     'view_ccli_report'          => ['View CCLI usage report',         'Export the annual song-usage return as CSV (#317)'],
+    'view_org_ccli_report'      => ['View own organisation\'s CCLI report', 'Pull the CCLI usage return for an organisation you own or admin (#1861)'],
     'request_api_keys'          => ['Request an API key',             'Ask for a machine-to-machine key; a Global Admin approves it'],
     'manage_api_keys'           => ['Manage API keys',                'Mint, approve and revoke machine-to-machine API keys'],
 ];

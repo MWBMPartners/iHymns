@@ -111,6 +111,11 @@ $_adminLinks = [
        userHasOwnOrganisation() so non-admins only see this link when they
        hold an admin/owner row in tblOrganisationMembers. */
     ['my-organisations',     '/manage/my-organisations',     'bi-buildings',         'My Organisations',         'manage_own_organisation',     'People'              ],
+    /* My CCLI Report (#1861) — org-facing sibling of ccli-report (which stays
+       system-wide under view_ccli_report). Entitlement open to every signed-in
+       role; admin-nav.php applies the same data-driven userHasOwnOrganisation()
+       hide as my-organisations above. */
+    ['my-ccli-report',       '/manage/my-ccli-report',       'bi-receipt-cutoff',    'My CCLI Report',           'view_org_ccli_report',        'People'              ],
 
     /* Access & Permissions — who can see and do what */
     /* Content Access (#1769 P6 / #1778) — the family overview + activation-

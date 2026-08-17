@@ -120,22 +120,59 @@ function _printUsageTableExists(\mysqli $db): bool
  * disagree about what "licensed" means (rule #35) — `printUsageLog()`
  * re-calls this itself rather than trusting a caller's earlier answer.
  *
+ * #1861 W1 — PREFERS an org-sourced licence over a user-sourced one.
+ *
+ * ELI5: if you hold BOTH a personal CCLI number AND your church's CCLI
+ * licence, we report the print as your CHURCH's usage and stamp your
+ * church's licence number on the footer — not your personal one — because
+ * that is the licence a church's usage return actually needs to reflect.
+ *
+ * DETAIL: `getUserEffectiveLicences()` (`includes/licences.php`) appends
+ * rows in a fixed order — (a) direct user-level `tblContentLicences` rows,
+ * (b) the personal `tblUsers.CcliNumber`, THEN (c–f) every org-sourced row.
+ * Before this fix, this function returned the FIRST 'ccli' row it saw, so a
+ * user holding both a personal number and an org licence always resolved to
+ * the PERSONAL one — `printUsageLog()` then logged `OrgId = NULL` for a
+ * print that was genuinely the org's usage, and the compliance footer
+ * stamped the user's personal CCL number instead of the org's. That is the
+ * exact under-attribution `#1861`'s org-scoped report exists to surface (see
+ * the system report's "Unattributed" filter, `manage/ccli-report.php`) — and
+ * per this file's doc-block, under-counting is the direction that violates
+ * the licence, never the safe default.
+ *
+ * A multi-org user who holds several org CCLI licences still resolves to
+ * the FIRST org-sourced row `getUserEffectiveLicences()` returns — direct
+ * memberships resolve before inherited-parent-org rows in that function,
+ * which is the defensible order; picking a "best" org licence among several
+ * is a real refinement but out of scope here (#1861 owner decision O4).
+ *
+ * Users whose ONLY CCLI licence is personal are unaffected and continue to
+ * log `OrgId = NULL` — correctly, since there is no org to attribute to.
+ *
  * @param  int|null $userId
  * @return array{type:string,key:string,source:string,source_id:?int}|null
- *         The FIRST qualifying 'ccli' row from getUserEffectiveLicences(),
- *         or null when the user is anonymous or holds none.
+ *         An org-sourced 'ccli' row when the user holds one, else the FIRST
+ *         user-sourced 'ccli' row, else null when the user is anonymous or
+ *         holds no qualifying licence at all.
  */
 function printUsageResolveCcliLicence(?int $userId): ?array
 {
     if ($userId === null || $userId <= 0) {
         return null;
     }
+    $fallback = null;
     foreach (getUserEffectiveLicences($userId) as $l) {
-        if (($l['type'] ?? '') === 'ccli') {
-            return $l;
+        if (($l['type'] ?? '') !== 'ccli') {
+            continue;
+        }
+        if ((string)($l['source'] ?? '') === 'org') {
+            return $l; // org-held licence wins: org attribution + the org's CCL number on the footer (#1861 O4)
+        }
+        if ($fallback === null) {
+            $fallback = $l; // first user-sourced row — used only when no org holds one
         }
     }
-    return null;
+    return $fallback;
 }
 
 /**

@@ -283,6 +283,14 @@ const ENTITLEMENTS = [
        usage return. */
     'view_ccli_report'     => ['admin', 'global_admin'],
 
+    /* Org-facing CCLI report (#1861). Deliberately open to every signed-in
+       role: the REAL restriction is data-driven — /manage/my-ccli-report
+       additionally requires an admin/owner row in tblOrganisationMembers
+       (userIsOrgAdminOf()), the manage_own_organisation pattern (#707).
+       The role layer exists so an operator can still switch the whole
+       surface off per-role at /manage/entitlements. */
+    'view_org_ccli_report' => ['user', 'editor', 'admin', 'global_admin'],
+
     /* Activity log viewer (#535). Reads tblActivityLog — every
        meaningful auth, CRUD, user-action, API, and system event.
        Default is admin+ since rows expose IP, UA, and email columns. */
