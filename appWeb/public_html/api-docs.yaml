@@ -1443,6 +1443,7 @@ paths:
                 setlist_id:
                   type: string
                   nullable: true
+                  description: The set-list this print was made FOR, if any (#1897 W3 — the batch set-list PDF path sends it; a single-song print correctly omits it). Sanitised + clamped to 100 chars server-side; stored on the usage row for report drill-down.
       responses:
         "200":
           description: |

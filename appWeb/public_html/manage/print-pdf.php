@@ -59,7 +59,8 @@ declare(strict_types=1);
  *     "css": "…printCss() output…",
  *     "pageOptions": { … },        // re-validated against the SAME schema the editor uses
  *     "filename": "amazing-grace", // optional; slug-sanitised server-side either way
- *     "copies": 1                  // optional int 1..10000 — #1767 remainder P5, rides into printUsageLog() PER QUALIFYING DOCUMENT
+ *     "copies": 1,                 // optional int 1..10000 — #1767 remainder P5, rides into printUsageLog() PER QUALIFYING DOCUMENT
+ *     "setlistId": "abc123"        // optional — #1897 W3, the set-list this batch was printed FOR; sanitised + ridden into each printUsageLog() meta
  *   }
  * `meta.book` (#1767 remainder P4, §4.3) feeds the OPTIONAL `runningHeader`
  * page option's 'titleBook' mode only — capped/control-stripped exactly like
@@ -260,6 +261,13 @@ if (strlen($cssRaw) > PDF_MAX_CSS_BYTES) {
 $pageOptionsRaw = $body['pageOptions'] ?? null;
 $filenameRaw    = (string)($body['filename'] ?? 'ihymns-print');
 
+/* #1897 W3 — the OPTIONAL set-list this batch was printed FOR (the batch caller
+   js/modules/setlist.js sends `list.id`). Sanitised ONCE here and ridden into
+   every qualifying document's printUsageLog() meta below. Charset mirrors the
+   client-minted-setlist-id sanitiser at api.php (the setlist_share path); length
+   mirrors printUsageLog()'s own 100-char clamp. Empty → NULL (no attribution). */
+$pdfSetlistId = preg_replace('/[^a-zA-Z0-9_\-]/', '', mb_substr(trim((string)($body['setlistId'] ?? '')), 0, 100));
+
 /* ---- Sanitise (P2's ONE sanitiser — reused, never forked, plan §5.2) ---- */
 $sanitisedDocs = [];
 foreach ($documentsRaw as $d) {
@@ -397,7 +405,13 @@ if ($pdfCopiesRaw !== null) {
                 (int)($currentUser['id'] ?? 0),
                 $pdfLogSongId,
                 (int)$pdfCopiesRaw,
-                ['surface' => 'pdf', 'templateId' => isset($body['templateId']) ? (int)$body['templateId'] : null]
+                [
+                    'surface'    => 'pdf',
+                    'templateId' => isset($body['templateId']) ? (int)$body['templateId'] : null,
+                    /* #1897 W3 — the set-list this batch was printed for (every
+                       document in a batch was printed FOR the same list). */
+                    'setlistId'  => ($pdfSetlistId !== '' ? $pdfSetlistId : null),
+                ]
             );
         } catch (\Throwable $e) {
             error_log('[print-pdf] usage log failed: ' . $e->getMessage());

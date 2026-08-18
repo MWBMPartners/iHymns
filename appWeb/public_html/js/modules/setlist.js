@@ -4246,6 +4246,11 @@ export class SetList {
             css: printCss(tpl.pageOptions),
             pageOptions: tpl.pageOptions || {},
             filename: pdfFilenameFor({ title: list.name }),
+            // #1897 W3 — the set-list this whole batch was printed FOR. The
+            // server sanitises it and rides it into each qualifying document's
+            // printUsageLog() so the CCLI report can attribute the print to a
+            // service's list (an absent/blank id is stored as NULL server-side).
+            setlistId: list.id,
         };
         if (copies != null) { payload.copies = copies; }
 

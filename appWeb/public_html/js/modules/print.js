@@ -1082,7 +1082,7 @@ export async function printUsageContextFor(app, songId) {
  * failure gets its own toast asking the user to retry rather than
  * disappearing silently.
  */
-async function logPrintUsage(app, songId, copies, surface, templateId) {
+async function logPrintUsage(app, songId, copies, surface, templateId, setlistId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
         const res = await apiFetch(`${base}?action=print_usage_log`, {
@@ -1093,6 +1093,12 @@ async function logPrintUsage(app, songId, copies, surface, templateId) {
             body: JSON.stringify({
                 song_id: songId, copies, surface,
                 ...(templateId != null ? { template_id: templateId } : {}),
+                // #1897 W3 — dormant slot (rule #20): a single-song browser
+                // print has no set-list context (correctly absent), but a future
+                // set-list browser-print caller passes list.id here and the
+                // api.php?action=print_usage_log `setlist_id` param finally has
+                // its consumer. `api.php` already accepts + stores it.
+                ...(setlistId ? { setlist_id: setlistId } : {}),
             }),
         });
         if (!res.ok) { throw new Error('print_usage_log failed: ' + res.status); }
