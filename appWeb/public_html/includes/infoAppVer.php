@@ -131,6 +131,15 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
    be in), so the major digit no longer encodes a data-source phase. */
 $app["Application"]["Version"]["Number"] = "0.5250.0";
 
+/* Build number — the git commit count (`git rev-list --count HEAD`): a
+ * monotonic, per-commit build identifier that advances on every landed commit,
+ * independent of the semantic MAJOR.MINOR.PATCH above. NULL in source; the
+ * deploy pipeline injects the real value via sed at deploy time — the same
+ * no-commit-back mechanism as the commit SHA/date below — so it is never
+ * bumped by hand and never churns git history. An un-injected checkout (local
+ * dev) reads NULL. See deploy.yml, step "Inject build info into infoAppVer.php". */
+$app["Application"]["Version"]["Build"]["Number"] = NULL;
+
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
 

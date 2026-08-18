@@ -475,13 +475,18 @@ jobs:
           SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
           COMMIT_DATE=$(git log -1 --format="%cd" --date=format:"%Y-%m-%d %H:%M:%S")
           REPO_URL="https://github.com/${{ github.repository }}"
+          # Build number = git commit count: a monotonic, per-commit build id,
+          # injected the same no-commit-back way as the SHA/date below. Relies on
+          # the full history the checkout already fetches (fetch-depth: 0).
+          BUILD_NUMBER=$(git rev-list --count HEAD)
           VERFILE="${SOURCE_DIR}includes/infoAppVer.php"
           if [[ -f "$VERFILE" ]]; then
             sed -i "s|\[\"Commit\"\]\[\"SHA\"\]\[\"Full\"\] = NULL|\[\"Commit\"\]\[\"SHA\"\]\[\"Full\"\] = \"${COMMIT_SHA}\"|" "$VERFILE"
             sed -i "s|\[\"Commit\"\]\[\"SHA\"\]\[\"Short\"\] = NULL|\[\"Commit\"\]\[\"SHA\"\]\[\"Short\"\] = \"${SHORT_SHA}\"|" "$VERFILE"
             sed -i "s|\[\"Commit\"\]\[\"Date\"\] = NULL|\[\"Commit\"\]\[\"Date\"\] = \"${COMMIT_DATE}\"|" "$VERFILE"
             sed -i "s|\[\"Commit\"\]\[\"URL\"\] = NULL|\[\"Commit\"\]\[\"URL\"\] = \"${REPO_URL}/commit/${COMMIT_SHA}\"|" "$VERFILE"
-            echo "Injected build info into infoAppVer.php - ${SHORT_SHA} @ ${COMMIT_DATE}"
+            sed -i "s|\[\"Build\"\]\[\"Number\"\] = NULL|\[\"Build\"\]\[\"Number\"\] = ${BUILD_NUMBER}|" "$VERFILE"
+            echo "Injected build info into infoAppVer.php - ${SHORT_SHA} @ ${COMMIT_DATE} (build ${BUILD_NUMBER})"
           fi
 
       # -- Sync manifest.json name/description from infoAppVer.php --
