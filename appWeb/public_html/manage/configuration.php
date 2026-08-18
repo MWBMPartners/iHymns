@@ -935,6 +935,33 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_live_follow_idle] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_pd_publication_threshold') {
+            /* #1862 (epic #1863) — decision D3: the publication-year fallback
+               threshold the public-domain suggestion falls back to when a
+               part's death-basis year can't be concluded. A plain
+               tblAppSettings key (no migration needed), mirroring the
+               live_follow_idle pattern immediately above. Clamped to the SAME
+               [500, 2100] band FirstPublishedYear itself validates against
+               (api2.php's metadata_field_update — SMALLINT UNSIGNED, not
+               MySQL YEAR, since hymns predate 1901) so a hand-edited or
+               out-of-range POST can never store a threshold FirstPublishedYear
+               itself could never carry. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+            try {
+                $pdThresholdIn  = filter_var((string)($_POST['pd_publication_year_threshold'] ?? ''), FILTER_VALIDATE_INT);
+                $pdThresholdVal = $pdThresholdIn === false
+                    ? IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT
+                    : max(500, min(2100, (int)$pdThresholdIn));
+                $saveSetting($db, IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY, (string)$pdThresholdVal);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY,
+                        ['keys' => [IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY], 'value' => $pdThresholdVal], 'success');
+                }
+                $saveSuccess = 'Public-domain publication-year threshold saved (' . $pdThresholdVal . ').';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_pd_publication_threshold] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -1041,6 +1068,15 @@ $cuercodeConfigured = cuercodeConfigured();
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
 $liveFollowIdleTimeoutVal = (int)(getAppSetting(LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES) ?? LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES);
 if ($liveFollowIdleTimeoutVal <= 0) { $liveFollowIdleTimeoutVal = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES; }
+
+/* #1862 (epic #1863) — decision D3's publication-year fallback threshold,
+   read via the SAME constants (rule #35 — one source of truth for the key
+   name + default) editor2.php's window._iHymnsPdSuggest emit uses, so this
+   admin field can never disagree with what the PD-suggestion hint actually
+   falls back to. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+$pdPublicationThresholdVal = (int)(getAppSetting(IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY, (string)IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT) ?? IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT);
+if ($pdPublicationThresholdVal <= 0) { $pdPublicationThresholdVal = IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT; }
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -1448,6 +1484,47 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>&ndash;<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?> minutes; default
                         <?= LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES ?>. Only affects sessions started AFTER this is saved —
                         already-running sessions keep the value they were started with.
+                    </div>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         PUBLIC-DOMAIN SUGGESTION SECTION (#1862, epic #1863)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-shield-check me-2"></i>Public-domain suggestion
+            </h2>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                The Editor2 metadata tab hints "this looks public domain" from a credited
+                contributor's death date (life + 70 years — a code constant, not configurable
+                here). When no death date is on record, it falls back to assuming a song
+                published before this year is public domain. This is a SUGGESTION only —
+                curators still tick the Public Domain box themselves; nothing here auto-sets it.
+            </p>
+            <form method="post" class="row g-3 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_pd_publication_threshold">
+                <div class="col-auto">
+                    <label for="pd_publication_year_threshold" class="form-label">Publication-year fallback threshold</label>
+                    <input type="number" name="pd_publication_year_threshold" id="pd_publication_year_threshold"
+                           class="form-control" style="max-width: 10rem;"
+                           min="500" max="2100" step="1"
+                           value="<?= (int)$pdPublicationThresholdVal ?>">
+                    <div class="form-text">
+                        500&ndash;2100; default <?= IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT ?>. A song
+                        first published before this year is suggested public domain when no
+                        death-date basis is available.
                     </div>
                 </div>
                 <div class="col-auto">

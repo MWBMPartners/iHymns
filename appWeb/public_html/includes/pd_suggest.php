@@ -114,6 +114,15 @@ const IHYMNS_PD_LIFE_PLUS_YEARS = 70;
 const IHYMNS_PD_LYRICS_CREDIT_TABLES = ['tblSongWriters', 'tblSongAdaptors', 'tblSongTranslators'];
 const IHYMNS_PD_MUSIC_CREDIT_TABLES  = ['tblSongComposers', 'tblSongArrangers'];
 
+/** The tblAppSettings key for the publication-year fallback threshold
+ *  (decision D3) — the ONE spelling, shared by editor2.php's
+ *  window._iHymnsPdSuggest emit and /manage/configuration's admin control,
+ *  so the two can never drift onto different key strings (rule #35). */
+const IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY = 'pd_publication_year_threshold';
+/** Default publication-year threshold (decision D3) — pre-1900 is the
+ *  owner's own "e.g. pre-1900" example; configurable at /manage/configuration. */
+const IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT = 1900;
+
 if (!function_exists('pdFromYearColsPresent')) {
     /**
      * Memoised probe: do BOTH `tblSongs.LyricsPdFromYear` /

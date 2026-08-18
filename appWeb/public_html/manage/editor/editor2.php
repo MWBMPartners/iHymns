@@ -182,7 +182,10 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 $pdSuggestForJs = [
     'lifePlusYears'        => IHYMNS_PD_LIFE_PLUS_YEARS,
-    'publicationThreshold' => (int)getAppSetting('pd_publication_year_threshold', '1900'),
+    'publicationThreshold' => (int)getAppSetting(
+        IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY,
+        (string)IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT
+    ),
 ];
 ?><!DOCTYPE html>
 <html lang="en">
