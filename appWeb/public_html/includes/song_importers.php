@@ -569,6 +569,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $tuneStmt->close();
         }
 
+        /* #1039 Part A — maintain the diacritic-folded search mirror
+           (LyricsTextFolded) + repair NormalizedTitle for the just-imported
+           song, in this import's own transaction. The INSERT above wrote
+           $lyricsText and $title; the shared helper folds both with the exact
+           fold the query side uses. Dormant + fail-open no-op on an
+           un-migrated install. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'search_fold.php';
+        searchFoldSyncSong($db, $songId, $title, $lyricsText);
+
         /* #1860 go-live — Works auto-link, same shared core the editor save
            path uses (rule #22). Inside this import's own transaction
            (ownTransaction=false); fail-safe — a link failure never aborts

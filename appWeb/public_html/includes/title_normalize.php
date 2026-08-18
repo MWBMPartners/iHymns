@@ -40,3 +40,30 @@ if (!function_exists('ihymns_normalize_title')) {
         return trim($t);
     }
 }
+
+if (!function_exists('ihymns_search_fold')) {
+    /**
+     * ihymns_search_fold() — the ONE fold point for diacritic/apostrophe-aware
+     * SEARCH (#1039 Part A). A thin semantic ALIAS over ihymns_normalize_title():
+     * the exact same iconv ASCII//TRANSLIT + lowercase + unicode-property strip.
+     *
+     * ELI5: turns "Miłość", "Noël" and "aren’t" into "milosc", "noel" and "arent"
+     * so a reader typing plain ASCII still finds the accented / apostrophised song.
+     *
+     * WHY AN ALIAS, NOT A NEW FOLD (rule #22): using the identical fold on BOTH the
+     * stored column (tblSongs.NormalizedTitle / LyricsTextFolded) AND the live query
+     * is what makes a match internally consistent regardless of the host's iconv
+     * quirks — a second, subtly-different transliterator would drift the two apart.
+     * This is a third *use* of the exact dedup fold, NOT a third fold: it is
+     * deliberately DISTINCT from ihymns_sim_normalise() (song_similarity.php), the
+     * FUZZY-compare fold that also strips a leading article.
+     *
+     * @see ihymns_normalize_title()  the single implementation this delegates to
+     * @see includes/search_fold.php  the write-path helper that stores the fold
+     * @link https://www.php.net/manual/en/function.iconv.php
+     */
+    function ihymns_search_fold(string $text): string
+    {
+        return ihymns_normalize_title($text);
+    }
+}

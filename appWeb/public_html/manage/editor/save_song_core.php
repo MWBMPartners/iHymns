@@ -725,6 +725,16 @@ function editorSaveSongCore(): array
                 $tuneStmt->close();
             }
 
+            /* #1039 Part A — maintain the diacritic-folded search mirror
+               (LyricsTextFolded) + repair NormalizedTitle in the SAME
+               transaction as the UPSERT above, via the ONE shared write helper.
+               Dormant + fail-open: a no-op on an un-migrated install (the gate
+               is column+index existence), so this is byte-identical there. The
+               UPSERT wrote $lyricsText and $title a few lines up; both fold
+               with the exact fold the query side uses. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+            searchFoldSyncSong($db, $songId, $title, $lyricsText);
+
             /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
                A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
                POSTs components WITHOUT `chords` / `languages`, so a naive recreate

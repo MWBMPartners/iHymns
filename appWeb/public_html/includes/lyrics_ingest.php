@@ -689,6 +689,15 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
            and still applies. */
         ilidStampNewRow($db, 'song', $songId, 'SongId');
 
+        /* #1039 Part A — maintain the diacritic-folded search mirror
+           (LyricsTextFolded) + set NormalizedTitle for the newly-ingested song,
+           in the SAME transaction. This INSERT path historically wrote NEITHER
+           column (the #1039 NormalizedTitle funnel gap); the shared helper
+           closes both here. Dormant + fail-open no-op on an un-migrated
+           install. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'search_fold.php';
+        searchFoldSyncSong($db, $songId, $title, $lyricsText);
+
         /* #1751 — ELI5: tell the external-IDs store about the ISRC we just
            saved, right after we save it, so the two never fall out of sync.
            DETAILED / WHY: dual-write mirror, inside the SAME transaction as

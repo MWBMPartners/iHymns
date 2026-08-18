@@ -1165,6 +1165,31 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
     $u->bind_param('ss', $text, $songId);
     $u->execute();
     $u->close();
+
+    /* #1039 Part A — keep the diacritic-folded search mirror in lockstep with
+       the LyricsText we just rebuilt (and repair NormalizedTitle). The rebuild
+       only has $songId, so read back the CURRENT Title for the fold; every v2
+       title change funnels through its own NormalizedTitle write, so this
+       Title is authoritative at this instant. Dormant + fail-open no-op on an
+       un-migrated install. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+    /* Gated so an un-migrated install does the ONE memoised readiness probe and
+       nothing more — no extra Title read-back until the feature is live. */
+    if (searchFoldReady($db)) {
+        /* @deleted-visible: editor LyricsText rebuild (#1039) — this runs after a
+           component mutation on the song the curator is actively editing; a
+           soft-deleted song under review is still edited (restore-first), so its
+           fold mirror must be kept current too.
+           @disabled-visible: same reasoning, one predicate over (#1765) — a song in
+           a publicly-disabled book is still edited in the admin editor; this is a
+           write-support read-back of the CURRENT Title, not a public read. */
+        $ts = $db->prepare('SELECT Title FROM tblSongs WHERE SongId = ?');
+        $ts->bind_param('s', $songId);
+        $ts->execute();
+        $trow = $ts->get_result()->fetch_row();
+        $ts->close();
+        searchFoldSyncSong($db, $songId, $trow ? (string)$trow[0] : '', $text);
+    }
 }
 
 /**

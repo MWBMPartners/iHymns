@@ -1362,6 +1362,14 @@ switch ($action) {
                 );
                 $upd->execute();
                 $upd->close();
+
+                /* #1039 Part A — a restore is a LyricsText + Title write funnel:
+                   fold the restored values into the search mirror (and repair
+                   NormalizedTitle, which this v1 restore path never maintained)
+                   in the SAME transaction. Dormant + fail-open no-op when the
+                   fold schema isn't live. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+                searchFoldSyncSong($db, $songId, $title, $lyrics);
             }
 
             /* Log the restore as its own revision row so the audit
