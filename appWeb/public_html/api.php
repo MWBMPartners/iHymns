@@ -637,6 +637,28 @@ if ($page !== null) {
         $_shouldCachePage = false;
         header('Cache-Control: private, no-store');
     }
+    /* #1710 — resolve the viewer ONCE so a fragment can render signed-in vs
+       signed-out copy server-side. Before this, `$currentUser` was simply
+       undefined in every fragment's scope (api.php never set it), so
+       settings.php's `!empty($currentUser)` was permanently false and a
+       signed-in user was told to "Sign in to sync across devices" on a page
+       they reached BY being signed in. The fix is deliberately general
+       (option 1 in #1710): any non-cacheable fragment that wants the viewer
+       can now read `$currentUser`, so the next reader doesn't re-hit the trap.
+
+       GATED ON `!$_shouldCachePage` (rule #6): a $_cacheablePages fragment is a
+       shared-cache response keyed by URL alone — personalising it would serve
+       one viewer's signed-in copy to everyone from the ETag/service-worker
+       cache. Cacheable pages therefore get `null` and NEVER a per-viewer render.
+       For the resolved (non-cacheable) path, getAuthenticatedUser() reads the
+       Bearer token OR the same-origin `ihymns_auth` cookie and returns null when
+       signed out — and returns null with ZERO DB cost for an anonymous visitor
+       (getAuthBearerToken() short-circuits on no token), so public non-cacheable
+       reads (publisher/tune/iswc) pay nothing unless a real token is present.
+       Shape is getAuthenticatedUser()'s (Id/Username/DisplayName/Role/Email);
+       consumers today use it only as a boolean (settings.php). Guarded by
+       tests/php/test-fragment-viewer-contract.php. */
+    $currentUser = $_shouldCachePage ? null : getAuthenticatedUser();
     if ($_shouldCachePage) {
         ob_start();
     }
