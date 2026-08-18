@@ -34,7 +34,13 @@ info:
       `/manage/` PHP session. `/manage/editor/` no longer routes here by
       default (see the v2 entry below); this API is still live and NOT
       retired, reachable directly or via the v2 shell's `?legacy=1` escape
-      hatch, while the #1601 v1→v2 migration completes.
+      hatch, while the #1601 v1→v2 migration completes. 14 of its ~37 actions
+      have individual path items below (the **Editor API** tag); the
+      remaining ~23 (`load_index`/`load_song`/`load_songs`,
+      `bulk_import_*` ×8, `song_media_*` ×5, the v1 song-link family, and
+      `easyworship_export`) are internal-only and deliberately NOT written up
+      as individual paths — see the note at the top of the **Editor API**
+      section below.
     - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
       purpose-built, per-edit atomic editor backend that replaces the
       whole-song `save_song` race (#1178), and, as of **#1601 scope item 2**,
@@ -89,7 +95,11 @@ info:
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
     One non-action route exists: the gated media stream `GET /song-media/<id>`
-    (#853, `<id>` = `tblSongMedia.Id`). Access is evaluated via **two gates**,
+    (#853, `<id>` = `tblSongMedia.Id`). As of **#1860** `<id>` also accepts
+    the media row's permanent internal id (`ILD` + up to 10 digits, no
+    separator) — resolved to the numeric `Id` before either gate below runs,
+    gated on `tblSongMedia.IlId` existing; a non-IL / un-migrated `<id>` falls
+    through to the plain `(int)` cast unchanged. Access is evaluated via **two gates**,
     both `403` on denial: (1) the entity gate, `checkContentAccess('song',
     <parent SongId>, …)` — an anonymous request degrades gracefully (gating
     applies as anonymous, never a hard `401`); and (2) as of **#1388**, a
@@ -766,7 +776,16 @@ paths:
         - name: id
           in: query
           required: true
-          description: "Song ID in BOOK-NUMBER format (e.g., CP-0001)"
+          description: |
+            Song ID in BOOK-NUMBER format (e.g., CP-0001). As of **#1860**
+            also accepts the song's permanent internal id (`ILS` + up to 10
+            digits, no separator — e.g. `ILS0000012345`; the leading zeros are
+            optional on input) — `SongData::getSongById()` tries this form
+            first for any hyphen-less token, resolving it to the current
+            `SongId` via `tblSongs.IlId`. Gated on that column existing
+            (`_hasIlIdColumn()`); on an un-migrated install a hyphen-less
+            token simply falls through to the existing PublicId/legacy
+            lookups, unchanged.
           schema:
             type: string
             example: CP-0001
@@ -1730,7 +1749,11 @@ paths:
         - name: id
           in: query
           required: true
-          description: "Song ID in BOOK-NUMBER format (e.g. CP-0001)"
+          description: |
+            Song ID in BOOK-NUMBER format (e.g. CP-0001), OR — as of **#1860**
+            — the song's permanent internal id (`ILS` + up to 10 digits, no
+            separator, e.g. `ILS0000012345`). Same handler as `song_data`;
+            see that entry's `id` parameter for the full resolution note.
           schema: { type: string, example: CP-0001 }
         - name: include
           in: query
@@ -7178,6 +7201,27 @@ paths:
 
   # ===========================================================================
   # EDITOR API  (separate entry point — /manage/editor/api.php)
+  #
+  # v1 is live-but-legacy (#1601): the DEFAULT editor is now v2
+  # (/manage/editor/api2.php), and v1 is reached only via the v2 shell's
+  # `?legacy=1` escape hatch. 14 of v1's ~37 dispatched actions get an
+  # individual path item below. The remaining 23 are internal-only surfaces
+  # (the legacy editor's own page + its own bulk-import/media/song-link UI
+  # calling itself) that are NOT part of the published contract and are
+  # deliberately not written up as individual paths — writing 23 more paths
+  # for a surface being retired with #1601 is not a good use of the effort
+  # (see api-docs-swagger-plan §3.3-2). If the owner wants full completeness
+  # anyway, each has a near-identical v2 twin already documented to crib
+  # from. The 23: `load_index`, `load_song`, `load_songs`,
+  # `easyworship_export`, `song_media_list`/`_upload`/`_update`/`_delete`/
+  # `_reorder`, `bulk_import_chordpro`/`_easyworship`/`_freeshow`/`_openlp`/
+  # `_pptx`/`_pro6`/`_proclaim`/`_skipped_csv`/`_videopsalm`,
+  # `get_song_links`, `add_song_link`, `remove_song_link`,
+  # `suggest_song_links`, `dismiss_song_link_suggestion`. Verified against
+  # the dispatcher via the same tokenising parser
+  # `tests/php/lib/dispatch_parser.php` uses — re-run its
+  # `dispatchParserCasesForSwitch()` against `manage/editor/api.php`'s
+  # `$action` switch to reproduce this list if it drifts.
   # ===========================================================================
 
   /manage/editor/api.php?action=songbook_export:
@@ -8714,6 +8758,13 @@ paths:
         Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
         client calls this today (orphan inventory §2.5, remediation X7). The
         endpoint is live and correct; it simply has no first-party caller yet.
+
+        As of **#1830 §6.3**, each org additionally carries `logos` — an
+        array of the org's ACTIVE logo rows (meta only, no image bytes: the
+        print `logo` block resolves the actual bytes through
+        `/org-logo.php` using `kind` + `v`). Gated dormant on
+        `orgLogoTableExists()` (rule #19): the field is simply ABSENT on an
+        un-migrated install, never an empty array — never null.
       security:
         - bearerAuth: []
       parameters:
@@ -8734,9 +8785,26 @@ paths:
                     items:
                       type: object
                       properties:
-                        id:   { type: integer }
-                        name: { type: string }
-                        role: { type: string, enum: [owner, admin, member] }
+                        id:          { type: integer }
+                        name:        { type: string }
+                        slug:        { type: string }
+                        parentOrgId: { type: integer, nullable: true }
+                        description: { type: string, nullable: true }
+                        licenceType: { type: string, nullable: true }
+                        isActive:    { type: boolean }
+                        memberRole:  { type: string, enum: [owner, admin, member], description: "The caller's own role in this org." }
+                        logos:
+                          type: array
+                          description: Present only when the org-logo table exists (#1830). Absent, not empty/null, on an un-migrated install.
+                          items:
+                            type: object
+                            properties:
+                              kind:   { type: string, description: "One of IHYMNS_ORG_LOGO_KINDS (org_logo_helpers.php), e.g. primary/full/monochrome/favicon." }
+                              variant: { type: string, nullable: true }
+                              v:      { type: string, description: "Sha256 of the sanitised bytes — the /org-logo.php cache-busting version key." }
+                              alt:    { type: string, nullable: true }
+                              width:  { type: integer, nullable: true }
+                              height: { type: integer, nullable: true }
 
   # ===========================================================================
   # CONTENT ACCESS
@@ -10975,17 +11043,23 @@ paths:
     get:
       operationId: pagePerson
       tags: [Pages]
-      summary: Credit-person public page HTML fragment (#588)
+      deprecated: true
+      summary: (DEPRECATED — use page=musician) Credit-person public page HTML fragment (#588)
       description: |
-        Renders the `/people/<slug>` page's bio + discography-by-role for
-        SPA hydration. `slug` is the canonical `tblMusicians.Slug`
-        lookup; the renderer falls back to a name-based search when the
-        slug migration hasn't been applied yet. Cacheable fragment (ETag).
+        **Deprecated by #1741 P2-B — use `page=musician` instead.** Kept
+        indefinitely: `page=person`/`page=people` are normalised to
+        `page=musician` right after `$page` is read (`api.php`, before the
+        cache-key logic), so there is only ever ONE case label
+        (`case 'musician':`) and this alias renders the byte-identical
+        fragment as the canonical entry below — years of external links and
+        the shipped Apple client's `CanonicalURL.person(slug:)` still emit
+        this spelling (rule #33). See `page=musician` for the full
+        description, including the slug/IL-id resolution ladder.
       parameters:
         - name: page
           in: query
           required: true
-          schema: { type: string, enum: [person] }
+          schema: { type: string, enum: [person, people] }
         - name: slug
           in: query
           required: true
@@ -10996,6 +11070,43 @@ paths:
           content: { text/html: { schema: { type: string } } }
         "400":
           description: Missing person slug
+
+  /api.php?page=musician:
+    get:
+      operationId: pageMusician
+      tags: [Pages]
+      summary: Musician public page HTML fragment (#588, canonical)
+      description: |
+        Renders the `/musician/<slug>` page's bio + discography-by-role for
+        SPA hydration — the canonical case label (`case 'musician':` in
+        `api.php`'s page-router switch); `page=person`/`page=people` (see
+        above) and the `writer` route (`page=writer&id=<slug>` — a shipped,
+        forever-kept alias, #1741 P4a-3) all resolve to this SAME fragment.
+        `slug` is the canonical `tblMusicians.Slug` lookup, falling back to
+        a name-based search when the slug migration hasn't been applied yet.
+
+        As of **#1860**, `slug` also accepts the musician's permanent
+        internal id (`ILM` + up to 10 digits, no separator) — resolved to
+        the real `Slug` BEFORE the legacy-slug ladder / name-based fallback
+        run, so every rung after it sees a canonical slug exactly as if the
+        curator had typed it. Gated on `tblMusicians.IlId` existing; a miss
+        (not an IL id, or the column doesn't exist yet) leaves `slug`
+        unchanged. Cacheable fragment (ETag).
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [musician] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: john-newton }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing musician slug
 
   /api.php?page=work:
     get:
@@ -11037,6 +11148,13 @@ paths:
         over `tblPublisherAliases` (a renamed publisher's old name becomes an
         alias, so old links keep resolving). A friendly empty/404 state when
         the registry isn't migrated or the slug is unknown.
+
+        As of **#1860**, `slug` also accepts the publisher's permanent
+        internal id (`ILP` + up to 10 digits, no separator) — resolved to
+        the real `Slug` BEFORE the three-rung ladder runs (rung 0), gated on
+        `tblPublishers.IlId` existing. A miss (not an IL id, the column
+        doesn't exist yet, or no row carries it) leaves `slug` unchanged and
+        the ladder proceeds exactly as before.
       parameters:
         - name: page
           in: query
@@ -11063,6 +11181,12 @@ paths:
         tune. An empty/missing slug renders a friendly empty state rather
         than a 400. Cacheable fragment (ETag) — `tune` is NOT in the
         cacheable-pages allow-list, so this always renders fresh per request.
+
+        As of **#1860**, `slug` also accepts the tune's permanent internal
+        id (`ILT` + up to 10 digits, no separator) — resolved to the real
+        `Slug` before the exact-slug lookup runs, gated on `tblTunes.IlId`
+        existing. A miss (not an IL id, the column doesn't exist yet, or no
+        row carries it) leaves `slug` unchanged.
       parameters:
         - name: page
           in: query
@@ -11101,6 +11225,162 @@ paths:
         "200":
           description: HTML fragment (empty-state markup when code is absent/unmatched)
           content: { text/html: { schema: { type: string } } }
+
+  # ---------------------------------------------------------------------------
+  # #1741 P3 — iswc's five siblings. All six schemes (iswc + these five) are
+  # ONE file (includes/pages/identifier.php) driven by the shared
+  # IHYMNS_ID_SCHEMES registry (includes/identifier_normalize.php) — the
+  # entity/multiSong shape per scheme is documented once here rather than six
+  # times. Each is deliberately NOT in $_cacheablePages (matches the iswc/tune
+  # precedent — a cheap, indexed, anonymous read; rule #6, an explicit choice).
+  # ---------------------------------------------------------------------------
+
+  /api.php?page=ccli:
+    get:
+      operationId: pageCcli
+      tags: [Pages]
+      summary: CCLI (SongSelect) number public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/ccli/<code>` — same shape as `page=iswc` (entity `work`,
+        `multiSong: true`): an optional "Linked Work" header when a
+        `tblWorks` row carries this exact code, plus the full song list
+        grouped by songbook. The code is canonicalised by stripping every
+        non-digit character (`ihymns_canonical_ccli()`). An empty/missing/
+        unmatched code renders a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [ccli] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "7028268" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=bowi:
+    get:
+      operationId: pageBowi
+      tags: [Pages]
+      summary: BOWI (Bank of Work Identifiers) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/bowi/<code>` — entity `work`, `multiSong: false`: the Work
+        header only (Luminate's BOWI has no song-list concept in this
+        catalogue, unlike ISWC/CCLI). The code is canonicalised by
+        uppercasing and stripping spaces/hyphens/dots
+        (`ihymns_canonical_bowi()`) — BOWI has no publicly documented fixed
+        shape, so this cleans without rejecting. An empty/missing/unmatched
+        code renders a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [bowi] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "B0001234567" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=isrc:
+    get:
+      operationId: pageIsrc
+      tags: [Pages]
+      summary: ISRC (recording) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/isrc/<code>` — entity `song`, `multiSong: true`: the song
+        list only (ISRC identifies a specific RECORDING, which has no Work
+        concept here). The code is canonicalised to the bare 12-character
+        `CCXXXYYNNNNN` form with separators stripped, uppercased
+        (`ihymns_canonical_isrc()`). An empty/missing/unmatched code renders
+        a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [isrc] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: USABC1234567 }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=ipi:
+    get:
+      operationId: pageIpi
+      tags: [Pages]
+      summary: IPI (Interested Party Information) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/ipi/<code>` — entity `musician`, `multiSong: false`: a
+        list of matching `tblMusicians` entries (via `tblMusicianIdentifiers`
+        — the same query shape as the dormant `person_by_identifier`/
+        `musician_by_identifier` JSON action). The code is canonicalised by
+        stripping every non-digit character (`ihymns_canonical_ipi()`). An
+        empty/missing/unmatched code renders a friendly empty state rather
+        than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [ipi] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "123456789" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=isni:
+    get:
+      operationId: pageIsni
+      tags: [Pages]
+      summary: ISNI (International Standard Name Identifier) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/isni/<code>` — entity `musician`, `multiSong: false`: a
+        list of matching `tblMusicians` entries, same shape as `page=ipi`.
+        The code is canonicalised via the shared `canonicaliseIsni()`
+        (`musician_helpers.php` — the same fold `/manage/musicians`'s "Other
+        Identifiers" save path uses) into grouped `NNNN NNNN NNNN NNNX`
+        form. An empty/missing/unmatched code renders a friendly empty state
+        rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [isni] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "0000 0001 2103 2683" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  # ===========================================================================
+  # The remaining `?page=` case labels (`song`, `songbook`, `songbooks`,
+  # `search`, `favorites`, `setlist`, `setlist-shared`, `stats`, `link`,
+  # `writer`, `tag`) render SPA-internal HTML fragments consumed only by
+  # router.js's own fetch — never a JSON contract and never linked to from
+  # outside the SPA shell. They are deliberately NOT written up as individual
+  # paths here (would be presence-only noise with no parameter contract worth
+  # publishing); each is covered by the reasoned exemption map in
+  # `tests/php/test-openapi-actions-exist.php`'s `?page=` direction check
+  # (§6.2 of the docs-swagger plan), which fails the build the moment a
+  # page's exemption reason stops being true — so this paragraph cannot go
+  # stale silently the way a hand-written list can.
+  # ===========================================================================
 
   /api.php?page=request:
     get:
@@ -13620,7 +13900,9 @@ paths:
         defaults to `"New Song"` (clamped to 500 chars). Mints the id via
         the shared `<ABBR>-<NNNNNN>` allocator (never a client-supplied id),
         recomputes the songbook's cached `SongCount` best-effort, and writes
-        the create revision.
+        the create revision. As of **#1860** also mints the song's permanent
+        internal id (`ILS…`, `ilidStampNewRow()`) — internal bookkeeping
+        only; NOT echoed in the response below.
       requestBody:
         required: true
         content:
@@ -13661,7 +13943,10 @@ paths:
         fields empty**; assigning a real songbook (the #1679 re-key) turns it
         into a brand-new catalogue song. Reset on the copy: `Number`,
         `Verified`, recording-level `Isrc`, media flags (media is not copied);
-        a fresh `PublicId`; a `'duplicate'` revision. (#1783)
+        a fresh `PublicId`; a `'duplicate'` revision. (#1783) As of **#1860**
+        the copy also mints its OWN permanent internal id (`ILS…`) — never
+        copied from the source (a duplicate is a distinct row); not echoed
+        in the response below.
       requestBody:
         required: true
         content:
