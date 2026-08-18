@@ -84,6 +84,16 @@ jobs:
 
           # Extract version number from the PHP file
           VERSION=$(grep -oP '\["Version"\]\["Number"\]\s*=\s*"\K[^"]+' "$VERSION_FILE" 2>/dev/null || echo "Unreleased")
+          # Defuse (#1899): this workflow is dormant (beta pushes are
+          # GITHUB_TOKEN-suppressed), but if a direct human push to beta ever
+          # fires it, a committed-version heading `## [1.0.0] — date` would
+          # collide with the real release section cut by the tag pipeline and
+          # cl_clean.py would REPLACE it with a commit-message dump. `-beta`
+          # cannot collide: release.yml's `## \[1\.0\.0\]` regex and the
+          # rollover's `## [<version>]` checks both need `]` immediately after
+          # the patch digit, which `## [1.0.0-beta]` never has. (Follow-up:
+          # retire/rework this zombie now that real tags exist — #1899 §7.)
+          VERSION="${VERSION}-beta"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION"
 
@@ -206,8 +216,9 @@ jobs:
 
           git commit -m "chore: update changelogs for ${{ steps.version.outputs.version }} [skip ci]"
 
-          # Retry on non-fast-forward rejection — the version-bump workflow runs
-          # in parallel and may push to the same branch first.
+          # Retry on non-fast-forward rejection — another automation (the
+          # release rollover in promotion-deploy-bridge.yml, #1899) may push to
+          # this branch first.
           for attempt in 1 2 3 4 5; do
             if git push origin "HEAD:${BRANCH}"; then
               echo "Pushed on attempt $attempt"

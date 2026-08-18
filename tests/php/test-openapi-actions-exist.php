@@ -257,13 +257,15 @@ foreach ($API2_UNDOCUMENTED_OK as $a => $why) {
 
    Two files independently state the app version: `info.version` in the
    spec, and `Version.Number` in infoAppVer.php. Nothing enforced they
-   agree until now — and `version-bump.yml` (the ONLY thing that writes
-   the version on every alpha/beta push) used to touch infoAppVer.php
-   alone. This assertion is what earns the right to exist: the SAME
-   commit that adds it also adds a "Update version in api-docs.yaml" step
-   to version-bump.yml, so a routine bump keeps both files in lockstep
-   instead of turning this check red on the very next push (rule #34 —
-   a guard that fails on correct process gets deleted, not fixed). */
+   agree. Under #1899 the automated bumper (version-bump.yml) is RETIRED —
+   the committed `Version.Number` is now a hand-edited MAJOR anchor, and
+   the deployed value (MAJOR.RELEASE.BUILD) is injected at deploy from the
+   latest production tag, which rewrites BOTH this file's line AND the
+   deployed api-docs.yaml with the same string (deploy.yml, #1899). So this
+   lockstep guard now protects the COMMITTED pair against a manual edit that
+   updates one file and forgets the other (e.g. the baseline 1.0.0 bump) —
+   its job survived the bumper's deletion, exactly the point of putting the
+   agreement in a test and not in a workflow step (rule #35). */
 
 $infoAppVerSrc = (string)file_get_contents($pub . '/includes/infoAppVer.php');
 preg_match('/\["Version"\]\["Number"\]\s*=\s*"([^"]+)"/', $infoAppVerSrc, $vm);

@@ -16,7 +16,9 @@ declare(strict_types=1);
  * and licensing information.
  *
  * This file is auto-updated by the CI/CD pipeline:
- * - Version number bumped by version-bump.yml workflow
+ * - Version.Number: the MAJOR is committed here (hand-edited, rare); the
+ *   RELEASE (minor) + BUILD (patch) are injected at deploy time from the
+ *   latest production `v*` tag + the commit count (deploy.yml, #1899).
  * - Build metadata (commit SHA, date, URL) injected by deploy.yml
  *
  * STRUCTURE:
@@ -77,11 +79,22 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * ========================================================================= */
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
-/* Bumped BY HAND after every large alpha batch. The version-bump GitHub Action
-   is configured for alpha+beta (#1596), but auto-merged alpha PRs push via
-   GITHUB_TOKEN, and GitHub does NOT re-trigger workflows on a GITHUB_TOKEN push
-   — so in practice the bumper never fires on alpha and the number stands still
-   until bumped manually. Do not rely on a "+1 on merge" happening here.
+/* TAG-DERIVED SCHEME (#1899). This committed value is:
+     - the LOCAL-DEV / pre-first-tag display, and
+     - the Apple MAJOR-parity anchor: appApple/Scripts/sync-version.sh reads
+       THIS file (never a deployed artifact) and enforces that its MAJOR equals
+       Versioning.xcconfig's MARKETING_VERSION major, so it MUST stay three
+       plain integers "X.Y.Z" (no suffix — the regex `"[0-9]+\.[0-9]+\.[0-9]+"`
+       would otherwise fail).
+   MAJOR is hand-edited here (rare — a product-identity decision). The DEPLOYED
+   value is `MAJOR.RELEASE.BUILD`, rewritten by deploy.yml from the latest
+   production `v*` tag (RELEASE = the tag's minor) + the commit count (BUILD);
+   an untagged checkout deploys this committed value unchanged. The `v*` tags
+   are minted by promotion-deploy-bridge.yml at each beta→main promotion. The
+   old auto-bumper (version-bump.yml) that ballooned the minor to 5250 is
+   RETIRED — do NOT rely on a "+1 on merge" happening here, and keep
+   api-docs.yaml's info.version in lockstep on any manual edit
+   (tests/php/test-openapi-actions-exist.php guards it).
 
    History:
    - 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch (the 214-commit
