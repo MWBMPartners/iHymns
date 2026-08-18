@@ -171,6 +171,30 @@ jobs:
           grep 'Version.*Number' "$VERSION_FILE"
 
       # -----------------------------------------------------------------------
+      # Step 5b: Keep api-docs.yaml's info.version in lockstep (docs-swagger
+      # plan §6.1 / CLAUDE.md rule #35 — "cross-file agreement needs a
+      # mechanism, not a comment"). tests/php/test-openapi-actions-exist.php
+      # asserts these two files agree EXACTLY; without this step every bump
+      # would immediately turn that assertion red on otherwise-correct code,
+      # which is precisely the guard shape rule #34 forbids shipping. Same
+      # sed-replace idiom as the PHP file above, applied to the YAML's single
+      # top-level `version: "X.Y.Z"` line under `info:`.
+      # -----------------------------------------------------------------------
+      - name: Update version in api-docs.yaml
+        run: |
+          SPEC_FILE="appWeb/public_html/api-docs.yaml"
+          OLD_VERSION="${{ steps.current.outputs.current }}"
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+
+          if [ ! -f "$SPEC_FILE" ]; then
+            echo "::warning::$SPEC_FILE not found — skipping (nothing to keep in lockstep)."
+          else
+            echo "Updating $SPEC_FILE: $OLD_VERSION -> $NEW_VERSION"
+            sed -i "s|^\(  version: \"\)${OLD_VERSION}\"|\1${NEW_VERSION}\"|" "$SPEC_FILE"
+            grep '^  version:' "$SPEC_FILE"
+          fi
+
+      # -----------------------------------------------------------------------
       # Step 6: Roll CHANGELOG.md's unreleased section into the new version
       #         (#1589)
       #
@@ -329,6 +353,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add appWeb/public_html/includes/infoAppVer.php
+          # api-docs.yaml may not exist yet on very old history, or the sed
+          # above may have no-op'd if the version already matched (a re-run) —
+          # `git add` on an unmodified tracked file is itself a safe no-op.
+          if [ -f appWeb/public_html/api-docs.yaml ]; then
+            git add appWeb/public_html/api-docs.yaml
+          fi
 
           COMMIT_MSG="chore: bump version to ${NEW_VERSION} [skip ci]"
           if [ "$ROLLED" = "true" ]; then

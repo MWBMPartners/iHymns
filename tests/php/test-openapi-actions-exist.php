@@ -251,6 +251,112 @@ foreach ($API2_UNDOCUMENTED_OK as $a => $why) {
         in_array($a, $api2Actions, true) && !in_array($a, $api2Documented, true));
 }
 
+/* ---- 4. api-docs.yaml <-> infoAppVer.php version lockstep (docs-swagger
+       plan §6.1, CLAUDE.md rule #35 — "cross-file agreement needs a
+       mechanism, not a comment") ------------------------------------------
+
+   Two files independently state the app version: `info.version` in the
+   spec, and `Version.Number` in infoAppVer.php. Nothing enforced they
+   agree until now — and `version-bump.yml` (the ONLY thing that writes
+   the version on every alpha/beta push) used to touch infoAppVer.php
+   alone. This assertion is what earns the right to exist: the SAME
+   commit that adds it also adds a "Update version in api-docs.yaml" step
+   to version-bump.yml, so a routine bump keeps both files in lockstep
+   instead of turning this check red on the very next push (rule #34 —
+   a guard that fails on correct process gets deleted, not fixed). */
+
+$infoAppVerSrc = (string)file_get_contents($pub . '/includes/infoAppVer.php');
+preg_match('/\["Version"\]\["Number"\]\s*=\s*"([^"]+)"/', $infoAppVerSrc, $vm);
+$appVersion = $vm[1] ?? null;
+
+preg_match('/^  version:\s*"([^"]+)"/m', $yaml, $vm2);
+$specVersion = $vm2[1] ?? null;
+
+ok('infoAppVer.php Version.Number is parseable', $appVersion !== null);
+ok('api-docs.yaml info.version is parseable', $specVersion !== null);
+ok("api-docs.yaml info.version ({$specVersion}) matches infoAppVer.php Version.Number ({$appVersion})",
+    $appVersion !== null && $specVersion !== null && $appVersion === $specVersion);
+
+/* ---- 5. every $page case must be documented, or carry a reasoned
+       exemption (docs-swagger plan §6.2) -----------------------------------
+
+   Mirrors section 2/3 above but for the PAGE router, which had NO presence
+   check at all before this — an entire dispatch surface (SPA HTML-fragment
+   hydration) could drift silently in either direction. Both directions are
+   asserted, with the SAME self-cleaning exemption contract used throughout
+   this file: an entry that stops being true (documented, or no longer a
+   real case) fails its own assertion, so the list cannot rot into a place
+   to hide things. */
+
+$pageCasesReal = $casesForSwitch($pub . '/api.php', '$page');
+
+preg_match_all('#^  /api\.php\?page=([a-z0-9_-]+):#m', $yaml, $pm);
+$pageDocumented = array_values(array_unique($pm[1] ?? []));
+
+ok('parsed a plausible number of documented ?page= routes from api-docs.yaml (>= 15)',
+    count($pageDocumented) >= 15);
+
+/* Phantom direction (documented but not a real case): `person`/`people` are
+   PRE-SWITCH aliases — api.php normalises $page to 'musician' before the
+   switch even runs (line ~440), so they can never be real case labels, yet
+   are deliberately documented (deprecated, pointing at the canonical
+   `musician` entry). That is a real, reasoned exception — not a phantom —
+   so it gets the same named-exemption treatment as `health` in section 2. */
+$PAGE_PHANTOM_OK = [
+    'person' => 'pre-switch alias normalised to musician before the $page switch runs (api.php ~line 440) — never a real case label, kept for back-compat links',
+];
+$pagePhantom = [];
+foreach ($pageDocumented as $p) {
+    if (in_array($p, $pageCasesReal, true) || isset($PAGE_PHANTOM_OK[$p])) { continue; }
+    $pagePhantom[] = $p;
+}
+ok('every documented ?page= route is a real $page case or a reasoned alias ('
+    . count($pageDocumented) . ' documented)', $pagePhantom === []);
+foreach ($pagePhantom as $p) {
+    echo "       api-docs.yaml documents ?page={$p} — no such \$page case; it would 404\n";
+}
+foreach ($PAGE_PHANTOM_OK as $p => $why) {
+    ok("page-phantom-exemption '{$p}' is still needed ({$why})",
+        !in_array($p, $pageCasesReal, true) && in_array($p, $pageDocumented, true));
+}
+
+/* Reverse direction (real but undocumented): every $page case is either a
+   documented path item, or named in $PAGE_INTERNAL with a reason. These are
+   all SPA-internal HTML fragments consumed only by router.js's own fetch —
+   never a JSON contract, never linked to from outside the SPA shell — so
+   documenting them as individual OpenAPI paths would be presence-only noise
+   with no parameter contract worth publishing (docs-swagger plan §3.3-1). */
+$PAGE_INTERNAL = [
+    'songbooks'      => 'SPA-internal HTML fragment (songbook list) — no external consumer',
+    'songbook'       => 'SPA-internal HTML fragment — no external consumer',
+    'song'           => 'SPA-internal HTML fragment — the JSON twin (song_detail/song_data) is the published contract for this data',
+    'search'         => 'SPA-internal HTML fragment — no external consumer',
+    'favorites'      => 'SPA-internal HTML fragment, auth-required user-specific view',
+    'setlist'        => 'SPA-internal HTML fragment, auth-required user-specific view',
+    'setlist-shared' => 'SPA-internal HTML fragment for a shared set-list link',
+    'link'           => 'SPA-internal HTML fragment — RFC 8628 device-pairing approval screen, auth-required user-specific view',
+    'stats'          => 'SPA-internal HTML fragment, auth-required user-specific view',
+    'writer'         => 'forever-kept alias (rule #33) rendering the SAME fragment as the documented ?page=musician — no independent contract of its own',
+    'tag'            => 'SPA-internal HTML fragment (theme page) — no external consumer',
+    'request-a-song' => 'alias of ?page=request, documented inside that path item\'s `page` parameter enum rather than as a second path item',
+];
+
+$pageUndocumented = [];
+foreach ($pageCasesReal as $p) {
+    if (in_array($p, $pageDocumented, true) || isset($PAGE_INTERNAL[$p])) { continue; }
+    $pageUndocumented[] = $p;
+}
+ok('every $page case is documented or has a reasoned exemption in $PAGE_INTERNAL ('
+    . count($pageCasesReal) . ' real page cases, ' . count($pageDocumented) . ' documented)',
+    $pageUndocumented === []);
+foreach ($pageUndocumented as $p) {
+    echo "       api.php dispatches ?page={$p} — absent from api-docs.yaml and from \$PAGE_INTERNAL\n";
+}
+foreach ($PAGE_INTERNAL as $p => $why) {
+    ok("page-internal-exemption '{$p}' is still needed ({$why})",
+        in_array($p, $pageCasesReal, true) && !in_array($p, $pageDocumented, true));
+}
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
