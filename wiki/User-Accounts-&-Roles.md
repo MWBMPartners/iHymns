@@ -249,8 +249,16 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | Purge songs (permanent, irreversible) | — | — | — | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
 | Activity log | — | — | — | Yes | Yes |
+| CCLI Usage Report (system-wide, `/manage/ccli-report`) | — | — | — | Yes | Yes |
+| My CCLI Report (own org only, `/manage/my-ccli-report`, #1861) | — | Yes¹ | Yes¹ | Yes¹ | Yes¹ |
 | App settings | — | — | — | — | Yes |
 | Assign global_admin | — | — | — | — | Yes |
+
+¹ `My CCLI Report`'s entitlement (`view_org_ccli_report`) is open to every signed-in role by default —
+it's a role-level kill-switch, not the real access control. The REAL scoping is structural: the page's
+only row source refuses to run without a non-empty `tblOrganisationMembers`-derived org-id list, so a
+user with no admin/owner role on any organisation sees a friendly "not an organisation admin" message
+rather than an empty report, regardless of the entitlement. See [[Security]] and [[API Reference]].
 
 ---
 

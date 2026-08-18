@@ -133,6 +133,16 @@ This batch landed several feature families as additive, dormant, forward-looking
 
 **Migration cards (all in `migration-registry.php` with real probes; operator-run via `/manage/setup-database`, not auto-applied on deploy):** `migrate-publication-metadata`, `migrate-publishers-entity` (idempotent by Name existence, not slug), `migrate-reconcile-credit-name-bytes`, `migrate-musician-duplicates-dismissed`, `migrate-add-gating-facts-and-licence-types`, `migrate-derive-rights-facts`, `migrate-consolidate-org-licences`, `migrate-live-follow-quick-capable`, `migrate-setlist-share-scope`, `migrate-print-template-layouts`, `migrate-ia-reconcile`, `migrate-organisation-logos` (#1830).
 
+### Permanent internal ids + Editor2 metadata derivation (#1860 / #1862, branch `claude/ilyrics-identity-work-model`)
+
+| Table / column | Purpose |
+|---|---|
+| `tblIlyricsIdSequence` | Per-entity-type allocator for the permanent `IL*` internal ids (#1860 §2.3) — one row per entity family (`song`/`work`/`musician`/`tune`/`publisher`/`catalogue`/`songbook`/`document`), `NextValue` is a SEED (`ilidAllocate()` claim-checks the entity table's `uq_IlId` before returning, so a restored/rolled-back counter can't mint a collision). Read/written only by `ilidAllocate()` in `includes/ilyrics_id.php`. |
+| `IlId` (8 tables) | `tblSongs` / `tblWorks` / `tblMusicians` / `tblTunes` / `tblPublishers` / `tblCatalogues` / `tblSongbooks` / `tblSongMedia` each gain a nullable `VARCHAR(16)` `IlId` + `UNIQUE KEY uq_IlId` — the permanent, grammar-disjoint id (`IL<letter>` + 10 zero-padded digits, e.g. `ILS0000012345`; move/rename-stable, never re-keyed). NULL until minted; every dual-addressing read path (see [[API Reference]]) is column-existence-gated, so an un-migrated install is a verified no-op. |
+| `tblSongs.LyricsPdFromYear` / `MusicPdFromYear` | (#1862 B1) `SMALLINT UNSIGNED NULL` — a denorm "public domain from this year" per part, derived from the oldest ratified contributor's death year + life-plus-70, recomputed live by `includes/pd_suggest.php`'s fold rather than a batch job. Suggestion-only; never auto-sets the `PublicDomain` checkboxes. |
+
+**Migration cards:** `migrate-ilyrics-internal-ids` (creates + seeds `tblIlyricsIdSequence`, adds the 8 `IlId` columns — additive, dormant until Phase 2 mint-on-create + the go-live A/B/C commits wired every write funnel), `migrate-song-pd-from-year` (adds the two `PdFromYear` columns + a chunked backfill using the same live fold the write path uses), `migrate-reconcile-media-flags` (`'manual'` + `dryRunnable` — a one-time, docroot-sensitive `HasAudio`/`HasSheetMusic` reconcile; no new columns, those predate this batch).
+
 ### User & Access Control Tables
 
 | Table | Purpose |

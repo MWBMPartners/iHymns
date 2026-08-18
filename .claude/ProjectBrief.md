@@ -4,6 +4,65 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-18 (docs refresh for #1860-#1863, landed earlier on this same branch)
+
+**Branch `claude/ilyrics-identity-work-model`, still on top of `v0.5250.0` (1f71b177) — no app-version
+bump this pass.** This session's own commits are a docs-and-guards catch-up: the feature work below had
+already landed on this branch with no matching `ProjectBrief.md` continuation note, so the code was
+ahead of its own documentation. Recorded here for the first time, then this session's docs work on top.
+
+**The feature work this branch already shipped** (earlier commits, `3108260c`…`6754c39a`), briefly:
+- **#1860 — permanent internal ids (ILID) + Work identity.** `includes/ilyrics_id.php` mints a
+  permanent, grammar-disjoint `IL<letter><digits>` id on every entity create across every write funnel
+  (go-live A); Works auto-link on song save via one fail-safe wrapper in `includes/work_admin.php`
+  (go-live B); every relevant read path (`SongData::getSongById()`, the `musician`/`publisher`/`tune`
+  pages, `song-media.php`) accepts either address form, gated on the migrated `IlId` column (go-live C).
+- **#1861 — org-scoped CCLI usage report.** `includes/ccli_report.php` (the one query core), a new
+  self-serve `/manage/my-ccli-report` structurally incapable of an unscoped query, an org filter on the
+  existing system-wide report, and an org-licence-preferred attribution fix in `includes/print_usage.php`.
+- **#1862 (epic #1863) — Editor2 metadata derivation.** `includes/copyright_display.php` /
+  `includes/pd_suggest.php` / `includes/song_media_flags.php` — the copyright line, a public-domain
+  suggestion, and the audio/sheet-music availability line all now derive themselves instead of being
+  hand-collected; the old media checkboxes are gone (rule #44).
+- **#1863 picker rollout (#1864-#1869).** Six more registry-referencing fields (Works' Tune Name +
+  Copyright Holder, a Songbook's Publisher, Collections' "Add a song", the request-flow SongId +
+  Songbook fields, Group members + the Publisher-merge picker, the Structure-tab section-type dropdown)
+  became find-or-create search-select pickers instead of free text (rule #43).
+- **Build-number CI** — a monotonic per-commit build number injected into `infoAppVer.php` at deploy.
+
+**What THIS session did** on top of that — a docs-and-guards catch-up, per its own plan
+(`.claude/sessions/2026-08-18-HANDOFF.md` has the live task table; this note is the summary, not a
+duplicate of it):
+- `api-docs.yaml` sync — #1860 ILID dual-addressing documented (the `song_detail`/`song_data` `id` param,
+  `page=musician`/`publisher`/`tune` slugs, `/song-media/<id>`), a new canonical `page=musician` path
+  (previous docs only had the deprecated `person` alias), the five `iswc`-sibling identifier pages, and
+  a prose note for the 23 undocumented legacy v1 editor actions. Also fixed a genuine pre-existing doc
+  bug found along the way: `my_organisations`'s response schema was fictional and didn't match the real
+  handler at all (missing `slug`/`parentOrgId`/`description`/`licenceType`/`isActive`/the #1830 `logos`
+  array; `role` doesn't exist, the real field is `memberRole`).
+- Two new tree-derived, mutation-proven CI guards in `test-openapi-actions-exist.php`: an `api-docs.yaml`
+  ↔ `infoAppVer.php` version-lockstep check (paired with a `version-bump.yml` step that keeps them in
+  lockstep on every bump — shipping the guard alone would have gone red on the very next bump), and a
+  `?page=` presence-direction check (both phantom and undocumented directions, with reasoned exemption
+  maps). Plus a new standalone guard, `test-admin-help-coverage.php`, asserting every `/manage/*` nav
+  destination has a matching Help & Guides section or a reasoned alias — derived from `admin-links.php`
+  vs `manage/help.php`'s own `$sections` array, mutation-proven by reproducing the exact `tunes`-shipped-
+  without-help bug it now catches.
+- `manage/help.php` — added the three sections that gap analysis found missing (Tunes, Venues & Service
+  Times, My CCLI Report) and folded Feature Access / the No-Op Verifier / Connected Apps into their
+  sibling sections; updated Song Editor (copyright/PD-suggestion/derived-media-line, corrected a stale
+  "copyright holder is on Credits" line — it moved to Metadata in #1862), CCLI Usage Report (org filter +
+  attribution fix), and Settings (the PD publication-year threshold control) for #1861/#1862.
+- Top-level `.md` refresh: `CHANGELOG.md`'s `## [unreleased] — alpha` recreated (one bullet per branch
+  item); `README.md`/`PROJECT_STATUS.md`/`DEV_NOTES.md`/`WHATS-NEW.md`/`Project_Plan.md`/`SECURITY.md`
+  updated, with every COUNT re-derived from the tree rather than copied forward — `PROJECT_STATUS.md` in
+  particular had accumulated real self-contradictions (38 vs 46 admin destinations; two different
+  "highest issue" numbers) that are now both the same tree-derived figure (47 destinations; #1900,
+  cross-checked against `.claude/sessions/2026-08-18-HANDOFF.md`).
+
+Full per-commit detail (SHAs, exact `run-php-tests.php` counts, the mutation-test log for each new guard)
+is in this session's report to the orchestrator, not duplicated here.
+
 ## 📌 Continuation note — 2026-08-14 (P0 transport-routing fix + Editor2 confidence pass — v0.5250.0)
 
 **Branch `claude/musician-profile-migration-8n15p1` (re-based onto latest `alpha` da3973d after #1854 merged).
