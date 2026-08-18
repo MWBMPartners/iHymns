@@ -78,6 +78,12 @@ foreach ($rows as $r) {
                 Printed copies
                 <?php if (!$hasUsageEvents): ?>
                     <i class="bi bi-info-circle ms-1" title="Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install" aria-hidden="true"></i>
+                    <?php /* #1874 — the notice previously lived ONLY in the icon's
+                             title on an aria-hidden element: invisible to screen
+                             readers and unreachable by keyboard (WCAG 1.1.1 / 1.4.13).
+                             Carry the same sentence in an always-rendered visually-
+                             hidden span so assistive tech announces it. */ ?>
+                    <span class="visually-hidden">Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install</span>
                 <?php endif; ?>
             </div>
             <div class="h4 mb-0"><?= number_format($totalPrinted) ?></div>

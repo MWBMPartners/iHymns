@@ -84,7 +84,12 @@ $allowedOrgIds = userIsOrgAdminOf($userId);
 if ($allowedOrgIds === []) {
     http_response_code(403);
     $alsoSystemViewer = userHasEntitlement('view_ccli_report', $currentUser['role'] ?? null);
-    echo '<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;">';
+    /* #1874 — a standalone HTML document needs a page language (WCAG 3.1.1)
+       and a title (WCAG 2.4.2), both Level A; the inline 403 previously emitted
+       neither. */
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">';
+    echo '<title>403 — Not an organisation admin</title></head>';
+    echo '<body style="font-family:sans-serif;padding:2rem;">';
     echo '<h1>403 — Not an organisation admin</h1>';
     echo '<p>You don\'t hold an admin or owner role on any organisation, so there is no ';
     echo 'organisation-scoped CCLI report to show you. A system administrator can grant you ';
@@ -224,8 +229,16 @@ try {
         'from' => $fromDate, 'to' => $toDate, 'show_all' => $showAll,
     ]);
     $rows = [];
-    $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
-    $queryError = 'Database error: ' . $e->getMessage() . $where;
+    /* #1874 (security, Low) — this page's audience is any signed-in user with an
+       org admin/owner membership row: a materially wider and less-trusted set
+       than the system-admin pages that established the "render the DB error"
+       convention. Showing raw SQL/schema/path detail to that audience is an
+       internal-disclosure risk, so surface a generic message here. Nothing
+       diagnosable is lost — the full detail is already captured server-side
+       (error_log + logActivityError above). The system-admin pages keep their
+       existing convention unchanged (whether to tighten it everywhere is an
+       owner call, out of scope for this fix). */
+    $queryError = 'The report is temporarily unavailable — the failure has been logged.';
 }
 
 $hasUsageEvents = _printUsageTableExists($db);

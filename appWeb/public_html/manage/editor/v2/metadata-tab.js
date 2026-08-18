@@ -320,7 +320,17 @@ export function mountMetadataTab(container, opts) {
                the derived value into `song` + the read-only line so a
                leftover caller can't show a lie even transiently. */
             if ((field === 'hasAudio' || field === 'hasSheetMusic') && res && typeof res.value !== 'undefined') {
-                song[field === 'hasAudio' ? 'HasAudio' : 'HasSheetMusic'] = res.value;
+                /* #1874 — read the LIVE `song` slice from the store, not a
+                   closure variable: `song` is declared only inside render()
+                   (below), so referencing it from this outer-scope save() threw
+                   a ReferenceError → landed in the .catch() → toasted "Could not
+                   save … song is not defined" about a save that actually
+                   succeeded server-side (the misleading-error class the comment
+                   at 296-299 calls "worse than none"). Reading from the store
+                   also survives a re-render between request and echo, which a
+                   captured closure variable would not have. */
+                const s = store.get('song');
+                if (s) { s[field === 'hasAudio' ? 'HasAudio' : 'HasSheetMusic'] = res.value; }
                 refreshMediaLine();   // always a function — see its declaration above
             }
             return true;
@@ -937,11 +947,21 @@ export function mountMetadataTab(container, opts) {
         overrideWrap.className = 'mt-2';
         const overrideHelp = document.createElement('div');
         overrideHelp.className = 'form-text small';
+        overrideHelp.id = 'meta-copyright-help';   // #1874 — referenced by aria-describedby below
         overrideHelp.textContent = 'Used only when Copyright year(s) and holder are both empty. Prefer the structured fields.';
         const overrideInput = document.createElement('input');
         overrideInput.type = 'text';
         overrideInput.className = 'form-control form-control-sm';
         overrideInput.id = 'meta-copyright';
+        /* #1874 — the collapsed <summary> heading ("Custom statement
+           (override)") is not programmatically associated with this input, so a
+           screen-reader user tabbing in heard an unnamed edit field on a tab
+           where every sibling control is labelled. Give it a real accessible
+           name (WCAG 4.1.2 / 3.3.2, both Level A) and announce the guidance via
+           aria-describedby (WCAG 3.3.2). The visible summary already carries the
+           heading, so an aria-label avoids a redundant second visible label. */
+        overrideInput.setAttribute('aria-label', 'Custom copyright statement (override)');
+        overrideInput.setAttribute('aria-describedby', 'meta-copyright-help');
         overrideInput.value = song.Copyright != null ? String(song.Copyright) : '';
         overrideInput.addEventListener('input', () => {
             song.Copyright = overrideInput.value;
@@ -1028,6 +1048,11 @@ export function mountMetadataTab(container, opts) {
             useBtn.type = 'button';
             useBtn.className = 'btn btn-sm btn-outline-secondary py-0 px-1';
             useBtn.textContent = 'Use';
+            /* #1874 — both PD-hint adopt buttons read just "Use", so in a
+               screen-reader buttons list the lyrics one and the music one are
+               indistinguishable out of context (WCAG 2.4.6). partLabel is
+               "lyrics"/"music"; keep the visible "Use" text. */
+            useBtn.setAttribute('aria-label', 'Mark ' + partLabel + ' as public domain');
             useBtn.addEventListener('click', () => {
                 checkboxInput.checked = true;
                 checkboxInput.dispatchEvent(new Event('change', { bubbles: true }));
