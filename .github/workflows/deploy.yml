@@ -62,9 +62,11 @@ on:
 # silently "didn't deploy", with both runs reporting success.
 #
 # Alpha is where this is most likely, because it auto-merges: two PRs going
-# green minutes apart is routine and the mirror takes longer than that. #1596
-# makes it certain rather than likely, by dispatching a second deploy after
-# each version bump.
+# green minutes apart is routine and the mirror takes longer than that.
+# (Historical: #1596's version-bump.yml dispatched a second deploy after each
+# bump, making close-together deploys certain rather than likely. The bumper is
+# retired — #1899 — but the concurrency group stays load-bearing for any two
+# deploys that land close together, e.g. an auto-merge and a promotion bridge.)
 #
 # `cancel-in-progress: false` is LOAD-BEARING and is the opposite of the right
 # setting for apple.yml. Cancelling a superseded *build* is free; cancelling a
@@ -149,6 +151,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # Release version injection (#1899) parses the latest v* tag, so the
+          # tags must be fetched. fetch-depth: 0 alone is not a documented tag
+          # guarantee — ask for tags explicitly.
+          fetch-tags: true
           ref: ${{ github.ref_name }}
 
       # -- lftp connection timeouts (global ~/.lftprc, inherited by every lftp
@@ -290,8 +296,9 @@ jobs:
       #                  single fat section eats the whole budget again.
       #   MAX_SECTIONS — at most N release headings, counted on headings
       #                  actually EMITTED (an empty `## [unreleased] — alpha`,
-      #                  which is exactly what version-bump.yml's rollover
-      #                  leaves behind, must not burn a slot).
+      #                  which is exactly what the release rollover
+      #                  (promotion-deploy-bridge.yml, #1899) leaves behind,
+      #                  must not burn a slot).
       #   MAX_BYTES    — the same 48 KB budget, but now enforced BEFORE an
       #                  entry is written rather than by cutting bytes after
       #                  the fact, so output always ends on an entry boundary.
@@ -487,6 +494,30 @@ jobs:
             sed -i "s|\[\"Commit\"\]\[\"URL\"\] = NULL|\[\"Commit\"\]\[\"URL\"\] = \"${REPO_URL}/commit/${COMMIT_SHA}\"|" "$VERFILE"
             sed -i "s|\[\"Build\"\]\[\"Number\"\] = NULL|\[\"Build\"\]\[\"Number\"\] = ${BUILD_NUMBER}|" "$VERFILE"
             echo "Injected build info into infoAppVer.php - ${SHORT_SHA} @ ${COMMIT_DATE} (build ${BUILD_NUMBER})"
+
+            # Release version (#1899 PR2): MAJOR.RELEASE from the latest
+            # production tag + the per-commit build number in the patch slot.
+            # Dormant until the first v* tag exists — an untagged repo deploys
+            # the committed value exactly as before. The tag-filter regex MUST
+            # stay byte-identical to promotion-deploy-bridge.yml's copy (guarded
+            # by tests/test-versioning-pipeline.js — rule #35). The `= "` in the
+            # Version.Number pattern makes the line-29 usage docblock
+            # (`echo $app[...]["Number"];`, no `= "`) a non-match; verified.
+            LATEST_TAG=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            if [[ -n "$LATEST_TAG" ]]; then
+              REL_BASE="${LATEST_TAG#v}"
+              REL_MAJOR="${REL_BASE%%.*}"
+              REL_MINOR=$(echo "$REL_BASE" | cut -d. -f2)
+              DEPLOY_VERSION="${REL_MAJOR}.${REL_MINOR}.${BUILD_NUMBER}"
+              sed -i "s|\(\[\"Version\"\]\[\"Number\"\] = \"\)[^\"]*\"|\1${DEPLOY_VERSION}\"|" "$VERFILE"
+              SPEC_FILE="${SOURCE_DIR}api-docs.yaml"
+              if [[ -f "$SPEC_FILE" ]]; then
+                sed -i "s|^\(  version: \"\)[^\"]*\"|\1${DEPLOY_VERSION}\"|" "$SPEC_FILE"
+              fi
+              echo "Injected release version ${DEPLOY_VERSION} (from ${LATEST_TAG})"
+            else
+              echo "No release tags yet — committed Version.Number left as-is (release scheme dormant until the first production tag, #1899)."
+            fi
           fi
 
       # -- Sync manifest.json name/description from infoAppVer.php --
@@ -507,6 +538,15 @@ jobs:
             if [[ -n "$APP_DESC" ]]; then
               sed -i "s|\"description\": \"[^\"]*\"|\"description\": \"${APP_DESC}\"|" "$MANIFEST"
               echo "Manifest description synced from infoAppVer.php"
+            fi
+            # Sync manifest version (#1899): read back what was actually injected
+            # into Version.Number above (the release value if a tag existed, else
+            # the committed value) — never recompute (rule #35). Closes the
+            # manifest.json:8 gap where the hardcoded version was never synced.
+            APP_VER=$(grep -oP '\["Version"\]\["Number"\] = "\K[^"]+' "$VERFILE" | head -1)
+            if [[ -n "$APP_VER" ]]; then
+              sed -i "s|\"version\": \"[^\"]*\"|\"version\": \"${APP_VER}\"|" "$MANIFEST"
+              echo "Manifest version synced: ${APP_VER}"
             fi
           fi
 
