@@ -2359,16 +2359,28 @@ return [
     'search-synonyms' => [
         'script' => 'migrate-search-synonyms.php',
         'card' => [
-            'title'  => 'Search synonyms + diacritic folding (#1142)',
-            'body'   => 'Creates <code>tblSearchSynonyms</code> and adds a'
+            'title'  => 'Search synonyms + diacritic folding (#1142 / #1039)',
+            'body'   => 'Creates <code>tblSearchSynonyms</code>, adds the'
                       . ' diacritic-folded <code>tblSongs.LyricsTextFolded</code> +'
-                      . ' FULLTEXT index for accent-insensitive search'
-                      . ' (Noël↔Noel, Saviour↔Savior). Additive + idempotent.',
+                      . ' the three folded FULLTEXT indexes'
+                      . ' (<code>ft_LyricsTextFolded</code>, <code>ft_NormalizedTitle</code>,'
+                      . ' <code>ft_NormTitleLyricsFolded</code>) and backfills the folded'
+                      . ' columns for accent/apostrophe-insensitive search'
+                      . ' (Miłość↔milosc, aren’t↔arent, Noël↔Noel). Additive + idempotent.',
             'button' => 'Run Search Synonyms Migration',
         ],
+        /* #1039 Part A — OR-in the two NEW FULLTEXT indexes AND a backfill-
+           completeness data check, so an install that ran the #1142 v1 (column +
+           ft_LyricsTextFolded only) correctly RE-PENDS until the read-path
+           indexes exist and every lyrics-bearing row has been folded. Gate on
+           the INDEXES (not just the column) — a half-migrated install would
+           throw on the dual-arm MATCH(). */
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblSearchSynonyms')
-            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded'),
+            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded')
+            || !_migProbe_indexExists($db, 'tblSongs', 'ft_NormalizedTitle')
+            || !_migProbe_indexExists($db, 'tblSongs', 'ft_NormTitleLyricsFolded')
+            || _migProbe_hasUnfoldedLyrics($db),
     ],
 
     'source-documents' => [

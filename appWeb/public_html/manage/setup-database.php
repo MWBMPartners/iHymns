@@ -918,6 +918,28 @@ function _migProbe_hasNullPublicId(\mysqli $db): bool
     return $has;
 }
 
+/** True if any LYRICS-BEARING tblSongs row still lacks its folded search mirror
+ *  (#1039 Part A) — drives the search-synonyms backfill probe so the card stays
+ *  pending until every song with lyrics has been folded. False (done) when the
+ *  column is absent (the column probe handles that state). The predicate is
+ *  `LyricsTextFolded IS NULL AND LyricsText <> ''` — NOT a bare NULL check: an
+ *  empty-lyrics song (a freshly-created create_song row) legitimately carries a
+ *  NULL fold with '' lyrics and must NOT re-pend the card, whereas a lyrics-bearing
+ *  un-backfilled row must. */
+function _migProbe_hasUnfoldedLyrics(\mysqli $db): bool
+{
+    if (!_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded')) { return false; }
+    /* @deleted-visible: migration probe (#1039) — backfill completeness is a
+       PHYSICAL property; a hidden song with lyrics still needs its fold mirror so
+       search reaches it once restored.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a song in a
+       publicly-disabled book still needs its fold mirror backfilled. */
+    $res = $db->query("SELECT 1 FROM tblSongs WHERE LyricsTextFolded IS NULL AND LyricsText <> '' LIMIT 1");
+    $has = $res && $res->fetch_row() !== null;
+    if ($res) { $res->free(); }
+    return $has;
+}
+
 /** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
 function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column): bool
 {

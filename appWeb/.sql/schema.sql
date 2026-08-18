@@ -343,6 +343,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
     FULLTEXT ft_LyricsTextFolded (LyricsTextFolded),
+    FULLTEXT ft_NormalizedTitle (NormalizedTitle),
+    FULLTEXT ft_NormTitleLyricsFolded (NormalizedTitle, LyricsTextFolded),
 
     /* Why the FK targets Abbreviation and not tblSongbooks.Id: SongbookAbbr IS
        the SongId prefix ("MP" in MP-1008), so the natural key is what every
