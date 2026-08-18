@@ -10,6 +10,20 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 0.5300.0 — 18 August 2026
+
+- **See your own church's CCLI report** — Organisation admins can now pull their
+  own church's printed-copy usage report straight from the admin area, without
+  needing full system-wide report access.
+- **Less form-filling in the Song Editor** — Copyright lines, public-domain
+  status, and audio/sheet-music indicators now fill themselves in from what the
+  catalogue already knows, instead of asking a curator to type or tick them by
+  hand.
+- **Fewer duplicate entries** — When adding a song, songbook, publisher, tune,
+  or person, you now pick from a live search list instead of typing a name —
+  so two curators typing the same thing slightly differently no longer creates
+  two separate entries for the same thing.
+
 ## 0.5160.0 — 12 August 2026
 
 - **A more inspiring Song of the Day** — The little lyric taster on the home

@@ -516,6 +516,42 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
   `_share_revoke` all funnel through these. The edit audience resolves per-write; the mint response is
   the truth, not the request (CLAUDE.md rule #40).
 
+### ILID identity model (#1860) — the shared modules you MUST reuse, not re-fork
+
+`includes/ilyrics_id.php` is the ONE allocator. `IHYMNS_ILID_TYPES` is the ONE prefix → table registry
+(song `ILS`, work `ILW`, musician `ILM`, tune `ILT`, publisher `ILP`, catalogue `ILC`, songbook `ILB`,
+document/media `ILD`) — every function in the file derives its behaviour from this map; there is no
+second hardcoded prefix list anywhere. `ilidAllocate()` mints inside the CALLER's own transaction (no
+BEGIN/COMMIT of its own), reading `tblIlyricsIdSequence` with `SELECT … FOR UPDATE` plus a claim-check
+against `uq_IlId` so two concurrent creates can never collide. `ilidParse()` gives the tolerant human
+form (`'ILS12345'` → canonical `'ILS0000012345'`) and is what every dual-addressing resolver calls.
+**Dual-addressing branches on grammar, never on a guess**: a hyphen present means the public
+`<letters>-<digits>` SongId form; a hyphen-less token is tried against `ilidParse()` first. The pattern
+repeats identically in every resolver that accepts an IL id today (`SongData::getSongById()`,
+`includes/pages/{musician,publisher,tune}.php`, `song-media.php`): try/catch-swallowed, gated on an
+`INFORMATION_SCHEMA` probe of the entity's `IlId` column, falling through UNCHANGED on any miss (not an
+IL id, the column doesn't exist yet, or no row carries it) — so every one of these call sites is a
+verified no-op on an un-migrated install (the #1228 lesson). Never re-implement the parse/format fold,
+never hardcode a second prefix map, never skip the column-existence gate.
+
+### Report + Editor2 metadata cores (#1861 / #1862) — the shared modules you MUST reuse, not re-fork
+
+- **`includes/ccli_report.php`** — the ONE CCLI-report query core. `ccliReportWindow()` (shared date-range
+  parse), `ccliReportSystemRows()` (the system-wide query, with an org/Unattributed narrowing selector),
+  `ccliReportOrgRows()` (org-scoped, structurally incapable of an unscoped query — refuses to run without
+  a non-empty, membership-derived org-id list). `/manage/ccli-report` and `/manage/my-ccli-report` are
+  both thin page consumers.
+- **`includes/copyright_display.php`** — `ihymns_copyright_statement()`, the ONE copyright-line
+  precedence fold (structured years+holder wins over the legacy free-text `Copyright` column whenever
+  either half is non-empty). Shared, via a fixture-driven lockstep test, with the JS twin in
+  `manage/editor/v2/metadata-tab.js`'s `ihymnsCopyrightPreview()` — never re-type the fold in JS.
+- **`includes/pd_suggest.php`** — the public-domain suggestion fold: a credited contributor's death date
+  (life + a fixed 70-year constant) first, falling back to `tblAppSettings.pd_publication_year_threshold`
+  (admin-configurable on `/manage/configuration`, default 1900) when no death date is on record. Suggests
+  only — never auto-ticks a Public Domain checkbox.
+- **`includes/song_media_flags.php`** — `HasAudio`/`HasSheetMusic` auto-maintained from `tblSongMedia`;
+  the editor's old manual checkboxes are gone (rule #44 — don't collect what can be derived).
+
 ---
 
 ## 🚀 Deployment Architecture
@@ -556,6 +592,16 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
 - Version stored in `appWeb/public_html/includes/infoAppVer.php`
 - Build metadata (SHA, date) injected at deploy time
 - Git tags `v*` trigger GitHub Releases
+
+**Build Number.** Alongside the human-facing semver, `infoAppVer.php`'s
+`Application.Version.Build.Number` carries a **monotonic per-commit build id** —
+`git rev-list --count HEAD`, injected by `deploy.yml`'s "Inject build info into infoAppVer.php" step
+using the same sed-injection mechanism as the SHA/date. It is `NULL` on any checkout that hasn't been
+through a deploy (local dev, CI). Where semver answers "which release is this" (and can repeat across
+many commits between bumps), the build number answers "which commit, precisely" — monotonically
+increasing, one per commit, never reset. `api-docs.yaml`'s `info.version` is kept in lockstep with the
+semver number by the same workflow (a dedicated step + a CI guard, `test-openapi-actions-exist.php`) —
+the build number is NOT part of that lockstep, since it has no equivalent field in the OpenAPI spec.
 
 ### Application IDs (per-platform)
 

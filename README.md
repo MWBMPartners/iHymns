@@ -79,6 +79,8 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Standard theme vocabulary** (#1152 / #1222) — the CCLI / SongSelect OpenLyrics theme taxonomy is seeded as a 2-level hierarchy; curator tags are canonicalised into standard themes from `/manage/tags`.
 - **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, unlinks, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
 - **Musician registry duplicate detection** (#1785) — a sibling live scan for the Musicians registry (`includes/musician_duplicates.php`, extending the same shared NAME-similarity scorer): fold-equal byte variants, fuzzy near-misses, and curated-alias matches surface at `/manage/musician-duplicates` for one-click merge or dismiss, with a lifespan-conflict guard on the risky class of merge. Every merge affordance across the app now shows why two similar names look alike and which registry row is which.
+- **Permanent catalogue ids (ILIDs)** (#1860) — every song, songbook, Work, musician, tune, publisher, Collection and media row now mints a permanent, grammar-disjoint internal id (`IL<letter><digits>`, e.g. `ILS0000012345`) on create; the public-facing `song_detail`/`page=musician`/`page=publisher`/`page=tune`/`/song-media/<id>` reads all resolve either id form transparently. Groundwork for the future iLyricsDB merge — the id is minted and dual-addressed now, ahead of any cross-database join.
+- **Tunes registry** (#1748) — hymn tunes (e.g. *HYFRYDOL*, *OLD HUNDREDTH*) as first-class entities with aliases, composer/arranger/harmoniser/source credits and a public `/tune/<slug>` page; managed at `/manage/tunes`, and the Song Editor's Tune Name field is a find-or-create picker into the same registry.
 
 ### Discovery
 
@@ -137,10 +139,12 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ### Administration
 
-- **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk **verify** and **tag** (add or remove); bulk delete, move and export remain in the legacy editor for now (#1628, #1679). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
+- **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk **verify** and **tag** (add or remove); bulk delete, move and export remain in the legacy editor for now (#1628, #1679). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088, section types sourced from a live `tblSongPartTypes` registry #1869), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
+- **Metadata that fills itself in** (#1862, epic #1863) — the Metadata tab derives the copyright display line live from Copyright Year(s)/Holder (a free-text override remains for a genuinely custom statement), suggests Public Domain from a credited contributor's death date or an admin-configurable publication-year fallback (never auto-ticked), and shows Audio/Sheet-music availability as a read-only line derived from the Media tab — the old manual checkboxes are gone. Across the app, every field that references a registry (Tune Name, Copyright Holder, Publisher, group members, song/songbook pickers, …) is now a find-or-create search-select rather than free text (#1863, #1864–#1869).
 - **Revision history** — every save writes `tblSongRevisions`; a per-song Revisions tab (a History modal in the legacy editor) with per-revision Restore + global audit log at `/manage/revisions` (#400). The legacy editor's modal also shows a before/after JSON diff; the v2 tab does not yet (#1628). Restore semantics differ by editor version too: v2 restores the state a revision *left* the song in; the legacy editor restored the state *before* that edit.
 - **Database setup** — web-accessible installer with backup restore upload, **pre-flight summary**, pre-restore auto-snapshot, transactional data-load, and live migration cards that auto-hide when fully applied (#820, #824, #405).
 - **Activity logging** — audit trail for significant actions (logins, admin writes, backup restores, song-media uploads).
+- **CCLI Usage Report** (#1861) — the system-wide report at `/manage/ccli-report` now filters by organisation (or "Unattributed"); a self-serve **`/manage/my-ccli-report`** lets an organisation admin pull their own org's usage without the system-wide report's permission. Usage that could be attributed to either a personal or an organisational CCLI licence now prefers the organisation's.
 - **Analytics** — GA4, Plausible, Clarity, Matomo, Fathom with GDPR consent; admin dashboard with top songs / books / queries + zero-result queries + CSV export (#404).
 - **Client error surfacing** (#1582) — uncaught browser errors show one generic toast and are beaconed (deduplicated, privacy-scrubbed) to the Activity Log (`Action=client.jserror`).
 
@@ -148,16 +152,16 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 46 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 47 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
-| **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) |
-| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · Publishers (`/manage/publishers`) · IA Reconcile (`/manage/ia-reconcile`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
+| **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) · Deleted Songs (`/manage/deleted-songs`, #1694) |
+| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · Tunes (`/manage/tunes`, #1748) · Publishers (`/manage/publishers`) · IA Reconcile (`/manage/ia-reconcile`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
 | **Access** | Content Restrictions · Access Tiers · Licence Types (`/manage/licence-types`) · Feature Gating · Gating Hub (`/manage/gating`) · Entitlements |
 | **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
-| **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Notifications · API Keys |
+| **Operations** | Analytics · CCLI Usage Report · My CCLI Report (`/manage/my-ccli-report`, #1861) · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Connected Apps (`/manage/intapps-status`) · Content-Gating No-Op Verifier · Notifications · API Keys |
 | **Help** | Help / Guides · API Docs (Swagger UI) |
 
 Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
@@ -285,6 +289,8 @@ For shared hosting:
 | `main` | `ihymns.app` | Production |
 
 Deployment is automated via GitHub Actions (SFTP). See `DEV_NOTES.md` for full deployment architecture.
+
+Versioning is semver (`infoAppVer.php`'s `Version.Number`, auto-bumped by `version-bump.yml`) plus a monotonic **per-commit build number** (`git rev-list --count HEAD`, injected at deploy alongside the existing SHA/date; `NULL` on a local, un-deployed checkout).
 
 ---
 

@@ -111,6 +111,12 @@
 - Same frontend UI, different data source
 - API endpoint integration via REST
 
+The **#1860 permanent internal-id (ILID) model** — every song/songbook/Work/musician/tune/publisher/
+Collection/media row minting a grammar-disjoint permanent id and every relevant read path resolving
+either address form — is the live groundwork for this merge: ids are minted now, resolvers are already
+dual-addressed, and any cross-database (iLyricsDB-keyed) object stays gated behind the DB-merge decision
+this phase represents (CLAUDE.md rule #20).
+
 ---
 
 ## 🛠 Technology Stack

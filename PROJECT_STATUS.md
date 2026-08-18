@@ -10,13 +10,13 @@
 | --- | --- | --- |
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
-| 📖 Help Documentation | ✅ Complete | 8 guides in `help/` + in-app help (21 public topics, 39 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1680+ — see GitHub for live open/closed counts |
+| 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 47 admin sections) |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1900+ — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
-| 🛠 Admin Portal | ✅ Active | 38 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions) |
-| 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, version-bump, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge |
+| 🛠 Admin Portal | ✅ Active | 47 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the new org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748) |
+| 🚀 CI/CD Pipeline | ✅ Complete | 15 workflows: deploy, version-bump, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
 
@@ -42,7 +42,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ### Infrastructure ✅
 
-14 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, and the two monthly maintenance sweeps.
+15 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, Dependabot security-fix backport to the release branches, and the two monthly maintenance sweeps.
 
 ### 2026-05 catalogue & platform work ✅ (highlights)
 
@@ -96,18 +96,31 @@ The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.410
 - **Public multi-level list sort** (#1786) — a Sort ▾ control on every catalogue list, up to 3 levels, per-surface device memory + account sync via the `user_settings` `list_sorts` namespace.
 - **Editor duplicate-song** (#1783), **ProPresenter CSP-safe export** (#1788), **QR → CueRCode** (`/qr.php`, owner directive), and the **#89 sweep** items (#288 song-page tags, #150 article-blind sort, #299 inline chords, #302 set-list Save-as-PDF, #112 offline count, et al.).
 
+### 2026-08 (mid) highlights ✅ — v0.5160.0 → v0.5250.0 → `claude/ilyrics-identity-work-model`
+
+- **#1853 batch** (v0.5200.0) — a musician-profile migration false-negative fixed so `/manage/setup-database`'s "Apply all pending" stops retrying an already-superseded card (#1824); the v2 editor's Credits-tab autosave no longer mints orphaned `tblMusicians` rows on every keystroke (#1843); a responsive v2 shell for phones/tablets (#1845); the restored IETF BCP 47 live-search Language picker (#1849); a manual **Save** button that flushes pending autosaves (#1846); single-line songbook-coloured sidebar rows (#1850); a CSP-safe CDN→`/vendor` stylesheet fallback (#1832); a 10-fix editor/shell hardening pass (#1851); and Microsoft Clarity session recording no longer loads under Do-Not-Track (#1852).
+- **#1859 P0 transport-routing fix** (v0.5250.0) — every browser POST/PUT/PATCH/DELETE aimed at a literal `/manage/**.php` URL had been silently losing its request body for months (a 301 cosmetic-URL redirect downgrades a write to a body-less GET per RFC 7231 §6.4), breaking the v2 editor's metadata saves, the whole Arrangement editor, server-PDF download, bulk import and more — masquerading as unrelated client bugs (#1846/#1847/#1851) because reads were unaffected. Fixed at both layers (the redirect now exempts write methods; every browser call site uses the extensionless URL), with a new mutation-proven guard banning any browser request to a literal `/manage/**.php` path.
+- **#1860 — permanent internal ids (ILIDs) + Work identity** — every catalogue entity now mints a grammar-disjoint permanent internal id (`IL<letter><digits>`) on create, dual-addressed alongside its public id across every read path; Works now auto-link on song save via one fail-safe wrapper. Groundwork for the future iLyricsDB merge.
+- **#1861 — org-scoped CCLI usage report** — a self-serve `/manage/my-ccli-report` alongside the existing system-wide report, plus an organisation-filter on the system-wide one and a fix for usage under-attributed away from an org's own licence.
+- **#1862 — Song Editor metadata derivation** (epic #1863) — the copyright display line, a public-domain suggestion, and the audio/sheet-music availability line all now derive themselves from what the catalogue already knows, replacing three things a curator used to have to fill in or tick by hand.
+- **#1863 picker rollout (#1864–#1869)** — six more registry-referencing fields across Works, Songbooks, Collections, Song Requests, User Groups and the Song Editor's Structure tab became find-or-create search-select pickers instead of free text, closing the "typo mints a duplicate registry row" failure mode app-wide.
+- **Build-number CI** — a monotonic per-commit build number is now injected into `infoAppVer.php` at deploy, alongside the existing SHA/date injection.
+- **`api-docs.yaml` sync + two new CI guards** — the ILID dual-addressing behaviour, the canonical `?page=musician` path, and the five `iswc`-sibling identifier pages are now documented; a version-lockstep guard and an admin-nav↔Help-coverage guard (both tree-derived, mutation-proven) close the exact class of gap that let this branch's new admin pages ship without in-app help.
+
 ---
 
 ## 📌 Next Milestones
 
-### Milestone 0 (blocking, not a feature): runtime verification of `claude/wave3-fixes`
+### Milestone 0 (blocking, not a feature): live multi-device Service Mode / Live-Follow verify (#1339)
 
-~90 commits of correctness work sit on that branch, **none of it ever run against a database or a
-browser** — the container has neither. Migrations applied, one v2 editor write, a real songbook
-move, two-device setlist sync, and the CCLI gate flipped on in a controlled window. Ranked P0 with
-the full sequence in `.claude/proposals-2026-07-31.md`; it outranks everything below because a
-runtime surprise there invalidates assumptions the rest build on.
-
+The `claude/wave3-fixes` runtime-verification item this section used to track is **done** — that
+branch (`49d4d57d`) is merged and its commits are in every branch's history, including this one.
+The one item in this family still genuinely unverified (CLAUDE.md rule #26) is **#1339**: Service
+Mode / Live-Follow has never once been exercised with two real devices on one channel (a leader
+device broadcasting + a congregant device following, live). Everything else in the family —
+including the persistent host bar, presentation-app driver key, and the #1770 idle-timeout
+resolver — has shipped and been reasoned through, but this one needs physical hardware the
+container doesn't have.
 
 ### Milestone 4 & 5: Apple App (consolidated, unreleased)
 
@@ -134,10 +147,10 @@ runtime surprise there invalidates assumptions the rest build on.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1900+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.5250.0 Alpha (authoritative: `includes/infoAppVer.php`)
-- **CI/CD**: 14 GitHub Actions workflows live
+- **Version**: 0.5250.0 Alpha (authoritative: `includes/infoAppVer.php`), plus a monotonic per-commit build number (`Version.Build.Number`, deploy-injected)
+- **CI/CD**: 15 GitHub Actions workflows live
 
 ---
 
@@ -154,4 +167,4 @@ runtime surprise there invalidates assumptions the rest build on.
 
 ---
 
-Last updated: 2026-07-30
+Last updated: 2026-08-18

@@ -58,6 +58,12 @@ These are enforced conventions; new code must follow them (see
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call
   `requireAdmin()`/`requireEditor()`/`userHasEntitlement()`. **Global Admin
   always bypasses the invite-only channel gate** so it can't lock itself out.
+  **Org-scoped reads are structurally isolated, not just entitlement-gated**
+  (#1861) — `/manage/my-ccli-report`'s only row source refuses to run without a
+  non-empty, `tblOrganisationMembers`-derived org-id list, so an org admin can
+  never see another organisation's CCLI usage regardless of the entitlement
+  check alone; the system-wide `/manage/ccli-report` stays a separate,
+  higher-privileged view.
 - **CSRF** — state-changing requests are verified by `validateCsrfRequest()`
   (`manage/includes/auth.php`): it passes when EITHER a valid per-session token is
   present OR the request is provably same-origin — it requires the

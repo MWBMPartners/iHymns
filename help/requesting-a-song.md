@@ -15,7 +15,7 @@ If iHymns is missing a song you need, you can submit a request to our curators. 
 Open **Request a Song** (linked from the bottom of any song page as "Report a missing song", or from the Help page). Fill in:
 
 - **Song title** — required.
-- **Songbook** — optional; helps a curator find it faster.
+- **Songbook** — optional; helps a curator find it faster. As you type, matching songbook names from our catalogue appear below the box so you can pick the exact one — but you can still type any name, even one that isn't in our catalogue yet, since that may be exactly why you're asking us to add the song.
 - **Extra details** — optional; a first line of lyrics or the writer's name goes a long way.
 - **Your email** — optional, only if you'd like curators to follow up with you directly.
 
