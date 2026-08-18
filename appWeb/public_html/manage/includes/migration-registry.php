@@ -4278,4 +4278,78 @@ return [
             || !_migProbe_indexExists($db, 'tblSongComponents', 'idx_SourceWork')
             || !_migProbe_constraintExists($db, 'tblSongComponents', 'fk_Component_SourceWork'),
     ],
+
+    'song-pd-from-year' => [
+        'script' => 'migrate-song-pd-from-year.php',
+        'card' => [
+            'title'  => 'Public-domain suggestion (#1862)',
+            'body'   => 'Adds <code>tblSongs.LyricsPdFromYear</code> / <code>MusicPdFromYear</code>'
+                      . ' (the &ldquo;first year this part is suggested public domain under life+70&rdquo;'
+                      . ' denorm the Editor2 metadata tab hints from) and backfills every existing song'
+                      . ' via the shared <code>pdRecomputeForSong()</code> fold. NEVER auto-sets the'
+                      . ' <code>LyricsPublicDomain</code> / <code>MusicPublicDomain</code> checkboxes — a'
+                      . ' suggestion only, always adopted by an explicit curator click. Additive,'
+                      . ' idempotent (the backfill is write-if-changed) — safe to re-run.',
+            'button' => 'Run PD-From-Year Migration',
+        ],
+        /* Schema-completion probe (rule #19) — never `=> true`. The backfill itself
+           is idempotent-by-recompute (the 'publication-metadata' idiom) and has no
+           schema signal of its own, so this measures column presence only. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'LyricsPdFromYear')
+            || !_migProbe_columnExists($db, 'tblSongs', 'MusicPdFromYear'),
+    ],
+
+    /* ---- #1862 — the RECONCILE (data-only, manual + docroot-sensitive) --------
+       The static-file half of the HasAudio/HasSheetMusic union (includes/
+       song_media_flags.php) depends on the EXECUTING docroot's filesystem, and
+       alpha/beta/production share ONE database — so this is a single in-place
+       reconcile run ONCE BY HAND, from the production docroot (the only one with
+       the full /data/audio + /data/music corpus), never per-env and never via
+       "Apply all". Defaults to a dry-run report; ?confirm=1 applies. */
+    'reconcile-media-flags' => [
+        'script' => 'migrate-reconcile-media-flags.php',
+        /* #1862 — DATA-ONLY reconcile, docroot-sensitive: EXCLUDED from "Apply
+           all" (both the JS bulk runner and the no-JS apply-all loop) and the
+           pending counter — the same posture as 'backfill-canonical-songids'.
+           A web run WITHOUT &confirm=1 only REPORTS a dry-run diff. */
+        'manual' => true,
+        /* #1862 — real dry-run report mode (mirrors 'backfill-canonical-songids'):
+           renders a distinct "Dry-run (report only)" link alongside the confirm
+           button rather than the drop-only single button the JSON-column DROP
+           card uses. */
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => 'Reconcile HasAudio/HasSheetMusic (#1862)',
+            'body'   => 'DATA REWRITE — recomputes <code>tblSongs.HasAudio</code> /'
+                      . ' <code>HasSheetMusic</code> as the UNION of a hosted'
+                      . ' <code>tblSongMedia</code> row and the legacy static'
+                      . ' <code>/data/audio/*.mid|.mp3</code> / <code>/data/music/*.pdf</code> files —'
+                      . ' run ONLY from the production docroot (the only one with the full media'
+                      . ' corpus on disk); alpha/beta share the same database, so running this from'
+                      . ' a docroot missing the static files would wrongly clear flags for songs whose'
+                      . ' audio/sheet-music is genuinely only a static file elsewhere. Do NOT run via'
+                      . ' &ldquo;Apply all&rdquo;. Defaults to <strong>dry-run</strong> (reports counts'
+                      . ' + a sample of songs whose flags would flip, each direction); pass'
+                      . ' <code>&amp;confirm=1</code> to apply. Data-only — no schema change. Writes a'
+                      . ' <code>media_flags_reconciled_at</code> sentinel in <code>tblAppSettings</code>'
+                      . ' on apply. Idempotent — safe to re-run.',
+            'button' => 'Reconcile Media Flags (dry-run unless confirmed)',
+        ],
+        /* Sentinel-row probe (rule #19) — a data-only pass has no schema signal of
+           its own (the 'publishers-entity' backfill idiom), so completion is a
+           tblAppSettings row the migration writes only on a confirmed apply. */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'media_flags_reconciled_at' LIMIT 1"
+                );
+                $applied = $r && $r->fetch_row() !== null;
+                if ($r) { $r->close(); }
+                return !$applied;
+            } catch (\Throwable $_e) {
+                return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
+            }
+        },
+    ],
 ];

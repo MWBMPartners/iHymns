@@ -18,6 +18,10 @@ declare(strict_types=1);
 
 /* #1328 — hide the songbook abbreviation badge when it just repeats the name. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+/* #1862 — the ONE copyright display-statement fold (ihymns_copyright_statement()),
+   shared with the Editor2 metadata tab's live preview via the fixture-driven
+   PHP<->JS lockstep test. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'copyright_display.php';
 
 /* Fetch the full song data — UNLESS a caller already injected one.
    #1598 — the bulk_songs loop in api.php sets $song (= $bulkSong, already
@@ -178,9 +182,11 @@ $copyrightHolder = trim((string)($song['copyrightHolder'] ?? ''));
    (#1741 P1 contract, mirrors the CopyrightYears schema COMMENT: legacy
    Copyright is NOT auto-parsed). Web and native must render identically —
    this precedence rule is part of the #1750/#4 API contract, never
-   concatenate both. */
-$copyrightSplit   = trim($copyrightYears . ' ' . $copyrightHolder);
-$copyrightDisplay = $copyrightSplit !== '' ? $copyrightSplit : trim((string)$copyright);
+   concatenate both. #1862 — extracted to the ONE shared fold
+   (ihymns_copyright_statement(), includes/copyright_display.php) so the
+   Editor2 metadata tab's live preview can share this exact decision;
+   behaviour here is byte-identical to the inline pair this replaced. */
+$copyrightDisplay = ihymns_copyright_statement($copyrightYears, $copyrightHolder, (string)$copyright);
 
 /* #1750 — prefer the tblTunes registry slug (via the existing scoped
    include-block reader) over the name-fold, exactly as work.php does
