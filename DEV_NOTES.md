@@ -580,18 +580,16 @@ never hardcode a second prefix map, never skip the column-existence gate.
 | --- | --- |
 | `[deploy all]` | Force full SFTP upload even if no files changed |
 | `[skip sync]` | (Deprecated — no longer used) |
-| `[skip ci]` | Skip changelog, version-bump, and deploy workflows |
+| `[skip ci]` | Skip changelog and deploy workflows |
 
 ### Version Numbering
 
-- **Semver**: `v1.x.x` (Phase 1 — local JSON) / `v2.x.x` (Phase 2 — iLyrics dB)
-- Auto-bumped via conventional commits on `beta`:
-  - `BREAKING CHANGE` or `!:` → major bump
-  - `feat(...):` → minor bump
-  - Everything else → patch bump
-- Version stored in `appWeb/public_html/includes/infoAppVer.php`
-- Build metadata (SHA, date) injected at deploy time
-- Git tags `v*` trigger GitHub Releases
+**Tag-derived scheme (#1899).** The DEPLOYED version is `MAJOR.RELEASE.BUILD`:
+- **MAJOR** — hand-edited in `appWeb/public_html/includes/infoAppVer.php` (rare — a product-identity decision; also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z`). Baseline reset to `1.0.0`.
+- **RELEASE** (minor) — the minor of the latest production `v*` tag; a `vMAJOR.RELEASE.0` tag is cut automatically at each **beta→main promotion** by `promotion-deploy-bridge.yml` (RELEASE = the previous tag's minor + 1).
+- **BUILD** (patch) — the git commit count (`git rev-list --count HEAD`), a monotonic per-commit id.
+- `deploy.yml` injects RELEASE + BUILD at deploy time (the same no-commit-back sed as the SHA/date); an untagged checkout deploys the committed `infoAppVer.php` value unchanged.
+- The old conventional-commit auto-bumper (`version-bump.yml`) that ballooned the minor to 5250 is **RETIRED**; `api-docs.yaml`'s `info.version` stays in lockstep with the committed semver via a CI guard (`test-openapi-actions-exist.php`). Pushed `v*` tags trigger `release.yml` (GitHub Release + notes).
 
 **Build Number.** Alongside the human-facing semver, `infoAppVer.php`'s
 `Application.Version.Build.Number` carries a **monotonic per-commit build id** —
@@ -618,7 +616,6 @@ the build number is NOT part of that lockstep, since it has no equivalent field 
 | Workflow | Purpose |
 | --- | --- |
 | `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583) and media excludes (#1584) |
-| `version-bump.yml` | Auto-bumps `infoAppVer.php` from conventional commits on push to `alpha` **or** `beta` (#1595/#1596 — previously beta-only); on `alpha` it also closes the `CHANGELOG.md` `## [unreleased] — alpha` section into the new version heading (#1589). The commit message it bumps from is passed to the bump script as an **environment variable**, never interpolated into a `run:` shell body (#1622 — a commit message is attacker-controllable text, and `${{ }}`-into-`run:` pastes it into the script before the shell parses anything) |
 | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
 | `release.yml` | Creates a GitHub Release + extracts notes when a `v*` tag is pushed |
 | `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |
@@ -630,7 +627,7 @@ the build number is NOT part of that lockstep, since it has no equivalent field 
 | `build-android.yml` | Builds/distributes the Android app (Play Store, Amazon Appstore/Fire OS, direct APK) |
 | `maintenance-ha-integrity-audit.yml` | Monthly cross-source integrity audit (#699 Phase C) against the Spanish "Himnario Adventista" (HA) songbook |
 | `maintenance-issues-sweep.yml` | Monthly sweep that closes GitHub issues referenced by `closes #N` in commits merged to `alpha` but never auto-closed (GitHub only auto-closes on the default branch) |
-| `promotion-deploy-bridge.yml` | Fires the SFTP deploy when a promotion PR *merges* into `beta`/`main` (works around the `GITHUB_TOKEN` anti-recursion rule suppressing `deploy.yml`'s push trigger) |
+| `promotion-deploy-bridge.yml` | On a merged beta→main promotion PR, cuts the `vMAJOR.RELEASE.0` release tag, then dispatches deploy + `release.yml` + the CHANGELOG rollover (`scripts/roll-changelog.py`) (#1899) |
 
 ---
 

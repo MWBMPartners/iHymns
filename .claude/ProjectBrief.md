@@ -6,8 +6,7 @@
 
 ## 📌 Continuation note — 2026-08-18 (docs refresh for #1860-#1863, landed earlier on this same branch)
 
-**Branch `claude/ilyrics-identity-work-model`, still on top of `v0.5250.0` (1f71b177) — no app-version
-bump this pass.** This session's own commits are a docs-and-guards catch-up: the feature work below had
+**Branch `claude/ilyrics-identity-work-model`, on top of `v1.0.0` tag-derived baseline with per-commit build number injection — app-version baseline reset, no additional bump this pass.** This session's own commits are a docs-and-guards catch-up: the feature work below had
 already landed on this branch with no matching `ProjectBrief.md` continuation note, so the code was
 ahead of its own documentation. Recorded here for the first time, then this session's docs work on top.
 
