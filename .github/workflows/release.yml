@@ -6,9 +6,25 @@
 # distribution is strictly prohibited.
 #
 # PURPOSE:
-# Automatically creates a GitHub Release when a version tag (v*) is pushed.
-# - Extracts the release notes from CHANGELOG.md for the tagged version
-# - Marks tags containing "-beta" or "-rc" as pre-releases
+# Creates a GitHub Release for a version tag (v*). TWO triggers (#1899):
+#   - `on: push: tags: v*` — a HUMAN-pushed tag fires this directly.
+#   - `workflow_dispatch` — promotion-deploy-bridge.yml (the tag MINTER at every
+#     beta→main promotion) dispatches this ON THE TAG REF, because a
+#     GITHUB_TOKEN-pushed tag does NOT fire `on: push` (anti-recursion, the same
+#     trap the bridge itself exists for). On a `--ref v1.2.0` dispatch,
+#     github.ref_name IS the tag, so every step below works unchanged.
+# - Extracts the release notes from CHANGELOG.md for the tagged version, falling
+#   back to the `## [unreleased] — alpha` section (which at the tagged main
+#   commit holds exactly this release's entries — the rollover commit lands on
+#   ALPHA, not main).
+# - Marks tags containing "-beta" or "-rc" as pre-releases.
+#
+# ⚠️ KNOWN ONE-TIME (baseline (a) v1.0.0, #1899 §2): CHANGELOG.md carries a
+# DEAD-scheme `## [1.0.0] — 2026-04-06` section, so for the FIRST release only,
+# the version-specific match below finds those historical notes instead of
+# falling through to the unreleased section. The Release is still created; its
+# notes just need a one-time manual edit (or paste from the run log). Every
+# later release (v1.1.0, v1.2.0, …) has no such collision and needs no edit.
 # =============================================================================
 
 name: Release
@@ -16,7 +32,9 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'          # a HUMAN-pushed tag still fires this directly
+  workflow_dispatch: {} # promotion-deploy-bridge dispatches on the tag ref —
+                        # a GITHUB_TOKEN tag push cannot fire `on: push` (#1899)
 
 # Cancel any in-progress release for the same tag
 concurrency:
@@ -71,8 +89,14 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 4: Extract release notes from CHANGELOG.md
-      # Finds the section matching this version and extracts all content
-      # until the next version heading
+      # Finds the section matching this version and extracts all content until
+      # the next version heading. If no `## [<version>]` section exists yet
+      # (the normal case for a fresh bridge-cut tag — the rollover commit lands
+      # on ALPHA, not on the tagged main commit), fall back to the
+      # `## [unreleased] — alpha` section, which at the tagged commit holds
+      # exactly this release's entries. The fallback matches LOWERCASE
+      # `[unreleased]` only, so historical `## [Unreleased]` headings never
+      # match (#1899).
       # -----------------------------------------------------------------------
       - name: Extract release notes from CHANGELOG.md
         id: notes
@@ -98,6 +122,14 @@ jobs:
           escaped = re.escape(version)
           pattern = rf'## \[{escaped}\][^\n]*\n(.*?)(?=\n## \[|\Z)'
           match = re.search(pattern, content, re.DOTALL)
+
+          if not match:
+              # Fallback: the unreleased section (which at the tagged main commit
+              # holds exactly this release's entries — the rollover lands on
+              # alpha, not main). Lowercase '[unreleased]' ONLY — a historical
+              # '## [Unreleased]' (capital U) must not match (#1899).
+              pattern = r'## \[unreleased\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+              match = re.search(pattern, content, re.DOTALL)
 
           if match:
               notes = match.group(1).strip()
