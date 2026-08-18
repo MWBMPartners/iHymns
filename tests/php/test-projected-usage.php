@@ -119,7 +119,19 @@ function pu2StripComments(string $src): string
         }
         $out .= $tok;
     }
-    return $out;
+    /* ALSO blank HTML comments (<!-- … -->). A template file (e.g.
+       manage/includes/ccli-report-results.php) may legitimately DOCUMENT the
+       writer by name in an HTML comment — token_get_all leaves that as
+       T_INLINE_HTML, so without this a doc MENTION would read as a second call
+       site and trip A2.1 (rule #34: a guard must not fail on correct code). A
+       real caller writes the call in PHP code (T_STRING), which survives both
+       strips — mutation 6 (a real api.php call) still goes red. Newlines kept
+       so any strpos-ordering assertion stays line-stable. */
+    return preg_replace_callback(
+        '/<!--.*?-->/s',
+        static fn(array $m): string => (string)preg_replace('/[^\n]/', ' ', $m[0]),
+        $out
+    );
 }
 
 /** Extract a top-level function body (BALANCED braces, so nested if/foreach

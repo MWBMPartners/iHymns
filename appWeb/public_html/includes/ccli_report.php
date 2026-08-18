@@ -170,7 +170,7 @@ function ccliReportWindow(array $get): array
  * @param  bool       $showAll      Include songs with no CCLI number.
  * @param  int|null   $orgFilter    Narrow printed copies to one org (validated positive int by the caller).
  * @param  bool       $unattributed Narrow printed copies to `OrgId IS NULL` rows.
- * @return array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int}>
+ * @return array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int,projected_uses:int}>
  * @throws \InvalidArgumentException if both $orgFilter and $unattributed are given — a programmer error, never user input (the caller parses `?org=` into exactly one of the two, or neither).
  */
 function ccliReportSystemRows(
@@ -195,7 +195,7 @@ function ccliReportSystemRows(
     $hasUsageEvents = _printUsageTableExists($db);
 
     $printedJoin   = '';
-    $printedSelect = '0 AS printed_copies';
+    $printedSelect = '0 AS printed_copies, 0 AS projected_uses';
     $orgClause     = ''; /* also a hardcoded literal, never user input (see above) */
     if ($hasUsageEvents) {
         if ($orgFilter !== null) {
@@ -203,16 +203,24 @@ function ccliReportSystemRows(
         } elseif ($unattributed) {
             $orgClause = 'AND OrgId IS NULL';
         }
+        /* #1897 — widened from printed-only to ALSO carry PROJECTED
+           (Service-Mode) uses, in ONE scan of the same window via conditional
+           SUMs. printed_copies keeps byte-identical semantics (the CASE folds
+           to the old SUM(Quantity) for the 'printed' rows, since the WHERE
+           already restricted to 'printed'); projected_uses is the new column
+           projectionUsageLog() populates. */
         $printedJoin = "LEFT JOIN (
-               SELECT SongId, SUM(Quantity) AS printed_copies
+               SELECT SongId,
+                      SUM(CASE WHEN UsageContext = 'printed'   THEN Quantity ELSE 0 END) AS printed_copies,
+                      SUM(CASE WHEN UsageContext = 'projected' THEN Quantity ELSE 0 END) AS projected_uses
                  FROM tblSongUsageEvents
-                WHERE UsageContext = 'printed'
+                WHERE UsageContext IN ('printed','projected')
                   AND UsedAt >= ?
                   AND UsedAt <  DATE_ADD(?, INTERVAL 1 DAY)
                   $orgClause
                 GROUP BY SongId
            ) p ON p.SongId = s.SongId";
-        $printedSelect = 'COALESCE(p.printed_copies, 0) AS printed_copies';
+        $printedSelect = 'COALESCE(p.printed_copies, 0) AS printed_copies, COALESCE(p.projected_uses, 0) AS projected_uses';
     }
 
     /* @deleted-visible: COMPLIANCE reporting (#1694) — a song's past usage was
@@ -293,7 +301,7 @@ function ccliReportSystemRows(
  * @param  string  $from    Y-m-d, inclusive.
  * @param  string  $to      Y-m-d, inclusive.
  * @param  bool    $showAll Include songs with no CCLI number.
- * @return array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int}>
+ * @return array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int,projected_uses:int}>
  *         Same row shape as ccliReportSystemRows() so rendering + CSV are
  *         shared; `view_count` is always 0 (see this file's doc-block, O3).
  */
@@ -323,14 +331,23 @@ function ccliReportOrgRows(\mysqli $db, array $orgIds, string $from, string $to,
        query is the same CCLI-compliance substrate, just membership-scoped, so
        it must NOT filter on songServableSql()/songbookVisibleSql(). Both
        markers kept separate so BOTH visibility guards see their own token. */
+    /* #1897 — widened from printed-only to ALSO carry PROJECTED (Service-Mode)
+       uses via conditional SUMs, in the SAME membership-scoped scan. Two
+       consequences, both intended: printed_copies keeps its exact old value
+       (the CASE folds to SUM(u.Quantity) over the 'printed' rows), and a song
+       an org ONLY projected (never printed) now appears with printed_copies=0
+       and projected_uses>0 — which is precisely the usage the org report exists
+       to surface. ORDER stays printed_copies DESC (cosmetic; a purely-projected
+       song sorts to the tail — acceptable). */
     $stmt = $db->prepare(
         "SELECT s.SongId AS song_id, s.Title AS title, s.SongbookAbbr AS songbook,
                 s.Number AS number, s.Ccli AS ccli, s.Copyright AS copyright,
                 0 AS view_count,
-                COALESCE(SUM(u.Quantity), 0) AS printed_copies
+                COALESCE(SUM(CASE WHEN u.UsageContext = 'printed'   THEN u.Quantity ELSE 0 END), 0) AS printed_copies,
+                COALESCE(SUM(CASE WHEN u.UsageContext = 'projected' THEN u.Quantity ELSE 0 END), 0) AS projected_uses
            FROM tblSongUsageEvents u
            JOIN tblSongs s ON s.SongId = u.SongId
-          WHERE u.UsageContext = 'printed'
+          WHERE u.UsageContext IN ('printed','projected')
             AND u.OrgId IN ($placeholders)
             AND u.UsedAt >= ? AND u.UsedAt < DATE_ADD(?, INTERVAL 1 DAY)
             $ccliFilter
@@ -393,16 +410,18 @@ function ccliReportResolveOrgScope(?string $requestedOrg, array $allowedOrgIds):
 /**
  * Stream `$rows` as a CCLI-portal-compatible CSV and set the download
  * headers. Moved verbatim from the pre-#1861 manage/ccli-report.php — the
- * 8-column order is load-bearing (an existing upload template maps the
+ * column order is load-bearing (an existing upload template maps the
  * first 7 columns positionally; Printed copies was appended last in #1767
- * remainder P5). The org report keeps the SAME 8 columns (Views = literal
+ * remainder P5). The org report keeps the SAME columns (Views = literal
  * 0) rather than drop a column — see this file's doc-block (O3) for why.
+ * #1897 appends a 9th column (Projected uses) at the END, so the first 8
+ * positions stay byte-stable for anything mapping them positionally.
  *
  * Caller is responsible for `exit`ing immediately afterwards — this
  * function only emits, it never terminates the request itself (keeps it a
  * plain, testable function rather than a hidden control-flow surprise).
  *
- * @param  array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int}> $rows
+ * @param  array<int, array{song_id:string,title:string,songbook:string,number:?int,ccli:string,copyright:string,view_count:int,printed_copies:int,projected_uses:int}> $rows
  * @param  string $filename Suggested download filename (caller builds it —
  *                           system vs. org reports use different patterns).
  */
@@ -413,7 +432,7 @@ function ccliReportEmitCsv(array $rows, string $filename): void
     header('Cache-Control: no-store');
 
     $out = fopen('php://output', 'wb');
-    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views', 'Printed copies']);
+    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views', 'Printed copies', 'Projected uses']);
     foreach ($rows as $r) {
         ihymns_fputcsv($out, [
             $r['song_id'],
@@ -424,6 +443,7 @@ function ccliReportEmitCsv(array $rows, string $filename): void
             $r['copyright'],
             $r['view_count'],
             $r['printed_copies'],
+            $r['projected_uses'] ?? 0,
         ]);
     }
     fclose($out);

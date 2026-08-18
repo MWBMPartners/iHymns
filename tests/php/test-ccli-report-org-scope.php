@@ -59,10 +59,15 @@ declare(strict_types=1);
  * (member on A — must NOT qualify), uN (no rows); one song with a CCLI
  * number; `tblSongUsageEvents` rows: 3 printed copies for OrgId=A, 5 for
  * OrgId=B, 2 with OrgId=NULL, all `UsedAt` inside the window, plus one A-row
- * OUTSIDE the window:
+ * OUTSIDE the window, plus (#1897) 7 PROJECTED uses for OrgId=B in-window:
  *   B1. THE isolation property — `ccliReportOrgRows($db, userIsOrgAdminOf(uA),
  *       …)` returns printed_copies EXACTLY 3 (B's 5 absent, the NULL-org 2
  *       absent, the out-of-window row absent). Symmetrically uB → exactly 5.
+ *       B1.3/B1.4 (#1897): the SAME isolation holds for projected_uses — org A
+ *       shows 0 (org B's 7 never leaks), org B shows exactly its own 7.
+ *       B4.4-B4.6: the system query carries projected_uses too, while the
+ *       printed_copies assertions above stay byte-identical (proving the
+ *       conditional-SUM widening left 'printed' semantics untouched).
  *   B2. `userIsOrgAdminOf(uM) === []` (a member is not an admin) and `=== []`
  *       for uN; `ccliReportOrgRows($db, [], …) === []` (the structural
  *       refusal — no query issued on an empty scope).
@@ -384,6 +389,18 @@ if ($dbName !== null && $sock === null) {
                 $stmt->execute();
                 $stmt->close();
             };
+            /* #1897 — a PROJECTED (Service-Mode) usage row. Same table, same
+               window semantics; UsageContext='projected' is what the widened
+               readers fold into the new projected_uses column. */
+            $mkProjected = function (string $songId, ?int $orgId, string $usedAt, int $qty) use ($db): void {
+                $stmt = $db->prepare(
+                    "INSERT INTO tblSongUsageEvents (SongId, OrgId, UsedAt, UsageContext, Quantity)
+                     VALUES (?, ?, ?, 'projected', ?)"
+                );
+                $stmt->bind_param('sisi', $songId, $orgId, $usedAt, $qty);
+                $stmt->execute();
+                $stmt->close();
+            };
             $mkOrgLicence = function (int $orgId, string $number) use ($db): void {
                 $stmt = $db->prepare(
                     "INSERT INTO tblOrganisationLicences (OrganisationId, LicenceType, LicenceNumber, IsActive)
@@ -421,12 +438,22 @@ if ($dbName !== null && $sock === null) {
             $mkUsage($songId, $orgB, $inWin, 5);   // org B: 5 in window
             $mkUsage($songId, null, $inWin, 2);    // unattributed: 2 in window
             $mkUsage($songId, $orgA, $outWin, 99); // org A: OUTSIDE window — must never count
+            $mkProjected($songId, $orgB, $inWin, 7); // org B: 7 PROJECTED uses in window (#1897)
 
             /* Helper: printed_copies for our song in a result set, or null. */
             $printedFor = function (array $rows, string $songId): ?int {
                 foreach ($rows as $r) {
                     if ((string)($r['song_id'] ?? '') === $songId) {
                         return (int)$r['printed_copies'];
+                    }
+                }
+                return null;
+            };
+            /* #1897 — projected_uses for our song in a result set, or null. */
+            $projectedFor = function (array $rows, string $songId): ?int {
+                foreach ($rows as $r) {
+                    if ((string)($r['song_id'] ?? '') === $songId) {
+                        return (int)($r['projected_uses'] ?? -1);
                     }
                 }
                 return null;
@@ -445,6 +472,20 @@ if ($dbName !== null && $sock === null) {
             cros(
                 count($rowsB) === 1 && $printedFor($rowsB, $songId) === 5,
                 'B1.2 symmetrically, org B\'s admin sees EXACTLY its own 5 (got printed=' . var_export($printedFor($rowsB, $songId), true) . ')'
+            );
+
+            /* B1.3/B1.4 (#1897) — projected uses are org-isolated exactly like
+               printed copies. Org B PROJECTED 7; org A projected nothing. A's
+               report must show projected_uses=0 for the shared song (never B's
+               7); B's must show 7. Same isolation property, new UsageContext. */
+            cros(
+                $projectedFor($rowsA, $songId) === 0,
+                'B1.3 org A projected_uses=0 for the shared song — org B\'s 7 projected uses do NOT leak into A (got '
+                    . var_export($projectedFor($rowsA, $songId), true) . ')'
+            );
+            cros(
+                $projectedFor($rowsB, $songId) === 7,
+                'B1.4 org B\'s admin sees its OWN 7 projected uses (got ' . var_export($projectedFor($rowsB, $songId), true) . ')'
             );
 
             /* ---- B2: non-admins do not qualify; empty scope refuses -------- */
@@ -474,6 +515,18 @@ if ($dbName !== null && $sock === null) {
             $sysAll = ccliReportSystemRows($db, $from, $to, false, null, false);
             cros($printedFor($sysAll, $songId) === 10,
                 'B4.3 ccliReportSystemRows(unfiltered) printed=10 (3+5+2, out-of-window row still excluded)');
+
+            /* B4.4-B4.6 (#1897) — the system query carries projected_uses too,
+               and printed_copies stays byte-identical above (proves the CASE
+               widening didn't disturb the printed semantics). Only org B
+               projected (7), so A=0, B=7, unfiltered=7. */
+            cros($projectedFor($sysA, $songId) === 0,
+                'B4.4 ccliReportSystemRows(orgFilter=A) projected=0 (org A never projected)');
+            $sysB = ccliReportSystemRows($db, $from, $to, false, $orgB, false);
+            cros($projectedFor($sysB, $songId) === 7,
+                'B4.5 ccliReportSystemRows(orgFilter=B) projected=7 (org B\'s Service-Mode projections)');
+            cros($projectedFor($sysAll, $songId) === 7,
+                'B4.6 ccliReportSystemRows(unfiltered) projected=7 (only org B projected)');
 
             /* ---- B5: W1 — org licence wins over the personal one ----------- */
             $lic = printUsageResolveCcliLicence($uA);

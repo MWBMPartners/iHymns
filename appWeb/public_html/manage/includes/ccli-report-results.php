@@ -46,12 +46,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 /* Totals are derived HERE from $rows (never passed in separately) so there
    is exactly one place that can miscount — CLAUDE.md rule #44 ("derive, don't
    duplicate a value the caller could get wrong twice"). */
-$totalSongs   = count($rows);
-$totalViews   = 0;
-$totalPrinted = 0;
+$totalSongs     = count($rows);
+$totalViews     = 0;
+$totalPrinted   = 0;
+$totalProjected = 0; // #1897 — Service-Mode projected uses (projectionUsageLog())
 foreach ($rows as $r) {
-    $totalViews   += (int)($r['view_count'] ?? 0);
-    $totalPrinted += (int)($r['printed_copies'] ?? 0);
+    $totalViews     += (int)($r['view_count'] ?? 0);
+    $totalPrinted   += (int)($r['printed_copies'] ?? 0);
+    $totalProjected += (int)($r['projected_uses'] ?? 0);
 }
 ?>
 <!-- ============================================================
@@ -89,6 +91,23 @@ foreach ($rows as $r) {
             <div class="h4 mb-0"><?= number_format($totalPrinted) ?></div>
         </div>
     </div>
+    <?php /* #1897 — projected (Service-Mode) uses, populated by
+             projectionUsageLog() inside serviceMode_applyBroadcast(). Shown on
+             BOTH reports (a projection is org-attributed via the session's
+             OrgId, so — unlike Views, decision O3 — the org report can carry
+             it). Same un-migrated tooltip as Printed copies. */ ?>
+    <div class="col-sm-6 col-md-3">
+        <div class="card-admin">
+            <div class="text-muted text-uppercase small">
+                Projected uses
+                <?php if (!$hasUsageEvents): ?>
+                    <i class="bi bi-info-circle ms-1" title="Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install" aria-hidden="true"></i>
+                    <span class="visually-hidden">Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install</span>
+                <?php endif; ?>
+            </div>
+            <div class="h4 mb-0"><?= number_format($totalProjected) ?></div>
+        </div>
+    </div>
     <div class="col-sm-6 col-md-3">
         <div class="card-admin">
             <div class="text-muted text-uppercase small">Window</div>
@@ -120,6 +139,9 @@ foreach ($rows as $r) {
                     <!-- #1767 remainder P5 — printed copies, logged via the "How many
                          copies?" prompt (js/modules/print.js) under a CCLI licence. -->
                     <th scope="col" class="text-end" data-sort-key="printed" data-sort-type="number">Printed copies</th>
+                    <!-- #1897 — projected uses, logged per (service session, song) by
+                         projectionUsageLog() inside the Service-Mode broadcast core. -->
+                    <th scope="col" class="text-end" data-sort-key="projected" data-sort-type="number">Projected</th>
                     <th scope="col" data-sort-key="copyright" data-sort-type="text">Copyright</th>
                 </tr>
             </thead>
@@ -146,6 +168,9 @@ foreach ($rows as $r) {
                         <?php endif; ?>
                         <td class="text-end fw-semibold">
                             <?= number_format((int)$r['printed_copies']) ?>
+                        </td>
+                        <td class="text-end fw-semibold">
+                            <?= number_format((int)($r['projected_uses'] ?? 0)) ?>
                         </td>
                         <td class="small text-muted">
                             <?= htmlspecialchars($r['copyright']) ?>
