@@ -29,7 +29,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 $_sidebarActive = $activePage ?? '';
 $_sidebarRole   = $currentUser['role'] ?? null;
-$_sidebarLinks  = visibleAdminLinks($_sidebarRole);
+/* userId drives the optional 'org_admin' sentinel (#1667) — same as admin-nav.php,
+   so the sidebar and the offcanvas surface the same links for an org admin. */
+$_sidebarUserId = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
+$_sidebarLinks  = visibleAdminLinks($_sidebarRole, $_sidebarUserId);
 
 /* Collect into { groupHeading => [link, …] } while preserving the
    registry's declaration order so groups surface in a stable sequence

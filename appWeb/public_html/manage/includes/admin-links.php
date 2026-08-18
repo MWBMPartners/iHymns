@@ -22,6 +22,15 @@ declare(strict_types=1);
  *   5 group        sidebar section heading; '' = top-level (shown
  *                  above the first group). Groups are rendered in the
  *                  order they first appear in the array.
+ *   6 orVisibleIf  OPTIONAL data-driven "…OR" sentinel (#1667). Some
+ *                  pages admit a user the flat entitlement column can't
+ *                  name — an org admin, whose status is per-organisation
+ *                  DATA, not a role. `'org_admin'` means "also visible
+ *                  when userIsOrgAdminOf() is non-empty", evaluated by
+ *                  visibleAdminLinks($role, $userId). Absent on every row
+ *                  that gates on its entitlement alone. The nav-gate
+ *                  parity guard verifies each sentinel page really does
+ *                  check userIsOrgAdminOf (rule #1587 / #1667).
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
@@ -94,13 +103,15 @@ $_adminLinks = [
        Service Mode (#1323). Same entitlement as Organisations. */
     ['venues',               '/manage/venues',               'bi-geo-alt',           'Venues',                   'manage_organisations',        'Live Services'       ],
     /* Projector Screen (#1335) — the projector page that runs a live service +
-       shows the rotating join code. Page self-gates to org-admins; nav visible to
-       manage_organisations like Venues. */
-    ['service-projection',   '/manage/service-projection',   'bi-projector',         'Projector Screen',         'manage_organisations',        'Live Services'       ],
+       shows the rotating join code. Page self-gates to manage_organisations OR
+       an org admin (userIsOrgAdminOf), so the row carries the 'org_admin' sentinel
+       (#1667) — otherwise an org admin who runs services could never find it. */
+    ['service-projection',   '/manage/service-projection',   'bi-projector',         'Projector Screen',         'manage_organisations',        'Live Services',        'org_admin'],
     /* Lead a Service (#1335) — the second broadcaster front-end: a handheld the
        worship leader uses to drive the songs of a running service (the projector
-       shows the code; this drives the songs). Same self-gate + entitlement. */
-    ['service-lead',         '/manage/service-lead',         'bi-music-note-list',   'Lead a Service',           'manage_organisations',        'Live Services'       ],
+       shows the code; this drives the songs). Same self-gate + 'org_admin'
+       sentinel as the projector page (#1667). */
+    ['service-lead',         '/manage/service-lead',         'bi-music-note-list',   'Lead a Service',           'manage_organisations',        'Live Services',        'org_admin'],
 
     /* People — user accounts and organisations */
     ['users',                '/manage/users',                'bi-people',            'Users',                    'view_users',                  'People'              ],
@@ -168,14 +179,40 @@ $_adminLinks = [
  * already required by admin pages via the auth bootstrap; the caller
  * doesn't need to pull it in separately.
  *
- * @param string|null $role The user's role (e.g. 'global_admin').
- * @return array            Links the role is entitled to see.
+ * @param string|null $role   The user's role (e.g. 'global_admin').
+ * @param int|null    $userId  The user's id, for the optional data-driven
+ *                             `orVisibleIf` sentinel (#1667). Omit (null) to
+ *                             evaluate the entitlement column alone — a caller
+ *                             that can't resolve a user id degrades to the
+ *                             role-only view, never an error.
+ * @return array               Links the user is entitled to see.
  */
-function visibleAdminLinks(?string $role): array
+function visibleAdminLinks(?string $role, ?int $userId = null): array
 {
     global $_adminLinks;
     return array_values(array_filter(
         $_adminLinks,
-        static fn(array $l): bool => $l[4] === null || userHasEntitlement($l[4], $role)
+        static function (array $l) use ($role, $userId): bool {
+            /* Primary gate: the entitlement column (null = every admin user). */
+            if ($l[4] === null || userHasEntitlement($l[4], $role)) {
+                return true;
+            }
+            /* Optional data-driven "…OR" (#1667). Index 6 is a sentinel naming a
+               membership check the flat entitlement column can't express. The
+               ONLY sentinel today is 'org_admin' — the page admits an org admin
+               (userIsOrgAdminOf non-empty) as well as its entitlement holder, so
+               the row must be visible to them too or the feature is undiscoverable
+               to exactly the people it was built for. userIsOrgAdminOf() is the
+               SAME lookup those pages gate on (rule #22); function_exists-guarded
+               so a nav render before entitlements.php loads degrades to the
+               entitlement-only view rather than throwing. */
+            if (($l[6] ?? null) === 'org_admin'
+                && $userId !== null
+                && function_exists('userIsOrgAdminOf')
+                && !empty(userIsOrgAdminOf($userId))) {
+                return true;
+            }
+            return false;
+        }
     ));
 }

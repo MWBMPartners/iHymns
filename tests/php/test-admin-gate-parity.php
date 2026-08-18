@@ -116,6 +116,35 @@ foreach ($m as $row) {
     }
 }
 
+/* #1667 — the optional index-6 'org_admin' sentinel says a page ALSO admits an
+   org admin (userIsOrgAdminOf non-empty), beyond its flat entitlement column, so
+   visibleAdminLinks() shows the row to them. Verify each such page really gates
+   on userIsOrgAdminOf() — a sentinel pointing at a page that doesn't would
+   advertise access the page then 403s (the #1587 confusing-but-harmless
+   direction). Derived from the tree — the same registry, a wider row match — so a
+   NEW sentinel row is covered automatically (rule #34), never a typed list. */
+$sentinelRe = "~\[\s*'([a-z0-9\-]+)'\s*(?:,\s*'[^']*'\s*){5},\s*'org_admin'\s*\]~i";
+$sentinelChecked = 0;
+if (preg_match_all($sentinelRe, $src, $sm, PREG_SET_ORDER)) {
+    foreach ($sm as $srow) {
+        $slug = $srow[1];
+        $page = $manage . '/' . $slug . '.php';
+        if (!is_file($page)) {
+            $skipped[] = "{$slug} (org_admin sentinel, no {$slug}.php)";
+            continue;
+        }
+        $pageSrc = preg_replace('~/\*.*?\*/~s', '', (string) file_get_contents($page)) ?? '';
+        $sentinelChecked++;
+        if (!str_contains($pageSrc, 'userIsOrgAdminOf')) {
+            $failures[] = sprintf(
+                "%s.php — nav row carries the 'org_admin' sentinel (also visible to org admins) "
+                . "but the page never calls userIsOrgAdminOf(). The menu would advertise access the page 403s.",
+                $slug
+            );
+        }
+    }
+}
+
 if ($checked === 0) {
     fwrite(STDERR, "FAIL: 0 pages checked — every nav row resolved to a missing file, so this\n");
     fwrite(STDERR, "      guard is vacuous. That is itself the finding.\n");
@@ -132,8 +161,10 @@ if ($failures) {
 }
 
 printf(
-    "PASS: %d admin page(s) gate on the entitlement their nav entry advertises.%s\n",
+    "PASS: %d admin page(s) gate on the entitlement their nav entry advertises; "
+    . "%d 'org_admin' sentinel page(s) check userIsOrgAdminOf().%s\n",
     $checked,
+    $sentinelChecked,
     $skipped ? ' Skipped: ' . implode(', ', $skipped) . '.' : ''
 );
 exit(0);

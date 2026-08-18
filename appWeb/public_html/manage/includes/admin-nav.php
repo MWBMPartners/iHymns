@@ -54,7 +54,10 @@ $_roleBadge   = match($_role) {
    source and stay in lock-step. `visibleAdminLinks()` applies the
    per-link entitlement gate for the current role. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-links.php';
-$_visibleAdminLinks = visibleAdminLinks($_role);
+/* userId drives the optional per-row 'org_admin' sentinel (#1667) so an org
+   admin sees the Service Mode broadcaster links even without manage_organisations. */
+$_adminNavUserId    = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
+$_visibleAdminLinks = visibleAdminLinks($_role, $_adminNavUserId);
 
 /* Data-driven hide for `my-organisations` + `my-ccli-report` (#707 / #1861).
    Both entitlements (`manage_own_organisation`, `view_org_ccli_report`) are
