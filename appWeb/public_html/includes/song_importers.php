@@ -373,6 +373,56 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
 }
 
 /**
+ * Extract the licensing / identifier / public-domain fields from a parsed song
+ * dict, with the pre-#1673 hardcoded defaults as fallbacks (#1673 / #1896).
+ *
+ * ELI5: the parsers already read a song's copyright, CCLI number, ISWC and
+ * public-domain flags — but the shared saver used to throw them all away and
+ * write blanks. This reads them back out so an imported catalogue keeps its
+ * rights metadata.
+ *
+ * THE BUG (#1673 / #1896): `_bulkImport_saveSong()` — the ONE saver every
+ * importer (TXT / OpenSong / VideoPsalm / ChordPro / FreeShow / OpenLyrics /
+ * CSV / iHymns-JSON) funnels through — hardcoded `$copyright=''`, `$ccli=''`,
+ * `$iswc=null`, `$verified=0`, `$lyricsPD=0`, `$musicPD=0`, discarding the
+ * values the parsers had already collected into the dict. Two layers each doing
+ * their job, the data falling through the gap between them. It matters because
+ * Copyright + CCLI are the LICENSING metadata: the CCLI usage report (#317)
+ * joins on `tblSongs.Ccli` and so undercounts imported songs; content gating
+ * (#1590) reads the PD flags; and post-#1860 the bulk path's Work auto-link is a
+ * near-permanent no-op with no CCLI/ISWC to link on (#1896).
+ *
+ * Extracted as a PURE helper (not inlined) so the field mapping is behaviourally
+ * testable without a database — the saver itself does multi-statement DB work.
+ * Every read keeps its fallback so a parser that omits a key (OpenLyrics builds
+ * its own dict, not the template above) still saves, never throws on a missing
+ * key (the #1673 ⚠️). CREDITS (writers/composers) are deliberately OUT of scope
+ * here — they resolve into the separate musicians/credits tables (#832 territory)
+ * with their own rules, and #1673 says split them once the columns are done.
+ *
+ * @param array $song A parsed song dict (any importer's output shape).
+ * @return array{copyright:string, ccli:string, iswc:?string, verified:int,
+ *               lyricsPublicDomain:int, musicPublicDomain:int}
+ * @see https://www.php.net/manual/en/language.types.array.php
+ */
+function _bulkImportRightsFromSong(array $song): array
+{
+    $iswcRaw = trim((string)($song['iswc'] ?? ''));
+    return [
+        'copyright'          => trim((string)($song['copyright'] ?? '')),
+        'ccli'               => trim((string)($song['ccli'] ?? '')),
+        /* '' means "no ISWC": the column is nullable and the #1860 identifier /
+           auto-link read path expects NULL, not an empty string. */
+        'iswc'               => ($iswcRaw !== '') ? $iswcRaw : null,
+        /* Truthy source value → 1, anything else (absent / '' / 0 / false) → 0,
+           so a parser that never sets the flag keeps the safe default. */
+        'verified'           => !empty($song['verified']) ? 1 : 0,
+        'lyricsPublicDomain' => !empty($song['lyricsPublicDomain']) ? 1 : 0,
+        'musicPublicDomain'  => !empty($song['musicPublicDomain']) ? 1 : 0,
+    ];
+}
+
+/**
  * Persist one parsed song — INSERT-ONLY. If a row with the same
  * SongId already exists, the existing row is left untouched and the
  * call returns 'skipped'. This is the explicit user requirement for
@@ -406,13 +456,18 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
        on one bad row. */
     $validLang    = _ietfBcp47Validate((string)$song['language']);
     $language     = $validLang ?? 'en';
-    $copyright    = '';
+    /* #1673 / #1896 — read the licensing / identifier / public-domain fields the
+       parsers already collected, instead of the blanks this used to hardcode. */
+    $rights       = _bulkImportRightsFromSong($song);
+    $copyright    = $rights['copyright'];
     $tuneName     = null;
-    $ccli         = '';
-    $iswc         = null;
-    $verified     = 0;
-    $lyricsPD     = 0;
-    $musicPD      = 0;
+    $ccli         = $rights['ccli'];
+    $iswc         = $rights['iswc'];
+    $verified     = $rights['verified'];
+    $lyricsPD     = $rights['lyricsPublicDomain'];
+    $musicPD      = $rights['musicPublicDomain'];
+    /* HasAudio / HasSheetMusic stay 0 at import — they are DERIVED from attached
+       tblSongMedia rows (rule #44), never a hand-set flag on the song row. */
     $hasAudio     = 0;
     $hasSheet     = 0;
 
