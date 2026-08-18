@@ -111,6 +111,12 @@ require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRE
    before any handler runs, not merely before this file's own text position. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the legacy media-upload case below */
+/* #1862 — songMediaRecomputeFlags() (HasAudio/HasSheetMusic derivation) for
+   the legacy song_media_upload/song_media_delete hooks below; pdRecomputeForSong()
+   for the legacy revision-restore hook. Same pair api2.php requires (rule #22 —
+   never a second copy of either fold). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_flags.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -1378,6 +1384,18 @@ switch ($action) {
             $rev->close();
 
             $db->commit();
+
+            /* #1862 — the restore above keeps writing the SNAPSHOT's own
+               HasAudio/HasSheetMusic scalars (a restore should reproduce the
+               snapshot) — then live media truth immediately re-wins via a
+               post-commit recompute, same "restore keeps the snapshot, then
+               truth wins" contract v2's revision_restore uses. Also
+               recomputes the PD-suggestion denorm, since a restore can
+               reintroduce/remove credits. Both own their failure boundary,
+               neither ever throws. */
+            songMediaRecomputeFlags($db, $songId);
+            pdRecomputeForSong($db, $songId);
+
             echo json_encode([
                 'ok'            => true,
                 'songId'        => $songId,
@@ -3177,6 +3195,13 @@ switch ($action) {
                 throw $insertErr;
             }
 
+            /* #1862 — a new media row can flip HasAudio/HasSheetMusic; recompute
+               the derived UNION (own failure boundary, never throws — see
+               song_media_flags.php's header). Tree-derived wiring guard:
+               tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongMedia` and asserts this hook is referenced. */
+            songMediaRecomputeFlags($db, $songId);
+
             if (function_exists('logActivity')) {
                 logActivity(
                     'song-media.upload',
@@ -3337,6 +3362,12 @@ switch ($action) {
             $stmt->bind_param('i', $mediaId);
             $stmt->execute();
             $stmt->close();
+
+            /* #1862 — a removed media row can flip HasAudio/HasSheetMusic;
+               recompute the derived UNION (own failure boundary, never throws).
+               Tree-derived wiring guard: tests/php/test-editor2-metadata-1862.php
+               scans every `DELETE FROM tblSongMedia` and asserts this reference. */
+            songMediaRecomputeFlags($db, (string)$row['SongId']);
 
             if (function_exists('logActivity')) {
                 logActivity(

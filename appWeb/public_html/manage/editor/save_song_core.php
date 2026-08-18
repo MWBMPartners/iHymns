@@ -57,6 +57,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -256,8 +257,17 @@ function editorSaveSongCore(): array
         $verified     = (int)($song['verified']           ?? 0);
         $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? 0);
         $musicPD      = (int)($song['musicPublicDomain']  ?? 0);
-        $hasAudio     = (int)($song['hasAudio']           ?? 0);
-        $hasSheet     = (int)($song['hasSheetMusic']      ?? 0);
+        /* #1862 — HasAudio/HasSheetMusic are DERIVED, never curator-set (the
+           manual checkboxes were removed from the editor entirely — rule #44).
+           Coerced to 0 here regardless of whatever a stale cached client still
+           sends: a brand-new song (the only case this INSERT value is ever
+           actually used for — see the ON DUPLICATE KEY UPDATE tail below,
+           which no longer touches either column on an UPDATE) has no media or
+           static files yet, so 0 is always correct at creation time; live
+           truth is established by songMediaRecomputeFlags() the moment media
+           is actually attached. */
+        $hasAudio     = 0;
+        $hasSheet     = 0;
 
         /* Build lyrics_text for FULLTEXT index */
         $lyricsLines = [];
@@ -578,6 +588,16 @@ function editorSaveSongCore(): array
                #1679 — the test is $mintedNewId, NOT `$assignedId !== null`: a songbook
                move ALSO sets $assignedId (it shares the client-relabel contract) but
                its row already exists, so it needs the UPDATE tail, not a plain INSERT. */
+            /* #1862 — HasAudio/HasSheetMusic are DELIBERATELY ABSENT from this
+               UPDATE tail (they used to be here). The two flags are now
+               DERIVED-only (songMediaRecomputeFlags(), rule #44); an UPDATE
+               that overwrote them with $hasAudio/$hasSheet (unconditionally
+               coerced to 0 above, since the client can no longer edit them)
+               would CLOBBER live media truth on every ordinary re-save of an
+               existing song — the exact regression this omission prevents.
+               The INSERT column list a few lines down still binds
+               $hasAudio/$hasSheet — needed only for the brand-new-song path
+               (see that variable's own comment above). */
             $upsertDuplicateClause = $mintedNewId
                 ? ''
                 : ' ON DUPLICATE KEY UPDATE
@@ -589,7 +609,6 @@ function editorSaveSongCore(): array
                         Verified = VALUES(Verified),
                         LyricsPublicDomain = VALUES(LyricsPublicDomain),
                         MusicPublicDomain = VALUES(MusicPublicDomain),
-                        HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
                         LyricsText = VALUES(LyricsText)';
 
             /* UPSERT tblSongs — now carries TuneName + Iswc (#497) and
@@ -1509,6 +1528,14 @@ function editorSaveSongCore(): array
                un-migrated (no-mirror) branch has no mirror to sync. */
 
             $db->commit();
+
+            /* #1862 — the credits loop above just replaced the whole
+               contributor set (and the identity block above may have changed
+               FirstPublishedYear too); recompute the PD-suggestion denorm
+               post-commit, own failure boundary (pdRecomputeForSong() never
+               throws — see pd_suggest.php's header) so a denorm hiccup can
+               never cost the curator this save. */
+            pdRecomputeForSong($db, $songId);
 
             /* WS-J #1020: no songs.json cache to refresh — all reads are now
                live MySQL (editor sidebar via load_index, songbook export via

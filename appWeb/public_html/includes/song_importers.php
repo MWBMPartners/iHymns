@@ -690,6 +690,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
 
         $db->commit();
 
+        /* #1862 — the credit inserts above just established this song's
+           contributor set; recompute the PD-suggestion denorm post-commit,
+           own failure boundary (pdRecomputeForSong() never throws — see
+           pd_suggest.php's header). Tree-derived wiring guard:
+           tests/php/test-editor2-metadata-1862.php scans every
+           `INSERT INTO tblSongWriters` (etc.) and asserts this reference. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+        pdRecomputeForSong($db, $songId);
+
         if (function_exists('logActivity')) {
             logActivity(
                 $action === 'create' ? 'song.create' : 'song.edit',

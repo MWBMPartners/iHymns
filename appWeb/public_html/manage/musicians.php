@@ -48,6 +48,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    admin_musician_* API endpoints in /api.php so a tweak to the
    link-type set or the row-shape rules lands on both surfaces. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1862 (epic #1863) — pdRecomputeForMusicianName(): a DeathDate change here
+   (create/update/rename) can change the public-domain suggestion for every
+   song this person is credited on. Required explicitly (rule #22 — never
+   rely on an implicit transitive load, even though musician_helpers.php
+   also pulls this in). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
 /* #1785 §7/§8 — the registry-duplicate scan helper (the cheap Bucket-A-
    only CTA-badge count below) + the shared disambiguation payload
    builder the merge-target typeahead/Merge-modal preview consume
@@ -1024,6 +1030,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     }
                     $db->commit();
 
+                    /* #1862 — a brand-new registry row can already have a
+                       DeathDate AND already be referenced by existing song
+                       credits (a curator registering a row for a name
+                       already credited on songs) — recompute the
+                       PD-suggestion denorm for every song this name touches,
+                       post-commit, own failure boundary. */
+                    pdRecomputeForMusicianName($db, $name);
+
                     $logMusician('add', (string)$newId, [
                         'name'        => $name,
                         'type'        => $musicianType, // #1741 P4a
@@ -1319,6 +1333,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                             $changed[] = $k;
                         }
                     }
+
+                    /* #1862 — only when DeathDate actually changed (the one
+                       field the PD-suggestion fold reads); recompute every
+                       song this name touches, post-commit, own failure
+                       boundary. Cheap either way, but the guard keeps a
+                       routine notes-only edit from paying for a scan. */
+                    if (in_array('DeathDate', $changed, true)) {
+                        pdRecomputeForMusicianName($db, $name);
+                    }
+
                     $logMusician('update_person', (string)$id, [
                         'name'       => $name,
                         'type'       => $musicianType, // #1741 P4a
@@ -1427,6 +1451,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     $stmt->close();
 
                     $db->commit();
+
+                    /* #1862 — every song-credit row was just re-pointed to
+                       $newName; recompute the PD-suggestion denorm for every
+                       song that name touches (the death date itself didn't
+                       change, but the OLD name's songs now resolve under a
+                       different — identical — registry row, so this is a
+                       cheap no-op unless something else was ALSO mid-flight;
+                       correctness over skipping a rare edge). Post-commit,
+                       own failure boundary. */
+                    pdRecomputeForMusicianName($db, $newName);
 
                     $logMusician('rename', (string)$id, [
                         'before'   => ['name' => $oldName],

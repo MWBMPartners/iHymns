@@ -316,6 +316,21 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    tune_search AND ed2_applySongSnapshot()'s revision-restore all reach the one
    tune write core (ed2_songTuneApply()) from different points in this file. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1862 (epic #1863) — publisherSearchRows() / publisherResolvePickedOrCreate()
+   / publisherFindOrCreateByName() (#1864 cores, rule #22 — never re-forked):
+   the Copyright Holder picker's write core (ed2_songCopyrightHolderApply())
+   and its typeahead (publisher_search) both delegate here, mirroring the
+   tune_helpers.php require immediately above. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+/* #1862 — songMediaRecomputeFlags() (HasAudio/HasSheetMusic derivation,
+   consumed by the media_upload/media_delete hooks + the metadata_field_update
+   alias branch below) and pdRecomputeForSong() (public-domain suggestion
+   denorm, consumed by credit_upsert/credit_delete + save_song_core.php's
+   post-commit tail). Loaded at module scope like every other shared core on
+   this page — never a lazy per-branch require for a hook every relevant
+   action needs. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_flags.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
 /* #1860 Phase 3 — workFindOrLinkByIdentifier() / workLinkPlan() / workAdminReady()
    / workSlugify() / workExists() / workSnapshot() / workFindOrCreateByTitle() /
    workLinkSongRow() / workUnlinkSongRow() — the ONE shared work-identity write
@@ -882,6 +897,86 @@ function ed2_songTuneApply(\mysqli $db, string $songId, string $rawName): array 
     }
 
     return ['tuneId' => $tuneId, 'tuneName' => $tuneName, 'slug' => $slug, 'meterCode' => $meterCode];
+}
+
+/**
+ * Memoised probe: does `tblSongs.CopyrightHolderId` exist on this install
+ * (#1864's dormant column, activated by #1862)? Same shape as
+ * `ed2_tuneIdColumnExists()` just above — a dedicated, self-contained probe
+ * rather than reaching into publisher_helpers.php for a generic one, since
+ * that file's own probes are about `tblPublishers` existing, not this
+ * specific `tblSongs` column.
+ */
+function ed2_copyrightHolderIdColPresent(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs' AND COLUMN_NAME = 'CopyrightHolderId' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * The ONE tblSongs copyright-holder write: CopyrightHolder + CopyrightHolderId
+ * in lockstep (#1862, activating the #1864 dormant column). Mirrors
+ * `ed2_songTuneApply()` immediately above — same shape, same reasoning:
+ * `case 'song_copyright_holder_set'` and the `CopyrightHolder` alias branch
+ * inside `metadata_field_update` both delegate here, so there is exactly ONE
+ * place in this editor a song's copyright holder can be written from.
+ *
+ * ELI5: a curator types (or picks) a publisher name; this finds or creates
+ * that publisher's registry row and writes BOTH the display name and the
+ * registry link onto the song in one go — the same TuneName/TuneId shape,
+ * applied to publishers.
+ *
+ * DETAILED: empty/whitespace `$rawName` clears BOTH columns — a legal "no
+ * holder set", not an error (`CopyrightHolder` is `NOT NULL DEFAULT ''`, so
+ * it's set to `''`, never left NULL). A non-empty name is capped to 255
+ * chars (`tblSongs.CopyrightHolder` is VARCHAR(255) — the same cap
+ * `publisherResolvePickedOrCreate()`/`publisherFindOrCreateByName()` apply
+ * internally, belt-and-braces). `$claimedId` is TRUSTED-BUT-VERIFIED by
+ * `publisherResolvePickedOrCreate()` (publisher_helpers.php) — never a raw
+ * client-supplied id written unverified (rule #43's find-or-create
+ * contract). When `tblSongs.CopyrightHolderId` doesn't exist yet (pre-#1864
+ * install), the write degrades to a CopyrightHolder-only UPDATE — safe ONLY
+ * because there is then no id column to strand (the works.php /
+ * ed2_songTuneApply() asymmetry, restated for publishers).
+ *
+ * @param \mysqli  $db
+ * @param string   $songId
+ * @param string   $rawName   Curator-typed or picked holder name, any whitespace.
+ * @param ?int     $claimedId The picker's claimed `tblPublishers.Id`, or null
+ *                            when nothing was picked (free-typed / cleared).
+ * @return array{holderName: string, publisherId: ?int}
+ * @link appWeb/public_html/includes/publisher_helpers.php  publisherResolvePickedOrCreate()
+ * @link appWeb/public_html/manage/works.php:294-360         the sibling Work-side lockstep this mirrors
+ */
+function ed2_songCopyrightHolderApply(\mysqli $db, string $songId, string $rawName, ?int $claimedId): array {
+    $name = trim($rawName);
+    if ($name !== '') { $name = mb_substr($name, 0, 255); }
+
+    if (ed2_copyrightHolderIdColPresent($db)) {
+        $publisherId = $name === '' ? null : publisherResolvePickedOrCreate($db, $name, $claimedId);
+        $u = $db->prepare('UPDATE tblSongs SET CopyrightHolder = ?, CopyrightHolderId = ? WHERE SongId = ?');
+        $u->bind_param('sis', $name, $publisherId, $songId);
+        $u->execute();
+        $u->close();
+    } else {
+        $publisherId = null;
+        $u = $db->prepare('UPDATE tblSongs SET CopyrightHolder = ? WHERE SongId = ?');
+        $u->bind_param('ss', $name, $songId);
+        $u->execute();
+        $u->close();
+    }
+
+    return ['holderName' => $name, 'publisherId' => $publisherId];
 }
 
 /** Shape a tblSongMedia row for the v2 client (camelCase, like the other slices).
@@ -1946,6 +2041,12 @@ try {
         $dupIdStmt->close();
         workAutolinkSafe($db, $newId, (string)($dupIdRow['Ccli'] ?? ''), (string)($dupIdRow['Iswc'] ?? ''), true);
 
+        /* #1862 — the snapshot copy above (ed2_applySongSnapshot()) carried
+           the source's full credit set onto $newId; the duplicate could
+           already qualify for a PD suggestion the instant it exists.
+           Post-commit, own failure boundary. */
+        pdRecomputeForSong($db, $newId);
+
         /* Post-commit, best-effort (parity with create_song, #1742). */
         try { songbookRecomputeSongCount($db, $pendingAbbr); }
         catch (\Throwable $_e) { error_log('[editor duplicate_song] SongCount recompute failed: ' . $_e->getMessage()); }
@@ -2136,6 +2237,54 @@ try {
             }
             logActivity('song.metadata', 'song', $songId, ['field' => $field, 'tuneId' => $tuneResult['tuneId']]);
             ed2_respond(['ok' => true, 'field' => 'tuneName', 'tuneId' => $tuneResult['tuneId']]);
+        }
+
+        /* ---- #1862 — COPYRIGHT HOLDER is not a generic scalar update either ----
+           Writing CopyrightHolder through the generic coercion + UPDATE below
+           would leave CopyrightHolderId stranded — the exact TuneId-stranding
+           drift class rule #33 names. `copyrightHolder` stays a valid
+           wire-contract KEY (a stale Service-Worker-cached metadata-tab.js may
+           still send the OLD plain field) but is now an ALIAS into the SAME
+           shared lockstep core `song_copyright_holder_set` uses
+           (`ed2_songCopyrightHolderApply()`), never the bare column write.
+           Mirrors the TuneName branch immediately above in shape — but never a
+           picker-claimed publisherId here: a stale client sending this KEY
+           never carried one, so this always resolves via the name-only
+           find-or-create funnel (ed2_songCopyrightHolderApply()'s own
+           $claimedId=null path — a genuine picker pick goes through
+           song_copyright_holder_set instead, which DOES carry the claimed id). */
+        if ($column === 'CopyrightHolder') {
+            $db->begin_transaction();
+            try {
+                $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)($raw ?? ''), null);
+                ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.metadata', 'song', $songId, ['field' => $field, 'publisherId' => $holderResult['publisherId']]);
+            ed2_respond(['ok' => true, 'field' => 'copyrightHolder', 'value' => $holderResult['holderName'], 'publisherId' => $holderResult['publisherId']]);
+        }
+
+        /* ---- #1862 — HasAudio / HasSheetMusic are DERIVED, never curator-set --
+           The manual checkboxes were removed from the Editor2 client (rule #44
+           — a value the app can already derive gets no editable control), but
+           the two keys STAY in ED2_META_FIELDS (rule #33 — a stale cached
+           client may still send one). This branch IGNORES whatever value the
+           client sent, recomputes the honest UNION
+           (songMediaRecomputeFlags(), includes/song_media_flags.php) and
+           echoes the DERIVED truth back — so a stale checkbox click "saves"
+           nothing but a snap-back to reality, never a lie the client typed. */
+        if ($column === 'HasAudio' || $column === 'HasSheetMusic') {
+            songMediaRecomputeFlags($db, $songId);
+            /* Column name comes from the ED2_META_FIELDS constant only. */
+            $derived = $db->prepare("SELECT `{$column}` FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $derived->bind_param('s', $songId);
+            $derived->execute();
+            $derivedRow = $derived->get_result()->fetch_assoc() ?: [$column => 0];
+            $derived->close();
+            ed2_respond(['ok' => true, 'field' => $field, 'value' => (int)$derivedRow[$column]]);
         }
 
         /* ---- #1769 P4 — RIGHTS FACTS are not a generic scalar update -------
@@ -2355,6 +2504,49 @@ try {
             'tuneName'  => $tuneResult['tuneName'],
             'slug'      => $tuneResult['slug'],
             'meterCode' => $tuneResult['meterCode'],
+        ]);
+        break;
+    }
+
+    /* ---- song_copyright_holder_set (POST) — the ONE copyright-holder write
+           (#1862, activating the #1864 dormant tblSongs.CopyrightHolderId).
+           Same shared core (ed2_songCopyrightHolderApply()) the
+           `CopyrightHolder` alias branch inside metadata_field_update
+           delegates to — mirrors song_tune_set immediately above in every
+           respect: `name` MAY be '' (a legal clear), `publisherId` is the
+           picker's CLAIMED id (trust-but-verify inside the write core —
+           never written unverified), and the existence gate 409s on the
+           SAME #1741 P1 identity-column presence map CopyrightHolder
+           already uses (ed2_songIdentityColsPresent(), so this endpoint
+           can't 500 under STRICT on an un-migrated install). ---- */
+    case 'song_copyright_holder_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '' || !array_key_exists('name', $body)) {
+            ed2_respond(['ok' => false, 'error' => 'songId + name (may be empty, to clear) are required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        $ed2IdentityPresence = ed2_songIdentityColsPresent($db);
+        if (!$ed2IdentityPresence['CopyrightHolder']) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the song-identity-fields migration card yet (run it at /manage/setup-database).'], 409);
+        }
+        $claimedId = isset($body['publisherId']) && $body['publisherId'] !== null && $body['publisherId'] !== ''
+            ? (int)$body['publisherId'] : null;
+
+        $db->begin_transaction();
+        try {
+            $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)$body['name'], $claimedId);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.metadata', 'song', $songId, ['field' => 'copyrightHolder', 'publisherId' => $holderResult['publisherId']]);
+        ed2_respond([
+            'ok'          => true,
+            'field'       => 'copyrightHolder',
+            'holderName'  => $holderResult['holderName'],
+            'publisherId' => $holderResult['publisherId'],
         ]);
         break;
     }
@@ -2907,6 +3099,14 @@ try {
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
 
+            /* #1862 — a credit add/edit can change the PD-suggestion contributor
+               set (or a death date via the registry read below); recompute the
+               denorm post-commit, own failure boundary (pdRecomputeForSong()
+               never throws — see pd_suggest.php's header). Tree-derived wiring
+               guard: tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongWriters` (etc.) and asserts this reference. */
+            pdRecomputeForSong($db, $songId);
+
             /* #1843 — post-commit best-effort janitor. If this save RENAMED the
                credit (the old spelling differs from the new one), the old
                partial name may have auto-minted a junk uncurated registry row
@@ -2990,6 +3190,10 @@ try {
             $d->close();
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
+
+            /* #1862 — same post-commit PD recompute as credit_upsert above —
+               removing a credit can change the contributor set too. */
+            pdRecomputeForSong($db, $songId);
 
             /* #1843 — post-commit best-effort janitor. A delete has no
                successor name, so keepRegistryId = 0: reap the removed credit's
@@ -3165,6 +3369,30 @@ try {
         }
 
         ed2_respond(['ok' => true, 'suggestions' => $rows]);
+        break;
+    }
+
+    /* ---- publisher_search (GET) — typeahead for the Copyright Holder picker
+           (#1862, rule #22). Mirrors tune_search above in posture, but does
+           NO local SQL of its own — delegates entirely to the ONE shared
+           publisher typeahead core (publisherSearchRows(), #1864), the same
+           core /manage/publishers, /manage/songbooks and /manage/works
+           already share. `[]` pre-migration — the helper itself degrades
+           gracefully when tblPublishers is absent. ---- */
+    case 'publisher_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 50) { $limit = 50; }
+
+        $rows = publisherSearchRows($db, $term, $limit);
+        ed2_respond([
+            'ok'          => true,
+            'suggestions' => array_map(
+                static fn(array $p): array => ['id' => $p['id'], 'name' => $p['name'], 'slug' => $p['slug'], 'kind' => $p['kind']],
+                $rows
+            ),
+        ]);
         break;
     }
 
@@ -4150,6 +4378,13 @@ try {
                 throw $e;
             }
 
+            /* #1862 — a new media row can flip HasAudio/HasSheetMusic; recompute
+               the derived UNION post-commit (own failure boundary, never throws —
+               see song_media_flags.php's header). Tree-derived wiring guard:
+               tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongMedia` and asserts this hook is referenced. */
+            songMediaRecomputeFlags($db, $songId);
+
             logActivity('song-media.upload', 'song', $songId, [
                 'media_id' => $newId, 'kind' => $kind, 'backend' => $staged['backend'],
                 'file_name' => $cleanName, 'mime' => $meta['mime'], 'size_bytes' => $size, 'sha256' => $staged['sha256'],
@@ -4242,6 +4477,12 @@ try {
             'StorageBackend' => (string)$mrow['StorageBackend'],
             'StoragePath'    => (string)($mrow['StoragePath'] ?? ''),
         ]);
+        /* #1862 — a removed media row can flip HasAudio/HasSheetMusic; recompute
+           the derived UNION post-commit, same posture as the media_upload hook
+           above (own failure boundary, never throws). Tree-derived wiring guard:
+           tests/php/test-editor2-metadata-1862.php scans every
+           `DELETE FROM tblSongMedia` and asserts this hook is referenced. */
+        songMediaRecomputeFlags($db, $mSongId);
         logActivity('song-media.delete', 'song', $mSongId, [
             'mediaId' => $mediaId, 'kind' => (string)$mrow['Kind'], 'fileName' => (string)$mrow['FileName'],
         ]);
@@ -5281,6 +5522,18 @@ try {
         $restoreIdRow = $restoreIdStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
         $restoreIdStmt->close();
         workAutolinkSafe($db, $songId, (string)($restoreIdRow['Ccli'] ?? ''), (string)($restoreIdRow['Iswc'] ?? ''), true);
+
+        /* #1862 — a restore round-trips the snapshot's OWN HasAudio/
+           HasSheetMusic/credit scalars (ed2_applySongSnapshot()'s generic
+           ED2_META_FIELDS loop has no special case for the two flags, and the
+           credit tables were just replaced too), so both derived denorms can
+           legitimately go stale the instant a restore lands. Same
+           "restore keeps the snapshot, then live truth immediately re-wins"
+           contract as the legacy v1 restore path (manage/editor/api.php's
+           song_restore case) — post-commit, own failure boundaries, neither
+           call ever throws. */
+        songMediaRecomputeFlags($db, $songId);
+        pdRecomputeForSong($db, $songId);
 
         logActivity('song.revision.restore', 'song', $songId, ['fromRevisionId' => $revisionId]);
         ed2_respond(['ok' => true, 'songId' => $songId]);

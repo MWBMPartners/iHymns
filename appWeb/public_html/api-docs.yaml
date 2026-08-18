@@ -14824,6 +14824,47 @@ paths:
                         matchedAlias: { type: string, nullable: true }
                   tableMissing: { type: boolean }
 
+  /manage/editor/api2.php?action=publisher_search:
+    get:
+      operationId: editorPublisherSearch
+      tags: [Editor API v2]
+      summary: Typeahead for the Copyright Holder picker (#1862)
+      description: |
+        GET, editor role only. Delegates entirely to the ONE shared
+        publisher typeahead core (`publisherSearchRows()`, #1864) — no
+        local SQL of its own, the same core `/manage/publishers`,
+        `/manage/songbooks` and `/manage/works` already share. `[]`
+        (never a 500) on an install without `tblPublishers`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [publisher_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string }
+                        kind: { type: string, example: company }
+
   /manage/editor/api2.php?action=work_search:
     get:
       operationId: editorWorkSearch
@@ -15025,6 +15066,60 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "404":
           description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_copyright_holder_set:
+    post:
+      operationId: editorSongCopyrightHolderSet
+      tags: [Editor API v2]
+      summary: The ONE copyright-holder write — CopyrightHolder + CopyrightHolderId in lockstep (#1862)
+      description: |
+        POST, editor role only. Activates the dormant #1864
+        `tblSongs.CopyrightHolderId` FK. Mirrors `song_tune_set`'s shape
+        exactly: `name` MAY be an empty string — a legal clear (both
+        `CopyrightHolder` and `CopyrightHolderId` → cleared), distinct
+        from the key being absent (a caller mistake, 400). `publisherId`
+        is the picker's CLAIMED `tblPublishers.Id` — trusted only after
+        server-side verification against `name`
+        (`publisherResolvePickedOrCreate()`), never written unverified; a
+        stale/forged id degrades to the name find-or-create funnel. Shares
+        the exact write core `metadata_field_update`'s `CopyrightHolder`
+        alias branch delegates to, so a song's copyright holder has
+        exactly one write path regardless of which action a (current or
+        stale-cached) client uses. 409 on an install that hasn't run the
+        song-identity-fields migration card yet (the column this shares
+        with Subtitle/Disambiguation/FirstPublishedYear/CopyrightYears).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, name]
+              properties:
+                songId: { type: string }
+                name: { type: string, description: "Empty string clears the holder." }
+                publisherId: { type: integer, nullable: true, description: "The picker's claimed tblPublishers.Id; verified server-side, never trusted blindly." }
+      responses:
+        "200":
+          description: Copyright holder saved (or cleared)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string, example: copyrightHolder }
+                  holderName: { type: string }
+                  publisherId: { type: integer, nullable: true }
+        "400":
+          description: Missing songId, or the name key is absent
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The song-identity-fields migration card has not been applied yet (run it at /manage/setup-database)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /manage/editor/api2.php?action=media_list:

@@ -167,6 +167,23 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
    lives client-side only). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_part_type_helpers.php';
 $songPartTypesForJs = songPartTypesForPicker(getDbMysqli());
+
+/* #1862 (epic #1863) — server-derived config for the Metadata tab's
+   public-domain suggestion hint, shipped the SAME "server-derive the vocab/
+   config, no second list" convention as the three registries above
+   (rule #35): the life-plus term is the ONE code constant
+   (includes/pd_suggest.php's IHYMNS_PD_LIFE_PLUS_YEARS, decision D4) and the
+   publication-year fallback threshold is the plain app setting
+   'pd_publication_year_threshold' (configurable at /manage/configuration,
+   default 1900, decision D3) — metadata-tab.js reads both from here rather
+   than hardcoding either, so the hint text and the server's own fold
+   (includes/pd_suggest.php's pdSuggestFold()) can never silently disagree. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+$pdSuggestForJs = [
+    'lifePlusYears'        => IHYMNS_PD_LIFE_PLUS_YEARS,
+    'publicationThreshold' => (int)getAppSetting('pd_publication_year_threshold', '1900'),
+];
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -387,6 +404,11 @@ $songPartTypesForJs = songPartTypesForPicker(getDbMysqli());
          module-evaluation time, top-level) — [] on an un-migrated install, which
          structure-tab.js treats as "use my own built-in fallback list", never an error. -->
     <script>window._iHymnsSongPartTypes = <?= json_encode($songPartTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
+    <!-- #1862 — public-domain suggestion config (life-plus term + publication-year
+         fallback threshold) for the Metadata tab's PD hint. Same emit shape + flags
+         + "classic global registry map" convention as the three registries above. -->
+    <script>window._iHymnsPdSuggest = <?= json_encode($pdSuggestForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file

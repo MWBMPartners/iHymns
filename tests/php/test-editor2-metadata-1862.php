@@ -241,8 +241,202 @@ if (is_file($pdSuggestFile)) {
 }
 
 /* =============================================================================
+ * SECTION 3 (B2) — flag/PD-recompute wiring, TREE-DERIVED (rule #34): every
+ * tblSongMedia writer and every credit-table writer under appWeb/public_html
+ * must also reference the matching recompute hook. Nothing here is a typed
+ * file list — a FUTURE writer that forgets the hook fails this section
+ * without anyone editing this test.
+ * ============================================================================= */
+echo "-- Section 3: flag/PD-recompute wiring (tree-derived) --\n";
+
+/* Loaded once here, reused by Section 3's per-site checks below AND Section 4a. */
+$api2Src  = is_file($pub . '/manage/editor/api2.php') ? (string)file_get_contents($pub . '/manage/editor/api2.php') : '';
+$api2Code = ed1862PhpCode($api2Src);
+check('manage/editor/api2.php is readable', $api2Src !== '');
+
+/** Every .php file under $root whose comment-stripped source matches $needleRegex. */
+function ed1862ScanTree(string $root, string $needleRegex): array
+{
+    $hits = [];
+    $rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($rii as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') { continue; }
+        $code = ed1862PhpCode((string)file_get_contents($file->getPathname()));
+        if (preg_match($needleRegex, $code)) { $hits[] = $file->getPathname(); }
+    }
+    sort($hits);
+    return $hits;
+}
+
+/* ---- tblSongMedia writers -> songMediaRecomputeFlags() ---- */
+$mediaWriterNeedle = '/\b(INSERT\s+INTO\s+tblSongMedia\b|DELETE\s+FROM\s+tblSongMedia\b)/i';
+$mediaWriters = ed1862ScanTree($pub, $mediaWriterNeedle);
+check('derived at least 2 tblSongMedia writer files (vacuity check — a scan finding none would pass vacuously)', count($mediaWriters) >= 2);
+foreach ($mediaWriters as $path) {
+    $rel = str_replace($repo . '/', '', $path);
+    $code = ed1862PhpCode((string)file_get_contents($path));
+    check("{$rel} references songMediaRecomputeFlags() SOMEWHERE (file-level net — a brand-new writer with zero references fails here)", strpos($code, 'songMediaRecomputeFlags(') !== false);
+}
+
+/* ---- credit-table writers -> pdRecomputeForSong() / pdRecomputeForMusicianName() ----
+   Two signals, like schemaAuditScanMigrations()'s multi-signal approach:
+   (A) the literal table name straight after INSERT INTO (save_song_core.php,
+       includes/song_importers.php); (B) this codebase's own established
+       DYNAMIC credit-insert fingerprint — `` INSERT INTO `{$table}` (SongId, Name) ``
+       — which is how api2.php's credit_upsert / ed2_applySongSnapshot() write
+       these same five tables via the ED2_CREDIT_TABLES map. Confirmed
+       non-vacuous against the real tree, and mutation-tested (a decoy dynamic
+       INSERT with different columns correctly does NOT match — see the
+       session report). */
+$creditWriterNeedle = '/\bINSERT\s+INTO\s+(?:(tblSongWriters|tblSongComposers|tblSongArrangers|tblSongAdaptors|tblSongTranslators)\b|`?\{\$table\}`?\s*\(SongId,\s*Name\))/i';
+$creditWriters = ed1862ScanTree($pub, $creditWriterNeedle);
+check('derived at least 3 credit-table writer files (vacuity check)', count($creditWriters) >= 3);
+foreach ($creditWriters as $path) {
+    $rel = str_replace($repo . '/', '', $path);
+    $code = ed1862PhpCode((string)file_get_contents($path));
+    check(
+        "{$rel} references pdRecomputeForSong() or pdRecomputeForMusicianName() SOMEWHERE (file-level net)",
+        strpos($code, 'pdRecomputeForSong(') !== false || strpos($code, 'pdRecomputeForMusicianName(') !== false
+    );
+}
+
+/* ---- LAYER 2 — precisely-scoped per-site checks ----------------------------
+   The file-level scan above proves a FUTURE writer file can't ship with zero
+   references (the regression class rule #34 exists for) but, as originally
+   written, could NOT prove that a SPECIFIC hook at a SPECIFIC call site
+   wasn't deleted while an unrelated hook elsewhere in the same file (e.g.
+   HasAudio/HasSheetMusic's own recompute-and-echo alias branch, or the
+   revision-restore recompute) kept the file-level substring check green —
+   confirmed by mutation: deleting media_delete's hook call left this
+   file-level check passing because media_upload's + revision_restore's own
+   calls were still present in the same file. Scoping to the SWITCH-CASE body
+   (a flat run from `case 'x':` to the next `case`/`default`) or the enclosing
+   FUNCTION body (brace-depth matched) closes that gap for every hook this
+   build actually added — TODAY's known write sites, layered ON TOP of the
+   tree-derived scan above, the same "derived set + a human disposition list"
+   shape test-editor-api2-contract.php's $RENAMED/$RETIRED maps use (rule
+   #34's own carve-out for policy data that can't be mechanically derived). */
+
+/** The flat body of a `switch` case: from `case '$name':` to the next
+ *  `case '...'`/`default:` (this codebase's case bodies never nest another
+ *  switch, so no brace-depth tracking is needed). '' if not found. */
+function ed1862CaseBody(string $code, string $caseName): string
+{
+    $start = strpos($code, "case '{$caseName}':");
+    if ($start === false) { return ''; }
+    $rest = substr($code, $start + 20);
+    $end = preg_match('/case\s+\'[A-Za-z0-9_]+\'\s*:|default\s*:/', $rest, $m, PREG_OFFSET_CAPTURE)
+        ? $start + 20 + $m[0][1]
+        : strlen($code);
+    return substr($code, $start, $end - $start);
+}
+
+/** A brace-depth-matched function body: from `function $name(` through its
+ *  balanced closing `}`. '' if not found or unbalanced. */
+function ed1862FunctionBody(string $code, string $funcName): string
+{
+    $start = strpos($code, "function {$funcName}(");
+    if ($start === false) { return ''; }
+    $braceStart = strpos($code, '{', $start);
+    if ($braceStart === false) { return ''; }
+    $depth = 0;
+    for ($i = $braceStart, $len = strlen($code); $i < $len; $i++) {
+        if ($code[$i] === '{') { $depth++; }
+        elseif ($code[$i] === '}') {
+            $depth--;
+            if ($depth === 0) { return substr($code, $start, $i - $start + 1); }
+        }
+    }
+    return '';   // unbalanced — degrade to "not found" rather than a bogus tail
+}
+
+/* Media: every write case, scoped, must contain its own hook call. */
+foreach (['media_upload' => 'media_upload', 'media_delete' => 'media_delete'] as $label => $caseName) {
+    $body = $api2Code !== '' ? ed1862CaseBody($api2Code, $caseName) : '';
+    check("api2.php's case '{$caseName}' contains a songMediaRecomputeFlags() call (per-site, not just per-file)", $body !== '' && strpos($body, 'songMediaRecomputeFlags(') !== false);
+}
+$apiLegacySrc  = is_file($pub . '/manage/editor/api.php') ? (string)file_get_contents($pub . '/manage/editor/api.php') : '';
+$apiLegacyCode = ed1862PhpCode($apiLegacySrc);
+foreach (['song_media_upload', 'song_media_delete'] as $caseName) {
+    $body = $apiLegacyCode !== '' ? ed1862CaseBody($apiLegacyCode, $caseName) : '';
+    check("api.php's case '{$caseName}' contains a songMediaRecomputeFlags() call (per-site, not just per-file)", $body !== '' && strpos($body, 'songMediaRecomputeFlags(') !== false);
+}
+
+/* Credits: each case/function that writes a credit table, scoped, must
+   contain its own PD-recompute call. */
+foreach (['credit_upsert', 'credit_delete', 'duplicate_song'] as $caseName) {
+    $body = $api2Code !== '' ? ed1862CaseBody($api2Code, $caseName) : '';
+    check("api2.php's case '{$caseName}' contains a pdRecomputeForSong() call (per-site)", $body !== '' && strpos($body, 'pdRecomputeForSong(') !== false);
+}
+$saveCoreFileSrc = is_file($pub . '/manage/editor/save_song_core.php') ? (string)file_get_contents($pub . '/manage/editor/save_song_core.php') : '';
+$saveCoreFileCode = ed1862PhpCode($saveCoreFileSrc);
+$saveCoreBody = $saveCoreFileCode !== '' ? ed1862FunctionBody($saveCoreFileCode, 'editorSaveSongCore') : '';
+check("save_song_core.php's editorSaveSongCore() contains a pdRecomputeForSong() call (per-function)", $saveCoreBody !== '' && strpos($saveCoreBody, 'pdRecomputeForSong(') !== false);
+
+$importerFileSrc = is_file($pub . '/includes/song_importers.php') ? (string)file_get_contents($pub . '/includes/song_importers.php') : '';
+$importerFileCode = ed1862PhpCode($importerFileSrc);
+$importerBody = $importerFileCode !== '' ? ed1862FunctionBody($importerFileCode, '_bulkImport_saveSong') : '';
+check("song_importers.php's _bulkImport_saveSong() contains a pdRecomputeForSong() call (per-function)", $importerBody !== '' && strpos($importerBody, 'pdRecomputeForSong(') !== false);
+
+/* =============================================================================
+ * SECTION 4a (B2) — the server half of the manual-field retirement: the
+ * CopyrightHolder/HasAudio/HasSheetMusic alias branches in
+ * metadata_field_update must run BEFORE the generic column write (the
+ * test-editor-api2-contract.php windowing technique — a 300-char window,
+ * widened from an initial 120 against real source per rule #34's own
+ * retrospective), and save_song_core's ON-DUPLICATE tail must no longer
+ * update either flag. (The CLIENT half — metadata-tab.js's FIELDS array —
+ * is asserted in Section 4b, appended once the Editor2 client build lands.)
+ * ============================================================================= */
+echo "-- Section 4a: server-side alias branches + ON-DUPLICATE tail (B2) --\n";
+
+/* $api2Src / $api2Code loaded once, in Section 3 above — reused here. */
+
+/* Scope to the metadata_field_update CASE BODY only — the literal
+   `UPDATE tblSongs SET \`{$column}\` = ?` string ALSO appears verbatim inside
+   ed2_applySongSnapshot() (a different function entirely, the restore path)
+   and inside this same case's own RIGHTS-FACTS branch, both of which precede
+   the true generic write textually. Scoping to the case + taking the LAST
+   occurrence inside it is what makes "before the generic write" mean
+   anything (the first cut of this assertion matched the wrong occurrence
+   and false-failed on real, correct source — exactly the rule #34 "a guard
+   that fails on correct code" trap; fixed to find the case body first). */
+$caseStart = strpos($api2Code, "case 'metadata_field_update':");
+$caseEnd   = $caseStart !== false ? strpos($api2Code, "case 'song_tune_set':", $caseStart) : false;
+check('located the metadata_field_update case body (case start + next-case end)', $caseStart !== false && $caseEnd !== false && $caseEnd > $caseStart);
+$caseBody = ($caseStart !== false && $caseEnd !== false) ? substr($api2Code, $caseStart, $caseEnd - $caseStart) : '';
+
+$genericWritePos = $caseBody !== '' ? strrpos($caseBody, 'UPDATE tblSongs SET `{$column}` = ?') : false;
+check('api2.php still has the generic metadata_field_update column write (if this moved, the "before" assertions below prove nothing)', $genericWritePos !== false);
+if ($genericWritePos !== false) {
+    foreach (['CopyrightHolder', 'HasAudio', 'HasSheetMusic'] as $col) {
+        $branchPos = strpos($caseBody, "column === '{$col}'");
+        check("api2.php has a dedicated \$column === '{$col}' alias branch inside metadata_field_update", $branchPos !== false);
+        if ($branchPos !== false) {
+            check("the '{$col}' alias branch runs BEFORE the generic column write", $branchPos < $genericWritePos);
+        }
+    }
+}
+
+$saveSongCoreFile = $pub . '/manage/editor/save_song_core.php';
+if (is_file($saveSongCoreFile)) {
+    $saveCoreCode = ed1862PhpCode((string)file_get_contents($saveSongCoreFile));
+    $onDupPos = strpos($saveCoreCode, 'ON DUPLICATE KEY UPDATE');
+    check("save_song_core.php has an ON DUPLICATE KEY UPDATE tail", $onDupPos !== false);
+    if ($onDupPos !== false) {
+        /* Window from ON DUPLICATE to the closing quote — generous (600) since
+           the tail lists ~10 columns. */
+        $win = substr($saveCoreCode, $onDupPos, 600);
+        check(
+            "save_song_core's ON-DUPLICATE tail no longer writes HasAudio/HasSheetMusic (#1862 — they are derived, an UPDATE must never clobber live media truth)",
+            strpos($win, 'HasAudio') === false && strpos($win, 'HasSheetMusic') === false
+        );
+    }
+}
+
+/* =============================================================================
  * SECTION 6 (B1) — migration registry + schema entries.
- * (Sections 3-5 and 7 are appended by later commits in this build sequence —
+ * (Sections 4b, 5 and 7 are appended by the B3 commit in this build sequence —
  * see the file header.)
  * ============================================================================= */
 echo "-- Section 6: migration registry + schema --\n";
