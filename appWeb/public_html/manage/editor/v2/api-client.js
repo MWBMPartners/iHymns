@@ -236,6 +236,21 @@ export const editorApi = {
     searchTunes:       (q, limit, meter)         => getJson('tune_search', Object.assign({ q: q || '', limit: limit || 10 }, meter ? { meter: meter } : {})),
     setSongTune:       (songId, tuneName)        => postJson('song_tune_set', { songId: songId, tuneName: tuneName }),
 
+    /* Publisher registry typeahead + the ONE copyright-holder write (#1862,
+       activating the #1864 dormant CopyrightHolderId FK). searchPublishers
+       mirrors searchTunes's shape (q/limit only — no meter-style extra leg).
+       setCopyrightHolder is consumed by metadata-tab.js's holder control on
+       `change` (blur) + a typeahead pick — deliberately NOT on every
+       keystroke, the exact #1679/#1741 P5c reasoning restated for
+       publishers (a debounced write could find-or-CREATE a junk
+       tblPublishers row per keystroke pause). `publisherId` is the
+       picker's CLAIMED id (or null when nothing was picked / it was
+       cleared by free-typing) — trust-but-verify happens server-side
+       (publisherResolvePickedOrCreate()), never assumed by this client. An
+       empty `name` is a legal CLEAR (both columns -> cleared server-side). */
+    searchPublishers:   (q, limit)                  => getJson('publisher_search', { q: q || '', limit: limit || 10 }),
+    setCopyrightHolder: (songId, name, publisherId) => postJson('song_copyright_holder_set', { songId: songId, name: name, publisherId: publisherId }),
+
     /* External links — whole sub-form reconcile (the shared card-list editor model).
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),

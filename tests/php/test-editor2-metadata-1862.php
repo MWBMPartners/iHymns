@@ -435,9 +435,75 @@ if (is_file($saveSongCoreFile)) {
 }
 
 /* =============================================================================
+ * SECTION 4b (B3) — the CLIENT half of the manual-field retirement:
+ * metadata-tab.js's FIELDS array literal must contain no
+ * 'hasAudio'/'hasSheetMusic'/'copyrightHolder'/'copyright' rows. Regexes the
+ * FIELDS array literal ONLY (not the whole file) — a NARROW check, per rule
+ * #34's own warning that an over-blunt guard (banning a phrase file-wide)
+ * gets weakened or deleted rather than fixed; a bespoke control elsewhere in
+ * the file legitimately references these words (e.g. `song.CopyrightHolder`,
+ * the picker's own id) without being a FIELDS row.
+ * ============================================================================= */
+echo "-- Section 4b: client-side FIELDS retirement (B3) --\n";
+
+$metaTabFile = $pub . '/manage/editor/v2/metadata-tab.js';
+check('manage/editor/v2/metadata-tab.js exists', is_file($metaTabFile));
+$metaTabSrc = is_file($metaTabFile) ? (string)file_get_contents($metaTabFile) : '';
+/* JS comment-strip (block + line comments) — mirrors test-rights-panel-
+   fields.php's own inline approach for the same reason: a doc-comment
+   EXPLAINING the retirement (this file's own header prose) must not
+   satisfy a check for the retirement itself. */
+$metaTabStripped = $metaTabSrc !== '' ? (preg_replace('#/\*[\s\S]*?\*/#', '', $metaTabSrc) ?? $metaTabSrc) : '';
+$metaTabStripped = $metaTabStripped !== '' ? (preg_replace('#(^|[^:])//.*$#m', '$1', $metaTabStripped) ?? $metaTabStripped) : '';
+
+if ($metaTabStripped !== '' && preg_match('/const\s+FIELDS\s*=\s*\[.*?\n\];/s', $metaTabStripped, $fm)) {
+    $fieldsSlice = $fm[0];
+    check('FIELDS array literal slice is non-trivial (vacuity check)', strlen($fieldsSlice) > 200);
+    foreach (['hasAudio', 'hasSheetMusic', 'copyrightHolder', 'copyright'] as $retired) {
+        check(
+            "metadata-tab.js's FIELDS array no longer has a '{$retired}' row (#1862 retirement)",
+            strpos($fieldsSlice, "['{$retired}',") === false
+        );
+    }
+    /* Positive control: fields that DID stay must still be there, so a
+       mutation that deletes the WHOLE array (making every "no longer has"
+       check vacuously true) is caught. */
+    foreach (['title', 'copyrightYears', 'lyricsPublicDomain', 'musicPublicDomain'] as $kept) {
+        check("metadata-tab.js's FIELDS array still has a '{$kept}' row (positive control)", strpos($fieldsSlice, "['{$kept}',") !== false);
+    }
+} else {
+    check('located the FIELDS const array literal in metadata-tab.js', false);
+}
+
+/* =============================================================================
+ * SECTION 5 (B3) — rights-panel removal, lightweight (the full mutation-
+ * proven guard is tests/php/test-rights-panel-fields.php, updated in this
+ * same build — never re-forked here, rule #22; these are the two headline
+ * checks the #1862 spec's own §8 item 5 names, kept here too so this file
+ * is self-contained for its own build-sequence story).
+ * ============================================================================= */
+echo "-- Section 5: rights panel removal (B3) --\n";
+
+check('v2/rights-panel.js does not exist on disk (#1862 — replaced by a derived coverage line)', !is_file($pub . '/manage/editor/v2/rights-panel.js'));
+if ($metaTabStripped !== '') {
+    check('metadata-tab.js does not import rights-panel.js', strpos($metaTabStripped, 'rights-panel.js') === false);
+}
+check(
+    'api2.php STILL contains the LyricsRightsLicenceKey branch (dormant server plumbing kept per #1862 — removal of the client picker must not strip the server side)',
+    strpos($api2Code, 'LyricsRightsLicenceKey') !== false
+);
+
+/* =============================================================================
+ * SECTION 7 note — the PHP<->JS copyright-fold lockstep (spec §8 item 7)
+ * lives as its OWN node test, tests/test-copyright-preview-lockstep.js
+ * (auto-discovered by tools/run-node-tests.js's tests/*.js glob — no
+ * separate wiring needed, the exact mechanism #1581/rule #35 exists to
+ * guarantee). Nothing to assert here in the PHP suite; noted so this file's
+ * own section numbering stays legible against the spec.
+ * ============================================================================= */
+
+/* =============================================================================
  * SECTION 6 (B1) — migration registry + schema entries.
- * (Sections 4b, 5 and 7 are appended by the B3 commit in this build sequence —
- * see the file header.)
  * ============================================================================= */
 echo "-- Section 6: migration registry + schema --\n";
 

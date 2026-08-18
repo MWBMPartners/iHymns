@@ -327,20 +327,10 @@ return [
         'song_work_autolink'                    => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 1) is a tracked follow-up build',
         'song_work_set'                         => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
         'work_search'                           => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
-
-        /* ---------------------------------------------------------------
-         * 1i. #1862 Copyright Holder picker — same "server core landed
-         * ahead of its client" shape as 1h immediately above (the #1862
-         * build sequence's own B2/B3 split: server endpoints + hooks land
-         * in B2, the Editor2 client picker in B3). `publisher_search` is
-         * NOT listed here — the caller-detection scan already matches the
-         * literal action-name string via the unrelated but identically-
-         * named ?action=publisher_search on works.php/songbooks.php/
-         * publishers.php, a known scanner imprecision, not evidence this
-         * one is wired. Self-cleaning expected the moment metadata-tab.js's
-         * holder picker + api-client.js's setCopyrightHolder() land (B3).
-         * --------------------------------------------------------------- */
-        'song_copyright_holder_set'             => 'deliberate #1862; server core landed ahead of its client — Editor2 holder-picker wiring is B3 of this same build sequence',
+        /* #1862's 'song_copyright_holder_set' temporary entry (B2 server-
+           core-ahead-of-client) was HERE and has been removed — self-
+           cleaning, as designed: metadata-tab.js's holder picker +
+           api-client.js's setCopyrightHolder() (B3) now call it. */
     ],
 
     /* =====================================================================

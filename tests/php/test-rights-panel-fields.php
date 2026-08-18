@@ -3,21 +3,31 @@
 declare(strict_types=1);
 
 /**
- * iHymns — editor Rights-panel wiring guard (#1769 P4 Commit B)
- * ============================================================
+ * iHymns — editor Rights-facts server-plumbing + panel-removal guard
+ * (#1769 P4 Commit B, updated #1862 sub-build F)
+ * ====================================================================
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * ELI5
  * ----
- * Commit B adds the per-song rights facts to the v2 editor: two columns in the
- * api2 allow-list, an existence probe, a validated write branch, a restore-loop
- * gate, a `load_song` prefill hint, an editor2 vocab global, and a client panel.
- * Several of these are cross-file agreements with nothing but this guard holding
- * them together (rule #35): the field KEYS the panel POSTs must be the KEYS the
- * server allow-lists; the vocab global the page emits must be the one the panel
- * reads. This pins the server write path (the enforcement-adjacent half,
- * comment-stripped so a mention can't satisfy a check) and the boundary keys.
+ * Commit B added the per-song rights facts to the v2 editor: two columns in
+ * the api2 allow-list, an existence probe, a validated write branch, a
+ * restore-loop gate, a `load_song` prefill hint, an editor2 vocab global, and
+ * a client panel that let a curator PICK a per-song licence key. #1862's
+ * owner-refinement comment then replaced that PICKER with a DERIVED
+ * read-only coverability line — but explicitly kept every server-side piece
+ * (dormant facts, kept for the future P6 enforcement pass and for a stale
+ * cached client's wire contract, rule #33). This file was originally the
+ * wiring guard for the picker; it now asserts BOTH directions of that split:
+ * sections A-F below still pin the SERVER half exactly as Commit B built it
+ * (a regression here would silently strip dormant plumbing #1862 explicitly
+ * chose to keep), and section G asserts the CLIENT picker is actually GONE —
+ * `v2/rights-panel.js` does not exist on disk and metadata-tab.js does not
+ * import it (the #1862 spec §8 test-plan item 5 assertion, the opposite
+ * direction from Commit B's original section H/I, which asserted the panel
+ * DID exist and DID agree on field keys with the server — now meaningless
+ * once there is no panel to agree with).
  *
  * WHY MUTATION-PROVEN (rule #34): the PHP comment-stripper is exercised in both
  * directions before any real assertion trusts it, so a check can never be
@@ -28,12 +38,12 @@ declare(strict_types=1);
  *
  *   php tests/php/test-rights-panel-fields.php
  *
- * @see appWeb/public_html/manage/editor/api2.php               the write path + probe + restore gate
- * @see appWeb/public_html/manage/editor/editor2.php            window._iHymnsLicenceTypes emit
- * @see appWeb/public_html/manage/editor/v2/rights-panel.js     the client panel
- * @see appWeb/public_html/manage/editor/v2/metadata-tab.js     mounts the panel
+ * @see appWeb/public_html/manage/editor/api2.php               the write path + probe + restore gate (KEPT, #1862)
+ * @see appWeb/public_html/manage/editor/editor2.php            window._iHymnsLicenceTypes emit (KEPT, #1862)
+ * @see appWeb/public_html/manage/editor/v2/metadata-tab.js     the derived coverage line that replaced the picker
  * @see tests/php/test-gating-pipeline-structure.php            §(g) the fact-column containment lock
  * @see .claude/gating-p4-design.md §"Commit B"
+ * @see #1862, epic #1863
  */
 
 $repoRoot = dirname(__DIR__, 2);
@@ -74,7 +84,6 @@ foreach (['NeedleInComment', 'NeedleInBlock', 'NeedleInHtml'] as $n) {
 $files = [
     'api2'      => $pub . '/manage/editor/api2.php',
     'editor2'   => $pub . '/manage/editor/editor2.php',
-    'panel'     => $pub . '/manage/editor/v2/rights-panel.js',
     'metaTab'   => $pub . '/manage/editor/v2/metadata-tab.js',
 ];
 foreach ($files as $k => $p) {
@@ -83,8 +92,8 @@ foreach ($files as $k => $p) {
 $api2Code   = rpfPhpCode((string)file_get_contents($files['api2']));
 $editor2    = (string)file_get_contents($files['editor2']);      // template — check emit line raw
 $editor2Php = rpfPhpCode($editor2);
-$panel      = (string)file_get_contents($files['panel']);
 $metaTab    = (string)file_get_contents($files['metaTab']);
+$panelPath  = $pub . '/manage/editor/v2/rights-panel.js';
 
 /* ==== A. api2 ED2_META_FIELDS maps both rights keys → columns ==== */
 foreach ([
@@ -147,34 +156,31 @@ if (strpos($editor2, 'window._iHymnsLicenceTypes') === false) {
     $failures[] = 'editor2.php does not emit window._iHymnsLicenceTypes';
 }
 
-/* ==== G. rights-panel.js reads the vocab + branches on err.status ==== */
-foreach ([
-    'window._iHymnsLicenceTypes' => 'reads the licence vocab global',
-    'updateMetadata('            => 'writes via the granular metadata endpoint',
-    'songbookRightsDefaults'     => 'reads the songbook-default hint slice',
-    '.status === 409'            => 'branches on 409 (un-migrated) by status, not prose',
-    '.status === 422'            => 'branches on 422 (bad key) by status, not prose',
-    "'lyricsRightsLicenceKey'"   => 'POSTs the lyrics field key the server allow-lists',
-    "'musicRightsLicenceKey'"    => 'POSTs the music field key the server allow-lists',
-] as $needle => $why) {
-    if (strpos($panel, $needle) === false) {
-        $failures[] = "rights-panel.js is missing {$needle} ({$why})";
-    }
+/* ==== G. the CLIENT picker is actually GONE (#1862 sub-build F / spec §8 item 5) ====
+ * The owner's refinement comment replaced the per-part picker with a derived
+ * read-only coverability line — this is the opposite-direction proof from the
+ * ORIGINAL sections G/H/I this guard carried (which asserted the panel DID
+ * exist and DID share field keys with the server): a regression that quietly
+ * re-adds the picker, or a stale import metadata-tab.js forgot to drop, both
+ * fail here. */
+if (is_file($panelPath)) {
+    $failures[] = 'v2/rights-panel.js still exists on disk — the owner-refinement comment (#1862) replaced the picker with a derived coverage line; delete the file';
 }
-
-/* ==== H. metadata-tab.js mounts the rights panel ==== */
-if (strpos($metaTab, 'rights-panel.js') === false || strpos($metaTab, 'mountRightsPanel(') === false) {
-    $failures[] = 'metadata-tab.js does not import + mount rights-panel.js';
+/* Comment-stripped (the SAME JS block/line stripper test-tune-typeahead-ui.js
+   uses) — metadata-tab.js's own doc-comments legitimately EXPLAIN this
+   removal by name ("replaces the deleted rights-panel.js picker"), and a
+   mention in prose must not satisfy a check for real code (rule #34's own
+   "kept a comment" failure mode, restated for JS instead of PHP). */
+$metaTabStripped = preg_replace('#/\*[\s\S]*?\*/#', '', $metaTab) ?? $metaTab;
+$metaTabStripped = preg_replace('#(^|[^:])//.*$#m', '$1', $metaTabStripped) ?? $metaTabStripped;
+if (strpos($metaTabStripped, 'rights-panel.js') !== false || strpos($metaTabStripped, 'mountRightsPanel(') !== false) {
+    $failures[] = 'metadata-tab.js still references rights-panel.js / mountRightsPanel() in real code — the picker mount must be fully removed (#1862)';
 }
-
-/* ==== I. cross-boundary key agreement (rule #35): the two field keys exist on
- * BOTH sides of the wire (server allow-list + client POST). ==== */
-foreach (["'lyricsRightsLicenceKey'", "'musicRightsLicenceKey'"] as $key) {
-    $onServer = strpos($api2Code, $key) !== false;
-    $onClient = strpos($panel, $key) !== false;
-    if (!$onServer || !$onClient) {
-        $failures[] = "field key {$key} is not present on both server (api2) and client (rights-panel) — the two would drift (rule #35)";
-    }
+/* The derived line that replaced the picker must actually be present — a
+   silent DOUBLE removal (picker AND its replacement both gone) would still
+   pass every assertion above. */
+if (strpos($metaTab, 'Copyrighted') === false && strpos($metaTab, 'Public domain (both parts)') === false) {
+    $failures[] = 'metadata-tab.js has no sign of the derived rights-coverage line that was supposed to replace the picker (#1862)';
 }
 
 /* ---- report ---- */
@@ -185,14 +191,15 @@ if ($failures || $mut) {
         fwrite(STDERR, "\n");
     }
     if ($failures) {
-        fwrite(STDERR, "FAIL: editor Rights-panel wiring guard (#1769 P4 Commit B):\n\n");
+        fwrite(STDERR, "FAIL: editor Rights-facts server-plumbing + panel-removal guard:\n\n");
         foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
         fwrite(STDERR, "\n");
     }
     exit(1);
 }
-echo "PASS: editor Rights-panel wiring — api2 allow-lists + probes + validates + audits the two rights facts, "
-   . "the restore loop gates + nullifies them, load_song emits the songbook-default hint, editor2 emits the "
-   . "licence vocab global, rights-panel.js reads it and branches on err.status, metadata-tab mounts it, and "
-   . "the field keys agree across the wire; mutation self-tests went red as expected.\n";
+echo "PASS: editor Rights-facts plumbing — api2 still allow-lists + probes + validates + audits the two "
+   . "rights facts, the restore loop still gates + nullifies them, load_song still emits the songbook-default "
+   . "hint, editor2 still emits the licence vocab global (all KEPT dormant per #1862) — AND the client picker "
+   . "(rights-panel.js) is confirmed gone, replaced by metadata-tab.js's derived coverage line; mutation "
+   . "self-tests went red as expected.\n";
 exit(0);

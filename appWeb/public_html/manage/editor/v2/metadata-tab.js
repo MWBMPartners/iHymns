@@ -12,6 +12,28 @@
  *  saves now" function for its manual Save button. See flushPending() below.
  *  Reads initial values from the store's `song` slice (the tblSongs row, as
  *  returned by api2.php load_song — note the columns are PascalCase).
+ *
+ *  #1862 (epic #1863) — MAJOR REORG. The flat `row g-3` grid this tab used to
+ *  pour every field into is now three labelled `<fieldset>` blocks (Identity /
+ *  Composition IDs / Publication & Copyright — see BLOCKS below), matching the
+ *  song-key/external-ids panels' visual shape. Four fields RETIRED from the
+ *  editable grid because the app now DERIVES them instead of asking a curator
+ *  to maintain them by hand (rule #44):
+ *    - `copyright` (free text)      -> a collapsed "Custom statement (override)"
+ *      disclosure, used only when the structured years+holder fields are both
+ *      empty; a live "Displayed as: …" preview replaces the plain text row.
+ *    - `copyrightHolder` (free text)-> a bespoke tblPublishers-backed picker
+ *      (mirrors the Tune control below), activating the #1864 dormant
+ *      CopyrightHolderId FK.
+ *    - `hasAudio`/`hasSheetMusic` (checkboxes) -> a read-only derived line —
+ *      the server now computes both from a union of hosted media + legacy
+ *      static files (includes/song_media_flags.php); manually ticking a box
+ *      that predicted a file's existence, rather than checking, was the
+ *      exact "vanity field" rule #44 exists to remove.
+ *  Two NEW derived lines replace the deleted rights-panel.js picker (owner's
+ *  #1862 refinement comment: rights coverage is DERIVED, never picked) and
+ *  surface a public-domain SUGGESTION next to each PD checkbox — a hint with
+ *  a one-click "Use" adopt, never an auto-tick (owner-stated, twice).
  * ========================================================================== */
 
 /* #1849 — the Language field is the shared IETF BCP 47 live-search picker
@@ -27,10 +49,15 @@ import { bootIetfLanguagePicker } from '../../../js/modules/ietf-language-picker
 
 const SAVE_DEBOUNCE_MS = 500;
 
-/* field key (api2 ED2_META_FIELDS) -> [label, tblSongs column, input kind]
+/* field key (api2 ED2_META_FIELDS) -> [label, tblSongs column, input kind, block]
  *
  * Input kinds: 'text' | 'number' (debounced on `input`), 'check' (immediate on
  * `change`), 'select' (immediate on `change`, options supplied by the caller).
+ *
+ * `block` routes the control into one of the three BLOCKS fieldsets below
+ * (#1862) — the single field registry stays intact (rule "extract first, use
+ * second" — never fork the per-kind control builders), only the CONTAINER
+ * each control's `col` div is appended to changes.
  *
  * #1679 H1 — `songbook` is a SELECT, and deliberately not a text box. Since the
  * move became a re-key, writing this field mints a NEW SongId, clears Number,
@@ -44,40 +71,50 @@ const SAVE_DEBOUNCE_MS = 500;
  * move) — this is the same rule, expressed as a control the user cannot get
  * wrong rather than as a check after the fact. */
 const FIELDS = [
-    ['title',              'Song Title',        'Title',              'text'],
-    ['subtitle',           'Subtitle',          'Subtitle',           'text'],
-    ['disambiguation',     'Disambiguation (short parenthetical)', 'Disambiguation', 'text'],
-    ['number',             'Song Number',       'Number',             'number'],
-    ['songbook',           'Songbook',          'SongbookAbbr',       'select'],
+    ['title',              'Song Title',        'Title',              'text',   'identity'],
+    ['subtitle',           'Subtitle',          'Subtitle',           'text',   'identity'],
+    ['disambiguation',     'Disambiguation (short parenthetical)', 'Disambiguation', 'text', 'identity'],
+    ['number',             'Song Number',       'Number',             'number', 'identity'],
+    ['songbook',           'Songbook',          'SongbookAbbr',       'select', 'identity'],
     /* #1849 — 'language' DELETED from this list. A plain FIELDS text row made
        curators type/paste a raw BCP 47 tag ("pt-BR") by hand; the rich
        live-search Language/Script/Region picker this field needs already
        exists and is mounted by BOTH v1's editor and /manage/songbooks
        (js/modules/ietf-language-picker.js, #681) — v2 just never adopted it.
-       Rendered as a BESPOKE control after the grid below instead (mirrors
+       Rendered as a BESPOKE control in the Identity block instead (mirrors
        'tuneName's #1741 P5c removal for the identical reason: a generic
        metadata_field_update row only ever saves ONE column, and the picker
        module already owns the compose/decompose logic — reusing it beats
        re-typing that logic a third time, rule "extract first, use second"). */
-    ['ccli',               'CCLI Number',       'Ccli',               'text'],
-    ['iswc',               'ISWC',              'Iswc',               'text'],
-    ['isrc',               'ISRC',              'Isrc',               'text'],
+    ['verified',           'Verified',          'Verified',           'check',  'identity'],
+    ['ccli',               'CCLI Number',       'Ccli',               'text',   'composition'],
+    ['iswc',               'ISWC',              'Iswc',               'text',   'composition'],
+    /* #1862 — 'isrc' DELETED from this list (issue §2: it's a RECORDING-grain
+       code, not a work-grain composition id). Rendered as a bespoke row at
+       the end of the Composition IDs block instead, `id="meta-isrc"`
+       preserved — both save('isrc', …)'s echo and onIsrcDenorm() below look
+       it up by that id — with the identical debounced save('isrc', value)
+       wiring. Server untouched. */
     /* #1741 P5c — 'tuneName' DELETED from this list. A plain FIELDS row
        saved TuneName alone through the generic metadata_field_update path,
        stranding TuneId on every edit (the drift this phase retires). The
-       Tune control is now a BESPOKE live-search widget rendered after the
-       origin-city picker below (see render()), backed by the shared
+       Tune control is now a BESPOKE live-search widget rendered in the
+       Identity block (see render()), backed by the shared
        ed2_songTuneApply() write core via api.setSongTune() — never a plain
        text FIELDS row again. */
-    ['copyright',          'Copyright',         'Copyright',          'text'],
-    ['copyrightYears',     'Copyright year(s)', 'CopyrightYears',     'text'],
-    ['copyrightHolder',    'Copyright holder',  'CopyrightHolder',    'text'],
-    ['firstPublishedYear', 'First published (year)', 'FirstPublishedYear', 'number'],
-    ['verified',           'Verified',          'Verified',           'check'],
-    ['lyricsPublicDomain', 'Lyrics Public Domain', 'LyricsPublicDomain', 'check'],
-    ['musicPublicDomain',  'Music Public Domain',  'MusicPublicDomain',  'check'],
-    ['hasAudio',           'Has audio',         'HasAudio',           'check'],
-    ['hasSheetMusic',      'Has sheet music',   'HasSheetMusic',      'check'],
+    ['firstPublishedYear', 'First published (year)', 'FirstPublishedYear', 'number', 'publication'],
+    ['copyrightYears',     'Copyright year(s)', 'CopyrightYears',     'text',   'publication'],
+    /* #1862 — 'copyright' / 'copyrightHolder' / 'hasAudio' / 'hasSheetMusic'
+       DELETED from this list — see the file header. copyright ->
+       the "Custom statement (override)" disclosure; copyrightHolder -> the
+       bespoke tblPublishers picker; hasAudio/hasSheetMusic -> the read-only
+       derived line. All rendered as bespoke controls in the Publication
+       block by render() below, in the order the #1862 spec's issue §2
+       specifies: firstPublishedYear -> copyrightYears -> holder picker ->
+       PD checkboxes (+ hints) -> derived statement -> rights line -> media
+       line. */
+    ['lyricsPublicDomain', 'Lyrics Public Domain', 'LyricsPublicDomain', 'check', 'publication'],
+    ['musicPublicDomain',  'Music Public Domain',  'MusicPublicDomain',  'check', 'publication'],
 ];
 
 /* #1741 P1 — these five tblSongs columns may not exist yet on an install that
@@ -88,8 +125,54 @@ const FIELDS = [
  * install — checking `column in song` is a zero-extra-request client gate
  * that gives a curator no dead control to click (the server's 409 remains
  * for a stale Service-Worker-cached client that tries anyway).
+ * #1862 — 'CopyrightHolder' REMOVED from this set: it is no longer a FIELDS
+ * row at all (it's the bespoke picker below), gated directly on
+ * `('CopyrightHolder' in song)` at its own render call — the same
+ * zero-extra-request idiom, just no longer routed through this shared Set.
  */
-const GATED_COLUMNS = new Set(['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder']);
+const GATED_COLUMNS = new Set(['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears']);
+
+/**
+ * The ONE copyright-statement precedence fold, byte-identical to
+ * `ihymns_copyright_statement()` (includes/copyright_display.php) — #1862's
+ * PHP<->JS lockstep pair. Exported so both the live "Displayed as: …" preview
+ * below AND `tests/test-copyright-preview-lockstep.js` can import this exact
+ * function rather than either side re-typing the precedence rule (rule #35).
+ * Fixtures for both sides: tests/fixtures/copyright-statement-cases.json.
+ *
+ * @param {string} years  Typed/loaded CopyrightYears.
+ * @param {string} holder Typed/loaded CopyrightHolder (display name).
+ * @param {string} legacy Typed/loaded legacy Copyright override text.
+ * @returns {string}
+ */
+export function ihymnsCopyrightPreview(years, holder, legacy) {
+    const split = (String(years == null ? '' : years).trim() + ' ' + String(holder == null ? '' : holder).trim()).trim();
+    return split !== '' ? split : String(legacy == null ? '' : legacy).trim();
+}
+
+/**
+ * The public-domain suggestion read fold, mirroring `pdSuggestFold()`
+ * (includes/pd_suggest.php) — same precedence, same "publication fallback
+ * ONLY when pdFromYear is unknown" rule. Kept as a small pure function (not
+ * exported — no PHP<->JS lockstep test covers this one, unlike the copyright
+ * fold; it has no server-side rendering counterpart to drift from) so the
+ * hint-rendering code below stays readable.
+ *
+ * @param {?number} pdFromYear
+ * @param {?number} firstPublishedYear
+ * @param {number}  threshold
+ * @param {number}  currentYear
+ * @returns {{suggested: boolean, basis: ?string, fromYear: ?number}}
+ */
+function pdSuggestHintFold(pdFromYear, firstPublishedYear, threshold, currentYear) {
+    if (pdFromYear != null && pdFromYear <= currentYear) {
+        return { suggested: true, basis: 'death', fromYear: pdFromYear };
+    }
+    if (pdFromYear == null && firstPublishedYear != null && firstPublishedYear < threshold) {
+        return { suggested: true, basis: 'publication', fromYear: firstPublishedYear };
+    }
+    return { suggested: false, basis: null, fromYear: null };
+}
 
 export function mountMetadataTab(container, opts) {
     const { store, api, songId } = opts;
@@ -143,6 +226,10 @@ export function mountMetadataTab(container, opts) {
        render()-wipes-the-container reason as placeDetach immediately
        above: a fresh attach() happens on every `song`-slice change. */
     let tuneDetach = null;
+    /* #1862 — teardown for the Copyright Holder typeahead, the SAME shared
+       module again (pickMode:'value', noun:{publisher,publishers}) —
+       mirrors tuneDetach immediately above in every respect. */
+    let holderDetach = null;
     /* #1849 — teardown for the language picker (js/modules/ietf-language-
        picker.js). Same render()-wipes-the-container reason as placeDetach/
        tuneDetach immediately above — BUT the module itself returns no
@@ -166,10 +253,20 @@ export function mountMetadataTab(container, opts) {
        container on every `song`-slice change, so this panel is torn down and
        re-mounted with it. */
     let extIdsDetach = null;
-    /* #1769 P4 — teardown for the "Rights" fieldset. Same reason as the two
-       panels above: render() wipes the container on every `song`-slice change,
-       so the panel is torn down and re-mounted with it. */
-    let rightsPanelDetach = null;
+    /* #1862 — teardown for the store subscription that keeps the derived
+       media-availability line in sync with the Media tab (subscribes to the
+       `media` store slice). render() wipes the container on every
+       `song`-slice change, so this subscription is torn down and
+       re-established with it — same reason as every teardown above. */
+    let mediaLineOff = null;
+    /* #1862 — reassigned inside render() (to refreshDerivedLines, a function
+       declared in that scope) so save()'s echo-handling below — which lives
+       in the OUTER mountMetadataTab scope, not inside render() — can still
+       reach the current render pass's line-refresh function. Starts as a
+       no-op so an echo arriving before the first render ever completes
+       (impossible in practice, but cheap to guard) is a silent no-op rather
+       than a throw. */
+    let refreshMediaLine = function () {};
 
     /**
      * @param {string}   field
@@ -215,6 +312,16 @@ export function mountMetadataTab(container, opts) {
                 if (isrcInput && document.activeElement !== isrcInput) {
                     isrcInput.value = res.value == null ? '' : String(res.value);
                 }
+            }
+            /* #1862 — HasAudio/HasSheetMusic's alias branch echoes the DERIVED
+               truth (server ignores whatever a stale client sent). Neither
+               field has a live control on this tab any more, but a stale
+               Service-Worker-cached tab could still be the caller — reflect
+               the derived value into `song` + the read-only line so a
+               leftover caller can't show a lie even transiently. */
+            if ((field === 'hasAudio' || field === 'hasSheetMusic') && res && typeof res.value !== 'undefined') {
+                song[field === 'hasAudio' ? 'HasAudio' : 'HasSheetMusic'] = res.value;
+                refreshMediaLine();   // always a function — see its declaration above
             }
             return true;
         }).catch((e) => {
@@ -386,19 +493,58 @@ export function mountMetadataTab(container, opts) {
         return wrap;
     }
 
+    /** A labelled fieldset matching the song-key/external-ids panels' visual
+     *  shape (#1862). Returns {fieldset, row} — `row` is the Bootstrap grid
+     *  row FIELDS' controls (and this tab's own bespoke controls) append into. */
+    function buildBlock(legendText) {
+        const fieldset = document.createElement('fieldset');
+        fieldset.className = 'border rounded p-3 mb-3';
+        const legend = document.createElement('legend');
+        legend.className = 'float-none w-auto px-2 fs-6 fw-semibold mb-2';
+        legend.textContent = legendText;
+        const row = document.createElement('div');
+        row.className = 'row g-3';
+        fieldset.append(legend, row);
+        return { fieldset, row };
+    }
+
     function render() {
         const song = store.get('song') || {};
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
+        if (holderDetach) { try { holderDetach(); } catch (_e) {} holderDetach = null; }
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
-        if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }
+        if (mediaLineOff) { try { mediaLineOff(); } catch (_e) {} mediaLineOff = null; }
         container.innerHTML = '';
-        const row = document.createElement('div');
-        row.className = 'row g-3';
 
-        FIELDS.forEach(([field, label, column, kind]) => {
+        /* #1862 — the three BLOCKS (issue §2): Identity, Composition IDs,
+           Publication & Copyright, in that order. FIELDS' loop below routes
+           each control's `col` div into the matching block's `row`; bespoke
+           controls (Language, Composition origin, Tune, ISRC, Copyright
+           Holder, PD hints, the derived statement, the two derived lines)
+           are appended into whichever block's `row` they conceptually
+           belong to, further down. */
+        const identity    = buildBlock('Identity');
+        const composition = buildBlock('Composition IDs');
+        const publication = buildBlock('Publication & Copyright');
+        const BLOCKS = { identity: identity.row, composition: composition.row, publication: publication.row };
+
+        /* Captured during the FIELDS loop so the bespoke controls built AFTER
+           it (PD hints, the lockout, the derived preview) can reach them
+           without a DOM query. */
+        let copyrightYearsInput = null;
+        let lyricsPDInput = null;
+        let musicPDInput = null;
+        let lyricsPDHintEl = null;
+        let musicPDHintEl = null;
+        /* Set below, in the Copyright Holder block, ONLY when the column
+           exists on this install ('CopyrightHolder' in song) — stays null
+           otherwise, and every reader below already null-guards it. */
+        let copyrightHolderInput = null;
+
+        FIELDS.forEach(([field, label, column, kind, block]) => {
             /* #1741 P1 gate — skip a field the server would 409 on rather
                than render a control that can never save. */
             if (GATED_COLUMNS.has(column) && !(column in song)) { return; }
@@ -416,6 +562,13 @@ export function mountMetadataTab(container, opts) {
                 input.addEventListener('change', () => {
                     song[column] = input.checked ? 1 : 0;
                     save(field, input.checked ? 1 : 0);   // immediate
+                    /* #1862 — both-PD lockout + hint refresh (defined further
+                       down; hoisted function declarations make this safe to
+                       call from here). Harmless no-op for 'verified'. */
+                    if (column === 'LyricsPublicDomain' || column === 'MusicPublicDomain') {
+                        syncPdLockout();
+                        refreshPdHints();
+                    }
                 });
                 const lab = document.createElement('label');
                 lab.className = 'form-check-label';
@@ -423,6 +576,17 @@ export function mountMetadataTab(container, opts) {
                 lab.textContent = label;
                 wrap.append(input, lab);
                 col.appendChild(wrap);
+                /* #1862 — an empty hint slot right after the PD checkboxes'
+                   wrap; renderPdHint() (below) fills or clears it. */
+                if (column === 'LyricsPublicDomain') {
+                    lyricsPDInput = input;
+                    lyricsPDHintEl = document.createElement('div');
+                    col.appendChild(lyricsPDHintEl);
+                } else if (column === 'MusicPublicDomain') {
+                    musicPDInput = input;
+                    musicPDHintEl = document.createElement('div');
+                    col.appendChild(musicPDHintEl);
+                }
             } else if (kind === 'select') {
                 col.appendChild(renderSongbookSelect(song, field, label, column));
             } else {
@@ -439,10 +603,16 @@ export function mountMetadataTab(container, opts) {
                     const val = kind === 'number' ? (parseInt(input.value, 10) || '') : input.value;
                     song[column] = val;
                     debouncedSave(field, val);
+                    /* #1862 — copyrightYears feeds the derived preview + is
+                       disabled by the both-PD lockout; firstPublishedYear
+                       feeds the publication-basis PD hint. */
+                    if (field === 'copyrightYears') { updateDerivedPreview(); }
+                    if (field === 'firstPublishedYear') { refreshPdHints(); }
                 });
+                if (field === 'copyrightYears') { copyrightYearsInput = input; }
                 col.append(lab, input);
             }
-            row.appendChild(col);
+            (BLOCKS[block] || identity.row).appendChild(col);
         });
 
         /* Language (#1849) — the shared IETF BCP 47 live-search picker
@@ -453,7 +623,7 @@ export function mountMetadataTab(container, opts) {
            /manage/songbooks both rely on — reusing it beats re-forking that
            logic a third time (rule "extract first, use second"; the FIELDS
            array comment above has the full story of why 'language' isn't in
-           that list any more). */
+           that list any more). Lives in the IDENTITY block (#1862 issue §2). */
         const lcol = document.createElement('div');
         lcol.className = 'col-12 col-md-6';
         const llab = document.createElement('label');
@@ -494,15 +664,16 @@ export function mountMetadataTab(container, opts) {
           + '<datalist id="ietf-region-list-ed2"></datalist>';
         /* Grabbed now (querySelector walks lwrap's own subtree regardless of
            whether lwrap is connected to the document yet) but not USED until
-           after `container.appendChild(row)` below — see the comment there
-           for why booting the picker itself has to wait that long. */
+           after the block is attached to `container` below — see the comment
+           there for why booting the picker itself has to wait that long. */
         const langTagOutput = lwrap.querySelector('.ietf-tag-output');
         lcol.append(llab, lwrap);
-        row.appendChild(lcol);
+        identity.row.appendChild(lcol);
 
         /* Composition origin — a geocoded place picker (visible text + hidden id),
            reusing the shared window.iHymnsPlaceSearch (places-api.php). Free-typing
-           saves OriginCity; picking a place also saves the OriginCityId FK. */
+           saves OriginCity; picking a place also saves the OriginCityId FK. Lives in
+           the IDENTITY block (#1862 issue §2). */
         const pcol = document.createElement('div');
         pcol.className = 'col-12 col-md-6';
         const plab = document.createElement('label');
@@ -532,18 +703,19 @@ export function mountMetadataTab(container, opts) {
             save('originCity', pinput.value);    // a pick also set the visible display name
         });
         pcol.append(plab, pinput, phidden);
-        row.appendChild(pcol);
+        identity.row.appendChild(pcol);
 
         /* Tune (#1741 P5c) — a BESPOKE live-search control, not a plain
            FIELDS row (the old `['tuneName', …]` row, DELETED above, saved
-           TuneName alone and stranded TuneId on every edit). Rendered right
-           after the origin-city picker above, mirroring its shape: visible
-           text input + hidden TuneId + (once a metre is actually known) a
-           small badge and a "Matching metre only" toggle that narrows the
-           typeahead to same-metre tunes — the swap-lyrics-between-tunes
-           affordance the parent plan names. Both the badge and the toggle
-           start HIDDEN — dormant-by-data, like P4c's own meter section —
-           so a tune with no recorded MeterCode shows nothing extra. */
+           TuneName alone and stranded TuneId on every edit). Rendered in the
+           IDENTITY block (#1862 issue §2), mirroring the origin-city
+           picker's shape: visible text input + hidden TuneId + (once a metre
+           is actually known) a small badge and a "Matching metre only"
+           toggle that narrows the typeahead to same-metre tunes — the
+           swap-lyrics-between-tunes affordance the parent plan names. Both
+           the badge and the toggle start HIDDEN — dormant-by-data, like
+           P4c's own meter section — so a tune with no recorded MeterCode
+           shows nothing extra. */
         const tcol = document.createElement('div');
         tcol.className = 'col-12 col-md-6';
         const tlab = document.createElement('label');
@@ -630,28 +802,325 @@ export function mountMetadataTab(container, opts) {
         tinput.addEventListener('change', () => { saveTune(tinput.value, null); });
 
         tcol.append(tlab, tinput, thidden, tmeterRow);
-        row.appendChild(tcol);
+        identity.row.appendChild(tcol);
 
-        container.appendChild(row);
+        /* ---- Composition IDs block: ISRC (#1862 issue §2) ----
+           A bespoke row, NOT a FIELDS entry (recording-grain, not work-grain
+           like CCLI/ISWC above it) — rendered last in the Composition IDs
+           block, immediately above where external-ids-panel.js mounts
+           itself (further down, into THIS block's fieldset — same visual
+           grouping). `id="meta-isrc"` preserved: save()'s echo above and
+           onIsrcDenorm() below both look it up by that id. Debounced save,
+           unchanged server wiring. */
+        const icol = document.createElement('div');
+        icol.className = 'col-12 col-md-6';
+        const ilab = document.createElement('label');
+        ilab.className = 'form-label small mb-1';
+        ilab.textContent = 'ISRC';
+        ilab.htmlFor = 'meta-isrc';
+        const iinput = document.createElement('input');
+        iinput.type = 'text';
+        iinput.className = 'form-control form-control-sm';
+        iinput.id = 'meta-isrc';
+        iinput.placeholder = 'e.g. USABC1234567';
+        iinput.value = song.Isrc != null ? String(song.Isrc) : '';
+        iinput.addEventListener('input', () => {
+            song.Isrc = iinput.value;
+            debouncedSave('isrc', iinput.value);
+        });
+        icol.append(ilab, iinput);
+        composition.row.appendChild(icol);
+
+        /* ==================================================================
+         * Publication & Copyright block (#1862 issue §2 order):
+         *   firstPublishedYear (FIELDS loop, above) -> copyrightYears
+         *   (FIELDS loop, above) -> Copyright Holder picker -> the two PD
+         *   checkboxes + hints (FIELDS loop, above; hints filled below) ->
+         *   derived-statement preview + override disclosure -> derived
+         *   rights-coverage line -> derived media-availability line.
+         * ================================================================== */
+
+        /* Copyright Holder (#1862) — a BESPOKE tblPublishers-backed
+           live-search control, mirroring the Tune control above in every
+           respect (activates the #1864 dormant CopyrightHolderId FK).
+           Gated the SAME zero-extra-request way GATED_COLUMNS' fields are —
+           just no longer routed through that shared Set, since this isn't a
+           FIELDS row (rule #43 — never a free-text box into a registry). */
+        if ('CopyrightHolder' in song) {
+            const hcol = document.createElement('div');
+            hcol.className = 'col-12 col-md-6';
+            const hlab = document.createElement('label');
+            hlab.className = 'form-label small mb-1';
+            hlab.htmlFor = 'meta-copyrightHolder';
+            hlab.textContent = 'Copyright holder';
+            const hinput = document.createElement('input');
+            hinput.type = 'text';
+            hinput.className = 'form-control form-control-sm';
+            hinput.id = 'meta-copyrightHolder';
+            hinput.placeholder = 'Publisher / holder name…';
+            hinput.value = song.CopyrightHolder != null ? String(song.CopyrightHolder) : '';
+            const hhidden = document.createElement('input');
+            hhidden.type = 'hidden';
+            hhidden.value = song.CopyrightHolderId != null ? String(song.CopyrightHolderId) : '';
+
+            /**
+             * Persist a holder edit/pick via the ONE write
+             * (`song_copyright_holder_set`, `ed2_songCopyrightHolderApply()`
+             * server-side) — the SAME "commit event, never a typing pause"
+             * rule saveTune() above documents at length: a find-or-create
+             * write must not fire on a debounced keystroke pause (#1679's
+             * anti-pattern, rule #43).
+             *
+             * @param {string} name Holder name to save (server-trimmed; '' clears).
+             * @param {?number} publisherId A typeahead pick's claimed id, else null.
+             */
+            function saveHolder(name, publisherId) {
+                api.setCopyrightHolder(songId, name, publisherId).then((res) => {
+                    song.CopyrightHolder = res.holderName;
+                    song.CopyrightHolderId = res.publisherId;
+                    hhidden.value = res.publisherId != null ? String(res.publisherId) : '';
+                    updateDerivedPreview();
+                }).catch((e) => {
+                    toast('Could not save copyright holder: ' + e.message, 'danger');
+                });
+            }
+
+            hinput.addEventListener('input', () => {
+                /* Free-typing invalidates a previously-picked publisherId —
+                   the same contract tinput's own listener documents above. */
+                hhidden.value = '';
+                updateDerivedPreview();
+            });
+            hinput.addEventListener('change', () => { saveHolder(hinput.value, null); });
+
+            hcol.append(hlab, hinput, hhidden);
+            publication.row.appendChild(hcol);
+
+            if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+                holderDetach = window.iHymnsPlaceSearch.attach(hinput, {
+                    hiddenIdInput: hhidden,
+                    minChars: 2,
+                    pickMode: 'value',
+                    noun: { singular: 'publisher', plural: 'publishers' },
+                    // #1855: extensionless, matches every sibling searchUrl here.
+                    searchUrl: (q) => '/manage/editor/api2?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                    parseResults: (d) => (d.suggestions || []).map((s) => ({
+                        id: s.id,
+                        display_name: s.name,
+                        hint: s.kind || '',
+                    })),
+                    onSelect: (c) => saveHolder(c.display_name, c.id),
+                }) || null;
+            }
+
+            copyrightHolderInput = hinput;
+        }
+
+        /* ---- Derived copyright statement preview + override disclosure (#1862 issue §3) ---- */
+        const previewWrap = document.createElement('div');
+        previewWrap.className = 'col-12';
+        const previewLine = document.createElement('div');
+        previewLine.className = 'form-text small';
+        const previewLabel = document.createElement('span');
+        previewLabel.textContent = 'Displayed as: ';
+        const previewValue = document.createElement('strong');
+        previewLine.append(previewLabel, previewValue);
+        previewWrap.appendChild(previewLine);
+
+        const details = document.createElement('details');
+        details.className = 'mt-1';
+        const summary = document.createElement('summary');
+        summary.className = 'small text-body-secondary';
+        summary.style.cursor = 'pointer';
+        summary.textContent = 'Custom statement (override)';
+        const overrideWrap = document.createElement('div');
+        overrideWrap.className = 'mt-2';
+        const overrideHelp = document.createElement('div');
+        overrideHelp.className = 'form-text small';
+        overrideHelp.textContent = 'Used only when Copyright year(s) and holder are both empty. Prefer the structured fields.';
+        const overrideInput = document.createElement('input');
+        overrideInput.type = 'text';
+        overrideInput.className = 'form-control form-control-sm';
+        overrideInput.id = 'meta-copyright';
+        overrideInput.value = song.Copyright != null ? String(song.Copyright) : '';
+        overrideInput.addEventListener('input', () => {
+            song.Copyright = overrideInput.value;
+            debouncedSave('copyright', overrideInput.value);
+            updateDerivedPreview();
+        });
+        overrideWrap.append(overrideInput, overrideHelp);
+        details.append(summary, overrideWrap);
+        /* Auto-open when the legacy field is live (issue §3's "the cases
+           where it's live" — non-empty override, both structured fields
+           empty at load time). */
+        const yearsAtLoad = song.CopyrightYears != null ? String(song.CopyrightYears).trim() : '';
+        const holderAtLoad = song.CopyrightHolder != null ? String(song.CopyrightHolder).trim() : '';
+        const legacyAtLoad = song.Copyright != null ? String(song.Copyright).trim() : '';
+        if (legacyAtLoad !== '' && yearsAtLoad === '' && holderAtLoad === '') { details.open = true; }
+        previewWrap.appendChild(details);
+        publication.row.appendChild(previewWrap);
+
+        /** Recompute + render the "Displayed as: …" preview from the live
+         *  input values (client-side twin of ihymns_copyright_statement(),
+         *  imported by tests/test-copyright-preview-lockstep.js — never
+         *  re-typed inline here). Shows "Public domain" while the both-PD
+         *  lockout is engaged (issue §5). */
+        function updateDerivedPreview() {
+            const bothPD = !!(lyricsPDInput && lyricsPDInput.checked) && !!(musicPDInput && musicPDInput.checked);
+            if (bothPD) {
+                previewValue.textContent = 'Public domain';
+                return;
+            }
+            const years = copyrightYearsInput ? copyrightYearsInput.value : yearsAtLoad;
+            const holder = copyrightHolderInput ? copyrightHolderInput.value : holderAtLoad;
+            const legacy = overrideInput.value;
+            const shown = ihymnsCopyrightPreview(years, holder, legacy);
+            previewValue.textContent = shown !== '' ? shown : '(none)';
+        }
+
+        /* ---- Both-PD lockout (#1862 issue §5) ----
+           When BOTH PD checkboxes are checked: disable copyrightYears, the
+           holder picker input, and the override input (values RETAINED —
+           disabling, never clearing; re-enabled on uncheck). Called once at
+           render (below) and from both checkboxes' own change handlers
+           (wired inside the FIELDS loop above via hoisting — this function
+           declaration runs before that closure is ever INVOKED, which is
+           all JS function-hoisting requires). */
+        function syncPdLockout() {
+            const bothPD = !!(lyricsPDInput && lyricsPDInput.checked) && !!(musicPDInput && musicPDInput.checked);
+            if (copyrightYearsInput) { copyrightYearsInput.disabled = bothPD; }
+            if (copyrightHolderInput) { copyrightHolderInput.disabled = bothPD; }
+            overrideInput.disabled = bothPD;
+            updateDerivedPreview();
+        }
+
+        /* ---- PD suggestion hints (#1862 issue §7 + owner comment) ----
+           Beside each PD checkbox: a hint + one-click "Use" adopt when the
+           fold says suggested — NEVER an auto-tick. Gated on the denorm
+           columns existing (`('LyricsPdFromYear' in song)`), the same
+           zero-extra-request idiom GATED_COLUMNS uses. */
+        function renderOnePdHint(hintEl, checkboxInput, pdFromYearRaw, partLabel, roleLabel) {
+            if (!hintEl) { return; }
+            hintEl.innerHTML = '';
+            if (!checkboxInput || checkboxInput.checked) { return; }   // already ticked — nothing to suggest
+            const cfg = window._iHymnsPdSuggest || { lifePlusYears: 70, publicationThreshold: 1900 };
+            const currentYear = new Date().getFullYear();
+            const pdFromYear = pdFromYearRaw != null && pdFromYearRaw !== '' ? Number(pdFromYearRaw) : null;
+            const firstPublishedYear = song.FirstPublishedYear != null && song.FirstPublishedYear !== ''
+                ? Number(song.FirstPublishedYear) : null;
+            const fold = pdSuggestHintFold(pdFromYear, firstPublishedYear, Number(cfg.publicationThreshold), currentYear);
+            if (!fold.suggested) { return; }
+
+            const p = document.createElement('div');
+            p.className = 'form-text small text-body-secondary mt-1';
+            let text;
+            if (fold.basis === 'death') {
+                const diedBefore = fold.fromYear - (Number(cfg.lifePlusYears) + 1);
+                text = 'Suggested: the ' + partLabel + ' appear to be public domain — every credited '
+                    + roleLabel + ' died before ' + diedBefore + '; PD from ' + fold.fromYear
+                    + ' under life + ' + cfg.lifePlusYears + '. Verify before ticking — terms vary by jurisdiction.';
+            } else {
+                text = 'Suggested (assumed from publication age): first published ' + fold.fromYear
+                    + ', before ' + cfg.publicationThreshold + '. Please verify.';
+            }
+            p.appendChild(document.createTextNode(text + ' '));
+            const useBtn = document.createElement('button');
+            useBtn.type = 'button';
+            useBtn.className = 'btn btn-sm btn-outline-secondary py-0 px-1';
+            useBtn.textContent = 'Use';
+            useBtn.addEventListener('click', () => {
+                checkboxInput.checked = true;
+                checkboxInput.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            p.appendChild(useBtn);
+            hintEl.appendChild(p);
+        }
+
+        function refreshPdHints() {
+            if ('LyricsPdFromYear' in song) {
+                renderOnePdHint(lyricsPDHintEl, lyricsPDInput, song.LyricsPdFromYear, 'lyrics', 'lyricist');
+            }
+            if ('MusicPdFromYear' in song) {
+                renderOnePdHint(musicPDHintEl, musicPDInput, song.MusicPdFromYear, 'music', 'composer/arranger');
+            }
+        }
+
+        /* ---- Derived rights-coverage line (#1862 issue §1, owner's refinement) ----
+           Replaces the deleted rights-panel.js picker: coverability is
+           DERIVED (every iHymns song is IsChristian, owner-stated, so that
+           term drops out of the sentence entirely), never picked. Recomputed
+           on PD-checkbox change (folded into refreshDerivedLines() below). */
+        const rightsLineWrap = document.createElement('div');
+        rightsLineWrap.className = 'col-12';
+        const rightsLine = document.createElement('div');
+        rightsLine.className = 'form-text small';
+        rightsLineWrap.appendChild(rightsLine);
+        publication.row.appendChild(rightsLineWrap);
+
+        /* ---- Derived media-availability line (#1862 issue §6) ----
+           Replaces the deleted hasAudio/hasSheetMusic checkboxes: read-only,
+           derived from the server union (includes/song_media_flags.php) —
+           "manage files on the Media tab" is the only affordance left. */
+        const mediaLineWrap = document.createElement('div');
+        mediaLineWrap.className = 'col-12';
+        const mediaLine = document.createElement('div');
+        mediaLine.className = 'form-text small';
+        mediaLineWrap.appendChild(mediaLine);
+        publication.row.appendChild(mediaLineWrap);
+
+        function refreshDerivedLines() {
+            const bothPD = !!Number(song.LyricsPublicDomain) && !!Number(song.MusicPublicDomain);
+            rightsLine.textContent = bothPD
+                ? 'Public domain (both parts) — no licence required.'
+                : 'Copyrighted — coverable by a CCLI / MRL licence when the viewing organisation holds one.';
+
+            /* #1862 — the SAME union kind-map as includes/song_media_flags.php's
+               songMediaFlagKinds() (D8): 'audio'+'midi' -> HasAudio,
+               'sheet-music' -> HasSheetMusic. This is a client-side ECHO for
+               optimistic Media-tab feedback only — the server denorm
+               (song.HasAudio/HasSheetMusic) is the source of truth; this
+               never writes anything, it only makes the line update the
+               instant a file is attached rather than waiting for a reload. */
+            const mediaRows = store.get('media') || [];
+            const mediaHasAudio = mediaRows.some((m) => m && (m.kind === 'audio' || m.kind === 'midi'));
+            const mediaHasSheet = mediaRows.some((m) => m && m.kind === 'sheet-music');
+            const hasAudio = !!Number(song.HasAudio) || mediaHasAudio;
+            const hasSheet = !!Number(song.HasSheetMusic) || mediaHasSheet;
+            mediaLine.textContent = 'Audio: ' + (hasAudio ? 'yes' : 'no') + ' · Sheet music: ' + (hasSheet ? 'yes' : 'no')
+                + ' (derived from attached media and legacy files — manage files on the Media tab)';
+        }
+        /* Reassign the OUTER-scope `refreshMediaLine` (declared once, in
+           mountMetadataTab's own scope, above) so save()'s echo-handling —
+           which lives outside render() — can reach THIS render pass's
+           line-refresh function. */
+        refreshMediaLine = refreshDerivedLines;
+
+        mediaLineOff = store.subscribe('media', refreshDerivedLines);
+
+        /* Initial paint of everything the FIELDS loop + bespoke controls
+           above just built — must run AFTER copyrightYearsInput/
+           lyricsPDInput/musicPDInput/copyrightHolderInput are all captured. */
+        syncPdLockout();
+        refreshPdHints();
+        refreshDerivedLines();
+
+        container.append(identity.fieldset, composition.fieldset, publication.fieldset);
 
         /* #1849 — boot the language picker only NOW, after `lwrap` is
-           actually attached to the live document via the `container.
-           appendChild(row)` immediately above — not right after building its
-           markup earlier. bootIetfLanguagePicker() resolves its three
-           <datalist>s via `document.getElementById(input.getAttribute(
-           'list'))`, which searches the WHOLE DOCUMENT: a <datalist> that
-           exists only inside a detached `document.createElement()` subtree
-           is invisible to that lookup, and the null it gets back is
-           captured ONCE into a closure the module never re-queries later.
-           Booting too early would silently strand the typeahead — free
-           typing would still work (the module's own resolveCode() falls
-           through to whatever was typed when no matching option exists), so
-           this would misread as "the picker works, it just never suggests
-           anything" rather than fail loudly. Mirrors why the geocoder
-           `attach()` calls just below ALSO wait for this exact same
-           `container.appendChild(row)` — place-search.js needs live
-           `getBoundingClientRect()` geometry, the same live-DOM
-           requirement in a different guise. */
+           actually attached to the live document via the `container.append(…)`
+           immediately above — not right after building its markup earlier.
+           bootIetfLanguagePicker() resolves its three <datalist>s via
+           `document.getElementById(input.getAttribute('list'))`, which
+           searches the WHOLE DOCUMENT: a <datalist> that exists only inside a
+           detached `document.createElement()` subtree is invisible to that
+           lookup, and the null it gets back is captured ONCE into a closure
+           the module never re-queries later. Booting too early would
+           silently strand the typeahead — free typing would still work (the
+           module's own resolveCode() falls through to whatever was typed
+           when no matching option exists), so this would misread as "the
+           picker works, it just never suggests anything" rather than fail
+           loudly. Mirrors why the geocoder/tune/holder `attach()` calls all
+           wait for this exact same live-DOM requirement. */
         bootIetfLanguagePicker(lwrap);
         langPickerDetach = function () { /* see the langPickerDetach declaration above — nothing to detach */ };
 
@@ -781,32 +1250,33 @@ export function mountMetadataTab(container, opts) {
 
         /* Recording / external IDs (#1741 P5b, tblSongExternalIds' first UI
            write path) — a card-list of {Spotify, ISRC, MusicBrainz, …} ids for
-           this recording. Mounted BELOW the scalar grid via the SAME
-           dynamically-imported-panel pattern as "Musical key" immediately
-           above (own fieldset, own teardown var, curator who never opens
-           Metadata never pays for the extra module). Lives here rather than
-           as a new editor2.php tab because these ARE song metadata
-           (identifiers about the song), not a Links-tab row — the Links tab's
-           rows carry a `typeId` FK into a completely different registry
-           (tblExternalLinkTypes), so reusing that editor here would mean
-           faking typeIds for a store that doesn't have them. */
+           this recording. Mounted INTO the Composition IDs fieldset (#1862 —
+           "immediately above the external-ids panel mount, same fieldset
+           visually": the panel's mountFn accepts any container, so passing
+           `composition.fieldset` groups it directly beneath the bespoke ISRC
+           row instead of appending to the whole tab). Own fieldset, own
+           teardown var, curator who never opens Metadata never pays for the
+           extra module. Lives here rather than as a new editor2.php tab
+           because these ARE song metadata (identifiers about the song), not
+           a Links-tab row — the Links tab's rows carry a `typeId` FK into a
+           completely different registry (tblExternalLinkTypes), so reusing
+           that editor here would mean faking typeIds for a store that
+           doesn't have them. */
         import('./external-ids-panel.js')
             .then((m) => {
                 if (disposed || !container.isConnected) { return; }
-                extIdsDetach = m.mountExternalIdsPanel(container, { songId: songId, toast: toast, onIsrcDenorm: onIsrcDenorm });
+                extIdsDetach = m.mountExternalIdsPanel(composition.fieldset, { songId: songId, toast: toast, onIsrcDenorm: onIsrcDenorm });
             })
             .catch((e) => { console.error('[metadata-tab] external-ids panel failed to load:', e); });
 
-        /* Rights (#1769 P4) — the per-song lyrics/music licence pickers. Same
-           dynamically-imported-panel pattern as the two above (own fieldset, own
-           teardown var). Reads its vocab from window._iHymnsLicenceTypes and its
-           songbook-default hint from the store's songbookRightsDefaults slice. */
-        import('./rights-panel.js')
-            .then((m) => {
-                if (disposed || !container.isConnected) { return; }
-                rightsPanelDetach = m.mountRightsPanel(container, { songId: songId, store: store, api: api, toast: toast });
-            })
-            .catch((e) => { console.error('[metadata-tab] rights panel failed to load:', e); });
+        /* #1862 — the Rights fieldset (#1769 P4's rights-panel.js) is GONE:
+           the owner's refinement comment replaced the per-part picker with
+           the derived coverage line built above. The server plumbing
+           (LyricsRightsLicenceKey/MusicRightsLicenceKey columns, the
+           metadata_field_update rights branch, window._iHymnsLicenceTypes)
+           all STAYS — dormant facts kept for the future P6 enforcement pass
+           and the stale-client wire contract (rule #33) — only this tab's
+           now-removed picker is gone. */
     }
 
     /**
@@ -844,10 +1314,11 @@ export function mountMetadataTab(container, opts) {
         pending.clear();   // #1846 — no lingering references once the tab is gone
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
+        if (holderDetach) { try { holderDetach(); } catch (_e) {} holderDetach = null; }
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
-        if (rightsPanelDetach) { try { rightsPanelDetach(); } catch (_e) {} rightsPanelDetach = null; }
+        if (mediaLineOff) { try { mediaLineOff(); } catch (_e) {} mediaLineOff = null; }
         container.innerHTML = '';
     };
 }
