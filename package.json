@@ -14,7 +14,7 @@
     "build:proto-static": "node tools/build-proto-static.js",
     "dev": "php -S localhost:8000 -t appWeb/public_html",
     "preview": "php -S localhost:8080 -t dist/web",
-    "lint:js": "eslint appWeb/public_html/js/",
+    "lint:js": "eslint appWeb/public_html/js/ appWeb/public_html/manage/",
     "lint": "npm run lint:js",
     "format": "prettier --write appWeb/public_html/",
     "test": "node tools/run-node-tests.js",
