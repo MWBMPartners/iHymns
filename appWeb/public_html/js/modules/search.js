@@ -22,7 +22,7 @@
  *   is the offline-download feature in settings.js, addressed by WS-I.)
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { toTitleCase } from '../utils/text.js';
+import { toTitleCase, foldSearchText } from '../utils/text.js';
 import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
@@ -470,14 +470,18 @@ export class Search {
      * @returns {Array} Matching rows (capped at PAGE_SIZE)
      */
     _filterSlimIndex(index, query, songbook) {
-        const q = query.toLowerCase();
+        /* #1039 Part A — fold the query the SAME way the offline title is folded
+           (diacritic + apostrophe insensitive), so "milosc"/"arent" match
+           "Miłość"/"aren’t" offline too, mirroring the live server search. */
+        const q = foldSearchText(query);
         const book = songbook ? songbook.toUpperCase() : '';
         const out = [];
+        if (!q) return out;
         for (const s of index) {
             if (book && (s.songbook || '').toUpperCase() !== book) continue;
-            const title = (s.title || '').toLowerCase();
+            const title = foldSearchText(s.title || '');
             const num = String(s.number == null ? '' : s.number);
-            if (title.indexOf(q) !== -1 || (q && num.indexOf(q) !== -1)) {
+            if (title.indexOf(q) !== -1 || num.indexOf(q) !== -1) {
                 out.push(s);
                 if (out.length >= PAGE_SIZE) break;
             }

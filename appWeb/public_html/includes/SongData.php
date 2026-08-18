@@ -3156,6 +3156,16 @@ class SongData
            a dedicated FULLTEXT index (idx_TitleFt / idx_TitleLyricsFt). */
         $matchCols = $includeLyrics ? 's.Title, s.LyricsText' : 's.Title';
 
+        /* #1039 Part A — diacritic/apostrophe-folded search arm. When the
+           mode's folded FULLTEXT index is live, we compute a SECOND boolean
+           expression from the SAME query folded through ihymns_search_fold()
+           (the exact fold the stored NormalizedTitle / LyricsTextFolded columns
+           carry) and OR it into each FULLTEXT pass below. $foldReady false ⇒
+           $foldedPrimary/$foldedLoose stay '' ⇒ byte-identical single-arm SQL. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+        $foldReady  = $this->_searchFoldReady($includeLyrics);
+        $foldedCols = $includeLyrics ? 's.NormalizedTitle, s.LyricsTextFolded' : 's.NormalizedTitle';
+
         $results = [];
         $tokens  = self::_tokenizeSearch($query);
 
@@ -3177,14 +3187,34 @@ class SongData
                     $primary = '(' . $primary . ') (' . $expExpr . ')';
                 }
             }
-            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
+
+            /* Folded twin of $primary — built from the folded query the SAME
+               way (scripture expansion folded and OR-ed in too), so the folded
+               arm mirrors the raw arm term-for-term. */
+            $foldedPrimary = '';
+            $foldedLoose   = '';
+            if ($foldReady) {
+                $foldedTokens = self::_tokenizeSearch(ihymns_search_fold($query));
+                if (!empty($foldedTokens)) {
+                    $foldedPrimary = self::_booleanPrefixExpr($foldedTokens, true);
+                    if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                        $foldedExp = self::_booleanPrefixExpr(self::_tokenizeSearch(ihymns_search_fold($scriptureExpansion)), true);
+                        if ($foldedExp !== '') {
+                            $foldedPrimary = '(' . $foldedPrimary . ') (' . $foldedExp . ')';
+                        }
+                    }
+                    $foldedLoose = self::_booleanPrefixExpr($foldedTokens, false);
+                }
+            }
+
+            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedPrimary, $foldedCols);
 
             /* D2 hybrid — step 2: if requiring every term found nothing,
                broaden to ANY term (drop the +) so a single mistyped
                token doesn't sink the whole query. */
             if (empty($results)) {
                 $loose   = self::_booleanPrefixExpr($tokens, false);
-                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
+                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedLoose, $foldedCols);
             }
         }
 
@@ -3196,7 +3226,7 @@ class SongData
            snippet) — only when lyrics search is on and the hit is in the
            body rather than the title. */
         if ($includeLyrics) {
-            $this->_attachLyricsSnippets($results, $tokens);
+            $this->_attachLyricsSnippets($results, $tokens, $foldReady);
         }
 
         /* D2 hybrid — step 3: writer/composer LIKE fallback when the
@@ -3329,21 +3359,84 @@ class SongData
         return implode(', ', $fragments);
     }
 
+    /** @var array<string,bool> $_searchFoldFtCache probe cache: FT index name => present */
+    private array $_searchFoldFtCache = [];
+
+    /**
+     * Is the diacritic-folded search arm (#1039 Part A) usable for this mode?
+     *
+     * ELI5: only turn on the "match accents/apostrophes loosely" arm once the
+     * migration that built its FULLTEXT index has actually run on this install.
+     *
+     * Gates on the specific FULLTEXT INDEX the mode's MATCH() will name —
+     * `ft_NormalizedTitle` for title-only search, `ft_NormTitleLyricsFolded`
+     * for title+lyrics — NOT merely the LyricsTextFolded column. A half-migrated
+     * install (column added, indexes not) would throw on `MATCH(NormalizedTitle,
+     * LyricsTextFolded)` because MySQL requires an FT index over exactly that
+     * column set; probing the index is what makes the read path fail-CLOSED to
+     * today's byte-identical single-arm SQL instead (rule #28-C). Memoised per
+     * index (one INFORMATION_SCHEMA round-trip), fail-open to false on error.
+     *
+     * @link https://dev.mysql.com/doc/refman/8.0/en/fulltext-search.html
+     */
+    private function _searchFoldReady(bool $withLyrics): bool
+    {
+        $index = $withLyrics ? 'ft_NormTitleLyricsFolded' : 'ft_NormalizedTitle';
+        if (array_key_exists($index, $this->_searchFoldFtCache)) {
+            return $this->_searchFoldFtCache[$index];
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND INDEX_NAME   = ? LIMIT 1"
+            );
+            $probe->bind_param('s', $index);
+            $probe->execute();
+            $has = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure ⇒ single-arm (byte-identical) */ }
+        return $this->_searchFoldFtCache[$index] = $has;
+    }
+
     /**
      * Run a single FULLTEXT BOOLEAN-mode pass and return lightweight,
      * relevance-ordered rows (credits are bulk-attached by the caller).
      * songbookName comes from the LIVE tblSongbooks JOIN, not the
      * denormalised tblSongs.SongbookName (WS-E #1013).
+     *
+     * #1039 Part A — when $foldedExpr is non-empty (the caller only passes it
+     * once _searchFoldReady() confirmed the index), a SECOND folded MATCH() arm
+     * is OR-ed into the WHERE and SUMMED into the relevance score:
+     *   WHERE  (MATCH(raw) OR MATCH(folded))
+     *   score  (MATCH(raw) + MATCH(folded))
+     * A raw hit usually matches both arms and so keeps its standing above a
+     * folded-only hit; the `s.SongbookAbbr, s.Number` tie-break is untouched.
+     * An empty $foldedExpr ⇒ byte-identical single-arm SQL (un-migrated install).
      */
-    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = [], array $sortSpec = []): array
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = [], array $sortSpec = [], string $foldedExpr = '', string $foldedCols = ''): array
     {
         if (trim($ftQuery) === '') {
             return [];
         }
 
-        $where  = ["MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)"];
-        $params = [$ftQuery];
-        $types  = 's';
+        $useFolded = ($foldedExpr !== '' && $foldedCols !== '');
+        $relevanceExpr = $useFolded
+            ? "(MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) + MATCH({$foldedCols}) AGAINST(? IN BOOLEAN MODE))"
+            : "MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)";
+        $whereMatch = $useFolded
+            ? "(MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) OR MATCH({$foldedCols}) AGAINST(? IN BOOLEAN MODE))"
+            : "MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)";
+
+        /* WHERE-side match bind(s) come FIRST in $params; the SELECT-side
+           relevance bind(s) are array_unshift-ed onto the front afterwards, so
+           the final order is [relevance…, whereMatch…, songbook?, lang…, limit,
+           offset] — exactly the placeholder order in the SQL below. */
+        $where  = [$whereMatch];
+        $params = $useFolded ? [$ftQuery, $foldedExpr] : [$ftQuery];
+        $types  = $useFolded ? 'ss' : 's';
 
         $where[] = $this->_visible();   /* #1694 — hidden songs never match */
 
@@ -3379,16 +3472,22 @@ class SongData
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
-                       MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) AS relevance
+                       {$relevanceExpr} AS relevance
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
                 ORDER BY {$orderBy}
                 {$limitClause}";
 
-        /* MATCH appears in SELECT (relevance) and WHERE — bind twice. */
-        array_unshift($params, $ftQuery);
-        $types = 's' . $types;
+        /* MATCH appears in SELECT (relevance) and WHERE — bind the relevance
+           side onto the FRONT. Folded mode doubles both (raw + folded). */
+        if ($useFolded) {
+            array_unshift($params, $ftQuery, $foldedExpr);
+            $types = 'ss' . $types;
+        } else {
+            array_unshift($params, $ftQuery);
+            $types = 's' . $types;
+        }
         if ($limit > 0) {
             $params[] = $limit;  $types .= 'i';
             $params[] = $offset; $types .= 'i';
@@ -3411,14 +3510,34 @@ class SongData
     {
         $like = '%' . $query . '%';
 
+        /* #1039 Part A — cheap folded symmetry for the sub-3-char / LIKE path:
+           OR in `s.NormalizedTitle LIKE <foldedQuery>` when the feature is live,
+           so this path picks up the special-letter / apostrophe classes (é/ñ
+           already work here via the utf8mb4 collation). $foldedLike null (un-
+           migrated OR the query folds to nothing) ⇒ byte-identical to today. */
+        $foldedLike = null;
+        if ($this->_searchFoldReady(false)) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            $fq = ihymns_search_fold($query);
+            if ($fq !== '') { $foldedLike = '%' . $fq . '%'; }
+        }
+
         if ($includeLyrics) {
-            $where  = ['(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
+            $where  = [$foldedLike !== null
+                ? '(s.Title LIKE ? OR s.LyricsText LIKE ? OR s.NormalizedTitle LIKE ?)'
+                : '(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
             $params = [$like, $like];
             $types  = 'ss';
         } else {
-            $where  = ['s.Title LIKE ?'];
+            $where  = [$foldedLike !== null
+                ? '(s.Title LIKE ? OR s.NormalizedTitle LIKE ?)'
+                : 's.Title LIKE ?'];
             $params = [$like];
             $types  = 's';
+        }
+        if ($foldedLike !== null) {
+            $params[] = $foldedLike;
+            $types   .= 's';
         }
 
         $where[] = $this->_visible();   /* #1694 — hidden songs never match */
@@ -3555,9 +3674,17 @@ class SongData
      * the server-side replacement for the old Fuse match-snippet.
      * Requires components to have been attached already.
      *
+     * #1039 Part A — when $foldReady, a raw `mb_stripos` miss retries with the
+     * FOLDED needle against `ihymns_search_fold($line)`, using the RAW line as
+     * the snippet. `mb_stripos` is accent-sensitive, so a row the folded
+     * FULLTEXT arm matched by an accent/apostrophe class ("Miłość", "aren’t")
+     * would otherwise match-with-no-snippet — a silent degradation this fixes.
+     * $foldReady false ⇒ byte-identical to the pre-#1039 raw-only scan.
+     *
      * @param string[] $tokens
+     * @param bool     $foldReady whether the folded fallback should run
      */
-    private function _attachLyricsSnippets(array &$rows, array $tokens): void
+    private function _attachLyricsSnippets(array &$rows, array $tokens, bool $foldReady = false): void
     {
         if (empty($rows) || empty($tokens)) {
             return;
@@ -3571,23 +3698,59 @@ class SongData
             return;
         }
 
+        /* Folded needles are computed once (only when the feature is live). */
+        $foldedNeedles = [];
+        if ($foldReady) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            foreach ($needles as $n) {
+                $fn = ihymns_search_fold($n);
+                if ($fn !== '') { $foldedNeedles[] = $fn; }
+            }
+        }
+
         foreach ($rows as &$row) {
             /* Snippet is only useful when the hit is NOT already in the
-               title — a title match is its own context. */
+               title — a title match is its own context. Fold the title too so
+               an accent-matched title doesn't get a stray lyrics snippet. */
             $title = mb_strtolower($row['title'] ?? '');
             $inTitle = false;
             foreach ($needles as $n) {
                 if (mb_stripos($title, $n) !== false) { $inTitle = true; break; }
             }
+            if (!$inTitle && !empty($foldedNeedles)) {
+                $ftitle = ihymns_search_fold($title);
+                foreach ($foldedNeedles as $fn) {
+                    if (mb_stripos($ftitle, $fn) !== false) { $inTitle = true; break; }
+                }
+            }
             if ($inTitle) continue;
 
+            $found = false;
             foreach (($row['components'] ?? []) as $comp) {
                 foreach (($comp['lines'] ?? []) as $line) {
                     $ll = mb_strtolower($line);
                     foreach ($needles as $n) {
                         if (mb_stripos($ll, $n) !== false) {
                             $row['lyricsSnippet'] = $line;
+                            $found = true;
                             break 3;
+                        }
+                    }
+                }
+            }
+
+            /* Folded retry — only reached when the raw scan found nothing AND
+               the feature is live. Uses the RAW line as the snippet (whole-line
+               snippet, so no offset mapping is needed). */
+            if (!$found && !empty($foldedNeedles)) {
+                foreach (($row['components'] ?? []) as $comp) {
+                    foreach (($comp['lines'] ?? []) as $line) {
+                        $fl = ihymns_search_fold($line);
+                        foreach ($foldedNeedles as $fn) {
+                            if (mb_stripos($fl, $fn) !== false) {
+                                $row['lyricsSnippet'] = $line;
+                                break 3;
+                            }
                         }
                     }
                 }
