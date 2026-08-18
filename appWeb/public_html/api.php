@@ -18418,7 +18418,14 @@ if ($action !== null) {
                through the exact same path rather than a second copy (rule
                #26 I4 / plan guard G4). Fixture-diffed byte-identical: same
                SQL text, same statement order, same LastHeartbeatAt touch. */
-            $revision = serviceMode_applyBroadcast($db, $sessionId, $songId, $componentIndex, $stateJson);
+            /* #1897 W2 — usage context for the projected-usage log inside the
+               core. $userId is nullable (the #1408 control-token path); 'via'
+               is the same fixed 'bearer'|'control_token' vocabulary the
+               breadcrumb below uses. */
+            $revision = serviceMode_applyBroadcast($db, $sessionId, $songId, $componentIndex, $stateJson, [
+                'userId' => $userId,
+                'via'    => $viaControlToken ? 'control_token' : 'bearer',
+            ]);
 
             /* §3.2 — song-change only, never on a component-index-only nudge.
                'via' (#1408) is a fixed 'bearer'|'control_token' string —
@@ -19024,7 +19031,12 @@ if ($action !== null) {
 
             /* 6. Write — the ONE core, the SAME one the operator console
                writes through (rule #26 I4 / guard G4). */
-            $driveRevision = serviceMode_applyBroadcast($db, $driveSessionId, $effectiveSongId, $driveComponentIndex, $driveStateJson);
+            /* #1897 W2 — driver-key funnel has no user at all; 'via' extends
+               the existing 'bearer'|'control_token' vocabulary with 'driver_key'. */
+            $driveRevision = serviceMode_applyBroadcast($db, $driveSessionId, $effectiveSongId, $driveComponentIndex, $driveStateJson, [
+                'userId' => null,
+                'via'    => 'driver_key',
+            ]);
 
             /* 7. Breadcrumb — mirrors service_broadcast's own "song-change
                only" condition, extending the existing 'via' vocabulary

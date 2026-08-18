@@ -1774,15 +1774,25 @@ function serviceMode_liveFollowExtendAuthorize(\mysqli $db, int $hostUserId, int
  * IS the operator's heartbeat — no separate beat needed the same instant),
  * pushes a Live Activity 'update', and returns the POST-write revision.
  *
- * Extracted verbatim from `service_broadcast` (api.php) — same SQL text,
- * same statement order — so the extraction is a fixture-diffed no-op for
- * every existing caller; `service_drive` (§4.5) is simply the SECOND caller.
+ * The broadcast WRITE (UPDATE + revision re-read + Live Activity push) is
+ * extracted verbatim from `service_broadcast` (api.php) — same SQL text, same
+ * statement order — so that part is a fixture-diffed no-op for every existing
+ * caller; `service_drive` (§4.5) is simply the SECOND caller.
+ *
+ * #1897 W2 added, AROUND that unchanged write: (1) a fail-quiet PK pre-read of
+ * the session row BEFORE the UPDATE overwrites `CurrentSongId`, so a genuine
+ * song change is detectable afterwards, and (2) a try/catch-wrapped
+ * projected-usage log AFTER the write + push (#1860 fail-safe: a logging
+ * failure is an `error_log` line, NEVER a broken or delayed broadcast). The
+ * write itself is untouched — so it is NO LONGER byte-identical to the
+ * pre-#1897 body, only the write STATEMENTS are.
  *
  * DELIBERATELY NOT the same function `live_follow_update` uses: that
  * endpoint's WHERE is `SessionCode + HostUserId` (not a bare `Id`) and it
  * ALSO rolls `ExpiresAt` — folding it in would change semantics for a
  * different session KIND. Noted as a possible future convergence, not
- * forced here (plan §4.4).
+ * forced here (plan §4.4). That path is Quick-host, has no OrgId, and is
+ * deliberately NOT usage-logged (plan D3).
  *
  * @param \mysqli     $db
  * @param int         $sessionId
@@ -1790,12 +1800,41 @@ function serviceMode_liveFollowExtendAuthorize(\mysqli $db, int $hostUserId, int
  * @param int|null    $componentIndex
  * @param string|null $stateJson Pre-cleaned via serviceMode_cleanState() —
  *                                this function does NOT re-validate it.
+ * @param array       $usageCtx  #1897 W2 — optional caller context for the
+ *                                projected-usage log: userId(?int), via(string).
+ *                                The session's own row supplies everything else
+ *                                (OrgId, Channel, SetlistId, …) via the pre-read,
+ *                                so no caller can feed a stale/forged prior song.
  * @return int The StateRevision AFTER this write.
+ * @see includes/print_usage.php projectionUsageLog() — the gated writer this hooks
+ * @link #1897
  */
-function serviceMode_applyBroadcast(\mysqli $db, int $sessionId, ?string $songId, ?int $componentIndex, ?string $stateJson): int
+function serviceMode_applyBroadcast(\mysqli $db, int $sessionId, ?string $songId, ?int $componentIndex, ?string $stateJson, array $usageCtx = []): int
 {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'live_activity_push.php';
 
+    /* #1897 W2 — pre-read the session row BEFORE the UPDATE overwrites
+       CurrentSongId, so a genuine song change is detectable afterwards.
+       Fail-quiet: a failed pre-read only disables the usage hook below, never
+       the broadcast. One PK SELECT per broadcast (operators post a handful a
+       minute) — the self-containment is worth it: no caller can feed a stale or
+       forged prior-song, and every future broadcaster inherits logging. */
+    $pre = null;
+    try {
+        $ps = $db->prepare(
+            'SELECT SessionKind, OrgId, SetlistId, VenueId, ScheduleId,
+                    OccurrenceDate, Channel, CurrentSongId
+               FROM tblLiveFollowSessions WHERE Id = ?'
+        );
+        $ps->bind_param('i', $sessionId);
+        $ps->execute();
+        $pre = $ps->get_result()->fetch_assoc();
+        $ps->close();
+    } catch (\Throwable $_e) {
+        $pre = null;
+    }
+
+    /* ---- UNCHANGED broadcast write (byte-identical statements + order) ---- */
     $upd = $db->prepare(
         'UPDATE tblLiveFollowSessions
             SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
@@ -1815,6 +1854,33 @@ function serviceMode_applyBroadcast(\mysqli $db, int $sessionId, ?string $songId
     if (function_exists('liveActivitySessionPush')) {
         liveActivitySessionPush($db, $sessionId, 'update');
     }
+
+    /* #1897 W2 — projected-usage log. AFTER the write + push (log only what was
+       actually broadcast; a throw above means nothing was projected), fires
+       only on a GENUINE song change under a service-kind, org-anchored session.
+       #1860 posture: NOTHING in here may break or delay the broadcast — the
+       revision is already computed and is returned regardless. */
+    try {
+        if ($pre !== null
+            && (string)($pre['SessionKind'] ?? '') === 'service'
+            && $songId !== null
+            && (string)($pre['CurrentSongId'] ?? '') !== $songId
+            && (int)($pre['OrgId'] ?? 0) > 0) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'print_usage.php';
+            projectionUsageLog((int)$pre['OrgId'], $songId, $sessionId, [
+                'userId'         => isset($usageCtx['userId']) ? (int)$usageCtx['userId'] : null,
+                'via'            => (string)($usageCtx['via'] ?? 'unknown'),
+                'channel'        => (string)($pre['Channel'] ?? ''),
+                'setlistId'      => $pre['SetlistId'] ?? null,
+                'venueId'        => isset($pre['VenueId']) ? (int)$pre['VenueId'] : null,
+                'orgScheduleId'  => isset($pre['ScheduleId']) ? (int)$pre['ScheduleId'] : null,
+                'occurrenceDate' => $pre['OccurrenceDate'] ?? null,
+            ]);
+        }
+    } catch (\Throwable $e) {
+        error_log('[service_mode] projected-usage log failed: ' . $e->getMessage());
+    }
+
     return $revision;
 }
 
