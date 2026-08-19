@@ -189,6 +189,32 @@ RewriteRule ^ - [L]
 RewriteRule ^(vendor|css|js|fonts)/ - [R=404,L]
 
 # ==========================================================================
+# BAD-BOT / SCANNER PROBE DENY-LIST (#1905)
+#
+# Extensionless, directory-style scanner probes — /wp-admin/, /wp-content/,
+# /wp-includes/…, /wordpress/, /phpmyadmin/, /administrator/, /adminer/,
+# /autodiscover/autodiscover.xml, /cgi-bin/… — have NO .php extension (so the
+# request-line ".php" 404 above misses them) and match no real asset prefix, so
+# without this they fall through to the SPA catch-all below and get index.php's
+# shell at HTTP 200 — telling a scanner the path is "valid" and logging as
+# request.success. This returns a real 404 before PHP even runs. [NC] is
+# load-bearing: scanners randomise case (WP-, PhpMyAdmin, ADMINISTRATOR).
+#
+# The eleven leading tokens are RESERVED probe prefixes — never begin a real SPA
+# route with one. CI (tests/php/test-route-allowlist-coverage.php) enforces that
+# no valid route segment starts with any of them, and that this alternation stays
+# byte-identical to its mirror in tests/browser/router.php (rule #35).
+#
+# Placement: AFTER the real-file/-dir passthrough above (so a genuine asset always
+# wins) and the vendor 404, BEFORE the SPA catch-all. index.php's own derived
+# allow-list (#1905, includes/spa_routes.php) is the UNIVERSAL backstop that 404s
+# every OTHER unknown path; this rule just short-circuits the highest-volume
+# families cheaply, before PHP runs.
+# ==========================================================================
+
+RewriteRule ^(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin) - [R=404,L,NC]
+
+# ==========================================================================
 # SPA CATCH-ALL — Rewrite all other requests to index.php
 #
 # This handles all clean URL navigation:

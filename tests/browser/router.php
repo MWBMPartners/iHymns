@@ -197,8 +197,24 @@ if (preg_match('#^/(vendor|css|js|fonts)/#', $uri) === 1) {
     return true;
 }
 
+/* Bad-bot / scanner probe deny-list (#1905) — mirrors .htaccess's
+ *   RewriteRule ^(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin) - [R=404,L,NC]
+ * Extensionless directory-style probes that no earlier rule catches must 404
+ * here too, not fall to the SPA catch-all and get the shell. Keep the family
+ * alternation BYTE-IDENTICAL to the .htaccess one (rule #35; the CI guard
+ * tests/php/test-route-allowlist-coverage.php asserts the two match). `#i`
+ * mirrors [NC]. */
+if (preg_match('#^/(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin)#i', $uri) === 1) {
+    http_response_code(404);
+    return true;
+}
+
 /* SPA catch-all — everything else that isn't a real file falls to
- * index.php, mirroring .htaccess's final `RewriteRule ^ index.php`. */
+ * index.php, mirroring .htaccess's final `RewriteRule ^ index.php`.
+ * NOTE (#1905): index.php now owns the UNKNOWN-ROUTE status — its derived
+ * allow-list (includes/spa_routes.php) calls http_response_code(404) for an
+ * unknown first segment before any output, so this dev router inherits the
+ * hard-404 for unknown routes automatically, exactly as production does. */
 chdir($docroot);
 require $docroot . '/index.php';
 return true;

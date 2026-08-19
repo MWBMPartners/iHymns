@@ -770,6 +770,29 @@ try {
     error_log('[index.php] OG/route detection failed: ' . $e->getMessage());
 }
 
+/* #1905 — HARD 404 for an unknown top-level route. The .htaccess SPA catch-all
+   rewrites EVERY non-file path here, and this file used to render the shell with
+   HTTP 200 no matter what — a soft-404 that told scanners /wp-admin/ was "valid",
+   logged probe hits as request.success, and looked to search engines like a real
+   page. The shell STILL renders below (the client router shows the themed
+   "not found" card for an unknown route); only the STATUS becomes honest.
+
+   The valid-segment set is DERIVED (includes/spa_routes.php: page fragments +
+   identifier schemes + router aliases), so a new page never needs an edit here —
+   CI (tests/php/test-route-allowlist-coverage.php) keeps it in lockstep with
+   router.js. Case-sensitive, mirroring router.js's literal switch (/Song already
+   renders not-found client-side, so the server agrees). $pageType is deliberately
+   NOT used as the discriminator — known non-OG routes (/search, /settings, …) all
+   set pageType='other', identical to a genuinely unknown path.
+
+   Placed here — after the OG try/catch, before the first byte of body output
+   (the `?>` at the end of this PHP block) so headers are not yet sent — and after
+   the channel_gate/maintenance early-exits above, so their 503/403 are untouched. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'spa_routes.php';
+if (!spaIsKnownRoute($requestPath)) {
+    http_response_code(404);
+}
+
 /* JSON-LD: WebSite schema with SearchAction (home page only) */
 if ($pageType === 'home') {
     $siteUrl = getCanonicalUrl('/');
