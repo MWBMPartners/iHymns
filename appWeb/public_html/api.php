@@ -57,6 +57,9 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+/* #1906 — brand X-Powered-By as "iHymns/<version>" (our identity, never the PHP
+   runtime version) on the API surface too, before any response is sent. */
+ihymns_emit_powered_by_header($app);
 /* #1201/#1761 — public/PWA API response-envelope helpers (apiContractVersion /
    apiEnvelopeWrap / apiEnvelopeError). Loaded early so sendJson() can wrap the
    v2 envelope; extracted from this file so the contract is unit-testable

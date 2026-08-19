@@ -374,11 +374,16 @@ RewriteRule ^ index.php [QSA,L]
     # HSTS in particular MUST survive an error hit or a first-visit MITM isn't
     # pinned to HTTPS. Cache directives (below) stay `set` — errors shouldn't cache.
 
-    # Strip the PHP version fingerprint (#1906). PHP emits X-Powered-By when
-    # expose_php=On; unset it at the edge (mod_headers, host-safe). The
-    # authoritative fix is expose_php=Off via the sibling .user.ini — kept both
-    # because mod_headers can only remove the header AFTER PHP has set it.
-    Header always unset X-Powered-By
+    # X-Powered-By (#1906): brand it "iHymns/<version>" instead of leaking the PHP
+    # runtime version. The version is a deploy-injected PHP value, so PHP sets the
+    # branded header (index.php / api.php -> ihymns_emit_powered_by_header()); the
+    # PHP runtime version is suppressed at source by expose_php=Off (sibling
+    # .user.ini). This `edit` is the belt-and-braces for a mod_php host that
+    # ignores .user.ini: it rewrites ONLY a leaked "PHP/x.y" value to our bare
+    # name, and — because it matches on value, not blanket-unset — it leaves the
+    # PHP-set "iHymns/<version>" brand untouched (it doesn't match ^PHP/). On the
+    # normal FastCGI/FPM host expose_php=Off means there's nothing to rewrite.
+    Header always edit X-Powered-By "^PHP/.*$" "iHymns"
 
     # Prevent MIME type sniffing
     Header always set X-Content-Type-Options "nosniff"

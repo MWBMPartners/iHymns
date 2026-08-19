@@ -299,3 +299,64 @@ $app["Application"]["Repo"]["URL"] = "https://github.com/MWBMPartners/iHymns";
 
 /* GitHub issues URL */
 $app["Application"]["Repo"]["Issues"]["URL"] = "https://github.com/MWBMPartners/iHymns/issues";
+
+/* =========================================================================
+ * X-POWERED-BY BRANDING (#1906)
+ *
+ * ELI5: instead of letting the header quietly announce "PHP/8.x" (which tells
+ * a scanner exactly which runtime — and which known runtime bugs — we run), we
+ * replace it with our OWN name and app version, e.g. "iHymns/1.0.0". It says
+ * who we are, not what we're built on.
+ *
+ * WHY here / WHY a function: the app version is a PHP value injected at deploy
+ * time into $app["Application"]["Version"]["Number"] (deploy.yml, #1899), so the
+ * ONLY place that knows the real version at runtime is PHP — a static .htaccess
+ * can't read it. This file is that single source of truth, so the emitter lives
+ * with it. It is a FUNCTION (not an unconditional side-effect) because
+ * infoAppVer.php is also required in header-late contexts (admin-footer),
+ * non-HTTP contexts (the setup-database CLI probe) and the service worker; those
+ * callers must be able to read $app WITHOUT emitting a header. The two
+ * scanner-facing entry points (index.php, api.php) call it explicitly right
+ * after they load this file.
+ *
+ * SECURITY: this is BRANDING, not the leak defence. The actual PHP-version
+ * fingerprint is suppressed at the source by `expose_php = Off` in the sibling
+ * .user.ini, with a mod_headers `edit ^PHP/` in .htaccess as the belt-and-braces
+ * for a mod_php host that ignores .user.ini. Advertising our own app version is
+ * a deliberate, low-sensitivity disclosure (it is already public in the footer,
+ * the PWA manifest and api-docs.yaml) — never the PHP runtime version.
+ *
+ * @see https://www.php.net/manual/en/function.header.php
+ * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Powered-By
+ */
+if (!function_exists('ihymns_emit_powered_by_header')) {
+    /**
+     * Emit `X-Powered-By: <Name>[/<Version>]` for the current response.
+     *
+     * @param array $app The application-metadata array built above (Name +
+     *                    Version.Number are read; both degrade gracefully).
+     */
+    function ihymns_emit_powered_by_header(array $app): void
+    {
+        /* Never over an already-flushed response (would emit a PHP warning and
+           do nothing), and never on the CLI SAPI (header() is a no-op there —
+           the setup-database probe and test harness load this file). */
+        if (PHP_SAPI === 'cli' || headers_sent()) {
+            return;
+        }
+
+        /* Name is a constant identity; Version.Number is the deploy-injected
+           MAJOR.RELEASE.BUILD (or the committed dev value on an untagged build).
+           If the version is somehow absent, fall back to the bare app name —
+           still branded, still no runtime fingerprint. */
+        $name    = (string) ($app['Application']['Name'] ?? 'iHymns');
+        $version = $app['Application']['Version']['Number'] ?? null;
+        $value   = ($version !== null && $version !== '')
+            ? $name . '/' . (string) $version
+            : $name;
+
+        /* header() with an existing name REPLACES it, so this also overrides any
+           default X-Powered-By PHP itself set (belt-and-braces with expose_php). */
+        header('X-Powered-By: ' . $value);
+    }
+}
