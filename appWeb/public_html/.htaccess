@@ -356,27 +356,34 @@ RewriteRule ^ index.php [QSA,L]
 # ==========================================================================
 
 <IfModule mod_headers.c>
+    # `always` (not bare `set`) so every directive attaches to ERROR responses
+    # too — a 403 channel-gate/maintenance page, a 503 DB-down page, and the
+    # #1905/#1906 404s are served via ErrorDocument, and a bare `Header set`
+    # writes only the onsuccess table (2xx/3xx), silently dropping these on 4xx/5xx.
+    # HSTS in particular MUST survive an error hit or a first-visit MITM isn't
+    # pinned to HTTPS. Cache directives (below) stay `set` — errors shouldn't cache.
+
     # Prevent MIME type sniffing
-    Header set X-Content-Type-Options "nosniff"
+    Header always set X-Content-Type-Options "nosniff"
 
     # XSS Protection (legacy browsers)
-    Header set X-XSS-Protection "1; mode=block"
+    Header always set X-XSS-Protection "1; mode=block"
 
     # Prevent clickjacking
-    Header set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Frame-Options "SAMEORIGIN"
 
     # Referrer policy
-    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
     # Permissions policy — disable unnecessary APIs
-    Header set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
 
     # HSTS — Enforce HTTPS (1 year, include subdomains)
-    Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
     # Cross-Origin policies
-    Header set Cross-Origin-Opener-Policy "same-origin"
-    Header set Cross-Origin-Resource-Policy "same-origin"
+    Header always set Cross-Origin-Opener-Policy "same-origin"
+    Header always set Cross-Origin-Resource-Policy "same-origin"
 </IfModule>
 
 # ==========================================================================

@@ -47,6 +47,20 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    surfaces in /manage/activity-log alongside other server errors. */
 installGlobalActivityLogHandlers('og_image');
 
+/* #1906 — rate-limit the heaviest public render (fail-open, per-token/IP),
+   mirroring the qr.php / org-logo.php sibling image endpoints. og-image builds a
+   1200×630 truecolor canvas + TTF layout + icon resample + DB reads on EVERY
+   request, and a cache-busting query param (?song=X&_=rand) defeats the
+   Cache-Control max-age below — so without this, a varying-URL loop forces
+   unbounded fresh GD renders. Generous ceiling; real crawlers/unfurlers never
+   trip it. Placed before any output so a 429 carries no image content-type. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
+try {
+    enforceReadRateLimitKeyed('og_image', 240);
+} catch (\Throwable $e) {
+    /* fail-open — never let the limiter itself break the endpoint */
+}
+
 /* Cache for 24 hours — images rarely change */
 header('Cache-Control: public, max-age=86400');
 header('Content-Type: image/png');

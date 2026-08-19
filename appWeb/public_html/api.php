@@ -1055,6 +1055,13 @@ if ($action !== null) {
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'random':
+            /* #1906 — `random` emits the SAME full song payload (lyric body +
+               media) as song_detail, so it gets the SAME 240/min corpus-walk
+               cap or it is a trivial bypass of it (a scraper loops
+               /api?action=random to harvest the corpus unbounded). Fail-open,
+               per-token/IP — matches the song_detail sibling below. */
+            enforceReadRateLimitKeyed('random', 240);
+
             $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
             if ($bookId === '') {
                 $bookId = null;
