@@ -87,6 +87,29 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    page having to remember to register its own. */
 installGlobalActivityLogHandlers('manage');
 
+/* Content-Security-Policy for the /manage/* admin area (#1906). The enforcing
+   nonce CSP lives only in index.php, which never serves /manage/* — so admin
+   pages shipped ZERO CSP. This emits a GENUINE, ZERO-BREAKAGE policy from the
+   one shared admin bootstrap every page requires before output (incl. the
+   bespoke-head editor pages).
+
+   Deliberately only the directives that constrain NOTHING the browser loads by
+   default — no `default-src`, `script-src` or `style-src` — because the admin
+   surface is inline-heavy (86 inline <script>, 61 inline handlers, 241 inline
+   style= attrs) and has NO client error monitor (rule #1587), so a mis-scoped
+   fetch directive would break a page SILENTLY. These four have no inline or
+   asset-load dependency and cannot break any admin resource:
+     - object-src 'none'      blocks legacy plugin (<object>/<embed>) XSS
+     - base-uri 'self'        blocks a <base> tag redirecting relative URLs
+     - form-action 'self'     blocks form-hijack POSTing admin creds off-site
+     - frame-ancestors 'self' blocks click-jacking the admin UI in an iframe
+   Tightening script-src/style-src needs the nonce refactor (rewrite the 61
+   inline handlers + nonce the 86 scripts) — tracked separately on #1906.
+   Guarded on !headers_sent() so an unusual early-output caller can't fatal. */
+if (!headers_sent()) {
+    header("Content-Security-Policy: object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
+}
+
 /* =========================================================================
  * SESSION CONFIGURATION
  * ========================================================================= */
@@ -219,6 +242,19 @@ function adoptApiTokenSession(): bool
 
     if (!$row) {
         return false;
+    }
+
+    /* SECURITY (#1906) — session-fixation defence on the cross-surface promotion.
+       An anonymous /manage PHP session is about to become an AUTHENTICATED one
+       purely on the strength of the cross-subdomain ihymns_auth cookie, so rotate
+       the session id BEFORE seeding the identity — a PHPSESSID fixed on the victim
+       before promotion must not survive into the now-authenticated session. Every
+       OTHER identity-seeding path in this file already does this (the login POST
+       handler + the idle-refresh paths); adoptApiTokenSession() was the one that
+       didn't. Fires once per promotion (isAuthenticated() short-circuits after),
+       not per request. Guarded on an active session. */
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_regenerate_id(true);
     }
 
     /* Promote the token into $_SESSION exactly as /manage/login.php's

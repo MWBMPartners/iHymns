@@ -54,6 +54,17 @@ RewriteRule ^ - [R=404,L]
 # Block access to the includes directory entirely
 RewriteRule ^includes/ - [F,L]
 
+# Block direct HTTP access to internal Markdown docs (#1906).
+# MUST be an access-phase deny, not a RewriteRule: the /manage/ passthrough
+# (`RewriteRule ^manage/ - [L]` below) L-stops rewriting under /manage/, so a
+# rewrite-based block would MISS the at-risk files (manage/editor/*.md served as
+# static text/plain to anyone). A <FilesMatch>+Require runs in the authz phase,
+# which the rewrite [L] does not bypass, so it covers the whole docroot. No
+# client fetches a .md over HTTP (verified), so this breaks nothing.
+<FilesMatch "\.md$">
+    Require all denied
+</FilesMatch>
+
 # Block access to hidden files (e.g., .gitkeep, .env)
 RewriteRule (^|/)\.(?!well-known) - [F,L]
 
@@ -363,11 +374,20 @@ RewriteRule ^ index.php [QSA,L]
     # HSTS in particular MUST survive an error hit or a first-visit MITM isn't
     # pinned to HTTPS. Cache directives (below) stay `set` — errors shouldn't cache.
 
+    # Strip the PHP version fingerprint (#1906). PHP emits X-Powered-By when
+    # expose_php=On; unset it at the edge (mod_headers, host-safe). The
+    # authoritative fix is expose_php=Off via the sibling .user.ini — kept both
+    # because mod_headers can only remove the header AFTER PHP has set it.
+    Header always unset X-Powered-By
+
     # Prevent MIME type sniffing
     Header always set X-Content-Type-Options "nosniff"
 
-    # XSS Protection (legacy browsers)
-    Header always set X-XSS-Protection "1; mode=block"
+    # X-XSS-Protection: OWASP now advises "0" (#1906). The legacy "1; mode=block"
+    # auditor is removed from all modern browsers and has itself caused XSS /
+    # info-leak side channels; the enforcing nonce CSP (index.php, rule #30) is
+    # the real defence. "0" explicitly disables the legacy filter where honoured.
+    Header always set X-XSS-Protection "0"
 
     # Prevent clickjacking
     Header always set X-Frame-Options "SAMEORIGIN"

@@ -1114,6 +1114,12 @@ if ($action !== null) {
          *                     malformed.
          * ----------------------------------------------------------------- */
         case 'song_of_the_day':
+            /* #1906 — the daily pick runs a per-request DB selection and is
+               cache-bustable (?date/?hemisphere/?country), so throttle it like
+               the other heavy public reads. 120/min ≈ 2 req/s is generous for a
+               real client (one pick per app open) while stopping a date-walking
+               scraper. Fail-open + per-token (rule #26 NAT lesson). */
+            enforceReadRateLimitKeyed('song_of_the_day', 120);
             $sotdLangs = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
 
             $sotdDate = new DateTimeImmutable('now');
@@ -2830,10 +2836,19 @@ if ($action !== null) {
                registration POST 500'd with `Unknown column 'UserId' in
                'field list'`. The fallback below was already doing the
                rate-limit work correctly. */
+            /* #1906 — this 20/hour IP cap was DEAD: the read counted
+               tblLoginAttempts rows but the handler NEVER wrote one under this
+               action, so a registration flood (fresh random usernames, no email)
+               never tripped it — cost-12 bcrypt + row creation, unbounded. Fix:
+               (a) action-scope the read to Username='auth_register' (so a busy
+               login/reset IP no longer accidentally blocks signup), and (b)
+               record every registration attempt below so the counter grows and
+               the cap actually engages. Bound params (rule #5). */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $stmt = $db->prepare(
-                'SELECT COUNT(*) FROM tblLoginAttempts
-                 WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
+                "SELECT COUNT(*) FROM tblLoginAttempts
+                 WHERE IpAddress = ? AND Username = 'auth_register'
+                   AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)"
             );
             $stmt->bind_param('s', $clientIp);
             $stmt->execute();
@@ -2843,6 +2858,17 @@ if ($action !== null) {
             if ($recentAttempts >= 20) {
                 sendJson(['error' => 'Too many requests from this IP. Please try again later.'], 429);
                 break;
+            }
+            /* Record THIS attempt so the cap above counts it for the next hour
+               (the write half that was missing). Every registration POST leaves
+               one row; outcome-independent (a flood is a flood). */
+            if ($clientIp !== '') {
+                $regAtt = $db->prepare(
+                    "INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_register', 0)"
+                );
+                $regAtt->bind_param('s', $clientIp);
+                $regAtt->execute();
+                $regAtt->close();
             }
 
             $rawBody = file_get_contents('php://input');
@@ -4667,6 +4693,28 @@ if ($action !== null) {
                 }
             }
 
+            /* SECURITY (#1906) — the per-IP cap above is bypassable by a botnet
+               rotating source IPs, because the 6-digit code (~1M space, 10-min
+               life) is bound to the EMAIL, not the IP: <10 guesses/IP keeps the
+               per-IP window clear while thousands of IPs grind the code. Add a
+               PER-EMAIL failure bucket via the shared limiter (rule #22) that
+               counts across ALL IPs — 10 misses / 15 min per address caps total
+               guesses-per-code at ~10 of 1M (negligible). Fail-open (the shared
+               limiter degrades to allow on any error / un-migrated install). */
+            /* Hashed identifier key (44 chars) — the raw email would overflow the
+               VARCHAR(45) IpAddress bucket column and throw under STRICT; mirrors
+               apiForgotPasswordIdentifierKey()'s 'pwr:'+sha256[0..40] convention. */
+            $verifyEmailKey = ($isCodeMode && $verifyEmail !== '')
+                ? 'evc:' . substr(hash('sha256', mb_strtolower(trim($verifyEmail))), 0, 40)
+                : '';
+            if ($verifyEmailKey !== ''
+                && !checkRateLimit('email_verify_id', $verifyEmailKey, 10, 900, false)) {
+                logActivity('auth.login_email_verify', '', '',
+                    ['mode' => 'code', 'email' => $verifyEmail, 'reason' => 'rate_limited_email'], 'failure');
+                sendJson(['error' => 'Too many attempts. Please request a new code and try again later.'], 429);
+                break;
+            }
+
             $verified = null;
 
             if ($verifyToken !== '') {
@@ -4689,6 +4737,11 @@ if ($action !== null) {
                     $fa->bind_param('s', $verifyIp);
                     $fa->execute();
                     $fa->close();
+                }
+                /* SECURITY (#1906): and spend the PER-EMAIL failure budget so the
+                   distributed-across-IPs cap above fills regardless of source IP. */
+                if ($isCodeMode && $verifyEmailKey !== '') {
+                    recordRateLimitHit('email_verify_id', $verifyEmailKey, false);
                 }
                 logActivity(
                     'auth.login_email_verify',

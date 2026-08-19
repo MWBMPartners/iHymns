@@ -64,6 +64,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken song-media stream (storage backend down, missing
@@ -258,6 +259,15 @@ if (!contentGatingMediaAllowed((string)$row['Kind'], $userId, $presence)) {
     echo 'Access restricted: gated content.';
     exit;
 }
+
+/* #1906 — media BYTES are access-gated but were never volume-capped, so an
+   allowed caller could exhaust bandwidth by pulling large files (up to ~50MB) in
+   a loop. Runs HERE — after both access gates (a denied caller is never counted
+   and never reaches this line) and BEFORE any streaming header/body, so a 429 is
+   a clean JSON reply, not a truncated media stream. Shared 'media' scope +
+   240/min: an <audio>/<img> element issues several Range requests per file, so
+   240/min is generous for playback, tight for a scrape. Fail-open (rule #26). */
+enforceReadRateLimitKeyed('media', 240);
 
 $totalSize = (int)$row['SizeBytes'];
 $mime      = (string)$row['MimeType'];

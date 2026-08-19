@@ -217,6 +217,14 @@ $cspDirectives = [
     "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
+    /* #1906 — no plugin content exists anywhere in the app (grep: zero real
+       <object>/<embed>/<applet>). default-src 'self' already implied this; the
+       explicit 'none' is the strict, self-documenting form that blocks the
+       legacy plugin XSS vector. (base-uri/form-action/frame-ancestors are
+       already set below; style-src 'unsafe-inline' is retained deliberately —
+       inline styles are pervasive across fragments + JS + Bootstrap runtime, and
+       CSP nonces/hashes don't cover the style ATTRIBUTE.) */
+    "object-src 'none'",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
     "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app",

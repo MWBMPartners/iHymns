@@ -41,11 +41,22 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken OG image (e.g. GD failure, SongData migration drift)
    surfaces in /manage/activity-log alongside other server errors. */
 installGlobalActivityLogHandlers('og_image');
+
+/* #1906 — defensive headers matching the qr.php / org-logo.php sibling image
+   endpoints. Set BEFORE the rate-limit exit below so even a 429 carries them.
+   nosniff stops a content-type-confusion sniff of the PNG bytes; the CSP
+   sandboxes a DIRECT navigation to this URL (a PNG needs nothing, so
+   `default-src 'none'; sandbox` is the tightest correct policy); no-referrer
+   keeps the ?song=/?setlist= id out of the outbound Referer. */
+header('X-Content-Type-Options: nosniff');
+header("Content-Security-Policy: default-src 'none'; sandbox");
+header('Referrer-Policy: no-referrer');
 
 /* #1906 — rate-limit the heaviest public render (fail-open, per-token/IP),
    mirroring the qr.php / org-logo.php sibling image endpoints. og-image builds a
@@ -289,6 +300,34 @@ function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold)
             imagedestroy($icon);
             imagettftext($img, 12, 0, (int)$iconX + 34, $brandY + 20, $grey, $fontBold, 'iHymns');
         }
+    }
+}
+
+/* #1906 — CONTENT-ACCESS GATE for the song card's lyric preview. The song
+   render below draws the first ~4 lyric lines — copyrighted content that MUST
+   obey the SAME gate every other read path runs (song-media.php, song.php,
+   contentGatingApply()); og-image was the one path that skipped it, so a
+   require_licence-restricted song's share card leaked the verse. On a DENY,
+   downgrade to the generic branding image (never the lyrics). Anonymous by
+   design — a social unfurler carries no auth; a present congregant's
+   ihymns_sf_presence_token cookie still rides the org CCLI licence. DORMANT
+   no-op today: with content_gating_enabled='0' the gate allows every song and
+   the card renders byte-identically (rule #28A). checkContentAccess is
+   fail-open internally, so a probe error also renders the song unchanged. */
+if ($mode === 'song' && $songId !== null) {
+    $ogPresence = null;
+    if (isset($_COOKIE['ihymns_sf_presence_token'])
+        && preg_match('/^[A-Za-z0-9_\-]{43}$/D', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+        $ogPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
+    }
+    try {
+        $ogGate = checkContentAccess('song', (string)$songId, null, 'PWA', $ogPresence);
+        if (empty($ogGate['allowed'])) {
+            $mode = 'generic';   // gated → branding card, not the lyric preview
+        }
+    } catch (\Throwable $e) {
+        /* fail-open — a gate probe error must not blank the share card (#28C) */
+        error_log('[og-image] content gate probe failed, rendering unchanged: ' . $e->getMessage());
     }
 }
 
