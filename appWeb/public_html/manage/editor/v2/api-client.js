@@ -331,8 +331,14 @@ export const editorApi = {
     deleteMedia:       (mediaId)                 => postJson('media_delete', { mediaId: mediaId }),
     reorderMedia:      (songId, kind, ids)       => postJson('media_reorder', { songId: songId, kind: kind, ids: ids }),
 
-    /* Revisions — history (metadata) + full-snapshot restore */
+    /* Revisions — history (metadata) + before/after diff pair + full-snapshot
+       restore. getRevision is the #1628 item 4 diff-view read: the server
+       resolves the before-snapshot LADDER (previousData -> priorRevision ->
+       none, api2.php's revision_get doc-block) so this client never
+       re-implements that chain (rule #35) — it only reads `beforeSource` and
+       branches on it. */
     listRevisions:     (songId)                  => getJson('revision_list', { songId: songId }),
+    getRevision:       (revisionId, songId)      => getJson('revision_get', { revisionId: revisionId, songId: songId }),
     restoreRevision:   (revisionId, songId)      => postJson('revision_restore', { revisionId: revisionId, songId: songId }),
 
     /* Arrangement — the song's running order (#161 / #1627 item 2). `arrangement`

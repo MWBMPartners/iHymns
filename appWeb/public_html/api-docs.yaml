@@ -16083,6 +16083,64 @@ paths:
           description: Missing songId
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=revision_get:
+    get:
+      operationId: editorRevisionGet
+      tags: [Editor API v2]
+      summary: One revision's before/after snapshots for a field-level diff (#1628)
+      description: |
+        GET, editor role only. Returns the revision's `after` (its decoded
+        `NewData`) and `before` snapshot for a changed-fields diff view. The
+        server resolves `before` ONCE, in a fixed ladder, and reports which
+        rung answered in `beforeSource` (the client never re-derives it):
+        `previousData` (the chained `PreviousData`, populated for all
+        revisions since #1743) → `priorRevision` (the immediately-older
+        revision's `NewData`, same ordering as `revision_list`) → `none`
+        (the song's first revision — render "No earlier state recorded",
+        not an error). A revision whose own `NewData` is NULL/undecodable
+        answers 409. Legacy bare-`tblSongs`-row snapshots are returned as-is;
+        shape normalisation is the client's rendering concern.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [revision_get] }
+        - name: revisionId
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: songId
+          in: query
+          required: false
+          description: Optional defence-in-depth — the revision must belong to this song.
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: The revision's before/after snapshots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revision:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      action: { type: string }
+                      createdAt: { type: string }
+                      userId: { type: integer, nullable: true }
+                      username: { type: string, nullable: true }
+                  after: { type: object, description: Decoded NewData snapshot. }
+                  before: { type: object, nullable: true, description: Resolved prior snapshot, or null. }
+                  beforeSource: { type: string, enum: [previousData, priorRevision, none] }
+        "400":
+          description: Missing or invalid revisionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The revision has no restorable/decodable snapshot, or songId does not match
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=revision_restore:
     post:
       operationId: editorRevisionRestore

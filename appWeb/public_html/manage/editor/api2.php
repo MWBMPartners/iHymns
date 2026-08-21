@@ -237,6 +237,30 @@ declare(strict_types=1);
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
+ *   GET  revision_get?revisionId=<id>[&songId=<id>]           -> { ok, revision, after, before, beforeSource }
+ *                               #1628 item 4 — the before/after snapshot PAIR
+ *                               for one revision, so the client can render a
+ *                               diff before committing to Restore. `after` is
+ *                               the decoded NewData; `before` resolves through
+ *                               a server-side LADDER — this row's own
+ *                               PreviousData when decodable (the #1743-C2
+ *                               chain, f18c54ac, populates it for every
+ *                               revision written since), else the
+ *                               immediately-older revision's own NewData
+ *                               (one extra bound SELECT, same
+ *                               (CreatedAt, Id) DESC ordering revision_list
+ *                               uses), else null. `beforeSource` names which
+ *                               rung answered — 'previousData' |
+ *                               'priorRevision' | 'none' (rule #20 — a
+ *                               vocabulary string, never a boolean pair) — so
+ *                               the client never re-implements the fallback
+ *                               chain (rule #35). 409 when THIS revision's own
+ *                               NewData is NULL/undecodable (the same
+ *                               "no snapshot" semantics revision_restore
+ *                               uses). A legacy bare-tblSongs-row snapshot
+ *                               (the pre-#1743 v1 shape) is returned AS-IS —
+ *                               shape normalisation is the client's rendering
+ *                               concern, not this endpoint's.
  *   POST revision_restore       { revisionId }                -> { ok, songId }
  *   GET  work_search?q=&limit=                                -> { ok, suggestions, tableMissing? }
  *                               #1860 Phase 3 — typeahead over the tblWorks registry (mirror of
@@ -6001,7 +6025,9 @@ try {
     }
 
     /* ---- revision_list (GET) — revision history for a song, newest first
-           (metadata only; the full NewData snapshot is fetched on restore). ---- */
+           (metadata only; the before/after snapshot PAIR for one revision is
+           fetched via revision_get below; the full NewData snapshot alone is
+           fetched on restore). ---- */
     case 'revision_list': {
         $songId = trim((string)($_GET['songId'] ?? $_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
@@ -6027,6 +6053,145 @@ try {
         }
         $q->close();
         ed2_respond(['ok' => true, 'revisions' => $rows]);
+        break;
+    }
+
+    /* ---- revision_get (GET) — the before/after snapshot PAIR for ONE
+           revision, so a curator can see WHAT changed before committing to
+           Restore (#1628 item 4). Companion to revision_list (metadata only,
+           above) and revision_restore (writes, below) — never a third reader
+           of tblSongRevisions with its own resolution logic (rule #22).
+
+           ELI5: this is the one place that works out "what did the song look
+           like right before this edit, and right after it" so the browser
+           can just draw the two side by side — the browser never has to
+           guess or re-derive that itself.
+
+           DETAILED — the before-snapshot LADDER (rule #35: resolved ONCE,
+           here, server-side; the client only reads the answer + its
+           `beforeSource` label, never re-implements the chain):
+             1. This row's OWN `PreviousData`, when non-NULL and decodable —
+                the #1743-C2 chain (f18c54ac) populates this for every
+                revision `ed2_touchRevision()` has written since, verbatim
+                from whatever the immediately preceding row's NewData held.
+             2. Else the immediately OLDER revision's own `NewData` (one
+                extra bound SELECT, ordered `(CreatedAt, Id) DESC` — the SAME
+                ordering revision_list above uses — and excluding this row
+                itself) — the fallback for a pre-chain row whose
+                PreviousData was never populated, or one where PreviousData
+                failed to decode.
+             3. Else `null` — genuinely nothing recorded before this
+                revision: the song's very first revision, or an install with
+                no earlier row at all.
+           `beforeSource` names which rung answered as a VOCABULARY STRING
+           ('previousData' | 'priorRevision' | 'none') — never a boolean pair
+           (rule #20's discipline applied here in miniature) — so the client
+           can render "No earlier state recorded" for 'none' without
+           re-deriving which case it is.
+
+           `after` (this row's own NewData) 409s with the same "no snapshot"
+           wording revision_restore uses (below) when it is NULL/undecodable
+           — there is nothing to diff either side against. `before` failing
+           to resolve past rung 1/2 is NOT an error — it degrades to
+           beforeSource:'none', a designed rendering (plan §A.1), never a
+           thrown failure.
+
+           Three snapshot SHAPES coexist in NewData/PreviousData (see
+           ed2_touchRevision()'s doc-block below): the v2 full snapshot
+           `{song:{...}, components, credits, tags, links}`, a bare
+           tblSongs-row (the pre-#1743 v1 shape), or an old editor-payload
+           lowercase-keys shape. This endpoint returns whichever shape each
+           side actually is, untouched — normalising/diffing that is the
+           CLIENT's job (diffSnapshots() in v2/revisions-tab.js), never
+           this endpoint's. ---- */
+    case 'revision_get': {
+        $revisionId   = (int)($_GET['revisionId'] ?? 0);
+        $expectSongId = trim((string)($_GET['songId'] ?? ''));   // optional defense-in-depth
+        if ($revisionId <= 0) { ed2_respond(['ok' => false, 'error' => 'revisionId is required.'], 400); }
+
+        $sel = $db->prepare(
+            'SELECT r.Id, r.SongId, r.Action, r.CreatedAt, r.UserId, u.Username, r.PreviousData, r.NewData
+               FROM tblSongRevisions r LEFT JOIN tblUsers u ON u.Id = r.UserId
+              WHERE r.Id = ? LIMIT 1'
+        );
+        $sel->bind_param('i', $revisionId);
+        $sel->execute();
+        $row = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$row) { ed2_respond(['ok' => false, 'error' => 'Revision not found.'], 404); }
+
+        $songId = (string)$row['SongId'];
+        /* Guard against a client passing a revisionId from a different song —
+           the same defence-in-depth revision_restore applies (below,
+           $expectSongId). */
+        if ($expectSongId !== '' && $expectSongId !== $songId) {
+            ed2_respond(['ok' => false, 'error' => 'Revision does not belong to the expected song.'], 409);
+        }
+
+        $after = $row['NewData'] !== null ? json_decode((string)$row['NewData'], true) : null;
+        if (!is_array($after)) {
+            /* Same "no snapshot" semantics revision_restore uses below —
+               nothing to diff either side against. */
+            ed2_respond(['ok' => false, 'error' => 'This revision has no snapshot to restore.'], 409);
+        }
+
+        /* The before-snapshot ladder — see the doc-block above for the full
+           reasoning. $beforeSource stays null until a rung actually answers;
+           the response coalesces null -> the 'none' vocabulary string right
+           at the end (below), so 'none' never has to be a placeholder default
+           threaded through the middle of this logic — it is purely the
+           terminal, nothing-answered case, textually and logically last.
+
+           Rung 1: this row's own chained PreviousData. */
+        $before       = null;
+        $beforeSource = null;
+        if ($row['PreviousData'] !== null) {
+            $decodedPrev = json_decode((string)$row['PreviousData'], true);
+            if (is_array($decodedPrev)) {
+                $before       = $decodedPrev;
+                $beforeSource = 'previousData';
+            }
+        }
+        /* Rung 2: the immediately older revision row for this SongId, by the
+           SAME (CreatedAt, Id) DESC ordering revision_list uses — only
+           reached when rung 1 didn't answer (PreviousData NULL or
+           undecodable). */
+        if ($beforeSource === null) {
+            $createdAt = (string)$row['CreatedAt'];
+            $prior = $db->prepare(
+                'SELECT NewData FROM tblSongRevisions
+                  WHERE SongId = ? AND (CreatedAt < ? OR (CreatedAt = ? AND Id < ?))
+                  ORDER BY CreatedAt DESC, Id DESC LIMIT 1'
+            );
+            $prior->bind_param('sssi', $songId, $createdAt, $createdAt, $revisionId);
+            $prior->execute();
+            $priorRow = $prior->get_result()->fetch_assoc();
+            $prior->close();
+            if ($priorRow && $priorRow['NewData'] !== null) {
+                $decodedPrior = json_decode((string)$priorRow['NewData'], true);
+                if (is_array($decodedPrior)) {
+                    $before       = $decodedPrior;
+                    $beforeSource = 'priorRevision';
+                }
+            }
+        }
+        /* Rung 3 (implicit, resolved by the ?? below): neither rung
+           answered — $before stays null, $beforeSource is reported as
+           'none'. */
+
+        ed2_respond([
+            'ok'       => true,
+            'revision' => [
+                'id'        => (int)$row['Id'],
+                'action'    => (string)$row['Action'],
+                'createdAt' => (string)$row['CreatedAt'],
+                'userId'    => $row['UserId'] !== null ? (int)$row['UserId'] : null,
+                'username'  => $row['Username'] !== null ? (string)$row['Username'] : null,
+            ],
+            'after'        => $after,
+            'before'       => $before,
+            'beforeSource' => $beforeSource ?? 'none',
+        ]);
         break;
     }
 

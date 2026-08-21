@@ -467,6 +467,103 @@ if (!is_file($v1DispatchFile)) {
        not a gap to fail on. */
 }
 
+/* =============================================================================
+ * 4. revision_get — the before-snapshot resolution LADDER (#1628 item 4)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * revision_get answers "what did the song look like right before this edit,
+ * and right after it". The "right before" half isn't always stored directly —
+ * the server has to try a couple of things, in a specific order, before it
+ * gives up and says "nothing recorded". This section checks that the order
+ * really is what the doc-block claims.
+ *
+ * WHY A SOURCE-TEXT CHECK, AND WHY A GENEROUS WINDOW (not the whole file)
+ * ------------------------------------------------------------------------
+ * There is no live DB in this test run to exercise the three rungs
+ * behaviourally (PreviousData present / PreviousData absent with an older
+ * row / no older row at all), so this — like section 1's X-Requested-With
+ * check — verifies the SHAPE of the handler source instead: the three
+ * `beforeSource` vocabulary strings ('previousData' | 'priorRevision' |
+ * 'none') must all appear inside the `revision_get` case, in that source
+ * order. Isolating the case body (rather than grepping the whole file) stops
+ * an unrelated case elsewhere from making this pass vacuously; requiring
+ * >= 300 chars is this test's own recorded lesson (line ~199 above) that a
+ * narrow window silently misses real source.
+ *
+ * WHY 'none' MUST BE THE STRING'S *LAST* OCCURRENCE, NOT ITS FIRST
+ * -------------------------------------------------------------------
+ * A naive implementation could default `$beforeSource` to the literal
+ * 'none' up front and only overwrite it on success — which would put the
+ * word 'none' EARLIEST in the source, ahead of 'previousData', even though
+ * it is logically the LAST rung. That shape would fail this ordering
+ * assertion on otherwise-correct code (the exact rule #34 trap: "a guard
+ * that fails on correct code gets weakened or deleted rather than fixed").
+ * The shipped handler avoids this by keeping `$beforeSource` as PHP `null`
+ * through both rungs and only writing the literal 'none' once, via
+ * `?? 'none'`, at the point the response is built — so 'none' is both
+ * textually and logically last. This assertion is written to match THAT
+ * shape; if a future edit needs an early 'none' default, this assertion (not
+ * the code) should be revisited.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   invert the ladder (assign 'priorRevision' before 'previousData' in
+ *   source order) -> the ordering assertion below goes RED. Reverted -> GREEN.
+ * ============================================================================= */
+
+echo "\n#1628 item 4 — revision_get before-snapshot resolution ladder\n\n";
+
+/* Isolate the `case 'revision_get': { ... }` block, comments stripped first
+   so the literal vocabulary words appearing in this case's own doc-block
+   prose (which lists all three, in order, as documentation) cannot satisfy
+   the assertion in place of the actual resolution code. */
+$apiNoComments = preg_replace('#/\*[\s\S]*?\*/#', '', $apiSrc) ?? $apiSrc;
+$caseStart = strpos($apiNoComments, "case 'revision_get':");
+$revisionGetBody = '';
+if ($caseStart !== false) {
+    if (preg_match('/\n    case \'/', $apiNoComments, $mEnd, PREG_OFFSET_CAPTURE, $caseStart + 1)) {
+        $revisionGetBody = substr($apiNoComments, $caseStart, $mEnd[0][1] - $caseStart);
+    } else {
+        $revisionGetBody = substr($apiNoComments, $caseStart);
+    }
+}
+
+check("api2.php has a 'revision_get' case", $revisionGetBody !== '');
+check(
+    "revision_get's isolated case body is a real handler, not a stub (>= 300 chars — "
+        . 'this test\'s own recorded lesson about generous regex windows)',
+    strlen($revisionGetBody) >= 300
+);
+
+$posPreviousData  = strpos($revisionGetBody, "'previousData'");
+$posPriorRevision = strpos($revisionGetBody, "'priorRevision'");
+$posNone          = strrpos($revisionGetBody, "'none'");   // LAST occurrence — see doc-block above
+check(
+    "revision_get's handler names all three beforeSource rungs: 'previousData', 'priorRevision', 'none'",
+    $posPreviousData !== false && $posPriorRevision !== false && $posNone !== false
+);
+check(
+    'revision_get resolves the before-snapshot ladder in source order: '
+        . "previousData -> priorRevision -> none (rule #20 vocabulary discipline; rule #35 — "
+        . 'the server resolves this chain ONCE, the client never re-implements it)',
+    $posPreviousData !== false && $posPriorRevision !== false && $posNone !== false
+        && $posPreviousData < $posPriorRevision && $posPriorRevision < $posNone
+);
+
+/* The client side of the same pair: getRevision() exists beside listRevisions
+   and asks for the 'revision_get' action (already proven to be a real
+   api2.php case by section 2's client<->server action check above — this
+   just pins the method's existence and its action-name literal, the same
+   shape section 1 uses for the write helpers). */
+check(
+    "v2 api-client exposes getRevision() calling the 'revision_get' action",
+    (bool)preg_match(
+        "/getRevision\s*:\s*\([^)]*\)\s*=>\s*getJson\(\s*'revision_get'/",
+        $client
+    )
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
