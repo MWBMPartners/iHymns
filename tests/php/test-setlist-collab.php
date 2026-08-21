@@ -194,10 +194,16 @@ $arr = setlistCollabSanitiseSongs([[
 _scAssert($arr[0]['arrangement'] === [0, 2, 5],
     'arrangement keeps only non-negative ints (negatives/strings/floats dropped)');
 
-$capped = setlistCollabSanitiseSongs(
+/* #1662 — the sanitiser NO LONGER SLICES. It is pure shape-cleaning now; the
+   200-song cap became a caller-side 413 REJECTION (see section 7 below). 250
+   valid entries in → 250 out, so the caller — not this shared helper — is where
+   an over-cap payload is refused, visibly, before anything is stored. */
+$uncapped = setlistCollabSanitiseSongs(
     array_map(static fn(int $i): array => ['id' => 'MP-' . $i], range(1, 250))
 );
-_scAssert(count($capped) === 200, 'entries are capped at 200 (matches the sync cap)');
+_scAssert(count($uncapped) === 250, 'the sanitiser does NOT slice (250 in → 250 out) — #1662');
+_scAssert(setlistCollabMaxSongs() === 200,
+    'setlistCollabMaxSongs() is 200 — the product cap, in ONE owner-changeable place');
 
 /* ====================================================================== *
  * 4. STRUCTURAL — the legacy trio is GONE
@@ -342,6 +348,80 @@ _scAssert(str_contains($sharedWithMe, 'SongsJson'),
     'shared_with_me returns the songs, so a client can actually render the list');
 _scAssert(str_contains($sharedWithMe, 'setlistCollabNormalisePermission('),
     'shared_with_me folds Permission through the shared normaliser (fails closed)');
+
+/* ====================================================================== *
+ * 7. #1662 — THE SONGS CAP IS A 413 REJECTION, NEVER A SILENT SLICE
+ *
+ * The sanitiser was de-sliced (section 3), so EVERY write path must now reject
+ * an over-cap payload with a 413 BEFORE storing it, or the cap is simply gone
+ * and the tail is stored rather than truncated. Rule #34: the call sites are
+ * ENUMERATED FROM THE SOURCE (never a typed list of three) so a future fourth
+ * write path that forgets the guard is caught automatically. Comment mentions
+ * of the function name are stripped first so a prose reference is not mistaken
+ * for a call.
+ * ====================================================================== */
+
+echo "\n-- #1662 songs cap is a rejection, not a slice --\n";
+
+/* The shared sanitiser owns no slice any more (#1671 posture, extended).
+   Checked against CODE only — the de-slice doc-block legitimately mentions
+   `array_slice()` in prose to explain what was removed, and a guard that
+   banned the word outright would fail on correct code (rule #34's second
+   edge), so block comments are stripped first. */
+$collabNoComments = (string)preg_replace('!/\*.*?\*/!s', '', $collabSrc);
+_scAssert(!str_contains($collabNoComments, 'array_slice'),
+    'setlist_collab.php CODE contains NO array_slice (the sanitiser no longer truncates)');
+
+/* Strip block comments so the two prose mentions of the function (in the
+   dispatcher doc-blocks) are not counted as call sites. */
+$apiNoComments = (string)preg_replace('!/\*.*?\*/!s', '', $apiSrc);
+
+/* Enumerate the call sites straight from the (comment-stripped) source. */
+$callOffsets = [];
+$scanFrom = 0;
+while (($p = strpos($apiNoComments, 'setlistCollabSanitiseSongs(', $scanFrom)) !== false) {
+    $callOffsets[] = $p;
+    $scanFrom = $p + 1;
+}
+_scAssert(count($callOffsets) >= 3,
+    'the three shipping write paths call setlistCollabSanitiseSongs() (derivation sanity — a strip that finds fewer is broken)');
+
+/* Each call's enclosing `case '<action>':` arm must guard BEFORE the call:
+   setlistCollabMaxSongs() + a 413 + the machine-readable 'too_many_songs'. */
+foreach ($callOffsets as $callPos) {
+    $caseKw = strrpos(substr($apiNoComments, 0, $callPos), "case '");
+    if ($caseKw === false) {
+        _scAssert(false, "call at offset $callPos has no enclosing case arm");
+        continue;
+    }
+    $labelStart = $caseKw + strlen("case '");
+    $labelEnd   = strpos($apiNoComments, "'", $labelStart);
+    $action     = substr($apiNoComments, $labelStart, $labelEnd - $labelStart);
+    $arm        = _scCaseBody($apiNoComments, $action);
+    $callInArm  = strpos($arm, 'setlistCollabSanitiseSongs(');
+    $guardPos   = strpos($arm, 'too_many_songs');
+    $maxPos     = strpos($arm, 'setlistCollabMaxSongs(');
+    $has413     = str_contains($arm, '413');
+    _scAssert(
+        $guardPos !== false && $maxPos !== false && $has413
+        && $callInArm !== false && $guardPos < $callInArm && $maxPos < $callInArm,
+        "the `$action` handler rejects an over-cap payload (setlistCollabMaxSongs + 413 + too_many_songs) BEFORE it sanitises"
+    );
+}
+
+/* The ONLY surviving songs slice is the marked legacy protocol-1 carve-out,
+   gated on !$clientProtocol2 (protocol-2 clients were 413'd above, never
+   sliced). This is what keeps the native apps byte-identical. */
+_scAssert(str_contains($apiSrc, 'legacy-protocol1-slice'),
+    'the one surviving songs slice carries the legacy-protocol1-slice marker');
+$slicePos = strpos($apiNoComments, 'array_slice($songsIn');
+_scAssert($slicePos !== false,
+    'the legacy slice operates on $songsIn (the raw pre-sanitise array)');
+if ($slicePos !== false) {
+    $window = substr($apiNoComments, max(0, $slicePos - 220), 220);
+    _scAssert(str_contains($window, '!$clientProtocol2'),
+        'the legacy slice is gated on !$clientProtocol2');
+}
 
 /* ====================================================================== *
  * Summary

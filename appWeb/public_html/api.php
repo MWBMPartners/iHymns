@@ -3600,6 +3600,12 @@ if ($action !== null) {
             if (userSyncBodyExceeds((string)$rawBody)) {
                 sendJson([
                     'error'    => 'Request too large. Your set lists were NOT changed.',
+                    /* #1662 — one branchable `reason` on every 413 in this
+                       family (rule #35: clients switch on status + reason, never
+                       on the human prose). Additive: a native decoder that reads
+                       only `error`/`maxBytes` ignores it (the `cap: null`
+                       precedent below). */
+                    'reason'   => 'body_too_large',
                     'maxBytes' => userSyncMaxBodyBytes(),
                 ], 413);
                 break;
@@ -3630,6 +3636,7 @@ if ($action !== null) {
                 if (is_array($planCheck) && setlistTemplatePlanExceedsCap($planCheck['plan'] ?? null)) {
                     sendJson([
                         'error'    => 'A set list plan has too many slots. Nothing was changed.',
+                        'reason'   => 'too_many_slots',   /* #1662 — see body_too_large above */
                         'maxSlots' => setlistTemplateMaxSlots(),
                     ], 413);
                     break 2;
@@ -3641,6 +3648,37 @@ if ($action !== null) {
                supports, not yet what this install can honour. */
             $clientProtocol2 = userSyncExplicitProtocol($body);
             $deletedIds      = userSyncSanitiseDeletedIds($body['deleted'] ?? null);
+
+            /* #1662 — THE SONGS CAP IS A REJECTION, NEVER A TRUNCATION (protocol 2).
+               ELI5: if any one set list in the payload holds more songs than the
+               limit, we refuse the WHOLE sync with a 413 and change nothing —
+               instead of the old behaviour of quietly keeping the first 200 and
+               dropping the rest where the user never sees it.
+
+               Raw count, BEFORE sanitising, mirroring the whole-body ceiling
+               above: the work is bounded before it is done, and the cap is on
+               what you SENT (a payload whose 201st entry is malformed is still
+               over-cap — the user has 201 songs on screen). The gate is the
+               client's protocol CLAIM (`$clientProtocol2`), unqualified by the
+               tombstone schema gate — a 413 rejection needs no table. Protocol-1
+               clients (the native apps — no `deleted` key) keep the historical
+               silent slice in the upsert loop below, byte-identical, until they
+               adopt protocol 2. `break 2` leaves the foreach AND the switch case,
+               exactly like the slot-cap guard above. */
+            if ($clientProtocol2) {
+                foreach ($localLists as $songsCheck) {
+                    if (is_array($songsCheck) && is_array($songsCheck['songs'] ?? null)
+                        && count($songsCheck['songs']) > setlistCollabMaxSongs()) {
+                        sendJson([
+                            'error'     => 'A set list has too many songs. Nothing was changed.',
+                            'reason'    => 'too_many_songs',
+                            'maxSongs'  => setlistCollabMaxSongs(),
+                            'setlistId' => userSyncSanitiseId($songsCheck['id'] ?? ''),
+                        ], 413);
+                        break 2;
+                    }
+                }
+            }
 
             /* Sync mode (WS-F #1018):
              *   'merge'   — union local + server, never delete (the safe
@@ -3856,8 +3894,23 @@ if ($action !== null) {
                    inline) logic into includes/setlist_collab.php so the
                    collaborative write path writes the identical shape into the
                    identical column — behaviour unchanged, one implementation
-                   instead of two that could drift. */
-                $cleanSongs = setlistCollabSanitiseSongs($list['songs'] ?? null);
+                   instead of two that could drift.
+
+                   legacy-protocol1-slice (#1662) — the sanitiser no longer
+                   slices (it "deliberately owns no array_slice()"), so the
+                   ONLY songs-array slice left anywhere in the app is this one.
+                   Protocol-1 clients (the native apps — no `deleted` key) keep
+                   today's silent truncation BYTE-FOR-BYTE; protocol-2 clients
+                   were already 413'd above, so for them an over-cap payload
+                   never reaches here (this branch is structurally unreachable
+                   over-cap). Slice BEFORE sanitise deliberately — sanitise-
+                   then-slice would store different bytes than today whenever a
+                   malformed entry precedes index 200. */
+                $songsIn = $list['songs'] ?? null;
+                if (!$clientProtocol2 && is_array($songsIn)) {
+                    $songsIn = array_slice($songsIn, 0, setlistCollabMaxSongs());
+                }
+                $cleanSongs = setlistCollabSanitiseSongs($songsIn);
 
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
@@ -11777,6 +11830,19 @@ if ($action !== null) {
                 sendJson(['error' => 'songs (array) required.'], 400);
                 break;
             }
+            /* #1662 — songs cap is a 413 rejection, never a slice. This is a
+               web-only collaborator surface (no native caller), so it is
+               UNCONDITIONAL — no protocol gate. Refused BEFORE any write, so a
+               staged over-cap array leaves the stored row untouched; the client
+               reverts to its last server-confirmed copy and toasts `maxSongs`. */
+            if (count($body['songs']) > setlistCollabMaxSongs()) {
+                sendJson([
+                    'error'    => 'This set list has too many songs. Nothing was changed.',
+                    'reason'   => 'too_many_songs',
+                    'maxSongs' => setlistCollabMaxSongs(),
+                ], 413);
+                break;
+            }
             try {
                 $db = getDbMysqli();
                 $authUserId = (int)$authUser['Id'];
@@ -11878,6 +11944,18 @@ if ($action !== null) {
             $tokShareId = sharedSetlistSafeShareId((string)($tokBody['shareId'] ?? ''));
             if ($tokShareId === '') { sendJson(['error' => 'Invalid or missing share id.'], 400); break; }
             if (!is_array($tokBody['songs'] ?? null)) { sendJson(['error' => 'songs (array) required.'], 400); break; }
+            /* #1662 — songs cap is a 413 rejection, never a slice. Web-only
+               edit-link surface (no native caller) → unconditional, refused
+               before any write; the client reverts its staged copy + toasts
+               maxSongs from the response body (rule #35). */
+            if (count($tokBody['songs']) > setlistCollabMaxSongs()) {
+                sendJson([
+                    'error'    => 'This set list has too many songs. Nothing was changed.',
+                    'reason'   => 'too_many_songs',
+                    'maxSongs' => setlistCollabMaxSongs(),
+                ], 413);
+                break;
+            }
 
             /* (2) per-TOKEN rate limit — a NAT-shared congregation is one IP, so
                keying on the IP would throttle a whole room; the token is the

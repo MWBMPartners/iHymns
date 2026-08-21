@@ -687,18 +687,47 @@ export class UserAuth {
 
             if (!res.ok) {
                 if (res.status === 401) this.clearCredentials();
-                /* #1661 — 413: the payload is too large to accept. Nothing on
-                   the server changed, so the local cache is intact and the
-                   user must be told, because unlike the truncation this
-                   replaced there is no partial success to mistake for one. */
+                /* #1661/#1662 — 413: the payload was refused whole; nothing on
+                   the server changed, so the local cache is intact and the user
+                   must be told (unlike the silent truncation this replaced,
+                   there is no partial success to mistake for one). Branch on the
+                   machine-readable `reason`, NEVER the prose (rule #35): a
+                   too_many_songs refusal names the offending list and its cap;
+                   anything else (body_too_large / too_many_slots / a non-JSON
+                   body) keeps the generic "too large" message. Latched once per
+                   session either way, so a wedged auto-sync can't storm toasts. */
                 if (res.status === 413 && !this._setlistTooLargeWarned) {
                     this._setlistTooLargeWarned = true;
-                    this.app.showToast?.(
-                        'Your set lists are too large to sync in one request. Nothing was changed — '
-                        + 'try removing a very large set list.',
-                        'danger',
-                        8000
-                    );
+                    let body = null;
+                    try { body = await res.json(); } catch (_e) { /* non-JSON 413 → generic below */ }
+                    if (body && body.reason === 'too_many_songs') {
+                        const max = Number(body.maxSongs) || null;
+                        /* Resolve the list's name from the local cache by the
+                           id the server echoed — the response carries no name
+                           (it changed nothing), and naming the list is what
+                           makes the message actionable. */
+                        const local = this.app.setList?.getAll?.() || [];
+                        const match = Array.isArray(local)
+                            ? local.find((l) => l && l.id === body.setlistId)
+                            : null;
+                        const named = match && match.name;
+                        this.app.showToast?.(
+                            (named
+                                ? `The set list “${named}” has too many songs`
+                                : 'One of your set lists has too many songs')
+                            + (max ? ` (limit ${max}).` : '.')
+                            + ' Nothing was changed — remove some songs and sync again.',
+                            'danger',
+                            8000
+                        );
+                    } else {
+                        this.app.showToast?.(
+                            'Your set lists are too large to sync in one request. Nothing was changed — '
+                            + 'try removing a very large set list.',
+                            'danger',
+                            8000
+                        );
+                    }
                 }
                 return null;
             }

@@ -333,10 +333,40 @@ function setlistCollabApplyOwnerLock(array $access, string $ownerState): array
 }
 
 /**
+ * The hard per-set-list songs cap (#1662 reopened).
+ *
+ * ELI5: the largest number of songs one set list is allowed to hold — go over
+ * it and the save is refused outright, nothing is quietly cut off.
+ *
+ * ONE function, not a magic number copy-pasted at each of the three call
+ * sites (`user_setlists_sync`, `setlist_collab_update`, `setlist_token_update`)
+ * — CLAUDE.md rule #22 ("one shared helper per decision"). Kept as a function
+ * rather than a `const` for the same double-include-safety reason
+ * `userSyncMaxBodyBytes()` in user_sync.php is a function: a bare top-level
+ * `const` would fatal if this file were ever required twice.
+ *
+ * VALUE: 200. A real service runs ~15–25 songs, so this is already an order
+ * of magnitude of headroom; `tblUserSetlists.SongsJson` is MEDIUMTEXT, so
+ * nothing about storage forces this number either way — it is a product
+ * choice, not a technical ceiling, which is exactly why it lives in one place
+ * an owner can change with a single-line edit rather than a grep-and-hope.
+ *
+ * @return int Maximum songs one set list may hold.
+ * @link https://www.php.net/manual/en/language.oop5.constants.php
+ */
+function setlistCollabMaxSongs(): int
+{
+    return 200;
+}
+
+/**
  * Sanitise a client-supplied setlist songs array into the stored shape.
  *
  * ELI5: keeps only the four things a set-list entry is allowed to say about a
- * song, trims them to fit, and throws away anything else the client sent.
+ * song, and trims them to fit — it does NOT decide how many entries are too
+ * many; that is a REJECTION the caller makes before this ever runs (#1662
+ * reopened — see setlistCollabMaxSongs() and the 413 guards at every call
+ * site).
  *
  * Extracted from `user_setlists_sync` in #1638 because the collaborative write
  * path (`setlist_collab_update`) writes the very same `tblUserSetlists.SongsJson`
@@ -344,21 +374,35 @@ function setlistCollabApplyOwnerLock(array $access, string $ownerState): array
  * invisible until a collaborator's write produced a row the owner's client
  * could not render. Behaviour is unchanged from the inline original.
  *
+ * ⚠️ #1662 REOPENED — THIS FUNCTION NO LONGER SLICES. It used to accept a
+ * `$max` parameter and silently `array_slice()` down to it — the exact
+ * "quietly keep only the first N and say nothing" shape #1661 already
+ * removed from the sync handler's deletion logic and #1671 removed from the
+ * service-plan cap. A caller that still needs the ORIGINAL "keep only the
+ * first 200, no error" behaviour for a legacy (protocol-1, no `deleted` key)
+ * client does that itself, explicitly, at the call site — see the
+ * `legacy-protocol1-slice` comment in api.php's `user_setlists_sync` — so the
+ * decision to ever silently drop the tail is visible where it is made, not
+ * buried inside a shared sanitiser every caller trusts blindly. This module
+ * "deliberately owns no array_slice()" (the #1671 posture, now extended
+ * here): the whole-body 4 MiB ceiling already bounds hostile input before
+ * this runs, and every caller is expected to have rejected an over-cap
+ * payload with a 413 already (setlistCollabMaxSongs()) before sanitising it.
+ *
  * Note what is deliberately DROPPED: `arrangementLabel` is a client-side
  * display convenience recomputed on render (setlist.js), so persisting it
  * would store a stale label forever.
  *
  * @param  mixed $songs Raw `songs` array from a request body (any type).
- * @param  int   $max   Hard cap on entries kept.
  * @return array<int,array<string,mixed>> Clean entries, re-indexed.
  */
-function setlistCollabSanitiseSongs($songs, int $max = 200): array
+function setlistCollabSanitiseSongs($songs): array
 {
     if (!is_array($songs)) {
         return [];
     }
     $clean = [];
-    foreach (array_slice($songs, 0, $max) as $s) {
+    foreach ($songs as $s) {
         if (!is_array($s) || empty($s['id'])) {
             continue;
         }

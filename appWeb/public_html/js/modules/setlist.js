@@ -884,6 +884,16 @@ export class SetList {
         /* Work on a COPY. Edits are staged locally and pushed explicitly, so
            an abandoned reorder never half-writes to the owner's list. */
         const songs = Array.isArray(shared.songs) ? shared.songs.map(s => ({ ...s })) : [];
+        /* #1662 — the last songs copy the SERVER confirmed for this list, kept
+           on the persistent `shared` object (this method re-renders itself on
+           every edit, so a closure-local snapshot would reset to the STAGED
+           state each render and be useless as a revert target). Seeded from the
+           loaded list on first render, advanced to res.data.songs on every
+           successful push, and the copy a refused push reverts to — mirrors the
+           token surface's `lastGoodSongs`. */
+        if (!Array.isArray(shared._serverSongs)) {
+            shared._serverSongs = songs.map(s => ({ ...s }));
+        }
         const canEdit = sharedCanWrite(shared);
         const locked = shared.locked === true;
 
@@ -1011,18 +1021,34 @@ export class SetList {
                 .then(r => r.json().then(j => ({ ok: r.ok, data: j })))
                 .then(res => {
                     if (!res.ok) {
-                        /* Re-render from the SERVER's copy so the UI never keeps
-                           showing a change the server refused (a view-only
-                           collaborator whose row was downgraded mid-session is
-                           the case that matters). */
-                        if (status) {
-                            status.innerHTML = `<span class="text-danger">${escapeHtml(res.data.error || 'Save failed.')}</span>`;
+                        /* #1662 — REVERT the staged songs to the last
+                           server-confirmed copy and re-render, THEN paint the
+                           error. The comment here always promised "re-render
+                           from the SERVER's copy" but the code only ever set the
+                           status text, so a refused change (a view-only
+                           downgrade, or an over-cap 413) stayed on screen and
+                           re-pushed the refused state on the next tap. Now it is
+                           actually undone locally. Branch the MESSAGE on the
+                           machine-readable reason, not the prose (rule #35). */
+                        shared.songs = shared._serverSongs.map(s => ({ ...s }));
+                        this.renderSharedSetListDetail(shared);
+                        const status2 = document.getElementById('shared-save-status');
+                        if (status2) {
+                            const msg = (res.status === 413 && res.data && res.data.reason === 'too_many_songs')
+                                ? `This set list has too many songs${res.data.maxSongs ? ` (limit ${res.data.maxSongs})` : ''}. Nothing was saved — remove some songs and try again.`
+                                : ((res.data && res.data.error) || 'Save failed.');
+                            status2.innerHTML = `<span class="text-danger">${escapeHtml(msg)}</span>`;
                         }
                         return false;
                     }
                     /* Keep the cached entry in step so Back → re-open shows the
-                       saved order without another fetch. Still memory-only. */
+                       saved order without another fetch. Still memory-only.
+                       #1662/rule #40 — adopt the SERVER's sanitised copy as the
+                       new confirmed baseline, so a later refusal reverts to what
+                       was actually stored, not to the pre-sanitise local array. */
                     shared.songs = Array.isArray(res.data.songs) ? res.data.songs : songs;
+                    shared._serverSongs = (Array.isArray(res.data.songs) ? res.data.songs : songs)
+                        .map(s => ({ ...s }));
                     if (status) status.innerHTML = '<span class="text-success">Saved.</span>';
                     return true;
                 })
@@ -3488,7 +3514,14 @@ export class SetList {
                             syncHeaderFromSongs();
                             renderEditRows();
                             if (editStatusEl) {
-                                editStatusEl.innerHTML = `<span class="text-danger">${escapeHtml((res.data && res.data.error) || 'Save failed.')}</span>`;
+                                /* #1662 — an over-cap 413 names the limit from
+                                   res.data.maxSongs (rule #35: the number reaches
+                                   the client ONLY via the response body — there
+                                   is deliberately no client-side cap constant). */
+                                const msg = (res.status === 413 && res.data && res.data.reason === 'too_many_songs')
+                                    ? `This set list has too many songs${res.data.maxSongs ? ` (limit ${res.data.maxSongs})` : ''}. Nothing was saved — remove some songs and try again.`
+                                    : ((res.data && res.data.error) || 'Save failed.');
+                                editStatusEl.innerHTML = `<span class="text-danger">${escapeHtml(msg)}</span>`;
                             }
                             return false;
                         }

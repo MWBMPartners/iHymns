@@ -381,8 +381,15 @@ check('syncSetlists() surfaces the tombstones on its result object',
    there is no partial success here to mistake for one. */
 check('syncSetlists() handles a 413 (over-size body) distinctly',
     !!syncSetlistsBody && /res\.status\s*===\s*413/.test(syncSetlistsBody));
+/* #1662 — window widened 400 → 1200. The 413 branch grew a reason-switch
+   (too_many_songs names the offending list from the response body, vs the
+   generic body_too_large message), so the first showToast now sits further
+   from the `413` token. Still a LOCAL window — it proves the 413 branch reaches
+   a toast, not silence — just sized to the real (correct) code rather than to
+   the old single-message branch (rule #34: widen a guard that fails on correct
+   code, don't delete it). */
 check('the 413 branch tells the user rather than failing silently',
-    !!syncSetlistsBody && /413[\s\S]{0,400}?showToast/.test(stripComments(syncSetlistsBody)));
+    !!syncSetlistsBody && /413[\s\S]{0,1200}?showToast/.test(stripComments(syncSetlistsBody)));
 
 /* Failure KINDS are distinguished by STATUS, never by matching the server's
    prose (rule #35 — reword a server sentence and the UI degrades silently).
