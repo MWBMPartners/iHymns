@@ -230,6 +230,11 @@ export function mountMetadataTab(container, opts) {
        module again (pickMode:'value', noun:{publisher,publishers}) —
        mirrors tuneDetach immediately above in every respect. */
     let holderDetach = null;
+    /* #1860 Phase 5 Commit 9 — teardown for the manual "Part of work"
+       typeahead (the SAME shared module again, pickMode:'value',
+       noun:{work,works} — mirrors tuneDetach/holderDetach immediately
+       above in every respect). */
+    let workDetach = null;
     /* #1849 — teardown for the language picker (js/modules/ietf-language-
        picker.js). Same render()-wipes-the-container reason as placeDetach/
        tuneDetach immediately above — BUT the module itself returns no
@@ -523,6 +528,7 @@ export function mountMetadataTab(container, opts) {
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (holderDetach) { try { holderDetach(); } catch (_e) {} holderDetach = null; }
+        if (workDetach) { try { workDetach(); } catch (_e) {} workDetach = null; }
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
@@ -620,6 +626,24 @@ export function mountMetadataTab(container, opts) {
                     if (field === 'firstPublishedYear') { refreshPdHints(); }
                 });
                 if (field === 'copyrightYears') { copyrightYearsInput = input; }
+                if (field === 'ccli' || field === 'iswc') {
+                    /* #1860 Phase 5 Commit 9 item (a) — the auto-link SIDE-EFFECT
+                       hook (#1679 discipline): fires on `change` (blur/Enter)
+                       ONLY, never coupled to the debounced `input` save above,
+                       which still owns saving the field itself unchanged. A
+                       SEPARATE call (not a read of that save's own
+                       `res.workAutolink`, which `metadata_field_update` already
+                       returns as a go-live safety net, api2.php:2512-2524) —
+                       the badge update is deliberately driven by ONE commit-time
+                       request per the locked spec, not by every keystroke-pause
+                       autosave. triggerWorkAutolink() is declared further down
+                       in this render() pass; safe to reference here — a
+                       `function` declaration is hoisted to the top of its
+                       enclosing scope, the same reason updateDerivedPreview()/
+                       refreshPdHints() above are already callable before their
+                       own declarations appear later in this file. */
+                    input.addEventListener('change', () => { triggerWorkAutolink(); });
+                }
                 col.append(lab, input);
             }
             (BLOCKS[block] || identity.row).appendChild(col);
@@ -840,6 +864,205 @@ export function mountMetadataTab(container, opts) {
         });
         icol.append(ilab, iinput);
         composition.row.appendChild(icol);
+
+        /* ---- "Part of work" (#1860 Phase 5 Commit 9, design §3.7 items 1-3) ----
+           Composition IDs block, last row: CCLI/ISWC (FIELDS loop above)
+           auto-link into a Work — item (a)'s `change` hook two blocks up
+           calls triggerWorkAutolink() below; item (b) is a manual
+           find-or-create picker for identifier-less hymns, the SAME
+           Copyright Holder attach shape a few blocks up (~:909-923
+           pre-Commit-9); item (c) is a read-only "Medley of: A, B, C" line
+           when a linked Work is itself a medley. renderWorkInfo() reads
+           `song.works` — the LEAN snapshot attach ed2_buildSongSnapshot()
+           now carries (api2.php D6, nested onto the song row exactly like
+           SongData::getSongById()'s own $row['works'] attach) — so a song
+           already linked when the editor opens shows its badge with NO
+           extra request; the autolink hook and the manual picker each
+           merge their response into `song.works` in place and re-call
+           renderWorkInfo() (rule #35 — adopt what the server stored). */
+        const workCol = document.createElement('div');
+        workCol.className = 'col-12';
+
+        const workInfoWrap = document.createElement('div');
+        workInfoWrap.className = 'mb-2';
+        workInfoWrap.style.display = 'none';
+
+        /** Redraw the read-only "Part of work" / "Medley of" lines from
+         *  `song.works` (mutated in place by applyWorkResult() below). */
+        function renderWorkInfo() {
+            workInfoWrap.innerHTML = '';
+            const works = Array.isArray(song.works) ? song.works : [];
+            if (!works.length) { workInfoWrap.style.display = 'none'; return; }
+            workInfoWrap.style.display = '';
+            works.forEach((w) => {
+                const line = document.createElement('div');
+                line.className = 'form-text small mb-1';
+                line.appendChild(document.createTextNode('Part of work: '));
+                const link = document.createElement('a');
+                /* target=_blank + noopener/noreferrer — same-site but leaves
+                   THIS song mid-edit; opening in a new tab keeps the editor
+                   session alive, matching manage/works.php's own link out
+                   to a public /work/<slug> page (works.php:1137-1139). */
+                link.href = '/work/' + encodeURIComponent(w.slug || '');
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = w.title || ('Work #' + w.id);
+                line.appendChild(link);
+                const n = Number(w.songCount) || 0;
+                line.appendChild(document.createTextNode(' (' + n + (n === 1 ? ' song' : ' songs') + ')'));
+                workInfoWrap.appendChild(line);
+
+                /* Item (c) — read-only, names linked to /work/<slug>. */
+                if (Array.isArray(w.constituents) && w.constituents.length) {
+                    const mLine = document.createElement('div');
+                    mLine.className = 'form-text small mb-1';
+                    mLine.appendChild(document.createTextNode('Medley of: '));
+                    w.constituents.forEach((c, i) => {
+                        if (i > 0) { mLine.appendChild(document.createTextNode(', ')); }
+                        const cLink = document.createElement('a');
+                        cLink.href = '/work/' + encodeURIComponent(c.slug || '');
+                        cLink.target = '_blank';
+                        cLink.rel = 'noopener noreferrer';
+                        cLink.textContent = c.title || ('Work #' + c.id);
+                        mLine.appendChild(cLink);
+                    });
+                    workInfoWrap.appendChild(mLine);
+                }
+            });
+
+            /* Plain "Manage works" link, NO query params (SD9/rule #33) —
+               works.php's own GET handling accepts only action/q/limit; an
+               ?id=/?edit= here would be an unhonoured deep link, exactly
+               the regression rule #33 exists to prevent. */
+            const manageLine = document.createElement('div');
+            manageLine.className = 'form-text small';
+            const manageLink = document.createElement('a');
+            manageLink.href = '/manage/works';
+            manageLink.target = '_blank';
+            manageLink.rel = 'noopener noreferrer';
+            manageLink.textContent = 'Manage works';
+            manageLine.appendChild(manageLink);
+            workInfoWrap.appendChild(manageLine);
+        }
+        renderWorkInfo();
+
+        /* Merge a song_work_autolink / song_work_set response into
+           `song.works` in place (rule #35 read-back — never assume the
+           request's own claimed value survived) and redraw. Only a
+           successful LINK carries a workId; an un-linked/not-ready
+           response (`res.linked === false`, e.g. no CCLI/ISWC to match on
+           yet) leaves `song.works` untouched. */
+        function applyWorkResult(res) {
+            if (!res || !res.workId) { return; }
+            const works = Array.isArray(song.works) ? song.works.slice() : [];
+            const idx = works.findIndex((w) => Number(w.id) === Number(res.workId));
+            const shaped = {
+                id:           res.workId,
+                title:        res.workTitle,
+                slug:         res.workSlug,
+                iswc:         idx >= 0 ? works[idx].iswc : null,
+                isCanonical:  idx >= 0 ? works[idx].isCanonical : false,
+                songCount:    res.songCount,
+                constituents: idx >= 0 ? works[idx].constituents : [],
+            };
+            if (idx >= 0) { works[idx] = shaped; } else { works.push(shaped); }
+            song.works = works;
+            renderWorkInfo();
+        }
+
+        /* Item (a) — the CCLI/ISWC `change` listener above calls this.
+           Server-authoritative (api-client.js's autolinkWork doc-comment):
+           this client sends only songId, never a locally-typed identifier
+           value. */
+        function triggerWorkAutolink() {
+            api.autolinkWork(songId).then((res) => {
+                if (res.conflict) { toast(res.conflict, 'warning'); }
+                if (res.linked) { applyWorkResult(res); }
+            }).catch((e) => {
+                /* rule #35 — branch on STATUS, never the error sentence.
+                   409 = the work-identity migration cards aren't applied
+                   yet on this install: hide the affordance silently,
+                   exactly like structure-tab.js's own SourceWorkId picker
+                   degrades on the same install. Any OTHER failure is a
+                   background enrichment hook, not the field save itself
+                   (which already succeeded via its own debounced path) —
+                   logged for diagnosis, never a distracting toast. */
+                if (e && e.status === 409) { return; }
+                console.error('[metadata-tab] work autolink failed:', e);
+            });
+        }
+
+        /* Item (b) — manual "Part of work" picker, the Copyright Holder
+           attach shape (~:909-923 above) over searchWorks. Adds a link
+           rather than editing one in place (a song may legitimately belong
+           to more than one Work), so the box clears after a successful
+           commit instead of holding the picked value like Tune/Holder do. */
+        const wlab = document.createElement('label');
+        wlab.className = 'form-label small mb-1';
+        wlab.htmlFor = 'meta-partOfWork';
+        wlab.textContent = 'Link to a work…';
+        const wInput = document.createElement('input');
+        wInput.type = 'text';
+        wInput.className = 'form-control form-control-sm';
+        wInput.id = 'meta-partOfWork';
+        wInput.placeholder = 'Search an existing work, or type a new title…';
+        wInput.value = '';
+        const wHidden = document.createElement('input');
+        wHidden.type = 'hidden';
+
+        /**
+         * Persist a manual work link via the ONE write (`setSongWork`,
+         * `song_work_set` server-side) — pick -> {workId}; a typed-but-
+         * never-picked title -> {title}, the endpoint's OWN find-or-create
+         * mode (never a client-side mint, rule #43).
+         *
+         * @param {?number} workId  A typeahead pick's claimed id, else null.
+         * @param {string}  title   The typed text (used only when workId is null).
+         */
+        function commitWorkPick(workId, title) {
+            const opts = workId ? { workId: workId } : { title: title };
+            api.setSongWork(songId, opts).then((res) => {
+                if (res.conflict) { toast(res.conflict, 'warning'); }
+                applyWorkResult(res);
+                wInput.value = '';
+                wHidden.value = '';
+            }).catch((e) => {
+                if (e && e.status === 409) { return; }   // un-migrated — hide silently (rule #35)
+                toast('Could not link work: ' + e.message, 'danger');
+            });
+        }
+
+        wInput.addEventListener('input', () => {
+            /* Free-typing invalidates a previously-picked workId — the same
+               contract the Tune/Copyright Holder inputs use above. */
+            wHidden.value = '';
+        });
+        wInput.addEventListener('change', () => {
+            const typed = wInput.value.trim();
+            if (typed === '') { return; }   // nothing typed — no CLEAR mode exists here, unlike Tune/Holder
+            const pickedId = wHidden.value ? Number(wHidden.value) : null;
+            commitWorkPick(pickedId, typed);
+        });
+
+        if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+            workDetach = window.iHymnsPlaceSearch.attach(wInput, {
+                hiddenIdInput: wHidden,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'work', plural: 'works' },
+                // #1855-style: extensionless, matches every sibling searchUrl on this shell.
+                searchUrl: (q) => '/manage/editor/api2?action=work_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.title,
+                    hint: s.iswc || s.ccli || '',
+                })),
+                onSelect: (c) => { commitWorkPick(c.id, c.display_name); },
+            }) || null;
+        }
+
+        workCol.append(workInfoWrap, wlab, wInput, wHidden);
+        composition.row.appendChild(workCol);
 
         /* ==================================================================
          * Publication & Copyright block (#1862 issue §2 order):
@@ -1340,6 +1563,7 @@ export function mountMetadataTab(container, opts) {
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (holderDetach) { try { holderDetach(); } catch (_e) {} holderDetach = null; }
+        if (workDetach) { try { workDetach(); } catch (_e) {} workDetach = null; }
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }

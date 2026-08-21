@@ -1355,11 +1355,110 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
 }
 
 /**
+ * #1860 Phase 5 Commit 9 (D6, design §3.7 items 1-3) — a song's Work
+ * membership(s) in the LEAN shape Editor2's "Part of work" line needs:
+ * {id,title,slug,iswc,isCanonical,songCount,constituents}. Deliberately NOT
+ * `SongData::_worksMap()`'s heavier public-page shape (sibling members +
+ * work-level external links, `SongData.php:5650`) — this consumer only ever
+ * renders the badge text + a read-only "Medley of: A, B, C" line, never the
+ * member list, so pulling that extra data here would be dead weight on
+ * every editor load. `songCount` mirrors `work_search`'s `UsageCount`
+ * (`:3612` above) — a live count of every song the Work is linked to, not
+ * just "1" for the row just fetched.
+ *
+ * ELI5: "which Work(s), if any, does this song belong to, and what does
+ * each contain if it's a medley?" — just enough to draw one line per Work.
+ *
+ * Gated on `ed2_worksTableExists()` (mirrors `SongData::_hasWorksSchema()`'s
+ * bare-`tblWorks`-existence probe, `SongData.php:5406`) — `tblWorkSongs` is
+ * created BY THE SAME "works" migration card as `tblWorks`
+ * (`work_admin.php`'s `workAdminReady()` doc-block), so the one probe is
+ * enough to guarantee the JOIN below won't throw under STRICT on an
+ * un-migrated install; `[]` there, same as `_worksMap()`. Constituents are
+ * attached via the SHARED bulk `workMedleyConstituentsMap()` core the
+ * public song page (Commit 7) and `/manage/works` (Commit 6) both use
+ * (rule #22 — never a second inline medley query), itself gated on
+ * `workMedleyReady()` (a SEPARATE migration card from `tblWorks`/
+ * `tblWorkSongs` — an install can have one without the other).
+ *
+ * @return list<array{id:int,title:string,slug:string,iswc:?string,
+ *                     isCanonical:bool,songCount:int,
+ *                     constituents:list<array{id:int,title:string,slug:string,sortOrder:int}>}>
+ */
+function ed2_songWorksLean(\mysqli $db, string $songId): array {
+    if (!ed2_worksTableExists($db)) { return []; }
+
+    $wq = $db->prepare(
+        'SELECT w.Id AS Id, w.Title AS Title, w.Slug AS Slug, w.Iswc AS Iswc,
+                ws.IsCanonical AS IsCanonical,
+                (SELECT COUNT(*) FROM tblWorkSongs ws2 WHERE ws2.WorkId = w.Id) AS SongCount
+           FROM tblWorkSongs ws
+           JOIN tblWorks w ON w.Id = ws.WorkId
+          WHERE ws.SongId = ?
+          ORDER BY w.Title ASC'
+    );
+    $wq->bind_param('s', $songId);
+    $wq->execute();
+    $wr = $wq->get_result();
+    $works   = [];   // Id -> shaped row, so step 2 below can key back in by id
+    $workIds = [];
+    while ($row = $wr->fetch_assoc()) {
+        $wid = (int)$row['Id'];
+        $workIds[] = $wid;
+        $works[$wid] = [
+            'id'           => $wid,
+            'title'        => (string)$row['Title'],
+            'slug'         => (string)$row['Slug'],
+            'iswc'         => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+            'isCanonical'  => (bool)$row['IsCanonical'],
+            'songCount'    => (int)$row['SongCount'],
+            'constituents' => [],
+        ];
+    }
+    $wq->close();
+    if (!$works) { return []; }
+
+    /* Step 2 — medley constituents, batched across every Work surfaced above
+       in ONE query (the same N+1-avoidance the bulk map's own doc-block
+       names, `work_admin.php:1230-1236`). A medley id with no constituent
+       rows is simply absent from the map — `?? []` below leaves that
+       Work's `constituents` at the [] it was seeded with. */
+    if (workMedleyReady($db)) {
+        $constMap = workMedleyConstituentsMap($db, $workIds);
+        foreach ($constMap as $mid => $list) {
+            if (!isset($works[$mid])) { continue; }
+            $works[$mid]['constituents'] = array_map(static fn(array $c): array => [
+                'id'        => $c['workId'],
+                'title'     => $c['title'],
+                'slug'      => $c['slug'],
+                'sortOrder' => $c['sortOrder'],
+            ], $list);
+        }
+    }
+
+    return array_values($works);
+}
+
+/**
  * Build the full editable song record — { song, components, credits, tags, links }
  * — in the SAME shapes load_song returns (minus media, which is a separate file
  * lifecycle). The single source for BOTH the load_song hydration and the
  * tblSongRevisions snapshot, so a restored snapshot re-hydrates the editor
  * identically. Returns null if the song is gone.
+ *
+ * `$song['works']` (#1860 Phase 5 Commit 9) mirrors `SongData::getSongById()`'s
+ * OWN exact attach convention (`$row['works'] = $worksMap[$songId] ?? [];`,
+ * `SongData.php:4442-4443`) rather than a new sibling top-level snapshot key —
+ * so `store.set('song', data.song)` (editor2.php's existing `loadSong()`,
+ * unchanged) already carries it to the client with no new store wiring, and
+ * metadata-tab.js's existing `store.subscribe('song', render)` already
+ * re-renders on it. RESTORE-SAFETY: `ed2_applySongSnapshot()` below writes
+ * `tblSongs` scalars ONLY for the columns named in `ED2_META_FIELDS`
+ * (`:464-` above) via `array_key_exists($column, $songRow)` per named
+ * column — 'works' is not, and never will be, one of those keys, so this
+ * extra array on `$songRow` is silently ignored on every restore/duplicate
+ * path (`ed2_applySongSnapshot()`, `duplicate_song`) exactly like the
+ * un-plumbed `IsDeleted`/every other non-ED2_META_FIELDS column already is.
  */
 function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     /* @deleted-visible: editor load + revision snapshot (#1694) — a curator
@@ -1379,6 +1478,12 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     /* #1235 P4/C5 — components in the editor/snapshot shape from the AUTHORITATIVE
        tblLyricLines (drop-safe), so the revision NewData + v2 load are line-sourced. */
     $components = ed2_currentComponents($db, $songId);
+
+    /* #1860 Phase 5 Commit 9 (D6) — this song's Work membership(s), read-only
+       in Editor2's "Part of work" line. See ed2_songWorksLean()'s doc-block
+       for the shape + gating; see THIS function's own doc-block for why it
+       is attached onto $song rather than as a new sibling snapshot key. */
+    $song['works'] = ed2_songWorksLean($db, $songId);
 
     $credits = [];
     $creditNames = [];   // distinct names credited on this song, any role

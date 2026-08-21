@@ -319,18 +319,22 @@ return [
          * includes/work_admin.php's workFindOrLinkByIdentifier() /
          * workLinkPlan() — no decision logic lives in api2.php itself.
          *
-         * Self-cleaning expected the moment the Editor2 follow-up wires
+         * Self-cleaning happened the moment the Editor2 follow-up wired
          * metadata-tab.js's CCLI/ISWC commit listener + the "Part of work"
-         * picker (design §3.7) — the same F5/F6/1g pattern this file's
-         * history already proves out.
+         * picker (design §3.7, #1907 Phase-5 Commit 9) — the same F5/F6/1g
+         * pattern this file's history already proves out; see the removal
+         * note just below.
          * --------------------------------------------------------------- */
-        'song_work_autolink'                    => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 1) is a tracked follow-up build',
-        'song_work_set'                         => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
         /* 'work_search' entry removed (#1907 Phase-5 Commit 4): it now has a real
            caller — the Structure-tab per-section Source-work picker
-           (structure-tab.js) — so it is no longer an orphan. song_work_autolink /
-           song_work_set stay allowlisted until Commit 9 wires their metadata-tab
-           clients. */
+           (structure-tab.js) — so it is no longer an orphan.
+           'song_work_autolink' / 'song_work_set' entries removed (#1907
+           Phase-5 Commit 9): self-cleaning, as designed — metadata-tab.js's
+           CCLI/ISWC auto-link hook (design §3.7 item 1) now calls
+           api.autolinkWork(), and its manual "Part of work" picker (design
+           §3.7 item 2) now calls api.setSongWork(), both via the new
+           api-client.js methods. Same F5/F6/1g/1h self-cleaning pattern
+           this file's history already proves out. */
         /* #1862's 'song_copyright_holder_set' temporary entry (B2 server-
            core-ahead-of-client) was HERE and has been removed — self-
            cleaning, as designed: metadata-tab.js's holder picker +

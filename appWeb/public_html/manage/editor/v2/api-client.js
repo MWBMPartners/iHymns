@@ -251,6 +251,25 @@ export const editorApi = {
     searchPublishers:   (q, limit)                  => getJson('publisher_search', { q: q || '', limit: limit || 10 }),
     setCopyrightHolder: (songId, name, publisherId) => postJson('song_copyright_holder_set', { songId: songId, name: name, publisherId: publisherId }),
 
+    /* Work registry typeahead + the two "Part of work" writes (#1860 Phase 5
+       Commit 9, design §3.7 items 1-2). searchWorks mirrors searchPublishers'
+       /searchTunes' shape (q/limit only). autolinkWork is the commit-time
+       hook metadata-tab.js fires after a CCLI/ISWC field's `change` (blur)
+       lands — server-authoritative: it reads the song's STORED Ccli/Iswc,
+       never anything this client sends (rule #35's read-back posture), so
+       the request carries only songId. setSongWork is the manual "Part of
+       work" picker's write: EXACTLY ONE of `opts.workId` (a typeahead pick)
+       or `opts.title` (find-or-create for an identifier-less hymn) per call
+       — never both, per api2.php's `song_work_set` contract (400 otherwise).
+       Both endpoints answer HTTP 409 when the work-identity migration cards
+       haven't been applied yet; metadata-tab.js's callers branch on
+       `err.status`, never on the error sentence (rule #35). A work-link
+       CONFLICT is not a failure — it rides back as a `conflict` string on
+       the 200 body (a work-link ambiguity must never fail the song save). */
+    searchWorks:  (q, limit)     => getJson('work_search', { q: q || '', limit: limit || 10 }),
+    autolinkWork: (songId)       => postJson('song_work_autolink', { songId: songId }),
+    setSongWork:  (songId, opts) => postJson('song_work_set', Object.assign({ songId: songId }, opts || {})),
+
     /* External links — whole sub-form reconcile (the shared card-list editor model).
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
