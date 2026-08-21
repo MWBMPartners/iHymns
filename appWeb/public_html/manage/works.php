@@ -455,6 +455,64 @@ if ($hasSchema
     exit;
 }
 
+/* ---- GET ?action=work_search&q=&exclude= — typeahead for the
+   constituent-works (medley) picker (#1860 Phase 5 Commit 6, SD8).
+   Mirrors song_search (:380-435) in posture: read-only GET, no CSRF
+   (rule #29's write gate is for STATE-CHANGING requests only — this
+   never writes). `exclude` is the work currently being edited, so a
+   work is never offered as a constituent of itself (the DB-level
+   self-link guard lives in workMedleyAttach(), includes/work_admin.php
+   — this is only the UI-level "don't even suggest it" courtesy). */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'work_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q       = trim((string)($_GET['q'] ?? ''));
+    $limit   = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    $exclude = (int)($_GET['exclude'] ?? 0);
+    try {
+        /* `usage` = direct tblWorkSongs membership count, the exact
+           column api2.php's own work_search emits (:3611-3641) — kept
+           for label-building parity even though this local handler's
+           response shape ({results:…}) is otherwise independent of
+           that endpoint (SD8: this is a LOCAL handler, not a reuse of
+           api2's, because works.php has no access to api2.php's
+           private ed2_* probes). */
+        $like = '%' . $q . '%';
+        $sql = 'SELECT w.Id, w.Title, w.Slug, w.Iswc,
+                       COUNT(DISTINCT ws.SongId) AS UsageCount
+                  FROM tblWorks w
+                  LEFT JOIN tblWorkSongs ws ON ws.WorkId = w.Id
+                 WHERE w.Title LIKE ? AND w.Id <> ?
+                 GROUP BY w.Id, w.Title, w.Slug, w.Iswc
+                 ORDER BY UsageCount DESC, w.Title ASC
+                 LIMIT ?';
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('sii', $like, $exclude, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $out[] = [
+                'id'    => (int)$row['Id'],
+                'title' => (string)$row['Title'],
+                'slug'  => (string)$row['Slug'],
+                'iswc'  => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+                'usage' => (int)$row['UsageCount'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['results' => $out], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[works work_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     /* #1864 — validateCsrfRequest() (rule #29): a strict superset of the
@@ -656,6 +714,35 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $postedSongs
                 ))));
 
+                /* Constituent works (medley) reconciliation — #1860 Phase 5
+                   Commit 6. Mirrors the member_* shape immediately above:
+                   sort/note are keyed by the constituent's OWN work id, not
+                   by array index (the exact "member sort/note are keyed by
+                   id" precedent this spec calls out). Built into $rows here;
+                   the actual DELETE-then-reinsert happens via the ONE shared
+                   medley write core (workMedleyReplace(), includes/
+                   work_admin.php — rule #22, never re-forked here). */
+                $postedConstituents = $_POST['constituent_work_ids'] ?? [];
+                $postedConstSort    = $_POST['constituent_sort']     ?? [];
+                $postedConstNote    = $_POST['constituent_note']     ?? [];
+                if (!is_array($postedConstituents)) $postedConstituents = [];
+                if (!is_array($postedConstSort))    $postedConstSort    = [];
+                if (!is_array($postedConstNote))    $postedConstNote    = [];
+                $cleanConstituents = array_values(array_unique(array_filter(array_map(
+                    static fn($w) => (int)$w,
+                    $postedConstituents
+                ), static fn($w) => $w > 0)));
+                $constituentRows = [];
+                foreach ($cleanConstituents as $cwid) {
+                    $constituentRows[] = [
+                        'workId'    => $cwid,
+                        'sortOrder' => isset($postedConstSort[$cwid]) ? max(0, min(65535, (int)$postedConstSort[$cwid])) : 0,
+                        'note'      => isset($postedConstNote[$cwid]) && trim((string)$postedConstNote[$cwid]) !== ''
+                                        ? mb_substr(trim((string)$postedConstNote[$cwid]), 0, 255)
+                                        : null,
+                    ];
+                }
+
                 $db->begin_transaction();
                 try {
                     $stmt = $db->prepare(
@@ -709,6 +796,21 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                             $stmt->execute();
                         }
                         $stmt->close();
+                    }
+
+                    /* Constituent works (medley) — gated on workMedleyReady()
+                       (rule #19: an un-migrated install has no
+                       tblWorkComponents to write to). workMedleyReplace()
+                       itself is a no-op when !workMedleyReady() too, but the
+                       explicit gate here avoids building/passing $rows on an
+                       install that can never use them, and keeps this call
+                       site self-documenting about the dependency. Runs in
+                       the SAME transaction as the rest of this save (§5.2's
+                       write core is caller's-transaction, framework-free —
+                       rule #22) so a mid-way failure rolls the medley
+                       reconcile back together with everything else. */
+                    if (workMedleyReady($db)) {
+                        workMedleyReplace($db, $id, $constituentRows);
                     }
 
                     /* External links — delegated to the shared saver. */
@@ -795,6 +897,7 @@ $parentMap      = [];
 $worksByIdShort = [];
 $workMembersMap = [];
 $workLinksMap   = [];
+$workConstituentsMap = [];   /* #1860 Phase 5 Commit 6 — keyed by MedleyWorkId, see below */
 
 if ($hasSchema) {
     try {
@@ -896,6 +999,19 @@ if ($hasSchema) {
                 }
                 $stmt->close();
             }
+
+            /* Constituent works (medley) per work — #1860 Phase 5 Commit 6.
+               ONE bulk read via the shared medley core's bulk variant
+               (workMedleyConstituentsMap(), includes/work_admin.php —
+               rule #22: never a per-row query loop here, the exact N+1
+               that function's own doc-block calls out avoiding). Gated on
+               workMedleyReady() so an un-migrated install (tblWorkComponents
+               absent) never attempts the query — the function itself
+               already no-ops in that case, but the explicit gate keeps this
+               call site self-documenting like the medley reconcile above. */
+            if (workMedleyReady($db)) {
+                $workConstituentsMap = workMedleyConstituentsMap($db, array_column($rows, 'Id'));
+            }
         }
     } catch (\Throwable $e) {
         error_log('[works read] ' . $e->getMessage());
@@ -960,6 +1076,7 @@ if ($hasSchema) {
                         <th data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
                         <th data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
                         <th data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
+                        <th data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
                         <th data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
                         <th data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
@@ -999,6 +1116,14 @@ if ($hasSchema) {
                                 'musicbrainz_work_mbid' => (string)($r['MusicBrainzWorkMBID'] ?? ''),
                                 'members'    => $workMembersMap[$wid] ?? [],
                                 'links'      => $workLinksMap[$wid]   ?? [],
+                                /* #1860 Phase 5 Commit 6 — this work's OWN
+                                   constituent list (what it is a medley OF),
+                                   read via the shared bulk helper above.
+                                   DISTINCT from 'members' (other songs that
+                                   ARE this work) and from 'parent_id' (the
+                                   variant/arrangement hierarchy) — see the
+                                   help text in the edit-form section below. */
+                                'constituents' => $workConstituentsMap[$wid] ?? [],
                             ];
                             $rowJson = json_encode($rowPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                             $deleteJson = json_encode(['id' => $wid, 'title' => (string)$r['Title']],
@@ -1032,6 +1157,17 @@ if ($hasSchema) {
                             <td data-col-priority="tertiary" class="text-center">
                                 <?= (int)$r['ChildCount'] > 0 ? (int)$r['ChildCount'] : '<span class="text-muted">—</span>' ?>
                             </td>
+                            <td data-col-priority="tertiary" class="text-center">
+                                <?php $constituentCount = count($rowPayload['constituents']); ?>
+                                <?php if ($constituentCount > 0): ?>
+                                    <span class="badge bg-info-subtle text-info-emphasis"
+                                          title="Medley of <?= (int)$constituentCount ?> constituent work<?= $constituentCount === 1 ? '' : 's' ?>">
+                                        Medley (<?= (int)$constituentCount ?>)
+                                    </span>
+                                <?php else: ?>
+                                    <span class="text-muted">—</span>
+                                <?php endif; ?>
+                            </td>
                             <td data-col-priority="tertiary">
                                 <?php if ($parentTitle !== ''): ?>
                                     <small class="text-muted"><?= htmlspecialchars($parentTitle) ?></small>
@@ -1054,7 +1190,7 @@ if ($hasSchema) {
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="6" class="text-muted text-center py-4">No works yet. Add one below.</td></tr>
+                        <tr><td colspan="7" class="text-muted text-center py-4">No works yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -1375,6 +1511,58 @@ if ($hasSchema) {
                                 </div>
                             </div>
 
+                            <hr>
+
+                            <!-- #1860 Phase 5 Commit 6 — constituent works
+                                 (medley) editor. tblWorkComponents is a plain
+                                 M:N "contains" join, deliberately separate
+                                 from BOTH of the other two work-to-work
+                                 relationships already on this page:
+                                   - Parent work (above) = ParentWorkId, an
+                                     is-a-VARIANT-of hierarchy (arrangement /
+                                     translation of the SAME underlying work);
+                                   - Member songs (above) = tblWorkSongs, the
+                                     tblSongs ROWS that ARE renditions of THIS
+                                     work;
+                                   - Constituent works (here) = tblWorkComponents,
+                                     OTHER WHOLE WORKS this one is stitched
+                                     together FROM (a medley), each keeping its
+                                     own separate identity, members and page. -->
+                            <h6 class="mb-2"><i class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
+                            <p class="form-text small mt-0 mb-2">
+                                Use this when this Work is a <strong>medley</strong> stitched together from other,
+                                separately-identified works (e.g. a "Christmas Medley" containing "Joy to the World"
+                                and "O Come, All Ye Faithful" as two of its constituents). This is different from
+                                <strong>Parent work</strong> above (a variant/arrangement of the <em>same</em> work)
+                                and from <strong>Member songs</strong> above (song rows that <em>are</em> this work) —
+                                a constituent work stays its own separate Work with its own members and page.
+                            </p>
+
+                            <table class="table table-sm align-middle mb-2">
+                                <thead>
+                                    <tr class="text-muted small">
+                                        <th style="width:6rem">Sort</th>
+                                        <th>Work</th>
+                                        <th>Note</th>
+                                        <th class="text-end" style="width:3rem"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="edit-work-constituents-tbody">
+                                    <!-- populated by openWorkEditModal -->
+                                </tbody>
+                            </table>
+
+                            <div class="d-flex gap-2 align-items-end mb-3">
+                                <div class="flex-grow-1">
+                                    <label class="form-label small mb-1">Add a constituent work</label>
+                                    <input type="text" id="edit-work-constituent-add-search"
+                                           class="form-control form-control-sm"
+                                           autocomplete="off"
+                                           placeholder="Type to search by work title…">
+                                    <div id="edit-work-constituent-add-suggestions" class="list-group small mt-1" style="display:none; max-height: 220px; overflow-y: auto;"></div>
+                                </div>
+                            </div>
+
                             <?php if ($hasExtLinksSchema): ?>
                             <hr>
                             <?php
@@ -1475,6 +1663,11 @@ if ($hasSchema) {
         const addLinkBtn = document.getElementById('edit-work-ext-link-add-btn');
         const search = document.getElementById('edit-work-add-search');
         const sugBox = document.getElementById('edit-work-add-suggestions');
+        /* #1860 Phase 5 Commit 6 — constituent-works (medley) editor. Same
+           element shape as the member-songs trio immediately above. */
+        const constTbody = document.getElementById('edit-work-constituents-tbody');
+        const constSearch = document.getElementById('edit-work-constituent-add-search');
+        const constSugBox = document.getElementById('edit-work-constituent-add-suggestions');
 
         function escapeHtml(s) {
             return String(s)
@@ -1507,6 +1700,34 @@ if ($hasSchema) {
 
         function rebindRemoveButtons() {
             tbody.querySelectorAll('[data-action="remove-member"]').forEach(btn => {
+                btn.onclick = () => btn.closest('tr')?.remove();
+            });
+        }
+
+        /* #1860 Phase 5 Commit 6 — constituent-works (medley) row builder.
+           Mirrors memberRowHtml()/rebindRemoveButtons() immediately above
+           verbatim in shape (row remove is the same "capture a closure over
+           the row, drop it on click" pattern) — the only differences are the
+           field names (constituent_* vs member_*) and that a constituent row
+           has no canonical checkbox (a medley's constituents aren't ranked
+           "most canonical", only ordered). */
+        function constituentRowHtml(c) {
+            const wid  = String(c.workId || '');
+            const sort = (c.sortOrder !== undefined && c.sortOrder !== null) ? c.sortOrder : 0;
+            const note = String(c.note || '');
+            const workLabel = escapeHtml(c.title || wid);
+            const rowNote = workLabel;
+            return '' +
+              '<tr data-work-id="' + escapeHtml(wid) + '">' +
+                '<td><input type="number" class="form-control form-control-sm" name="constituent_sort[' + escapeHtml(wid) + ']" value="' + Number(sort) + '" min="0" max="65535" style="width:6rem" aria-label="Sort order for ' + rowNote + '"></td>' +
+                '<td><input type="hidden" name="constituent_work_ids[]" value="' + escapeHtml(wid) + '">' + workLabel + '</td>' +
+                '<td><input type="text" class="form-control form-control-sm" name="constituent_note[' + escapeHtml(wid) + ']" maxlength="255" value="' + escapeHtml(note) + '" placeholder="e.g. \'second half\'" aria-label="Note for ' + rowNote + '"></td>' +
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-constituent" title="Remove" aria-label="Remove ' + rowNote + ' from this medley"><i class="bi bi-x-lg" aria-hidden="true"></i></button></td>' +
+              '</tr>';
+        }
+
+        function rebindRemoveButtonsConstituents() {
+            constTbody.querySelectorAll('[data-action="remove-constituent"]').forEach(btn => {
                 btn.onclick = () => btn.closest('tr')?.remove();
             });
         }
@@ -1645,6 +1866,116 @@ if ($hasSchema) {
             });
         }
 
+        /* === Constituent-work typeahead ===
+           #1860 Phase 5 Commit 6 — mirrors the song typeahead immediately
+           above verbatim in shape (same abort-controller debounce, same
+           iHymnsComboboxA11y wiring), hitting the LOCAL ?action=work_search
+           handler (SD8) instead of ?action=song_search. That handler's
+           response shape is {results:[...]}, NOT {suggestions:[...]} — its
+           own contract, documented on the PHP handler above — so this is
+           its own parse, not a call into runSongSearch(). */
+        let constSearchAbortController = null;
+        let constSuggestionItems = []; // last-fetched raw {id,title,slug,iswc,usage}[]
+        let constSuggestActiveIndex = -1;
+        async function runConstituentSearch(q) {
+            try {
+                if (constSearchAbortController) constSearchAbortController.abort();
+                constSearchAbortController = new AbortController();
+                const excludeId = document.getElementById('edit-work-id').value || '0';
+                const res = await fetch('/manage/works?action=work_search&exclude=' + encodeURIComponent(excludeId)
+                        + '&q=' + encodeURIComponent(q),
+                    { signal: constSearchAbortController.signal });
+                if (!res.ok) return;
+                const data = await res.json();
+                const items = (data && data.results) || [];
+                constSuggestionItems = items;
+                constSuggestActiveIndex = items.length ? 0 : -1;
+                renderConstituentSuggestionRows();
+            } catch (e) { /* aborted */ }
+        }
+        function isConstSuggestPanelOpen() { return constSugBox.style.display !== 'none' && constSugBox.style.display !== ''; }
+        function constSuggestOptionEls() { return Array.from(constSugBox.querySelectorAll('a[data-payload]')); }
+        function pickConstituentSuggestion(payload) {
+            /* Skip if already in the list. The server already excludes the
+               current work id from results (?exclude=), so this dedupe is
+               only against a work already added to the medley, not
+               belt-and-braces against self-linking. */
+            if (constTbody.querySelector('tr[data-work-id="' + String(payload.workId || '').replace(/"/g, '\\"') + '"]')) {
+                constSugBox.style.display = 'none';
+                constSearch.value = '';
+                return;
+            }
+            constTbody.insertAdjacentHTML('beforeend', constituentRowHtml({
+                workId: payload.workId, title: payload.title,
+                sortOrder: constTbody.children.length * 10, note: '',
+            }));
+            rebindRemoveButtonsConstituents();
+            constSugBox.style.display = 'none';
+            constSearch.value = '';
+        }
+        function renderConstituentSuggestionRows() {
+            const items = constSuggestionItems;
+            if (!items.length) {
+                constSugBox.style.display = 'none';
+                constSugBox.innerHTML = '';
+                if (window.iHymnsComboboxA11y) {
+                    window.iHymnsComboboxA11y.applyComboboxAria({ input: constSearch, panel: constSugBox, items: [], activeIndex: -1, idPrefix: 'edit-work-constituent-add-suggestions', expanded: false });
+                }
+                return;
+            }
+            constSugBox.style.display = '';
+            constSugBox.innerHTML = items.map(it => {
+                const bits = [it.title || ('Work #' + it.id)];
+                if (it.iswc) bits.push(it.iswc);
+                if (it.usage) bits.push(it.usage + ' song' + (it.usage === 1 ? '' : 's'));
+                const label = bits.join(' — ');
+                const json = JSON.stringify({ workId: it.id, title: it.title });
+                return '<a href="#" class="list-group-item list-group-item-action small" data-payload=\'' + escapeHtml(json) + '\'>' +
+                    escapeHtml(label) + '</a>';
+            }).join('');
+            const optionEls = constSuggestOptionEls();
+            optionEls.forEach((a, i) => {
+                a.classList.toggle('active', i === constSuggestActiveIndex);
+                a.onclick = (ev) => {
+                    ev.preventDefault();
+                    let payload;
+                    try { payload = JSON.parse(a.getAttribute('data-payload')); } catch (_e) { return; }
+                    pickConstituentSuggestion(payload);
+                };
+            });
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input: constSearch, panel: constSugBox, items: optionEls,
+                    activeIndex: constSuggestActiveIndex, idPrefix: 'edit-work-constituent-add-suggestions',
+                });
+            }
+        }
+        if (constSearch) {
+            let ct = null;
+            constSearch.addEventListener('input', () => {
+                clearTimeout(ct);
+                const q = constSearch.value.trim();
+                ct = setTimeout(() => runConstituentSearch(q), 180);
+            });
+            constSearch.addEventListener('keydown', (e) => {
+                if (!window.iHymnsComboboxA11y) return;
+                window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                    isOpen: isConstSuggestPanelOpen,
+                    getItems: constSuggestOptionEls,
+                    getActiveIndex: () => constSuggestActiveIndex,
+                    setActiveIndex: (i) => { constSuggestActiveIndex = i; },
+                    render: renderConstituentSuggestionRows,
+                    onCommit: (i, el) => el.click(),
+                    onClose: () => { constSugBox.style.display = 'none'; },
+                });
+            });
+            document.addEventListener('click', (e) => {
+                if (!constSugBox.contains(e.target) && e.target !== constSearch) {
+                    constSugBox.style.display = 'none';
+                }
+            });
+        }
+
         /* === Public openers === */
         window.openWorkEditModal = function (row) {
             document.getElementById('edit-work-id').value           = row.id;
@@ -1686,6 +2017,13 @@ if ($hasSchema) {
             tbody.innerHTML = (row.members || []).map(m => memberRowHtml(m)).join('');
             rebindRemoveButtons();
 
+            /* #1860 Phase 5 Commit 6 — constituent works (medley), hydrated
+               from row.constituents the exact same way as row.members above. */
+            if (constTbody) {
+                constTbody.innerHTML = (row.constituents || []).map(c => constituentRowHtml(c)).join('');
+                rebindRemoveButtonsConstituents();
+            }
+
             if (workLinksEditor) {
                 workLinksEditor.setRows((row.links || []).map(l => ({
                     typeId: l.typeId, url: l.url, note: l.note, verified: l.verified,
@@ -1694,6 +2032,8 @@ if ($hasSchema) {
 
             if (sugBox) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; }
             if (search) search.value = '';
+            if (constSugBox) { constSugBox.style.display = 'none'; constSugBox.innerHTML = ''; }
+            if (constSearch) constSearch.value = '';
 
             const inst = ensureModal(modalEl, 'edit');
             if (inst) inst.show();
