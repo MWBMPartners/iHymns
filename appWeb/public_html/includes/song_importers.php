@@ -1045,6 +1045,48 @@ function _bulkImport_dryRunSeen(?string $songId, bool $reset = false): bool
 }
 
 /**
+ * Read the persisted DryRun flag off a bulk-import job row (#1911).
+ *
+ * ELI5: look up whether THIS import job was started as a preview, by
+ * reading the flag off its own database row rather than trusting whatever
+ * happens to be sitting in the in-process static flag.
+ *
+ * Detail: called ONLY by _bulkImport_processZip() when it was handed a
+ * $jobDb/$jobId pair — the async worker path (api2.php's import_zip case,
+ * after fastcgi_finish_request() has already released the HTTP connection
+ * the request-scoped $dryRun local variable was read from). The single-file
+ * import path (#1674) never needs this: it stays fully synchronous, so its
+ * caller's own _bulkImport_dryRun($dryRun) call is still authoritative for
+ * the whole request.
+ *
+ * Column-existence-gated via try/catch rather than a separate probe query:
+ * on an un-migrated install (no DryRun column) the SELECT throws under
+ * MYSQLI_REPORT_STRICT and this returns false — which is always the correct
+ * answer there, since import_zip's own column-existence gate
+ * (ed2_bulkJobsDryRunColumnExists() in api2.php) already refuses dryRun=1
+ * with a 422 before any job row can be created on such a deployment
+ * (CLAUDE.md rule #33 — the honest refusal, never a silently-ignored flag).
+ *
+ * @see _bulkImport_dryRun()  the static flag this value feeds
+ * @see appWeb/public_html/manage/editor/api2.php  import_zip case, ed2_bulkJobsDryRunColumnExists()
+ * @link https://www.php.net/manual/en/mysqli-stmt.get-result.php  mysqli_stmt::get_result()
+ */
+function _bulkImport_jobDryRunFlag(\mysqli $db, int $jobId): bool
+{
+    try {
+        $stmt = $db->prepare('SELECT DryRun FROM tblBulkImportJobs WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $jobId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null && (int)($row['DryRun'] ?? 0) === 1;
+    } catch (\Throwable $_e) {
+        /* Un-migrated install (no DryRun column) — never a dry run. */
+        return false;
+    }
+}
+
+/**
  * INSERT-ONLY songbook helper. If a songbook with this Abbreviation
  * already exists, the row is left fully untouched — no rename, no
  * Name refresh — per the bulk-import contract: never overwrite
@@ -1292,6 +1334,20 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     }
 
     $db = getDbMysqli();
+
+    /* #1911 — resolve THIS job's DryRun flag from its own persisted row
+       (not from whatever the caller may already have set) so the flag every
+       per-file write below obeys is the durable source of truth, not
+       in-process state a genuinely separate execution of this worker step
+       could never see. Set BEFORE the per-file loop starts, mirroring
+       #1674's placement in import_file. Synchronous callers — both $jobDb
+       and $jobId null, the "no bulk-import table" / "move_uploaded_file
+       failed" fallbacks in api2.php's import_zip case, neither of which
+       ever gets a job row — rely on the caller having already primed the
+       flag via its own _bulkImport_dryRun() call before reaching here. */
+    if ($jobDb !== null && $jobId !== null) {
+        _bulkImport_dryRun(_bulkImport_jobDryRunFlag($jobDb, $jobId));
+    }
 
     /* Tally counters. Bulk import is INSERT-ONLY (#664) — existing
        songbook + song rows are skipped untouched, never overwritten,

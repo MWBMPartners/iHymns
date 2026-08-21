@@ -210,6 +210,10 @@ $formats = [
             const fd = new FormData();
             fd.append('file', file);
             fd.append('dedupeMode', dedupeEl.checked ? 'skip-title' : 'off');
+            /* #1911 — round-trips through tblBulkImportJobs.DryRun; the
+               poll widget renders the preview banner from the server's own
+               `dry_run` echo (rule #35), never from this checkbox state. */
+            fd.append('dryRun', dryRunEl.checked ? '1' : '0');
             startUploadTracking({ filename: file.name, sizeBytes: file.size });
             const xhr = new XMLHttpRequest();
             /* #1855: extensionless — the literal .php URL is 301'd by
@@ -292,16 +296,13 @@ $formats = [
             const file = fileEl.files && fileEl.files[0];
             if (!file) { statusEl.textContent = 'Choose a file first.'; return; }
             const isZip = /\.zip$/i.test(file.name);
-            /* #1674 — ZIP dry-run is deferred server-side (import_zip 422s on
-               dryRun=1); refuse here too so nothing uploads for a request the
-               server can only reject, and the operator sees the "why"
-               immediately rather than after a wait for the response. */
-            if (isZip && dryRunEl.checked) {
-                statusEl.textContent = '';
-                resultEl.innerHTML = '';
-                showError('Dry run is not yet supported for ZIP imports — import a single file to preview, or uncheck dry run to import this zip for real.');
-                return;
-            }
+            /* #1911 — ZIP dry-run now round-trips through the async job row
+               (tblBulkImportJobs.DryRun), so the client-side refusal that
+               used to live here (#1674) is gone: import_zip carries the
+               flag exactly like import_file already does. An un-migrated
+               deployment still answers with its own 422, surfaced by
+               importZip()'s xhr.onload → showError() below — this page
+               doesn't pre-guess that outcome. */
             goBtn.disabled = true;
             statusEl.textContent = 'Importing…';
             resultEl.innerHTML = '';

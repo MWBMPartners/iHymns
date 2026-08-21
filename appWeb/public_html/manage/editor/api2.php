@@ -1113,6 +1113,24 @@ function ed2_bulkJobsTableExists(\mysqli $db): bool {
     return $exists;
 }
 
+/** Memoised probe: does tblBulkImportJobs.DryRun exist (#1911 — ZIP dry-run
+ *  preview, migrate-bulk-import-dryrun.php)? Column-existence-gated so an
+ *  un-migrated install keeps the honest pre-#1911 422 refusal (rule #33)
+ *  instead of a silently-ignored flag or a STRICT-mode throw the moment the
+ *  status poll's SELECT tries to read a column that isn't there. */
+function ed2_bulkJobsDryRunColumnExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblBulkImportJobs' AND COLUMN_NAME = 'DryRun' LIMIT 1");
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
 /** Best-effort songbook maintenance after an import created songs (cache regen +
  *  stale-prefix fixup, #932). Guarded + lazy-required; never throws to the caller. */
 function ed2_runSongbookMaintenance(\mysqli $db, string $context): void {
@@ -5361,15 +5379,33 @@ try {
            ed2_respond (which exit()s) — it echoes, flushes, then keeps working. ---- */
     case 'import_zip': {
         if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
-        /* #1674 — ZIP dry-run is DEFERRED: the async job's state lives on
-           tblBulkImportJobs, which has no spare column to carry the flag
-           across the worker's separate request lifecycle (a migration —
-           rule #19 — not something this endpoint can improvise). A param
-           the destination cannot honour is REFUSED, not silently ignored
-           (rule #33) — checked BEFORE any job/file work below. */
-        if ((string)($_POST['dryRun'] ?? '0') === '1') {
-            ed2_respond(['ok' => false, 'error' => 'Dry run is not yet supported for ZIP imports — import a single file to preview instead (see #1674).'], 422);
+        /* #1911 — ZIP dry-run preview. Parsed the same way import_file parses
+           it (#1674, beside dedupeMode below). #1674 originally REFUSED this
+           flag outright: the async job's state lives on tblBulkImportJobs,
+           which had no spare column to carry it across the worker's separate
+           execution (post-fastcgi_finish_request) — a migration (rule #19),
+           not something this endpoint could improvise. That column now
+           exists (migrate-bulk-import-dryrun.php), so the refusal is
+           column-existence-gated instead of unconditional: an un-migrated
+           install still gets the honest 422 (rule #33 — never a silently
+           ignored flag), a migrated one gets a working preview. */
+        $dryRun = ((string)($_POST['dryRun'] ?? '0') === '1');
+        if ($dryRun && !ed2_bulkJobsDryRunColumnExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'Dry run is not yet supported for ZIP imports on this deployment — import a single file to preview instead, or ask an admin to run the pending migration (see #1911).'], 422);
         }
+        /* #1911 — set explicitly BOTH ways (mirrors import_file's #1674
+           placement in this same file), so a stale flag from an earlier
+           request in the same PHP process/worker can never leak into this
+           one. This one call is what gates every write below that never
+           gets a job row to read DryRun back from — the EasyWorship inline
+           branch and both "no job row yet" sync fallbacks — via the SAME
+           static flag _bulkImport_saveSong() / _bulkImport_upsertSongbook()
+           already consult. The async worker section (after
+           fastcgi_finish_request()) re-derives the flag from the job row
+           instead, inside _bulkImport_processZip() itself — see that
+           function's own read, keyed off this request's persisted DryRun
+           column rather than this in-process variable. */
+        _bulkImport_dryRun($dryRun);
         _bulkImport_dedupeMode(((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off');
         if (!class_exists('ZipArchive')) { ed2_respond(['ok' => false, 'error' => 'Server is missing the PHP zip extension.'], 500); }
         if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -5398,8 +5434,19 @@ try {
                 $ewProbe->close();
                 if ($hasSongsDb) {
                     $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
-                    if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
-                    logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                    /* #1911 — this branch bypasses the async worker entirely
+                       (the "synchronous EasyWorship-zip fallback" the plan's
+                       risk register calls out), so it gates its own
+                       maintenance write on the SAME $dryRun the top-of-case
+                       _bulkImport_dryRun() call already primed
+                       _bulkImport_saveSong() with. */
+                    if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
+                    logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0), 'dryRun' => $dryRun]);
+                    /* #1911 — a KEY, not prose (rule #35): import2.php's
+                       renderSummary() branches on this for the sync-render
+                       path importZip() falls back to when `data.async` is
+                       absent. */
+                    $summary['dry_run'] = $dryRun;
                     ed2_respond(array_merge(['ok' => (bool)($summary['ok'] ?? false)], $summary), ($summary['ok'] ?? false) ? 200 : 400);
                 }
             }
@@ -5411,8 +5458,16 @@ try {
         if (!ed2_bulkJobsTableExists($db)) {
             try {
                 $summary = _bulkImport_processZip($tmpPath);
-                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync'); }
-                logActivity('song.import_zip', 'import', $origName, ['mode' => 'sync', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                /* #1911 — no job row exists on this branch (the table itself
+                   is absent, so no DryRun column could exist for it either),
+                   so _bulkImport_processZip() has nothing to read a flag
+                   back from; the top-of-case _bulkImport_dryRun($dryRun)
+                   call already primed it for this request, and $dryRun
+                   gates the maintenance write the same way as every other
+                   branch in this case. */
+                if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync'); }
+                logActivity('song.import_zip', 'import', $origName, ['mode' => 'sync', 'created' => (int)($summary['songs_created'] ?? 0), 'dryRun' => $dryRun]);
+                $summary['dry_run'] = $dryRun;
                 ed2_respond(array_merge(['ok' => true], $summary));
             } catch (\Throwable $e) {
                 error_log('[editor-v2-api import_zip sync] ' . $e->getMessage());
@@ -5426,10 +5481,14 @@ try {
         if (!is_dir($persistDir)) { @mkdir($persistDir, 0700, true); }
         $persistPath = $persistDir . DIRECTORY_SEPARATOR . 'job-' . bin2hex(random_bytes(8)) . '-' . preg_replace('/[^A-Za-z0-9._-]/', '_', $origName);
         if (!@move_uploaded_file($tmpPath, $persistPath)) {
-            /* move failed → sync fallback so the import still succeeds. */
+            /* move failed → sync fallback so the import still succeeds. No
+               job row exists yet at this point either (#1911 — same
+               reasoning as the table-absent branch above), so the
+               top-of-case $dryRun still gates this. */
             try {
                 $summary = _bulkImport_processZip($tmpPath);
-                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync_fallback'); }
+                if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync_fallback'); }
+                $summary['dry_run'] = $dryRun;
                 ed2_respond(array_merge(['ok' => true], $summary));
             } catch (\Throwable $e) {
                 error_log('[editor-v2-api import_zip move-fallback] ' . $e->getMessage());
@@ -5441,11 +5500,23 @@ try {
         /* Create the queued job row. Bind a guaranteed-int UserId (the auth gate
            guarantees a logged-in editor; the ?? 0 keeps the stored UserId
            consistent with the `?? 0` ownership filter in import_zip_status /
-           import_zip_skipped_csv, so a row is never un-pollable on a NULL≠0 mismatch). */
-        $insUid = (int)($ed2UserId ?? 0);
+           import_zip_skipped_csv, so a row is never un-pollable on a NULL≠0 mismatch).
+           #1911 — DryRun is written column-existence-gated: reaching this
+           INSERT with $dryRun===true already implies the column exists (the
+           gate at the top of this case would have 422'd otherwise), but the
+           INSERT itself must still branch so a real (non-dry-run) import on
+           an UN-migrated install keeps working exactly as before. */
+        $insUid       = (int)($ed2UserId ?? 0);
+        $hasDryRunCol = ed2_bulkJobsDryRunColumnExists($db);
         try {
-            $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status) VALUES (?, ?, ?, ?, "queued")');
-            $j->bind_param('issi', $insUid, $origName, $persistPath, $sizeBytes);
+            if ($hasDryRunCol) {
+                $dryRunInt = $dryRun ? 1 : 0;
+                $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status, DryRun) VALUES (?, ?, ?, ?, "queued", ?)');
+                $j->bind_param('issii', $insUid, $origName, $persistPath, $sizeBytes, $dryRunInt);
+            } else {
+                $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status) VALUES (?, ?, ?, ?, "queued")');
+                $j->bind_param('issi', $insUid, $origName, $persistPath, $sizeBytes);
+            }
             $j->execute();
             $jobId = (int)$db->insert_id;
             $j->close();
@@ -5485,7 +5556,15 @@ try {
         try {
             $db = getDbMysqli();
             _bulkImport_jobMark($db, $jobId, 'running', ['StartedAt' => 'NOW()']);
-            $summary = _bulkImport_processZip($persistPath, $db, $jobId);
+            /* #1911 — _bulkImport_processZip() reads DryRun off THIS job row
+               itself (not off the $dryRun PHP variable above) before its
+               per-file loop starts, so the flag its writes obey is the
+               persisted column, not request-local state — see that
+               function's own doc-block. Read it back via the getter (no
+               args) rather than trusting the local $dryRun, so the gates
+               below reflect what the worker actually resolved. */
+            $summary      = _bulkImport_processZip($persistPath, $db, $jobId);
+            $jobWasDryRun = _bulkImport_dryRun();
             _bulkImport_jobMark($db, $jobId, 'completed', [
                 'CompletedAt'           => 'NOW()',
                 'SongbooksCreatedJson'  => json_encode($summary['songbooks_created']  ?? [], JSON_UNESCAPED_UNICODE),
@@ -5499,8 +5578,20 @@ try {
                 'PhaseLabel'            => 'completed',
                 'TempPath'              => '',
             ]);
+            /* #1911 — TempPath cleanup is NEVER gated by dry-run: a preview
+               run that leaked its upload into .bulk_import_uploads/ forever
+               would be a disk-fill regression nobody would think to check
+               for, precisely because dry-run promises to leave no trace. */
             @unlink($persistPath);
-            if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
+            /* #1911 — under dry-run, skip maintenance AND the completion
+               notification: both are finalisation writes beyond the job
+               row's own counters/status, and a dry run promises to write
+               nothing beyond that row (mirrors import_file's #1674 gate on
+               ed2_runSongbookMaintenance). logActivity() below stays
+               UNCONDITIONAL, same as import_file — an audit-trail entry
+               recording that a preview ran is itself correct information,
+               tagged via the 'dryRun' detail key rather than suppressed. */
+            if (!$jobWasDryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
 
             /* Best-effort completion notification so the curator finds the result later.
                #1638 — was a hand-rolled INSERT INTO tblNotifications, one of
@@ -5508,7 +5599,7 @@ try {
                which owns the best-effort try/catch, the column-width clipping
                and the #1238 Environment/ExpiresAt migration gate that this copy
                never had. */
-            if ($ed2UserId !== null) {
+            if (!$jobWasDryRun && $ed2UserId !== null) {
                 $c = (int)($summary['songs_created'] ?? 0); $s = (int)($summary['songs_skipped_existing'] ?? 0); $fl = (int)($summary['songs_failed'] ?? 0);
                 notifyUser(
                     $db,
@@ -5524,6 +5615,7 @@ try {
                 'created' => (int)($summary['songs_created'] ?? 0),
                 'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
                 'failed'  => (int)($summary['songs_failed'] ?? 0),
+                'dryRun'  => $jobWasDryRun,
             ]);
         } catch (\Throwable $e) {
             error_log('[editor-v2-api import_zip worker] ' . $e->getMessage());
@@ -5548,10 +5640,16 @@ try {
         if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Bulk-import job tracking is not enabled on this deployment.', 'migration_needed' => true], 404); }
 
         $uid = $ed2UserId ?? 0;
+        /* #1911 — DryRun is column-existence-gated in the SELECT list itself:
+           an un-migrated install's tblBulkImportJobs has no such column, and
+           naming it unconditionally would throw under STRICT (unknown
+           column) on every single poll tick until the migration runs. */
+        $hasDryRunCol = ed2_bulkJobsDryRunColumnExists($db);
         $s = $db->prepare(
             'SELECT Id, UserId, Filename, SizeBytes, Status, TotalEntries, ProcessedEntries,
                     SongbooksCreatedJson, SongbooksExistingJson, SongsCreated, SongsSkippedExisting,
-                    SongsFailed, ErrorsJson, PerSongbookJson, PhaseLabel, StartedAt, CompletedAt, CreatedAt, UpdatedAt
+                    SongsFailed, ErrorsJson, PerSongbookJson, PhaseLabel, StartedAt, CompletedAt, CreatedAt, UpdatedAt'
+                    . ($hasDryRunCol ? ', DryRun' : '') . '
                FROM tblBulkImportJobs WHERE Id = ? AND UserId = ? LIMIT 1'
         );
         $s->bind_param('ii', $jobId, $uid);
@@ -5578,6 +5676,14 @@ try {
             'errors'                 => $decode($row['ErrorsJson'])            ?? [],
             'per_songbook'           => $decode($row['PerSongbookJson'])       ?? null,
             'skip_reason'            => 'existing-in-db',
+            /* #1911 — a KEY, not prose (rule #35): bulk-import-progress.js's
+               render() branches on this to show the same dry-run banner
+               import2.php's renderSummary() shows for the single-file /
+               sync-fallback paths. Always false on an un-migrated install —
+               the column-existence gate on import_zip itself means no job on
+               such a deployment could ever have been created with
+               DryRun=1 in the first place. */
+            'dry_run'                => $hasDryRunCol && (int)($row['DryRun'] ?? 0) === 1,
             /* #1855: extensionless — this becomes an <a href> the browser
                navigates to as a plain GET download. Survives a 301 either way,
                but the sibling v1 handler (api.php's bulk_import_skipped_csv

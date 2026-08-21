@@ -179,6 +179,10 @@ function ensureWidget() {
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
+        <div class="ihymns-bulk-import-dryrun-banner" data-dryrun-banner
+             style="font-size:0.7rem; font-weight:600; color:#38bdf8; margin-bottom:0.15rem; display:none;">
+            <i class="fa-solid fa-flask"></i> DRY RUN — nothing will be written
+        </div>
         <div class="ihymns-bulk-import-phase text-muted small" data-phase
              style="font-size:0.7rem; margin-bottom:0.15rem; display:none;"></div>
         <div class="ihymns-bulk-import-summary text-muted" style="font-size:0.75rem;">Connecting…</div>
@@ -273,10 +277,11 @@ const PHASE_LABEL_TEXT = {
 
 function render(job) {
     if (!widgetEl) return;
-    const summary  = widgetEl.querySelector('.ihymns-bulk-import-summary');
-    const phaseEl  = widgetEl.querySelector('[data-phase]');
-    const bar      = widgetEl.querySelector('.progress-bar');
-    const titleEl  = widgetEl.querySelector('strong');
+    const summary   = widgetEl.querySelector('.ihymns-bulk-import-summary');
+    const phaseEl   = widgetEl.querySelector('[data-phase]');
+    const bar       = widgetEl.querySelector('.progress-bar');
+    const titleEl   = widgetEl.querySelector('strong');
+    const dryRunEl  = widgetEl.querySelector('[data-dryrun-banner]'); // #1911
 
     if (!job) {
         if (summary) summary.textContent = 'No active import.';
@@ -294,6 +299,11 @@ function render(job) {
     const created  = Number(job.songs_created || 0);
     const skipped  = Number(job.songs_skipped_existing || 0);
     const failed   = Number(job.songs_failed || 0);
+    /* #1911 — branches ONLY on the server-echoed `dry_run` key (rule #35),
+       exactly like import2.php's renderSummary() does for the sync paths;
+       never on the checkbox state the client happened to send. */
+    const isDryRun = job.dry_run === true;
+    if (dryRunEl) dryRunEl.style.display = isDryRun ? 'block' : 'none';
 
     /* Stash status on activeJob so the hover handlers can decide
        whether to reschedule auto-dismiss on mouse-leave. */
@@ -329,16 +339,25 @@ function render(job) {
         } else if (status === 'completed') {
             /* Spell out the skip reason inline so the curator never
                has to guess what "X skipped" means. Today every skip
-               is "already in the database" (INSERT-only contract). */
+               is "already in the database" (INSERT-only contract).
+               #1911 — under dry-run the same counters describe what
+               WOULD happen (the seam in _bulkImport_saveSong() /
+               _bulkImport_upsertSongbook() already reports them that
+               way), so only the WORDING changes here, mirroring
+               import2.php's renderSummary(). */
             const skippedClause = skipped > 0
                 ? ` (<strong>${skipped.toLocaleString()}</strong> already in the database`
+                + (isDryRun ? ' (would skip)' : '')
                 + (failed > 0 ? `, ${failed.toLocaleString()} failed` : '')
                 + ')'
                 : (failed > 0 ? ` (${failed.toLocaleString()} failed)` : '');
-            summary.innerHTML =
-                `<i class="fa-solid fa-check-circle" style="color:#16a34a;"></i> ` +
-                `Imported <strong>${created.toLocaleString()}</strong> new` +
-                skippedClause + '.';
+            summary.innerHTML = isDryRun
+                ? `<i class="fa-solid fa-flask" style="color:#38bdf8;"></i> ` +
+                  `Would import <strong>${created.toLocaleString()}</strong> new` +
+                  skippedClause + '.'
+                : `<i class="fa-solid fa-check-circle" style="color:#16a34a;"></i> ` +
+                  `Imported <strong>${created.toLocaleString()}</strong> new` +
+                  skippedClause + '.';
         } else if (status === 'failed') {
             const errs = Array.isArray(job.errors) ? job.errors : [];
             const first = errs.length ? escapeHtml(errs[0].error || 'see logs') : 'see server logs';

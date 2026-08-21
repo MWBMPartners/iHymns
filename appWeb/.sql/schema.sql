@@ -2256,6 +2256,7 @@ CREATE TABLE IF NOT EXISTS tblBulkImportJobs (
     TempPath                 VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Server-side path to the moved temp file; cleared on completion',
     SizeBytes                BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Original upload size in bytes (display only)',
     Status                   ENUM('queued','running','completed','failed') NOT NULL DEFAULT 'queued',
+    DryRun                   TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Preview-only flag (#1911) — set from the import_zip request at job-creation time and read back by the async worker (post-fastcgi_finish_request) and by import_zip_status polls, since neither can see the per-request _bulkImport_dryRun() static flag that gates single-file import (#1674). 1 = the worker must not write songs/songbooks or run songbook maintenance; SongsCreated/SongsSkippedExisting keep their normal meaning but describe what WOULD happen. Column-existence-gated everywhere it is read; an un-migrated install keeps the pre-#1911 422 refusal for dryRun=1 ZIP imports',
     TotalEntries             INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Real .txt entries the worker has classified for processing',
     ProcessedEntries         INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Counter the worker bumps every ~50 rows so the polling endpoint can render a percentage',
     SongbooksCreatedJson     JSON NULL COMMENT 'Result summary — list of abbrevs created in this run',

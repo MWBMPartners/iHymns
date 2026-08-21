@@ -4417,4 +4417,20 @@ return [
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongComponents', 'Label'),
     ],
+
+    'bulk-import-dryrun' => [
+        'script' => 'migrate-bulk-import-dryrun.php',
+        'card' => [
+            'title'  => 'ZIP bulk-import dry-run (#1911)',
+            'body'   => 'Adds <code>tblBulkImportJobs.DryRun</code> — lets the async ZIP import'
+                      . ' worker (and its status-poll endpoint) know a job was started as a'
+                      . ' preview, since the static per-request flag single-file import uses'
+                      . ' cannot survive past <code>fastcgi_finish_request()</code>. Additive,'
+                      . ' idempotent, dormant until a curator ticks "Dry run" on a ZIP import.'
+                      . ' Safe to re-run.',
+            'button' => 'Run ZIP Dry-Run Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblBulkImportJobs', 'DryRun'),
+    ],
 ];

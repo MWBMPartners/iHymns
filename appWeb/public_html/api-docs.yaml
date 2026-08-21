@@ -15900,11 +15900,20 @@ paths:
         SYNCHRONOUS import that returns the full summary in the same
         response.
 
-        `dryRun` is NOT supported here (#1674) — the async job's state lives
-        on `tblBulkImportJobs`, which has no spare column to carry the flag
-        across the worker's separate request lifecycle. `dryRun="1"` is
-        REFUSED with 422 before any job/file work; import a single file via
-        `import_file` to preview instead.
+        `dryRun="1"` (#1911) previews the import — nothing is written for
+        real, and `songs_created` / `songs_skipped_existing` describe what
+        WOULD happen. Unlike `import_file` (#1674), whose preview flag only
+        needs to survive one synchronous request, `import_zip`'s flag has to
+        survive the async job boundary: it is persisted onto the queued
+        `tblBulkImportJobs` row's `DryRun` column, read back by the
+        background worker (after `fastcgi_finish_request`) and echoed back
+        by `import_zip_status` as `dry_run` on every poll, so the client
+        never has to re-derive it from what it originally sent (a status/data
+        key is the contract, not client-side state). This gate is
+        column-existence-gated: on a deployment that hasn't yet run the
+        `migrate-bulk-import-dryrun.php` migration, `dryRun="1"` is still
+        REFUSED with 422 (see below) rather than silently importing for
+        real.
       requestBody:
         required: true
         content:
@@ -15917,11 +15926,13 @@ paths:
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
                 dryRun:
                   type: string
-                  enum: ["0"]
+                  enum: ["0", "1"]
                   default: "0"
                   description: |
-                    Not supported for ZIP imports (#1674) — "1" is refused
-                    with 422. Omit this field, or send "0".
+                    "1" previews the import (nothing is written); see the
+                    endpoint description. (#1911) Refused with 422 on a
+                    deployment where `tblBulkImportJobs.DryRun` doesn't exist
+                    yet.
       responses:
         "200":
           description: Either an async job handle, or a completed synchronous summary
@@ -15938,6 +15949,7 @@ paths:
                   songs_created: { type: integer, description: Present on a synchronous (non-async) response. }
                   songs_skipped_existing: { type: integer }
                   songs_failed: { type: integer }
+                  dry_run: { type: boolean, description: Present on a synchronous (non-async) response — echoes back whether this was a dry-run preview (#1911). }
         "400":
           description: No file / upload error, or an EasyWorship/synchronous import that failed to parse
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -15945,7 +15957,7 @@ paths:
           description: Uploaded zip exceeds the 100 MB import limit
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "422":
-          description: dryRun="1" was posted — ZIP dry-run is not yet supported (#1674); import a single file to preview instead
+          description: dryRun="1" was posted but this deployment hasn't run the ZIP dry-run migration yet (#1911); import a single file to preview instead, or ask an admin to apply it
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: Server missing the PHP zip extension, or the import/job creation failed
@@ -15995,6 +16007,7 @@ paths:
                       errors: { type: array, items: {} }
                       per_songbook: { type: object, nullable: true }
                       skip_reason: { type: string, example: existing-in-db }
+                      dry_run: { type: boolean, description: Echoes tblBulkImportJobs.DryRun for this job (#1911) — false on an un-migrated deployment, where such a job could never have been created with the flag set in the first place. }
                       skipped_csv_url: { type: string }
                       phase_label: { type: string, nullable: true }
                       started_at: { type: string, nullable: true }

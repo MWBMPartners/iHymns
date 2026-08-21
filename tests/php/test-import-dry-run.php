@@ -58,6 +58,19 @@ declare(strict_types=1);
  *   (c) the `!$dryRun` conjunct dropped from the maintenance-call gate →
  *       PART D's gate assertion goes red.
  *
+ * #1911 (Wave 4 C6) SUPERSESSION — PART E's 422 is no longer UNCONDITIONAL.
+ * #1674 shipped ZIP dry-run as a flat refusal (no spare column existed yet
+ * to carry the flag across the async job boundary); #1911 adds
+ * `tblBulkImportJobs.DryRun` and lifts the refusal to a column-existence
+ * gate (`$dryRun && !ed2_bulkJobsDryRunColumnExists($db)`) — still a 422,
+ * still gated on a check whose head names `dryRun` (so PART E's structural
+ * assertions keep passing unmodified), but no longer refusing every
+ * dryRun=1 ZIP unconditionally. PART F's former "the click handler refuses
+ * client-side" assertion is GONE for the same reason: import2.php no longer
+ * pre-guesses that refusal (tests/php/test-zip-dryrun.php now guards its
+ * absence + the server-round-trip that replaced it). See
+ * appWeb/.sql/migrate-bulk-import-dryrun.php and tests/php/test-zip-dryrun.php.
+ *
  *   php tests/php/test-import-dry-run.php
  *
  * Exit status 0 = all pass, 1 = at least one failure.
@@ -295,10 +308,27 @@ idr(
     "importSingle() appends the 'dryRun' form field the server reads (PART D)",
     (bool)preg_match('/fd\.append\(\s*[\'"]dryRun[\'"]\s*,\s*dryRunEl\.checked/', $import2)
 );
+/* #1911 (Wave 4 C6) — the client-side ZIP refusal is GONE (see the doc-block
+   supersession note above); importZip() now sends the SAME field
+   importSingle() always has, round-tripping through the async job row
+   instead of refusing on the client. Scoped to importZip()'s own body (not
+   merely "somewhere in the file", which importSingle()'s identical append
+   above would coincidentally satisfy). */
 idr(
-    'the click handler refuses a ZIP + dry-run combination client-side, without uploading',
-    (bool)preg_match('/isZip\s*&&\s*dryRunEl\.checked/', $import2)
+    'the pre-#1911 client-side ZIP + dry-run refusal is GONE (server round-trip replaced it)',
+    !str_contains($import2, 'isZip && dryRunEl.checked')
 );
+$posImportZipFn    = strpos($import2, 'function importZip(file)');
+$posImportSingleFn = strpos($import2, 'function importSingle(file)');
+if ($posImportZipFn !== false && $posImportSingleFn !== false && $posImportSingleFn > $posImportZipFn) {
+    $importZipBody = substr($import2, $posImportZipFn, $posImportSingleFn - $posImportZipFn);
+    idr(
+        "importZip() appends the 'dryRun' form field (#1911) — the async job row carries it, not a client refusal",
+        (bool)preg_match('/fd\.append\(\s*[\'"]dryRun[\'"]\s*,\s*dryRunEl\.checked/', $importZipBody)
+    );
+} else {
+    idr("importZip() appends the 'dryRun' form field (#1911) — the async job row carries it, not a client refusal", false);
+}
 idr(
     "renderSummary() branches on data.dry_run (the EXACT key api2.php injects in PART D — not a re-derived guess)",
     str_contains($import2, 'data.dry_run')
