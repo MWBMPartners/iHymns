@@ -258,7 +258,9 @@ function _bulkImport_componentTypeFor(string $marker): string
  * body is too malformed to import (caller logs the reason in
  * errors[]).
  *
- * @param string $body       File contents (UTF-8)
+ * @param string $body       File contents (UTF-8, UTF-16, or UTF-32 — see
+ *                           ihymnsTextToUtf8() below; any other encoding is
+ *                           rejected with a clear error rather than mangled)
  * @param string $abbrev     Songbook abbreviation parsed from the filename
  * @param string $songbook   Songbook display name parsed from the folder
  * @param int    $number     Song number parsed from the filename
@@ -266,6 +268,19 @@ function _bulkImport_componentTypeFor(string $marker): string
  */
 function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, int $number): array
 {
+    /* #1908 Commit 6 — ELI5: a Windows "Save As... Unicode" .txt file is
+       secretly UTF-16, not UTF-8; read it as UTF-8 and every character
+       comes out mangled with no error at all (the READ succeeds — it just
+       decodes to garbage). Detect + convert BEFORE anything else touches
+       the bytes. See includes/text_encoding.php for the full detection
+       ladder this delegates to (rule #22 — the ONE shared sniffer). */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
+
     /* Normalise line endings so a CRLF source from Windows reads the
        same as an LF source from macOS/Linux. */
     $body  = str_replace(["\r\n", "\r"], "\n", $body);
@@ -2097,8 +2112,16 @@ function _bulkImport_videopsalmAbbrevFromHint(?string $abbrevHint, string $songb
  */
 function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint = null): array
 {
-    /* Strip a UTF-8 BOM so json_decode doesn't trip. */
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — detect + convert UTF-16/UTF-32 (with or without a
+       BOM) to UTF-8 before json_decode() ever sees the bytes; a raw UTF-8
+       BOM strip alone (the old behaviour here) left a UTF-16 export a
+       generic, unhelpful "invalid JSON" failure. See text_encoding.php. */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
     $data = json_decode($body, true);
     if ($data === null) {
         return [null, null, 'invalid JSON: ' . json_last_error_msg()];
@@ -4160,7 +4183,15 @@ function _bulkImport_freeShowSlideLines(array $slide): array
  */
 function _bulkImport_parseFreeShow(string $body): array
 {
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — see the VideoPsalm parser above for why a raw UTF-8
+       BOM strip alone isn't enough (a UTF-16 .show export needs a real
+       conversion, not just a BOM strip). See text_encoding.php. */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
     $data = json_decode($body, true);
     if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
         return [null, 'invalid JSON: ' . json_last_error_msg()];
@@ -4548,10 +4579,15 @@ function _bulkImport_looksLikeIHymnsJson(string $body): bool
  */
 function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null): array
 {
+    require_once __DIR__ . '/text_encoding.php';   // #1908 Commit 6 — ihymnsTextToUtf8() below
     $fail = static fn(string $msg): array => [null, null, $msg];
 
     /* (0) SIZE GATE — must precede json_decode(), which is the allocation.
-           See _BULK_IMPORT_IHYMNS_MAX_BYTES for the measurement behind 8 MiB. */
+           See _BULK_IMPORT_IHYMNS_MAX_BYTES for the measurement behind 8 MiB.
+           #1908: this MUST stay ahead of the UTF-8 conversion below too — it
+           is a memory bound on the RAW upload bytes, and converting a wider
+           encoding (UTF-16/UTF-32) down to UTF-8 can only ever GROW or hold
+           steady the byte count, never shrink past this cap unnoticed. */
     $bytes = strlen($body);
     if ($bytes > _BULK_IMPORT_IHYMNS_MAX_BYTES) {
         return $fail(sprintf(
@@ -4564,9 +4600,15 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
         ));
     }
 
-    /* Strip a UTF-8 BOM — Windows editors add one and json_decode() rejects it.
-       Same guard as the VideoPsalm parser. */
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — detect + convert UTF-16/UTF-32 (with or without a
+       BOM) to UTF-8; a raw UTF-8 BOM strip alone (the old behaviour here)
+       left a UTF-16 export a generic "invalid JSON" failure instead of a
+       clear, actionable message. Same guard as the VideoPsalm parser. */
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return $fail('file is not UTF-8 (or UTF-16) text — re-save it as UTF-8');
+    }
+    $body = $converted;
 
     $data = json_decode($body, true);
     if (!is_array($data)) {
