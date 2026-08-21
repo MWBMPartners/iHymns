@@ -33,6 +33,25 @@ declare(strict_types=1);
  *   GET  easyworship_export?id=<SongId>|abbr=<BOOK>[&maxLinesPerSlide=N] -> streams an EasyWorship Songs.db (#1059/#1678)
  *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
  *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
+ *   POST bulk_move   { songIds:[...], targetAbbr }  -> { ok, moved:[{oldId,newId}], failed:[{id,error,status}] }
+ *                               #1628 item 3 — each song re-keyed through the SAME
+ *                               songRelocate() core the single-song
+ *                               metadata_field_update(field=songbook) branch uses
+ *                               (#1679 option B). PER-SONG verdicts — one bad row
+ *                               never aborts the batch. `targetAbbr` is validated
+ *                               ONCE up front (422 on an unknown book, before the
+ *                               loop); every OTHER per-song failure lands in
+ *                               `failed`, never a 500 for the whole request.
+ *                               `moved` carries the NEW ids — option B means every
+ *                               selected id is stale the instant this returns.
+ *   POST bulk_delete { songIds:[...], reason?, note? } -> { ok, deleted:[ids], failed:[{id,error,status}] }
+ *                               #1628 item 3 — each song SOFT-deleted through the
+ *                               SAME songSoftDelete() core the single-song
+ *                               delete_song case uses (#1694); restorable from
+ *                               /manage/deleted-songs. Entitlement is
+ *                               `delete_songs` (the single-delete gate), not
+ *                               `bulk_edit_songs` — a bulk delete repeats the same
+ *                               destructive act N times.
  *   GET  load_song?id=<SongId>                              -> { ok, song, components, credits, tags, links, media, … }
  *                               credits[role][] now carries first/surname/suffix
  *                               alongside {id,name} (#960 plan §4 item 3) — the
@@ -5752,6 +5771,147 @@ try {
         }
         logActivity('song.bulk_tag_detach', 'song', '', ['tag' => $name, 'count' => count($ids), 'detached' => $detached]);
         ed2_respond(['ok' => true, 'tag' => ['id' => $tagId, 'name' => $name, 'slug' => $slug], 'detached' => $detached, 'count' => count($ids)]);
+        break;
+    }
+
+    /* ---- bulk_move (POST) — move many songs to a different songbook in one
+           request (#1628 item 3). Each song gets its OWN transaction through
+           the SAME songRelocate() core the single-song
+           `metadata_field_update` (field=songbook) branch above uses — #1679
+           is RESOLVED option B, so a move re-keys the SongId; there is no
+           other legal way to change a song's book (rule #27, enforced by
+           tests/php/test-song-relocate-funnels.php — never write
+           `SongbookAbbr` directly here).
+           PER-SONG VERDICTS, never all-or-nothing (#1690 A7): one row that
+           refuses (a stale FK, an already-relocated concurrent edit) must
+           not abort the rest of a 300-song batch. The two-tier catch below
+           is a literal mirror of the single-song block's (:2480-2492):
+           \InvalidArgumentException is ordinary bad input (a per-song 422
+           verdict, loop continues); \Throwable is a real server fault
+           (rolled back, recorded, loop continues — never rethrown, or one
+           bad row would 500 the whole batch).
+           `targetAbbr` is validated ONCE up front (A3): a typo'd/unknown
+           book must refuse the WHOLE request with one clear 422, not 300
+           identical per-song failures — reusing songRelocate()'s own
+           existence check rather than a second, possibly-divergent one.
+           Response: `{ok, moved:[{oldId,newId}], failed:[{id,error,status}]}`
+           — the NEW ids are the point: option B means every selected id is
+           stale the instant this returns, so the client MUST re-key its
+           selection from `moved`, never assume the old ids still resolve
+           (they only resolve via the redirect layer). ---- */
+    case 'bulk_move': {
+        ed2_requireEntitlement('bulk_edit_songs');
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        if (!$ids) { ed2_respond(['ok' => false, 'error' => 'songIds are required.'], 400); }
+        if (count($ids) > 300) {
+            ed2_respond(['ok' => false, 'error' => 'Too many songs selected (max 300 per bulk move).'], 400);
+        }
+        $targetAbbr = trim((string)($body['targetAbbr'] ?? ''));
+        if ($targetAbbr === '') {
+            ed2_respond(['ok' => false, 'error' => 'A target songbook abbreviation is required.'], 400);
+        }
+
+        /* A3 — probe the destination ONCE, before the per-song loop. Mirrors
+           songRelocate()'s own step 2 existence check (song_relocate.php) —
+           a bad book name is a request-level mistake, not a per-song one.
+           @disabled-visible: admin write-path (#1765) — the SAME reasoning
+           song_relocate.php's own identical check carries: a curator moving
+           songs must be able to target ANY songbook, including one that is
+           currently disabled (e.g. relocating songs OUT of a disabled book,
+           or into the hidden staging book) — this pre-check is not a public
+           listing, it exists only to name a bad targetAbbr precisely. */
+        $bk = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+        $bk->bind_param('s', $targetAbbr);
+        $bk->execute();
+        $bkFound = $bk->get_result()->fetch_row() !== null;
+        $bk->close();
+        if (!$bkFound) {
+            ed2_respond(['ok' => false, 'error' => 'Unknown target songbook "' . $targetAbbr . '".'], 422);
+        }
+
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        $moved  = [];
+        $failed = [];
+        foreach ($ids as $songId) {
+            $db->begin_transaction();
+            try {
+                $rel = songRelocate($db, $songId, $targetAbbr, $ed2UserId);
+                ed2_touchRevision($db, $rel['songId'], $ed2UserId, 'metadata');
+                $db->commit();
+                $moved[] = ['oldId' => $songId, 'newId' => $rel['songId']];
+            } catch (\InvalidArgumentException $e) {
+                $db->rollback();
+                $failed[] = ['id' => $songId, 'error' => $e->getMessage(), 'status' => 422];
+            } catch (\Throwable $e) {
+                $db->rollback();
+                $failed[] = ['id' => $songId, 'error' => $e->getMessage(), 'status' => 500];
+            }
+        }
+
+        logActivity('song.bulk_move', 'song', '', [
+            'targetAbbr' => $targetAbbr,
+            'count'      => count($ids),
+            'moved'      => count($moved),
+            'failed'     => count($failed),
+        ]);
+        ed2_respond(['ok' => true, 'moved' => $moved, 'failed' => $failed]);
+        break;
+    }
+
+    /* ---- bulk_delete (POST) — soft-delete many songs in one request (#1628
+           item 3). Each song goes through the SAME songSoftDelete() core the
+           single-song `delete_song` case above uses (#1694) — a bulk delete
+           writes NOTHING via a raw `DELETE FROM tblSongs`; that would be the
+           hard-delete cascade songPurge() alone is allowed to run, and only
+           from the deleted state.
+           Entitlement is `delete_songs`, not `bulk_edit_songs`: a bulk
+           delete is N repetitions of the SAME destructive act
+           `delete_song` already gates on `delete_songs`, so the single-song
+           entitlement governs — an operator who can delete one song can
+           delete many, and revoking `delete_songs` must revoke both.
+           PER-SONG VERDICTS: songSoftDelete() already returns a pure verdict
+           per call (409 un-migrated/already-deleted, 422 unknown reason,
+           404 absent, 200 ok) — this loop simply collects them, same
+           posture as bulk_move above. Soft delete writes no redirects
+           (#1694) and is restorable from /manage/deleted-songs, which is
+           what makes a BULK version of a destructive action acceptable at
+           all. ---- */
+    case 'bulk_delete': {
+        ed2_requireEntitlement('delete_songs');
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        if (!$ids) { ed2_respond(['ok' => false, 'error' => 'songIds are required.'], 400); }
+        if (count($ids) > 300) {
+            ed2_respond(['ok' => false, 'error' => 'Too many songs selected (max 300 per bulk delete).'], 400);
+        }
+        $reason = trim((string)($body['reason'] ?? ''));
+        $note   = trim((string)($body['note'] ?? ''));
+
+        $deleted = [];
+        $failed  = [];
+        foreach ($ids as $songId) {
+            /* songSoftDelete() runs its OWN begin_transaction/commit per call
+               (song_soft_delete.php) — no wrapping transaction here, matching
+               how the single-song delete_song case above calls it. */
+            $verdict = songSoftDelete($db, $songId, $ed2UserId, $reason === '' ? null : $reason, $note);
+            if ($verdict['ok']) {
+                $deleted[] = $songId;
+            } else {
+                $failed[] = ['id' => $songId, 'error' => $verdict['error'], 'status' => $verdict['status']];
+            }
+        }
+
+        logActivity('song.bulk_delete', 'song', '', [
+            'count'   => count($ids),
+            'deleted' => count($deleted),
+            'failed'  => count($failed),
+            'reason'  => $reason === '' ? null : $reason,
+        ]);
+        ed2_respond(['ok' => true, 'deleted' => $deleted, 'failed' => $failed]);
         break;
     }
 
