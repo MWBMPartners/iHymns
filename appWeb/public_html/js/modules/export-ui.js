@@ -107,6 +107,47 @@ async function fetchJson(url) {
 }
 
 /**
+ * Read the "Lines per slide" picker inside one export `<menu>` (#1918).
+ * Returns 0 ("all on one slide", the unchanged default) when the control
+ * is absent (an older cached fragment) or set to something non-numeric.
+ * Read at CLICK time (not once at wire time) so the curator can change the
+ * picker and immediately re-export without re-opening the menu.
+ * @param {Element|null} menu
+ * @returns {number}
+ */
+function readLinesPerSlide(menu) {
+    /* Defensive: a menu stub without querySelector (an older cached
+       fragment, or a minimal test double) yields the 0 default rather than
+       throwing — the picker being absent already means "all on one slide". */
+    const select = (menu && typeof menu.querySelector === 'function')
+        ? menu.querySelector('.export-lines-per-slide')
+        : null;
+    const n = select ? parseInt(select.value, 10) : 0;
+    return (Number.isFinite(n) && n > 0) ? n : 0;
+}
+
+/**
+ * Build the `options` object to hand to ONE exporter, using whichever
+ * option-key spelling that exporter actually reads (#1918). The two
+ * exporter surfaces predate this control and were never reconciled onto one
+ * shared key name: `window.iHymnsProPresenter.exportSong()` /
+ * `exportAllAsBundle()` read `options.linesPerSlide`
+ * (propresenter-export.js `normaliseOptions()`); every
+ * `window.iHymnsFormatExport[...]` format reads `options.maxLinesPerSlide`
+ * (format-export.js `maxLinesOf()`). Centralising the mapping HERE (rather
+ * than at each of the two call sites below) means a future third exporter
+ * only has to be added to this one function.
+ * @param {string} fmtKey
+ * @param {number} linesPerSlide
+ * @returns {{linesPerSlide: number}|{maxLinesPerSlide: number}}
+ */
+function exportOptionsFor(fmtKey, linesPerSlide) {
+    return fmtKey === 'proPresenter7'
+        ? { linesPerSlide: linesPerSlide }
+        : { maxLinesPerSlide: linesPerSlide };
+}
+
+/**
  * Wire a song-view "Export ▾" dropdown. The dropdown markup (button +
  * `.song-export-menu` with `[data-export-format]` items) lives in song.php;
  * this binds the clicks.
@@ -120,6 +161,9 @@ export function initSongExport(songId) {
     menu.querySelectorAll('[data-export-format]').forEach((item) => {
         item.addEventListener('click', async () => {
             const fmtKey = item.dataset.exportFormat;
+            /* #1918: read the picker at click time (not wire time) so a
+               change to the <select> takes effect on the very next click. */
+            const options = exportOptionsFor(fmtKey, readLinesPerSlide(menu));
             try {
                 toast('Preparing export…', 'info');
                 const data = await fetchJson('/api?action=song_data&id=' + encodeURIComponent(songId));
@@ -132,13 +176,13 @@ export function initSongExport(songId) {
                        equivalent. Missing this await let an encode failure
                        become an unhandled promise rejection instead of the
                        catch block's toast — the user saw nothing at all. */
-                    await window.iHymnsProPresenter.exportSong(data.song, {});
+                    await window.iHymnsProPresenter.exportSong(data.song, options);
                     return;
                 }
                 await loadExportLibs();
                 const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
                 if (!fmt || typeof fmt.exportSong !== 'function') { throw new Error('format unavailable'); }
-                fmt.exportSong(data.song, {});
+                fmt.exportSong(data.song, options);
             } catch (err) {
                 toast('Export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
             }
@@ -156,10 +200,11 @@ export function initSongExport(songId) {
  * clean up once (the songbook menu missing ChordPro).
  * @param {string} abbr    Songbook abbreviation (e.g. 'MP')
  * @param {string} fmtKey  One of the `data-export-format` keys in export-menu.php
+ * @param {number} [linesPerSlide] 0 (default) = all on one slide (#1918)
  * @returns {Promise<void>} Resolves once the download has been triggered;
  *   rejects with an Error whose message is fit to show the user.
  */
-async function exportSongbookAs(abbr, fmtKey) {
+async function exportSongbookAs(abbr, fmtKey, linesPerSlide) {
     const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
     const songs = data && data.songs;
     if (!Array.isArray(songs) || !songs.length) { throw new Error('no songs to export'); }
@@ -167,19 +212,21 @@ async function exportSongbookAs(abbr, fmtKey) {
         name:         (data.songbook && (data.songbook.name || data.songbook.id)) || abbr,
         abbreviation: (data.songbook && (data.songbook.id || data.songbook.abbreviation)) || abbr,
     };
+    const options = exportOptionsFor(fmtKey, linesPerSlide || 0);
     if (fmtKey === 'proPresenter7') {
         /* PP7 exports a whole songbook as a .probundle (#887). */
         await loadPP7();
         await window.iHymnsProPresenter.exportAllAsBundle(songs, {
             songbookAbbrev: meta.abbreviation,
             songbookName:   meta.name,
+            linesPerSlide:  options.linesPerSlide,
         });
         return;
     }
     await loadExportLibs();
     const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
     if (!fmt || typeof fmt.exportSongbook !== 'function') { throw new Error('format unavailable'); }
-    fmt.exportSongbook(songs, meta);
+    fmt.exportSongbook(songs, Object.assign({}, meta, options));
 }
 
 /**
@@ -199,9 +246,11 @@ function wireSongbookExportMenu(menu, abbr) {
     menu.querySelectorAll('[data-export-format]').forEach((item) => {
         item.addEventListener('click', async () => {
             const fmtKey = item.dataset.exportFormat;
+            /* #1918: read the picker at click time (not wire time). */
+            const linesPerSlide = readLinesPerSlide(menu);
             try {
                 toast('Preparing songbook export…', 'info');
-                await exportSongbookAs(abbr, fmtKey);
+                await exportSongbookAs(abbr, fmtKey, linesPerSlide);
             } catch (err) {
                 toast('Songbook export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
             }

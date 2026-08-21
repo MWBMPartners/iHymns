@@ -295,7 +295,7 @@ if (!empty($songs)) {
             <div class="btn-group">
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm dropdown-toggle btn-export-songbook"
-                        data-bs-toggle="dropdown" aria-expanded="false"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                         aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format">
                     <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                     Export

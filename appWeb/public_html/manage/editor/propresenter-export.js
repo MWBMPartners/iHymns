@@ -240,7 +240,18 @@
      * `Graphics.Text.rtf_data`. We emit the minimum subset described
      * in iHymns issue #887: ANSI prefix, lines separated by `\par`,
      * RTF metacharacters (`\`, `{`, `}`) escaped, non-ASCII via
-     * `\uN?` (signed-16-bit Unicode form). */
+     * `\uN?` (signed-16-bit Unicode form).
+     *
+     * #1918 — deliberately NOT extended with a font table / `\pard` /
+     * `\fs` run here. Now that `makeLyricCue()` sets `text.attributes`
+     * (font/colour/paragraph alignment — SECTION 5c), ProPresenter uses
+     * THOSE for the element's default styling; the bare RTF stays legible
+     * on its own. Adding paragraph/font control words here would be
+     * redundant with `attributes` and risks disagreeing with it. It would
+     * also break the existing exact-prefix assertions in
+     * tests/test-propresenter-export.js (notably the empty-input case,
+     * which asserts the WHOLE string is `{\rtf1\ansi\uc1 }` — inserting
+     * `\pard` unconditionally would no longer match). */
 
     function buildRTF(lines) {
         var arr;
@@ -376,6 +387,87 @@
     }
 
     /* ==================================================================
+     *  SECTION 5c — Slide geometry & default text styling (#1918)
+     * ==================================================================
+     * ISSUE #1918: exported .pro files opened in ProPresenter 7+ as blank
+     * blue slides — no visible lyric text. Root cause per
+     * `rv.data.Graphics.Element` (graphicsData.proto line 17-44 —
+     * `Graphics.Element.bounds = 3`, type `Graphics.Rect`): every text
+     * element `makeLyricCue()` built set NO `bounds`, so the element's
+     * frame defaulted to 0×0 — invisible, with nothing for ProPresenter's
+     * Reflow layout to fill. The blue is not a background colour we
+     * emitted (we still emit none, deliberately — see makeLyricCue() below);
+     * it's ProPresenter's own "this slide is empty" placeholder, shown
+     * because a 0×0 element renders nothing at all.
+     *
+     * SLIDE_WIDTH/SLIDE_HEIGHT are standard ProPresenter 16:9 (1920×1080).
+     * MARGIN insets the text frame off all four edges (~5%) so lyric text
+     * doesn't crowd right up to a projector's clipped edge.
+     *
+     * DEFAULT_FONT_* / DEFAULT_TEXT_COLOR give the slide legible default
+     * styling via `Graphics.Text.Attributes` (graphicsData.proto line 274)
+     * even though we still emit no background — an operator applying their
+     * own theme/background is the intended workflow (see makeLyricCue()). */
+    var SLIDE_WIDTH = 1920;
+    var SLIDE_HEIGHT = 1080;
+    var MARGIN = 96; /* ≈ 5% of 1920 */
+
+    var DEFAULT_FONT_NAME = 'Arial';
+    var DEFAULT_FONT_SIZE = 80; /* pt — worship-legible default (60-90pt range) */
+    /* rv.data.Color (color.proto): float red/green/blue/alpha, 0..1. White. */
+    var DEFAULT_TEXT_COLOR = { red: 1, green: 1, blue: 1, alpha: 1 };
+
+    /* Horizontal alignment is DELIBERATELY left unset (no
+       `Graphics.Text.Attributes.paragraph_style`). Two reasons: (1)
+       ProPresenter defaults a text element's horizontal alignment to CENTRE
+       already, which is what we want for lyrics; (2) — the load-bearing one —
+       a `paragraph_style: { alignment }` sub-message is the ONE field in this
+       payload where protobufjs's static (`pbjs -t static`) and reflection
+       encoders disagree by 2 bytes per element (isolated empirically), which
+       trips the #1788 byte-identical determinism guard. Both encoders produce
+       a VALID file that round-trips, but the static/reflection outputs must
+       stay identical so the CSP-safe static path is trustworthy. Centre
+       alignment therefore rides on ProPresenter's own default; if a real
+       ProPresenter check ever shows left-aligned lyrics, add `\qc` to the RTF
+       in buildRTF() (RTF-level, no protobuf divergence) rather than
+       re-introducing paragraph_style. See tests/test-propresenter-static-csp.js.
+       Graphics.Text.VerticalAlignment (graphicsData.proto line 209-213):
+       TOP=0, MIDDLE=1, BOTTOM=2. */
+    var TEXT_VERTICAL_ALIGNMENT_MIDDLE = 1;
+    /* Graphics.Text.ScaleBehavior (graphicsData.proto line 215-222):
+       NONE=0, ADJUST_CONTAINER_HEIGHT=1, SCALE_FONT_DOWN=2,
+       SCALE_FONT_UP=3, SCALE_FONT_UP_DOWN=4. SCALE_FONT_DOWN so a long
+       verse shrinks to fit the bounds instead of overflowing them. */
+    var TEXT_SCALE_BEHAVIOR_SCALE_FONT_DOWN = 2;
+
+    /* The default (full-slide-minus-margin) text frame every lyric
+       element uses. Built once per encode call by makeLyricCue() rather
+       than module-level, purely so nothing here is a shared mutable
+       object accidentally reused/mutated across slides — plain data, so
+       the cost of rebuilding it is negligible. */
+    function defaultTextBounds() {
+        return {
+            origin: { x: MARGIN, y: MARGIN },
+            size: {
+                width: SLIDE_WIDTH - (2 * MARGIN),
+                height: SLIDE_HEIGHT - (2 * MARGIN)
+            }
+        };
+    }
+
+    /* Default `Graphics.Text.Attributes` (font/colour/centred paragraph)
+       applied to every lyric element so ProPresenter has something
+       legible to render before an operator's theme takes over. */
+    function defaultTextAttributes() {
+        return {
+            font: { name: DEFAULT_FONT_NAME, size: DEFAULT_FONT_SIZE },
+            text_solid_fill: DEFAULT_TEXT_COLOR
+            /* paragraph_style deliberately omitted — see the comment on the
+               VerticalAlignment constants above (#1788 determinism). */
+        };
+    }
+
+    /* ==================================================================
      *  SECTION 6 — Plain-object Presentation builder
      * ==================================================================
      * Produces the JS object that protobufjs's `Presentation.create()`
@@ -421,7 +513,24 @@
 
     /* Build one (cue, slide-action) pair for a single slide's RTF body.
        Returns `{ cueId, cue }` so the caller can push the cue into the
-       presentation and reference its UUID from the parent cue_group. */
+       presentation and reference its UUID from the parent cue_group.
+
+       #1918 THE FIX: the element now carries `bounds` (a real, non-zero
+       frame — see SECTION 5c) and `text.attributes` (font/colour/centred
+       paragraph) so ProPresenter has something to actually lay out and
+       render, plus `vertical_alignment`/`scale_behavior` so a long verse
+       centres and shrinks-to-fit rather than overflowing. `base_slide`
+       also now carries `size` (`rv.data.Slide.size`, slide.proto line 19
+       — the per-slide canvas the element's `bounds` are laid out inside),
+       matching the same SLIDE_WIDTH/SLIDE_HEIGHT the element frame is
+       computed from.
+
+       Deliberately still NO background (no `Slide.background_color`, no
+       `draws_background_color`, no `Presentation.background`): the slide
+       stays transparent so the operator's own theme/background shows
+       through underneath in ProPresenter's Look/Slide compositing — see
+       the doc-block on SECTION 5c for why the blue this issue reported
+       was never a background WE emitted. */
     function makeLyricCue(name, rtfString) {
         var cueUuid = uuidMsg();
         var actionUuid = uuidMsg();
@@ -438,11 +547,18 @@
                 presentation: {
                     base_slide: {
                         uuid: slideUuid,
+                        size: { width: SLIDE_WIDTH, height: SLIDE_HEIGHT },
                         elements: [{
                             element: {
                                 uuid: elementUuid,
                                 name: 'Lyrics',
-                                text: { rtf_data: rtfBytes }
+                                bounds: defaultTextBounds(),
+                                text: {
+                                    rtf_data: rtfBytes,
+                                    attributes: defaultTextAttributes(),
+                                    vertical_alignment: TEXT_VERTICAL_ALIGNMENT_MIDDLE,
+                                    scale_behavior: TEXT_SCALE_BEHAVIOR_SCALE_FONT_DOWN
+                                }
                             }
                         }]
                     }

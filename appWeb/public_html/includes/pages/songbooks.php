@@ -238,7 +238,7 @@ $stats = $songData->getStats();
                         <div class="btn-group songbook-export-tile-group">
                             <button type="button"
                                     class="btn btn-sm btn-outline-secondary dropdown-toggle songbook-export-tile-btn"
-                                    data-bs-toggle="dropdown" aria-expanded="false"
+                                    data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                                     aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format"
                                     title="Export this songbook"
                                     <?php if (((int)($book['songCount'] ?? 0)) < 1): ?>disabled aria-disabled="true"<?php endif; ?>>

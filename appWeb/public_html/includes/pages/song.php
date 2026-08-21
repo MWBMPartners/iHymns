@@ -1063,7 +1063,7 @@ foreach ($components as $_c) {
                 <div class="btn-group song-toolbar-btn">
                     <button type="button"
                             class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
-                            data-bs-toggle="dropdown" aria-expanded="false"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                             aria-label="Export this song to a worship-presentation format">
                         <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                         Export

@@ -466,6 +466,52 @@ function createFreshExporter(overrides) {
         assert.ok(rtf.includes('Line two'));
     });
 
+    /* ---------------------------------------------------------------- */
+    /* #1918 — the blank/blue-slide regression guard. rule #34 in
+       .claude/CLAUDE.md: the OLD test suite already round-tripped and
+       decoded the slide element above without ever noticing it had a
+       0x0 frame — a guard that only checks the element EXISTS is not a
+       guard against it being invisible. These assertions check the
+       actual rendering-relevant shape: a non-zero `bounds.size`, a set
+       `text.attributes.font`, and that the RTF body a real ProPresenter
+       user would see actually contains the song's own words. Mutation
+       tested: temporarily removing `bounds:` from makeLyricCue() in
+       propresenter-export.js turns the first assertion below RED (see
+       the session's mutation transcript in the handoff/PR description). */
+    await test('every lyric slide element has a non-zero bounds.size (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        assert.ok(decoded.cues.length > 0, 'expected at least one cue to check');
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.ok(element.bounds, 'element.bounds is unset — this is the #1918 invisible-element regression');
+                assert.ok(element.bounds.size, 'element.bounds.size is unset');
+                assert.ok(element.bounds.size.width > 0, 'element.bounds.size.width must be > 0, got ' + element.bounds.size.width);
+                assert.ok(element.bounds.size.height > 0, 'element.bounds.size.height must be > 0, got ' + element.bounds.size.height);
+            }
+        }
+    });
+    await test('every lyric slide element sets text.attributes.font (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.ok(element.text && element.text.attributes, 'element.text.attributes is unset');
+                assert.ok(element.text.attributes.font, 'element.text.attributes.font is unset');
+                assert.ok(element.text.attributes.font.name, 'font.name is unset');
+                assert.ok(element.text.attributes.font.size > 0, 'font.size must be > 0');
+            }
+        }
+    });
+    await test('decoded rtf_data (TextDecoder) contains the expected verse text (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        const element = decoded.cues[0].actions[0].slide.presentation.base_slide.elements[0].element;
+        /* Use TextDecoder (not Buffer) per the #1918 spec, to exercise the
+           same decode path a browser (not just Node/Buffer) would use. */
+        const rtf = new TextDecoder().decode(element.text.rtf_data);
+        assert.ok(rtf.includes('Line one'), 'expected decoded RTF to contain the verse text "Line one"');
+    });
+
     await test('decoded CCLI block contains author, title and #587 artist', () => {
         const decoded = Presentation.decode(encoded);
         assert.equal(decoded.ccli.author, 'Ivor Golby / Noël Tredinnick');

@@ -53,6 +53,30 @@ declare(strict_types=1);
  * menu simply hadn't been kept in sync (its exporter always supported
  * exportSongbook(), so this was never a functional gap — just a rendering
  * one). Sharing ONE list here is what keeps that from happening again.
+ *
+ * "Lines per slide" control (#1918):
+ * A `<select class="export-lines-per-slide">` sits above the format list so
+ * a curator can chunk long components across several presentation slides
+ * instead of one overflowing slide. Read by export-ui.js at click time via
+ * `menu.querySelector('.export-lines-per-slide')` (scoped to THIS menu
+ * instance, so the N per-tile menus on `/songbooks` each keep their own
+ * independent choice). Default value is `0` ("All on one slide") — the
+ * pre-existing one-click export behaviour is unchanged unless the curator
+ * opens the picker. The value is threaded to the underlying exporters under
+ * TWO different option-key spellings that already existed before this
+ * control did (never reconciled here — out of scope for #1918):
+ * `propresenter-export.js` reads `options.linesPerSlide`; every format in
+ * `format-export.js` reads `options.maxLinesPerSlide` (its own
+ * `maxLinesOf()` helper). export-ui.js maps the one selected number to
+ * whichever key the exporter it's calling actually expects.
+ *
+ * The parent `.dropdown` toggle button for every surface carries
+ * `data-bs-auto-close="outside"` (song.php / songbook.php / songbooks.php)
+ * specifically so interacting with this `<select>` doesn't immediately
+ * collapse the menu — Bootstrap 5's default `autoClose: true` closes a
+ * dropdown on ANY click that isn't on the toggle itself, native `<select>`
+ * included, unless the toggle opts into `"outside"`.
+ * https://getbootstrap.com/docs/5.3/components/dropdowns/#auto-close-behavior
  */
 
 $EXPORT_MENU_CLASS_BY_SURFACE = [
@@ -84,6 +108,27 @@ $EXPORT_MENU_FORMATS = [
 $exportMenuClass = $EXPORT_MENU_CLASS_BY_SURFACE[$exportMenuSurface];
 ?>
 <ul class="dropdown-menu dropdown-menu-end <?= $exportMenuClass ?>">
+    <li class="px-3 py-1">
+        <!-- #1918: wrapping the <select> in a <label> gives it an accessible
+             name via implicit labelling, without needing an `id`/`for` pair —
+             this partial is re-rendered N times on /songbooks (one menu per
+             tile), and a duplicated `id` across those instances would be an
+             a11y/HTML-validity bug of its own. Value persists only for the
+             lifetime of this open menu; 0 ("All on one slide") matches the
+             exporters' own pre-existing default so one-click export is
+             unchanged unless a curator opens this picker. -->
+        <label class="d-flex align-items-center gap-2 small mb-0 export-lines-per-slide-label">
+            <span class="text-body-secondary">Lines per slide</span>
+            <select class="form-select form-select-sm w-auto export-lines-per-slide" aria-label="Lines per slide">
+                <option value="0" selected>All on one slide</option>
+                <option value="2">2</option>
+                <option value="4">4</option>
+                <option value="6">6</option>
+                <option value="8">8</option>
+            </select>
+        </label>
+    </li>
+    <li><hr class="dropdown-divider"></li>
     <?php foreach ($EXPORT_MENU_FORMATS as $fmtKey => $fmtLabel): ?>
     <li><button type="button" class="dropdown-item" data-export-format="<?= htmlspecialchars($fmtKey) ?>"><?= htmlspecialchars($fmtLabel) ?></button></li>
     <?php endforeach; ?>

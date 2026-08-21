@@ -227,7 +227,10 @@ async function test(name, fn) {
         assert.deepEqual(fetchLog, ['/api?action=songbook_export&abbr=CP']);
         assert.equal(exportSongbookCalls.length, 1, 'expected exportSongbook to be called exactly once');
         assert.deepEqual(exportSongbookCalls[0].songs, SONGBOOK_FIXTURE.songs);
-        assert.deepEqual(exportSongbookCalls[0].meta, { name: 'Carol Praise', abbreviation: 'CP' });
+        /* #1918: the meta now also carries the exporter's lines-per-slide
+           option (0 = all-on-one-slide default) — format-export reads it as
+           `maxLinesPerSlide`. */
+        assert.deepEqual(exportSongbookCalls[0].meta, { name: 'Carol Praise', abbreviation: 'CP', maxLinesPerSlide: 0 });
     });
 
     await test('rejects (toasts, does not call the format spy) when songbook_export returns no songs', async () => {
