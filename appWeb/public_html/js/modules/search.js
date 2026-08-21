@@ -274,6 +274,95 @@ export class Search {
             });
         }
 
+        /* #1903 item 2 — keyboard navigation from the search input into the
+         * results list.
+         *
+         * ELI5: press the down arrow in the search box and your keyboard
+         * focus jumps into the list of results, so you can arrow up/down
+         * between them and press Enter to open one — all without touching
+         * the mouse.
+         *
+         * Detail: this is deliberately NOT a combobox/typeahead revival —
+         * the old header-search autocomplete (which imported
+         * combobox-a11y.js) was removed as dead code in #812 (see the note
+         * atop this file) and stays removed. The rows rendered by
+         * `_renderResultItems()` below are real `<a href>` elements
+         * (`.song-list-item`, natively focusable, no `tabindex` needed), so
+         * Enter opens them via ordinary browser anchor activation — nothing
+         * to wire for that part.
+         *
+         * ArrowDown on the input moves focus to the FIRST result row, but
+         * only when at least one exists (a query typed but not yet
+         * resolved, or a zero-result search, must not steal focus into an
+         * empty list). ArrowDown/ArrowUp on a focused row then walk between
+         * rows, BOUNDED — no wrap: ArrowDown on the last row is a no-op
+         * (stays put) and ArrowUp on the first row returns focus to the
+         * input, mirroring the common "type more, arrow back down" flow.
+         * `preventDefault()` is required on every branch that moves focus:
+         * an unprevented ArrowDown both scrolls the page AND moves focus,
+         * which reads as the list silently misbehaving rather than working.
+         * https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/APG/Patterns/listbox
+         * (the "arrow moves focus, bounded" shape below borrows the
+         * listbox pattern's keyboard model without adopting full listbox
+         * semantics — these stay plain links, not `role="option"` rows).
+         *
+         * The listener on `results` (`#text-search-results`) is bound ONCE,
+         * delegated, and MUST be — `performSearch()` replaces
+         * `results.innerHTML` (and therefore every `.song-list-item` row)
+         * on every search, but never replaces the `results` element itself,
+         * so a listener bound directly to a row would be discarded with it
+         * on the very next search. Binding on the stable container is what
+         * survives. `dataset.keynavBound` follows the same double-bind
+         * guard convention used elsewhere in this module family (see e.g.
+         * settings.js's `dataset.bound`, request-a-song.js's
+         * `dataset.songbookPickerBound`) — `initSearchPage()` itself only
+         * runs once per `/search` navigation (router.js re-creates this
+         * fragment, and with it fresh `input`/`results` nodes, each time),
+         * but the guard keeps a future caller that re-runs it against an
+         * already-wired container from double-firing every keystroke.
+         * Guard: tests/test-search-keyboard-nav.js
+         */
+        if (!input.dataset.keynavBound) {
+            input.dataset.keynavBound = '1';
+            input.addEventListener('keydown', (e) => {
+                if (e.key !== 'ArrowDown') return;
+                const firstRow = results.querySelector('.song-list-item');
+                if (!firstRow) return;
+                e.preventDefault();
+                firstRow.focus();
+            });
+        }
+
+        if (!results.dataset.keynavBound) {
+            results.dataset.keynavBound = '1';
+            results.addEventListener('keydown', (e) => {
+                if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                /* Delegated: only act when the keydown originated on (or
+                   inside) a result row, not the "Load more" button or the
+                   count text that also live in this container. */
+                const row = e.target.closest ? e.target.closest('.song-list-item') : null;
+                if (!row) return;
+
+                const rows = Array.from(results.querySelectorAll('.song-list-item'));
+                const idx = rows.indexOf(row);
+
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    const next = rows[idx + 1];
+                    if (next) next.focus();
+                    /* Last row: no wrap — focus stays put. */
+                } else {
+                    e.preventDefault();
+                    const prev = rows[idx - 1];
+                    if (prev) {
+                        prev.focus();
+                    } else {
+                        input.focus();
+                    }
+                }
+            });
+        }
+
         /* #1786 — Sort ▾ control. A change re-runs the CURRENT query fresh
            (append=false inside performSearch resets offset/loaded — see
            apiSearch() below for how the spec becomes a `sort=` param). No
