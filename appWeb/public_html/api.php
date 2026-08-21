@@ -3778,7 +3778,19 @@ if ($action !== null) {
                itself is gone — $serverRows is read directly below. */
             $payloadIds = [];
 
-            $now = gmdate('Y-m-d H:i:s');
+            /* #1675 — the upsert's UpdatedAt is stamped from the DB's OWN clock
+               (userSyncNow = SELECT NOW()), NOT PHP UTC (gmdate), so a stored
+               row's timestamp shares a frame of reference with the `since`
+               watermark (also userSyncNow, :~3990) that the conflict guard (C3,
+               §3.4) will compare it against. Before this the two were minted by
+               different clocks — PHP UTC here vs the DB session's NOW() for the
+               watermark — so on a DB session behind UTC every row would read
+               NEWER than a watermark taken the same instant and the guard would
+               refuse every push. This is the exact change user_sync.php's
+               userSyncNow() doc-block reserved "for its own change". CreatedAt
+               inherits the same $now default it always did — no contract change,
+               just a same-frame clock. */
+            $now = userSyncNow($db);
 
             /* Upsert each local setlist. The (UserId, SetlistId) pair
                has a UNIQUE constraint on tblUserSetlists, so

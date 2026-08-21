@@ -485,10 +485,20 @@ function setlistCollabPerformUpdate(
         throw new SetlistCollabEncodeException('Song list could not be encoded (invalid characters).');
     }
 
+    /* #1675 — UpdatedAt is stamped with NOW() (the DB SESSION clock), not
+       UTC_TIMESTAMP(). A collaborator's edit must be comparable against an
+       owner device's `since` watermark, and that watermark is userSyncNow()
+       = SELECT NOW() (the session frame). Stamping this write in a different
+       frame (UTC) would make a fresh collaborator edit read older or newer
+       than it really is relative to the watermark by the session's UTC offset
+       — the headline #1675 cross-device scenario (owner syncs, collaborator
+       edits, owner's next sync must SEE the edit as newer) depends on both
+       sides sharing this one clock. ExpiresAt handling elsewhere deliberately
+       stays on the UTC pair (different comparison, different frame). */
     if ($newName !== '') {
         $upd = $db->prepare(
             'UPDATE tblUserSetlists
-                SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                SET Name = ?, SongsJson = ?, UpdatedAt = NOW()
               WHERE UserId = ? AND SetlistId = ?
               LIMIT 1'
         );
@@ -496,7 +506,7 @@ function setlistCollabPerformUpdate(
     } else {
         $upd = $db->prepare(
             'UPDATE tblUserSetlists
-                SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                SET SongsJson = ?, UpdatedAt = NOW()
               WHERE UserId = ? AND SetlistId = ?
               LIMIT 1'
         );

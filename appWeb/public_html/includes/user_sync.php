@@ -316,26 +316,27 @@ if (!function_exists('userSyncNow')) {
      *
      * Cut to 19 chars to match the format userSyncParseSince() accepts.
      *
-     * KNOWN, BOUNDED CAVEAT (#1649). tblUserFavorites.CreatedAt and
-     * tblUserCustomTags.CreatedAt are written by MySQL itself (DEFAULT
-     * CURRENT_TIMESTAMP), so they share this watermark's frame exactly. But
-     * tblUserSetlists.UpdatedAt is written by the APP — the setlists upsert
-     * binds a PHP-generated UTC timestamp — and neither PHP nor the mysqli
-     * session sets an explicit time zone in this codebase. (That value used to
-     * be gmdate('c'); it is now gmdate('Y-m-d H:i:s'), because the ISO-8601
-     * OFFSET form is rejected outright by MariaDB and MySQL 5.7 — see the fix
-     * for the sign-in 500. Same instant, same skew caveat below; only the
-     * literal's syntax changed.) If the DB session runs ahead of UTC,
-     * setlist rows can therefore read as slightly OLDER than a watermark minted
-     * at the same instant, and guard (3) will let them be deleted.
+     * ONE CLOCK (#1675, was the #1649 "bounded caveat" — now CLOSED).
+     * tblUserFavorites.CreatedAt and tblUserCustomTags.CreatedAt are written by
+     * MySQL itself (DEFAULT CURRENT_TIMESTAMP), so they share this watermark's
+     * frame exactly. tblUserSetlists.UpdatedAt is written by the APP — and as
+     * of #1675 the setlists upsert (api.php user_setlists_sync: $now =
+     * userSyncNow($db)) and the collaborative/token write core
+     * (setlistCollabPerformUpdate: UpdatedAt = NOW()) BOTH stamp from this same
+     * DB session clock, so a stored setlist row and this watermark now live in
+     * ONE frame. This is the alignment the caveat here used to reserve "for its
+     * own change": without it, guard (3) and the #1675 per-row conflict guard
+     * would be wrong by the DB session's UTC offset — on a behind-UTC session,
+     * refusing every push forever (a bricked sync).
      *
-     * That failure mode is bounded to "exactly what happens today": deleting
-     * absent rows regardless of age IS the pre-#1649 behaviour, so a skewed
-     * clock degrades guard (3) to legacy and never does anything worse. Guard
-     * (2), the truncation skip — which is the actual data-loss fix — does not
-     * consult timestamps at all and is unaffected by any skew. Aligning the
-     * setlist upsert onto the DB clock would tighten this, but it changes a
-     * long-standing write path and belongs in its own change.
+     * TRANSITION: rows written BEFORE #1675 carry the old PHP-UTC stamp. On a
+     * behind-UTC session those read up to |offset| in the future relative to
+     * this clock; the #1675 conflict guard neutralises exactly that with a
+     * future-stamp clamp (userSyncRowNewerThanWatermark's $slackSeconds — a
+     * stamp materially past the DB's own now is treated as frame-poisoned and
+     * degrades to today's last-writer-wins, never a refusal loop). Ahead-of-UTC
+     * sessions degrade the other way (fewer conflicts). Either way the failure
+     * mode of a skewed install is "the guard under-fires", never "sync bricks".
      *
      * mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
      * (includes/db_mysql.php), so a failed query THROWS rather than returning
