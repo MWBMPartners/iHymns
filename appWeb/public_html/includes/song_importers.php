@@ -808,7 +808,12 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            otherwise-good song; a genuine mysqli error is NOT caught here and
            still rolls the whole song back. Entries equal to the main title
            are dropped (songAltTitleIsRedundant), and INSERT IGNORE +
-           uq_song_title absorb any remaining dupe. */
+           uq_song_title absorb any remaining dupe.
+           #1912 — `note` is now threaded through too (songAltTitleAdd()'s 5th
+           param): only the iHymns-interchange parser supplies one today (the
+           OpenLyrics <title> parser above never sets 'note', so this stays a
+           no-op — still null — for every other importer, byte-identical to
+           before #1912). */
         $altTitles = $song['altTitles'] ?? [];
         if (is_array($altTitles) && $altTitles !== []) {
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_alt_titles.php';
@@ -818,8 +823,9 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
                     $altTitle = trim((string)($alt['title'] ?? ''));
                     if ($altTitle === '' || songAltTitleIsRedundant($altTitle, $title)) { continue; }
                     $altLang = ($alt['language'] ?? '') !== '' ? (string)$alt['language'] : null;
+                    $altNote = ($alt['note'] ?? '') !== '' ? (string)$alt['note'] : null;
                     try {
-                        songAltTitleAdd($db, $songId, $altTitle, $altLang, null);
+                        songAltTitleAdd($db, $songId, $altTitle, $altLang, $altNote);
                     } catch (\InvalidArgumentException $_e) { /* skip a malformed alt, keep the import */ }
                 }
             }
@@ -4974,6 +4980,34 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
             $components[] = $mapped;
         }
 
+        /* #1912 — alternative titles round-trip. The interchange calls the key
+           "alternativeTitles" (matching what getSongs()/getSongById() now both
+           emit, SongData.php); the shared saveSong write loop below (:812-826,
+           #1669 C9) reads $song['altTitles'] as [{title, language, note}] and
+           feeds it straight to the ONE song_alt_titles.php core — this block
+           only maps the interchange spelling to the internal one, it does not
+           re-implement the write. Optional on the wire: an export made before
+           #1912 (or any hand-written fixture) simply has no "alternativeTitles"
+           key, `(array)(... ?? [])` folds that to [], and the song imports
+           byte-identically to before this change (rule #33 — never make an
+           optional wire key required). Malformed entries (not an object, or an
+           empty/whitespace-only title) are skipped here rather than failing the
+           whole song — the write loop re-validates the same fields anyway, so
+           this mirrors ITS tolerance instead of imposing a stricter one. */
+        $altTitles = [];
+        foreach ((array)($raw['alternativeTitles'] ?? []) as $altRaw) {
+            if (!is_array($altRaw)) { continue; }
+            $altTitleText = trim((string)($altRaw['title'] ?? ''));
+            if ($altTitleText === '') { continue; }
+            $altLangText = trim((string)($altRaw['language'] ?? ''));
+            $altNoteText = trim((string)($altRaw['note'] ?? ''));
+            $altTitles[] = [
+                'title'    => $altTitleText,
+                'language' => $altLangText !== '' ? $altLangText : null,
+                'note'     => $altNoteText !== '' ? $altNoteText : null,
+            ];
+        }
+
         /* Song dict in the exact shape _bulkImport_saveSong() consumes — the same
            key set _bulkImport_assembleSong() produces for OpenLyrics/PP6, so this
            format needs no special case anywhere downstream.
@@ -5002,6 +5036,7 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
             'musicPublicDomain'  => !empty($raw['musicPublicDomain']) ? 1 : 0,
             'hasAudio'           => !empty($raw['hasAudio']) ? 1 : 0,
             'hasSheetMusic'      => !empty($raw['hasSheetMusic']) ? 1 : 0,
+            'altTitles'          => $altTitles,
             'writers'            => array_values(array_filter(
                                         array_map('strval', (array)$raw['writers']),
                                         static fn(string $w): bool => trim($w) !== ''

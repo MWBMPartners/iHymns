@@ -26,6 +26,10 @@
       "musicPublicDomain": true,
       "hasAudio": false,
       "hasSheetMusic": false,
+      "alternativeTitles": [
+        { "title": "The River Song", "language": "en-GB", "note": "colloquial name" },
+        { "title": "Made-Up River" }
+      ],
       "components": [
         {
           "type": "verse",

@@ -2544,17 +2544,28 @@ class SongData
                exportAsJson → getSongs) surfaces existing links on load.
                Pre-migration safe via the schema probe in the helper. */
             $songLinksMap = $this->_externalLinksMap('song', $songIds);
+            /* #1912 — alternative titles bulked in too, same shape/keying as
+               getSongById()'s single-song attach below (:4451-4452). Needed
+               so the interchange bundle (manage/editor/api.php's
+               songbook_export -> getSongs()) round-trips alt titles: without
+               this, an export always emitted alternativeTitles=[] for every
+               song no matter what tblSongAlternativeTitles held, and the
+               importer (song_importers.php) had nothing to read back.
+               _songAltTitlesMap() is already bulk-capable and schema-probe
+               gated — [] on a pre-migration install, STRICT-safe. */
+            $altTitlesMap = $this->_songAltTitlesMap($songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
-                $song['writers']     = $writersMap[$sid]     ?? [];
-                $song['composers']   = $composersMap[$sid]   ?? [];
-                $song['arrangers']   = $arrangersMap[$sid]   ?? [];
-                $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
-                $song['translators'] = $translatorsMap[$sid] ?? [];
-                $song['artists']     = $artistsMap[$sid]     ?? [];   /* #587 */
-                $song['components']  = $componentsMap[$sid]  ?? [];
-                $song['tags']        = $tagsMap[$sid]        ?? [];
-                $song['links']       = $songLinksMap[$sid]   ?? [];
+                $song['writers']           = $writersMap[$sid]     ?? [];
+                $song['composers']         = $composersMap[$sid]   ?? [];
+                $song['arrangers']         = $arrangersMap[$sid]   ?? [];
+                $song['adaptors']          = $adaptorsMap[$sid]    ?? [];
+                $song['translators']       = $translatorsMap[$sid] ?? [];
+                $song['artists']           = $artistsMap[$sid]     ?? [];   /* #587 */
+                $song['components']        = $componentsMap[$sid]  ?? [];
+                $song['tags']              = $tagsMap[$sid]        ?? [];
+                $song['links']             = $songLinksMap[$sid]   ?? [];
+                $song['alternativeTitles'] = $altTitlesMap[$sid]   ?? [];
             }
             unset($song);
         }

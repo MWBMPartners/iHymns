@@ -176,6 +176,37 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "alternativeTitles": {
+          "description": "Optional (#1912): other titles this song is known by (e.g. a well-known first line, a regional variant name), one entry per tblSongAlternativeTitles row. Absent on any export made before this field existed, and on a song with none recorded — the importer treats a missing key exactly like an empty array, so old exports keep importing unchanged.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/alternativeTitle"
+          }
+        }
+      }
+    },
+    "alternativeTitle": {
+      "description": "A single alternative title for a song.",
+      "type": "object",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "description": "The alternative title text.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "language": {
+          "description": "Optional IETF BCP 47 language tag for this alternative title, when it differs from the song's own.",
+          "type": "string",
+          "minLength": 2
+        },
+        "note": {
+          "description": "Optional short curator note about this alternative title (e.g. 'first line', 'regional name').",
+          "type": "string",
+          "maxLength": 255
         }
       }
     },
