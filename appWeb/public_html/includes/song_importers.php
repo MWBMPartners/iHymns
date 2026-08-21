@@ -444,6 +444,31 @@ function _bulkImportRightsFromSong(array $song): array
  * bulk import (#664): never overwrite curator-edited data with
  * scraped source data.
  *
+ * DRY RUN (#1674): when _bulkImport_dryRun() is on, this function still runs
+ * BOTH real pre-flight decisions below (the existence check and, if opted
+ * in, the title-dedupe check) and returns exactly what a real run would
+ * return ('create'|'skipped') — but early-returns immediately before
+ * $db->begin_transaction(), so nothing after that point (the INSERT, the
+ * lyric-line write, the credit tables + musicianPromote(), ilidStampNewRow,
+ * the revision row, pdRecomputeForSong, logActivity) ever executes. This
+ * function opens its OWN per-song transaction and MySQL has no nested
+ * transactions, so "wrap the whole import and roll back" cannot work here —
+ * suppressing every write BY POSITION from one early-return, placed after
+ * both decisions and before the transaction, is the seam that keeps a
+ * single code path for both real and preview runs. The exact placement is
+ * load-bearing; see the comment at the early-return itself. In-file
+ * duplicates within one dry-run request are tracked via
+ * _bulkImport_dryRunSeen() so a second occurrence of the same SongId
+ * reports 'skipped' — mirroring how a real run's second INSERT of that
+ * SongId would be skipped by the existence check above, against the FIRST
+ * insert's now-committed row.
+ *
+ * HONEST LIMITATION: dry-run's `songs_failed` count (aggregated by the
+ * caller) reflects only parse/mapping failures caught before this function
+ * is even invoked — DB-level failures (a duplicate-key race, an FK
+ * surprise) are unreproducible without actually writing, so a dry run can
+ * under-report failures a real import would hit.
+ *
  * @return array{0: string, 1: ?string}  ['create'|'skipped'|'fail', errorMessage|null]
  */
 function _bulkImport_saveSong(\mysqli $db, array $song): array
@@ -528,6 +553,26 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
                     return ['skipped', null];
                 }
             }
+        }
+
+        /* #1674 — dry-run early return, WEDGED EXACTLY HERE by design (the
+           single highest-risk line of this feature — see the doc-block
+           above and the wave plan's adversarial-review section):
+           - AFTER both pre-flight decisions above (the existence check and
+             the title-dedupe check), so a dry-run preview makes the
+             IDENTICAL created/skipped call a real run would make — one
+             line earlier and a preview would lie about what would happen;
+           - BEFORE $db->begin_transaction() below, so a dry run never opens
+             a transaction — one line later and every dry-run song would
+             leak an open, uncommitted transaction.
+           _bulkImport_dryRunSeen() stands in for the existence check across
+           an in-file duplicate: a real run's second INSERT of the same
+           SongId is skipped by that check against the FIRST insert's
+           now-committed row, but a dry run never commits, so this per-run
+           static set is what makes the second occurrence report 'skipped'
+           too instead of a phantom second 'create'. */
+        if (_bulkImport_dryRun()) {
+            return _bulkImport_dryRunSeen($songId) ? ['skipped', null] : ['create', null];
         }
 
         $db->begin_transaction();
@@ -801,8 +846,11 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
  * under a different numbering scheme slips past it and creates a true
  * duplicate. These two PURE helpers add matching on songbook + NORMALISED
  * title so importers can detect existing songs before insert and offer
- * skip / merge / replace. No DB writes; reused by the preview endpoint and
- * (next) the processZip main flow.
+ * skip / merge / replace. No DB writes; called from the title-dedupe
+ * pre-flight inside _bulkImport_saveSong() above, which — since #1674 —
+ * also runs UNMODIFIED under dry-run mode (_bulkImport_dryRun()): a preview
+ * consults this exact matcher, so it reports the identical skip decision a
+ * real import would make.
  */
 
 /**
@@ -897,6 +945,71 @@ function _bulkImport_dedupeMode(?string $set = null): string
 }
 
 /**
+ * Dry-run mode flag for the current import request (#1674) — same
+ * request-scoped static-flag shape as _bulkImport_dedupeMode() above. When
+ * ON, _bulkImport_saveSong() and _bulkImport_upsertSongbook() report the
+ * exact created/skipped/existing decision a real run would make WITHOUT
+ * writing anything; see _bulkImport_saveSong()'s doc-block for the full
+ * contract and its one documented limitation (DB-level failures are
+ * unreproducible without writing).
+ *
+ * Setting the flag — in EITHER direction, `true` or `false` — also resets
+ * the per-run "already seen this SongId" set that _bulkImport_saveSong()
+ * consults for in-file-duplicate fidelity (via _bulkImport_dryRunSeen()
+ * below), so a fresh call to _bulkImport_dryRun($x) always starts a fresh
+ * run: a stray earlier dry run in the SAME PHP process/request could never
+ * leak its seen-set into this one.
+ *
+ * ELI5: one on/off switch, set once per import request before the
+ * parse/save loop runs, that every song in that request checks.
+ */
+function _bulkImport_dryRun(?bool $set = null): bool
+{
+    static $dryRun = false;
+    if ($set !== null) {
+        $dryRun = $set;
+        _bulkImport_dryRunSeen(null, true);
+    }
+    return $dryRun;
+}
+
+/**
+ * Per-run "already seen this SongId in this dry run" set (#1674) — the
+ * dry-run stand-in for the existence check a real run's SECOND insert of
+ * the same SongId would hit against the FIRST insert's committed row. A
+ * dry run never commits, so nothing is there for that check to see; this
+ * static set plays the same role within one request.
+ *
+ *   _bulkImport_dryRunSeen($songId)     → true if $songId was already
+ *                                          recorded this run (record it on
+ *                                          the FIRST call for a given id,
+ *                                          which returns false); false on
+ *                                          a genuinely new id.
+ *   _bulkImport_dryRunSeen(null, true)  → reset the set. Called only from
+ *                                          _bulkImport_dryRun() whenever the
+ *                                          flag is (re)set — the ONE
+ *                                          mechanism this file uses to keep
+ *                                          the flag and its seen-set in
+ *                                          lockstep (rule #35).
+ */
+function _bulkImport_dryRunSeen(?string $songId, bool $reset = false): bool
+{
+    static $seen = [];
+    if ($reset) {
+        $seen = [];
+        return false;
+    }
+    if ($songId === null) {
+        return false;
+    }
+    if (isset($seen[$songId])) {
+        return true;
+    }
+    $seen[$songId] = true;
+    return false;
+}
+
+/**
  * INSERT-ONLY songbook helper. If a songbook with this Abbreviation
  * already exists, the row is left fully untouched — no rename, no
  * Name refresh — per the bulk-import contract: never overwrite
@@ -905,7 +1018,9 @@ function _bulkImport_dedupeMode(?string $set = null): string
  * pass over the songs that successfully landed.
  *
  * Returns 'created' for a brand-new abbreviation, 'existing' if the
- * abbreviation was already in tblSongbooks.
+ * abbreviation was already in tblSongbooks. Under _bulkImport_dryRun()
+ * (#1674) a brand-new abbreviation still reports 'created' but the row is
+ * never inserted — see the early-return below.
  */
 function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?string $language = null): string
 {
@@ -919,6 +1034,19 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
 
     if ($exists) {
         return 'existing';
+    }
+
+    /* #1674 — dry-run early return: report the same 'created' signal a real
+       run would return, WITHOUT the INSERT / ilidStampNewRow below. No
+       change needed to the wrappers' per-created-book SongCount refresh
+       (`UPDATE tblSongbooks SET SongCount = … WHERE Abbreviation = ?`) —
+       under dry-run this abbreviation was never actually inserted, so that
+       UPDATE matches ZERO rows for it, a harmless no-op (an abbreviation
+       that already existed is never in the created-list by construction,
+       so this reasoning covers every abbreviation dry-run reports
+       'created' for). */
+    if (_bulkImport_dryRun()) {
+        return 'created';
     }
 
     /* Auto-colour the new songbook so its badge is visually distinct

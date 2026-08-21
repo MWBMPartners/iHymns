@@ -15828,6 +15828,16 @@ paths:
         (#882), which sniffs OpenLyrics vs OpenSong and retries the other
         parser once on a primary parse failure — the response's `format`
         echoes back whichever actually parsed. Max 25 MB.
+
+        `dryRun="1"` (#1674) previews the import: every real pre-flight
+        decision (existence check +, when `dedupeMode=skip-title`, the
+        title-dedupe check) still runs, so `songs_created` /
+        `songs_skipped_existing` reflect exactly what a real import would
+        do — but nothing is written (no song row, no songbook row, no
+        credits, no revision). The response echoes `dry_run: true`.
+        `songs_failed` under dry-run reflects parse/mapping failures only;
+        DB-level failures (a duplicate-key race, an FK surprise) cannot be
+        reproduced without actually writing.
       requestBody:
         required: true
         content:
@@ -15842,6 +15852,13 @@ paths:
                   default: auto
                   enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, proclaim, freeshow, chordpro, pptx, easyworship]
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+                dryRun:
+                  type: string
+                  enum: ["0", "1"]
+                  default: "0"
+                  description: |
+                    "1" previews the import (every pre-flight decision runs,
+                    nothing is written); see the endpoint description. (#1674)
       responses:
         "200":
           description: Import parsed and processed successfully
@@ -15855,6 +15872,7 @@ paths:
                   songs_created: { type: integer }
                   songs_skipped_existing: { type: integer }
                   songs_failed: { type: integer }
+                  dry_run: { type: boolean, description: Echoes back whether this was a dry-run preview (#1674). }
         "400":
           description: No file / upload error, file too large, unknown/undetected format, or the file failed to parse (a genuine client error — wrong/bad file)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -15881,6 +15899,12 @@ paths:
         job tracking, or if persisting the upload fails, falls back to a
         SYNCHRONOUS import that returns the full summary in the same
         response.
+
+        `dryRun` is NOT supported here (#1674) — the async job's state lives
+        on `tblBulkImportJobs`, which has no spare column to carry the flag
+        across the worker's separate request lifecycle. `dryRun="1"` is
+        REFUSED with 422 before any job/file work; import a single file via
+        `import_file` to preview instead.
       requestBody:
         required: true
         content:
@@ -15891,6 +15915,13 @@ paths:
               properties:
                 file: { type: string, format: binary, description: A .zip archive. }
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+                dryRun:
+                  type: string
+                  enum: ["0"]
+                  default: "0"
+                  description: |
+                    Not supported for ZIP imports (#1674) — "1" is refused
+                    with 422. Omit this field, or send "0".
       responses:
         "200":
           description: Either an async job handle, or a completed synchronous summary
@@ -15912,6 +15943,9 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "413":
           description: Uploaded zip exceeds the 100 MB import limit
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: dryRun="1" was posted — ZIP dry-run is not yet supported (#1674); import a single file to preview instead
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: Server missing the PHP zip extension, or the import/job creation failed

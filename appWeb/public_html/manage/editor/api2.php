@@ -219,13 +219,21 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
- *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
  *     format=auto on a .xml/.opensong upload resolves via the shared XML
  *     auto-router (_bulkImport_processXmlAuto(), #882) — it sniffs
  *     OpenLyrics vs OpenSong and tries the other parser once on a primary
  *     parse failure; the response's top-level `format` echoes back the
  *     format that actually parsed.
+ *     #1674 — dryRun="1" runs every real pre-flight decision (existence +
+ *     title-dedupe) but writes nothing; the response echoes `dry_run` (a
+ *     KEY, not prose) so the client can brand the summary as a preview.
+ *     `songs_failed` under dry-run reflects parse/mapping failures only —
+ *     DB-level failures are unreproducible without actually writing.
  *   POST import_zip    (MULTIPART: file=.zip, dedupeMode?)    -> { ok, async, job_id, poll_url } (async) | { ok, songs_created, ... } (sync fallback / EasyWorship)
+ *     #1674 — dryRun="1" is REFUSED with 422 (ZIP dry-run is deferred: the
+ *     async job has no spare column for the flag, which needs a migration).
+ *     Import a single file to preview instead.
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
@@ -5139,6 +5147,10 @@ try {
         if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
         $format = strtolower(trim((string)($_POST['format'] ?? 'auto')));
         $dedupe = ((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off';
+        /* #1674 — dry-run preview: '1' opts in, anything else (including
+           absence) is a real import. Parsed beside dedupeMode so both
+           per-request mode flags are set from the same place. */
+        $dryRun = ((string)($_POST['dryRun'] ?? '0') === '1');
 
         if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
             $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
@@ -5209,6 +5221,10 @@ try {
 
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
         _bulkImport_dedupeMode($dedupe);
+        /* #1674 — set explicitly BOTH ways (true and false), never left to the
+           function's default, so a stale flag from an earlier request in the
+           same PHP process/worker can never leak into this one. */
+        _bulkImport_dryRun($dryRun);
 
         /* #882 — 'xmlauto' is the internal auto-resolution target reached
            only via format=auto on a .xml/.opensong extension (never offered
@@ -5252,8 +5268,12 @@ try {
         if (!is_array($summary)) { ed2_respond(['ok' => false, 'error' => 'Importer returned no result.'], 500); }
 
         /* Regenerate songbook-derived state after a successful import (mirrors the
-           legacy bulk_import_* handlers). Best-effort + guarded. */
-        if ((int)($summary['songs_created'] ?? 0) > 0) {
+           legacy bulk_import_* handlers). Best-effort + guarded.
+           #1674 — skipped entirely under dry-run: nothing was created, so
+           there is no songbook-derived state to regenerate; SongCount /
+           other maintenance work would be a pure no-op at best and a
+           misleading side-effecting call at worst. */
+        if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) {
             ed2_runSongbookMaintenance($db, 'import_file');
         }
         /* #882 — the auto-router (format 'xmlauto') stamps its own resolved
@@ -5262,12 +5282,20 @@ try {
            the format that was actually used to parse. Same value feeds
            both the activity log and the response so they can't disagree. */
         $resolvedFormat = (string)($summary['format'] ?? $format);
+        /* #1674 — the activity row STAYS even under dry-run (an audit trail
+           entry about a preview is itself correct information), with
+           'dryRun' in its detail so the log distinguishes a preview from a
+           real import. */
         logActivity('song.import_file', 'import', $origName, [
             'format'  => $resolvedFormat,
             'created' => (int)($summary['songs_created'] ?? 0),
             'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
             'failed'  => (int)($summary['songs_failed'] ?? 0),
+            'dryRun'  => $dryRun,
         ]);
+        /* #1674 — a KEY, not prose (rule #35), so import2.php's renderSummary()
+           can branch on it rather than parse a sentence. */
+        $summary['dry_run'] = $dryRun;
         /* #882 — every single-file processor's contract is "ok=false ⇔ parse
            failed" (a save failure lands as ok=true + songs_failed>0
            instead); a parse failure is a genuine client error (bad/wrong
@@ -5290,6 +5318,15 @@ try {
            ed2_respond (which exit()s) — it echoes, flushes, then keeps working. ---- */
     case 'import_zip': {
         if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        /* #1674 — ZIP dry-run is DEFERRED: the async job's state lives on
+           tblBulkImportJobs, which has no spare column to carry the flag
+           across the worker's separate request lifecycle (a migration —
+           rule #19 — not something this endpoint can improvise). A param
+           the destination cannot honour is REFUSED, not silently ignored
+           (rule #33) — checked BEFORE any job/file work below. */
+        if ((string)($_POST['dryRun'] ?? '0') === '1') {
+            ed2_respond(['ok' => false, 'error' => 'Dry run is not yet supported for ZIP imports — import a single file to preview instead (see #1674).'], 422);
+        }
         _bulkImport_dedupeMode(((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off');
         if (!class_exists('ZipArchive')) { ed2_respond(['ok' => false, 'error' => 'Server is missing the PHP zip extension.'], 500); }
         if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
