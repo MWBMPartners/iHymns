@@ -753,6 +753,16 @@ function editorSaveSongCore(): array
             $ll_syncReady = lyricLinesSyncReady($db);
             $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list (arrays when mirrored; JSON strings legacy)
             $carryLangs   = [];
+            /* #1860 Phase 5 §3.4 — the same FIFO carry, for the two new thin-metadata
+               columns. This whole-song save REBUILDS a fixed component shape below
+               ($writeComps[] / the legacy re-INSERT), so without a carry a save from a
+               client that never learned about Label/SourceWorkId (a stale-cached
+               editor, or simply not touching the Structure tab) would silently wipe
+               every custom label + work link on the song — layer 2 of §3's
+               three-layer silent-wipe defence (this funnel's own carry, distinct from
+               the generic writer-level preserve in lyricLinesUpsertComponents()). */
+            $carryLabels      = [];
+            $carrySourceWorks = [];
             $pf1HasChords = false;
             $pf1HasLangs  = false;
             /* Clean a component's per-line `chords` (array OR space-separated string per
@@ -782,6 +792,11 @@ function editorSaveSongCore(): array
                     $key = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
                     $carryChords[$key][] = $pc['chords'];      // prior parallel chords array, or null
                     $carryLangs[$key][]  = $pc['languages'];   // prior per-line override array, or null
+                    /* #1860 Phase 5 §3.4 — lyricLinesEditableComponents() ALWAYS emits
+                       both keys (§2.3, null default), so no isset/array_key_exists guard
+                       is needed here — mirrors the chords/languages lines above. */
+                    $carryLabels[$key][]      = $pc['label'];
+                    $carrySourceWorks[$key][] = $pc['sourceWorkId'];
                 }
             } else {
                 /* lines-json-fallback (#1235 P4): un-migrated install (no mirror).
@@ -801,10 +816,22 @@ function editorSaveSongCore(): array
                     /* default false */
                 }
                 $pf1HasLangs = lyricLinesComponentsLangReady($db);
-                if ($pf1HasChords || $pf1HasLangs) {
+                /* #1860 Phase 5 §3.4 — Label/SourceWorkId are independent of the
+                   mirror AND of ChordsJson/LanguagesJson (each ships in its own
+                   migration), so they need their own gate via the ONE shared probe
+                   (rule #35). lyric_lines_read.php is only required on the mirrored
+                   branch above (:790) — this legacy branch needs its own require. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+                $pf1Extras = lyricLinesComponentExtrasPresent($db);
+                if ($pf1HasChords || $pf1HasLangs || $pf1Extras['Label'] || $pf1Extras['SourceWorkId']) {
                     $snapCols = 'Type, Number, LinesJson';
                     if ($pf1HasChords) { $snapCols .= ', ChordsJson'; }
                     if ($pf1HasLangs)  { $snapCols .= ', LanguagesJson'; }
+                    if ($pf1Extras['Label'])        { $snapCols .= ', Label'; }
+                    if ($pf1Extras['SourceWorkId']) { $snapCols .= ', SourceWorkId'; }
+                    /* lines-json-fallback (#1235 P4) continued from above —
+                       LinesJson/ChordsJson/LanguagesJson below are the SAME
+                       un-migrated-install columns the probes above gated on. */
                     $snap = $db->prepare(
                         "SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
                     );
@@ -817,6 +844,8 @@ function editorSaveSongCore(): array
                         $key     = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . $lc;
                         if ($pf1HasChords) { $carryChords[$key][] = $snapRow['ChordsJson']; }
                         if ($pf1HasLangs)  { $carryLangs[$key][]  = $snapRow['LanguagesJson']; }
+                        if ($pf1Extras['Label'])        { $carryLabels[$key][]      = $snapRow['Label']; }
+                        if ($pf1Extras['SourceWorkId']) { $carrySourceWorks[$key][] = $snapRow['SourceWorkId']; }
                     }
                     $snap->close();
                 }
@@ -968,6 +997,25 @@ function editorSaveSongCore(): array
                         $carriedL = !empty($carryLangs[$pf1Key]) ? array_shift($carryLangs[$pf1Key]) : null;
                         $cLangs = is_array($carriedL) ? $carriedL : null;
                     }
+                    /* #1860 Phase 5 §3.4 — label/sourceWorkId: same explicit-vs-carry
+                       rule as chords/languages above (array_key_exists — even an
+                       explicit `null` counts as "the client addressed this field").
+                       The resolved value is handed to lyricLinesWriteComponents()
+                       WITH the key always present, so its own labelProvided/
+                       sourceWorkIdProvided flags read true and it simply stores what
+                       this funnel already carried forward — the writer-level
+                       preserve (§3.1) only has work left to do for OTHER funnels that
+                       omit the key entirely. */
+                    if (array_key_exists('label', $comp)) {
+                        $cLabel = $comp['label'];
+                    } else {
+                        $cLabel = !empty($carryLabels[$pf1Key]) ? array_shift($carryLabels[$pf1Key]) : null;
+                    }
+                    if (array_key_exists('sourceWorkId', $comp)) {
+                        $cSourceWorkId = $comp['sourceWorkId'];
+                    } else {
+                        $cSourceWorkId = !empty($carrySourceWorks[$pf1Key]) ? array_shift($carrySourceWorks[$pf1Key]) : null;
+                    }
                     $writeComps[] = [
                         'type'      => $cType,
                         'number'    => $cNum,
@@ -975,6 +1023,8 @@ function editorSaveSongCore(): array
                         'lines'     => $cLines,
                         'chords'    => $cChords,
                         'languages' => $cLangs,
+                        'label'         => $cLabel,
+                        'sourceWorkId'  => $cSourceWorkId,
                     ];
                 }
                 lyricLinesWriteComponents($db, $songId, $writeComps);
@@ -1037,24 +1087,30 @@ function editorSaveSongCore(): array
                 ? $db->prepare('UPDATE tblSongComponents SET LanguagesJson = ? WHERE Id = ?')
                 : null;
 
-            if ($hasComponentLanguage) {
-                $insComp = $db->prepare(
-                    'INSERT INTO tblSongComponents
-                        (SongId, Type, Number, SortOrder, LinesJson, Language)
-                     VALUES (?, ?, ?, ?, ?, ?)'
-                );
-            } else {
-                $insComp = $db->prepare(
-                    'INSERT INTO tblSongComponents
-                        (SongId, Type, Number, SortOrder, LinesJson)
-                     VALUES (?, ?, ?, ?, ?)'
-                );
-            }
+            /* #1860 Phase 5 §3.4 (SD4) — Label/SourceWorkId are appended to the legacy
+               re-INSERT the SAME way Language already is: gated on the column
+               actually existing, via the ONE shared probe ($pf1Extras, already
+               fetched above for the carry-snapshot — memoised, so re-touching it here
+               costs nothing — rule #35). Built as a dynamic column/placeholder/type
+               list (mirroring lyricLinesUpsertComponents()'s $insCols/$insTypes shape
+               in lyric_lines_sync.php) so the two-variant $hasComponentLanguage
+               if/else above still degrades correctly when Label/SourceWorkId are
+               ALSO absent — byte-identical to the pre-#1860 SQL on that install. */
+            $insColsLegacy  = ['SongId', 'Type', 'Number', 'SortOrder', 'LinesJson'];
+            $insTypesLegacy = 'ssiis';
+            if ($hasComponentLanguage)      { $insColsLegacy[] = 'Language';     $insTypesLegacy .= 's'; }
+            if ($pf1Extras['Label'])        { $insColsLegacy[] = 'Label';        $insTypesLegacy .= 's'; }
+            if ($pf1Extras['SourceWorkId']) { $insColsLegacy[] = 'SourceWorkId'; $insTypesLegacy .= 'i'; }
+            $insPlaceLegacy = implode(',', array_fill(0, count($insColsLegacy), '?'));
+            $insComp = $db->prepare(
+                'INSERT INTO tblSongComponents (' . implode(',', $insColsLegacy) . ") VALUES ({$insPlaceLegacy})"
+            );
             $order = 0;
             foreach ($song['components'] ?? [] as $comp) {
                 $type   = (string)($comp['type'] ?? 'verse');
                 $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
                 $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+                $bindValsLegacy = [$songId, $type, $cNum, $order, $lines];
                 if ($hasComponentLanguage) {
                     /* Trim + cap to 35 chars (the BCP 47 column width).
                        Empty / null = inherit from the song; only persist
@@ -1065,10 +1121,38 @@ function editorSaveSongCore(): array
                     } else {
                         $lang = function_exists('mb_substr') ? mb_substr($lang, 0, 35) : substr($lang, 0, 35);
                     }
-                    $insComp->bind_param('ssiiss', $songId, $type, $cNum, $order, $lines, $lang);
-                } else {
-                    $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                    $bindValsLegacy[] = $lang;
                 }
+                /* #1860 Phase 5 §3.4 — Label/SourceWorkId, gated + PF1-carried exactly
+                   like chords/languages below: explicit (even empty/null) wins,
+                   omitted reclaims the pre-delete value for the position-matched part
+                   (FIFO by Type|Number|line-count — the same key shape the chords/
+                   languages carries use, computed fresh here since it's needed before
+                   $newCompId exists). */
+                if ($pf1Extras['Label'] || $pf1Extras['SourceWorkId']) {
+                    $pf1KeyExtra = $type . "\x1f" . (string)$cNum . "\x1f"
+                                 . (is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0);
+                    if ($pf1Extras['Label']) {
+                        if (array_key_exists('label', $comp)) {
+                            $labelVal = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                                ? (function_exists('mb_substr') ? mb_substr(trim((string)$comp['label']), 0, 100)
+                                                                : substr(trim((string)$comp['label']), 0, 100))
+                                : null;
+                        } else {
+                            $labelVal = !empty($carryLabels[$pf1KeyExtra]) ? array_shift($carryLabels[$pf1KeyExtra]) : null;
+                        }
+                        $bindValsLegacy[] = $labelVal;
+                    }
+                    if ($pf1Extras['SourceWorkId']) {
+                        if (array_key_exists('sourceWorkId', $comp)) {
+                            $srcWorkVal = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0) ? (int)$comp['sourceWorkId'] : null;
+                        } else {
+                            $srcWorkVal = !empty($carrySourceWorks[$pf1KeyExtra]) ? array_shift($carrySourceWorks[$pf1KeyExtra]) : null;
+                        }
+                        $bindValsLegacy[] = $srcWorkVal;
+                    }
+                }
+                $insComp->bind_param($insTypesLegacy, ...$bindValsLegacy);
                 $insComp->execute();
                 /* Capture the new component Id ONCE — the chords UPDATE below
                    would zero $db->insert_id, so the per-line-language write that

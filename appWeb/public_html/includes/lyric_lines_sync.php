@@ -494,8 +494,13 @@ function lyricLinesShadowColumnsPresent(\mysqli $db): array
  * contiguous 0..n-1 (so the #1066 ArrangementJson ordinal arrays stay valid).
  *
  * Each component entry: { type, number, language?, lines:string[], chords?:array,
- * notes?:array, languages?:array } — the same shape save_song / the importers /
- * the snapshot already hold. Call only when lyricLinesSyncReady() is true.
+ * notes?:array, languages?:array, label?:?string, sourceWorkId?:?int } — the same
+ * shape save_song / the importers / the snapshot already hold. `label`
+ * (#1860 Phase 5 REQ 3b) and `sourceWorkId` (REQ 2) are THIN-ROW metadata siblings
+ * of `language` — rule #25: this write path never touches line content, only the
+ * component's own columns — and are PRESENCE-gated (omit the key to leave the
+ * stored value alone; send it, even `null`, to set/clear it explicitly). Call only
+ * when lyricLinesSyncReady() is true.
  *
  * @param list<array<string,mixed>> $components  in display order
  * @return int  number of lines now stored
@@ -528,6 +533,26 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
             'notes'         => (isset($c['notes'])  && is_array($c['notes']))  ? array_values($c['notes'])  : null,
             'languagesJson' => $langsJson,                                                  // shadow string (or null)
             'validatedLangs'=> $langsJson !== null ? json_decode($langsJson, true) : null,  // null-padded validated array
+            /* #1860 Phase 5 §3.1 — THIN-ROW metadata siblings of 'language' above
+               (rule #25: never line content). 'label'/'sourceWorkId' are the
+               NORMALISED value to write when provided; the *Provided flags record
+               whether the caller's payload carried the key AT ALL
+               (array_key_exists, not isset — an explicit `null` still counts as
+               "provided", so a caller CAN deliberately clear a label/link, while an
+               omitted key means "say nothing, preserve whatever is already
+               stored"). lyricLinesUpsertComponents() below is the ONLY place that
+               reads these two flags — this is the writer-level layer of §3's
+               three-layer silent-wipe defence, the one that protects funnels which
+               never learned about Label/SourceWorkId at all (a stale-cached v1
+               editor whole-song save, a lyrics_ingest re-ingest over an existing
+               song, an OLD pre-Label revision restore, SD6). */
+            'label'                => (isset($c['label']) && trim((string)$c['label']) !== '')
+                ? (function_exists('mb_substr') ? mb_substr(trim((string)$c['label']), 0, 100)
+                                                : substr(trim((string)$c['label']), 0, 100))
+                : null,
+            'labelProvided'        => array_key_exists('label', $c),
+            'sourceWorkId'         => (isset($c['sourceWorkId']) && (int)$c['sourceWorkId'] > 0) ? (int)$c['sourceWorkId'] : null,
+            'sourceWorkIdProvided' => array_key_exists('sourceWorkId', $c),
         ];
     }
 
@@ -552,11 +577,38 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
  * so post-drop a thin row (Type/Number/SortOrder/Language only) is written and no
  * dropped column is named (R2). Helper for lyricLinesWriteComponents().
  *
+ * #1860 Phase 5 §3.1 — `Label`/`SourceWorkId` are appended to the same INSERT/UPDATE,
+ * GATED per-column via the ONE shared probe `lyricLinesComponentExtrasPresent()`
+ * (rule #35 — no second INFORMATION_SCHEMA copy; rule #19 — a bare reference to
+ * either would throw under MYSQLI_REPORT_STRICT on an install that hasn't run one
+ * or both of their migrations). **PROVIDED-ELSE-PRESERVE** is the writer-level layer
+ * of §3's three-layer silent-wipe defence: for an UPDATE, a component whose payload
+ * did NOT carry the key (`labelProvided`/`sourceWorkIdProvided` false) reclaims the
+ * value already sitting in that row (`$existingExtras[$i]`, fetched alongside
+ * `$existingIds` below) instead of the write silently NULLing it; a component that
+ * DID carry the key (even as an explicit `null`, meaning "clear it") stays
+ * authoritative. This is what protects a caller that never learned about
+ * Label/SourceWorkId at all — a stale-cached v1 editor whole-song save, a
+ * `lyrics_ingest` re-ingest over an existing song, an OLD pre-Label revision
+ * restore (SD6) — from wiping a curator's set label/work-link it doesn't know
+ * exists. For a brand-new row (INSERT) there is nothing to preserve, so an omitted
+ * key simply writes NULL. Still component METADATA only (rule #25) — this function
+ * never reads or writes a line's text, chords or notes.
+ *
  * @param list<array<string,mixed>> $norm  normalised components (lyricLinesWriteComponents)
  * @return array<int,int>  position → ComponentId
  */
 function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): array
 {
+    /* #1860 Phase 5 §3.1 step 1 — the shared probe lives in lyric_lines_read.php;
+       reached via a same-directory require (mirrors the line_enrichment.php require
+       a few lines up in lyricLinesWriteComponents()) so this file never forks a
+       second INFORMATION_SCHEMA query for the same two columns (rule #35). Safe to
+       call inside the caller's transaction — the probe's own catch posture already
+       re-throws a genuine deadlock via songRelocateIsTransactionFatal(). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    $extras = lyricLinesComponentExtrasPresent($db);
+
     $cols = lyricLinesShadowColumnsPresent($db);
 
     /* Shadow column list, in a fixed order, for both INSERT and UPDATE. */
@@ -601,22 +653,41 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
         return $out;
     };
 
-    /* Existing thin rows in position order (the match anchor). */
-    $exStmt = $db->prepare("SELECT Id FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
+    /* Existing thin rows in position order (the match anchor). #1860 Phase 5 §3.1
+       step 2 — Label/SourceWorkId are appended to the SELECT ONLY when each column
+       exists (gated, rule #19); $existingExtras carries the CURRENT stored value at
+       each position so the provided-else-preserve logic below can reclaim it. */
+    $extraSelCols = ($extras['Label'] ? ', Label' : '') . ($extras['SourceWorkId'] ? ', SourceWorkId' : '');
+    $exStmt = $db->prepare("SELECT Id{$extraSelCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
     $exStmt->bind_param('s', $songId);
     $exStmt->execute();
-    $existingIds = array_map(static fn($r) => (int)$r[0], $exStmt->get_result()->fetch_all(MYSQLI_NUM));
+    $existingRows = $exStmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $exStmt->close();
+    $existingIds    = array_map(static fn($r) => (int)$r['Id'], $existingRows);
+    $existingExtras = array_map(static function (array $r) use ($extras): array {
+        return [
+            'Label'        => $extras['Label']        ? ($r['Label']        ?? null) : null,
+            'SourceWorkId' => $extras['SourceWorkId'] ? ($r['SourceWorkId'] ?? null) : null,
+        ];
+    }, $existingRows);
+
+    /* #1860 Phase 5 §3.1 step 3 — extra column set, gated + in a fixed order,
+       appended AFTER the shadow columns on both statements. */
+    $extraCols  = [];
+    $extraTypes = '';
+    if ($extras['Label'])        { $extraCols[] = 'Label';        $extraTypes .= 's'; }
+    if ($extras['SourceWorkId']) { $extraCols[] = 'SourceWorkId'; $extraTypes .= 'i'; }
 
     /* Prepare INSERT + UPDATE once (column set is fixed for this call). */
-    $insCols  = array_merge(['SongId', 'Type', 'Number', 'SortOrder', 'Language'], $shadowCols);
+    $insCols  = array_merge(['SongId', 'Type', 'Number', 'SortOrder', 'Language'], $shadowCols, $extraCols);
     $insPlace = implode(',', array_fill(0, count($insCols), '?'));
-    $insTypes = 'ssiis' . str_repeat('s', count($shadowCols));
+    $insTypes = 'ssiis' . str_repeat('s', count($shadowCols)) . $extraTypes;
     $ins = $db->prepare('INSERT INTO tblSongComponents (' . implode(',', $insCols) . ") VALUES ({$insPlace})");
 
     $updSet   = 'Type = ?, Number = ?, SortOrder = ?, Language = ?'
-              . implode('', array_map(static fn($c) => ", {$c} = ?", $shadowCols));
-    $updTypes = 'siis' . str_repeat('s', count($shadowCols)) . 'i';
+              . implode('', array_map(static fn($c) => ", {$c} = ?", $shadowCols))
+              . implode('', array_map(static fn($c) => ", {$c} = ?", $extraCols));
+    $updTypes = 'siis' . str_repeat('s', count($shadowCols)) . $extraTypes . 'i';
     $upd = $db->prepare("UPDATE tblSongComponents SET {$updSet} WHERE Id = ?");
 
     $cidMap = [];
@@ -624,12 +695,33 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
         $shadow = $shadowVals($c);
         if ($i < count($existingIds)) {
             $compId = $existingIds[$i];
-            $vals   = array_merge([$c['type'], $c['number'], $i, $c['language']], $shadow, [$compId]);
+            /* #1860 Phase 5 §3.1 step 4 — UPDATE: provided-else-preserve. A
+               component whose payload carried the key (even as an explicit null)
+               stays authoritative; an omitted key reclaims this exact row's
+               CURRENTLY stored value (fetched above, BEFORE this write) rather
+               than letting the write silently NULL it. */
+            $extraVals = [];
+            if ($extras['Label']) {
+                $extraVals[] = !empty($c['labelProvided']) ? $c['label'] : ($existingExtras[$i]['Label'] ?? null);
+            }
+            if ($extras['SourceWorkId']) {
+                $swPreserve  = !empty($c['sourceWorkIdProvided']) ? $c['sourceWorkId'] : ($existingExtras[$i]['SourceWorkId'] ?? null);
+                $extraVals[] = ($swPreserve !== null) ? (int)$swPreserve : null;
+            }
+            $vals   = array_merge([$c['type'], $c['number'], $i, $c['language']], $shadow, $extraVals, [$compId]);
             $upd->bind_param($updTypes, ...$vals);
             $upd->execute();
             $cidMap[$i] = $compId;
         } else {
-            $vals = array_merge([$songId, $c['type'], $c['number'], $i, $c['language']], $shadow);
+            /* INSERT — a brand-new row has nothing to preserve: provided writes the
+               value, an omitted key writes NULL (which is also what $c['label'] /
+               $c['sourceWorkId'] already normalise to when absent, per the
+               normaliser above — both stay explicit here for symmetry with the
+               UPDATE branch). */
+            $extraVals = [];
+            if ($extras['Label'])        { $extraVals[] = !empty($c['labelProvided'])        ? $c['label']        : null; }
+            if ($extras['SourceWorkId']) { $extraVals[] = !empty($c['sourceWorkIdProvided']) ? $c['sourceWorkId'] : null; }
+            $vals = array_merge([$songId, $c['type'], $c['number'], $i, $c['language']], $shadow, $extraVals);
             $ins->bind_param($insTypes, ...$vals);
             $ins->execute();
             $cidMap[$i] = (int)$db->insert_id;

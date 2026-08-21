@@ -68,7 +68,18 @@ declare(strict_types=1);
  *                               ed2_songTuneApply() core song_tune_set (below)
  *                               uses, so TuneName can never again be written
  *                               without TuneId; answers { ok, field:'tuneName', tuneId }.
- *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
+ *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?,label?,sourceWorkId?} }
+ *                               -> { ok, componentId, label, sourceWorkId, sourceWorkIdIgnored }
+ *                               #1860 Phase 5 §3.2 — `label`/`sourceWorkId` are PRESENCE-gated
+ *                               (an absent key preserves the stored value, never wipes it — the
+ *                               "provided-else-preserve" contract §3's three layers exist for).
+ *                               D1/rule #27: a `label` equal to the derived "Type Number" heading
+ *                               folds to NULL server-side (hide-when-equal), so the client never
+ *                               has to duplicate that comparison. SD1: an unresolvable
+ *                               `sourceWorkId` is coerced to NULL — never a 422 — with
+ *                               `sourceWorkIdIgnored:true` in the response so the client can toast;
+ *                               the response is read BACK from the stored row (rule #35), not
+ *                               echoed from the request.
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
  *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
@@ -1296,7 +1307,27 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
         $del->bind_param('s', $songId);
         $del->execute();
         $del->close();
-        $ins = $db->prepare('INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        /* #1860 Phase 5 §3.5 (SD4) — Label/SourceWorkId are appended to the legacy
+           INSERT ONLY when each column exists (the ONE shared probe, rule #35),
+           independently of the tblLyricLines mirror itself: an install can have run
+           the Label/SourceWorkId migration cards without yet running the mirror
+           migration, and this branch is exactly what runs there. Without this gate,
+           an install with the column but still on the legacy write path would
+           silently drop every Label/SourceWorkId write (rule #30's silent-partial
+           class) — the very install SD4 exists to protect. */
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras     = lyricLinesComponentExtrasPresent($db);
+        $extraCols  = [];
+        $extraTypes = '';
+        if ($extras['Label'])        { $extraCols[] = 'Label';        $extraTypes .= 's'; }
+        if ($extras['SourceWorkId']) { $extraCols[] = 'SourceWorkId'; $extraTypes .= 'i'; }
+        /* lines-json-fallback (#1235 P4) continued from above — LinesJson/
+           ChordsJson below are the SAME un-migrated-install columns named in
+           this branch's opening comment. */
+        $insCols  = array_merge(['SongId', 'Type', 'Number', 'SortOrder', 'LinesJson', 'ChordsJson', 'Language'], $extraCols);
+        $insPlace = implode(',', array_fill(0, count($insCols), '?'));
+        $insTypes = 'ssiisss' . $extraTypes;
+        $ins = $db->prepare('INSERT INTO tblSongComponents (' . implode(',', $insCols) . ") VALUES ({$insPlace})");
         foreach ($components as $i => $comp) {
             $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
             $number    = max(0, (int)($comp['number'] ?? 0));
@@ -1305,7 +1336,16 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
             $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
             $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
             $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
-            $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
+            $vals = [$songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language];
+            if ($extras['Label']) {
+                $vals[] = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                    ? mb_substr(trim((string)$comp['label']), 0, 100)
+                    : null;
+            }
+            if ($extras['SourceWorkId']) {
+                $vals[] = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0) ? (int)$comp['sourceWorkId'] : null;
+            }
+            $ins->bind_param($insTypes, ...$vals);
             $ins->execute();
             ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
         }
@@ -2756,6 +2796,34 @@ try {
         $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
         $language  = isset($comp['language']) && trim((string)$comp['language']) !== '' ? trim((string)$comp['language']) : null;
 
+        /* #1860 Phase 5 §3.2 — accept `label` (REQ 3b) + `sourceWorkId` (REQ 2).
+           KEY-PRESENT = intent (array_key_exists, not isset): an explicit `label:null`
+           clears a set label, while an OMITTED key means "leave it alone" — the
+           target-preserve block below reads the stored value back onto $entry for
+           exactly that omitted case, so the handler never wipes a label/link the
+           caller didn't mention (§3's silent-wipe defence, layer 1 of 3). */
+        $hasLabel   = array_key_exists('label', $comp);
+        $labelIn    = $hasLabel ? mb_substr(trim((string)($comp['label'] ?? '')), 0, 100) : '';
+        /* D1 / rule #27 — server-side hide-when-equal: fold a label equal to the
+           derived display name back to NULL so no funnel can store the redundancy.
+           Compare against the ALIASED display derivation (refrain renders "Chorus"),
+           case-insensitively. */
+        $derived = ucfirst($type === 'refrain' ? 'chorus' : $type) . ($number > 0 ? ' ' . $number : '');
+        $label   = ($labelIn !== '' && mb_strtolower($labelIn) !== mb_strtolower($derived)) ? $labelIn : null;
+        $hasSrcWork    = array_key_exists('sourceWorkId', $comp);
+        $srcWorkIn     = $hasSrcWork ? (int)($comp['sourceWorkId'] ?? 0) : 0;
+        $sourceWorkId  = $srcWorkIn > 0 ? $srcWorkIn : null;
+        $srcWorkIgnored = false;
+        /* SD1 — an unresolvable sourceWorkId is COERCED to null, never a 422: a
+           work-link problem must not fail the section save. work_admin.php is
+           already `require_once`d at module scope (:339) for the other work
+           endpoints on this file, so workExists()/workAdminReady() are always
+           defined here — the function_exists guard is belt-and-braces only, so
+           this accept path never fatals even if that include set ever changes. */
+        if ($sourceWorkId !== null && function_exists('workExists') && workAdminReady($db) && !workExists($db, $sourceWorkId)) {
+            $sourceWorkId = null; $srcWorkIgnored = true;   /* SD1 — coerce, never fail the save */
+        }
+
         $db->begin_transaction();
         try {
             /* #1235 P4/C5 — read-modify-write the WHOLE component set through the shared
@@ -2773,11 +2841,25 @@ try {
                 'languages' => (isset($comp['languages']) && is_array($comp['languages'])) ? array_values($comp['languages']) : null,
                 '_target'   => true,   // marker to resolve the resulting Id (stripped by the writer)
             ];
+            /* #1860 Phase 5 §3.2 — key-present-only: an omitted key leaves $entry
+               without it here, so the target-preserve block below (which DOES run
+               for every matched existing component) is what actually fills it from
+               the stored row; a brand-new component with no explicit label/work
+               link simply has neither key, which the writer treats as "not
+               provided" -> NULL on INSERT (exactly right for a fresh section). */
+            if ($hasLabel)   { $entry['label']        = $label; }
+            if ($hasSrcWork) { $entry['sourceWorkId'] = $sourceWorkId; }
             $found = false;
             foreach ($comps as $idx => $c) {
                 if ($compId > 0 && (int)($c['id'] ?? 0) === $compId) {
                     if (!isset($comp['chords']))    { $entry['chords']    = $c['chords'] ?? null; }
                     if (!isset($comp['languages'])) { $entry['languages'] = $c['languages'] ?? null; }
+                    /* #1860 Phase 5 §3.2 — target-preserve, layer 1 of §3's three-layer
+                       silent-wipe defence: an omitted key on an UPDATE reads the CURRENT
+                       stored value straight off the pre-write row ($c, from
+                       ed2_currentComponents()) rather than letting it default to null. */
+                    if (!$hasLabel)   { $entry['label']        = $c['label']        ?? null; }
+                    if (!$hasSrcWork) { $entry['sourceWorkId'] = $c['sourceWorkId'] ?? null; }
                     $comps[$idx] = $entry;
                     $found = true;
                     break;
@@ -2804,7 +2886,17 @@ try {
             throw $e;
         }
         logActivity('song.component', 'song', $songId, ['componentId' => $compId, 'type' => $type]);
-        ed2_respond(['ok' => true, 'componentId' => $compId]);
+        /* #1860 Phase 5 §3.2 — rule #35 read-back: the response reflects what
+           $after (the freshly re-read stored row) actually holds, never the raw
+           request — so the client's own D1 fold + SD1 coercion always agree with
+           the server, and a stale/omitted client value is corrected visibly. */
+        ed2_respond([
+            'ok'                  => true,
+            'componentId'         => $compId,
+            'label'               => $after[$targetPos]['label']        ?? null,
+            'sourceWorkId'        => $after[$targetPos]['sourceWorkId'] ?? null,
+            'sourceWorkIdIgnored' => $srcWorkIgnored,
+        ]);
         break;
     }
 
@@ -4592,11 +4684,17 @@ try {
                (which rebuilds STRUCTURE, not enrichment) never silently drops it. Client-
                sent values always win. */
             $existing = ed2_currentComponents($db, $songId);
-            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null]
+            /* #1860 Phase 5 §3.3 — Paste & Reflow REBUILDS structure; the pasted rows
+               never carry `label`/`sourceWorkId` at all, so without a carry every
+               reflow would silently wipe every custom label + work link on the song
+               (layer 2 of §3's three-layer silent-wipe defence — this funnel's own
+               FIFO carry, distinct from the generic handler/writer preserve layers,
+               because it REPLACES the whole set rather than patching one row). */
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null,'lb'=>label|null,'sw'=>sourceWorkId|null]
             if ($mode === 'replace') {
                 foreach ($existing as $pc) {
                     $ck = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
-                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages']];
+                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages'], 'lb' => $pc['label'] ?? null, 'sw' => $pc['sourceWorkId'] ?? null];
                 }
             }
 
@@ -4618,6 +4716,17 @@ try {
                 $langs  = (isset($comp['languages']) && is_array($comp['languages']))
                     ? array_values($comp['languages'])
                     : ($carried !== null ? $carried['l'] : null);
+                /* #1860 Phase 5 §3.3 — explicit-wins-else-carried, mirroring the
+                   chords/languages shape immediately above (isset-based "was this
+                   provided" test, not array_key_exists — this funnel rebuilds
+                   STRUCTURE, so an incoming row without a real label/work-link value
+                   simply carries the position-matched original forward). */
+                $label = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                    ? mb_substr(trim((string)$comp['label']), 0, 100)
+                    : ($carried !== null ? $carried['lb'] : null);
+                $sourceWorkId = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0)
+                    ? (int)$comp['sourceWorkId']
+                    : ($carried !== null ? $carried['sw'] : null);
                 $incoming[] = [
                     'type'      => $type,
                     'number'    => $number,
@@ -4625,6 +4734,8 @@ try {
                     'lines'     => $lines,
                     'chords'    => is_array($chords) ? $chords : null,
                     'languages' => is_array($langs) ? $langs : null,
+                    'label'         => $label,
+                    'sourceWorkId'  => $sourceWorkId,
                 ];
             }
             $count = count($incoming);
