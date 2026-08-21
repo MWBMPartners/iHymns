@@ -781,6 +781,9 @@ foreach ($sections as $s) {
                         <strong>Dedupe on import</strong>: tick <em>"Skip existing (by title)"</em> next to the Import button to skip any incoming song whose title already exists in the same songbook (matched ignoring case, punctuation and accents) — catches duplicates that carry a different number. Imports are always INSERT-only; existing rows are never overwritten.
                     </p>
                     <p>
+                        <strong>Rights &amp; identifiers carry over</strong>: whatever copyright line, CCLI number, ISWC and public-domain markings a source file supplies are now kept on import &mdash; for every format &mdash; instead of being silently dropped. Imported songs therefore show up correctly in the <a href="#ccli-report">CCLI Usage Report</a> and can match themselves to an existing <a href="#works">Work</a> by their identifier.
+                    </p>
+                    <p>
                         <strong>Lines per slide</strong>: the <em>"Lines/slide"</em> box next to the export dropdowns caps how many lyric lines land on each slide when exporting to the presentation formats (ProPresenter 6 / FreeShow / OpenLP / OpenSong / VideoPsalm) — useful for lower-third layouts. <code>0</code> keeps each verse whole. Your value is remembered as your default for next time.
                     </p>
 
@@ -1616,6 +1619,9 @@ foreach ($sections as $s) {
                         <dt>Projector Screen</dt><dd>The big-screen / projector view. Displays the current song and the rotating join code (plus QR) for the congregation to scan or type. One of the two broadcaster front-ends &mdash; song-nav here sets the current song for everyone.</dd>
                         <dt>Lead a Service</dt><dd>The leader's own device: connect to a session and drive it from your phone or tablet, without needing to stand at the projector.</dd>
                     </dl>
+                    <p class="small">
+                        <strong>Finding these in the menu:</strong> organisation admins and owners now see the <strong>Projector Screen</strong> and <strong>Lead a Service</strong> links in the admin menu directly. They were always allowed to open these pages &mdash; only the menu had been hiding the links, so previously you had to reach them by their web address.
+                    </p>
                     <h3 class="h6">How a congregant follows</h3>
                     <p class="small">
                         A congregant opens the join link / scans the QR / types the code shown at the venue. The app mints an anonymous presence pass on their device, checks in for the current song, and follows along. That check-in is limited <em>per device</em>, not per network connection, so a whole congregation on one venue Wi-Fi isn't throttled as if it were a single visitor.
@@ -1671,6 +1677,7 @@ foreach ($sections as $s) {
                         <li>The CSV export is the column shape your CCLI portal expects (title, CCLI number, copyright, count).</li>
                         <li>Tick &ldquo;Show all&rdquo; to also include songs without a CCLI number assigned &mdash; useful for spotting gaps in the metadata.</li>
                         <li>The view-count is per occurrence: a user opening the same song twice counts as two views.</li>
+                        <li>Songs shown to a congregation during a live service (see <a href="#service-mode">Service Mode</a>) now count as uses too &mdash; including whole set-lists driven through the projector &mdash; so projected worship isn't undercounted.</li>
                     </ul>
                     <h3 class="h6 mt-3">Filtering by organisation (#1861)</h3>
                     <p>

@@ -4,6 +4,43 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-21 (docs-sync — INFRA delta since the 2026-08-18 sweep)
+
+Documentation catch-up recording the batch that landed after the 2026-08-18 note (CHANGELOG
+`[unreleased]` is authoritative, current through #1906). INFRA framing only — the user-facing
+copy went to WHATS-NEW / help; the security posture to `SECURITY.md`; routing/CSP/search to the
+wiki. Recorded here for continuity:
+
+- **#1905 real 404 for unknown routes** — the `.htaccess` catch-all no longer answers every
+  unmatched path with a soft `200` + SPA shell: scanner-probe paths 404 at the web-server edge,
+  every other unknown path 404s at the front controller, genuine app routes still get the shell.
+  The valid-route list is **derived from the app's pages** (rule #34) with a CI guard keeping it in
+  lockstep with the client router. Detail in `DEV_NOTES.md`.
+- **#1906 security-hardening pass** — defensive, no user-visible change: registration throttle (was
+  dead code) + a per-email email-code bucket now engage; a cross-surface admin sign-in
+  session-fixation gap closed (`session_regenerate_id`); `/manage` + `og-image.php` gained security
+  headers/CSP; copyrighted lyrics no longer leak via the share-image endpoint under content-locking;
+  rate limits added to `og-image`/`random`/`song_of_the_day`/media; error responses carry the
+  headers (`Header always set`); **`X-Powered-By` now advertises `iHymns/<version>` while the PHP
+  runtime version is suppressed at source (`expose_php=Off`)**. Owner/host-gated remainder
+  (`Options -Indexes`, `ServerSignature Off`) still pending an alpha check.
+- **#1710 signed-in sync notice** — `api.php` now resolves `$currentUser` for **non-cacheable**
+  fragments so Settings stops wrongly telling a signed-in user to "Sign in to sync…"; cacheable
+  fragments stay un-personalised for shared-cache safety (rule #6); mutation-proven guard.
+- **#1699 shared live set-list expiry** — a shared **live** link stops serving once the OWNER'S
+  per-set-list `ExpiresAt` passes (previously it honoured only the link's own expiry). Expired →
+  "no longer shared" (410/empty), no data deleted.
+- **#1673 / #1896 bulk-import rights passthrough** — bulk imports now carry the copyright line, CCLI
+  number, ISWC and public-domain flags the source file provides (silently blanked before, every
+  format), fixing the CCLI-report undercount and letting imports auto-link to their Work by
+  identifier (#1860). Writers/composers credits remain a follow-up (#1904).
+- **#1667 org-admin Service Mode nav parity** — organisation admins now SEE the Service Mode links
+  (Projector Screen, Lead a Service); they were always allowed to use them, only the menu visibility
+  was gated too broadly (#1587 nav↔gate parity applied to Service Mode).
+
+Version baseline stays the tag-derived `v1.0.0` (#1899); this is an unreleased-alpha docs pass, no
+bump. #1039/#1897/#1899 were already recorded in the 2026-08-18 sweep.
+
 ## 📌 Continuation note — 2026-08-18 (docs refresh for #1860-#1863, landed earlier on this same branch)
 
 **Branch `claude/ilyrics-identity-work-model`, on top of `v1.0.0` tag-derived baseline with per-commit build number injection — app-version baseline reset, no additional bump this pass.** This session's own commits are a docs-and-guards catch-up: the feature work below had

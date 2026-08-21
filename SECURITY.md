@@ -53,6 +53,14 @@ These are enforced conventions; new code must follow them (see
   `global_admin` inside one transaction with `SELECT … FOR UPDATE`, closing a
   TOCTOU where two registrations racing on a virgin install could otherwise
   both read zero users and both become the top-privilege account.
+  **Brute-force throttles on account creation and email-code entry now actually
+  engage** (#1906) — a previously-dead registration throttle was wired in, and
+  the magic-link/email-code check, which had been per-IP only, gained a
+  per-email bucket so a single IP can no longer grind codes across many accounts.
+  A **session-fixation** gap on cross-surface admin sign-in is closed (#1906):
+  the session id is regenerated (`session_regenerate_id`) when the API-token
+  session is adopted into the `manage/*` PHP session, so a pre-planted session
+  id cannot survive authentication.
 - **Authorization** — role hierarchy (`user` < `editor` < `admin` <
   `global_admin`) plus a fine-grained **entitlement** system
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call
@@ -133,7 +141,10 @@ These are enforced conventions; new code must follow them (see
   standing content unlock live for every congregant who had ever joined. It is
   **fail-open and STRICT-safe** (an un-migrated/edge env returns
   data unchanged rather than throwing) and **entirely dormant** — a verified
-  no-op — unless `tblAppSettings.content_gating_enabled='1'`.
+  no-op — unless `tblAppSettings.content_gating_enabled='1'`. **#1906** closes a
+  matching leak on the social share-image endpoint (`og-image.php`), which could
+  render copyrighted lyric text onto a share card even while content-locking is
+  on.
 - **Read rate limiting** — the heaviest sessionless public reads (`song_detail`,
   `search`, `songs_index`, `related_songs`, bulk) carry a fixed-window
   per-requester limit (`includes/read_rate_limit.php`, #1354) — keyed per session
@@ -142,7 +153,9 @@ These are enforced conventions; new code must follow them (see
   computed SQL-side (no per-node clock drift). It is **fail-open** (any error or
   an un-migrated `tblReadRateLimit` table allows the request) so it can never take
   the site down, and blunts scraping/volumetric abuse without affecting real
-  clients.
+  clients. **#1906** brings further heavy public endpoints under the same
+  fixed-window limiter — `og-image`, `random`, `song_of_the_day` and the media
+  reads.
 - **File / XML handling** — uploaded XML (MusicXML, PPTX, OpenSong, OpenLyrics,
   TTML) is parsed with `LIBXML_NONET` and no entity expansion (XXE/SSRF-safe on
   PHP 8); ZIP imports are read in-memory (no `extractTo`), validate entry names
@@ -170,6 +183,19 @@ These are enforced conventions; new code must follow them (see
   (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`); SPA fragments must never
   carry executable inline scripts, since a shared-cache fragment cannot carry a
   per-request nonce (CI guard `tests/php/test-fragment-inline-scripts.php`).
+  **#1906** extends header coverage to the `manage/*` admin area and the
+  social-card endpoint (`og-image.php`), which previously shipped no CSP or
+  hardening headers of their own.
+- **HTTP-layer hardening** (#1905 / #1906) — an unknown route (a `/wp-admin/`
+  scanner probe, any made-up path) now returns a real **404** rather than a soft
+  HTTP-200 app shell; the valid-route allow-list is **derived** from the app's
+  own pages and CI-locked in step with the client router (#1905). Security
+  response headers are emitted **on error responses too** (`Header always set`),
+  not just on `200`s. `X-Powered-By` now advertises the app's own
+  `iHymns/<version>` identity while the PHP runtime version is suppressed at
+  source (`expose_php=Off`), so the stack no longer volunteers its component
+  versions to a scanner. An owner/host-gated remainder (`Options -Indexes`,
+  `ServerSignature Off`) is still pending an alpha check.
 - **Client error telemetry** — uncaught browser errors are beaconed
   (`?action=client_error_report`) to the existing activity log, not a new store.
   Reports are privacy-scrubbed on both the client and the server (bearer tokens,

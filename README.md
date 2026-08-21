@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.5250.0 Alpha](https://img.shields.io/badge/Version-0.5250.0%20Alpha-orange.svg)](#environments)
+[![Version: 1.0.0 Alpha](https://img.shields.io/badge/Version-1.0.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.5250.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.0.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
@@ -36,6 +36,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 ### Song browsing & search
 
 - **Full-text search** — title, lyrics, songbook, song number, writer, composer (Fuse.js client-side + MySQL FULLTEXT). Multi-language with primary-subtag filtering.
+- **Accent- & apostrophe-folded search** (#1039) — song / songwriter / tune / place search folds accents and smart apostrophes to base characters, so "Café" matches "cafe" and "don't" matches "dont"; works online and in the offline cache.
 - **Scripture search** — `Ps 23`, `1 Cor 13`, `Rev 21` etc. via abbreviation expansion + curated tags (#397).
 - **Alternative titles** (#832) — songs and songbooks carry "also known as …" entries that surface in search and the public page (search for *Faith's Review and Expectation* finds *Amazing Grace*).
 - **Songbook browser** — alphabetical index, language filter, downloadable per book.
@@ -290,7 +291,7 @@ For shared hosting:
 
 Deployment is automated via GitHub Actions (SFTP). See `DEV_NOTES.md` for full deployment architecture.
 
-Versioning is semver (`infoAppVer.php`'s `Version.Number`, auto-bumped by `version-bump.yml`) plus a monotonic **per-commit build number** (`git rev-list --count HEAD`, injected at deploy alongside the existing SHA/date; `NULL` on a local, un-deployed checkout).
+Versioning is a **tag-derived `MAJOR.RELEASE.BUILD` scheme** (`infoAppVer.php`'s `Version.Number`, baseline `v1.0.0`, #1899): MAJOR is hand-edited (rare), RELEASE is automated at the beta→main promotion by `promotion-deploy-bridge.yml`, and BUILD is a monotonic **per-commit build number** (`git rev-list --count HEAD`, injected at deploy alongside the existing SHA/date; `NULL` on a local, un-deployed checkout). The old minor-auto-bumping `version-bump.yml` is retired.
 
 ---
 
@@ -299,7 +300,7 @@ Versioning is semver (`infoAppVer.php`'s `Version.Number`, auto-bumped by `versi
 ```text
 iHymns/
 ├── .claude/              Claude AI context, ProjectBrief.md, project-rules.md
-├── .github/workflows/    CI/CD: deploy, version bump, changelog
+├── .github/workflows/    CI/CD: deploy, release, changelog (14 workflows)
 ├── .SourceSongData/      Raw song text files (source of truth)
 ├── tools/                Build tools & song-data parser
 ├── data/                 Generated song data (songs.json, schema)

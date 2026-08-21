@@ -260,6 +260,14 @@ only row source refuses to run without a non-empty `tblOrganisationMembers`-deri
 user with no admin/owner role on any organisation sees a friendly "not an organisation admin" message
 rather than an empty report, regardless of the entitlement. See [[Security]] and [[API Reference]].
 
+### Nav↔gate parity for organisation admins (#1667)
+
+Organisation admins now **see** the Service Mode links (Projector Screen, Lead a Service) in the admin
+menu. They were always allowed to *use* those pages, but the menu only showed the links to holders of
+the broader "manage organisations" permission, so an org admin could reach the pages by URL yet never
+discover them. The menu visibility now matches the pages' own gate — the standing rule that an admin
+page's menu entry and its access check must be the same test (see [[Security]]).
+
 ---
 
 ## Account Lifecycle — disabled vs deleted (#1698)

@@ -1783,6 +1783,61 @@ delta + stress test + commit-by-commit plan:
 
 ---
 
+## 🛡 Routing & security hardening (#1905 / #1906)
+
+### Real 404s for unknown routes (#1905)
+
+The `.htaccess` catch-all used to answer **every** unmatched path with `200` + the SPA
+shell — so a `/wp-admin/` scanner probe or any typo'd URL returned a soft `200` that read
+as "page exists" to crawlers and log analysis. #1905 splits the decision by locality:
+**scanner-probe paths 404 at the web-server edge** (cheap, before PHP boots), **every other
+unknown path 404s at the front controller** while genuine app routes still receive the
+shell. The valid-route list is **derived from the app's own pages** (a new page is
+recognised automatically, never a hand-maintained allow-list — rule #34), and a CI guard
+keeps it in lockstep with the client router so the two can't drift. This does **not** change
+the #1566 static-asset-fetch trap (an unmatched *asset* path can still resolve to the shell
+for a browser `fetch()`; keep using root-absolute URLs + `apiFetchJson()`).
+
+### Defensive hardening pass (#1906)
+
+Entirely defensive; **no user-visible behaviour change**. Registration + email-code
+brute-force protections now actually engage (the registration throttle was **dead code**;
+the email-code check was per-IP only → a **per-email** bucket was added). A
+session-fixation gap on cross-surface admin sign-in is closed
+(`session_regenerate_id`). The `/manage` admin area and the social-card `og-image.php`
+endpoint gained security headers / CSP, and copyrighted lyrics no longer leak via the
+share-image endpoint when content-locking is on. Several heavy public endpoints
+(`og-image`, `random`, `song_of_the_day`, media) gained rate limits (the #1354 pattern), and
+error responses now carry the security headers (`Header always set`). **`X-Powered-By` now
+advertises our own `iHymns/<version>` identity while the PHP runtime version is suppressed at
+source (`expose_php=Off`).** Owner/host-gated remainder (`Options -Indexes`,
+`ServerSignature Off`) still pending an alpha check.
+
+---
+
+## 🩹 Behavioural fixes (#1667 · #1673/#1896 · #1699 · #1710)
+
+- **Org-admin Service Mode nav parity (#1667).** Organisation admins were always *allowed*
+  to use the Service Mode tools (Projector Screen, Lead a Service) but the **menu links**
+  were gated too broadly, so they never saw them. The nav visibility now matches the page
+  gate — the #1587 nav↔gate-parity discipline applied to Service Mode.
+- **Bulk-import rights passthrough (#1673 / #1896).** Bulk imports were silently **blanking**
+  the copyright line, CCLI number, ISWC and public-domain flags the source file provided, for
+  **every** format. They are now carried through — fixing the CCLI-report undercount of
+  imported songs and letting an imported song auto-link to its Work by identifier (#1860).
+  Writers/composers credits remain a follow-up (#1904).
+- **Shared live set-list expiry (#1699).** A shared **live** set-list link now stops serving
+  once the **owner's** per-set-list expiry passes; previously it honoured only the link's own
+  expiry, so an expired set-list kept serving on the anonymous share/social surfaces. Expired
+  → "no longer shared" (410 / empty), **no data deleted** — the resolver reads the set-list's
+  own `ExpiresAt`, not just the share token's.
+- **Signed-in sync notice (#1710).** A signed-in user was wrongly told to "Sign in to sync…"
+  on Settings. `api.php` now resolves `$currentUser` for **non-cacheable** fragments so a
+  personalised fragment sees the viewer; **cacheable** fragments stay un-personalised for
+  shared-cache safety (rule #6), and a mutation-proven guard keeps that split honest.
+
+---
+
 > **Platform status:** Web/PWA is the active production app. Apple is
 > **Phase 1 + Phase 2 code-complete** (iHymnsKit SwiftPM package; watch relay,
 > tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled
@@ -1791,4 +1846,4 @@ delta + stress test + commit-by-commit plan:
 > deployment-secrets and store-submission sections above describe the intended
 > CI/CD pipeline for when it ships.
 
-Last updated: 2026-07-28
+Last updated: 2026-08-21

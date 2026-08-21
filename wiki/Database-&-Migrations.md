@@ -71,6 +71,8 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | `tblSongComposers` | Song composer credits (many-to-one) |
 | `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
 
+**Accent/apostrophe-folded search (#1039).** Full-text search is backed by folded mirror columns so a query ignores diacritics and smart apostrophes — `tblSongs.NormalizedTitle` (app-maintained fold of `Title`) and `tblSongs.LyricsTextFolded` (diacritic-folded mirror of `LyricsText`) each carry their own `FULLTEXT` index (`ft_NormalizedTitle`, `ft_LyricsTextFolded`, plus the combined `ft_NormTitleLyricsFolded`). #1039 extends the same fold across the song/**songwriter/tune/place** search paths, so "Café" matches "cafe" and "don't" matches "dont" — online and in the offline cache alike.
+
 ### Song Deletion — Recoverable (#1694 / #1695, epic #1692)
 
 Deleting a song is a **soft delete**, not a row removal — deliberately, because 38 of the 41 foreign keys elsewhere in the schema that reference `tblSongs(SongId)` are `ON DELETE CASCADE`, so a hard delete used to take the song's components, credits, media links and its *entire revision history* with it, recoverable only from a database backup.
@@ -107,6 +109,8 @@ The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as 
 | `tblSongExternalIds` | Comprehensive per-song recording-ID key/value store — `IdType` ∈ MBID / Spotify / Genius / ISRC / … (`VARCHAR`, app-validated), `IdScope` server-derived, `(SongId, IdType, IdValue)` unique. `Source` distinguishes `manual` (curator) / `ihymns-backfill` (#1747 one-time) / `ihymns-mirror` (live ISRC dual-write, #1749). |
 
 `tblSongs` also gained identity/publication columns in the same pass: `Isrc`, `Subtitle`, `Disambiguation`, `FirstPublishedYear`, `CopyrightYears`, `CopyrightHolder` (the last three split the single old `Copyright` field). Alias URLs `/isrc /iswc /ccli /ipi /isni /bowi` resolve an industry identifier to its entity via one shared normaliser + resolver (see [[Architecture]] and [[API Reference]]). All of the above is additive and byte-mirrored into `schema.sql`; each migration has a real completion probe.
+
+**Bulk-import rights passthrough (#1673 / #1896).** Bulk song imports now persist the copyright line, CCLI number, ISWC and public-domain flags the source file provides, instead of writing blanks for every format. This un-breaks two downstream reads that depend on those columns: the CCLI usage report no longer undercounts imported songs, and imported songs auto-link to their Work by identifier (#1860). Writers/composers credits on import remain a follow-up (#1904).
 
 ### Publishers, Gating, Sharing & Print (branch `claude/issue-sweep-fixes-89`, epics #1765 / #1769 / #1767)
 

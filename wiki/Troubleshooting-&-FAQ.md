@@ -180,6 +180,9 @@ A: They let you reorder song components (verses, choruses, bridges, etc.) for a 
 **Q: Do shared setlists include custom arrangements?**
 A: Yes. Custom arrangements are included in shared setlist links and preserved when imported.
 
+**Q: A shared live set-list link says it's "no longer shared" — why?**
+A: A shared **live** set-list link stops serving once the set-list's own expiry passes (#1699). Previously a live share honoured only the link's own expiry and ignored the underlying set-list's, so an expired set-list could keep serving on the anonymous share/social surfaces; now an expired one resolves to "no longer shared" (empty/410) — no data is deleted, the owner still has it.
+
 ### Technical
 
 **Q: What browsers are supported?**
@@ -193,3 +196,9 @@ A: No. MySQL 5.7+ / MariaDB 10.3+ is the only supported database, via `getDbMysq
 
 **Q: How do I run the song parser?**
 A: `npm run parse-songs` or `node tools/parse-songs.js`. This regenerates `data/songs.json` from the source files in `.SourceSongData/` — that file is a one-time migration input consumed by `appWeb/.sql/migrate-json.php`, not something the running app reads.
+
+**Q: Why does a made-up URL like `/wp-admin` return 404 now?**
+A: That's deliberate (#1905). A path the app doesn't own — a `/wp-admin/` scanner probe, or any unknown URL — returns a real HTTP 404 instead of the old soft HTTP 200 with the app shell. Obvious scanner-bait is 404'd at the web-server edge; everything else is checked by the front controller against a valid-route list **derived from the app's own pages**, so a genuine new page is recognised automatically (a CI guard keeps that list in lockstep with the client router). A real iHymns page will not 404.
+
+**Q: What is the `X-Powered-By: iHymns/<version>` response header?**
+A: Part of a defensive hardening pass (#1906). The header now advertises our own `iHymns/<version>` identity, and the PHP runtime version is suppressed at source (`expose_php=Off`) so a scanner can't read the exact PHP build off the response. The same pass added security headers/CSP to the admin area and the social-card endpoint, per-email brute-force buckets, a session-fixation fix, and rate limits on several heavy public endpoints — all entirely behind the scenes, with no user-visible behaviour change.

@@ -23,6 +23,17 @@ with none of the behind-the-scenes technical detail.
   or person, you now pick from a live search list instead of typing a name —
   so two curators typing the same thing slightly differently no longer creates
   two separate entries for the same thing.
+- **Search that shrugs off accents and apostrophes** — Searching for songs,
+  songwriters, tunes or places now looks past accents and curly quotes, so
+  "Cafe" finds "Café" and "dont" finds "don't". It works the same whether
+  you're online or using songs you've saved for offline.
+- **Shared set lists stop sharing when they expire** — If you put an end date
+  on a set list you've shared, the link now stops showing it once that date
+  passes, however it's opened — so an out-of-date set list won't keep going
+  round.
+- **Reliability and security touch-ups** — Signed-in members no longer see a
+  stray "sign in to sync" prompt in Settings, and a round of behind-the-scenes
+  security work keeps the app safe without changing anything you'll notice.
 
 ## 0.5160.0 — 12 August 2026
 

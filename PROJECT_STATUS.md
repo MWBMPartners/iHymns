@@ -11,12 +11,12 @@
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
 | 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 47 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1900+ — see GitHub for live open/closed counts |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1906 — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
 | 🛠 Admin Portal | ✅ Active | 47 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the new org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748) |
-| 🚀 CI/CD Pipeline | ✅ Complete | 15 workflows: deploy, version-bump, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge |
+| 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge (the minor-auto-bumping `version-bump.yml` was retired at #1899; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline) |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
 
@@ -42,7 +42,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ### Infrastructure ✅
 
-15 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, Dependabot security-fix backport to the release branches, and the two monthly maintenance sweeps.
+14 GitHub Actions workflows: SFTP deployment, tag-derived version promotion (`promotion-deploy-bridge.yml`, #1899), changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, Dependabot security-fix backport to the release branches, and the two monthly maintenance sweeps. (The old minor-auto-bumping `version-bump.yml` was retired at #1899.)
 
 ### 2026-05 catalogue & platform work ✅ (highlights)
 
@@ -107,6 +107,17 @@ The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.410
 - **Build-number CI** — a monotonic per-commit build number is now injected into `infoAppVer.php` at deploy, alongside the existing SHA/date injection.
 - **`api-docs.yaml` sync + two new CI guards** — the ILID dual-addressing behaviour, the canonical `?page=musician` path, and the five `iswc`-sibling identifier pages are now documented; a version-lockstep guard and an admin-nav↔Help-coverage guard (both tree-derived, mutation-proven) close the exact class of gap that let this branch's new admin pages ship without in-app help.
 
+### 2026-08 (late) highlights ✅ — tag-derived v1.0.0 batch (through #1906)
+
+- **Tag-derived versioning** (#1899) — the version scheme moved to `MAJOR.RELEASE.BUILD` with the baseline reset to **v1.0.0**: MAJOR is hand-edited (rare), RELEASE is automated at the beta→main promotion by `promotion-deploy-bridge.yml`, and BUILD is the per-commit git commit count. The old minor-auto-bumping `version-bump.yml` (which had ballooned the minor to 5250) is retired; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline that replaced it.
+- **Security-hardening pass** (#1905 / #1906) — a made-up path (a `/wp-admin/` scanner probe, or any unknown URL) now returns a real **404** instead of a soft HTTP-200 app shell, with the valid-route list **derived** from the app's own pages and CI-guarded in lockstep with the client router (#1905). Registration + email-code brute-force protections now actually engage (the registration throttle was dead code; the email-code check gained a per-email bucket alongside the per-IP one), a session-fixation gap on cross-surface admin sign-in is closed, the `/manage` admin area and the social-card (`og-image.php`) endpoint gained security headers/CSP, copyrighted lyrics no longer leak via the share-image endpoint when content-locking is on, several heavy public endpoints gained rate limits, and `X-Powered-By` now advertises our own `iHymns/<version>` identity while the PHP runtime version is suppressed at source (`expose_php=Off`) (#1906). Entirely defensive; no user-visible change.
+- **Bulk-import rights passthrough** (#1673 / #1896) — bulk imports now keep the copyright line, CCLI number, ISWC and public-domain flags the source file provides (they were silently blanked for every format), fixing a CCLI-report undercount of imported songs and letting imported songs auto-link to their Work by identifier (writers/composers credits remain a follow-up, #1904).
+- **CCLI write-coverage widening** (#1897) — Service-Mode usage logging and the org-scoped #1861 report now include SetlistId, so multi-song set-list metrics are captured and projected uses surface in the report.
+- **Accent- & apostrophe-folded search** (#1039) — song / songwriter / tune / place search folds accents and smart apostrophes to base characters ("Café" matches "cafe", "don't" matches "dont"), online and in the offline cache.
+- **Shared live set-list expiry** (#1699) — a shared **live** set-list link now stops serving once the owner's per-set-list expiry passes (previously it honoured only the link's own expiry), returning "no longer shared" without deleting any data.
+- **Org-admin Service Mode nav** (#1667) — organisation admins now see the Service Mode links (Projector Screen, Lead a Service) in the admin menu; they were always allowed to use them, only the menu visibility was gated too broadly (nav↔gate parity).
+- **Signed-in sync notice fix** (#1710) — a signed-in user is no longer wrongly told to "Sign in to sync…" on Settings; `api.php` now resolves the current user for non-cacheable fragments while cacheable fragments stay un-personalised for shared-cache safety.
+
 ---
 
 ## 📌 Next Milestones
@@ -147,10 +158,10 @@ container doesn't have.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1900+ — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1906 — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.5250.0 Alpha (authoritative: `includes/infoAppVer.php`), plus a monotonic per-commit build number (`Version.Build.Number`, deploy-injected)
-- **CI/CD**: 15 GitHub Actions workflows live
+- **Version**: 1.0.0 Alpha (authoritative: `includes/infoAppVer.php`) — tag-derived `MAJOR.RELEASE.BUILD` scheme (#1899): MAJOR hand-edited (rare), RELEASE automated at the beta→main promotion, BUILD = the monotonic per-commit git commit count (`Version.Build.Number`, deploy-injected; `NULL` on an undeployed checkout). The old minor-auto-bumping `version-bump.yml` is retired
+- **CI/CD**: 14 GitHub Actions workflows live
 
 ---
 
@@ -167,4 +178,4 @@ container doesn't have.
 
 ---
 
-Last updated: 2026-08-18
+Last updated: 2026-08-21

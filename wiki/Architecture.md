@@ -9,7 +9,7 @@
 ```text
 iHymns/
 ├── .claude/                  # Claude AI context & project brief
-├── .github/workflows/        # CI/CD: deploy, version bump, changelog, tests (15 workflows)
+├── .github/workflows/        # CI/CD: deploy, release, changelog, tests (14 workflows)
 ├── .SourceSongData/           # Raw song text files (original import source — DO NOT MODIFY)
 ├── tools/                    # Build tools & song data parser
 │   ├── parse-songs.js        #   Parses .SourceSongData/ → data/songs.json
@@ -51,7 +51,11 @@ The PWA is a single-page application served from `index.php`. All URLs are rewri
 3. Renders the HTML shell (header, content area, footer)
 4. Loads the JS app which handles client-side routing via History API
 
+**Unknown routes return a real 404, not a soft 200 shell (#1905).** The `.htaccess` catch-all no longer answers *every* unmatched path with the app shell — a made-up path (a `/wp-admin/` scanner probe, any URL the app doesn't own) now gets a genuine HTTP 404. Obvious scanner-bait paths are refused at the web-server edge; everything else is checked by the front controller against a **valid-route list derived from the app's own pages** (so a new page is recognised automatically), with a CI guard keeping that list in lockstep with the client router. This closes the "soft-404" gap where a probe scan reported HTTP 200 for paths that don't exist.
+
 Page content itself is fetched separately: `router.js` requests an HTML **fragment** from `api.php?page=...`, which is a distinct HTTP response the document's per-request CSP nonce cannot travel with. Several fragments (`page=home`, `page=song`, `page=songbook`, …) are additionally served from a **shared HTTP cache** across all visitors, so they can never carry anything per-request at all — no per-user personalisation, no nonce.
+
+The corollary (#1710): `api.php` now resolves `$currentUser` when rendering a **non-cacheable** fragment, so a signed-in viewer gets correctly personalised copy — a signed-in user is no longer wrongly told to "Sign in to sync…" on Settings. Cacheable fragments deliberately stay un-personalised for shared-cache safety, and a mutation-tested guard keeps the two apart.
 
 This has one hard consequence: **a fragment can never carry an executable inline `<script>`.** The enforcing nonce CSP silently refuses any script node without a matching nonce — the page looks fine until a user clicks the broken feature. `router.js` no longer even tries to re-execute injected `<script>` tags (the `_executeInlineScripts()` shim that used to re-create them, nonce-less, was removed once nothing needed it); a fragment script today simply never runs. A CI guard (`tests/php/test-fragment-inline-scripts.php`) fails the build on any executable inline script under `includes/pages/` or `includes/partials/` — its allowlist is currently empty.
 
@@ -68,7 +72,7 @@ iHymnsApp
 ├── Router          — History API routing, AJAX fragment loading, afterPageLoad() module wiring
 ├── Transitions     — Page transition animations
 ├── Settings        — Theme, motion, font size, analytics consent
-├── Search          — Fuse.js search with TF-IDF related songs
+├── Search          — Fuse.js search with TF-IDF related songs; accent/apostrophe-folded matching (#1039)
 ├── Favorites       — Favourite songs (synced server-side when signed in, localStorage otherwise)
 ├── SetList         — Setlists with custom arrangements
 ├── UserAuth        — Bearer token auth, cross-device sync
@@ -292,5 +296,6 @@ and the read-only snapshot/diagnostic viewer at `/manage/intapps-status`
 - Role + entitlement gates (`requireAdmin()`, `userHasEntitlement()`) on every admin surface.
 - A registry-driven content-access-tier / gating system (`TIER_CAPS` in `includes/access_tier_validation.php`) — entirely dormant unless explicitly enabled, and never a hardcoded per-tier matrix. Enforcement splits in two: `contentGatingApply()` (`includes/content_gating.php`) strips gated fields from JSON *payloads* (`song_detail`, `song_data`, `random`, `songbook_export`); its sibling `contentGatingMediaAllowed($kind, $userId, $presenceToken)` answers the same question for one media row and gates the *bytes* — `song-media.php` and the `bulk_audio` offline manifest. A payload gate alone hides the affordance but leaves a URL-addressable file bookmarkable, so every gated asset needs both checks resolving through the same registry.
 - Friendly, theme-aware error pages for every status the app actually emits — `errorPageMap()` / `errorPageStatuses()` in `includes/error_page.php` is the one status→copy registry (400/401/403/404/405/410/429/500/503), and `error.php` (the Apache `ErrorDocument` target for 403/405/500/503) derives its render whitelist from it rather than a second hand-typed list (#1704). 405 and 410 are recent additions — 410 is what a soft-deleted or merged-with-no-replacement song now returns instead of a generic 404.
+- Defensive hardening pass (#1906, no user-visible behaviour change): the `/manage` admin area and the social-card `og-image.php` endpoint gained their own security headers / CSP; registration + email-code brute-force protections now actually engage (a dead registration throttle revived; the email-code check gained a per-email bucket on top of per-IP); a cross-surface admin sign-in session-fixation gap was closed with `session_regenerate_id`; copyrighted lyrics no longer leak through the share-image endpoint when content-locking is on; several heavy public endpoints (og-image, random, song-of-the-day, media) gained rate limits; and error responses now carry the security headers (`Header always set`). `X-Powered-By` advertises our own `iHymns/<version>` identity while the PHP runtime version is suppressed at source (`expose_php=Off`). An owner/host-gated remainder (`Options -Indexes`, `ServerSignature Off`) is still pending an alpha check.
 
 See [[Security]] for full details.
