@@ -409,9 +409,16 @@ export class ServiceBroadcaster {
     }
 
     /* Human label for a component — mirrors song.php's label logic exactly
-       (refrain→Chorus alias; number 0/absent = no number) so the operator's
-       chips read the same as the rendered song page. */
+       (refrain→Chorus alias; number 0/absent = no number), INCLUDING the
+       #1860 Phase 5 Commit 8 custom-first override: a curator-set
+       `c.label` replaces the derived name, exactly like
+       `includes/pages/song.php:1236-1248`'s `$custom` fold. So the
+       operator's chips read the same as the rendered song page in both
+       the default AND the custom-label case. Assigned via `chip.textContent`
+       at :397 (never innerHTML), so no separate escaping is required here. */
     _sectionLabel(c, i) {
+        const custom = (c && c.label != null) ? String(c.label).trim() : '';
+        if (custom !== '') { return custom; }
         let type = String((c && c.type) || 'verse').toLowerCase();
         if (type === 'refrain') { type = 'chorus'; }
         let label = type.charAt(0).toUpperCase() + type.slice(1);

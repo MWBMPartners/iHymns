@@ -98,10 +98,22 @@ export function shortTag(comp) {
  * Build a full human-readable label for a component, e.g. "Verse 1", "Chorus".
  * Aliases resolve to their canonical label (e.g. refrain → "Chorus").
  *
- * @param {Object} comp  Component object with `type` and optional `number`
+ * #1860 Phase 5 Commit 8 — custom-first (rule #33 display sweep): a
+ * curator-set `comp.label` (trimmed, non-empty) is returned VERBATIM,
+ * replacing the derived "Verse 1" heading entirely (D1 — mirrors
+ * song.php's `includes/pages/song.php:1236-1248` derivation exactly, since
+ * every consumer of this helper, e.g. setlist.js, must agree with the
+ * public song page about what a section is called). `shortTag()` above is
+ * left UNCHANGED — it is the space-constrained STRUCTURAL chip ("V1"),
+ * never the display name.
+ *
+ * @param {Object} comp  Component object with `type`, optional `number`,
+ *                       and optional custom `label` override
  * @returns {string}     Full label
  */
 export function fullLabel(comp) {
+    const custom = (comp.label != null) ? String(comp.label).trim() : '';
+    if (custom !== '') return custom;
     const meta = resolveType(comp.type);
     const label = meta ? meta.label : comp.type.charAt(0).toUpperCase() + comp.type.slice(1);
     const num = positiveNumber(comp.number);

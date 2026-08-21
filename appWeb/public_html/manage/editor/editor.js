@@ -1658,6 +1658,11 @@ function buildEnrichmentPanel(song, comp) {
 }
 
 function componentHeaderLabel(comp) {
+    /* #1860 Phase 5 Commit 8 (SD5) — custom-first: a curator-set comp.label
+       replaces the derived heading here too, same as every other display
+       site (rule #33). */
+    var custom = (comp && comp.label != null) ? String(comp.label).trim() : '';
+    if (custom !== '') { return custom; }
     var type = (comp && comp.type) ? String(comp.type) : 'verse';
     var cap = type.charAt(0).toUpperCase() + type.slice(1);
     var n = comp && comp.number;

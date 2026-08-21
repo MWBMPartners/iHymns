@@ -467,7 +467,12 @@ export function mountArrangementEditor(container, ctx) {
             chip.type = 'button';
             chip.className = 'badge rounded-pill border-0 arr-pool-chip';
             chip.style.cursor = 'pointer';
-            chip.title = label + ' — click to add';
+            /* #1860 Phase 5 Commit 8 — chip TEXT stays structural (space-
+               constrained: "V1"/"Chorus" identifies STRUCTURE for arrangement
+               editing), but a curator-set comp.label is surfaced in the
+               tooltip so it isn't invisible here. */
+            const customPool = (comp && comp.label != null) ? String(comp.label).trim() : '';
+            chip.title = (customPool !== '' ? customPool + ' (' + label + ')' : label) + ' — click to add';
             chip.textContent = label;
             chip.addEventListener('click', () => append(idx));
             pool.appendChild(chip);
@@ -505,7 +510,12 @@ export function mountArrangementEditor(container, ctx) {
                 const tag = document.createElement('span');
                 tag.className = 'badge rounded-pill arr-strip-chip';
                 tag.textContent = label;
-                tag.title = label + ' — position ' + (pos + 1) + ' of ' + arr.length;
+                /* #1860 Phase 5 Commit 8 — same tooltip-only surfacing as the
+                   pool chip above; the ordering strip's chip text is also
+                   left structural. */
+                const customStrip = (comp && comp.label != null) ? String(comp.label).trim() : '';
+                tag.title = (customStrip !== '' ? customStrip + ' (' + label + ')' : label)
+                    + ' — position ' + (pos + 1) + ' of ' + arr.length;
 
                 const btnLeft = iconBtn('bi-arrow-left', 'Move ' + label + ' earlier', isFirst, () => move(pos, -1));
                 btnLeft.classList.add('arr-move-left');

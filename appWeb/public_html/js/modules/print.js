@@ -195,7 +195,17 @@ function esc(s) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/* #1860 Phase 5 Commit 8 — custom-first (rule #33): a curator-set
+   `comp.label` replaces the derived "Verse 1" heading, mirroring
+   song.php's `includes/pages/song.php:1236-1248` derivation. `typeClass`
+   below (:234, unchanged) still keys off `comp.type`, so styling stays
+   structural even when the printed heading is custom text. The caller
+   (renderLyrics, :236) already routes this through esc() before
+   interpolating into the assembled HTML string, so no separate escaping
+   is needed here. */
 function componentLabel(comp) {
+    const custom = (comp.label != null) ? String(comp.label).trim() : '';
+    if (custom !== '') return custom;
     const type = String(comp.type || 'verse');
     const cap = type.charAt(0).toUpperCase() + type.slice(1);
     const n = comp.number;

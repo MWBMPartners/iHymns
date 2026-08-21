@@ -1232,11 +1232,26 @@ foreach ($components as $_c) {
                    The editor stores `number: 0` as a sentinel for "this is the
                    only one of its kind" (issue #795). Treat any non-positive
                    or non-numeric value as "no number" so single-component songs
-                   render as plain "Verse" / "Chorus" rather than "Verse 0". */
+                   render as plain "Verse" / "Chorus" rather than "Verse 0".
+
+                   #1860 Phase 5 Commit 8 — custom-first: a curator-set
+                   `component.label` (e.g. "Kyrie", "isiZulu") REPLACES the
+                   derived "Verse 1" heading entirely when present (D1). The
+                   derived name is still computed unconditionally because it
+                   remains the fallback AND (unchanged) the value the
+                   Structure-tab placeholder / server-side hide-when-equal
+                   fold compare against. $typeClass, the #858 language badge
+                   and the aria-label below all reuse $label as before, so
+                   they automatically inherit the custom label with no
+                   separate wiring. */
                 $displayType = ($type === 'refrain') ? 'chorus' : $type;
                 $label = ucfirst($displayType);
                 if (is_numeric($number) && (int)$number > 0) {
                     $label .= ' ' . (int)$number;
+                }
+                $custom = trim((string)($component['label'] ?? ''));
+                if ($custom !== '') {
+                    $label = $custom;
                 }
 
                 /* CSS class for styling different component types */

@@ -14098,6 +14098,19 @@ paths:
         `languages` on an update preserves the stored arrays. A new
         component (no `component.id`) is always appended last; reorder via
         `component_reorder`.
+
+        #1860 Phase 5 — `label` is an optional custom DISPLAY name for the
+        section (e.g. "Kyrie", "isiZulu"), overriding the derived "Verse 1"
+        heading everywhere the sweep in Commit 8 covers; omitting the key
+        preserves the stored value (same read-modify-write posture as
+        `chords`/`languages`). A label equal to the derived name is folded
+        to `null` server-side (rule #27 hide-when-equal) — the response
+        `label` is the authoritative post-fold value, so the client should
+        read it back rather than assume its own input round-tripped.
+        `sourceWorkId` links this ONE section to a `tblWorks` row (medley
+        provenance, #1860 §3.6b); an id that doesn't resolve to an existing
+        work is silently coerced to `null` (never a 422) and reported back
+        via `sourceWorkIdIgnored: true`.
       requestBody:
         required: true
         content:
@@ -14118,6 +14131,24 @@ paths:
                     chords: { type: array, items: {}, nullable: true }
                     language: { type: string, nullable: true }
                     languages: { type: array, items: {}, nullable: true }
+                    label:
+                      type: string
+                      nullable: true
+                      maxLength: 100
+                      description: |
+                        Optional custom display name overriding the derived
+                        "Verse 1"/"Chorus" heading. Omit the key to preserve
+                        the stored value; send `null` (or the derived name)
+                        to clear it. #1860 Phase 5.
+                      example: Kyrie
+                    sourceWorkId:
+                      type: integer
+                      nullable: true
+                      description: |
+                        Links this section to a `tblWorks` row (medley
+                        constituent provenance). Omit to preserve; an
+                        unresolvable id is coerced to `null` rather than
+                        rejected. #1860 §3.6b.
       responses:
         "200":
           description: Component saved
@@ -14128,6 +14159,14 @@ paths:
                 properties:
                   ok: { type: boolean, example: true }
                   componentId: { type: integer }
+                  label:
+                    type: string
+                    nullable: true
+                    description: The stored value after the hide-when-equal fold — read this back rather than assuming the request's `label` round-tripped verbatim.
+                  sourceWorkId: { type: integer, nullable: true }
+                  sourceWorkIdIgnored:
+                    type: boolean
+                    description: True when the request's `sourceWorkId` did not resolve to an existing work and was coerced to null instead of failing the save.
         "400":
           description: Missing songId/component
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -16514,6 +16553,18 @@ components:
             - That saved a wretch like me
             - I once was lost but now am found
             - Was blind but now I see
+        label:
+          type: string
+          description: |
+            Optional custom display name for this section (e.g. "Kyrie",
+            "isiZulu"), overriding the derived "Verse 1"/"Chorus" heading
+            everywhere the song is rendered. #1860 Phase 5. SPARSE: this key
+            is present ONLY when the curator has set a label — omitted
+            entirely for every unlabelled component (the pre-existing
+            byte-identical response for the whole un-labelled corpus is
+            unaffected), so a client must treat an absent key the same as
+            deriving the heading from `type`+`number` itself.
+          example: Kyrie
 
     SongSummary:
       type: object
