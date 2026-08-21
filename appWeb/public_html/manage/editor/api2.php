@@ -1811,6 +1811,25 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
  * (used for restores, which must always land in the audit trail). Best-effort —
  * a revision failure never breaks the edit; the precise per-edit trail lives in
  * tblActivityLog via logActivity().
+ *
+ * ELI5: every time we save a snapshot of the song, we now also remember what the
+ * PREVIOUS snapshot looked like, so "undo" has something real to go back to.
+ *
+ * DETAILED — #1743 THE CHAIN RULE: revision N's PreviousData := revision N-1's
+ * NewData, copied verbatim, in WHATEVER shape that prior row's NewData happens to
+ * be stored in (editor-payload lowercase-keys, the v2 full-snapshot {song:{...}},
+ * or a bare tblSongs-row — see api.php's restore_revision, #1743-C3, for the
+ * consumer that tolerates all three). This function never inspects or reshapes
+ * the prior value — it is a pure "what came immediately before" pointer, one link
+ * in the chain. Because this function COALESCES writes into ~15s bursts (the
+ * check just above), "the previous revision's NewData" is not literally the
+ * state one keystroke ago — it IS the last state that was actually audited, i.e.
+ * the correct pre-state at the audit trail's own granularity. A song that has no
+ * prior row in tblSongRevisions yet (legacy data saved before the revision table
+ * existed, or this song's genuine first save) legitimately keeps PreviousData
+ * NULL — there is nothing before it to chain to, and that NULL is itself
+ * meaningful downstream (api.php's restore_revision reads a NULL PreviousData as
+ * "this is the initial create, there is nothing to restore back to").
  */
 function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $actionTag, bool $force = false): void {
     try {
@@ -1827,14 +1846,31 @@ function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $ac
             if ($recent) { return; }
         }
 
+        /* #1743 — chain PreviousData from the immediately preceding revision row's
+           NewData (verbatim, whatever shape it is stored in — see the doc-block
+           above). NULL when there is no prior row for this song at all, OR when
+           the prior row's own NewData was itself NULL (fetch_row() returning a
+           row whose single column is null already collapses to that). */
+        $prev = $db->prepare(
+            'SELECT NewData FROM tblSongRevisions
+              WHERE SongId = ?
+              ORDER BY Id DESC
+              LIMIT 1'
+        );
+        $prev->bind_param('s', $songId);
+        $prev->execute();
+        $prevRow = $prev->get_result()->fetch_row();
+        $prev->close();
+        $previousData = $prevRow !== null ? $prevRow[0] : null;
+
         $snapshot = ed2_buildSongSnapshot($db, $songId);
         $newData  = $snapshot !== null ? json_encode($snapshot, JSON_UNESCAPED_UNICODE) : null;
 
         $rev = $db->prepare(
             'INSERT INTO tblSongRevisions (SongId, UserId, Action, PreviousData, NewData, Status)
-             VALUES (?, ?, ?, NULL, ?, "approved")'
+             VALUES (?, ?, ?, ?, ?, "approved")'
         );
-        $rev->bind_param('siss', $songId, $userId, $actionTag, $newData);
+        $rev->bind_param('sisss', $songId, $userId, $actionTag, $previousData, $newData);
         $rev->execute();
         $rev->close();
     } catch (\Throwable $_e) {
