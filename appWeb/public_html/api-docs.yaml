@@ -417,7 +417,8 @@ tags:
       `song_link_remove` / `song_link_suggestion_dismiss` → `edit_songs`;
       `bulk_verify` / `bulk_tag_attach` / `bulk_tag_detach` →
       `bulk_edit_songs`. Every other action — including
-      `song_external_id_add`/`song_external_id_delete` — rides the
+      `song_external_id_add`/`song_external_id_delete` and
+      `song_alt_title_add`/`song_alt_title_delete` — rides the
       file-level editor-role gate only (curation, not a destructive class).
 
       **CSRF**: every POST requires the `X-Requested-With: XMLHttpRequest`
@@ -15097,6 +15098,155 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
           description: The song external IDs (#1741 D5) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_alt_titles:
+    get:
+      operationId: editorSongAltTitles
+      tags: [Editor API v2]
+      summary: A song's alternative ("also known as") titles (#1669, epic #832)
+      description: |
+        GET, editor role only. `tblSongAlternativeTitles`' first UI write
+        path (the read half — the public song page, the OG image, and the
+        #832 search boost — has been live for a while). Row shape
+        `{id, title, language, note, sortOrder}`, ordered
+        `SortOrder ASC, Title ASC` — the same ordering the public read path
+        uses. `tableMissing:true` (empty list, not a 500) on an un-migrated
+        install. Alt titles are per-song FREE TEXT, not a reference to a
+        registry entity (CLAUDE.md rule #43 does not apply).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_alt_titles] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: MP-0001 }
+      responses:
+        "200":
+          description: Alternative titles for the song
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  altTitles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        title: { type: string }
+                        language: { type: string }
+                        note: { type: string }
+                        sortOrder: { type: integer }
+                  tableMissing: { type: boolean }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_alt_title_add:
+    post:
+      operationId: editorSongAltTitleAdd
+      tags: [Editor API v2]
+      summary: Add one alternative title (#1669, epic #832)
+      description: |
+        POST, editor role only (curation, not a destructive class like
+        `delete_song`). `title` is trimmed, non-empty, <=255 code points;
+        `language`, if given, must match a soft BCP-47 grammar (else 422)
+        and is capped to 35 code points; `note`, if given, is trimmed and
+        <=255 code points. `INSERT IGNORE` on the `(SongId,Title)`
+        `uq_song_title` unique key (case-insensitive collation) — a
+        duplicate re-selects the existing row, so the echo is always the
+        canonical stored row; `created` tells the client whether a NEW row
+        actually landed. An alt title identical to the song's own current
+        main title (case-insensitive) is refused with 422. Alt titles are
+        per-song free text, NOT a registry reference (rule #43 does not
+        apply — no find-or-create picker here).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, title]
+              properties:
+                songId: { type: string }
+                title: { type: string, example: "Faith's Review and Expectation" }
+                language: { type: string, example: es }
+                note: { type: string }
+      responses:
+        "200":
+          description: Added (or re-selected an existing matching row)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  altTitle:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      title: { type: string }
+                      language: { type: string }
+                      note: { type: string }
+                      sortOrder: { type: integer }
+                  created: { type: boolean }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The alternative titles (#832) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Empty/over-length title, an unrecognised language tag, or the title is just the song's own main title again
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_alt_title_delete:
+    post:
+      operationId: editorSongAltTitleDelete
+      tags: [Editor API v2]
+      summary: Remove one alternative title row (#1669, epic #832)
+      description: |
+        POST, editor role only (same posture as `song_alt_title_add`).
+        `songId` is part of the WHERE (cross-song defence-in-depth, not
+        just `id`). Already-gone is a successful no-op
+        (`{ok:true,deleted:0}`), matching `song_external_id_delete`'s
+        idempotent-double-click posture.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Removed (or already gone)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The alternative titles (#832) migration card has not been applied
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /manage/editor/api2.php?action=tune_search:

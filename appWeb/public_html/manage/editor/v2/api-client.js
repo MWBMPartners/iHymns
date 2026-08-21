@@ -302,6 +302,21 @@ export const editorApi = {
     addExternalId:     (songId, idType, idValue) => postJson('song_external_id_add', { songId: songId, idType: idType, idValue: idValue }),
     deleteExternalId:  (songId, id)              => postJson('song_external_id_delete', { songId: songId, id: id }),
 
+    /* Alternative titles (#1669, epic #832) — tblSongAlternativeTitles' first
+       UI write path. Per-song FREE TEXT "also known as" titles (NOT a
+       registry reference — rule #43 does not apply, see
+       includes/song_alt_titles.php's doc-block), shown on the Metadata tab
+       beside the Title field (alt-titles-panel.js). `created:false` on
+       addAltTitle means the exact title already existed for this song
+       (INSERT IGNORE server-side, the uq_song_title unique key);
+       err.status carries the failure KIND (409 = un-migrated, 422 =
+       empty/over-length title, an unrecognised language tag, or the title
+       being just the song's own main title again) per rule #35 — the panel
+       branches on that, never on err.message. */
+    listAltTitles:     (songId)                          => getJson('song_alt_titles', { id: songId }),
+    addAltTitle:       (songId, title, language, note)   => postJson('song_alt_title_add', { songId: songId, title: title, language: language || '', note: note || '' }),
+    deleteAltTitle:    (songId, id)                       => postJson('song_alt_title_delete', { songId: songId, id: id }),
+
     /* Media — file metadata reads; upload is multipart; only annotation is mutable. */
     listMedia:         (songId)                  => getJson('media_list', { id: songId }),
     uploadMedia:       (songId, kind, file, annotation) => {

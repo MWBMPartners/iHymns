@@ -167,6 +167,34 @@ declare(strict_types=1);
  *                               same idempotent-double-click posture as song_link_remove.
  *                               409 table missing. Deleting the P5d mirror row is harmless —
  *                               the next ISRC save re-mints it.
+ *   GET  song_alt_titles?id=<SongId>                          -> { ok, altTitles, tableMissing? }
+ *                               #1669 (epic #832) — tblSongAlternativeTitles' FIRST UI write
+ *                               path (the read half — SongData::_songAltTitlesMap(), the
+ *                               public song page, the OG image, the #832 search boost — has
+ *                               been live for a while; this is what finally lets a curator
+ *                               CREATE the first row). Row shape { id, title, language, note,
+ *                               sortOrder }, ordered SortOrder ASC, Title ASC — the SAME
+ *                               ordering the read half uses. tableMissing:true on an
+ *                               un-migrated install (empty list, not a 500), the same
+ *                               convention song_external_ids above uses. Per-song FREE TEXT
+ *                               (rule #43 does NOT apply — an alt title is a title string, not
+ *                               a reference to a registry entity).
+ *   POST song_alt_title_add     { songId, title, language?, note? } -> { ok, altTitle, created }
+ *                               404 unknown song; 409 table missing (names the
+ *                               'alternative-titles' migration card); 422 empty/over-length
+ *                               title, an unrecognised language tag, or the title being just
+ *                               the song's own main title again ("That is already the song's
+ *                               main title."). INSERT IGNORE on uq_song_title
+ *                               (SongId,Title) — a duplicate re-selects the existing row, so
+ *                               the echo is always canonical; `created` tells the client
+ *                               whether a NEW row actually landed. No ed2_touchRevision —
+ *                               alt titles sit outside the content snapshot, the SAME posture
+ *                               tblSongExternalIds/tblSongLinks take above.
+ *   POST song_alt_title_delete  { songId, id }               -> { ok, deleted }
+ *                               `SongId` is part of the WHERE (cross-song defence-in-depth,
+ *                               not just `id`); already-gone -> { ok:true, deleted:0 }, the
+ *                               same idempotent-double-click posture as song_external_id_delete.
+ *                               409 table missing.
  *   GET  tune_search?q=&limit=&meter=                          -> { ok, suggestions, tableMissing? }
  *                               #1741 P5c — typeahead over the tblTunes registry (mirror of
  *                               tag_search above). Alias-JOINed (tblTuneAliases, when present)
@@ -319,6 +347,14 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+/* #1669 — songAltTitlesTableExists()/songAltTitlesList()/songAltTitleAdd()/
+   songAltTitleDelete()/songAltTitleIsRedundant() (includes/song_alt_titles.php):
+   the ONE tblSongAlternativeTitles write core (rule #22), mirroring
+   song_external_ids.php immediately above byte-for-byte in shape. The
+   song_alt_titles* cases below are its first UI write path — the table's
+   read half (SongData::_songAltTitlesMap(), the #832 search boost) has been
+   live for a while; only the ADD/DELETE side was missing. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_alt_titles.php';
 /* #1741 P5c — tuneFindOrCreateByName() (P4b's find-or-create funnel, the
    TuneName<->TuneId lockstep every write path here consumes, never re-forks
    — rule #22) + ihymns_meter_normalize() (this phase's addition, tune_search's
@@ -4611,6 +4647,135 @@ try {
             $ed2ExtIdDeleteResponse['isrcDenorm'] = $isrcDenorm;
         }
         ed2_respond($ed2ExtIdDeleteResponse);
+        break;
+    }
+
+    /* =========================================================================
+     * song_alt_titles / song_alt_title_add / song_alt_title_delete (#1669,
+     * epic #832) — tblSongAlternativeTitles' FIRST UI write path.
+     *
+     * ELI5: a song can be catalogued under more than one name — "Amazing
+     * Grace" is also "Faith's Review and Expectation" — and this is the
+     * little list on the Metadata tab (beside the Title field) where a
+     * curator can see and add those.
+     *
+     * DETAILED
+     * --------------------------------------------------------------------
+     * The table has existed since #832 (`migrate-alternative-titles.php`)
+     * and its READ half has been live the whole time —
+     * `SongData::_songAltTitlesMap()` feeds the public song page's "Also
+     * known as" line, the OG image, and the #832 search boost (a query
+     * matching an alt title ranks the song top) — but until now the ONLY
+     * `INSERT` anywhere in the tree was the `duplicate_song` case's
+     * `INSERT … SELECT` COPY of an EXISTING song's rows (above), which can
+     * never create a FIRST row. This is that write path. It reuses, never
+     * re-forks, the ONE core `includes/song_alt_titles.php` (rule #22) —
+     * every case body below is a thin delegate, no inline
+     * tblSongAlternativeTitles SQL here.
+     *
+     * WHY NOT RULE #43's FIND-OR-CREATE PICKER: an alt title is per-song
+     * FREE TEXT — a title string, not a reference to a registry entity
+     * (tblTunes/tblPublishers/tblMusicians/…) that could be shared or
+     * looked up across songs. Nothing here mints or reuses a cross-song
+     * row, so rule #43 does not apply (see song_alt_titles.php's own
+     * doc-block for the full reasoning).
+     *
+     * No `ed2_touchRevision()` call anywhere below: alt titles are not part
+     * of the song record a revision snapshot restores — the SAME posture
+     * tblSongExternalIds (see that section's comment above) and
+     * tblSongLinks take.
+     *
+     * ENTITLEMENT: the file-level editor-role gate only (matches
+     * credit_upsert/tag_attach/song_external_id_add) — adding or removing
+     * an alt title is ordinary curation, not a destructive class like
+     * delete_song.
+     * ===================================================================== */
+
+    /* ---- song_alt_titles (GET) — a song's alternative titles. ---- */
+    case 'song_alt_titles': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!songAltTitlesTableExists($db)) {
+            /* Un-migrated read degrades to an empty list + tableMissing:true,
+               matching song_external_ids above — never a mysqli-STRICT
+               throw (rule #35: status/flag is the contract). */
+            ed2_respond(['ok' => true, 'altTitles' => [], 'tableMissing' => true]);
+        }
+
+        ed2_respond(['ok' => true, 'altTitles' => songAltTitlesList($db, $songId)]);
+        break;
+    }
+
+    /* ---- song_alt_title_add (POST) — add one alternative title. ---- */
+    case 'song_alt_title_add': {
+        $songId   = trim((string)($body['songId'] ?? ''));
+        $title    = trim((string)($body['title'] ?? ''));
+        $language = (string)($body['language'] ?? '');
+        $note     = (string)($body['note'] ?? '');
+
+        if ($songId === '') {
+            ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!songAltTitlesTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the alternative titles (#832) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* An alt title identical to the song's own CURRENT main title
+           (case-insensitive) is refused with a specific message rather
+           than silently stored as a pointless duplicate-of-itself row —
+           songAltTitleIsRedundant() is the shared pure check (also used by
+           the optional C9 importer path). Read fresh from tblSongs rather
+           than trusting any client-sent title, since the client's copy of
+           the song could be stale.
+           @deleted-visible: editor admin surface (#1694) — the redundancy
+             check reads the song's own CURRENT main title by KNOWN SongId
+             (existence already gated by ed2_songExists above). A soft-deleted
+             song's title must still be compared; applying the visibility
+             predicate here would blank $mainTitle and silently SKIP the
+             redundancy guard, not protect anything.
+           @disabled-visible: editor admin surface (#1765) — same read: the
+             editor operates on one known song regardless of whether its
+             songbook is disabled, and the comparison needs the real stored
+             title. */
+        $ts = $db->prepare('SELECT Title FROM tblSongs WHERE SongId = ?');
+        $ts->bind_param('s', $songId);
+        $ts->execute();
+        $mainTitleRow = $ts->get_result()->fetch_row();
+        $ts->close();
+        $mainTitle = $mainTitleRow ? (string)$mainTitleRow[0] : '';
+        if (songAltTitleIsRedundant($title, $mainTitle)) {
+            ed2_respond(['ok' => false, 'error' => "That is already the song's main title."], 422);
+        }
+
+        try {
+            $result = songAltTitleAdd($db, $songId, $title, $language, $note);
+        } catch (\InvalidArgumentException $e) {
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+
+        logActivity('song.alt_title.add', 'song', $songId, ['title' => $result['row']['title']]);
+        ed2_respond(['ok' => true, 'altTitle' => $result['row'], 'created' => $result['created']]);
+        break;
+    }
+
+    /* ---- song_alt_title_delete (POST) — remove one alternative title. ---- */
+    case 'song_alt_title_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) {
+            ed2_respond(['ok' => false, 'error' => 'songId and id are required.'], 400);
+        }
+        if (!songAltTitlesTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the alternative titles (#832) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        $deleted = songAltTitleDelete($db, $songId, $id);
+
+        logActivity('song.alt_title.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $deleted]);
         break;
     }
 

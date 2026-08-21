@@ -258,6 +258,11 @@ export function mountMetadataTab(container, opts) {
        container on every `song`-slice change, so this panel is torn down and
        re-mounted with it. */
     let extIdsDetach = null;
+    /* #1669 — teardown for the "Alternative titles" fieldset. Same reason as
+       extIdsDetach immediately above: render() wipes the whole container on
+       every `song`-slice change, so this panel is torn down and re-mounted
+       with it. */
+    let altTitlesDetach = null;
     /* #1862 — teardown for the store subscription that keeps the derived
        media-availability line in sync with the Media tab (subscribes to the
        `media` store slice). render() wipes the container on every
@@ -532,6 +537,7 @@ export function mountMetadataTab(container, opts) {
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
+        if (altTitlesDetach) { try { altTitlesDetach(); } catch (_e) {} altTitlesDetach = null; }
         if (mediaLineOff) { try { mediaLineOff(); } catch (_e) {} mediaLineOff = null; }
         container.innerHTML = '';
 
@@ -1517,6 +1523,26 @@ export function mountMetadataTab(container, opts) {
             })
             .catch((e) => { console.error('[metadata-tab] external-ids panel failed to load:', e); });
 
+        /* Alternative titles (#1669, epic #832) — tblSongAlternativeTitles'
+           first UI write path. A card-list of "also known as" titles for
+           THIS song (per-song free text — rule #43 does not apply, see
+           alt-titles-panel.js's doc-block), mounted INTO the Identity
+           fieldset so it sits beside the Title field it is a variant of
+           (`identity.fieldset` — the same block the FIELDS loop above
+           routed the Title/Subtitle/Number/Songbook controls into). Own
+           fieldset, own teardown var, dynamically imported so a curator who
+           never opens Metadata never pays for the extra module — the SAME
+           reasoning as the song-key and external-ids panels immediately
+           above. `api` is passed through explicitly (this panel takes an
+           injected client rather than importing api-client.js itself — see
+           its own doc-block for why). */
+        import('./alt-titles-panel.js')
+            .then((m) => {
+                if (disposed || !container.isConnected) { return; }
+                altTitlesDetach = m.mountAltTitlesPanel(identity.fieldset, { api: api, songId: songId, toast: toast });
+            })
+            .catch((e) => { console.error('[metadata-tab] alt-titles panel failed to load:', e); });
+
         /* #1862 — the Rights fieldset (#1769 P4's rights-panel.js) is GONE:
            the owner's refinement comment replaced the per-part picker with
            the derived coverage line built above. The server plumbing
@@ -1567,6 +1593,7 @@ export function mountMetadataTab(container, opts) {
         if (langPickerDetach) { try { langPickerDetach(); } catch (_e) {} langPickerDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
+        if (altTitlesDetach) { try { altTitlesDetach(); } catch (_e) {} altTitlesDetach = null; }
         if (mediaLineOff) { try { mediaLineOff(); } catch (_e) {} mediaLineOff = null; }
         container.innerHTML = '';
     };
