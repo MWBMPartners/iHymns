@@ -137,7 +137,12 @@ try {
         $batch = [];
         if ($sel) { while ($r = $sel->fetch_assoc()) { $batch[] = $r; } $sel->free(); }
         foreach ($batch as $r) {
-            $nt  = ihymns_search_fold((string)$r['Title']);
+            /* #1908 D6 — cap the title fold to the NormalizedTitle column width
+               (VARCHAR(500)); NFKD can EXPAND a title (Hangul decomposes to 2-3
+               jamo per syllable) and this backfill now emits the NEW fold on
+               any future/fresh run. $lf (LyricsTextFolded, MEDIUMTEXT) stays
+               uncapped — it must not be truncated. */
+            $nt  = mb_substr(ihymns_search_fold((string)$r['Title']), 0, 500);
             $lf  = ihymns_search_fold((string)$r['LyricsText']);
             $sid = (string)$r['SongId'];
             $updBf->bind_param('sss', $nt, $lf, $sid);

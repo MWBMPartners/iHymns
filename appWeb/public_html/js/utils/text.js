@@ -69,10 +69,12 @@ const FOLD_SPECIAL = {
  * It need NOT be byte-identical to the PHP fold — the offline path folds BOTH
  * the query and the candidate at compare time, so there is no stored-value
  * contract to honour; it only has to fold the two sides the SAME way. Steps
- * mirror the server's: lowercase, strip combining marks (NFD), map the
- * non-decomposing special letters, then drop everything that is not a letter,
- * number or space (which also removes apostrophes / smart quotes / dashes),
- * and collapse whitespace — the same shape as PHP's `[^\p{L}\p{N}\s]` strip.
+ * mirror the server's (#1908 — 'NFD'→'NFKD' so the two are step-identical,
+ * incl. full-width Latin/ideographic-space folding): lowercase, strip
+ * combining marks (NFKD), map the non-decomposing special letters, then drop
+ * everything that is not a letter, number or space (which also removes
+ * apostrophes / smart quotes / dashes — any script, non-Latin included), and
+ * collapse whitespace — the same shape as PHP's `[^\p{L}\p{N}\s]` strip.
  *
  * @param {string} s
  * @returns {string} the folded, lowercased, punctuation-stripped text
@@ -81,7 +83,7 @@ const FOLD_SPECIAL = {
  */
 export function foldSearchText(s) {
     if (!s) return '';
-    let out = String(s).toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+    let out = String(s).toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '');
     out = out.replace(/[łøđæœħßðþı]/g, ch => FOLD_SPECIAL[ch] || ch);
     out = out.replace(/[^\p{L}\p{N}\s]+/gu, '');
     out = out.replace(/\s+/g, ' ').trim();

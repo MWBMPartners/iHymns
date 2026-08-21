@@ -13,12 +13,17 @@ declare(strict_types=1);
  * load, and a tree-derived guard each catch a class the others cannot):
  *
  *   1. FUNCTIONAL fold truth table (no DB) — ihymns_search_fold() folds the
- *      apostrophe-elision and (iconv-permitting) accent / special-letter classes
- *      and is idempotent. Accent/special assertions are capability-gated so the
- *      suite is portable across iconv hosts (the test-song-similarity.php
- *      precedent), while the apostrophe class — which does NOT depend on iconv
- *      transliteration (the punctuation strip removes ’ regardless) — is
- *      asserted unconditionally.
+ *      apostrophe-elision, accent / special-letter, AND (#1908) non-Latin-script
+ *      classes, and is idempotent. The accent/special-letter classes are gated
+ *      on `class_exists('Normalizer')` (ext-intl) — deterministic and asserted
+ *      UNCONDITIONALLY when present, `skip()` only on an intl-absent host (the
+ *      test-song-similarity.php precedent) — while the apostrophe class, which
+ *      does NOT depend on iconv/ICU (the punctuation strip removes ’ regardless),
+ *      and the #1908 non-Latin preservation table, which the D2 no-new-'?' guard
+ *      makes host-independent by construction, are both asserted unconditionally.
+ *      A rule-#35 lockstep sub-check parses js/utils/text.js's FOLD_SPECIAL object
+ *      literal and proves it agrees with PHP's IHYMNS_FOLD_SPECIAL, key-for-key
+ *      and value-for-value.
  *
  *   2. LIVE half (the test-schema-installs.php pattern; SKIPS loudly when no
  *      MySQL/MariaDB is reachable) — a scratch table mirroring the two new
@@ -96,27 +101,194 @@ foreach (['Miłość', 'Noël', 'aren’t', 'The First Noël', ''] as $probe) {
        ihymns_search_fold($once) === $once);
 }
 
-/* Accent class — iconv ASCII//TRANSLIT dependent; gate on a host capability
-   probe (Noël→noel) so a non-glibc iconv SKIPS rather than falsely fails. */
-$accentCapable = ihymns_search_fold('Noël') === 'noel';
+/* #1908 D1 — Accent class + special-letter class are now DETERMINISTIC on any
+   host with ext-intl (Normalizer::FORM_KD is a standard, locale-independent
+   ICU algorithm, unlike the old iconv//TRANSLIT which varied by libc). The
+   capability gate therefore moves from "does this host's fold happen to
+   produce the expected string?" (probing the very function under test — a
+   circular capability check) to the actual PREREQUISITE the code branches on:
+   `class_exists('Normalizer')`. When intl IS present both classes assert
+   UNCONDITIONALLY (no more "maybe this host's iconv folds ł" hedging); only an
+   intl-absent host (rare — falls back to iconv, which the D2 guard makes safe
+   but not necessarily accent-folding) skips. */
+$intlCapable = class_exists('Normalizer');
+
+/* Accent class. */
+$accentCapable = $intlCapable;
 if ($accentCapable) {
-    ok('accent fold:  Noël → noel', ihymns_search_fold('Noël') === 'noel');
+    ok('accent fold:  Noël → noel', ihymns_search_fold('Noël') === 'noel',
+       'got: ' . ihymns_search_fold('Noël'));
     ok('accent fold:  José → jose', ihymns_search_fold('José') === 'jose',
        'got: ' . ihymns_search_fold('José'));
 } else {
-    skip('accent class (Noël/José) — this host\'s iconv does not ASCII//TRANSLIT accents');
+    skip('accent class (Noël/José) — this host has no ext-intl (Normalizer) available');
 }
 
-/* Special-letter class (ł ø …) — a distinct iconv capability; gate separately
-   (Miłość→milosc), as some hosts fold accents but not these. */
-$specialCapable = ihymns_search_fold('Miłość') === 'milosc';
+/* Special-letter class (ł ø …) — folded by the shared IHYMNS_FOLD_SPECIAL
+   strtr map (applied in BOTH the Normalizer and iconv-fallback branches), but
+   kept under the SAME intl gate as the accent class per the #1908 plan §1.5
+   item 2 (a conservative choice: the letter survives to the strtr step in
+   either branch, but only the intl branch is unconditionally guaranteed to). */
+$specialCapable = $intlCapable;
 if ($specialCapable) {
-    ok('special-letter fold:  Miłość → milosc', ihymns_search_fold('Miłość') === 'milosc');
+    ok('special-letter fold:  Miłość → milosc', ihymns_search_fold('Miłość') === 'milosc',
+       'got: ' . ihymns_search_fold('Miłość'));
     ok('special-letter fold:  Bjørn → bjorn', ihymns_search_fold('Bjørn') === 'bjorn',
        'got: ' . ihymns_search_fold('Bjørn'));
 } else {
-    skip('special-letter class (Miłość/Bjørn) — this host\'s iconv does not fold ł/ø');
+    skip('special-letter class (Miłość/Bjørn) — this host has no ext-intl (Normalizer) available');
 }
+
+/* Compatibility-decomposition class (full-width Latin, #1908 D1) — a distinct
+   NFKD behaviour (FORM_KD, not FORM_D) folding "Ａ"→"A" etc; same intl gate. */
+if ($intlCapable) {
+    ok('full-width fold:  Ａｍａｚｉｎｇ → amazing', ihymns_search_fold('Ａｍａｚｉｎｇ') === 'amazing',
+       'got: ' . ihymns_search_fold('Ａｍａｚｉｎｇ'));
+} else {
+    skip('full-width compatibility-decomposition class — this host has no ext-intl (Normalizer) available');
+}
+
+/* ---------------------------------------------------------------------- *
+ * #1908 §1.2 — non-Latin PRESERVATION table (the headline fix). Runtime-
+ * verified against PHP 8 + ICU (see .claude/unicode-nonlatin-1908-plan.md
+ * §1.2). Asserted UNCONDITIONALLY (no intl gate): the D2 "no new '?'" guard
+ * makes this host-independent BY CONSTRUCTION — a script iconv cannot
+ * transliterate is REJECTED wholesale (the old code's failure mode was
+ * accepting iconv's "????" mush and then stripping it to ''), so EITHER the
+ * Normalizer branch decomposes it correctly, OR the iconv-fallback branch's
+ * rejection preserves the original code points untouched — both converge on
+ * the same output. This is exactly the property that repairs D4's five
+ * equality-guard consumers (duplicate-songs, ia_reconcile, lyrics_ingest,
+ * song_importers): a non-Latin title now folds to ITSELF instead of to '',
+ * so it participates in dedup/matching instead of silently vanishing.
+ * ---------------------------------------------------------------------- */
+echo "\nNon-Latin preservation table (#1908 — the headline fix)\n";
+$nonLatinTable = [
+    '耶稣爱我'  => '耶稣爱我',   // CJK (Han) — pre-#1908 this folded to ''
+    'Иисус'    => 'иисус',     // Cyrillic
+    'Αγάπη'    => 'αγαπη',     // Greek
+    'イエス'    => 'イエス',     // Katakana
+    'พระเยซู'   => 'พระเยซ',    // Thai — vowel-sign marks (\p{Mn}) strip; documented, NOT a bug (§0.3 fact 4)
+    '♪ ♫ ♬'    => '',          // symbols only (\p{So}) — legitimately '' (no letters/digits at all)
+];
+foreach ($nonLatinTable as $in => $expect) {
+    $got = ihymns_search_fold($in);
+    ok("non-Latin preservation:  $in → " . ($expect === '' ? "''" : $expect),
+       $got === $expect, 'got: ' . ($got === '' ? "''" : $got));
+    if ($expect !== '') {
+        /* "each non-empty+idempotent for letter/digit inputs" — the two
+           properties every D4 consumer's `!== ''` guard actually relies on. */
+        ok("non-Latin preservation is non-empty:  $in", $got !== '');
+        ok("non-Latin preservation is idempotent:  $in", ihymns_search_fold($got) === $got);
+    }
+}
+
+/* Hangul (Korean) gets its OWN block, not a row in the exact-match table
+   above: NFKD decomposes a precomposed syllable block into 2-3 conjoining
+   jamo ("예수" → 4 jamo code points, §0.3 fact 4 / §1.2's "(4 jamo)" note),
+   which RENDERS visually identical to the precomposed input (a font recombines
+   jamo into syllable blocks on display) but is NOT byte-identical to it — a
+   same-looking literal typed into this test file would be the PRECOMPOSED
+   form and would never `===`-match the decomposed fold output. That is
+   expected, not a bug (see title_normalize.php's Hangul doc-block note), so
+   this proves PRESERVATION a different way: re-composing (NFC) the fold
+   output recovers the same text as the (lowercased) original — nothing was
+   lost, only decomposed — plus the usual non-empty + idempotent pair. */
+$hangulIn = '예수';
+$hangulOut = ihymns_search_fold($hangulIn);
+ok('Hangul preservation: 예수 folds non-empty', $hangulOut !== '', 'got: ' . $hangulOut);
+ok('Hangul preservation: 예수 fold is idempotent', ihymns_search_fold($hangulOut) === $hangulOut);
+ok('Hangul preservation: fold is 4 decomposed jamo code points (NFKD), not 2 precomposed syllables',
+   mb_strlen($hangulOut) === 4, 'got mb_strlen=' . mb_strlen($hangulOut) . ' value=' . $hangulOut);
+if ($intlCapable) {
+    $hangulRecomposed = \Normalizer::normalize($hangulOut, \Normalizer::FORM_C);
+    ok('Hangul preservation: re-composing (NFC) the fold recovers the original text',
+       $hangulRecomposed === mb_strtolower($hangulIn, 'UTF-8'),
+       'recomposed: ' . $hangulRecomposed . '  original(lowered): ' . mb_strtolower($hangulIn, 'UTF-8'));
+} else {
+    skip('Hangul NFC re-composition check — this host has no ext-intl (Normalizer) available');
+}
+
+/* ---------------------------------------------------------------------- *
+ * Universal property test (D4) — the property EVERY equality-guard consumer
+ * (duplicate-songs.php, ia_reconcile.php, lyrics_ingest.php, song_importers.php)
+ * depends on: if the input has a letter or a digit ANYWHERE, the fold is
+ * NEVER ''. Combines every letter/digit-bearing fixture used across this half
+ * — Latin, apostrophised, accented, special-letter, full-width, AND every
+ * non-Latin script above — so a regression in ANY class trips this one line.
+ * ---------------------------------------------------------------------- */
+echo "\nUniversal property (D4): any \\p{L}/\\p{N} input folds !== ''\n";
+$propertyFixtures = array_merge(
+    ['Café', 'Noël', 'José', 'Miłość', 'Bjørn', 'Niño', 'aren’t', '’Tis', "Ris'n",
+     'Amazing Grace', 'Ａｍａｚｉｎｇ', 'Song 2', '123', $hangulIn],
+    array_keys(array_filter($nonLatinTable, fn($v) => $v !== ''))
+);
+$propertyFail = [];
+foreach ($propertyFixtures as $f) {
+    if (ihymns_search_fold($f) === '') {
+        $propertyFail[] = $f;
+    }
+}
+ok('every letter/digit-bearing fixture folds to a NON-EMPTY string (' . count($propertyFixtures) . ' fixtures)',
+   $propertyFail === [],
+   'folded to \'\': ' . implode(', ', $propertyFail));
+
+/* Direct check of the D2 acceptance-guard ARITHMETIC itself (independent of
+   which branch this host's ihymns_normalize_title() actually takes): for a
+   CJK sample, glibc-style iconv//TRANSLIT//IGNORE mints a NEW '?' per
+   untransliterable character, so the guard's
+   `substr_count($folded,'?') === substr_count($t,'?')` condition MUST be
+   false — i.e. the candidate is correctly REJECTED. This is the exact
+   "'????'-shaped candidate" the #1908 plan calls out, and is what the old
+   `!== ''` guard (mutation proof c) could never catch, because "????" is a
+   non-empty string. Skips (rather than fails) only if this host's iconv build
+   lacks ASCII//TRANSLIT//IGNORE entirely. */
+$cjkSample = '耶稣爱我';
+$iconvGuess = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $cjkSample);
+if (is_string($iconvGuess)) {
+    $wouldAccept = $iconvGuess !== '' && substr_count($iconvGuess, '?') === substr_count($cjkSample, '?');
+    ok('D2 guard REJECTS a "????"-shaped iconv candidate for CJK input',
+       $wouldAccept === false,
+       'iconv produced: ' . var_export($iconvGuess, true) . ' (would the OLD !== \'\' guard have accepted it? '
+       . ($iconvGuess !== '' ? 'yes — the bug' : 'no') . ')');
+} else {
+    skip('D2 guard arithmetic check — this host\'s iconv has no ASCII//TRANSLIT//IGNORE support at all');
+}
+
+/* ---------------------------------------------------------------------- *
+ * Rule #35 lockstep — js/utils/text.js's FOLD_SPECIAL must never drift from
+ * PHP's IHYMNS_FOLD_SPECIAL. Parses the JS object literal textually (the
+ * test-org-logo-surfaces.php ORG_LOGO_KINDS precedent), never imports/evals
+ * JS. Mutation-proven: change one JS value and this goes RED (§1.5 item 4).
+ * ---------------------------------------------------------------------- */
+echo "\nRule #35 lockstep: js/utils/text.js FOLD_SPECIAL <-> PHP IHYMNS_FOLD_SPECIAL\n";
+$textJsPath = $root . '/appWeb/public_html/js/utils/text.js';
+$textJsSrc  = (string)file_get_contents($textJsPath);
+if (preg_match('/const\s+FOLD_SPECIAL\s*=\s*\{(.*?)\n\};/s', $textJsSrc, $fsMatch) !== 1) {
+    ok('parsed js/utils/text.js FOLD_SPECIAL object literal', false,
+       'regex anchor did not match — did the const declaration shape change?');
+} else {
+    preg_match_all("/'([^'\\\\]+)'\\s*:\\s*'([^'\\\\]*)'/u", $fsMatch[1], $pairMatches, PREG_SET_ORDER);
+    $jsFoldSpecial = [];
+    foreach ($pairMatches as $pair) {
+        $jsFoldSpecial[$pair[1]] = $pair[2];
+    }
+    /* Anti-under-report floor (rule #34, the test-org-logo-surfaces.php
+       ORG_LOGO_KINDS precedent): the real map is 10 entries; a parser that
+       silently matched only a handful could agree-by-coincidence on a
+       truncated subset and report a false lockstep. */
+    ok('parsed >= 10 FOLD_SPECIAL pair(s) from text.js (anti-under-report floor)',
+       count($jsFoldSpecial) >= 10, 'parsed ' . count($jsFoldSpecial) . ' pair(s)');
+    ksort($jsFoldSpecial);
+    $phpFoldSpecial = IHYMNS_FOLD_SPECIAL;
+    ksort($phpFoldSpecial);
+    ok('PHP IHYMNS_FOLD_SPECIAL <-> JS FOLD_SPECIAL are set-equal (keys AND values)',
+       $jsFoldSpecial === $phpFoldSpecial,
+       'js:  ' . json_encode($jsFoldSpecial, JSON_UNESCAPED_UNICODE)
+       . "\n        php: " . json_encode($phpFoldSpecial, JSON_UNESCAPED_UNICODE));
+}
+ok("js/utils/text.js calls normalize('NFKD') (D1 parity — was 'NFD')",
+   str_contains($textJsSrc, "normalize('NFKD')"));
 
 /* ====================================================================== *
  * HALF 3 (before the DB half so it always runs) — tree-derived funnel guard

@@ -118,7 +118,12 @@ if (!function_exists('searchFoldSyncSong')) {
             return;
         }
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
-        $normTitle  = ihymns_search_fold($title);
+        /* #1908 D6 — cap at the column width (VARCHAR(500)). NFKD can EXPAND a
+           title (Hangul syllables decompose to 2-3 jamo each), so an uncapped
+           write of a long non-Latin title can exceed 500 chars and throw under
+           STRICT mysqli. $foldedText stays uncapped: it feeds LyricsTextFolded
+           (MEDIUMTEXT), which must not be truncated. */
+        $normTitle  = mb_substr(ihymns_search_fold($title), 0, 500);
         $foldedText = ihymns_search_fold($lyricsText);
         $u = $db->prepare(
             'UPDATE tblSongs SET NormalizedTitle = ?, LyricsTextFolded = ? WHERE SongId = ?'

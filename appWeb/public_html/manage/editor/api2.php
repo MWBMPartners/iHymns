@@ -518,7 +518,10 @@ const ED2_META_FIELDS = [
 /* --------------------------------------------------------------- Helpers --- */
 
 /** App-maintained NormalizedTitle fold (best-effort; '' if the normalizer
- *  isn't loadable, matching the column's NOT NULL DEFAULT ''). */
+ *  isn't loadable, matching the column's NOT NULL DEFAULT ''). #1908 D6: capped
+ *  to the column width — NFKD can EXPAND a title (Hangul decomposes to 2-3
+ *  jamo per syllable), so an uncapped write of a long non-Latin title could
+ *  exceed VARCHAR(500) and throw under STRICT mysqli. */
 function ed2_normalizeTitle(string $t): string {
     static $loaded = null;
     if ($loaded === null) {
@@ -526,7 +529,8 @@ function ed2_normalizeTitle(string $t): string {
         $loaded = is_file($p);
         if ($loaded) { require_once $p; }
     }
-    return ($loaded && function_exists('ihymns_normalize_title')) ? ihymns_normalize_title($t) : '';
+    $folded = ($loaded && function_exists('ihymns_normalize_title')) ? ihymns_normalize_title($t) : '';
+    return mb_substr($folded, 0, 500);
 }
 
 /** Canonicalise a tag name — uses the SAME normalisation rules as the legacy
