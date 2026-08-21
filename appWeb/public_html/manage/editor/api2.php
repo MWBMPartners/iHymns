@@ -1221,10 +1221,15 @@ function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?
 
 /**
  * #1235 P4/C5 — a song's components in the editor shape
- * ({id,type,number,sortOrder,lines,chords,language,languages}), drop-safely. The ONE
- * read for the v2 mutators' read-modify-write + ed2_buildSongSnapshot. Sourced from the
- * authoritative tblLyricLines (assembler) when the mirror exists; the legacy LinesJson
- * read is the un-migrated-install fallback only.
+ * ({id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}),
+ * drop-safely. The ONE read for the v2 mutators' read-modify-write +
+ * ed2_buildSongSnapshot. Sourced from the authoritative tblLyricLines (assembler)
+ * when the mirror exists; the legacy LinesJson read is the un-migrated-install
+ * fallback only. Since #1860 Phase 5 (SD4), the fallback branch ALSO reads
+ * Label/SourceWorkId (gated per-column, mirroring the LanguagesJson `$langCol`
+ * treatment) — without this, an install with the Label column but no
+ * tblLyricLines mirror yet would silently no-op the Structure-tab Label input
+ * (rule #30's silent-partial class).
  *
  * @return list<array<string,mixed>>
  */
@@ -1234,14 +1239,22 @@ function ed2_currentComponents(\mysqli $db, string $songId): array {
         return lyricLinesEditableComponents($db, $songId);
     }
     /* lines-json-fallback (#1235 P4): un-migrated install — LanguagesJson optional
-       (hardcoded column name, never input — rule #5). */
+       (hardcoded column name, never input — rule #5). #1860 Phase 5 §2.4 (SD4):
+       Label/SourceWorkId are gated the SAME way, independently of each other and
+       of LanguagesJson. */
     $out = [];
-    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
-    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
+    $langCol    = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
+    $extras     = lyricLinesComponentExtrasPresent($db);
+    $labelCol   = $extras['Label'] ? 'Label' : 'NULL AS Label';
+    $srcWorkCol = $extras['SourceWorkId'] ? 'SourceWorkId' : 'NULL AS SourceWorkId';
+    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}, {$labelCol}, {$srcWorkCol}
                           FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
     $cs->bind_param('s', $songId);
     $cs->execute();
     $cr = $cs->get_result();
+    /* lines-json-fallback (#1235 P4) continued from above — LinesJson/ChordsJson/
+       LanguagesJson here are the SAME column-existence-gated un-migrated-install
+       read the doc-block + $langCol above describe. */
     while ($row = $cr->fetch_assoc()) {
         $out[] = [
             'id'        => (int)$row['Id'],
@@ -1252,6 +1265,8 @@ function ed2_currentComponents(\mysqli $db, string $songId): array {
             'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
             'language'  => $row['Language'],
             'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
+            'label'        => ($row['Label'] !== null && $row['Label'] !== '') ? (string)$row['Label'] : null,
+            'sourceWorkId' => $row['SourceWorkId'] !== null ? (int)$row['SourceWorkId'] : null,
         ];
     }
     $cs->close();

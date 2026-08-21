@@ -26,6 +26,10 @@ declare(strict_types=1);
  * `SongData::_getComponents()` exactly (`type,number,lines,chords,language` + the
  * optional `lineIds` / sparse `lineLanguages`), so the P4b read switch (C4) is a clean
  * delegation and the L3 export-fidelity gate proves pre==post on all 16,083 songs.
+ * Since #1860 Phase 5 the shape additionally carries an OPTIONAL sparse `label` key
+ * (present only when `tblSongComponents.Label` is set) — absent on every un-labelled
+ * component, so the pre-Phase-5 byte parity holds verbatim for the whole un-labelled
+ * corpus.
  *
  * The assembly CORE (lyricLinesAssembleFromRows) is PURE — no DB, no I/O — so it is
  * unit-tested directly (tests/php/test-lyric-lines-read.php). The DB wrappers fetch the
@@ -85,6 +89,78 @@ function lyricLinesMirrorPresent(\mysqli $db): bool
 }
 
 /**
+ * #1860 Phase 5 §2.1 — is either component-metadata EXTRA column present on
+ * `tblSongComponents`? `Label` (REQ 3b, a curator-set display override for a
+ * section — "Kyrie", "isiZulu") and `SourceWorkId` (REQ 2, the medley/
+ * work-identity link) each ship in their OWN additive migration and can land
+ * independently of one another and of the `tblLyricLines` mirror itself — so an
+ * install may have neither, either, or both. Every reader below therefore gates
+ * PER COLUMN, never behind a single combined flag: a bare `sc.Label` in a SELECT
+ * on an un-migrated install would throw under MYSQLI_REPORT_STRICT (rule #19).
+ *
+ * THE ONE PROBE (rule #35 — no second INFORMATION_SCHEMA copy): both this read
+ * seam AND the write seam (`lyric_lines_sync.php`'s `lyricLinesUpsertComponents()`,
+ * Commit 3) call this exact function — the write side reaches it via a
+ * same-directory `require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';`
+ * inside that function, mirroring the existing in-function `line_enrichment.php`
+ * require pattern already used elsewhere in this codebase.
+ *
+ * Catch posture mirrors `lyricLinesMirrorPresent()` / `lyricLinesSyncReady()` with
+ * one addition: because the write seam calls this INSIDE its own transaction
+ * (between `begin_transaction()` and `commit()`), a deadlock / lock-wait-timeout
+ * (#1688 A1 — `songRelocateIsTransactionFatal()` in `song_relocate.php`) means the
+ * transaction is already dead, not merely "extras absent" — swallowing it would
+ * let the caller commit nothing and still report success. `song_relocate.php` is
+ * NOT loaded on every path that reaches this function (the public read path in
+ * particular has no reason to pull it in), so the check is
+ * `function_exists()`-guarded: when the function isn't loaded there is no live
+ * write transaction depending on this call's answer, so any other throw
+ * (missing table, transient connection error, …) safely degrades to "both
+ * absent" — the same fail-safe posture as every other schema probe in this file.
+ *
+ * Memoised per request (rule #19 migrations are not auto-applied, so a fresh
+ * request re-probes after a migration is applied mid-deploy).
+ *
+ * @return array{Label:bool,SourceWorkId:bool}
+ */
+function lyricLinesComponentExtrasPresent(\mysqli $db): array
+{
+    static $present = null;
+    if ($present !== null) {
+        return $present;
+    }
+    try {
+        $r = $db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongComponents'
+                AND COLUMN_NAME  IN ('Label', 'SourceWorkId')"
+        );
+        $found = [];
+        if ($r) {
+            while ($row = $r->fetch_row()) {
+                $found[(string)$row[0]] = true;
+            }
+            $r->close();
+        }
+        $present = [
+            'Label'        => isset($found['Label']),
+            'SourceWorkId' => isset($found['SourceWorkId']),
+        ];
+    } catch (\Throwable $e) {
+        /* #1688 A1 — a deadlock/lock-timeout mid-transaction must re-throw, not
+           be swallowed as "extras absent" (see doc-block above). The
+           function_exists guard covers callers (the public read path) where
+           song_relocate.php — and therefore this predicate — was never loaded. */
+        if (function_exists('songRelocateIsTransactionFatal') && songRelocateIsTransactionFatal($e)) {
+            throw $e;
+        }
+        $present = ['Label' => false, 'SourceWorkId' => false];
+    }
+    return $present;
+}
+
+/**
  * Assemble ordered per-line rows (one song) into the component-shaped array
  * `SongData::_getComponents()` returns. **PURE** — no DB, no I/O.
  *
@@ -98,12 +174,22 @@ function lyricLinesMirrorPresent(\mysqli $db): bool
  * `lineLanguages` is emitted ONLY when some line's language differs from the component
  * default — identical sparse rule to the pre-cutover reader.
  *
+ * #1860 Phase 5 §2.2 (SD3): each row MAY carry `comp_label` (the thin
+ * component's `Label` column, joined upstream exactly like `comp_type` /
+ * `comp_lang` — absent entirely on an un-migrated install, gated by the caller
+ * via `lyricLinesComponentExtrasPresent()`). It is folded into the assembled
+ * component as a SPARSE `label` key — emitted only when non-null/non-empty —
+ * mirroring the sparse `lineLanguages` rule above so every pre-Phase-5 fixture
+ * and the corpus-wide byte-parity claim stay literally true for the whole
+ * un-labelled corpus.
+ *
  * @param list<array{
  *   line_id:int|string, cid:int|string|null, text:string, line_lang:?string,
  *   line_chords:?string, comp_type:?string, comp_number:int|string|null,
- *   comp_lang:?string, line_parttype:?string, line_partnum:int|string|null
+ *   comp_lang:?string, line_parttype:?string, line_partnum:int|string|null,
+ *   comp_label?:?string
  * }> $rows  one song's lines, already ordered by global SortOrder
- * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,lineIds?:list<int>,lineLanguages?:list<?string>}>
+ * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,label?:string,lineIds?:list<int>,lineLanguages?:list<?string>}>
  */
 function lyricLinesAssembleFromRows(array $rows): array
 {
@@ -127,6 +213,13 @@ function lyricLinesAssembleFromRows(array $rows): array
             'chords'   => $anyChords ? $c['_chords'] : null,
             'language' => $c['language'],
         ];
+        /* #1860 Phase 5 §2.2 (SD3) — sparse label emit: the key is present ONLY
+           when a curator set one, so every un-labelled component (the entire
+           corpus pre-Phase-5) keeps the exact pre-existing shape and the
+           strict-=== golden fixtures need no rewrite. */
+        if ($c['label'] !== null) {
+            $out['label'] = $c['label'];
+        }
         /* lineIds parallel to 'lines' (same length + order); lines are authoritative,
            so always present. */
         $out['lineIds'] = $c['_lineIds'];
@@ -159,10 +252,19 @@ function lyricLinesAssembleFromRows(array $rows): array
                 ? (int)$row['comp_number']
                 : (int)($row['line_partnum'] ?? 0);
             $lang   = ($row['comp_lang'] !== null && $row['comp_lang'] !== '') ? (string)$row['comp_lang'] : null;
+            /* #1860 Phase 5 §2.2 — 'comp_label' is present only when the caller's
+               SELECT included it (gated on lyricLinesComponentExtrasPresent()'s
+               'Label' flag); isset() tolerates it being entirely absent from the
+               row on an un-migrated install, matching every other optional field
+               here. */
+            $label  = (isset($row['comp_label']) && $row['comp_label'] !== null && $row['comp_label'] !== '')
+                ? (string)$row['comp_label']
+                : null;
             $cur = [
                 'type'      => $type !== '' ? $type : 'verse',
                 'number'    => $number,
                 'language'  => $lang,
+                'label'     => $label,
                 'lines'     => [],
                 '_chords'   => [],
                 '_lineIds'  => [],
@@ -196,6 +298,15 @@ function lyricLinesAssembleFromRows(array $rows): array
  */
 function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
 {
+    /* #1860 Phase 5 §2.2 — sc.Label is added to the SELECT ONLY when the column
+       exists (gated column list, never a bare reference — rule #19: it would
+       throw under MYSQLI_REPORT_STRICT on an un-migrated install). SourceWorkId
+       is deliberately NOT added here: it is editor/rights provenance metadata,
+       not a public render field, so it stays out of this (public/export) shape
+       — see lyricLinesEditableComponents() for the editor shape that does carry
+       it. */
+    $extras   = lyricLinesComponentExtrasPresent($db);
+    $labelCol = $extras['Label'] ? ",\n                sc.Label       AS comp_label" : '';
     $stmt = $db->prepare(
         "SELECT ll.Id        AS line_id,
                 ll.ComponentId AS cid,
@@ -206,7 +317,7 @@ function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
                 ll.PartNumber  AS line_partnum,
                 sc.Type        AS comp_type,
                 sc.Number      AS comp_number,
-                sc.Language    AS comp_lang
+                sc.Language    AS comp_lang{$labelCol}
            FROM tblLyricLines ll
            JOIN tblLyrics ly         ON ly.Id = ll.LyricsId
            LEFT JOIN tblSongComponents sc ON sc.Id = ll.ComponentId
@@ -232,6 +343,11 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
     $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
     if (empty($songIds)) { return []; }
 
+    /* #1860 Phase 5 §2.2 — same gated column as lyricLinesFetchPrimary(); see its
+       doc-block for why SourceWorkId stays out of this (public/export) shape. */
+    $extras   = lyricLinesComponentExtrasPresent($db);
+    $labelCol = $extras['Label'] ? ",\n                    sc.Label       AS comp_label" : '';
+
     $out = [];
     foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
         $place = implode(',', array_fill(0, count($chunk), '?'));
@@ -247,7 +363,7 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
                     ll.PartNumber  AS line_partnum,
                     sc.Type        AS comp_type,
                     sc.Number      AS comp_number,
-                    sc.Language    AS comp_lang
+                    sc.Language    AS comp_lang{$labelCol}
                FROM tblLyricLines ll
                JOIN tblLyrics ly         ON ly.Id = ll.LyricsId
                LEFT JOIN tblSongComponents sc ON sc.Id = ll.ComponentId
@@ -446,26 +562,40 @@ function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 14
 
 /**
  * Assemble one song's components in the EDITOR/SNAPSHOT shape
- * `[{id,type,number,sortOrder,lines,chords,language,languages}]` — the shape the v2
- * editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak. Sourced from the
- * authoritative `tblLyricLines` (lines/chords/per-line language) JOINed to the THIN
- * `tblSongComponents` metadata (Id/Type/Number/SortOrder/Language) — reads NO doomed
- * JSON payload column, so it survives the #1235 P4/C6 drop (R2).
+ * `[{id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}]` —
+ * the shape the v2 editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak.
+ * Sourced from the authoritative `tblLyricLines` (lines/chords/per-line language)
+ * JOINed to the THIN `tblSongComponents` metadata
+ * (Id/Type/Number/SortOrder/Language/Label/SourceWorkId) — reads NO doomed JSON
+ * payload column, so it survives the #1235 P4/C6 drop (R2).
  *
  * Differs from lyricLinesAssembleComponents (the public read/export shape) in that it
  * (a) carries the component `id` + `sortOrder` the editor edits, (b) includes EMPTY
- * components (a thin row with no mirrored lines — `lines: []`), and (c) emits a
+ * components (a thin row with no mirrored lines — `lines: []`), (c) emits a
  * null-padded per-line `languages` OVERRIDE array (effective ≠ component default →
- * the override; else null) byte-equal to the retired `LanguagesJson`. `chords` is the
- * null-padded parallel array (null when no line carries one), as `ChordsJson` held it.
+ * the override; else null) byte-equal to the retired `LanguagesJson` (`chords` is the
+ * null-padded parallel array, null when no line carries one, as `ChordsJson` held it),
+ * and (d), since #1860 Phase 5, ALWAYS emits `label` (the curator display override,
+ * REQ 3b) and `sourceWorkId` (the medley/work-identity link, REQ 2) — never sparse
+ * here, unlike the public shape's SD3 sparse `label`: the editor is the one place
+ * that must be able to distinguish "unset" from "not yet loaded", so both keys are
+ * present with a `null` default on every install, migrated or not (gated per-column
+ * via `lyricLinesComponentExtrasPresent()` exactly like the SELECT below).
  *
- * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,language:?string,languages:?array}>
+ * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,language:?string,languages:?array,label:?string,sourceWorkId:?int}>
  */
 function lyricLinesEditableComponents(\mysqli $db, string $songId): array
 {
+    /* #1860 Phase 5 §2.3 — Label/SourceWorkId are appended to the SELECT ONLY
+       when each column exists (independent per-column gate — rule #19: a bare
+       reference to either would throw under MYSQLI_REPORT_STRICT on an install
+       that hasn't run one or both of their migrations yet). */
+    $extras    = lyricLinesComponentExtrasPresent($db);
+    $extraCols = ($extras['Label'] ? ', Label' : '') . ($extras['SourceWorkId'] ? ', SourceWorkId' : '');
+
     /* Thin component metadata, in display order (NOT a doomed column among these). */
     $cs = $db->prepare(
-        "SELECT Id, Type, Number, SortOrder, Language
+        "SELECT Id, Type, Number, SortOrder, Language{$extraCols}
            FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
     );
     $cs->bind_param('s', $songId);
@@ -528,6 +658,19 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
             'chords'    => $anyChord ? $chords : null,
             'language'  => $compLang,
             'languages' => $anyLang ? $langOut : null,
+            /* #1860 Phase 5 §2.3 — ALWAYS-present (null default), never sparse
+               (contrast the public shape's SD3 sparse 'label'): the editor needs
+               to see "this component has no label" as distinctly as "this
+               component has one", and the SELECT only carried the column when
+               $extras says it exists, so $c['Label']/$c['SourceWorkId'] are
+               simply absent (not null) on an un-migrated install — the
+               ($extras[...] && ...) guard covers both cases identically. */
+            'label'        => ($extras['Label'] && ($c['Label'] ?? null) !== null && $c['Label'] !== '')
+                ? (string)$c['Label']
+                : null,
+            'sourceWorkId' => ($extras['SourceWorkId'] && ($c['SourceWorkId'] ?? null) !== null)
+                ? (int)$c['SourceWorkId']
+                : null,
             /* Parallel to `lines`, same order (#1627). Empty on a pre-mirror
                install, where lyricLinesFetchPrimary has no rows to report — the
                enrichment endpoints 409 on those installs anyway, so the editor

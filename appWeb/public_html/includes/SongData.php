@@ -4831,17 +4831,30 @@ class SongData
      * no stable line identity without the mirror). Once the P1 mirror exists this is
      * never reached; the column-existence guard means the same deployed code keeps
      * working before and after the P4d JSON-column drop.
+     *
+     * #1860 Phase 5 §2.4 (SD4): also gated-reads `Label` and sparse-emits it exactly
+     * like the mirror path (`lyricLinesAssembleFromRows()`'s SD3 rule), via the ONE
+     * shared probe `lyricLinesComponentExtrasPresent()` (rule #35 — never a second
+     * INFORMATION_SCHEMA copy here) — so an install that has run the Label migration
+     * but not yet the lyric-lines-mirror one still renders a stored label instead of
+     * silently dropping it.
      */
     private function _getComponentsFromJson(string $songId): array
     {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras = lyricLinesComponentExtrasPresent($this->db);
+
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
         $chordsSelect = $this->_hasComponentChordsColumn()
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
+        $labelSelect = $extras['Label']
+            ? ', Label AS label'
+            : ', NULL AS label';
         $stmt = $this->db->prepare(
-            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}{$labelSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -4853,13 +4866,18 @@ class SongData
 
         $components = [];
         foreach ($rows as $row) {
-            $components[] = [
+            $comp = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            /* Sparse — present only when set, matching the mirror path's SD3 rule. */
+            if (isset($row['label']) && $row['label'] !== null && $row['label'] !== '') {
+                $comp['label'] = (string)$row['label'];
+            }
+            $components[] = $comp;
         }
         return $components;
     }
@@ -4952,10 +4970,16 @@ class SongData
         return $this->_getComponentsMapFromJson($songIds);
     }
 
-    /** Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson(). */
+    /**
+     * Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson()
+     * — same #1860 Phase 5 §2.4 (SD4) gated-Label + sparse-emit treatment, batched.
+     */
     private function _getComponentsMapFromJson(array $songIds): array
     {
         if (empty($songIds)) return [];
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras = lyricLinesComponentExtrasPresent($this->db);
+
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
         $langSelect = $this->_hasComponentLanguageColumn()
@@ -4964,8 +4988,11 @@ class SongData
         $chordsSelect = $this->_hasComponentChordsColumn()
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
+        $labelSelect = $extras['Label']
+            ? ', Label AS label'
+            : ', NULL AS label';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}{$labelSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -4978,13 +5005,17 @@ class SongData
         $map = [];
         foreach ($rows as $row) {
             $sid = $row['SongId'];
-            $map[$sid][] = [
+            $comp = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            if (isset($row['label']) && $row['label'] !== null && $row['label'] !== '') {
+                $comp['label'] = (string)$row['label'];
+            }
+            $map[$sid][] = $comp;
         }
         return $map;
     }
