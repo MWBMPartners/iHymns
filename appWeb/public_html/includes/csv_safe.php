@@ -51,3 +51,56 @@ if (!function_exists('ihymns_csv_cell')) {
         fputcsv($stream, array_map('ihymns_csv_cell', $row));
     }
 }
+
+if (!function_exists('ihymns_csv_output_begin')) {
+    /**
+     * Open `php://output` for a CSV download and write the UTF-8 BOM
+     * (#1908 Commit 4 — "D" in the epic's gap table).
+     *
+     * ELI5: this is the "start writing a CSV file to the browser" button.
+     * It also drops three invisible bytes (EF BB BF) at the very front so
+     * Excel knows the file is UTF-8 text, not old Windows text.
+     *
+     * WHY (detailed): Excel-on-Windows ignores the HTTP response's
+     * `Content-Type: text/csv; charset=UTF-8` header for a *downloaded*
+     * .csv — by the time the file is double-clicked from disk/Downloads,
+     * the HTTP response is long gone, so Excel falls back to decoding the
+     * bytes as the system's legacy ANSI code page. Any non-ASCII cell
+     * (a songwriter's accented name, a non-Latin title — #1908's whole
+     * epic) then renders as mojibake. Prefixing the byte sequence
+     * `EF BB BF` (the UTF-8 byte-order mark) is the one signal Excel DOES
+     * honour from the file bytes themselves: it forces a UTF-8 decode
+     * regardless of the OS locale. Other consumers (LibreOffice, browsers
+     * re-opening the download, `Array.from(csv)` in JS) either already
+     * default to UTF-8 or explicitly skip a leading BOM, so this is safe
+     * everywhere a CSV is opened, not just Excel.
+     *
+     * This is the ONE emitter (rule #22) — every CSV exporter in the app
+     * calls this instead of inlining its own `fopen('php://output', …)` +
+     * `echo "\xEF\xBB\xBF"` pair, so the BOM can never again be forgotten
+     * (4 of 6 exporters were missing it) or duplicated (2 of 6 already had
+     * their own inline `echo` — replaced by this call in the same commit).
+     * `tests/php/test-csv-bom.php` is the tree-derived guard that enforces
+     * both directions.
+     *
+     * @see https://en.wikipedia.org/wiki/Byte_order_mark
+     * @see https://learn.microsoft.com/en-us/globalization/encoding/byte-order-mark
+     * @return resource The open `php://output` stream, ready for
+     *                   `ihymns_fputcsv()` / `fputcsv()` calls.
+     */
+    function ihymns_csv_output_begin()
+    {
+        // 'wb' (not 'w'): binary mode. On POSIX this is a no-op, but it
+        // documents intent and matches PHP's own recommendation for
+        // fopen() writes that must not have the platform silently rewrite
+        // line endings (irrelevant to the BOM bytes here, but this stream
+        // is reused for the whole CSV body by every caller).
+        $stream = fopen('php://output', 'wb');
+        // The UTF-8 BOM, written as raw bytes (not a PHP source literal
+        // like "\xEF\xBB\xBF" typed elsewhere) so there is exactly ONE
+        // place in the codebase that spells it out — see the double-BOM
+        // ban in test-csv-bom.php.
+        fwrite($stream, "\xEF\xBB\xBF");
+        return $stream;
+    }
+}

@@ -10416,9 +10416,20 @@ if ($action !== null) {
                     break;
 
                 case 'csv':
+                    /* #1908 Commit 4 — api.php doesn't otherwise include
+                       csv_safe.php (unlike the other five CSV exporters, which
+                       already require_once it for ihymns_fputcsv()); the local
+                       require here is function_exists()-guarded inside
+                       csv_safe.php itself, so a double-require is harmless. */
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php';
                     header('Content-Type: text/csv; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.csv"');
-                    $out = fopen('php://output', 'w');
+                    /* Shared emitter: opens the stream + writes the UTF-8 BOM
+                       so a downloaded .csv opens un-mojibaked in Excel. The
+                       raw fputcsv() calls below (not ihymns_fputcsv()) are
+                       untouched — that formula-escape posture is a separate,
+                       deliberate question per the #1908 plan §4 note. */
+                    $out = ihymns_csv_output_begin();
                     /* D4 (#1694): the is_deleted column exists only once the
                        migration has run — header and rows stay in lockstep so
                        an un-migrated export is byte-identical to before. */

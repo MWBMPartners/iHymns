@@ -585,7 +585,10 @@ if (($_GET['export'] ?? '') === 'csv') {
     header('Content-Disposition: attachment; filename="ihymns-activity-' . date('Ymd-His') . '.csv"');
     header('Cache-Control: no-store');
 
-    $out = fopen('php://output', 'w');
+    /* #1908 Commit 4 — the shared emitter opens the stream AND writes the
+       UTF-8 BOM Excel needs to decode a downloaded .csv correctly; see the
+       doc-block on ihymns_csv_output_begin() for the full why. */
+    $out = ihymns_csv_output_begin();
     /* #805 — CreatedAtUtc is an explicit UTC ISO-8601 string built
        from UNIX_TIMESTAMP() via gmdate() so downloaded CSVs are
        timezone-unambiguous regardless of where the spreadsheet ends

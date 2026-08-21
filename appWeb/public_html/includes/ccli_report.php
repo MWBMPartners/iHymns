@@ -431,7 +431,9 @@ function ccliReportEmitCsv(array $rows, string $filename): void
     header('Content-Disposition: attachment; filename="' . $filename . '"');
     header('Cache-Control: no-store');
 
-    $out = fopen('php://output', 'wb');
+    /* #1908 Commit 4 — shared emitter: opens the stream + writes the UTF-8
+       BOM so a downloaded .csv opens un-mojibaked in Excel-on-Windows. */
+    $out = ihymns_csv_output_begin();
     ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views', 'Printed copies', 'Projected uses']);
     foreach ($rows as $r) {
         ihymns_fputcsv($out, [

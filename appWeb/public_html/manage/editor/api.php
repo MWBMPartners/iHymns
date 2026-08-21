@@ -2949,17 +2949,19 @@ switch ($action) {
             $look->close();
 
             /* CSV streaming. fputcsv on php://output handles RFC 4180
-               quoting + UTF-8. The BOM prefix gets Excel to treat the
-               file as UTF-8 instead of mojibake-decoding it as
-               Windows-1252. */
+               quoting + UTF-8. ihymns_csv_output_begin() (#1908 Commit 4)
+               opens the stream AND writes the BOM prefix that gets Excel
+               to treat the file as UTF-8 instead of mojibake-decoding it
+               as Windows-1252 — replaces the old inline echo BOM + fopen()
+               pair (never both — see the double-BOM ban in
+               test-csv-bom.php). */
             $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_',
                           'skipped-songids-job-' . $jobId . '-' . pathinfo((string)$row['Filename'], PATHINFO_FILENAME) . '.csv'
                         ) ?? 'skipped-songids.csv';
             header('Content-Type: text/csv; charset=UTF-8');
             header('Content-Disposition: attachment; filename="' . $safeName . '"');
             header('Cache-Control: no-store, no-cache, must-revalidate');
-            echo "\xEF\xBB\xBF"; /* UTF-8 BOM */
-            $out = fopen('php://output', 'w');
+            $out = ihymns_csv_output_begin();
             ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
             foreach ($skipped as $sid) {
                 $sid = (string)$sid;

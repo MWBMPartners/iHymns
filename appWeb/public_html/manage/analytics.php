@@ -58,7 +58,9 @@ if ($exportPanel !== '') {
     $safePanel = preg_replace('/[^A-Za-z0-9_-]/', '', $exportPanel);
     header('Content-Type: text/csv; charset=UTF-8');
     header('Content-Disposition: attachment; filename="ihymns-' . $safePanel . '-' . $range . 'd.csv"');
-    $fp = fopen('php://output', 'w');
+    /* #1908 Commit 4 — shared emitter: opens the stream + writes the UTF-8
+       BOM so a downloaded .csv opens un-mojibaked in Excel-on-Windows. */
+    $fp = ihymns_csv_output_begin();
     try {
         switch ($exportPanel) {
             case 'top_songs':

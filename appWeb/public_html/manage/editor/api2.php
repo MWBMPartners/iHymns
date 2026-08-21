@@ -5354,8 +5354,10 @@ try {
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="' . $safeName . '"');
         header('Cache-Control: no-store, no-cache, must-revalidate');
-        echo "\xEF\xBB\xBF";   // UTF-8 BOM for Excel
-        $out = fopen('php://output', 'w');
+        /* #1908 Commit 4 — shared emitter replaces the old inline
+           echo BOM + fopen() pair (never both — see the double-BOM
+           ban in test-csv-bom.php). */
+        $out = ihymns_csv_output_begin();
         ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
         foreach ($skipped as $sid) {
             $sid = (string)$sid; $r = $byId[$sid] ?? null;
