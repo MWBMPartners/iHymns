@@ -269,6 +269,21 @@ export const editorApi = {
     searchPublishers:   (q, limit)                  => getJson('publisher_search', { q: q || '', limit: limit || 10 }),
     setCopyrightHolder: (songId, name, publisherId) => postJson('song_copyright_holder_set', { songId: songId, name: name, publisherId: publisherId }),
 
+    /* Multi-holder copyright (#1900 Wave 4 C8) — the ordered chip-list
+       sibling of setCopyrightHolder above. listCopyrightHolders is a plain
+       read; setCopyrightHolders REPLACES the FULL ordered list in one call
+       (never a per-chip add/remove endpoint — the server always resolves
+       the whole thing atomically, rule #35's read-back: metadata-tab.js
+       re-renders its chips from THIS response's `holders`, never from the
+       `holders` array it just sent). Both 409 on an install that hasn't run
+       the #1900 migration card — metadata-tab.js feature-detects that via
+       `err.status`, never the error sentence, and falls back to the
+       original single-pick control above when it sees one. `holders` is
+       `[{publisherId?, name, role?}]`; `role` defaults server-side to
+       `'holder'` when omitted. */
+    listCopyrightHolders: (songId)          => getJson('song_copyright_holders', { id: songId }),
+    setCopyrightHolders:  (songId, holders) => postJson('song_copyright_holders_set', { songId: songId, holders: holders }),
+
     /* Work registry typeahead + the two "Part of work" writes (#1860 Phase 5
        Commit 9, design §3.7 items 1-2). searchWorks mirrors searchPublishers'
        /searchTunes' shape (q/limit only). autolinkWork is the commit-time

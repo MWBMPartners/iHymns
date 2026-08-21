@@ -1079,80 +1079,280 @@ export function mountMetadataTab(container, opts) {
          *   rights-coverage line -> derived media-availability line.
          * ================================================================== */
 
-        /* Copyright Holder (#1862) — a BESPOKE tblPublishers-backed
-           live-search control, mirroring the Tune control above in every
-           respect (activates the #1864 dormant CopyrightHolderId FK).
+        /* Copyright Holder (#1862 -> #1900 Wave 4 C8) — TWO-PHASE render.
            Gated the SAME zero-extra-request way GATED_COLUMNS' fields are —
            just no longer routed through that shared Set, since this isn't a
-           FIELDS row (rule #43 — never a free-text box into a registry). */
+           FIELDS row (rule #43 — never a free-text box into a registry).
+           Phase 1 (below, synchronous, unchanged from #1862): the ORIGINAL
+           single tblPublishers-backed live-search control renders
+           immediately from the `song` slice load_song already returned, so
+           there is never a visible gap. Phase 2 (renderHolderChips() /
+           the api.listCopyrightHolders() call at the bottom of this block):
+           an ASYNC ask to the server "does this install actually have the
+           #1900 tblSongCopyrightHolders table" — on success the phase-1
+           control is torn down and replaced with the ordered multi-pick
+           chip list; on a 409 (status, never prose — rule #35) phase 1
+           simply stays exactly as it was, unchanged. Both phases share the
+           `hWrapCol` container so the swap is one `innerHTML` replace. */
         if ('CopyrightHolder' in song) {
-            const hcol = document.createElement('div');
-            hcol.className = 'col-12 col-md-6';
-            const hlab = document.createElement('label');
-            hlab.className = 'form-label small mb-1';
-            hlab.htmlFor = 'meta-copyrightHolder';
-            hlab.textContent = 'Copyright holder';
-            const hinput = document.createElement('input');
-            hinput.type = 'text';
-            hinput.className = 'form-control form-control-sm';
-            hinput.id = 'meta-copyrightHolder';
-            hinput.placeholder = 'Publisher / holder name…';
-            hinput.value = song.CopyrightHolder != null ? String(song.CopyrightHolder) : '';
-            const hhidden = document.createElement('input');
-            hhidden.type = 'hidden';
-            hhidden.value = song.CopyrightHolderId != null ? String(song.CopyrightHolderId) : '';
+            const hWrapCol = document.createElement('div');
+            hWrapCol.className = 'col-12 col-md-6';
+            publication.row.appendChild(hWrapCol);
 
-            /**
-             * Persist a holder edit/pick via the ONE write
-             * (`song_copyright_holder_set`, `ed2_songCopyrightHolderApply()`
-             * server-side) — the SAME "commit event, never a typing pause"
-             * rule saveTune() above documents at length: a find-or-create
-             * write must not fire on a debounced keystroke pause (#1679's
-             * anti-pattern, rule #43).
-             *
-             * @param {string} name Holder name to save (server-trimmed; '' clears).
-             * @param {?number} publisherId A typeahead pick's claimed id, else null.
-             */
-            function saveHolder(name, publisherId) {
-                api.setCopyrightHolder(songId, name, publisherId).then((res) => {
-                    song.CopyrightHolder = res.holderName;
-                    song.CopyrightHolderId = res.publisherId;
-                    hhidden.value = res.publisherId != null ? String(res.publisherId) : '';
+            /** Phase 1 (#1862) — the original single-pick control, unchanged
+             *  in every respect except that it now builds into the
+             *  swappable `hWrapCol` wrapper instead of directly into
+             *  `publication.row`. */
+            function renderHolderFallback() {
+                hWrapCol.innerHTML = '';
+                const hlab = document.createElement('label');
+                hlab.className = 'form-label small mb-1';
+                hlab.htmlFor = 'meta-copyrightHolder';
+                hlab.textContent = 'Copyright holder';
+                const hinput = document.createElement('input');
+                hinput.type = 'text';
+                hinput.className = 'form-control form-control-sm';
+                hinput.id = 'meta-copyrightHolder';
+                hinput.placeholder = 'Publisher / holder name…';
+                hinput.value = song.CopyrightHolder != null ? String(song.CopyrightHolder) : '';
+                const hhidden = document.createElement('input');
+                hhidden.type = 'hidden';
+                hhidden.value = song.CopyrightHolderId != null ? String(song.CopyrightHolderId) : '';
+
+                /**
+                 * Persist a holder edit/pick via the ONE write
+                 * (`song_copyright_holder_set`, `ed2_songCopyrightHolderApply()`
+                 * server-side) — the SAME "commit event, never a typing pause"
+                 * rule saveTune() above documents at length: a find-or-create
+                 * write must not fire on a debounced keystroke pause (#1679's
+                 * anti-pattern, rule #43).
+                 *
+                 * @param {string} name Holder name to save (server-trimmed; '' clears).
+                 * @param {?number} publisherId A typeahead pick's claimed id, else null.
+                 */
+                function saveHolder(name, publisherId) {
+                    api.setCopyrightHolder(songId, name, publisherId).then((res) => {
+                        song.CopyrightHolder = res.holderName;
+                        song.CopyrightHolderId = res.publisherId;
+                        hhidden.value = res.publisherId != null ? String(res.publisherId) : '';
+                        updateDerivedPreview();
+                    }).catch((e) => {
+                        toast('Could not save copyright holder: ' + e.message, 'danger');
+                    });
+                }
+
+                hinput.addEventListener('input', () => {
+                    /* Free-typing invalidates a previously-picked publisherId —
+                       the same contract tinput's own listener documents above. */
+                    hhidden.value = '';
                     updateDerivedPreview();
-                }).catch((e) => {
-                    toast('Could not save copyright holder: ' + e.message, 'danger');
                 });
+                hinput.addEventListener('change', () => { saveHolder(hinput.value, null); });
+
+                hWrapCol.append(hlab, hinput, hhidden);
+
+                if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+                    holderDetach = window.iHymnsPlaceSearch.attach(hinput, {
+                        hiddenIdInput: hhidden,
+                        minChars: 2,
+                        pickMode: 'value',
+                        noun: { singular: 'publisher', plural: 'publishers' },
+                        // #1855: extensionless, matches every sibling searchUrl here.
+                        searchUrl: (q) => '/manage/editor/api2?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                        parseResults: (d) => (d.suggestions || []).map((s) => ({
+                            id: s.id,
+                            display_name: s.name,
+                            hint: s.kind || '',
+                        })),
+                        onSelect: (c) => saveHolder(c.display_name, c.id),
+                    }) || null;
+                }
+
+                copyrightHolderInput = hinput;
+            }
+            renderHolderFallback();
+
+            /** A `{publisherId?,name,role?}` chip -> the wire row shape
+             *  `song_copyright_holders_set` expects. */
+            function holderToWireRow(h) {
+                return { publisherId: h.publisherId || null, name: h.name, role: h.role || 'holder' };
             }
 
-            hinput.addEventListener('input', () => {
-                /* Free-typing invalidates a previously-picked publisherId —
-                   the same contract tinput's own listener documents above. */
-                hhidden.value = '';
-                updateDerivedPreview();
+            /** Phase 2 (#1900) — the ordered multi-pick chip list. Replaces
+             *  whatever is currently in `hWrapCol` (phase 1, or a previous
+             *  call to this same function) with `holders` rendered as
+             *  removable, reorderable chips + an "add" picker.
+             *
+             *  @param {Array<{publisherId:?number,name:string,role:string}>} holders
+             *         ALWAYS a value that came FROM THE SERVER (either this
+             *         GET's response, or a prior write's response `holders`)
+             *         — never the locally-built request array a mutation
+             *         just sent (rule #35's read-back: `persist()` below
+             *         re-renders from `res.holders`, not from `nextRows`).
+             */
+            function renderHolderChips(holders) {
+                if (holderDetach) { try { holderDetach(); } catch (_e) {} holderDetach = null; }
+                hWrapCol.innerHTML = '';
+
+                const hlab = document.createElement('label');
+                hlab.className = 'form-label small mb-1';
+                hlab.htmlFor = 'meta-copyrightHolder-add';
+                hlab.textContent = 'Copyright holder(s)';
+                hWrapCol.appendChild(hlab);
+
+                const chipList = document.createElement('div');
+                chipList.className = 'd-flex flex-wrap gap-1 mb-1';
+                if (holders.length === 0) {
+                    chipList.hidden = true;
+                }
+                chipList.setAttribute('role', 'list');
+                chipList.setAttribute('aria-label', 'Copyright holders, in display order');
+                hWrapCol.appendChild(chipList);
+
+                /* `updateDerivedPreview()` (below, in this same render()
+                   scope) reads the current holder via
+                   `copyrightHolderInput.value` — a contract phase 1's
+                   `hinput` also satisfies. Rather than teach that function a
+                   SECOND shape (rule "leave ihymnsCopyrightPreview() itself
+                   untouched" — #1900 C8 §E), point `copyrightHolderInput` at
+                   this never-appended hidden proxy and keep it in sync with
+                   the FIRST-listed chip (the same "first-listed wins" rule
+                   the server denorm re-sync already uses, rule #37). */
+                const previewProxy = document.createElement('input');
+                previewProxy.type = 'hidden';
+                previewProxy.value = holders.length ? holders[0].name : '';
+                copyrightHolderInput = previewProxy;
+
+                /**
+                 * POST the FULL ordered list and re-render ONLY from the
+                 * response (rule #35 — never optimistically from `nextRows`,
+                 * the array this function was just asked to save).
+                 * @param {Array<{publisherId:?number,name:string,role:string}>} nextRows
+                 */
+                function persist(nextRows) {
+                    api.setCopyrightHolders(songId, nextRows).then((res) => {
+                        const stored = res.holders || [];
+                        song.CopyrightHolder = stored.length ? stored[0].name : '';
+                        song.CopyrightHolderId = stored.length ? stored[0].publisherId : null;
+                        renderHolderChips(stored);
+                        updateDerivedPreview();
+                    }).catch((e) => {
+                        toast('Could not save copyright holders: ' + e.message, 'danger');
+                    });
+                }
+
+                holders.forEach((h, idx) => {
+                    const chip = document.createElement('span');
+                    chip.className = 'badge text-bg-secondary d-inline-flex align-items-center gap-1 py-1';
+                    chip.setAttribute('role', 'listitem');
+
+                    const label = document.createElement('span');
+                    label.textContent = h.name + (h.role && h.role !== 'holder' ? ' (' + h.role + ')' : '');
+                    chip.appendChild(label);
+
+                    if (idx > 0) {
+                        const up = document.createElement('button');
+                        up.type = 'button';
+                        up.className = 'btn btn-sm btn-link text-white p-0 ms-1 lh-1';
+                        up.setAttribute('aria-label', 'Move ' + h.name + ' earlier in the holder list');
+                        up.textContent = '↑';
+                        up.addEventListener('click', () => {
+                            const next = holders.slice();
+                            const tmp = next[idx - 1];
+                            next[idx - 1] = next[idx];
+                            next[idx] = tmp;
+                            persist(next.map(holderToWireRow));
+                        });
+                        chip.appendChild(up);
+                    }
+                    if (idx < holders.length - 1) {
+                        const down = document.createElement('button');
+                        down.type = 'button';
+                        down.className = 'btn btn-sm btn-link text-white p-0 lh-1';
+                        down.setAttribute('aria-label', 'Move ' + h.name + ' later in the holder list');
+                        down.textContent = '↓';
+                        down.addEventListener('click', () => {
+                            const next = holders.slice();
+                            const tmp = next[idx];
+                            next[idx] = next[idx + 1];
+                            next[idx + 1] = tmp;
+                            persist(next.map(holderToWireRow));
+                        });
+                        chip.appendChild(down);
+                    }
+                    const remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'btn-close btn-close-white btn-sm ms-1';
+                    remove.setAttribute('aria-label', 'Remove ' + h.name + ' as a copyright holder');
+                    remove.addEventListener('click', () => {
+                        const next = holders.filter((_row, i) => i !== idx);
+                        persist(next.map(holderToWireRow));
+                    });
+                    chip.appendChild(remove);
+
+                    chipList.appendChild(chip);
+                });
+
+                /* Add control — the SAME shared find-or-create typeahead
+                   phase 1's control used (rule #43), committed on
+                   `change`/pick, NEVER a debounced keystroke (#1679). */
+                const addInput = document.createElement('input');
+                addInput.type = 'text';
+                addInput.className = 'form-control form-control-sm';
+                addInput.id = 'meta-copyrightHolder-add';
+                addInput.placeholder = 'Add a publisher / holder…';
+                const addHidden = document.createElement('input');
+                addHidden.type = 'hidden';
+                hWrapCol.append(addInput, addHidden);
+
+                function addHolder(name, publisherId) {
+                    const trimmed = (name || '').trim();
+                    if (trimmed === '') { return; }
+                    const next = holders.concat([{ publisherId: publisherId || null, name: trimmed, role: 'holder' }]);
+                    persist(next.map(holderToWireRow));
+                }
+                addInput.addEventListener('change', () => {
+                    addHolder(addInput.value, addHidden.value ? Number(addHidden.value) : null);
+                });
+
+                if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+                    holderDetach = window.iHymnsPlaceSearch.attach(addInput, {
+                        hiddenIdInput: addHidden,
+                        minChars: 2,
+                        pickMode: 'value',
+                        noun: { singular: 'publisher', plural: 'publishers' },
+                        searchUrl: (q) => '/manage/editor/api2?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                        parseResults: (d) => (d.suggestions || []).map((s) => ({
+                            id: s.id,
+                            display_name: s.name,
+                            hint: s.kind || '',
+                        })),
+                        onSelect: (c) => addHolder(c.display_name, c.id),
+                    }) || null;
+                }
+            }
+
+            /* Ask the server whether this install has run the #1900
+               migration card. `hWrapCol.isConnected` (standard DOM API,
+               https://developer.mozilla.org/docs/Web/API/Node/isConnected)
+               guards against a stale response landing after render() ran
+               again for a different `song` slice and threw this whole
+               subtree away — `disposed` alone would not catch that case
+               (the tab is still mounted; only THIS wrapper is gone). */
+            api.listCopyrightHolders(songId).then((res) => {
+                if (disposed || !hWrapCol.isConnected) { return; }
+                renderHolderChips(res.holders || []);
+            }).catch((e) => {
+                if (disposed || !hWrapCol.isConnected) { return; }
+                /* 409 = un-migrated install (rule #35 — status, never
+                   prose): phase 1's fallback, already rendered above, stays
+                   exactly as it was. Any OTHER failure (network hiccup,
+                   500) degrades the SAME way — never worse than the #1862
+                   single-pick behaviour this tab already had. */
+                if (e && e.status !== 409) {
+                    console.error('[metadata-tab] could not load multi-holder copyright chips:', e);
+                }
             });
-            hinput.addEventListener('change', () => { saveHolder(hinput.value, null); });
-
-            hcol.append(hlab, hinput, hhidden);
-            publication.row.appendChild(hcol);
-
-            if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
-                holderDetach = window.iHymnsPlaceSearch.attach(hinput, {
-                    hiddenIdInput: hhidden,
-                    minChars: 2,
-                    pickMode: 'value',
-                    noun: { singular: 'publisher', plural: 'publishers' },
-                    // #1855: extensionless, matches every sibling searchUrl here.
-                    searchUrl: (q) => '/manage/editor/api2?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
-                    parseResults: (d) => (d.suggestions || []).map((s) => ({
-                        id: s.id,
-                        display_name: s.name,
-                        hint: s.kind || '',
-                    })),
-                    onSelect: (c) => saveHolder(c.display_name, c.id),
-                }) || null;
-            }
-
-            copyrightHolderInput = hinput;
         }
 
         /* ---- Derived copyright statement preview + override disclosure (#1862 issue §3) ---- */

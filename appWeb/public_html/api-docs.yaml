@@ -15597,6 +15597,131 @@ paths:
           description: The song-identity-fields migration card has not been applied yet (run it at /manage/setup-database)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=song_copyright_holders:
+    get:
+      operationId: editorSongCopyrightHoldersList
+      tags: [Editor API v2]
+      summary: The ordered multi-holder copyright list for one song (#1900 Wave 4 C8)
+      description: |
+        GET, editor role only. Read counterpart of
+        `song_copyright_holders_set` below. Delegates entirely to the ONE
+        `tblSongCopyrightHolders` core (`songCopyrightHoldersList()`,
+        `includes/song_copyright_holders.php`) — no local SQL. This is a
+        DIFFERENT table from `song_copyright_holder_set`'s
+        song-identity-fields gate, so it 409s on its OWN un-migrated check
+        rather than reusing that one; `manage/editor/v2/metadata-tab.js`
+        feature-detects this via the response status and falls back to the
+        single-pick control on a 409, never by matching the error text.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_copyright_holders] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: The song's copyright holders, in display order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  holders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publisherId: { type: integer }
+                        name: { type: string }
+                        role: { type: string, example: holder }
+                        sortOrder: { type: integer }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The multi-holder-copyright migration card has not been applied yet (run it at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_copyright_holders_set:
+    post:
+      operationId: editorSongCopyrightHoldersSet
+      tags: [Editor API v2]
+      summary: Replace the FULL ordered multi-holder copyright list (#1900 Wave 4 C8)
+      description: |
+        POST, editor role only. The multi-pick sibling of
+        `song_copyright_holder_set` above: that endpoint (and
+        `metadata_field_update`'s `CopyrightHolder` alias branch) write ONE
+        holder through `ed2_songCopyrightHolderApply()`, which — on a
+        migrated install — now itself delegates to the SAME core this
+        endpoint calls directly (`songCopyrightHoldersReplace()`), so there
+        is exactly one write path into `tblSongCopyrightHolders` + the
+        `tblSongs.CopyrightHolder`/`CopyrightHolderId` denorm mirror
+        regardless of which UI surface a curator used. The denorm mirror is
+        always re-synced to the FIRST-listed holder in the request (or
+        cleared when the list is empty). Every mutation (add/remove/
+        reorder) in the client is expected to POST the FULL ordered list and
+        re-render only from this response's `holders` — never from the
+        request it just sent. 422 on an unknown `role` (checked against
+        `IHYMNS_COPYRIGHT_HOLDER_ROLES`) — a curator/client mistake, not a
+        server fault; nothing is written when this happens. 409 on an
+        install that hasn't run the #1900 migration card yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, holders]
+              properties:
+                songId: { type: string }
+                holders:
+                  type: array
+                  description: The FULL desired ordered list — this REPLACES whatever the song had before, it does not append.
+                  items:
+                    type: object
+                    properties:
+                      publisherId: { type: integer, nullable: true, description: "A picker's claimed tblPublishers.Id; verified server-side, never trusted blindly." }
+                      name: { type: string, description: "Typed or picked display text; required when publisherId is absent." }
+                      role: { type: string, example: holder, description: "Defaults to 'holder' when omitted. Must be a key in IHYMNS_COPYRIGHT_HOLDER_ROLES." }
+      responses:
+        "200":
+          description: Copyright holders replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string, example: copyrightHolders }
+                  holders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publisherId: { type: integer }
+                        name: { type: string }
+                        role: { type: string, example: holder }
+                        sortOrder: { type: integer }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The multi-holder-copyright migration card has not been applied yet (run it at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: An unknown role was supplied — nothing was written
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=media_list:
     get:
       operationId: editorMediaList

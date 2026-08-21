@@ -31,13 +31,18 @@ declare(strict_types=1);
  * a M:N (`tblWorkComponents`) that references but does not duplicate a
  * neighbouring entity's CRUD.
  *
- * DORMANT IN THIS COMMIT. C7 (this commit) lands the table + this core with
- * NO caller anywhere in the app — `api2.php`, `metadata-tab.js` and
- * `api-docs.yaml` are all Wave 4 Commit C8's job. Every function here is
- * therefore exercised only by `tests/php/test-song-copyright-holders.php`
- * (its pure parts) until C8 wires a real caller. Every table/column touch is
- * existence-gated so an un-migrated install never throws under mysqli STRICT
- * mode (rule #9) even once C8 starts calling in.
+ * ACTIVATED BY C8. C7 landed the table + this core with NO caller anywhere
+ * in the app. Wave 4 Commit C8 (#1900) wired the real callers: `api2.php`'s
+ * `case 'song_copyright_holders'` (GET, list) / `case
+ * 'song_copyright_holders_set'` (POST, replace) and, per the single-writer
+ * discipline the denorm re-sync below already documented, `api2.php`'s
+ * `ed2_songCopyrightHolderApply()` itself — on a migrated install that
+ * single-holder write ALSO routes through `songCopyrightHoldersReplace()`
+ * (a one-row list), so there is exactly one denorm writer regardless of
+ * which UI surface a curator uses. `metadata-tab.js` is the multi-pick chip
+ * list; `api-docs.yaml` documents both new actions. Every table/column touch
+ * stays existence-gated so an un-migrated install never throws under mysqli
+ * STRICT mode (rule #9).
  *
  * THE DENORM RE-SYNC (single-writer discipline, mirrors `tblSongbookPublishers`
  * rule #37 exactly, and `ed2_songCopyrightHolderApply()` in
@@ -285,13 +290,34 @@ function _songCopyHolders_normalizeRows(array $rows): array
  *
  * TRANSACTIONAL: the M:N replace (DELETE all rows for this song, INSERT the
  * deduped/ordered survivors with a fresh 0-based SortOrder) and the
- * `tblSongs` denorm re-sync happen inside ONE `begin_transaction()` /
- * `commit()` — a failure anywhere rolls back the whole thing rather than
- * leaving the M:N rows and the denorm mirror disagreeing. This function
- * OWNS its transaction (unlike e.g. `lyricLinesWriteComponents()`, which
- * expects to run inside a caller's already-open transaction) because it is
- * the top-level entry point for this concern — there is no larger save
- * operation it needs to nest inside today.
+ * `tblSongs` denorm re-sync happen inside ONE transaction — a failure
+ * anywhere rolls back the whole thing rather than leaving the M:N rows and
+ * the denorm mirror disagreeing.
+ *
+ * OWN-OR-BORROW TRANSACTION (#1900 Wave 4 C8, rule #35 — a mechanism, not a
+ * comment, for who commits): C7 (this file's first commit) had this function
+ * always call `begin_transaction()`/`commit()` itself, because it had no
+ * caller yet. C8 wired `ed2_songCopyrightHolderApply()` (`manage/editor/
+ * api2.php`) to become the SINGLE writer of the `CopyrightHolder`/
+ * `CopyrightHolderId` denorm on a migrated install — but every caller of
+ * THAT function already opens its own transaction (+ its own
+ * `ed2_touchRevision()` snapshot) around the whole request, so this function
+ * cannot unconditionally open a SECOND, nested one. The `$ownTransaction`
+ * param (default `true`, so every OTHER/future standalone caller sees no
+ * behaviour change) switches the mode:
+ *   - `true`  (default): unchanged from C7 — this function calls
+ *     `begin_transaction()` itself, and a write exception is caught here,
+ *     rolled back here, and turned into the `'write_failed'` return shape.
+ *   - `false` (a caller with its own open transaction, e.g. api2.php's
+ *     `song_copyright_holders_set` case and `ed2_songCopyrightHolderApply()`):
+ *     NEITHER `begin_transaction()` NOR `commit()` is called — the caller
+ *     commits once its own extra work (the revision snapshot) has also
+ *     succeeded. A write exception is NOT swallowed into a `'write_failed'`
+ *     return here; it is RE-THROWN so the caller's own `try/catch` rolls
+ *     back the WHOLE unit (holder rows + revision touch) rather than this
+ *     function silently rolling back only its half while the caller's
+ *     transaction — now holding a dangling DELETE it thinks succeeded —
+ *     sails on to commit.
  *
  * @param \mysqli    $db
  * @param string     $songId
@@ -305,20 +331,30 @@ function _songCopyHolders_normalizeRows(array $rows): array
  *        valid id) is silently skipped, mirroring
  *        `publisherResolvePickedOrCreate()`'s own "empty name -> null, no
  *        create" contract.
- * @param int|null   $userId  Reserved for C8's audit-log wiring (who changed
- *        the holder list) — accepted now so the signature does not need to
- *        change again when that lands; UNUSED by this commit (no audit-log
- *        call site exists yet — see the "What C8 must produce" plan
- *        section). Not a dormant/vanity field per rule #44: it is read by
- *        nothing today because nothing calls this function yet, not because
- *        the app collects it "in case".
+ * @param int|null   $userId  Reserved for the audit-log wiring (who changed
+ *        the holder list) — accepted so the signature does not need to
+ *        change again when that lands; STILL UNUSED by this commit (no
+ *        audit-log call site reads it yet, see api2.php's `logActivity()`
+ *        calls, which log `$ed2UserId` implicitly via the session, not this
+ *        param). Not a dormant/vanity field per rule #44: it is threaded
+ *        through because a future caller will need it on this exact
+ *        signature, not collected "in case".
+ * @param bool       $ownTransaction  `true` (default): this function opens
+ *        and commits/rolls back its own transaction (C7 standalone-caller
+ *        shape, unchanged). `false`: the caller already has one open — this
+ *        function does no `begin_transaction()`/`commit()`/`rollback()` of
+ *        its own, and a write exception is RE-THROWN (not swallowed) so the
+ *        caller's own rollback covers both the holder write and whatever
+ *        else it did in the same unit (#1900 Wave 4 C8).
  * @return array{ok:bool, reason?:string, role?:string, holders:array}
  *         `holders` is always the FRESH read-back via `songCopyrightHoldersList()`
  *         (rule #35 — the stored truth, not an echo of the input) except on
  *         the `'unmigrated'` path, where it is `[]` because there is nothing
  *         to read.
+ * @see #1900 Wave 4 C8 — manage/editor/api2.php's `ed2_songCopyrightHolderApply()`
+ *      and `case 'song_copyright_holders_set'`, the two `$ownTransaction=false` callers.
  */
-function songCopyrightHoldersReplace(\mysqli $db, string $songId, array $rows, ?int $userId = null): array
+function songCopyrightHoldersReplace(\mysqli $db, string $songId, array $rows, ?int $userId = null, bool $ownTransaction = true): array
 {
     if (!songCopyrightHoldersTableExists($db)) {
         return ['ok' => false, 'reason' => 'unmigrated', 'holders' => []];
@@ -392,9 +428,12 @@ function songCopyrightHoldersReplace(\mysqli $db, string $songId, array $rows, ?
     $toWrite = _songCopyHolders_normalizeRows($resolved);
 
     /* Step 3 — write the M:N + re-sync the tblSongs denorm mirror, both
-       inside one transaction. */
+       inside one transaction — OURS (default) or the CALLER'S (#1900 C8,
+       $ownTransaction=false), per the doc-block above. */
     try {
-        $db->begin_transaction();
+        if ($ownTransaction) {
+            $db->begin_transaction();
+        }
 
         $del = $db->prepare('DELETE FROM tblSongCopyrightHolders WHERE SongId = ?');
         $del->bind_param('s', $songId);
@@ -449,15 +488,24 @@ function songCopyrightHoldersReplace(\mysqli $db, string $songId, array $rows, ?
             $u->close();
         }
 
-        $db->commit();
+        if ($ownTransaction) {
+            $db->commit();
+        }
     } catch (\Throwable $e) {
-        $db->rollback();
         error_log('[songCopyrightHoldersReplace] ' . $e->getMessage());
-        return [
-            'ok'      => false,
-            'reason'  => 'write_failed',
-            'holders' => songCopyrightHoldersList($db, $songId),
-        ];
+        if ($ownTransaction) {
+            $db->rollback();
+            return [
+                'ok'      => false,
+                'reason'  => 'write_failed',
+                'holders' => songCopyrightHoldersList($db, $songId),
+            ];
+        }
+        /* Borrowed transaction (#1900 C8): do NOT swallow this into a
+           'write_failed' return — the caller's own try/catch must see the
+           throw so ITS rollback() undoes both this write AND whatever else
+           (e.g. ed2_touchRevision()'s snapshot) it did in the same unit. */
+        throw $e;
     }
 
     return ['ok' => true, 'holders' => songCopyrightHoldersList($db, $songId)];

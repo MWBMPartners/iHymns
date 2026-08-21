@@ -420,6 +420,16 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    and its typeahead (publisher_search) both delegate here, mirroring the
    tune_helpers.php require immediately above. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+/* #1900 Wave 4 C8 — songCopyrightHoldersTableExists() / …List() / …Replace():
+   the ONE tblSongCopyrightHolders read+write core (rule #22). On a migrated
+   install this is now the SOLE writer of the CopyrightHolder/CopyrightHolderId
+   denorm too (ed2_songCopyrightHolderApply() below delegates to it), so the
+   single-pick field and the multi-pick chip list can never diverge. Loaded at
+   module scope like publisher_helpers.php immediately above — every action
+   this file serves that might touch a song's copyright holders (the two new
+   song_copyright_holders* cases, PLUS song_copyright_holder_set and the
+   metadata_field_update CopyrightHolder alias, both further down) needs it. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_copyright_holders.php';
 /* #1862 — songMediaRecomputeFlags() (HasAudio/HasSheetMusic derivation,
    consumed by the media_upload/media_delete hooks + the metadata_field_update
    alias branch below) and pdRecomputeForSong() (public-domain suggestion
@@ -1038,32 +1048,81 @@ function ed2_copyrightHolderIdColPresent(\mysqli $db): bool {
  * registry link onto the song in one go — the same TuneName/TuneId shape,
  * applied to publishers.
  *
+ * #1900 WAVE 4 C8 — SINGLE-WRITER UNIFICATION (A.7). On a MIGRATED install
+ * (`tblSongCopyrightHolders` exists), this function no longer writes
+ * `tblSongs.CopyrightHolder`/`CopyrightHolderId` itself — it hands the ONE
+ * curator-typed/picked name off to the multi-holder core
+ * (`songCopyrightHoldersReplace()`, includes/song_copyright_holders.php) as a
+ * single-row list `[{name, publisherId, role:'holder'}]` (or `[]` to clear).
+ * That core is now the SOLE writer of the denorm pair — it re-syncs
+ * `CopyrightHolder`/`CopyrightHolderId` to the FIRST-listed holder (rule #37)
+ * after every write, single-pick or multi-pick, so the two UI surfaces
+ * (this function's single text field, and metadata-tab.js's chip list
+ * calling `song_copyright_holders_set` directly) can never disagree about
+ * what the denorm mirror should hold. `$ownTransaction=false` is passed
+ * because EVERY caller of this function already holds an open transaction
+ * (+ its own `ed2_touchRevision()` snapshot) — the core borrows it and
+ * RE-THROWS on a write failure, so this function's own caller's `catch` rolls
+ * back the whole unit (see `songCopyrightHoldersReplace()`'s doc-block).
+ *
+ * On an UN-MIGRATED install (no `tblSongCopyrightHolders` yet), this keeps
+ * the pre-#1900 behaviour byte-for-byte: a direct `tblSongs` UPDATE, so a
+ * single-holder save never regresses on an install that has run the #1864
+ * `CopyrightHolderId` column migration but not yet the #1900
+ * `tblSongCopyrightHolders` one.
+ *
  * DETAILED: empty/whitespace `$rawName` clears BOTH columns — a legal "no
  * holder set", not an error (`CopyrightHolder` is `NOT NULL DEFAULT ''`, so
  * it's set to `''`, never left NULL). A non-empty name is capped to 255
  * chars (`tblSongs.CopyrightHolder` is VARCHAR(255) — the same cap
  * `publisherResolvePickedOrCreate()`/`publisherFindOrCreateByName()` apply
- * internally, belt-and-braces). `$claimedId` is TRUSTED-BUT-VERIFIED by
- * `publisherResolvePickedOrCreate()` (publisher_helpers.php) — never a raw
+ * internally, belt-and-braces). `$claimedId` is TRUSTED-BUT-VERIFIED —
+ * `publisherResolvePickedOrCreate()` on the un-migrated path, or the core's
+ * own equivalent resolution on the migrated path — never a raw
  * client-supplied id written unverified (rule #43's find-or-create
  * contract). When `tblSongs.CopyrightHolderId` doesn't exist yet (pre-#1864
- * install), the write degrades to a CopyrightHolder-only UPDATE — safe ONLY
- * because there is then no id column to strand (the works.php /
- * ed2_songTuneApply() asymmetry, restated for publishers).
+ * install), the un-migrated branch degrades to a CopyrightHolder-only
+ * UPDATE — safe ONLY because there is then no id column to strand (the
+ * works.php / ed2_songTuneApply() asymmetry, restated for publishers).
  *
  * @param \mysqli  $db
  * @param string   $songId
  * @param string   $rawName   Curator-typed or picked holder name, any whitespace.
  * @param ?int     $claimedId The picker's claimed `tblPublishers.Id`, or null
  *                            when nothing was picked (free-typed / cleared).
+ * @param ?int     $userId    The signed-in curator (`$ed2UserId`) — threaded
+ *                            through to `songCopyrightHoldersReplace()`'s own
+ *                            reserved `$userId` param (rule #44 — not read by
+ *                            anything yet, but this call site is where a
+ *                            future audit-log wiring would need it, so the
+ *                            plumbing goes in now rather than as a second
+ *                            signature change later).
  * @return array{holderName: string, publisherId: ?int}
- * @link appWeb/public_html/includes/publisher_helpers.php  publisherResolvePickedOrCreate()
- * @link appWeb/public_html/manage/works.php:294-360         the sibling Work-side lockstep this mirrors
+ * @link appWeb/public_html/includes/publisher_helpers.php        publisherResolvePickedOrCreate() (un-migrated path)
+ * @link appWeb/public_html/includes/song_copyright_holders.php   songCopyrightHoldersReplace() (migrated path, THE single writer)
+ * @link appWeb/public_html/manage/works.php:294-360               the sibling Work-side lockstep this mirrors
  */
-function ed2_songCopyrightHolderApply(\mysqli $db, string $songId, string $rawName, ?int $claimedId): array {
+function ed2_songCopyrightHolderApply(\mysqli $db, string $songId, string $rawName, ?int $claimedId, ?int $userId = null): array {
     $name = trim($rawName);
     if ($name !== '') { $name = mb_substr($name, 0, 255); }
 
+    /* MIGRATED install — the #1900 multi-holder core is the ONE denorm
+       writer (A.7). A single-holder set collapses to exactly this one row
+       (or an empty list, to clear); the core resolves + re-syncs the denorm
+       from its OWN read-back, so we must not also write CopyrightHolder/
+       CopyrightHolderId here — that would be a second writer, the exact
+       drift rule #37 exists to forbid. */
+    if (function_exists('songCopyrightHoldersTableExists') && songCopyrightHoldersTableExists($db)) {
+        $rows  = $name === '' ? [] : [['name' => $name, 'publisherId' => $claimedId, 'role' => 'holder']];
+        $res   = songCopyrightHoldersReplace($db, $songId, $rows, $userId, false);
+        $first = $res['holders'][0] ?? null;
+        return [
+            'holderName'  => (string)($first['name'] ?? ''),
+            'publisherId' => $first['publisherId'] ?? null,
+        ];
+    }
+
+    /* UN-MIGRATED install — the pre-#1900 direct denorm UPDATE, unchanged. */
     if (ed2_copyrightHolderIdColPresent($db)) {
         $publisherId = $name === '' ? null : publisherResolvePickedOrCreate($db, $name, $claimedId);
         $u = $db->prepare('UPDATE tblSongs SET CopyrightHolder = ?, CopyrightHolderId = ? WHERE SongId = ?');
@@ -2586,7 +2645,7 @@ try {
         if ($column === 'CopyrightHolder') {
             $db->begin_transaction();
             try {
-                $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)($raw ?? ''), null);
+                $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)($raw ?? ''), null, $ed2UserId);
                 ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
                 $db->commit();
             } catch (\Throwable $e) {
@@ -2864,7 +2923,7 @@ try {
 
         $db->begin_transaction();
         try {
-            $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)$body['name'], $claimedId);
+            $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)$body['name'], $claimedId, $ed2UserId);
             ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
             $db->commit();
         } catch (\Throwable $e) {
@@ -2878,6 +2937,101 @@ try {
             'holderName'  => $holderResult['holderName'],
             'publisherId' => $holderResult['publisherId'],
         ]);
+        break;
+    }
+
+    /* ---- song_copyright_holders (GET) — the ordered multi-holder list
+           (#1900 Wave 4 C8). Read counterpart of song_copyright_holders_set
+           immediately below; delegates entirely to the ONE #1900 core
+           (songCopyrightHoldersList(), includes/song_copyright_holders.php)
+           — no local SQL. 409 (never an empty-list 200) on an un-migrated
+           install, the SAME honest-409 posture song_copyright_holder_set
+           above already uses for its OWN (different) migration gate — this
+           is a DIFFERENT table (tblSongCopyrightHolders) from that
+           endpoint's song-identity-fields column check, so it needs its own
+           presence probe. metadata-tab.js's chip list feature-detects by
+           THIS status (err.status === 409), never by the error sentence
+           (rule #35). ---- */
+    case 'song_copyright_holders': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!songCopyrightHoldersTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the multi-holder-copyright migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        ed2_respond(['ok' => true, 'holders' => songCopyrightHoldersList($db, $songId)]);
+        break;
+    }
+
+    /* ---- song_copyright_holders_set (POST) — replace the FULL ordered
+           holder list (#1900 Wave 4 C8). The multi-pick sibling of
+           song_copyright_holder_set above: that endpoint (and
+           metadata_field_update's CopyrightHolder alias branch) write ONE
+           holder through ed2_songCopyrightHolderApply(), which — on a
+           migrated install — now itself delegates to the SAME core this
+           case calls directly (songCopyrightHoldersReplace()), so there is
+           exactly ONE write path into tblSongCopyrightHolders + the
+           tblSongs denorm mirror regardless of which UI surface (the
+           single field or the chip list) a curator used (rule #22/#35 — no
+           second resolve/write path). `$ownTransaction=false` — THIS case
+           owns the transaction (+ the revision touch); the core borrows it
+           and RE-THROWS on a write failure, so the catch below rolls back
+           both the holder rows and the (not-yet-taken) revision snapshot
+           together, never one without the other. A `bad_role` rejection is
+           422 (a curator/client mistake — an unknown role string), never
+           500; the response always carries the machine-readable `reason`
+           so the client branches on THAT, not on prose. ---- */
+    case 'song_copyright_holders_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!songCopyrightHoldersTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the multi-holder-copyright migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* Defensive shape coercion — never trust the client's array
+           structure blindly. A non-array entry is dropped outright; the
+           core's own normalisation pass (_songCopyHolders_normalizeRows())
+           handles de-dup/ordering once these are shape-safe. `publisherId`
+           uses the SAME `!== null && !== ''` guard song_copyright_holder_set
+           above uses for its single `publisherId`. */
+        $rawHolders = is_array($body['holders'] ?? null) ? $body['holders'] : [];
+        $rows = [];
+        foreach ($rawHolders as $h) {
+            if (!is_array($h)) { continue; }
+            $rows[] = [
+                'name'        => isset($h['name']) ? (string)$h['name'] : '',
+                'publisherId' => isset($h['publisherId']) && $h['publisherId'] !== null && $h['publisherId'] !== ''
+                               ? (int)$h['publisherId'] : null,
+                'role'        => isset($h['role']) ? (string)$h['role'] : 'holder',
+            ];
+        }
+
+        $db->begin_transaction();
+        try {
+            $res = songCopyrightHoldersReplace($db, $songId, $rows, $ed2UserId, false);
+            if (!$res['ok']) {
+                /* A validation rejection (bad_role) — nothing was written.
+                   Roll back (no-op for the DB, but keeps this path
+                   symmetrical with the exception path below) and respond
+                   WITHOUT falling through to ed2_touchRevision()/commit() —
+                   rule #35: never 200 a failed write. */
+                $db->rollback();
+                ed2_respond(
+                    ['ok' => false, 'error' => 'Could not save copyright holders.', 'reason' => $res['reason'], 'holders' => $res['holders']],
+                    $res['reason'] === 'bad_role' ? 422 : 500
+                );
+            }
+            ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.metadata', 'song', $songId, ['field' => 'copyrightHolders', 'count' => count($res['holders'])]);
+        ed2_respond(['ok' => true, 'field' => 'copyrightHolders', 'holders' => $res['holders']]);
         break;
     }
 

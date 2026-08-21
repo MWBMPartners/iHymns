@@ -729,6 +729,82 @@ check(
     $bulkExportGoBlock !== '' && !str_contains($bulkExportGoBlock, 'load_songs')
 );
 
+/* =============================================================================
+ * 7. song_copyright_holders / song_copyright_holders_set — single-writer
+ *    unification (#1900 Wave 4 C8)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * #1900 adds a multi-holder copyright chip list alongside the pre-existing
+ * single-pick field. This section checks that BOTH write surfaces — the new
+ * `song_copyright_holders_set` case AND the pre-existing
+ * `ed2_songCopyrightHolderApply()` (itself called by `song_copyright_holder_set`
+ * and `metadata_field_update`'s `CopyrightHolder` alias) — funnel through the
+ * SAME server-side core (`songCopyrightHoldersReplace()`), never a second,
+ * forked resolve-and-write path for either surface.
+ *
+ * WHY A SOURCE-TEXT CHECK (no live DB in this container, same reasoning as
+ * sections 4/5). Case bodies are isolated via `$isolateCase`, the SAME
+ * helper section 5 already defines above — never a second copy of the same
+ * isolation logic (this file's own modularity rule, applied to itself).
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   rename the `songCopyrightHoldersReplace(` call inside
+ *   `case 'song_copyright_holders_set'` to `songCopyrightHoldersReplaceX(`  -> RED
+ *   reverted afterward                                                      -> GREEN
+ * ============================================================================= */
+
+echo "\n#1900 Wave 4 C8 — multi-holder copyright single-writer unification\n\n";
+
+check(
+    "api2.php has a 'song_copyright_holders' (GET, list) case",
+    (bool)preg_match("/case\s+'song_copyright_holders'\s*:/", $apiNoComments)
+);
+check(
+    "api2.php has a 'song_copyright_holders_set' (POST, replace) case",
+    (bool)preg_match("/case\s+'song_copyright_holders_set'\s*:/", $apiNoComments)
+);
+
+$holdersSetBody = $isolateCase($apiNoComments, 'song_copyright_holders_set');
+check("isolated the 'song_copyright_holders_set' case body", $holdersSetBody !== '');
+check(
+    'song_copyright_holders_set delegates to songCopyrightHoldersReplace() — the ONE #1900 write core',
+    $holdersSetBody !== '' && (bool)preg_match('/\bsongCopyrightHoldersReplace\s*\(/', $holdersSetBody)
+);
+check(
+    'song_copyright_holders_set does not resolve a publisher itself (no direct '
+        . 'publisherFindOrCreateByName()/publisherResolvePickedOrCreate() call) — that resolution '
+        . 'belongs ONLY to the core it delegates to, never a second inlined copy',
+    $holdersSetBody !== ''
+        && !preg_match('/\bpublisherFindOrCreateByName\s*\(|\bpublisherResolvePickedOrCreate\s*\(/', $holdersSetBody)
+);
+
+/* The single-writer unification's OTHER half: the pre-#1900 single-pick
+   write (ed2_songCopyrightHolderApply(), consumed by BOTH
+   song_copyright_holder_set and metadata_field_update's CopyrightHolder
+   alias) must ALSO delegate to the SAME core on a migrated install — proving
+   there is exactly one writer of tblSongCopyrightHolders + the
+   CopyrightHolder/CopyrightHolderId denorm regardless of which UI surface a
+   curator used (A.7). Isolated by function body (`function NAME(` to the
+   next top-level `function `) — the same "isolate, don't grep the whole
+   file" principle $isolateCase applies to a `case`, applied here to a PHP
+   function instead. */
+$phpFunctionBody = static function (string $src, string $name): string {
+    $start = strpos($src, 'function ' . $name . '(');
+    if ($start === false) { return ''; }
+    $next = strpos($src, "\nfunction ", $start + 10);
+    return substr($src, $start, $next === false ? strlen($src) : $next - $start);
+};
+$applyBody = $phpFunctionBody($apiNoComments, 'ed2_songCopyrightHolderApply');
+check('isolated the ed2_songCopyrightHolderApply() function body', $applyBody !== '');
+check(
+    'ed2_songCopyrightHolderApply() delegates to songCopyrightHoldersReplace() on a migrated install '
+        . '— the single-writer unification A.7 requires (no second CopyrightHolder/CopyrightHolderId '
+        . 'UPDATE path competing with the #1900 core)',
+    $applyBody !== '' && (bool)preg_match('/\bsongCopyrightHoldersReplace\s*\(/', $applyBody)
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
