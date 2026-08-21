@@ -1599,17 +1599,18 @@ try {
 
     <!-- =================================================================
          JAVASCRIPT DEPENDENCIES
-         Bootstrap 5.3 JS bundle (includes Popper for dropdowns) loaded
-         from CDN, followed by the editor's own JavaScript module.
+         Bootstrap 5.3 JS (includes Popper for dropdowns, incl. tabs and
+         other interactive components) arrives ONCE, from admin-footer.php
+         at the bottom of the page — followed by the editor's own
+         JavaScript module.
          ================================================================= -->
 
     <!-- Toast notification container — dynamically populated by editor.js -->
     <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
 
-    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other
-         interactive components. #1676: emitted by the shared helper so the version
-         tracks APP_CONFIG rather than a literal pinned here. -->
-    <?= ihymns_bootstrap_js_script() ?>
+    <?php /* Bootstrap JS is emitted ONCE, by admin-footer.php below (#1676's
+             shared emitter) — re-emitting here would double-load the bundle
+             and double-register its delegated data-API listeners (#1858). */ ?>
 
     <!-- Revision history modal (#400). Populated on demand when the
          History button is clicked; shows the timeline + side-by-side
