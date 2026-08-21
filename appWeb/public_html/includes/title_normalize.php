@@ -173,6 +173,63 @@ if (!function_exists('ihymns_normalize_title')) {
     }
 }
 
+if (!function_exists('ihymns_contains_spaceless_script')) {
+    /**
+     * ihymns_contains_spaceless_script() — #1908 Commit 5. Does a search
+     * query contain a character from a script that is normally written
+     * WITHOUT spaces between words?
+     *
+     * ELI5: English sentences have gaps between words, so MySQL's FULLTEXT
+     * index can find "grace" inside "Amazing grace" by looking for the gaps.
+     * Chinese/Japanese/Thai/Lao/Khmer/Burmese text is usually written as one
+     * unbroken run of characters with no gaps at all, so that same
+     * gap-finding trick can't cut it into separate words — FULLTEXT then
+     * finds nothing, even though the text is right there. This function just
+     * flags "hey, this query is in one of those no-gap scripts" so the
+     * caller can switch to a different search strategy for it.
+     *
+     * DETAILED / WHY THIS EXACT SET (rule #34 — narrow on purpose): these
+     * seven `\p{...}` Unicode script properties are EXACTLY the scripts whose
+     * normal prose has no inter-word whitespace, which is the one thing that
+     * defeats MySQL's built-in whitespace/punctuation FULLTEXT tokenizer
+     * (`ngram`/ICU parsers exist but are NOT installed here — see #1908 D7,
+     * deferred as a follow-up issue, not built in this pass):
+     *   - `\p{Han}`      — Chinese hanzi / Japanese kanji / (historic) Hanja
+     *   - `\p{Hiragana}` — Japanese hiragana
+     *   - `\p{Katakana}` — Japanese katakana
+     *   - `\p{Thai}`     — Thai
+     *   - `\p{Lao}`      — Lao
+     *   - `\p{Khmer}`    — Khmer (Cambodian)
+     *   - `\p{Myanmar}`  — Burmese
+     * Scripts DELIBERATELY EXCLUDED because they DO use inter-word spaces in
+     * normal writing, so the existing whitespace-tokenized FULLTEXT arm
+     * already segments and finds them correctly — adding them here would be
+     * both redundant and would wrongly divert a working query onto the
+     * (unranked) LIKE-only path:
+     *   - Hangul (Korean) — Korean prose is space-delimited at the word
+     *     (eojeol) level, e.g. "예수 사랑하심은".
+     *   - Cyrillic, Greek — European alphabetic scripts, space-delimited
+     *     exactly like Latin.
+     *   - Arabic, Hebrew — right-to-left, but STILL space-delimited between
+     *     words (harakat/niqqud are combining marks WITHIN a word, not a
+     *     substitute for the inter-word space).
+     *   - Devanagari (Hindi/Sanskrit/Marathi/…) — space-delimited at the
+     *     word level like Latin, despite the connecting "shirorekha" head
+     *     line making it visually look continuous.
+     *
+     * @param string $q The raw (unfolded) search query as typed by the user.
+     * @return bool True when $q contains at least one code point from one of
+     *              the space-less scripts listed above.
+     * @see includes/SongData.php  searchSongs() — the caller (#1908 Commit 5)
+     * @link https://www.php.net/manual/en/regexp.reference.unicode.php  PCRE \p{...} Unicode property classes
+     * @link https://dev.mysql.com/doc/refman/8.0/en/fulltext-fine-tuning.html  MySQL FULLTEXT's built-in parser is whitespace/punctuation based
+     */
+    function ihymns_contains_spaceless_script(string $q): bool
+    {
+        return (bool)preg_match('/[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}\p{Lao}\p{Khmer}\p{Myanmar}]/u', $q);
+    }
+}
+
 if (!function_exists('ihymns_search_fold')) {
     /**
      * ihymns_search_fold() — the ONE fold point for diacritic/apostrophe/script-

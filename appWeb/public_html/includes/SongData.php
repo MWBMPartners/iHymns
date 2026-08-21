@@ -3174,47 +3174,67 @@ class SongData
         if (mb_strlen($query) < 3 || empty($tokens)) {
             $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags, $sortSpec);
         } else {
-            /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
-               term prefix-matched AND required (+term*). Catches partial
-               words ("amaz grac" → "Amazing Grace") the way the old Fuse
-               index did, while staying a live, indexed MySQL query.
-               A scripture reference ORs in its canonical expansion so
-               "Ps 23" still reaches "Psalm 23" (#397). */
-            $primary = self::_booleanPrefixExpr($tokens, true);
-            if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
-                $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
-                if ($expExpr !== '') {
-                    $primary = '(' . $primary . ') (' . $expExpr . ')';
-                }
+            /* #1908 Commit 5 — space-less-script arm. MySQL's built-in
+               FULLTEXT parser segments words on whitespace/punctuation, so a
+               3+-char CJK/Thai/Lao/Khmer/Burmese query (normally written
+               with NO gaps between "words") tokenizes as one giant unmatched
+               blob and the boolean-prefix passes below return nothing — even
+               though the substring is right there in the title. The plain
+               substring scan (_searchByLike(), already the <3-char route
+               above) doesn't care about word boundaries at all, so it just
+               works for these scripts; try it FIRST and only fall through to
+               the untouched FULLTEXT ladder if it comes up empty. A Latin/
+               Cyrillic/Greek/Hangul/Arabic/Hebrew/Devanagari query never
+               matches the predicate, so this arm is a no-op for them and the
+               FULLTEXT path below stays byte-identical to before (see D7 in
+               the #1908 plan for why the heavier WITH PARSER ngram index
+               upgrade is a deferred follow-up, not built here). */
+            if (ihymns_contains_spaceless_script($query)) {
+                $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags, $sortSpec);
             }
-
-            /* Folded twin of $primary — built from the folded query the SAME
-               way (scripture expansion folded and OR-ed in too), so the folded
-               arm mirrors the raw arm term-for-term. */
-            $foldedPrimary = '';
-            $foldedLoose   = '';
-            if ($foldReady) {
-                $foldedTokens = self::_tokenizeSearch(ihymns_search_fold($query));
-                if (!empty($foldedTokens)) {
-                    $foldedPrimary = self::_booleanPrefixExpr($foldedTokens, true);
-                    if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
-                        $foldedExp = self::_booleanPrefixExpr(self::_tokenizeSearch(ihymns_search_fold($scriptureExpansion)), true);
-                        if ($foldedExp !== '') {
-                            $foldedPrimary = '(' . $foldedPrimary . ') (' . $foldedExp . ')';
-                        }
-                    }
-                    $foldedLoose = self::_booleanPrefixExpr($foldedTokens, false);
-                }
-            }
-
-            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedPrimary, $foldedCols);
-
-            /* D2 hybrid — step 2: if requiring every term found nothing,
-               broaden to ANY term (drop the +) so a single mistyped
-               token doesn't sink the whole query. */
             if (empty($results)) {
-                $loose   = self::_booleanPrefixExpr($tokens, false);
-                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedLoose, $foldedCols);
+                /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
+                   term prefix-matched AND required (+term*). Catches partial
+                   words ("amaz grac" → "Amazing Grace") the way the old Fuse
+                   index did, while staying a live, indexed MySQL query.
+                   A scripture reference ORs in its canonical expansion so
+                   "Ps 23" still reaches "Psalm 23" (#397). */
+                $primary = self::_booleanPrefixExpr($tokens, true);
+                if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                    $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
+                    if ($expExpr !== '') {
+                        $primary = '(' . $primary . ') (' . $expExpr . ')';
+                    }
+                }
+
+                /* Folded twin of $primary — built from the folded query the SAME
+                   way (scripture expansion folded and OR-ed in too), so the folded
+                   arm mirrors the raw arm term-for-term. */
+                $foldedPrimary = '';
+                $foldedLoose   = '';
+                if ($foldReady) {
+                    $foldedTokens = self::_tokenizeSearch(ihymns_search_fold($query));
+                    if (!empty($foldedTokens)) {
+                        $foldedPrimary = self::_booleanPrefixExpr($foldedTokens, true);
+                        if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                            $foldedExp = self::_booleanPrefixExpr(self::_tokenizeSearch(ihymns_search_fold($scriptureExpansion)), true);
+                            if ($foldedExp !== '') {
+                                $foldedPrimary = '(' . $foldedPrimary . ') (' . $foldedExp . ')';
+                            }
+                        }
+                        $foldedLoose = self::_booleanPrefixExpr($foldedTokens, false);
+                    }
+                }
+
+                $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedPrimary, $foldedCols);
+
+                /* D2 hybrid — step 2: if requiring every term found nothing,
+                   broaden to ANY term (drop the +) so a single mistyped
+                   token doesn't sink the whole query. */
+                if (empty($results)) {
+                    $loose   = self::_booleanPrefixExpr($tokens, false);
+                    $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedLoose, $foldedCols);
+                }
             }
         }
 
