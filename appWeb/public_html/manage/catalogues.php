@@ -24,6 +24,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
@@ -582,9 +583,12 @@ if ($hasSchema && !empty($catalogues)) {
                            placeholder="e.g. Christmas / Advent">
                 </div>
                 <div class="col-md-3">
-                    <label class="form-label small mb-0">Slug <small class="text-muted">(auto if blank)</small></label>
-                    <input type="text" name="slug" class="form-control form-control-sm" maxlength="255"
-                           placeholder="christmas-advent">
+                    <?= ihymns_slug_advanced_field([
+                        'value'       => '',
+                        'maxlength'   => 255,
+                        'placeholder' => 'christmas-advent',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label small mb-0">Description</label>

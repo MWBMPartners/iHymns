@@ -21,6 +21,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
@@ -1210,13 +1211,14 @@ if ($hasSchema) {
                            placeholder="e.g. Amazing Grace">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Slug
-                        <small class="text-muted">(auto)</small>
-                    </label>
-                    <input type="text" name="slug" id="create-slug"
-                           class="form-control form-control-sm"
-                           maxlength="80" pattern="[a-z0-9-]+"
-                           placeholder="amazing-grace">
+                    <?= ihymns_slug_advanced_field([
+                        'id'          => 'create-slug',
+                        'value'       => '',
+                        'maxlength'   => 80,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'amazing-grace',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">ISWC <small class="text-muted">(optional)</small></label>
@@ -1374,10 +1376,13 @@ if ($hasSchema) {
                                            class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-work-slug"
-                                           class="form-control" maxlength="80"
-                                           pattern="[a-z0-9-]+">
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-work-slug',
+                                        'value'     => '',
+                                        'maxlength' => 80,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                    ]) ?>
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label">ISWC <small class="text-muted">(opt.)</small></label>

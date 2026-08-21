@@ -10,6 +10,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 /* Shared org-validation include (#719 PR 2c) — exports the
    ORG_MEMBER_ROLES const + slugifyOrganisationName(). Same helpers
@@ -694,8 +695,12 @@ $csrf = csrfToken();
                         <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required>
                     </div>
                     <div class="col-sm-3">
-                        <label class="form-label small">Slug (optional, auto-derived)</label>
-                        <input type="text" name="slug" class="form-control form-control-sm" maxlength="100" placeholder="auto">
+                        <?= ihymns_slug_advanced_field([
+                            'value'       => '',
+                            'maxlength'   => 100,
+                            'placeholder' => 'auto',
+                            'small'       => true,
+                        ]) ?>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small">Parent organisation</label>
@@ -775,9 +780,19 @@ $csrf = csrfToken();
                                value="<?= htmlspecialchars($editOrg['Name']) ?>">
                     </div>
                     <div class="col-sm-3">
-                        <label class="form-label small">Slug</label>
-                        <input type="text" name="slug" class="form-control form-control-sm" maxlength="100" required
-                               value="<?= htmlspecialchars($editOrg['Slug']) ?>">
+                        <?php /* #1870 — the client `required` attribute is deliberately
+                                 DROPPED here: a `required` control inside a *closed*
+                                 <details> blocks form submit with browser focus aimed at
+                                 an invisible field. The server's own 'Slug is required.'
+                                 check (organisations.php's update handler) already
+                                 answers the empty case — status/server-truth over a
+                                 client-side claim, rule #35's spirit. No other slug
+                                 input in this partial's callers carries `required`. */ ?>
+                        <?= ihymns_slug_advanced_field([
+                            'value'     => $editOrg['Slug'],
+                            'maxlength' => 100,
+                            'small'     => true,
+                        ]) ?>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small">Parent organisation</label>

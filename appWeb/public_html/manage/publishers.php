@@ -31,6 +31,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 /* The shared validate/persist/merge/delete cores. Both this page's POST
@@ -470,8 +471,13 @@ if ($hasSchema) {
                     <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Slug <small class="text-muted">(auto)</small></label>
-                    <input type="text" name="slug" class="form-control form-control-sm" maxlength="120" pattern="[a-z0-9-]+" placeholder="praise-trust">
+                    <?= ihymns_slug_advanced_field([
+                        'value'       => '',
+                        'maxlength'   => 120,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'praise-trust',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">Kind</label>
@@ -541,9 +547,14 @@ if ($hasSchema) {
                                     <input type="text" name="name" id="edit-publisher-name" class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-publisher-slug" class="form-control" maxlength="120" pattern="[a-z0-9-]+">
-                                    <div class="form-text small">Changing this changes <code>/publisher/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.</div>
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-publisher-slug',
+                                        'value'     => '',
+                                        'maxlength' => 120,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                        'help'      => 'Changing this changes <code>/publisher/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.',
+                                    ]) ?>
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label">Kind</label>
