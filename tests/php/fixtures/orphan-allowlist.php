@@ -326,7 +326,11 @@ return [
          * --------------------------------------------------------------- */
         'song_work_autolink'                    => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 1) is a tracked follow-up build',
         'song_work_set'                         => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
-        'work_search'                           => 'deliberate #1860 Phase 3; server core landed ahead of its client — Editor2 wiring (design §3.7 item 2) is a tracked follow-up build',
+        /* 'work_search' entry removed (#1907 Phase-5 Commit 4): it now has a real
+           caller — the Structure-tab per-section Source-work picker
+           (structure-tab.js) — so it is no longer an orphan. song_work_autolink /
+           song_work_set stay allowlisted until Commit 9 wires their metadata-tab
+           clients. */
         /* #1862's 'song_copyright_holder_set' temporary entry (B2 server-
            core-ahead-of-client) was HERE and has been removed — self-
            cleaning, as designed: metadata-tab.js's holder picker +

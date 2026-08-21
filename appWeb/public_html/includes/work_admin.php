@@ -1064,8 +1064,8 @@ function workAutolinkSafe(\mysqli $db, string $songId, string $ccliRaw, string $
 }
 
 /* ============================================================================
- * DESIGN NOTES — recorded here per the build spec §2.4, NOT implemented in
- * this file. Read before "helpfully" adding either of these.
+ * DESIGN NOTE — recorded here per the build spec §2.4, NOT implemented in
+ * this file. Read before "helpfully" adding it.
  * ========================================================================== */
 
 /*
@@ -1078,9 +1078,419 @@ function workAutolinkSafe(\mysqli $db, string $songId, string $ccliRaw, string $
  * here. This core matches on identifiers ONLY, so it structurally cannot
  * fork — this note exists so a future backfill author doesn't "fix" that
  * into forking.
- *
- * MEDLEY WRITE HELPERS (`tblWorkComponents` attach/detach, with the
- * MedleyWorkId !== ComponentWorkId + bounded-depth cycle guards of design
- * §3.6): ship in Phase 5, WITH their `/manage/works` consumer. Schema now
- * (`migrate-work-identity-model.php`), helpers with the editor.
  */
+
+/* ============================================================================
+ * MEDLEY WRITE CORE — `tblWorkComponents` (#1860 Phase 5, §5.1 of
+ * `.claude/medley-component-work-1860-phase5-plan.md`; design doc §3.6/§3.6b)
+ * ==============================================================================
+ *
+ * ELI5
+ * ----
+ * A medley is a song stitched together from OTHER songs/works — verse from
+ * one hymn, chorus from another. `tblWorkComponents` is the guest list: "this
+ * medley Work CONTAINS these constituent Works". These five functions are the
+ * ONE place anything reads or writes that guest list (rule #22) — both the
+ * `component_upsert` lockstep below (§5.2) and the future `/manage/works`
+ * constituent editor (Commit 6) call THESE, never a second copy of the INSERT
+ * or the cycle check.
+ *
+ * DETAILED / WHY
+ * ---------------
+ * `tblWorkComponents` is a plain M:N join (`MedleyWorkId`, `ComponentWorkId`)
+ * — DELIBERATELY NOT `ParentWorkId` (design §3.2: `ParentWorkId` means
+ * *is-a-variant-of*; this table means *contains*). The DB cannot express
+ * "never a work medley-of-itself" or "never a containment cycle" — those are
+ * app-level guards every writer here funnels through:
+ *
+ *   - `$medleyId !== $componentId` (no self-containment);
+ *   - both ids must resolve via `workExists()` (no dangling FK attempt —
+ *     mirrors `song_work_set`'s existence check, `workExists()` above);
+ *   - `workMedleyWouldCycle()` — a bounded-depth BFS over the constituent
+ *     graph FROM the work about to become a constituent, refusing an attach
+ *     that would make the medley reachable from its own new component (A
+ *     contains B contains A). Mirrors `tblSongRedirects`' own
+ *     "transitive + cycle-guarded" posture (design §3.6b BFS note).
+ *
+ * `workMedleyAttach()` is the ONE write primitive (an idempotent upsert —
+ * `INSERT … ON DUPLICATE KEY UPDATE MedleyWorkId = MedleyWorkId`, the EXACT
+ * no-op-on-duplicate shape `workLinkSongRow()` above already uses for
+ * `tblWorkSongs`) that both consumers build on:
+ *
+ *   - the `component_upsert` LOCKSTEP (§5.2, design §3.6b.2/SD2) calls it
+ *     per work-membership, ADDITIVE ONLY — it NEVER updates an existing row's
+ *     `SortOrder`/`Note` (a curator's own `/manage/works` ordering must never
+ *     be silently overwritten by an unrelated section save) and NEVER
+ *     deletes on a section's link being cleared (design §3.3.1's "never
+ *     auto-unlink" posture, reapplied to this table);
+ *   - `workMedleyReplace()` (Commit 6's works.php full-form reconcile) is
+ *     built ENTIRELY out of it too — DELETE the medley's current rows, then
+ *     re-`workMedleyAttach()` each validated row, so the self-link/exists/
+ *     cycle guards are enforced exactly once, not duplicated into a second
+ *     INSERT statement (rule #22).
+ *
+ * Every public function here is FRAMEWORK-FREE and runs inside the CALLER's
+ * transaction (this file opens no BEGIN/COMMIT anywhere — the
+ * `song_relocate.php` contract this file already follows above, restated at
+ * §5.1's own top). None of them throw for an ordinary guard failure (not
+ * ready / self-link / missing work / would-cycle) — they answer `false`/`0`
+ * and let the caller decide whether that is worth surfacing; `workMedleyReady()`
+ * memoises like `workAdminReady()` right above it, catching down to `false`
+ * on ANY probe failure rather than letting an un-migrated install's missing
+ * table surface as an uncaught STRICT-mode throw (rule #19).
+ *
+ * @link .claude/ilyrics-internal-ids-work-model-plan.md §3.6/§3.6b  the design this implements
+ * @link .claude/medley-component-work-1860-phase5-plan.md §5  the locked implementation spec
+ * @link appWeb/public_html/manage/editor/api2.php  component_upsert — the §5.2 lockstep consumer
+ * @link appWeb/.sql/schema.sql  tblWorkComponents — PRIMARY KEY (MedleyWorkId, ComponentWorkId)
+ * @see #1860
+ * ========================================================================== */
+
+/**
+ * ELI5: "has this install run the migration that creates the medley table
+ * yet?" — asked once per request and remembered, the exact `static`-memoised
+ * idiom `workAdminReady()` uses above (`:138`).
+ *
+ * DETAILED: `tblWorkComponents` (`migrate-work-identity-model.php`) is a
+ * SEPARATE migration card from the `tblWorks`/`tblWorkSongs` core
+ * `workAdminReady()` gates, applied web-run and independently orderable
+ * (rule #41's "migrations are not auto-applied" applies here too) — so an
+ * install can have `workAdminReady() === true` (songs already linking to
+ * works) while `tblWorkComponents` still does not exist. Every medley
+ * function below funnels through THIS gate before touching the table.
+ *
+ * @param \mysqli $db
+ * @return bool
+ */
+function workMedleyReady(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorkComponents'"
+        );
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $cached = $row !== null && (int)$row['n'] > 0;
+    } catch (\Throwable $e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * A medley Work's constituent list, display-ready and in curator order.
+ * Feeds the read-only "Medley of: A, B, C" line (Editor2 Commit 9, public
+ * song/work pages Commit 7) and the `/manage/works` edit-form hydration
+ * (Commit 6) for a SINGLE medley.
+ *
+ * ELI5: "what does this medley contain, in the order it should be shown?"
+ *
+ * @param \mysqli $db
+ * @param int     $medleyWorkId
+ * @return list<array{workId:int, title:string, slug:string, sortOrder:int, note:?string}>
+ *         `[]` on an un-migrated install (rule #19 — never a bare query that
+ *         would throw under STRICT) or a medley with no constituents.
+ */
+function workMedleyConstituents(\mysqli $db, int $medleyWorkId): array
+{
+    if (!workMedleyReady($db)) {
+        return [];
+    }
+    $stmt = $db->prepare(
+        'SELECT wc.ComponentWorkId AS WorkId, w.Title AS Title, w.Slug AS Slug,
+                wc.SortOrder AS SortOrder, wc.Note AS Note
+           FROM tblWorkComponents wc
+           JOIN tblWorks w ON w.Id = wc.ComponentWorkId
+          WHERE wc.MedleyWorkId = ?
+          ORDER BY wc.SortOrder, w.Title'
+    );
+    $stmt->bind_param('i', $medleyWorkId);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $out = [];
+    while ($row = $res->fetch_assoc()) {
+        $out[] = [
+            'workId'    => (int)$row['WorkId'],
+            'title'     => (string)$row['Title'],
+            'slug'      => (string)$row['Slug'],
+            'sortOrder' => (int)$row['SortOrder'],
+            'note'      => $row['Note'] !== null ? (string)$row['Note'] : null,
+        ];
+    }
+    $stmt->close();
+    return $out;
+}
+
+/**
+ * Bulk variant of `workMedleyConstituents()` for a batch of medleys in ONE
+ * query — the shape `_worksMap()` (Commit 7) and `ed2_buildSongSnapshot()`
+ * (Commit 9) need: several works resolved in a single request, several of
+ * which might themselves be medleys, so a per-row `workMedleyConstituents()`
+ * call in a loop would be an N+1 (the `SongData.php` IN()-list precedent this
+ * mirrors, e.g. `:1096`).
+ *
+ * ELI5: "for ALL of these medleys at once, what does each one contain?"
+ *
+ * @param \mysqli    $db
+ * @param list<int>  $medleyWorkIds
+ * @return array<int, list<array{workId:int, title:string, slug:string, sortOrder:int, note:?string}>>
+ *         Keyed by `medleyWorkId`. A medley id with no constituent rows is
+ *         simply ABSENT from the returned array (never an empty-array key —
+ *         callers use `$map[$id] ?? []`, matching every other bulk-map
+ *         helper in this codebase). `[]` on an un-migrated install or an
+ *         empty/all-invalid `$medleyWorkIds`.
+ */
+function workMedleyConstituentsMap(\mysqli $db, array $medleyWorkIds): array
+{
+    $ids = array_values(array_unique(array_filter(
+        array_map('intval', $medleyWorkIds),
+        static fn(int $id): bool => $id > 0
+    )));
+    if (!workMedleyReady($db) || $ids === []) {
+        return [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare(
+        "SELECT wc.MedleyWorkId AS MedleyWorkId, wc.ComponentWorkId AS WorkId,
+                w.Title AS Title, w.Slug AS Slug, wc.SortOrder AS SortOrder, wc.Note AS Note
+           FROM tblWorkComponents wc
+           JOIN tblWorks w ON w.Id = wc.ComponentWorkId
+          WHERE wc.MedleyWorkId IN ($placeholders)
+          ORDER BY wc.MedleyWorkId, wc.SortOrder, w.Title"
+    );
+    $types = str_repeat('i', count($ids));
+    $stmt->bind_param($types, ...$ids);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $out = [];
+    while ($row = $res->fetch_assoc()) {
+        $mid = (int)$row['MedleyWorkId'];
+        $out[$mid][] = [
+            'workId'    => (int)$row['WorkId'],
+            'title'     => (string)$row['Title'],
+            'slug'      => (string)$row['Slug'],
+            'sortOrder' => (int)$row['SortOrder'],
+            'note'      => $row['Note'] !== null ? (string)$row['Note'] : null,
+        ];
+    }
+    $stmt->close();
+    return $out;
+}
+
+/**
+ * Would attaching `$componentId` as a constituent of `$medleyId` close a
+ * containment loop? Bounded-depth BFS starting FROM `$componentId`, walking
+ * its OWN constituents (treating it as a medley in turn) outward — the
+ * question is "can you get back to `$medleyId` by repeatedly asking 'what
+ * does this contain'?", because that is exactly the cycle a fresh
+ * `(MedleyWorkId=$medleyId, ComponentWorkId=$componentId)` row would close
+ * (design §3.6's bounded-depth guard; mirrors `tblSongRedirects`'
+ * "transitive + cycle-guarded" posture).
+ *
+ * ELI5: "if I make B a piece of medley A, does B (however many layers down)
+ * already contain A?" — if yes, attaching would make A contain B contain …
+ * contain A, a loop with no meaningful "what does this medley play" answer.
+ *
+ * DETAILED: a plain BFS with a visited-set (never re-queries the same work
+ * twice, so a diamond-shaped graph — two different medleys sharing one
+ * constituent — costs one query per distinct node, not one per PATH) plus a
+ * hard `$maxDepth` (default 8, matching `workAdminReady()`-gated callers'
+ * everyday medley depth many times over) so a pathological/corrupted graph
+ * cannot turn one `component_upsert` save into an unbounded query storm.
+ * Self-gated on `workMedleyReady()` (returns `false` — "no cycle to find" —
+ * on an un-migrated install, rule #19) even though every caller already
+ * gates before reaching here; a helper that trusts its own safety, not only
+ * its callers', is the `workMedleyConstituents()` posture repeated.
+ *
+ * @param \mysqli $db
+ * @param int     $medleyId     The work that WOULD contain `$componentId`.
+ * @param int     $componentId  The work about to become a constituent.
+ * @param int     $maxDepth     BFS hop cap (default 8).
+ * @return bool `true` when `$medleyId` is reachable from `$componentId` —
+ *              attaching would create a cycle.
+ */
+function workMedleyWouldCycle(\mysqli $db, int $medleyId, int $componentId, int $maxDepth = 8): bool
+{
+    if (!workMedleyReady($db)) {
+        return false;
+    }
+
+    $visited = [$componentId => true];
+    $queue   = [[$componentId, 0]];
+
+    while ($queue !== []) {
+        [$current, $depth] = array_shift($queue);
+        if ($depth >= $maxDepth) {
+            continue;   // depth cap — stop expanding this branch, keep draining the queue
+        }
+
+        $stmt = $db->prepare('SELECT ComponentWorkId FROM tblWorkComponents WHERE MedleyWorkId = ?');
+        $stmt->bind_param('i', $current);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $child = (int)$row['ComponentWorkId'];
+            if ($child === $medleyId) {
+                $stmt->close();
+                return true;   // $medleyId is reachable from $componentId -> attaching would close the loop
+            }
+            if (!isset($visited[$child])) {
+                $visited[$child] = true;
+                $queue[] = [$child, $depth + 1];
+            }
+        }
+        $stmt->close();
+    }
+
+    return false;
+}
+
+/**
+ * Attach `$componentId` as a constituent of medley `$medleyId` — the ONE
+ * write primitive both the §5.2 lockstep and `workMedleyReplace()` build on
+ * (rule #22; NEVER re-forked into a second INSERT statement).
+ *
+ * Guards, in order (short-circuit — the FIRST failing guard skips every DB
+ * call after it, so a self-link or not-ready install costs at most the
+ * `workMedleyReady()` probe):
+ *   1. `workMedleyReady($db)` — un-migrated install, refuse.
+ *   2. `$medleyId !== $componentId` — never a work medley-of-itself.
+ *   3. both ids resolve via `workExists()` — never a dangling FK attempt.
+ *   4. `!workMedleyWouldCycle($db, $medleyId, $componentId)` — never close a
+ *      containment loop.
+ *
+ * Then an IDEMPOTENT upsert: `INSERT … ON DUPLICATE KEY UPDATE
+ * MedleyWorkId = MedleyWorkId` — the exact no-op-on-duplicate shape
+ * `workLinkSongRow()` (`:517-544`) already uses for `tblWorkSongs`. **This is
+ * SD2's load-bearing property**: a row that already exists is left
+ * COMPLETELY untouched — `$sortOrder`/`$note` on THIS call are silently
+ * discarded for an existing row, never applied as an update. That is
+ * deliberate, not an oversight: the §5.2 lockstep calls this on every
+ * `component_upsert` whose section still carries a `sourceWorkId` (whether
+ * newly set or merely preserved from a previous save), so re-attaching an
+ * already-linked pair must be a true no-op — otherwise an unrelated section
+ * save would silently overwrite a curator's own `/manage/works` ordering.
+ *
+ * @param \mysqli     $db
+ * @param int         $medleyId    The work that would CONTAIN `$componentId`.
+ * @param int         $componentId The work becoming a constituent.
+ * @param int         $sortOrder   Seed value for a NEW row only (SD2);
+ *                                 clamped to >= 0 (the column is UNSIGNED).
+ * @param string|null $note        Seed value for a NEW row only; trimmed and
+ *                                 capped to the column's 255 chars, empty
+ *                                 folds to `null`.
+ * @return bool Whether a `(MedleyWorkId, ComponentWorkId)` row exists AFTER
+ *              this call — read back from the database (rule #35), not
+ *              inferred from `affected_rows` (which the `ON DUPLICATE KEY`
+ *              no-op path reports as `0`, indistinguishable from "refused").
+ */
+function workMedleyAttach(\mysqli $db, int $medleyId, int $componentId, int $sortOrder = 0, ?string $note = null): bool
+{
+    if (!workMedleyReady($db)) {
+        return false;
+    }
+    if ($medleyId === $componentId) {
+        return false;   // never a work medley-of-itself
+    }
+    if (!workExists($db, $medleyId) || !workExists($db, $componentId)) {
+        return false;
+    }
+    if (workMedleyWouldCycle($db, $medleyId, $componentId)) {
+        return false;
+    }
+
+    $sortOrder = max(0, $sortOrder);   // SortOrder is INT UNSIGNED — a negative would throw under STRICT
+    $note      = ($note !== null && trim($note) !== '') ? mb_substr(trim($note), 0, 255) : null;
+
+    $ins = $db->prepare(
+        'INSERT INTO tblWorkComponents (MedleyWorkId, ComponentWorkId, SortOrder, Note)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE MedleyWorkId = MedleyWorkId'
+    );
+    $ins->bind_param('iiis', $medleyId, $componentId, $sortOrder, $note);
+    $ins->execute();
+    $ins->close();
+
+    $chk = $db->prepare('SELECT 1 FROM tblWorkComponents WHERE MedleyWorkId = ? AND ComponentWorkId = ? LIMIT 1');
+    $chk->bind_param('ii', $medleyId, $componentId);
+    $chk->execute();
+    $exists = $chk->get_result()->fetch_row() !== null;
+    $chk->close();
+
+    return $exists;
+}
+
+/**
+ * The `/manage/works` full-form reconcile (Commit 6): replace medley
+ * `$medleyId`'s ENTIRE constituent list with `$rows` in one curator save —
+ * DELETE what is there, then re-`workMedleyAttach()` each validated row.
+ * Deliberately built OUT OF `workMedleyAttach()` rather than a second INSERT
+ * (rule #22): every guard (self-link / exists / cycle) applies identically
+ * to a hand-edited list as to the automatic lockstep, with no second place
+ * those checks could drift apart.
+ *
+ * ELI5: "here is the medley's whole ingredient list now — replace whatever
+ * was there before with exactly this."
+ *
+ * DETAILED: an invalid row (missing/non-positive `workId`, or a row
+ * `workMedleyAttach()` itself refuses — self-link, unknown work, cycle) is
+ * SKIPPED with `error_log()`, never a thrown exception — a single bad row
+ * in a curator's edit must not cost them the whole save (mirrors
+ * `workAutolinkSafe()`'s "the save must never notice" posture, `:1031-1064`,
+ * applied to a form submit instead of an autolink). The DELETE runs even
+ * when `$rows` is empty (a curator emptying the list is a valid, deliberate
+ * edit — not the §3.3.1 "never auto-unlink" posture, which is about
+ * SourceWorkId identifier clearing on a SONG, an entirely different write
+ * path from a curator explicitly editing a WORK's own constituent list here).
+ *
+ * @param \mysqli $db
+ * @param int     $medleyId
+ * @param list<array{workId?:mixed, sortOrder?:mixed, note?:mixed}> $rows
+ * @return int Count of rows actually inserted (i.e. `workMedleyAttach()`
+ *             returned `true`) — NOT `count($rows)`, since invalid/refused
+ *             rows are silently skipped.
+ */
+function workMedleyReplace(\mysqli $db, int $medleyId, array $rows): int
+{
+    if (!workMedleyReady($db)) {
+        return 0;
+    }
+
+    $del = $db->prepare('DELETE FROM tblWorkComponents WHERE MedleyWorkId = ?');
+    $del->bind_param('i', $medleyId);
+    $del->execute();
+    $del->close();
+
+    $inserted = 0;
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            error_log('[work medley] workMedleyReplace: skipped a non-array row for medley ' . $medleyId);
+            continue;
+        }
+        $workId = isset($row['workId']) ? (int)$row['workId'] : 0;
+        if ($workId <= 0) {
+            error_log('[work medley] workMedleyReplace: skipped an invalid workId for medley ' . $medleyId);
+            continue;
+        }
+        $sortOrder = isset($row['sortOrder']) ? (int)$row['sortOrder'] : 0;
+        $note      = isset($row['note']) && $row['note'] !== null ? (string)$row['note'] : null;
+
+        try {
+            if (workMedleyAttach($db, $medleyId, $workId, $sortOrder, $note)) {
+                $inserted++;
+            } else {
+                error_log('[work medley] workMedleyReplace: attach refused for medley ' . $medleyId . ' -> ' . $workId);
+            }
+        } catch (\Throwable $e) {
+            error_log('[work medley] workMedleyReplace: ' . $e->getMessage());
+        }
+    }
+    return $inserted;
+}

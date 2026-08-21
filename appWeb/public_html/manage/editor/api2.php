@@ -2879,6 +2879,67 @@ try {
             foreach ($comps as $idx => $c) { if (!empty($c['_target'])) { $targetPos = $idx; break; } }
             $after  = ed2_currentComponents($db, $songId);
             $compId = isset($after[$targetPos]['id']) ? (int)$after[$targetPos]['id'] : $compId;
+
+            /* #1860 §3.6b.2 — additive work-grain lockstep (SD2,
+               `.claude/medley-component-work-1860-phase5-plan.md` §5.2).
+               Setting a section's source work on a song that belongs
+               (tblWorkSongs) to other work(s) upserts the matching
+               (MedleyWorkId, ComponentWorkId) rows on `tblWorkComponents` —
+               "a section sourcing a DIFFERENT work than its song's own
+               membership IS the stitching evidence" (design §3.6b). ADDITIVE
+               ONLY: never removes on a section link being CLEARED (§3.3.1's
+               never-auto-unlink posture, reapplied to this table);
+               `workMedleyAttach()` itself never overwrites an existing row's
+               SortOrder/Note (SD2 — a curator's own /manage/works ordering
+               must never be silently touched by an unrelated section save).
+               Runs under component_upsert's OWN file-level editor gate +
+               X-Requested-With CSRF gate (rule #29) — deliberately NOT
+               clamped to manage_works: this is an ADDITIVE CONSEQUENCE of an
+               edit the curator can already make (setting a section's source
+               work), not the destructive/orderly medley editing that stays
+               behind manage_works on works.php (§6). Flagged in the PR body
+               for owner veto per the spec.
+
+               NON-BLOCKING (own try/catch, NOT the outer one): this sits
+               INSIDE the handler's existing transaction, so an uncaught
+               throw here would propagate to the outer catch and roll back
+               the WHOLE section save over a work-grain concern — exactly
+               what "the section save must never fail on a work concern"
+               forbids. Every ordinary guard failure inside workMedleyAttach()
+               (not ready / self-link / missing work / would-cycle) already
+               returns false rather than throwing, so this catch is a
+               belt-and-braces net for a genuine DB hiccup — mirrors
+               `ed2_touchRevision()`'s own catch immediately below and
+               `workAutolinkSafe()`'s $ownTransaction=false mode
+               (work_admin.php `:1054-1063`): re-throw ONLY when
+               songRelocateIsTransactionFatal() says the caller's transaction
+               is already dead (a deadlock/lock-wait-timeout victim — #1688
+               A1), because swallowing THAT would let $db->commit() below
+               succeed trivially over a rolled-back transaction (a false
+               "ok:true"). Every other throwable is logged and swallowed. */
+            if ($sourceWorkId !== null && workAdminReady($db) && workMedleyReady($db)) {
+                try {
+                    $memberStmt = $db->prepare('SELECT WorkId FROM tblWorkSongs WHERE SongId = ?');
+                    $memberStmt->bind_param('s', $songId);
+                    $memberStmt->execute();
+                    $memberRes = $memberStmt->get_result();
+                    $memberWorkIds = [];
+                    while ($memberRow = $memberRes->fetch_assoc()) {
+                        $memberWorkIds[] = (int)$memberRow['WorkId'];
+                    }
+                    $memberStmt->close();
+                    foreach ($memberWorkIds as $mw) {
+                        if ($mw !== $sourceWorkId) {
+                            workMedleyAttach($db, $mw, $sourceWorkId, $sortOrder /* the section's */, null);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    if (songRelocateIsTransactionFatal($e)) { throw $e; }
+                    error_log('[work medley lockstep] ' . $songId . ': ' . $e->getMessage());
+                    /* swallow — a work-grain hiccup must never fail the section save */
+                }
+            }
+
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();
         } catch (\Throwable $e) {
