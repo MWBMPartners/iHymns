@@ -730,6 +730,7 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     SortOrder   INT UNSIGNED    NOT NULL COMMENT 'Display order within the song',
     Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
     SourceWorkId INT UNSIGNED   NULL DEFAULT NULL COMMENT 'Optional provenance: the Work this section excerpts (medley stitching, #1860 §3.6b). Links the WORK, not a songbook song, so it survives songbook re-keys (#1679). NULL = whole-song default (the song''s own tblWorkSongs membership). DORMANT until Phase 5 wires component_upsert',
+    Label       VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional custom DISPLAY name for this section, overriding the derived "Type Number" heading (e.g. a Zulu verse shown as "isiZulu", a "Kyrie"). DISPLAY-ONLY: Type stays authoritative for CSS highlighting, arrangement resolution, chorus-repeat and machine-export section keywords. NULL = derive from Type+Number (stored NULL when a typed label equals the derived name, rule #27). Rendered inside the section''s own lang/dir context (#858). Per-section override sibling of Language (#858) and SourceWorkId (#1860 §3.6b). DORMANT until the #1860 Phase-5 wiring reads it',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),

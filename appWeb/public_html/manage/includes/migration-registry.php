@@ -4364,4 +4364,19 @@ return [
             }
         },
     ],
+
+    'component-label' => [
+        'script' => 'migrate-add-component-label.php',
+        'card' => [
+            'title'  => 'Custom component labels (#1860 Phase 5)',
+            'body'   => 'Adds <code>tblSongComponents.Label</code> — an optional custom DISPLAY'
+                      . ' name for one section ("Kyrie", "isiZulu"), overriding the derived'
+                      . ' "Verse 1" heading. Display-only: <code>Type</code> stays authoritative'
+                      . ' for styling, arrangement and machine exports. Additive, idempotent,'
+                      . ' dormant until a curator sets a label. Safe to re-run.',
+            'button' => 'Run Component Label Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongComponents', 'Label'),
+    ],
 ];
