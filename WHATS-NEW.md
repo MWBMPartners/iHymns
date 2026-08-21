@@ -41,6 +41,23 @@ with none of the behind-the-scenes technical detail.
 - **Medleys** — A song that stitches several hymns together can now be recorded
   as a medley — an ordered list of the songs it's made from — and its page shows
   a "Medley of: …" line so everyone can see what it's built from.
+- **Alternative titles now survive export and re-import** — If you export a
+  song and bring it back in later, any alternative titles it had travel with
+  it instead of being quietly dropped.
+- **Keyboard-friendly search results** — On the search page, press the down
+  arrow from the search box to move into the results list, keep arrowing to
+  step between them, and press Enter to open the one you've landed on.
+- **See what changed before you restore an old version** — The Song Editor's
+  history list now shows exactly what each past edit changed, so you can tell
+  what you're restoring before you commit to it.
+- **Handle several songs at once** — In the Song Editor you can now select a
+  batch of songs and move, delete, or export them together in one go.
+- **Preview a bulk import before it saves anything** — When importing a ZIP
+  of songs, tick "preview only" first to see what would be added or skipped
+  without actually saving it — useful for checking an unfamiliar bundle before
+  committing to it.
+- **More than one copyright holder** — A song can now list several copyright
+  holders in order, for the cases where credit is genuinely shared.
 
 ## 0.5160.0 — 12 August 2026
 

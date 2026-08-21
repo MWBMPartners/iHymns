@@ -655,7 +655,10 @@ foreach ($sections as $s) {
                             right (Metadata, Structure, Credits, Links, Tags, Media,
                             Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
-                            (verify, tag, move to another songbook, export, delete).
+                            (verify, tag, move to another songbook, export, delete) &mdash;
+                            each action reports a per-song result, so a batch that partly
+                            fails (e.g. moving ten songs when one is already at the target
+                            songbook) still tells you exactly which songs succeeded.
                             <br><strong>Deleting is recoverable.</strong> A deleted song
                             disappears from the app, from search and from this sidebar, but it is not
                             destroyed &mdash; it moves to <a href="#deleted-songs">Deleted Songs</a>,
@@ -673,8 +676,10 @@ foreach ($sections as $s) {
                             song is actually in before they play it. Tempo accepts 20–400 BPM; the key
                             and time-signature lists are fixed, so a typo cannot be saved.</p>
                             <p class="mt-2 mb-0"><strong>Copyright &amp; public domain (fills itself in)</strong> — type
-                            <em>Copyright year(s)</em> and <em>Copyright Holder</em> (a find-or-create picker
-                            into the publisher registry, same as a songbook's Publisher field) and a live
+                            <em>Copyright year(s)</em> and add <em>Copyright Holders</em> as an ordered list — a
+                            find-or-create picker into the publisher registry (same as a songbook's Publisher
+                            field) lets you add, remove and reorder as many holders as the song genuinely has;
+                            the first-listed holder is the one the displayed copyright line uses. A live
                             <em>&ldquo;Displayed as: &hellip;&rdquo;</em> line shows exactly what will print on the
                             public page — no separate step, no free-text line to keep in sync by hand. Only if
                             you need a genuinely custom statement does a <em>&ldquo;Custom statement
@@ -735,7 +740,7 @@ foreach ($sections as $s) {
                         <dd>Read-only render of the finished song as users will see it.</dd>
                         <dt>Revisions</dt>
                         <dd>
-                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. There is no side-by-side comparison here yet, so if you are unsure which row you want, restore the most likely one and check the song: Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
+                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. <strong>Click a row to see what changed</strong> &mdash; a field-by-field summary of exactly what that edit added, removed or altered (lyrics sections, credits, metadata and more), so you know what you're restoring before you commit to it. Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
                         </dd>
                     </dl>
                     <h3 class="h6">Saving, importing, exporting</h3>
@@ -758,6 +763,7 @@ foreach ($sections as $s) {
                         Both file kinds may be mixed in the same archive — the importer dispatches per entry by extension. The summary shows how many of each format landed.
                     </p>
                     <ul>
+                        <li><strong>Preview only (dry run):</strong> tick <em>"Preview only"</em> before uploading to see what the import would create or skip — songbooks, songs, matches — without saving anything, so you can sanity-check an unfamiliar bundle before committing to it.</li>
                         <li><strong>INSERT-only contract:</strong> if a songbook or song already exists, it's left untouched — never overwritten. The summary reports created vs. existing counts so you can see what landed.</li>
                         <li><strong>Live progress widget:</strong> the upload completes almost immediately; the actual import runs in the background. A small fixed-position card pinned bottom-right polls the job status, shows a progress bar, and survives navigation between admin pages and the public app. Hard-reload the page mid-import and the widget reattaches.</li>
                         <li><strong>Notification on completion:</strong> a row is written to <a href="#notifications">Notifications</a> when the worker finishes, and (if you've granted permission) a native browser notification fires.</li>
