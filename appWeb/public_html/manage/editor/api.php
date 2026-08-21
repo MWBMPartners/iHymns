@@ -1296,6 +1296,34 @@ switch ($action) {
                 break;
             }
 
+            /* #1743 — three snapshot shapes coexist in tblSongRevisions.NewData
+               (and, since #1743-C2, chained PreviousData can now legitimately be
+               any of them): (1) editor-payload lowercase-keys {id,title,...}; (2)
+               v2 full-snapshot {song:{<Uppercase tblSongs row>}, components,
+               credits, tags, links} (ed2_buildSongSnapshot()); (3) bare
+               tblSongs-row Uppercase keys. This restore's scalar path below
+               only understands shapes (1)/(3) — Uppercase 'Title' present at the
+               top level. Unwrap shape (2) the same way ed2_applySongSnapshot()
+               does at api2.php ~:1604 ($songRow = $snap['song'] ?? $snap) so a
+               chained v2 full snapshot restores its scalars through the
+               existing isset($restorePayload['Title']) path below unchanged. */
+            if (is_array($restorePayload['song'] ?? null)) {
+                $restorePayload = $restorePayload['song'];
+            }
+
+            /* #1743 — shape guard. Before this guard, an editor-payload-shaped
+               (shape 1, lowercase 'title') PreviousData silently skipped the
+               entire scalar UPDATE below (isset($restorePayload['Title']) is
+               false for lowercase keys) yet the endpoint still answered
+               ok:true — a rule #30/#33 silent-no-op: the caller is told the
+               restore succeeded and nothing was written. Close that hole with
+               an honest 409 instead of a false success. */
+            if (!isset($restorePayload['Title'])) {
+                http_response_code(409);
+                echo json_encode(['error' => "This revision's snapshot is stored in the v2 editor format and cannot be restored here — use the v2 editor's Revisions tab."]);
+                break;
+            }
+
             /* Capture the current state so the new revision row's
                PreviousData matches reality (not the stale PreviousData
                from the chosen row). */
