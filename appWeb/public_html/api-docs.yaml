@@ -16548,6 +16548,114 @@ paths:
           description: songIds/name missing, or the name has no usable characters
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=bulk_move:
+    post:
+      operationId: editorBulkMove
+      tags: [Editor API v2]
+      summary: Move many songs to a different songbook, per-song verdicts (#1628 item 3)
+      description: |
+        POST, entitlement `bulk_edit_songs`. Each song is re-keyed through the
+        SAME songRelocate() core the single-song
+        `metadata_field_update` (field=songbook) action uses (#1679 — option
+        B: a move always mints a new canonical SongId, clears Number, and
+        leaves a permalink redirect). `targetAbbr` is validated ONCE, before
+        any song is touched — an unknown songbook answers 422 for the whole
+        request. Every song after that gets its OWN transaction and its own
+        verdict: one row that refuses (a stale FK, a concurrent edit) never
+        aborts the rest of the batch. `moved` carries the NEW ids — every
+        selected id is stale the instant this responds; a client MUST re-key
+        its own selection from this list rather than assume the old ids
+        still resolve directly (they only resolve via the redirect layer).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds, targetAbbr]
+              properties:
+                songIds: { type: array, items: { type: string }, maxItems: 300 }
+                targetAbbr: { type: string, example: CP }
+      responses:
+        "200":
+          description: Per-song verdicts (may include failures alongside successes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  moved:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        oldId: { type: string }
+                        newId: { type: string }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        error: { type: string }
+                        status: { type: integer, description: "422 (per-song refusal) or 500 (unexpected write failure)." }
+        "400":
+          description: songIds missing/empty, more than 300 songIds, or targetAbbr missing
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Unknown target songbook (checked once, before any song is touched)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=bulk_delete:
+    post:
+      operationId: editorBulkDelete
+      tags: [Editor API v2]
+      summary: Soft-delete many songs, per-song verdicts (#1628 item 3)
+      description: |
+        POST, entitlement `delete_songs` (the SAME single-song gate
+        `delete_song` uses — a bulk delete is that same destructive act
+        repeated, so the single-delete entitlement governs). Each song goes
+        through the SAME songSoftDelete() core `delete_song` uses (#1694):
+        the row is hidden (`IsDeleted=1`) and restorable from
+        `/manage/deleted-songs` — nothing is permanently removed, and no
+        redirect is written (that happens only at purge). `deleted` lists
+        the SongIds that succeeded; `failed` carries a verdict per row that
+        didn't (already deleted, absent, an unknown `reason`, or this
+        install hasn't applied the soft-delete migration).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds]
+              properties:
+                songIds: { type: array, items: { type: string }, maxItems: 300 }
+                reason: { type: string, description: "Optional — one of the app's songDeleteReasons() keys." }
+                note: { type: string }
+      responses:
+        "200":
+          description: Per-song verdicts (may include failures alongside successes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: array, items: { type: string }, description: SongIds successfully soft-deleted. }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        error: { type: string }
+                        status: { type: integer, description: "404 absent / 409 already deleted or un-migrated / 422 unknown reason." }
+        "400":
+          description: songIds missing/empty, or more than 300 songIds
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================

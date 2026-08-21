@@ -162,6 +162,24 @@ export const editorApi = {
        and the toolbar button are what make it reachable, and their absence for
        part of a day is exactly the orphan class #1671 is about. */
     bulkTagDetach:     (songIds, name)           => postJson('bulk_tag_detach', { songIds: songIds, name: name }),
+    /* #1628 item 3 — the other two bulk actions v1 had that v2 shipped
+       without: moving many songs to a different songbook, and deleting many
+       at once. Both delegate server-side to the SAME per-song cores the
+       single-song actions use (songRelocate() / songSoftDelete()) — see
+       api2.php's doc-block for the full contract. Neither is all-or-
+       nothing: the response always carries BOTH a success list and a
+       `failed:[{id,error,status}]` list, so a curator moving/deleting 300
+       songs can see exactly which few refused, never a single opaque error
+       for the whole batch.
+       bulkMove's `moved` list carries `{oldId,newId}` pairs — option B
+       (#1679) re-keys every SongId it touches, so the caller MUST treat
+       every id it just sent as stale and re-key its own selection from
+       this response (never assume the old ids still resolve directly —
+       they only resolve via the redirect layer, editor2.php's handler
+       refreshes the sidebar's index unconditionally for exactly this
+       reason). */
+    bulkMove:          (songIds, targetAbbr)     => postJson('bulk_move', { songIds: songIds, targetAbbr: targetAbbr }),
+    bulkDelete:        (songIds, reason)         => postJson('bulk_delete', { songIds: songIds, reason: reason || '' }),
     loadSong:          (id)                      => getJson('load_song', { id: id }),
 
     /* Song lifecycle */

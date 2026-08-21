@@ -564,6 +564,171 @@ check(
     )
 );
 
+/* =============================================================================
+ * 5. bulk_move / bulk_delete — the per-song funnel discipline (Wave 4 C4, #1628 item 3)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Moving or deleting many songs at once must go through the SAME per-song
+ * machinery the single-song actions already use — a bulk action that grew its
+ * own copy of "how to move/delete a song" would drift the moment either copy
+ * changed underneath it. This pins that the two bulk handlers CALL the shared
+ * cores, and never reach for the raw SQL those cores exist to replace.
+ *
+ * WHY A SOURCE-TEXT CHECK (no live DB in this container, same reasoning as
+ * section 4). Each case body is isolated the SAME way section 4 isolates
+ * revision_get — from `case '<name>':` to the next top-level `case '` — so an
+ * unrelated case elsewhere in the file cannot satisfy this vacuously.
+ *
+ * `tests/php/test-song-relocate-funnels.php` already asserts, TREE-WIDE, that
+ * no per-song `SongbookAbbr` write anywhere skips `songRelocate()`. That guard
+ * was verified LIVE, during this commit's own implementation, against a
+ * deliberately-wrong `bulk_move` draft that wrote `SongbookAbbr` directly —
+ * CHECK 1 named the bad site and failed the build (transcript in the commit
+ * body). This section is a narrower, faster pin on the same two facts, scoped
+ * to just these two actions, so a regression here fails fast and by name
+ * without needing the full tree walk.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   rename the `songRelocate(` call inside `case 'bulk_move'` to
+ *   `songRelocateXXX(`                                             -> RED
+ *   rename the `songSoftDelete(` call inside `case 'bulk_delete'` to
+ *   `songSoftDeleteXXX(`                                            -> RED
+ *   both reverted afterward                                         -> GREEN.
+ * ============================================================================= */
+
+echo "\nWave 4 C4 — bulk_move / bulk_delete funnel discipline (#1628 item 3)\n\n";
+
+/** Isolate `case '$caseName':` from a comment-stripped switch-dispatch source,
+ *  up to the next top-level `case '`. Generalises section 4's own inline
+ *  isolation (there specific to revision_get) so this section can reuse it
+ *  for two more case names without a third copy of the same four lines. */
+$isolateCase = static function (string $noCommentsSrc, string $caseName): string {
+    $start = strpos($noCommentsSrc, "case '{$caseName}':");
+    if ($start === false) { return ''; }
+    if (preg_match('/\n    case \'/', $noCommentsSrc, $mEnd, PREG_OFFSET_CAPTURE, $start + 1)) {
+        return substr($noCommentsSrc, $start, $mEnd[0][1] - $start);
+    }
+    return substr($noCommentsSrc, $start);
+};
+
+$bulkMoveBody = $isolateCase($apiNoComments, 'bulk_move');
+check("api2.php has a 'bulk_move' case", $bulkMoveBody !== '');
+check(
+    'bulk_move delegates to songRelocate() — never a direct SongbookAbbr write (rule #27; '
+        . 'test-song-relocate-funnels.php CHECK 1 is the tree-wide version of this same fact)',
+    $bulkMoveBody !== '' && (bool)preg_match('/\bsongRelocate\s*\(/', $bulkMoveBody)
+);
+check(
+    'bulk_move contains no direct `UPDATE tblSongs … SongbookAbbr` write',
+    $bulkMoveBody !== '' && !preg_match('/UPDATE\s+`?tblSongs`?[^;]{0,200}SongbookAbbr/is', $bulkMoveBody)
+);
+
+$bulkDeleteBody = $isolateCase($apiNoComments, 'bulk_delete');
+check("api2.php has a 'bulk_delete' case", $bulkDeleteBody !== '');
+check(
+    'bulk_delete delegates to songSoftDelete() — never a raw hard DELETE (#1694)',
+    $bulkDeleteBody !== '' && (bool)preg_match('/\bsongSoftDelete\s*\(/', $bulkDeleteBody)
+);
+check(
+    'bulk_delete contains no `DELETE FROM tblSongs`',
+    $bulkDeleteBody !== '' && !preg_match('/DELETE\s+FROM\s+`?tblSongs`?/i', $bulkDeleteBody)
+);
+
+/* =============================================================================
+ * 6. bulk move/delete/export UI plumbing (Wave 4 C5, #1628 item 3)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * The bulk buttons in the editor toolbar have to call the RIGHT client
+ * methods, and the export button has to reuse the SAME format serializers the
+ * single-song Export menu uses rather than re-inventing a bulk fetch. This
+ * checks both, plus the one thing that would be silently dangerous to skip:
+ * after a bulk MOVE, the sidebar's selection and its cached song list are
+ * both stale (every moved SongId was just re-keyed, #1679 option B) — a
+ * handler that forgot to refresh would leave the curator staring at dead ids.
+ *
+ * WHY THE HANDLERS ARE ISOLATED BY DOM ID, NOT `case '...'`
+ * ----------------------------------------------------------
+ * editor2.php's inline module is not a PHP switch — its handlers are wired in
+ * a fixed, known source ORDER (this file's own), so each is isolated from its
+ * `byId('<id>').addEventListener(` start to the NEXT handler's identical
+ * marker (the export handler's end is the resizable-sidebar IIFE that follows
+ * it in source). Comments are stripped FIRST (the same $stripJs section 1
+ * already defines) so a doc-comment merely NAMING `sidebar.refresh()` cannot
+ * satisfy an assertion about the CODE calling it — the exact prose-satisfies-
+ * a-code-check trap CLAUDE.md rule #34 / this file's section 1 already guards
+ * against for the X-Requested-With header.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   delete the `sidebar.refresh()` line from the bulk-move handler -> RED
+ *   reverted afterward                                              -> GREEN.
+ * ============================================================================= */
+
+echo "\nWave 4 C5 — bulk move/delete/export UI plumbing (#1628 item 3)\n\n";
+
+check(
+    "v2 api-client exposes bulkMove() calling the 'bulk_move' action",
+    (bool)preg_match("/bulkMove\s*:\s*\([^)]*\)\s*=>\s*postJson\(\s*'bulk_move'/", $client)
+);
+check(
+    "v2 api-client exposes bulkDelete() calling the 'bulk_delete' action",
+    (bool)preg_match("/bulkDelete\s*:\s*\([^)]*\)\s*=>\s*postJson\(\s*'bulk_delete'/", $client)
+);
+
+$editor2Src         = (string)file_get_contents($editor . '/editor2.php');
+$editor2NoComments  = $stripJs($editor2Src);
+
+/** Isolate one inline-module click handler by its DOM id, from
+ *  `byId('$startId').addEventListener(` to $endNeedle (a literal that must
+ *  survive comment-stripping — i.e. real code, not prose naming the next
+ *  handler). Mirrors $isolateCase above, applied to a fixed source order
+ *  instead of a switch. */
+$isolateHandler = static function (string $src, string $startId, string $endNeedle): string {
+    $start = strpos($src, "byId('{$startId}').addEventListener(");
+    if ($start === false) { return ''; }
+    $end = $endNeedle === '' ? false : strpos($src, $endNeedle, $start + 10);
+    return substr($src, $start, ($end === false ? strlen($src) : $end) - $start);
+};
+
+$bulkMoveGoBlock   = $isolateHandler($editor2NoComments, 'v2-bulk-move-go', "byId('v2-bulk-delete').addEventListener(");
+$bulkDeleteBlock   = $isolateHandler($editor2NoComments, 'v2-bulk-delete', "byId('v2-bulk-export').addEventListener(");
+$bulkExportGoBlock = $isolateHandler($editor2NoComments, 'v2-bulk-export-go', '(function () {');
+
+check(
+    "editor2.php wires a 'v2-bulk-move-go' handler calling editorApi.bulkMove()",
+    $bulkMoveGoBlock !== '' && str_contains($bulkMoveGoBlock, 'editorApi.bulkMove(')
+);
+check(
+    "editor2.php's bulk-move handler clears the selection AND refreshes the sidebar's slim index "
+        . 'UNCONDITIONALLY — option B re-keys every SongId, so a stale sidebar after a move is a '
+        . 'silent data hazard, not a cosmetic one (A2)',
+    $bulkMoveGoBlock !== '' && str_contains($bulkMoveGoBlock, 'sidebar.clearSelection()')
+        && str_contains($bulkMoveGoBlock, 'sidebar.refresh(')
+);
+
+check(
+    "editor2.php wires a 'v2-bulk-delete' handler calling editorApi.bulkDelete()",
+    $bulkDeleteBlock !== '' && str_contains($bulkDeleteBlock, 'editorApi.bulkDelete(')
+);
+check(
+    "editor2.php's bulk-delete handler also clears the selection and refreshes the sidebar's slim index",
+    $bulkDeleteBlock !== '' && str_contains($bulkDeleteBlock, 'sidebar.clearSelection()')
+        && str_contains($bulkDeleteBlock, 'sidebar.refresh(')
+);
+
+check(
+    "editor2.php's bulk-export handler reuses window.iHymnsFormatExport's exportSongbook() — never a second serializer",
+    $bulkExportGoBlock !== '' && str_contains($bulkExportGoBlock, 'exportSongbook')
+);
+check(
+    "editor2.php's bulk-export handler contains no whole-corpus/bulk-fetch action "
+        . "('load_songs' — v1's retired _loadSongsFull() anti-pattern, rule #17)",
+    $bulkExportGoBlock !== '' && !str_contains($bulkExportGoBlock, 'load_songs')
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
