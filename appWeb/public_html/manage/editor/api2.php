@@ -3677,11 +3677,50 @@ try {
                 $u->execute();
                 $u->close();
             } else {
-                $i = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
-                $i->bind_param('ss', $songId, $name);
-                $i->execute();
-                $creditId = (int)$db->insert_id;
-                $i->close();
+                /* #1744-A5 — same-name dedup, mirroring the v1 whole-song
+                   save's $seenCredit set (manage/editor/save_song_core.php,
+                   #1178): a "new credit" call for a name that ALREADY sits
+                   in this role's table for this song must update the
+                   existing row's spelling rather than insert a duplicate
+                   link — a client accumulation bug (or a curator re-adding
+                   a name that autocomplete already offered) would otherwise
+                   list the same person twice in the same role. Scoped to
+                   (songId, table) exactly like v1's per-role-key
+                   $seenCredit reset.
+                   ELI5: before adding "John Newton" as a Writer, check
+                   whether this song already HAS a Writer named that —
+                   if so, just touch up the existing row instead of adding
+                   a second one.
+                   Case-insensitive comparison comes for free from the
+                   table's utf8mb4_unicode_ci collation (schema.sql) — the
+                   SAME bare `WHERE Name = ?` idiom
+                   registerMusicianByName() already uses against
+                   tblMusicians (includes/musician_helpers.php) — never a
+                   second, re-forked name-matching rule (rule #22).
+                   `FOR UPDATE` serialises this against a concurrent
+                   debounced add for the same name, the same reason the
+                   $creditId > 0 branch above locks its row. */
+                $dupe = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? AND Name = ? FOR UPDATE");
+                $dupe->bind_param('ss', $songId, $name);
+                $dupe->execute();
+                $dupeRow = $dupe->get_result()->fetch_assoc();
+                $dupe->close();
+
+                if ($dupeRow) {
+                    $creditId = (int)$dupeRow['Id'];
+                    $oldName  = (string)$dupeRow['Name'];
+
+                    $u = $db->prepare("UPDATE `{$table}` SET Name = ? WHERE Id = ? AND SongId = ?");
+                    $u->bind_param('sis', $name, $creditId, $songId);
+                    $u->execute();
+                    $u->close();
+                } else {
+                    $i = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
+                    $i->bind_param('ss', $songId, $name);
+                    $i->execute();
+                    $creditId = (int)$db->insert_id;
+                    $i->close();
+                }
             }
             /* #960 — the ACTUAL regression fix: promote the name into the
                tblMusicians registry in the SAME transaction as the
