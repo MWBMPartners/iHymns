@@ -100,6 +100,59 @@ function componentChordsToText(comp) {
     }).join('\n');
 }
 
+/**
+ * languageAutonym(tag) — the language's own native name for a BCP 47 tag
+ * ("zh-Hans" -> "Chinese (Simplified)"), used by the "Use language name"
+ * button below (#1860 Phase 5 §4.2, SD10). Browser-native
+ * `Intl.DisplayNames` — no dependency, no server round-trip; falls back to
+ * the raw tag on ANY failure (an unrecognised subtag, an engine without
+ * `Intl.DisplayNames`), so a bad/unusual tag degrades to "showing the code"
+ * rather than throwing. Kept LOCAL to this module (rule #22's posture) —
+ * extract to `js/utils/` only once a second consumer needs it; today the
+ * "Use language name" button is the only caller.
+ * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Intl/DisplayNames
+ * @param {string} tag BCP 47 language tag (e.g. "zh-Hans", "sr-Cyrl", "en").
+ * @returns {string} The language's autonym, or the raw tag on failure.
+ */
+function languageAutonym(tag) {
+    try {
+        const base = String(tag).split('-')[0];
+        return new Intl.DisplayNames([tag], { type: 'language' }).of(base) || String(tag);
+    } catch (_e) { return String(tag); }
+}
+
+/**
+ * derivedComponentName(comp) — the "Type Number" heading a component would
+ * show with NO custom Label set ("Verse 1", "Chorus", "Bridge 2"). Extracted
+ * so both headerText() below (the effective, custom-first heading) and the
+ * Label input's LIVE placeholder (recomputed on type/number change, #1860
+ * Phase 5 §4.2) share the ONE derivation instead of two copies drifting.
+ * @param {{type?:string, number?:number}} comp
+ * @returns {string}
+ */
+function derivedComponentName(comp) {
+    return (comp.type || 'verse').replace(/^\w/, (c) => c.toUpperCase()) + (comp.number ? ' ' + comp.number : '');
+}
+
+/**
+ * headerText(comp) — the EFFECTIVE card-header text: the curator's custom
+ * Label when one is set, else the derived "Type Number" heading (#1860 Phase
+ * 5 §4.2, D1). D1's rule-#27 hide-when-equal fold is enforced SERVER-SIDE in
+ * `component_upsert` (a typed label equal to the derived name is stored as
+ * NULL) — saveComponent()'s rule-#35 read-back copies that fold back onto
+ * `comp.label` client-side, so this helper never has to duplicate the
+ * comparison itself; it only ever sees a label the server actually kept.
+ * ONE helper for the three sites that used to inline this derivation
+ * (initial build + the type/number change handlers below) — extracted per
+ * the modularity rule so the D1 override lands in exactly one place.
+ * @param {{type?:string, number?:number, label?:?string}} comp
+ * @returns {string}
+ */
+function headerText(comp) {
+    const derived = derivedComponentName(comp);
+    return (comp.label && comp.label.trim()) ? comp.label.trim() : derived;
+}
+
 export function mountStructureTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
@@ -117,6 +170,21 @@ export function mountStructureTab(container, opts) {
        call saveComponent()/the API directly and never touch this map — only
        a lyric/chord textarea's debouncedSave() does. */
     const pendingSaves = new Map();
+
+    /* #1860 Phase 5 §4.3 — detach fns for every card's "Source work"
+       iHymnsPlaceSearch instance currently mounted. UNLIKE saveTimers/
+       pendingSaves above (keyed by the persistent comp._key, so they survive
+       a re-render), a picker instance is bound to the ACTUAL <input> DOM
+       node buildCard() just created — and place-search.js appends its
+       dropdown panel + status icon + live region to `document.body`, OUTSIDE
+       this tab's `container` (mirrors metadata-tab.js's placeDetach/
+       tuneDetach/holderDetach for the SAME shared module). `render()` wipes
+       and rebuilds every card on every structural op (move/remove/add), so
+       without detaching these FIRST, each such op would strand another
+       picker's body-appended nodes + its `window` scroll/resize listeners
+       forever — never cleaned up until the whole tab tears down. Cleared in
+       both render() (before the rebuild) and teardown() below. */
+    let cardPickerDetachFns = [];
 
     function debouncedSave(comp) {
         const key = comp._key;
@@ -169,6 +237,17 @@ export function mountStructureTab(container, opts) {
                 lines:     comp.lines,
                 chords:    comp.chords || null,
                 language:  comp.language || null,
+                /* #1860 Phase 5 §4.1 — custom display Label (REQ 3b) +
+                   provenance SourceWorkId (REQ 2). ALWAYS sent, exactly like
+                   `language` above (never gated behind a "did this change"
+                   check): this module's own `comp` is authoritative for its
+                   OWN saves — the three independent silent-wipe-preserve
+                   layers in component_upsert / lyric_lines_sync.php (§3)
+                   exist to protect every OTHER funnel that might omit these
+                   keys (a stale v1 editor tab, a lyrics_ingest re-ingest, an
+                   old revision restore), not this always-authoritative one. */
+                label:        comp.label || null,
+                sourceWorkId: comp.sourceWorkId || null,
                 /* #1627 item 3 — per-line language OVERRIDES (comp.languages,
                    an array parallel to lines), distinct from the single
                    per-SECTION `language` above. `comp.languages || null`:
@@ -181,6 +260,25 @@ export function mountStructureTab(container, opts) {
             };
             const res = await api.upsertComponent(songId, payload);
             if (!comp.id && res.componentId) { comp.id = res.componentId; }
+            /* #1860 Phase 5 §4.1 — rule #35 read-back: adopt what the server
+               actually stored, never assume the just-sent payload survived
+               verbatim. component_upsert's D1 hide-when-equal fold (a typed
+               Label equal to the derived "Verse 1" heading is stored as
+               NULL, §3.2) happens SERVER-SIDE only — copying `res.label`
+               back onto `comp.label` here is what makes that fold visible
+               client-side; without it the Label input would keep showing
+               text the database no longer has. `hasOwnProperty`, not a
+               truthy check: the server always sends the key (possibly
+               `null`), and a `null` IS the value to adopt. */
+            if (Object.prototype.hasOwnProperty.call(res, 'label')) { comp.label = res.label; }
+            if (res.sourceWorkIdIgnored) {
+                /* SD1 — the server coerced an unresolvable sourceWorkId to
+                   NULL rather than failing the whole section save (a
+                   work-link problem must never block a save); tell the
+                   curator why the link they just set silently didn't take. */
+                toast('Source work not found — cleared.', 'warning');
+                comp.sourceWorkId = null;
+            }
             return true;
         } catch (e) {
             toast('Could not save section: ' + e.message, 'danger');
@@ -199,7 +297,7 @@ export function mountStructureTab(container, opts) {
 
         const label = document.createElement('strong');
         label.className = 'me-auto';
-        label.textContent = (comp.type || 'verse').replace(/^\w/, (c) => c.toUpperCase()) + (comp.number ? ' ' + comp.number : '');
+        label.textContent = headerText(comp);
 
         const typeSel = document.createElement('select');
         typeSel.className = 'form-select form-select-sm';
@@ -220,7 +318,15 @@ export function mountStructureTab(container, opts) {
         });
         typeSel.addEventListener('change', () => {
             comp.type = typeSel.value;
-            label.textContent = comp.type.replace(/^\w/, (c) => c.toUpperCase()) + (comp.number ? ' ' + comp.number : '');
+            label.textContent = headerText(comp);
+            /* #1860 Phase 5 §4.2 — the Label input's placeholder is the LIVE
+               derived name (recomputed here on every type change) so an
+               EMPTY label box always previews what would actually render —
+               the store-NULL-when-equal affordance (D1). labelInput is
+               declared further down this same buildCard() call but this
+               callback only runs later, on 'change', by which point it's
+               assigned — no temporal-dead-zone hazard. */
+            labelInput.placeholder = derivedComponentName(comp);
             saveComponent(comp);
         });
 
@@ -233,7 +339,10 @@ export function mountStructureTab(container, opts) {
         numInput.value = comp.number ? String(comp.number) : '';
         numInput.addEventListener('change', () => {
             comp.number = parseInt(numInput.value, 10) || 0;
-            label.textContent = (comp.type || 'verse').replace(/^\w/, (c) => c.toUpperCase()) + (comp.number ? ' ' + comp.number : '');
+            label.textContent = headerText(comp);
+            /* #1860 Phase 5 §4.2 — see the matching comment on typeSel's
+               'change' handler above; same live-placeholder reason. */
+            labelInput.placeholder = derivedComponentName(comp);
             saveComponent(comp);
         });
 
@@ -254,6 +363,57 @@ export function mountStructureTab(container, opts) {
             const v = langInput.value.trim();
             comp.language = v !== '' ? v : null;
             langInput.classList.toggle('is-invalid', v !== '' && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(v));
+            /* #1860 Phase 5 §4.2 — the "Use language name" button is only
+               meaningful once a language is set; keep its disabled state
+               live as this field changes rather than only correct at
+               mount. langNameBtn is declared further down this same
+               buildCard() call — same no-TDZ-hazard reasoning as
+               labelInput above (this callback only runs later). */
+            langNameBtn.disabled = !comp.language;
+            saveComponent(comp);
+        });
+
+        /* #1860 Phase 5 §4.2 — optional custom display Label (REQ 3b). D1:
+           storing a label EQUAL to the derived name is folded to NULL
+           SERVER-SIDE (component_upsert, rule #27) — see saveComponent()'s
+           rule-#35 read-back above, which is what surfaces that fold here.
+           Commit on 'change' (blur/Enter), never a keystroke — matches
+           every other section control on this card (langInput immediately
+           above). */
+        const labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.className = 'form-control form-control-sm';
+        labelInput.style.width = '160px';
+        labelInput.maxLength = 100;
+        /* LIVE derived name — an empty box always previews what would
+           actually render (the store-NULL-when-equal affordance), kept in
+           sync by the typeSel/numInput 'change' handlers above. */
+        labelInput.placeholder = derivedComponentName(comp);
+        labelInput.title = 'Custom display name for this section, replacing the derived heading above (e.g. a "Kyrie" or "isiZulu"). Display only — the section Type still drives styling, arrangement and machine exports.';
+        labelInput.setAttribute('aria-label', 'Custom section label (display only)');
+        labelInput.value = comp.label || '';
+        labelInput.addEventListener('change', () => {
+            comp.label = labelInput.value.trim() || null;
+            label.textContent = headerText(comp);
+            saveComponent(comp);
+        });
+
+        /* #1860 Phase 5 §4.2 — D2/SD10: OPT-IN language-name fill, never an
+           automatic render-time substitution. Disabled until this section
+           has a Language set (kept live by langInput's 'change' handler
+           above). */
+        const langNameBtn = document.createElement('button');
+        langNameBtn.type = 'button';
+        langNameBtn.className = 'btn btn-sm btn-outline-secondary';
+        langNameBtn.textContent = 'Use language name';
+        langNameBtn.setAttribute('aria-label', 'Use language name as label');
+        langNameBtn.title = 'Fill the label above with this section\'s language name (e.g. zh-Hans -> "Chinese (Simplified)").';
+        langNameBtn.disabled = !comp.language;
+        langNameBtn.addEventListener('click', () => {
+            const autonym = languageAutonym(comp.language);
+            labelInput.value = autonym;
+            comp.label = autonym;
+            label.textContent = headerText(comp);
             saveComponent(comp);
         });
 
@@ -266,7 +426,110 @@ export function mountStructureTab(container, opts) {
         btns.className = 'btn-group btn-group-sm';
         btns.append(btnUp, btnDown, btnDel);
 
-        header.append(label, typeSel, numInput, langInput, btns);
+        header.append(label, typeSel, numInput, langInput, labelInput, langNameBtn, btns);
+
+        /* #1860 Phase 5 §4.3 — per-section "Source work" picker (REQ 2, rule
+           #43). PROGRESSIVE DISCLOSURE: a collapsed "Source work" toggle row
+           (the `w-100` class forces it onto its own line inside `header`'s
+           flex-wrap layout) so a plain, non-medley section's card looks
+           exactly as it did before this feature; auto-expanded when the
+           loaded component already carries a link. This is a LINK-ONLY
+           typeahead (pickMode:'value') over EXISTING tblWorks rows via
+           work_search — deliberately NO find-or-create here: a wrong
+           auto-mint would pollute the works registry, and #1860 §3.3.1's
+           "never auto-unlink" rule means this widget only ever sets/clears
+           THIS section's SourceWorkId, never deletes a tblWorkComponents row
+           (that lockstep is server-side, additive-only — Commit 5). */
+        const workRow = document.createElement('div');
+        workRow.className = 'w-100 mt-2';
+
+        const workToggle = document.createElement('button');
+        workToggle.type = 'button';
+        workToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        workToggle.innerHTML = '<i class="bi bi-link-45deg me-1"></i>Source work';
+
+        const workBox = document.createElement('div');
+        workBox.className = 'mt-1 d-flex align-items-center gap-2';
+        /* Auto-expanded only when a link is already set — otherwise this
+           whole row stays collapsed so an ordinary section's card is
+           unchanged from before this feature. */
+        workBox.style.display = comp.sourceWorkId ? '' : 'none';
+
+        const workInput = document.createElement('input');
+        workInput.type = 'text';
+        workInput.className = 'form-control form-control-sm';
+        workInput.style.width = '260px';
+        workInput.placeholder = 'Link this section to a work (medley)…';
+        workInput.title = 'Links this section to an existing Work — e.g. a hymn stitched into a medley. Never creates a new work.';
+        workInput.setAttribute('aria-label', 'Source work for this section (medley provenance)');
+        /* v1 roughness the spec explicitly accepts: show the linked work's
+           title from the LAST pick made THIS session (comp._sourceWorkTitle,
+           set by onSelect below) — no extra request is sent at mount to
+           resolve a title from the id alone, so a component that already
+           had a link BEFORE this page load shows "Work #<id>" until the
+           curator opens the picker and re-picks, or Commit 9's snapshot
+           `works` attach supplies real titles. */
+        workInput.value = comp.sourceWorkId
+            ? (comp._sourceWorkTitle || ('Work #' + comp.sourceWorkId))
+            : '';
+
+        workToggle.addEventListener('click', () => {
+            workBox.style.display = (workBox.style.display === 'none') ? '' : 'none';
+            if (workBox.style.display !== 'none') { workInput.focus(); }
+        });
+
+        workInput.addEventListener('input', () => {
+            /* Free-typing invalidates a previously-picked work — the same
+               contract the Copyright Holder input uses in metadata-tab.js
+               (#1862). This only clears LOCAL state; nothing is sent to the
+               server until a commit event fires (rule #43 — never a mint or
+               a save on a debounced keystroke, #1679's anti-pattern). */
+            comp.sourceWorkId = null;
+            comp._sourceWorkTitle = null;
+        });
+        workInput.addEventListener('change', () => {
+            /* Commit-on-change clearing only: an emptied box unlinks and
+               saves. A typed-but-never-picked name is deliberately NOT
+               resolved to a work here (no find-or-create for provenance,
+               rule #43) — it simply isn't persisted; the 'input' listener
+               above has already dropped the stale sourceWorkId locally. */
+            if (workInput.value.trim() === '') {
+                comp.sourceWorkId = null;
+                comp._sourceWorkTitle = null;
+                saveComponent(comp);
+            }
+        });
+
+        if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+            const workDetach = window.iHymnsPlaceSearch.attach(workInput, {
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'work', plural: 'works' },
+                // #1855-style: extensionless, matches every sibling searchUrl on this shell.
+                searchUrl: (q) => '/manage/editor/api2?action=work_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.title,
+                    hint: s.iswc || s.ccli || '',
+                })),
+                onSelect: (c) => {
+                    comp.sourceWorkId = c.id;
+                    comp._sourceWorkTitle = c.display_name;
+                    workInput.value = c.display_name;
+                    saveComponent(comp);
+                },
+            });
+            /* #1860 Phase 5 §4.3 — track this card's picker so render()/
+               teardown() below can detach it before its <input> is
+               discarded (see the cardPickerDetachFns declaration up top for
+               why: the module appends body-level nodes this tab's own
+               container.innerHTML='' cannot reach). */
+            if (workDetach) { cardPickerDetachFns.push(workDetach); }
+        }
+
+        workBox.appendChild(workInput);
+        workRow.append(workToggle, workBox);
+        header.appendChild(workRow);
 
         const body = document.createElement('div');
         body.className = 'card-body';
@@ -392,6 +655,17 @@ export function mountStructureTab(container, opts) {
     /* ---- render ---- */
 
     function render() {
+        /* #1860 Phase 5 §4.3 — detach every card's "Source work" picker
+           BEFORE wiping the container: place-search.js appends its dropdown
+           panel/status icon/live region to `document.body` (outside
+           `container`), so `container.innerHTML = ''` below cannot reach
+           them — without this, every structural op (move/remove/add) would
+           strand another instance's body-level nodes + `window` scroll/
+           resize listeners forever. Mirrors metadata-tab.js's placeDetach/
+           tuneDetach/holderDetach doing the same thing at the top of ITS
+           render() for the SAME shared module. */
+        cardPickerDetachFns.forEach((fn) => { try { fn(); } catch (_e) {} });
+        cardPickerDetachFns = [];
         container.innerHTML = '';
         const comps = store.get('components') || [];
         comps.forEach((c, i) => {
@@ -415,6 +689,12 @@ export function mountStructureTab(container, opts) {
         saveTimers.forEach((t) => clearTimeout(t));
         saveTimers.clear();
         pendingSaves.clear();   // #1846 — no lingering references once the tab is gone
+        /* #1860 Phase 5 §4.3 — detach every still-mounted "Source work"
+           picker; see the matching comment at the top of render() above for
+           why this can't be skipped (body-level nodes container.innerHTML
+           can't reach). */
+        cardPickerDetachFns.forEach((fn) => { try { fn(); } catch (_e) {} });
+        cardPickerDetachFns = [];
         container.innerHTML = '';
     };
 }
