@@ -2383,6 +2383,44 @@ return [
             || _migProbe_hasUnfoldedLyrics($db),
     ],
 
+    'refold-search-columns' => [
+        'script' => 'migrate-refold-search-columns.php',
+        'card' => [
+            'title'  => 'Refold search columns (fold v2, #1908)',
+            'body'   => 'Recomputes <code>tblSongs.NormalizedTitle</code> and'
+                      . ' <code>tblSongs.LyricsTextFolded</code> with the fixed,'
+                      . ' Unicode-preserving fold (#1908 Commit 1) — the old fold'
+                      . ' folded every non-Latin title/lyrics (CJK, Cyrillic, Greek,'
+                      . ' Thai, …) to an empty string, making those songs invisible to'
+                      . ' the folded FULLTEXT/LIKE search arms. Pure data recompute, no'
+                      . ' schema change. <strong>Run only after Commit 1 is deployed to'
+                      . ' all three docroots</strong> (main/beta/alpha share one DB) —'
+                      . ' an older docroot still saving with the old fold would re-stale'
+                      . ' rows it writes. Afterwards, re-run'
+                      . ' <code>includes/tools/build-song-link-suggestions.php</code> so'
+                      . ' fuzzy-duplicate suggestion scores refresh (harmless to defer).'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run Refold Search Columns Migration',
+        ],
+        /* Sentinel idiom (rule #19), modelled on email-login-token-hashing
+           above: pending until the migration's terminal write lands
+           tblAppSettings.search_fold_version = '2'. The migration itself
+           gates on tblSongs.NormalizedTitle existing and exits WITHOUT
+           writing the sentinel when it doesn't (§2 of the #1908 plan) — so
+           on a column-less install this probe correctly stays PENDING rather
+           than reporting a false "applied". NOT 'manual': safe for
+           "Apply all" — a fresh/empty install just walks zero rows. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'search_fold_version' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            return !($row && (string)$row[0] === '2');
+        })($db),
+    ],
+
     'source-documents' => [
         'script' => 'migrate-source-documents.php',
         'card' => [
