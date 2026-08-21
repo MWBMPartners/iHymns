@@ -383,6 +383,7 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
         'arrangers'          => [],
         'adaptors'           => [],
         'translators'        => [],
+        'altTitles'          => [],
         'components'         => $components,
     ], null];
 }
@@ -794,6 +795,34 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         }
         foreach ($regParts as $regName => $p) {
             musicianPromote($db, $regName, $p);
+        }
+
+        /* #1669 — alternative titles (e.g. an OpenLyrics file with several
+           <title> elements). Written through the ONE shared song_alt_titles
+           core, INSIDE this song's transaction so they are atomic with the
+           INSERT. Gated on the table existing (an un-migrated install imports
+           byte-identically) and on the parser actually supplying any (an
+           absent key folds to [] — every other importer imports unchanged).
+           A per-entry InvalidArgumentException (an over-long / malformed alt
+           title) is caught and skipped so one bad alt never aborts an
+           otherwise-good song; a genuine mysqli error is NOT caught here and
+           still rolls the whole song back. Entries equal to the main title
+           are dropped (songAltTitleIsRedundant), and INSERT IGNORE +
+           uq_song_title absorb any remaining dupe. */
+        $altTitles = $song['altTitles'] ?? [];
+        if (is_array($altTitles) && $altTitles !== []) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_alt_titles.php';
+            if (songAltTitlesTableExists($db)) {
+                foreach ($altTitles as $alt) {
+                    if (!is_array($alt)) { continue; }
+                    $altTitle = trim((string)($alt['title'] ?? ''));
+                    if ($altTitle === '' || songAltTitleIsRedundant($altTitle, $title)) { continue; }
+                    $altLang = ($alt['language'] ?? '') !== '' ? (string)$alt['language'] : null;
+                    try {
+                        songAltTitleAdd($db, $songId, $altTitle, $altLang, null);
+                    } catch (\InvalidArgumentException $_e) { /* skip a malformed alt, keep the import */ }
+                }
+            }
         }
 
         /* Revision audit row (#400). Same shape as save_song writes. */
@@ -2955,7 +2984,29 @@ function _bulkImport_parseOpenLyrics(string $body): array
     }
 
     $props = $xml->properties ?? null;
-    $title = $props ? trim((string)($props->titles->title ?? '')) : '';
+    /* OpenLyrics permits multiple <title> elements (#1052 / #1669): the first
+       non-empty is the MAIN title; each remaining distinct non-empty one is an
+       ALTERNATIVE title (its optional lang attribute carried through). The
+       shared song_alt_titles core writes them in _bulkImport_saveSong() when
+       that table is migrated, skipping any equal to the main title. */
+    $title     = '';
+    $altTitles = [];
+    $seenAlt   = [];
+    if ($props && isset($props->titles->title)) {
+        $fold = static fn(string $s): string => function_exists('mb_strtolower') ? mb_strtolower($s) : strtolower($s);
+        foreach ($props->titles->title as $tNode) {
+            $tText = trim((string)$tNode);
+            if ($tText === '') { continue; }
+            if ($title === '') { $title = $tText; continue; }
+            $foldAlt = $fold($tText);
+            if ($foldAlt === $fold($title) || isset($seenAlt[$foldAlt])) { continue; }
+            $seenAlt[$foldAlt] = true;
+            $altTitles[] = [
+                'title'    => $tText,
+                'language' => isset($tNode['lang']) ? trim((string)$tNode['lang']) : '',
+            ];
+        }
+    }
     if ($title === '') {
         return [null, 'no <title> element'];
     }
@@ -3031,6 +3082,7 @@ function _bulkImport_parseOpenLyrics(string $body): array
         'ccli'         => $ccli,
         'copyright'    => $copyright,
         'writers'      => $writers,
+        'altTitles'    => $altTitles,
         'components'   => $components,
     ], null];
 }
@@ -3065,6 +3117,7 @@ function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookN
         'arrangers'          => [],
         'adaptors'           => [],
         'translators'        => [],
+        'altTitles'          => (array)($parsed['altTitles'] ?? []),
         'components'         => (array)($parsed['components'] ?? []),
     ];
 }
