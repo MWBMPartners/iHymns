@@ -31,6 +31,18 @@ DirectoryIndex index.php
 RewriteRule ^editor/api$ editor/api.php [QSA,L]
 
 # ==========================================================================
+# DIRECTORY-LISTING KILL (#1906) — same rule as the docroot .htaccess; see
+# that file's "DIRECTORY-LISTING KILL" comment for the full rationale (why
+# mod_rewrite and not `Options -Indexes`, why not ServerSignature). The
+# `index.php !-f` exclusion keeps /manage/ and /manage/editor/ (both have an
+# index.php) working; /manage/includes/, /manage/editor/protos/ etc. 404.
+# The docroot's ErrorDocument 404 is inherited, so the body stays themed.
+# ==========================================================================
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_FILENAME}/index.php !-f
+RewriteRule ^.+ - [R=404,L]
+
+# ==========================================================================
 # Generic clean-URL rewrite:
 #   /manage/<name>       → /manage/<name>.php   (if <name>.php exists)
 #   /manage/<path>/<name> → same, at any depth

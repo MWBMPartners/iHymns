@@ -42,20 +42,24 @@ declare(strict_types=1);
  *   - drop 'search' from a page glob / the alias list      → A goes red
  *   - add 'song' to the .htaccess deny alternation         → B goes red (collision)
  *   - change one deny family in router.php only            → C goes red (mirror drift)
+ *   - delete the directory-404 rule from either .htaccess,
+ *     or the is_dir()/index.php check from router.php      → D goes red (#1906)
  *
  *   php tests/php/test-route-allowlist-coverage.php
  *
- * Exit 0 = allow-list covers the router + deny-list is safe + mirrors agree.
+ * Exit 0 = allow-list covers the router + deny-list is safe + mirrors agree
+ * + all three files carry the #1906 directory-listing-kill logic.
  *
  * @see appWeb/public_html/includes/spa_routes.php
  * @see appWeb/public_html/js/modules/router.js  parseRoute()
  */
 
-$repoRoot   = dirname(__DIR__, 2);
-$routerJs   = $repoRoot . '/appWeb/public_html/js/modules/router.js';
-$htaccess   = $repoRoot . '/appWeb/public_html/.htaccess';
-$devRouter  = $repoRoot . '/tests/browser/router.php';
-$spaRoutes  = $repoRoot . '/appWeb/public_html/includes/spa_routes.php';
+$repoRoot        = dirname(__DIR__, 2);
+$routerJs        = $repoRoot . '/appWeb/public_html/js/modules/router.js';
+$htaccess        = $repoRoot . '/appWeb/public_html/.htaccess';
+$manageHtaccess  = $repoRoot . '/appWeb/public_html/manage/.htaccess';
+$devRouter       = $repoRoot . '/tests/browser/router.php';
+$spaRoutes       = $repoRoot . '/appWeb/public_html/includes/spa_routes.php';
 
 $failures = [];
 $passed   = 0;
@@ -66,7 +70,7 @@ function rcOk(string $label, bool $cond): void
     $failures[] = $label;
 }
 
-foreach ([$routerJs, $htaccess, $devRouter, $spaRoutes] as $f) {
+foreach ([$routerJs, $htaccess, $manageHtaccess, $devRouter, $spaRoutes] as $f) {
     if (!is_file($f)) {
         fwrite(STDERR, "FATAL: missing $f — cannot derive the route contract.\n");
         exit(1);
@@ -153,6 +157,50 @@ rcOk(
     '.htaccess and tests/browser/router.php deny alternations are byte-identical (rule #35)'
         . ($denyPrefixesHt !== $denyPrefixesDev ? ' — htaccess=[' . implode('|', $denyPrefixesHt) . '] dev=[' . implode('|', $denyPrefixesDev) . ']' : ''),
     $denyPrefixesHt === $denyPrefixesDev
+);
+
+/* ---- D) directory-listing kill (#1906) is present in all three files ------- *
+ * The `Options -Indexes` EFFECT is delivered via mod_rewrite instead (the
+ * literal Options directive 500s the whole site under an unknown
+ * AllowOverride — see .htaccess's own "DIRECTORY-LISTING KILL" comment and
+ * CLAUDE.md rule #1906/§A.3). This asserts the mechanism actually landed in
+ * BOTH .htaccess files (the exact 3-line RewriteCond/RewriteCond/RewriteRule
+ * triple) and its is_dir()+index.php mirror in tests/browser/router.php —
+ * a comment describing the intent is not the same as the rule existing
+ * (rule #35: cross-file agreement needs a mechanism, not a comment). */
+$manageHtSrc = (string) file_get_contents($manageHtaccess);
+
+/* Matches the exact triple, back-to-back and in this order:
+ *   RewriteCond %{REQUEST_FILENAME} -d
+ *   RewriteCond %{REQUEST_FILENAME}/index.php !-f
+ *   RewriteRule ^.+ - [R=404,...
+ * `\s*\n` between clauses tolerates trailing horizontal whitespace and
+ * blank lines (both `\s` classes include newline) but NOT an interleaved
+ * comment line — a stray `#` between the directives breaks the match,
+ * which is correct: the shipped blocks keep the three lines adjacent with
+ * no explanatory comment wedged between them. */
+$dirKillHtaccessPattern = '/RewriteCond\s+%\{REQUEST_FILENAME\}\s+-d\s*\n'
+    . '\s*RewriteCond\s+%\{REQUEST_FILENAME\}\/index\.php\s+!-f\s*\n'
+    . '\s*RewriteRule\s+\^\.\+\s+-\s+\[R=404/';
+
+rcOk(
+    'appWeb/public_html/.htaccess carries the #1906 directory-404 RewriteCond/RewriteCond/RewriteRule triple',
+    preg_match($dirKillHtaccessPattern, $htSrc) === 1
+);
+rcOk(
+    'appWeb/public_html/manage/.htaccess carries the #1906 directory-404 RewriteCond/RewriteCond/RewriteRule triple',
+    preg_match($dirKillHtaccessPattern, $manageHtSrc) === 1
+);
+
+/* router.php mirror: an is_dir($x) check immediately AND-chained with a
+ * !is_file($x . '/index.php') check (variable name unconstrained — only the
+ * shape matters, so a future rename of $dirCandidate doesn't false-fail
+ * this guard). */
+$dirKillRouterPattern = '/is_dir\(\$\w+\)\s*\n'
+    . '\s*&&\s*!is_file\(\$\w+\s*\.\s*[\'"]\/index\.php[\'"]\)/';
+rcOk(
+    'tests/browser/router.php carries the #1906 is_dir()+index.php directory-404 mirror',
+    preg_match($dirKillRouterPattern, $devSrc) === 1
 );
 
 /* ---- report ---------------------------------------------------------------- */

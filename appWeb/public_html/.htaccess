@@ -159,6 +159,29 @@ RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
 RewriteRule ^\.well-known/apple-app-site-association$ .well-known/apple-app-site-association.php [L]
 
 # ==========================================================================
+# DIRECTORY-LISTING KILL (#1906)
+# A request that maps to a real DIRECTORY with no index.php of its own has
+# no legitimate response — without this it would fall through the -d
+# passthrough below into mod_autoindex, and whether that lists the
+# directory's contents is a HOST default (+Indexes) we don't control.
+# Deliberately mod_rewrite, NOT `Options -Indexes`: the Options directive
+# 500s the ENTIRE site if the host's AllowOverride excludes `Options`
+# (an <IfModule> wrapper does NOT prevent that — the directive is still
+# parsed whenever the module is present), while mod_rewrite is already
+# load-bearing in this file. Directories WITH an index.php (/, /manage/…)
+# are excluded and keep working via DirectoryIndex.
+# `^.+` (not `^`) exempts the docroot itself. ErrorDocument 404 below
+# serves the themed SPA 404 body, matching #1905's contract.
+# NOTE (#1906 also asked about ServerSignature Off): NOT set here —
+# Apache's default is already Off, ServerTokens can't be set from
+# .htaccess at all, and with listings dead the signature has nowhere
+# user-visible left to render. Host check: `curl -sI /<nonexistent>`.
+# ==========================================================================
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_FILENAME}/index.php !-f
+RewriteRule ^.+ - [R=404,L]
+
+# ==========================================================================
 # STATIC ASSET PASSTHROUGH
 #
 # Allow direct access to static files (CSS, JS, images, fonts, data).

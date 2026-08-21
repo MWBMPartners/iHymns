@@ -137,6 +137,36 @@ if (str_starts_with($uri, '/manage/')) {
     }
 }
 
+/* ==========================================================================
+ * DIRECTORY-LISTING KILL (#1906) — mirrors .htaccess's / manage/.htaccess's
+ *   RewriteCond %{REQUEST_FILENAME} -d
+ *   RewriteCond %{REQUEST_FILENAME}/index.php !-f
+ *   RewriteRule ^.+ - [R=404,L]
+ * ELI5: a directory with no index.php of its own (e.g. /manage/includes/,
+ * /css/) has no legitimate response. Production kills it via mod_rewrite
+ * BEFORE the -d passthrough would hand it to mod_autoindex; this dev router
+ * mirrors that by running the same is_dir()+!is_file(index.php) check
+ * BEFORE the static-asset passthrough below, which would otherwise hand a
+ * bare directory straight to the built-in server (PHP's `php -S` serves an
+ * index.php/index.html it finds inside a directory, or a raw listing if it
+ * finds neither — masking exactly the exposure this rule closes).
+ * `/` itself is excluded (mirrors `^.+`, not `^`, in the .htaccess rule) so
+ * it always falls through to the SPA catch-all below.
+ * @see appWeb/public_html/.htaccess (DIRECTORY-LISTING KILL block)
+ * @see appWeb/public_html/manage/.htaccess (DIRECTORY-LISTING KILL block)
+ * ========================================================================== */
+if ($uri !== '/') {
+    $dirCandidate = realpath($docroot . $uri);
+    if ($dirCandidate !== false
+        && str_starts_with($dirCandidate, $docroot . DIRECTORY_SEPARATOR)
+        && is_dir($dirCandidate)
+        && !is_file($dirCandidate . '/index.php')
+    ) {
+        http_response_code(404);
+        return true;
+    }
+}
+
 /* Static-asset / real-file passthrough — mirrors .htaccess's
  *   RewriteCond %{REQUEST_FILENAME} -f [OR]
  *   RewriteCond %{REQUEST_FILENAME} -d
