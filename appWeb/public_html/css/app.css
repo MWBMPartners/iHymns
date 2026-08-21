@@ -3480,6 +3480,23 @@ body.reduce-motion .related-songs-chevron {
     font-weight: 600;
 }
 
+/* #1531 part 2 — writing-team credit shown next to a song's home songbook
+   in a list/search row, when that songbook is Unofficial (rule #24 /
+   js/modules/search.js, `songbookIsOfficial()` in constants.js). Sibling of
+   .songbook-unofficial-badge above: same "Unofficial books are first-class
+   but visually flagged" family, applied to the writing-team text instead of
+   the songbook name/abbreviation.
+   Deliberately JUST italic, mirroring the existing Chorus/Refrain convention
+   (`.lyric-chorus,.lyric-refrain { font-style: italic }`, #1337) rather than
+   a new colour treatment — no theme tokens needed since italic inherits
+   whatever colour the surrounding `.text-muted` line already resolved to in
+   the current theme. Presentational only: the credited names are ordinary
+   text before and after this class is applied, so nothing here is the SOLE
+   carrier of meaning (WCAG 1.4.1, matching the badge's own reasoning above). */
+.songbook-credits-unofficial {
+    font-style: italic;
+}
+
 /* Feature-detect class driven by js/modules/offline-ui.js. When
    .offline-unsupported is on the body, every download control hides
    (rather than showing a permanently-disabled UI that can't recover). */

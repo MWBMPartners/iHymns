@@ -23,7 +23,7 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase, foldSearchText } from '../utils/text.js';
-import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
+import { STORAGE_SEARCH_LYRICS, songbookLabel, songbookIsOfficial } from '../constants.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
    itself, replacing the old global fetch monkey-patch. */
@@ -651,6 +651,20 @@ export class Search {
                citations legitimately contain commas inside a single
                name ("Smith, John"), so comma is ambiguous. */
             const writers = (song.writers || []).join('; ');
+            /* #1531 part 2 — for an Unofficial songbook (rule #24) the
+               writing-team credit sitting next to the songbook name is
+               rendered in italics, the SAME visual convention rule #24 uses
+               for Chorus/Refrain (`.lyric-chorus,.lyric-refrain { font-style:
+               italic }`, #1337) — a shared, theme-aware affordance rather
+               than a new one-off invented here. Purely presentational: the
+               credit text itself is unchanged and still fully legible/
+               announced to a screen reader without the italic (rule: don't
+               rely on style alone to carry meaning). */
+            const writersHtml = writers
+                ? (songbookIsOfficial(song.songbook)
+                    ? ` &middot; ${escapeHtml(writers)}`
+                    : ` &middot; <span class="songbook-credits-unofficial">${escapeHtml(writers)}</span>`)
+                : '';
             const snippet = song.lyricsSnippet
                 ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
                 : '';
@@ -667,8 +681,7 @@ export class Search {
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
                         <small class="text-muted d-block">
-                            ${songbookLabel(song.songbook, song.songbookName)}
-                            ${writers ? ' &middot; ' + escapeHtml(writers) : ''}
+                            ${songbookLabel(song.songbook, song.songbookName)}${writersHtml}
                         </small>
                         ${altName}
                         ${snippet}

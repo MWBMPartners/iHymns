@@ -269,15 +269,22 @@ export async function loadSongbookRegistry(apiUrl) {
         const data = await res.json();
         for (const book of (data.songbooks || [])) {
             if (book && book.id) {
-                /* Only the NAME is kept. An `isOfficial` flag was stored here
-                   too, read by exactly one exported helper that nothing ever
-                   called — both removed in #1696. When #1531 part 2 is actually
-                   built it should shape this against the requirements it has
-                   then; the API still sends `isOfficial`, so re-adding it is one
-                   line. (Rule #20's reasoning, applied to JS: a helper written
-                   against guessed requirements is the same mistake as a guessed
-                   schema.) */
-                _SONGBOOK_REGISTRY.set(book.id, { name: book.name || '' });
+                /* #1531 part 2 — `isOfficial` re-added (it lived here once,
+                   was removed in #1696 as a no-caller orphan — see
+                   songbookIsOfficial() below for that history). The API has
+                   sent `isOfficial` all along (SongData::getSongbooks(),
+                   `b.IsOfficial AS isOfficial`, CLAUDE.md rule #24); this is
+                   the one line that reads it back into the client registry
+                   now that something actually consumes it. */
+                _SONGBOOK_REGISTRY.set(book.id, {
+                    name: book.name || '',
+                    /* Preserve "the API didn't send a boolean" as `undefined`
+                       rather than coercing it to `false` — songbookIsOfficial()
+                       below treats a non-boolean as unresolved and assumes
+                       Official (the safe default), which a stray `false`
+                       here would defeat. */
+                    isOfficial: typeof book.isOfficial === 'boolean' ? book.isOfficial : undefined,
+                });
             }
         }
     } catch {
@@ -291,16 +298,28 @@ export function songbookFullName(abbr) {
     return (entry && entry.name) || null;
 }
 
-/* songbookIsOfficial() lived here until #1696. It was written as the enabling
-   helper for #1531 part 2 ("Unofficial → show writing team") and its own
-   definition was the ONLY match in the entire tree — no caller, on any surface.
-   That is precisely the shape the orphan programme exists to remove: a
-   shipped-looking capability that does nothing, which reads to the next person
-   as though part 2 were half-built.
-
-   Worth noting WHY it survived so long: tests/php/test-orphan-inventory.php
-   derives its corpus from dispatch surfaces, schema tables and entitlement
-   labels, and a plain exported JS helper is none of those — the guard is
-   structurally blind to this class and honestly says so in its header. Whether
-   it should grow an unimported-export check is on the record in #1696 and is
-   NOT settled by this deletion. */
+/**
+ * Is this songbook Official (`tblSongbooks.IsOfficial = 1`, rule #24)?
+ *
+ * #1531 part 2 — re-added. A same-named helper lived here once, was removed
+ * in #1696 as a no-caller orphan ("a shipped-looking capability that does
+ * nothing" — see that issue), and the registry stopped carrying the flag at
+ * all. Re-adding it now that `js/modules/search.js` actually branches on it
+ * (italic writing-team credits for Unofficial books — callers test
+ * `!songbookIsOfficial(abbr)`) is the difference #1696 asked for: shape the
+ * helper against a REAL consumer, not a guessed one.
+ *
+ * @param {string} abbr Songbook abbreviation
+ * @returns {boolean} `true` for a genuinely Official book AND for an abbr the
+ *   registry hasn't loaded/resolved yet (assume-official is the safe
+ *   default: misreporting an OFFICIAL book as Unofficial would italicize
+ *   real songbook provenance, while the reverse just withholds the italic
+ *   affordance until the registry has loaded — matching songbookFullName()'s
+ *   same best-effort posture above). `false` only once the registry has
+ *   POSITIVELY resolved this abbr as Unofficial.
+ */
+export function songbookIsOfficial(abbr) {
+    const entry = _SONGBOOK_REGISTRY.get(abbr);
+    if (!entry || typeof entry.isOfficial !== 'boolean') return true;
+    return entry.isOfficial;
+}
