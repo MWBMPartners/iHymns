@@ -1614,7 +1614,11 @@ foreach ($components as $_c) {
            SongData::_worksMap (#840). Lists each Work this song belongs
            to with its sibling members ("other versions of this work")
            grouped under it. Hidden when empty + when the schema isn't
-           applied. */
+           applied. #1860 Phase 5 Commit 7 adds a "Medley of: A, B, C"
+           line per Work when that Work is itself a medley
+           ($w['constituents'], gated on workMedleyReady() —
+           includes/work_admin.php — and empty/absent on a non-medley
+           Work or an un-migrated tblWorkComponents). */
         $songWorks = $song['works'] ?? [];
         if (!empty($songWorks)):
     ?>
@@ -1639,6 +1643,29 @@ foreach ($components as $_c) {
                         <span class="badge bg-success-subtle text-success-emphasis">Canonical version</span>
                     <?php endif; ?>
                 </div>
+                <?php if (!empty($w['constituents'])): ?>
+                    <?php
+                        /* #1860 Phase 5 Commit 7 — "Medley of: A, B, C".
+                           $w['constituents'] is attached by SongData::_worksMap()
+                           step 4, already SortOrder-ordered by
+                           workMedleyConstituentsMap()'s own ORDER BY — no
+                           client-side re-sort needed. Link markup mirrors
+                           the work title link two rows up (same href/
+                           data-navigate/data-work-slug shape) — PLAIN
+                           fragment markup only, no inline <script> (rule
+                           #30 — this fragment can be served through the
+                           shared-cache page=song path with no per-request
+                           CSP nonce). */
+                        $constituentCount = count($w['constituents']);
+                    ?>
+                    <div class="text-muted small mb-1">
+                        Medley of:
+                        <?php foreach ($w['constituents'] as $ci => $cw): ?><a
+                               href="/work/<?= htmlspecialchars($cw['slug']) ?>"
+                               data-navigate="work"
+                               data-work-slug="<?= htmlspecialchars($cw['slug']) ?>"><?= htmlspecialchars($cw['title']) ?></a><?php if ($ci < $constituentCount - 1): ?>,&nbsp;<?php endif; ?><?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
                 <?php
                     $siblings = array_values(array_filter(
                         $w['members'] ?? [],

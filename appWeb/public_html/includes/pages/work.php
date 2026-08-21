@@ -11,8 +11,13 @@ declare(strict_types=1);
  * shared `/iswc|/ccli|/bowi` resolver, #1741 P3), subtitle/
  * disambiguation, tune, first-published/copyright line, aggregated
  * writer/composer/arranger credits, parent / child / sibling Works
- * (unlimited nesting), every member song grouped by songbook, and the
- * categorised external-links panel (shared partial, #1741 P4b §0.4).
+ * (unlimited nesting), every member song grouped by songbook, the
+ * categorised external-links panel (shared partial, #1741 P4b §0.4), and
+ * (#1860 Phase 5 Commit 7) a "Contains (medley)" list when this Work is
+ * itself a medley (`$work['constituents']`, attached by `getWork()` and
+ * gated on `workMedleyReady()` — `[]`/hidden on a non-medley Work or an
+ * un-migrated `tblWorkComponents`). The inverse ("part of these
+ * medleys") is a tracked follow-up, not v1.
  *
  * Loaded via api.php?page=work&slug=amazing-grace.
  * Expects $workSlug to be set by api.php before inclusion.
@@ -278,6 +283,36 @@ foreach ($workCreditGroups as $workCreditGroup) {
                             <?php if (!empty($c['iswc'])): ?>
                                 <small class="text-muted ms-2"><code><?= htmlspecialchars($c['iswc']) ?></code></small>
                             <?php endif; ?>
+                        </div>
+                        <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+                    </a>
+                <?php endforeach; ?>
+            </div>
+        </section>
+    <?php endif; ?>
+
+    <!-- "Contains (medley)" (#1860 Phase 5 Commit 7) — this Work's own
+         medley constituents, attached by SongData::getWork() (gated on
+         workMedleyReady()/tblWorkComponents, includes/work_admin.php,
+         rule #22). Same list markup as the Derivative-works block above,
+         swapping the icon + heading. The INVERSE listing ("part of
+         medleys") is a tracked follow-up, not v1 (plan §7 item 3). -->
+    <?php if (!empty($work['constituents'])): ?>
+        <section class="mb-4">
+            <h2 class="h6 mb-2 text-muted">
+                <i class="fa-solid fa-layer-group me-1" aria-hidden="true"></i>
+                Contains (medley) (<?= count($work['constituents']) ?>)
+            </h2>
+            <div class="list-group" role="list">
+                <?php foreach ($work['constituents'] as $cw): ?>
+                    <a href="/work/<?= htmlspecialchars($cw['slug']) ?>"
+                       class="list-group-item list-group-item-action d-flex align-items-center gap-2"
+                       data-navigate="work"
+                       data-work-slug="<?= htmlspecialchars($cw['slug']) ?>"
+                       role="listitem">
+                        <i class="fa-solid fa-music text-muted" aria-hidden="true"></i>
+                        <div class="flex-grow-1">
+                            <?= htmlspecialchars($cw['title']) ?>
                         </div>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                     </a>

@@ -5634,11 +5634,15 @@ class SongData
      *
      * Each Work entry: { id, parentId, title, slug, iswc, isCanonical,
      *                    members:[{songId, songbook, number, title, songbookName}],
-     *                    links:[…] }
+     *                    links:[…],
+     *                    constituents:[{workId, title, slug, sortOrder, note}] }
      *
      * Members + links are attached for the Works that appear, so
      * downstream code can render the "Other versions of this work"
-     * sub-list without another round-trip.
+     * sub-list without another round-trip. `constituents` (#1860 Phase 5
+     * Commit 7) is the medley's own contents — `[]` on a non-medley Work
+     * or an un-migrated tblWorkComponents — feeding song.php's "Medley
+     * of: A, B, C" line via `includes/work_admin.php::workMedleyConstituentsMap()`.
      *
      * @param array<int,string> $songIds
      * @return array<string,array<int,array<string,mixed>>> keyed by songId
@@ -5686,9 +5690,11 @@ class SongData
                     'iswc'        => (string)($row['iswc'] ?? ''),
                     'isCanonical' => (bool)$row['isCanonical'],
                     'memberNote'  => (string)($row['memberNote'] ?? ''),
-                    /* members + links attached in step 2/3 below */
+                    /* members + links attached in step 2/3 below;
+                       constituents (#1860 Phase 5 Commit 7) in step 4 */
                     'members'     => [],
                     'links'       => [],
+                    'constituents' => [],
                 ];
             }
             $stmt->close();
@@ -5783,11 +5789,38 @@ class SongData
                 $stmt3->close();
             }
 
+            /* Step 4 — medley constituents ("Medley of: A, B, C"), #1860
+               Phase 5 Commit 7. Gated on workMedleyReady() — the
+               tblWorkComponents table is a SEPARATE migration card from the
+               tblWorks/tblWorkSongs core this method already requires
+               (work_admin.php's workMedleyReady() doc-block), so an install
+               can have _hasWorksSchema()===true while the medley table
+               still doesn't exist. Reuses the ONE shared medley-read core
+               in work_admin.php (rule #22 — never a second inline query)
+               and its BULK variant (rule #22's N+1 avoidance — the same
+               $widList already built for step 2/3, one query for every
+               work surfaced across $songIds, not one per work). Local
+               try/catch (matching this method's own external-links-probe
+               style at step 3) so an unexpected error here degrades every
+               work's constituents to [] rather than blanking the whole
+               song page (rule #9-class — no white-screen on an
+               un-migrated/partial install). */
+            $constituentsByWork = [];
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+                if (workMedleyReady($this->db)) {
+                    $constituentsByWork = workMedleyConstituentsMap($this->db, $widList);
+                }
+            } catch (\Throwable $_e) {
+                // dormant-by-design — un-migrated install keeps every work's constituents empty
+            }
+
             /* Stitch it together. */
             foreach ($bySong as $sid => &$worksList) {
                 foreach ($worksList as &$w) {
-                    $w['members'] = $membersByWork[$w['id']] ?? [];
-                    $w['links']   = $linksByWork[$w['id']]   ?? [];
+                    $w['members']      = $membersByWork[$w['id']]      ?? [];
+                    $w['links']        = $linksByWork[$w['id']]        ?? [];
+                    $w['constituents'] = $constituentsByWork[$w['id']] ?? [];
                 }
                 unset($w);
             }
@@ -5802,9 +5835,13 @@ class SongData
 
     /**
      * Public read: full Work row by slug or numeric id, including
-     * members, parent / children references and external links.
-     * Returns null when the schema isn't there or the work doesn't
-     * exist. Used by the public /work/<slug> page and the api.
+     * members, parent / children references, external links, and (#1860
+     * Phase 5 Commit 7) `constituents` — this Work's own medley contents
+     * when it IS a medley, `[]` otherwise or on an un-migrated
+     * tblWorkComponents (see `workMedleyReady()`/`workMedleyConstituents()`
+     * in `includes/work_admin.php`). Returns null when the schema isn't
+     * there or the work doesn't exist. Used by the public /work/<slug>
+     * page and the api.
      */
     public function getWork(string|int $slugOrId): ?array
     {
@@ -5905,6 +5942,7 @@ class SongData
                 'children'  => [],
                 'members'   => [],
                 'links'     => [],
+                'constituents' => [],
                 /* #1741 P4b (§2.2.2) — absent-column defaults so work.php
                    can render shape-blind: every key below is always
                    present in the returned array, whether or not the
@@ -5960,6 +5998,31 @@ class SongData
                 ];
             }
             $stmt->close();
+
+            /* Medley constituents ("Contains (medley)"), #1860 Phase 5
+               Commit 7. Gated on workMedleyReady() — tblWorkComponents is
+               a SEPARATE migration card from the tblWorks core this
+               method already requires (work_admin.php's workMedleyReady()
+               doc-block), so a work can resolve here while the medley
+               table still doesn't exist. Reuses the ONE shared medley-read
+               core (rule #22 — never a second inline query); this is a
+               SINGLE work, so the singular (non-bulk) reader is the right
+               tool, mirroring `workMedleyConstituentsMap()`'s bulk sibling
+               used by `_worksMap()` for the multi-song song-page case.
+               Local try/catch (matching this method's own
+               probe-then-query blocks, e.g. the Tune/external-links
+               lookups below) so an unexpected error here degrades to an
+               empty constituents list rather than the whole work page
+               404ing via the method's outer catch (rule #9-class — no
+               white-screen on an un-migrated/partial install). */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+                if (workMedleyReady($this->db)) {
+                    $work['constituents'] = workMedleyConstituents($this->db, $wid);
+                }
+            } catch (\Throwable $_e) {
+                // dormant-by-design — un-migrated install keeps an empty constituents list
+            }
 
             /* Members */
             $stmt = $this->db->prepare(
