@@ -4033,6 +4033,42 @@ CREATE TABLE IF NOT EXISTS tblSongbookPublishers (
   COMMENT='Songbook<->publisher many-to-many for multi-publisher copyright (#93).';
 
 -- ----------------------------------------------------------------------------
+-- tblSongCopyrightHolders (#1900, Wave 4 Commit C7) — the many-to-many between
+-- songs and publishers (multi-holder copyright). Mirrors tblSongbookPublishers
+-- exactly in shape; Role is an app-validated VARCHAR vocabulary (not ENUM,
+-- rule #20) — a DISTINCT vocab from tblSongbookPublishers.Role, since a
+-- copyright holder is about ownership of the SONG's rights, not a role on a
+-- SONGBOOK. SongId's FK is ON UPDATE CASCADE (not just ON DELETE CASCADE) so
+-- the songbook-relocate re-key (rule #1690/#1695) never freezes a song that
+-- has holder rows. PublisherId is ON DELETE RESTRICT (unlike the CASCADE on
+-- tblSongbookPublishers.PublisherId) — an actively-cited holder must not
+-- silently vanish if its registry row is deleted. Nullable ValidFrom/ValidTo
+-- reserve rights-window tracking so a future need costs no ALTER (rule #20
+-- forward-looking). Dormant until Wave 4 Commit C8 wires the picker + API.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongCopyrightHolders (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId       VARCHAR(20)  NOT NULL,
+    PublisherId  INT UNSIGNED NOT NULL,
+    Role         VARCHAR(30)  NOT NULL DEFAULT 'holder' COMMENT 'Role this publisher plays in this song''s copyright — app-validated, VARCHAR not ENUM (rule #20): holder | co-holder | administrator | publisher. Default holder.',
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL DEFAULT NULL,
+    ValidFrom    DATE         NULL DEFAULT NULL COMMENT 'Reserved (#1900): start of this holder''s rights window for this song. Dormant until a rights-window feature lands.',
+    ValidTo      DATE         NULL DEFAULT NULL COMMENT 'Reserved (#1900): end of this holder''s rights window for this song. Dormant until a rights-window feature lands.',
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_song_pub_role (SongId, PublisherId, Role),
+    INDEX      idx_sch_song (SongId),
+    INDEX      idx_sch_pub  (PublisherId),
+
+    CONSTRAINT fk_CopyHolders_Song
+        FOREIGN KEY (SongId)      REFERENCES tblSongs(SongId)   ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_CopyHolders_Pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id)  ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Song<->publisher many-to-many for multi-holder copyright (#1900).';
+
+-- ----------------------------------------------------------------------------
 -- tblPublisherAliases (#93) — alternate names a publisher is known by (former
 -- names, imprints-as-strings). Mirrors tblTuneAliases / tblMusicianAliases;
 -- indexed rows, not JSON. Feeds publisher typeahead matching.

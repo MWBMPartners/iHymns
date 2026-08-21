@@ -4433,4 +4433,23 @@ return [
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblBulkImportJobs', 'DryRun'),
     ],
+
+    'song-copyright-holders' => [
+        'script' => 'migrate-song-copyright-holders.php',
+        'card' => [
+            'title'  => 'Multi-holder song copyright (#1900)',
+            'body'   => 'Adds <code>tblSongCopyrightHolders</code> — a song&lt;-&gt;publisher'
+                      . ' many-to-many (mirrors <code>tblSongbookPublishers</code>, #93) so a song'
+                      . ' can carry an ORDERED LIST of copyright holders instead of just one.'
+                      . ' Requires the Publishers registry migration to have run first (its'
+                      . ' <code>PublisherId</code> foreign key references <code>tblPublishers</code>).'
+                      . ' Additive, idempotent, dormant until Wave 4 Commit C8 wires the picker'
+                      . ' + API. Safe to re-run.',
+            'button' => 'Run Multi-Holder Copyright Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. Placed at the END of
+           the registry (array-key order IS apply order) because this table's
+           PublisherId FK depends on 'publishers-entity' having already run. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongCopyrightHolders'),
+    ],
 ];

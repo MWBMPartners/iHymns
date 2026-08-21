@@ -65,6 +65,20 @@ const IHYMNS_PUBLISHER_ROLES = [
 ];
 
 /**
+ * Song copyright-holder roles (tblSongCopyrightHolders.Role, #1900). A DISTINCT
+ * vocabulary from IHYMNS_PUBLISHER_ROLES (which is about a publisher's role on a
+ * SONGBOOK — distributor/imprint/printer): a copyright HOLDER is about ownership
+ * and administration of the work's rights. App-validated VARCHAR, never ENUM
+ * (rule #20) — add a role here, never an ALTER.
+ */
+const IHYMNS_COPYRIGHT_HOLDER_ROLES = [
+    'holder'        => 'Copyright holder',
+    'co-holder'     => 'Co-holder',
+    'administrator' => 'Administrator',
+    'publisher'     => 'Publisher',
+];
+
+/**
  * Publisher name -> URL handle. RE-HOMED byte-for-byte from
  * ihymns_tune_slugify() (same iconv fall-through: a name that cannot
  * transliterate falls back to the raw name, the [^a-z0-9]+ strip removes what

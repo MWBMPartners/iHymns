@@ -466,6 +466,7 @@ const SONG_RELOCATE_EXPECTED_SONGID_FKS = [
     ['tblSongRoyaltyIds',              'SongId',          'fk_RoyaltyIds_Song',      null],
     ['tblPresentationThemeAssignments','SongId',          'fk_PresAssign_Song',      null],
     ['tblSongExternalIds',             'SongId',          'fk_SongExternalIds_Song', null],
+    ['tblSongCopyrightHolders',        'SongId',          'fk_CopyHolders_Song',     null],
 ];
 
 /**
