@@ -4798,11 +4798,11 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
            format needs no special case anywhere downstream.
            Credits (writers/composers/…) ARE now persisted by saveSong (#1736) —
            the shared saver writes the credit tables + promotes the registry, so
-           every importer inherits it. ⚠️ REMAINING LIMITATION (not introduced
-           here): saveSong still hardcodes copyright / ccli / verified / the
-           public-domain + media flags to empty on INSERT, so those carried below
-           are still dropped. Fixing THAT belongs in saveSong too (one change, all
-           formats), not in a fork here. */
+           every importer inherits it. The licensing / public-domain fields carried
+           below (copyright / ccli / iswc / verified / lyrics- & music-public-domain)
+           ARE now persisted too: saveSong reads them via _bulkImportRightsFromSong()
+           and writes them on INSERT (#1673 / #1896, 8807152d), so every importer
+           inherits that as well — no per-format fork is needed here. */
         $songDict = [
             'id'                 => $songId,
             'title'              => $title,
