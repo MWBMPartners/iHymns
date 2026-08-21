@@ -47,7 +47,14 @@ export function mountPreviewTab(container, opts) {
 
             const label = document.createElement('div');
             label.className = 'fw-semibold text-uppercase small text-muted mb-1';
-            label.textContent = (c.type || 'verse').replace(/^\w/, (ch) => ch.toUpperCase()) + (c.number ? ' ' + c.number : '');
+            /* #1907 Phase 5 — custom-first (rule #33): a curator-set component
+               Label overrides the derived "Verse 1" heading here too, mirroring
+               structure-tab.js's derivedComponentName()/headerText() and the six
+               other display sites. The tree-derived guard test-component-label-sites.js
+               caught this Preview tab as the site Commit 8's typed sweep missed. */
+            label.textContent = (c.label && String(c.label).trim())
+                ? String(c.label).trim()
+                : (c.type || 'verse').replace(/^\w/, (ch) => ch.toUpperCase()) + (c.number ? ' ' + c.number : '');
             block.appendChild(label);
 
             const body = document.createElement('div');
