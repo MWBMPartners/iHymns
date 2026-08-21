@@ -351,6 +351,142 @@ if (!function_exists('userSyncNow')) {
     }
 }
 
+if (!function_exists('userSyncRowNewerThanWatermark')) {
+    /**
+     * #1675 — is this server row too new for THIS client to overwrite?
+     *
+     * The per-row conflict predicate. A stored setlist row whose UpdatedAt is
+     * strictly after the client's `since` watermark is work another device did
+     * that this client has never absorbed — so a 'replace' push that would
+     * rewrite it must be REFUSED and the server row kept (#1649 err-toward-
+     * keeping). All three strings are the DB session frame (C2 aligned every
+     * writer + the watermark onto userSyncNow()/NOW()); lexicographic compare
+     * of 'YYYY-MM-DD HH:MM:SS' is chronological.
+     *
+     * STRICT `>` — a row stamped in the SAME second as the watermark is
+     * overwritable. This is the DELIBERATE OPPOSITE boundary to
+     * userSyncDeletableIds()'s `<` (which keeps on ambiguity): a deletion
+     * refused on the boundary costs a repeat, but an OVERWRITE refused on the
+     * boundary would make a client conflict with its OWN previous push — a
+     * device's own rows routinely stamp the same second as the watermark it was
+     * just handed (both are one request's NOW()), so refusing on equality is a
+     * self-inflicted refusal loop. The residual is a one-second last-writer-wins
+     * window (A.1), vs. today's PERMANENT one.
+     *
+     * FUTURE-STAMP CLAMP: a row stamped more than $slackSeconds past the DB's
+     * own now cannot be a real concurrent write in this frame — it is a
+     * frame-poisoned stamp (a pre-C2 PHP-UTC row read on a behind-UTC session,
+     * see userSyncNow()'s doc-block). Trusting the write there degrades to
+     * today's last-writer-wins instead of refusing pushes for hours. 300 s
+     * tolerates ordinary replication/read lag while being far under any real TZ
+     * offset (>= 1800 s).
+     *
+     * The ceiling is computed with an EXPLICIT UTC DateTimeImmutable for both
+     * parse AND format, so the TZ cancels regardless of PHP's ambient
+     * date.timezone — it is pure "+N seconds" string arithmetic on a same-frame
+     * value, never a second wall clock. (The design sketch used strtotime()+
+     * gmdate(), which only cancels when the ambient TZ is already UTC; this is
+     * the frame-safe form.)
+     * @see https://www.php.net/manual/en/datetimeimmutable.createfromformat.php
+     *
+     * @param ?string $since        the client's watermark, or null (legacy client)
+     * @param string  $rowTs        the stored row's UpdatedAt
+     * @param string  $dbNow        the DB's current NOW() (same frame as the row)
+     * @param int     $slackSeconds future-stamp tolerance
+     * @return bool true = refuse the overwrite (conflict); false = allow it
+     */
+    function userSyncRowNewerThanWatermark(?string $since, string $rowTs, string $dbNow, int $slackSeconds = 300): bool
+    {
+        if ($since === null) {
+            return false;
+        }
+        $ts = substr($rowTs, 0, 19);
+        if (!($ts > substr($since, 0, 19))) {
+            return false;
+        }
+        $now = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', substr($dbNow, 0, 19), new \DateTimeZone('UTC'));
+        if ($now === false) {
+            /* Unparseable DB clock — cannot bound the future, so do NOT refuse
+               (fail toward today's last-writer-wins, never a refusal loop). */
+            return false;
+        }
+        $ceiling = $now->modify('+' . $slackSeconds . ' seconds')->format('Y-m-d H:i:s');
+        return $ts <= $ceiling;
+    }
+}
+
+if (!function_exists('userSyncSetlistRowUnchanged')) {
+    /**
+     * #1675 — is the incoming setlist row a byte-level no-op against the stored
+     * one? Used for branch (a) of the conflict-safe upsert: an identical write
+     * is SKIPPED (not executed), so a routine push does not bump every row's
+     * UpdatedAt — which would otherwise make every row read "newer" to every
+     * other device and turn the conflict guard into a conflict FACTORY. It also
+     * makes a post-conflict converged push settle silently (the convergence
+     * proof in §3.5 of the plan).
+     *
+     * Compared field-by-field so a "not provided" key means "ignore", matching
+     * the write path's preserve semantics:
+     *   - Name / SongsJson byte-compare soundly (MEDIUMTEXT stores exactly the
+     *     bytes our own two funnels encoded — same encoder both sides).
+     *   - ExpiresAt only when the column is live (else the write never touches
+     *     it), compared as 19-char-or-null.
+     *   - Plan only when the client STATED one ($planProvided = array_key_exists
+     *     'plan'); compared through the canonical encode∘decode fold, NEVER by
+     *     bytes — SlotsJson is a JSON column MySQL re-normalises, so a byte
+     *     compare would read every planned list as "changed" on every push and
+     *     manufacture a permanent spurious-conflict loop (A.8).
+     *
+     * Returns false on ANY doubt (a false "changed" merely writes or
+     * conservatively conflicts; a false "unchanged" would silently drop an
+     * edit) — the plan helpers being unavailable, a decode failure, or any
+     * field differing all fail toward "changed".
+     *
+     * @param array<string,mixed> $srv          the stored row (SELECT snapshot)
+     * @param string              $name         the incoming, already-trimmed name
+     * @param string              $songsJson    the incoming encoded songs
+     * @param bool                $expiryReady  is the ExpiresAt column live?
+     * @param ?string             $expiresAt    the incoming expiry (19-char/null)
+     * @param bool                $planProvided did the client state a plan key?
+     * @param ?string             $planJson     the incoming encoded plan
+     * @return bool true = identical (skip the write); false = changed
+     */
+    function userSyncSetlistRowUnchanged(
+        array $srv,
+        string $name,
+        string $songsJson,
+        bool $expiryReady,
+        ?string $expiresAt,
+        bool $planProvided,
+        ?string $planJson
+    ): bool {
+        if ((string)($srv['Name'] ?? '') !== $name) {
+            return false;
+        }
+        if ((string)($srv['SongsJson'] ?? '') !== $songsJson) {
+            return false;
+        }
+        if ($expiryReady) {
+            $srvExp = (isset($srv['ExpiresAt']) && $srv['ExpiresAt'] !== null)
+                ? substr((string)$srv['ExpiresAt'], 0, 19) : null;
+            $inExp  = ($expiresAt !== null) ? substr($expiresAt, 0, 19) : null;
+            if ($srvExp !== $inExp) {
+                return false;
+            }
+        }
+        if ($planProvided) {
+            if (!function_exists('setlistTemplateEncodePlan') || !function_exists('setlistTemplateDecodePlan')) {
+                return false;
+            }
+            $srvPlanCanonical = setlistTemplateEncodePlan(setlistTemplateDecodePlan($srv['SlotsJson'] ?? null));
+            if ($srvPlanCanonical !== (string)$planJson) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
 /* ==========================================================================
  * #1661 — SETLIST TOMBSTONES, NO CAP, AND OPTIONAL EXPIRY  (sync protocol 2)
  * ==========================================================================

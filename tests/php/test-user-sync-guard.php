@@ -897,5 +897,113 @@ _usgAssert(
     'the migration carries a @migration-adds doctag for BOTH objects'
 );
 
+/* ====================================================================== *
+ * #1675 — the per-row conflict predicate + no-op skip (CALLED, truth table)
+ *
+ * These two pure helpers ARE the conflict-safe upsert. Being framework-free
+ * they are exercised directly here rather than grepped — a truth table over
+ * every boundary that decides whether an overwrite is refused or a write is
+ * skipped. The plan-fold path needs the setlist template encoder.
+ * ====================================================================== */
+
+echo "\n-- #1675 userSyncRowNewerThanWatermark (the conflict predicate) --\n";
+
+/* Normal shape: the watermark is minted just before the final read, so it
+   trails the DB's own NOW() slightly. */
+$W   = '2026-08-21 12:00:00';
+$NOW = '2026-08-21 12:00:05';
+
+_usgAssert(userSyncRowNewerThanWatermark(null, $W, $NOW) === false,
+    'a client with NO watermark (native) never conflicts — the guard is inert (byte-identical path)');
+_usgAssert(userSyncRowNewerThanWatermark($W, '2026-08-21 11:59:59', $NOW) === false,
+    'a row OLDER than the watermark is overwritable');
+_usgAssert(userSyncRowNewerThanWatermark($W, '2026-08-21 12:00:00', $NOW) === false,
+    'a row stamped the SAME second as the watermark is overwritable (strict >, no self-conflict loop)');
+_usgAssert(userSyncRowNewerThanWatermark($W, '2026-08-21 12:00:03', $NOW) === true,
+    'a row NEWER than the watermark (within the clamp) conflicts');
+_usgAssert(userSyncRowNewerThanWatermark($W, '2026-08-21 12:10:00', $NOW) === false,
+    'a row far in the FUTURE (past the 300s clamp) is frame-poisoned → allowed (degrade to LWW, never a refusal loop)');
+_usgAssert(
+    userSyncRowNewerThanWatermark($W, '2026-08-21 12:05:05', $NOW) === true
+    && userSyncRowNewerThanWatermark($W, '2026-08-21 12:05:06', $NOW) === false,
+    'the future-stamp clamp boundary is exactly dbNow + 300s (inclusive)'
+);
+
+echo "\n-- #1675 userSyncSetlistRowUnchanged (the no-op skip) --\n";
+
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/setlist_templates.php';
+
+$SRV = [
+    'Name'      => 'My List',
+    'SongsJson' => '[{"id":"MP-1"}]',
+    'ExpiresAt' => null,
+    'SlotsJson' => null,
+    'UpdatedAt' => '2026-08-21 12:00:00',
+];
+
+_usgAssert(userSyncSetlistRowUnchanged($SRV, 'My List', '[{"id":"MP-1"}]', false, null, false, null) === true,
+    'identical name+songs (no expiry, no plan) → unchanged (skip)');
+_usgAssert(userSyncSetlistRowUnchanged($SRV, 'Renamed', '[{"id":"MP-1"}]', false, null, false, null) === false,
+    'a changed name alone → changed');
+_usgAssert(userSyncSetlistRowUnchanged($SRV, 'My List', '[{"id":"MP-2"}]', false, null, false, null) === false,
+    'changed songs bytes → changed');
+_usgAssert(userSyncSetlistRowUnchanged($SRV, 'My List', '[{"id":"MP-1"}]', true, '2026-12-25 00:00:00', false, null) === false,
+    'expiryReady + a new expiry against stored NULL → changed');
+_usgAssert(userSyncSetlistRowUnchanged($SRV, 'My List', '[{"id":"MP-1"}]', true, null, false, null) === true,
+    'expiryReady + matching NULL expiry → unchanged');
+_usgAssert(
+    userSyncSetlistRowUnchanged(
+        ['Name' => 'My List', 'SongsJson' => '[{"id":"MP-1"}]', 'ExpiresAt' => '2026-12-25 00:00:00', 'SlotsJson' => null],
+        'My List', '[{"id":"MP-1"}]', false, null, false, null
+    ) === true,
+    'an un-gated ExpiresAt column is IGNORED when expiryReady is false (the write would not touch it)'
+);
+
+/* Plan is compared through the canonical encode∘decode fold, NEVER bytes — a
+   byte compare of the JSON column would read every planned list as "changed"
+   on every push and manufacture a permanent spurious-conflict loop. */
+$plan          = setlistTemplateSanitisePlan([['label' => 'Opening', 'type' => 'song']]);
+$canonicalPlan = setlistTemplateEncodePlan($plan);
+_usgAssert(
+    userSyncSetlistRowUnchanged(
+        ['Name' => 'My List', 'SongsJson' => '[{"id":"MP-1"}]', 'ExpiresAt' => null, 'SlotsJson' => ' ' . $canonicalPlan],
+        'My List', '[{"id":"MP-1"}]', false, null, true, $canonicalPlan
+    ) === true,
+    'a plan that DECODES equal but has different bytes (leading space) is unchanged — the fold is canonical, not a byte compare'
+);
+_usgAssert(
+    userSyncSetlistRowUnchanged(
+        ['Name' => 'My List', 'SongsJson' => '[{"id":"MP-1"}]', 'ExpiresAt' => null, 'SlotsJson' => $canonicalPlan],
+        'My List', '[{"id":"MP-1"}]', false, null, false, null
+    ) === true,
+    'an absent plan key (planProvided=false) is IGNORED even when the row already stores a plan'
+);
+
+echo "\n-- #1675 the conflict branch is wired into the sync handler --\n";
+
+/* $setlistSync is the comment-stripped user_setlists_sync body computed above. */
+_usgAssert(str_contains($setlistSync, "'newer_on_server'"),
+    'the sync handler emits the newer_on_server conflict reason');
+_usgAssert(str_contains($setlistSync, 'userSyncRowNewerThanWatermark('),
+    'the conflict decision is the shared predicate, not a re-inlined timestamp compare');
+_usgAssert(str_contains($setlistSync, 'userSyncSetlistRowUnchanged('),
+    'the no-op skip is the shared predicate');
+_usgAssert(str_contains($setlistSync, "'conflicts' => \$conflicts") || str_contains($setlistSync, "'conflicts'  => \$conflicts"),
+    "the response carries the 'conflicts' array (always present, [] when none)");
+/* BOTH the skip and the conflict branch must record the id as present, or the
+   deletion pass would treat a skipped/conflicted row as a deletion. Count the
+   `$payloadIds[] = $setlistId;` appends: one in the loop tail (fall-through) +
+   one in the skip branch + one in the conflict branch = at least 3. */
+_usgAssert(
+    substr_count($setlistSync, '$payloadIds[] = $setlistId;') >= 3,
+    'both the no-op-skip and conflict branches append $payloadIds (a skipped/conflicted row is NOT counted as deleted)'
+);
+/* The guard is watermark-gated so a native (no since) takes the identical old
+   path — byte-identical proof obligation (§4). */
+_usgAssert(
+    (bool)preg_match('/if \(\$since !== null && \$srv !== null\)/', $setlistSync),
+    'the whole conflict branch is gated on $since !== null (a native, no watermark, skips it entirely)'
+);
+
 echo "\n$passed passed, $failures failed.\n";
 exit($failures > 0 ? 1 : 0);

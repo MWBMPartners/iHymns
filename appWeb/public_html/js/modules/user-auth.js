@@ -598,9 +598,46 @@ export class UserAuth {
             this.app.setList.getAll(),
             res.tombstones
         );
-        const final = this._unionSetlists(pruned, res.setlists);
+        /* #1675 — SERVER WINS FOR CONFLICTED IDS. The union below puts the local
+           copy on top (correct for an in-flight edit) — but a row the server
+           REFUSED to overwrite (edited on another device since our watermark)
+           would then be resurrected locally from our stale copy and re-pushed
+           into a permanent conflict loop. So drop those ids from the local side
+           first; the union then takes the authoritative server row. BELT (§A.7):
+           only drop a local row when the server response actually carries a
+           replacement for that id — a conflict entry with no matching row would
+           otherwise delete the local copy leaving nothing. */
+        const serverIds = new Set(res.setlists.map((s) => s && s.id).filter(Boolean));
+        const conflictIds = new Set(
+            (Array.isArray(res.conflicts) ? res.conflicts : [])
+                .map((c) => c && c.id)
+                .filter((id) => id && serverIds.has(id))
+        );
+        const localSide = conflictIds.size
+            ? pruned.filter((l) => l && !conflictIds.has(l.id))
+            : pruned;
+        const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
+
+        /* One toast per absorb (not per row). The refused edit is replaced by
+           the newer server copy; the user re-applies it and the next push finds
+           the row content-identical (watermark advanced past the conflict) and
+           settles via the no-op skip — self-healing, no auto-retry (which would
+           be last-writer-wins with extra steps) and no auto-merge (no base). */
+        if (conflictIds.size) {
+            const names = res.setlists
+                .filter((s) => s && conflictIds.has(s.id) && s.name)
+                .map((s) => s.name);
+            const one = names.length === 1;
+            const label = one ? `“${names[0]}”` : `${conflictIds.size} set lists`;
+            this.app.showToast?.(
+                `${label} ${one ? 'was' : 'were'} updated on another device — showing the newer version. `
+                + `Your last change ${one ? 'to it' : 'to them'} was not applied.`,
+                'warning',
+                8000
+            );
+        }
         return true;
     }
 
@@ -755,6 +792,9 @@ export class UserAuth {
                 /* #1661 — deletions from other devices (and lazily-converted
                    expiries) for _absorbSetlistSync() to prune locally. */
                 tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
+                /* #1675 — per-row overwrite refusals for _absorbSetlistSync() to
+                   take the server copy of (and toast). [] when none. */
+                conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs

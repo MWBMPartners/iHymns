@@ -3536,10 +3536,22 @@ if ($action !== null) {
          * Sync setlists: merge local setlists with server-side storage.
          * Accepts the full array of local setlists and reconciles:
          *   - New setlists (by ID) are inserted
-         *   - Existing setlists are OVERWRITTEN by the payload (the upsert's
-         *     ON DUPLICATE KEY UPDATE is unconditional — there is no
-         *     "local version is newer" comparison; the previous wording of
-         *     this comment claimed one and was simply false, #1649)
+         *   - Existing setlists are upserted CONDITIONALLY (#1675/#1660). For a
+         *     client that sent a `since` watermark, each row runs a three-way
+         *     branch before the write:
+         *       (a) byte-identical content → SKIP (no write, no UpdatedAt bump)
+         *           so a routine push does not make every row read "newer" to
+         *           every other device (userSyncSetlistRowUnchanged);
+         *       (b) the stored row is newer than the client's watermark →
+         *           REFUSE the overwrite, keep the server row, and report it in
+         *           `conflicts` (userSyncRowNewerThanWatermark) — the row was
+         *           edited on another device since this client last absorbed;
+         *       (c) otherwise the existing ON DUPLICATE KEY UPDATE runs.
+         *     A client that sent NO watermark (the native apps) skips the whole
+         *     branch and keeps today's unconditional last-writer-wins, byte for
+         *     byte. This is the half #1660 asked for: the code now MATCHES this
+         *     comment (the earlier wording confessed an unconditional overwrite
+         *     — that confession is now history).
          *   - Server-only setlists are preserved in 'merge' mode, and in
          *     'replace' mode are deleted ONLY when userSyncDeletableIds()
          *     says it is safe (see includes/user_sync.php)
@@ -3573,7 +3585,10 @@ if ($action !== null) {
          *
          * Returns: { "setlists": [...], "syncedAt": "...",
          *            "truncated": false, "cap": null,
-         *            "tombstones": [{ id, deletedAt, reason }, …] }
+         *            "tombstones": [{ id, deletedAt, reason }, …],
+         *            "conflicts": [{ id, reason:"newer_on_server",
+         *                            serverUpdatedAt }, …]   // [] when none (#1675)
+         *          }
          * Requires: Authorization: Bearer <token>
          * ----------------------------------------------------------------- */
         case 'user_setlists_sync':
@@ -3879,6 +3894,16 @@ if ($action !== null) {
 
             $resurrectionsRefused = 0;
 
+            /* #1675 — index the snapshot taken above (zero extra queries) so the
+               per-row conflict branch can read each stored row by id, and start
+               the conflict report. The clamp's "now" is $now (userSyncNow from
+               C2), the SAME value + read the watermark is minted from below. */
+            $serverMap = [];
+            foreach ($serverRows as $r) {
+                $serverMap[(string)$r['SetlistId']] = $r;
+            }
+            $conflicts = [];
+
             foreach ($localLists as $list) {
                 if (empty($list['id'])) continue;
 
@@ -3940,8 +3965,54 @@ if ($action !== null) {
                    client that knows nothing about plans and must not clear
                    anything. */
                 $planStatement = ($upsertPlan !== null && array_key_exists('plan', $list));
+                /* #1675 — computed unconditionally (null when the client stated
+                   no plan) so the conflict no-op compare below can consult it
+                   BEFORE the execute. */
+                $planJson = $planStatement
+                    ? setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']))
+                    : null;
+
+                /* #1675 — PER-ROW CONFLICT-SAFE UPSERT (three-way). The gate is
+                   $since !== null (any client that sent a watermark), in BOTH
+                   'merge' and 'replace' modes — the merge-mode first-login
+                   reconcile is the worst stale-overwrite window. A native (no
+                   `since`) skips the whole branch → today's unconditional
+                   last-writer-wins, byte-identical. */
+                $srv = $serverMap[$setlistId] ?? null;
+                if ($since !== null && $srv !== null) {
+                    /* (a) NO-OP SKIP — identical content writes nothing and
+                       bumps nothing. Load-bearing twice over: it stops a routine
+                       push refreshing every row's UpdatedAt (which would make
+                       ALL rows read "newer" to every other device and turn the
+                       guard below into a conflict factory), and it makes a
+                       post-conflict converged push settle silently (§3.5). */
+                    if (userSyncSetlistRowUnchanged(
+                            $srv, $name, $songsJson, $expiryReady, $expiresAt,
+                            $planStatement, $planJson)) {
+                        $payloadIds[] = $setlistId;
+                        continue;
+                    }
+                    /* (b) CONFLICT — the row changed server-side after this
+                       client's last absorb, so this push would overwrite work
+                       the client has never seen. Keep the server row (#1649
+                       err-toward-keeping) and REPORT the refusal. The response's
+                       merged read already carries the authoritative row, so the
+                       entry is a status, not a data carrier. A refused row is
+                       refused WHOLE — name, songs, expiry and plan withheld
+                       together (single continue), never a partial write. */
+                    if (userSyncRowNewerThanWatermark($since, (string)$srv['UpdatedAt'], $now)) {
+                        $conflicts[] = [
+                            'id'              => $setlistId,
+                            'reason'          => 'newer_on_server',
+                            'serverUpdatedAt' => substr((string)$srv['UpdatedAt'], 0, 19),
+                        ];
+                        $payloadIds[] = $setlistId;
+                        continue;
+                    }
+                    /* (c) otherwise fall through to the EXISTING upsert below. */
+                }
+
                 if ($planStatement) {
-                    $planJson = setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']));
                     /* Type strings counted against the value list, not eyeballed:
                        8 values = 'i' + 7×'s'; 7 values = 'i' + 6×'s'. A
                        mismatch here is an ArgumentCountError at runtime, which
@@ -4064,7 +4135,8 @@ if ($action !== null) {
                thing to look at if a user says "it keeps coming back" (or, more
                likely, "it won't come back"). */
             if ($deleted > 0 || $truncated || $tombstonedNow > 0
-                || $expiredIds !== [] || $resurrectionsRefused > 0) {
+                || $expiredIds !== [] || $resurrectionsRefused > 0
+                || count($conflicts) > 0) {
                 logActivity('setlists.sync', 'user', (string)$userId, [
                     'mode'                 => $syncMode,
                     /* Logged as the EFFECTIVE protocol, not the client's
@@ -4077,6 +4149,9 @@ if ($action !== null) {
                     'explicitDeleted'      => $tombstonedNow,
                     'expired'              => count($expiredIds),
                     'resurrectionsRefused' => $resurrectionsRefused,
+                    /* #1675 — a refused overwrite is precisely what a curator
+                       investigating "my edit vanished / won't save" needs. */
+                    'conflicts'            => count($conflicts),
                     'total'                => count($mergedSetlists),
                 ]);
             }
@@ -4098,6 +4173,14 @@ if ($action !== null) {
                 'cap'       => null,
                 /* #1661 — ids this client must drop from its local cache. */
                 'tombstones' => $tombstones,
+                /* #1675 — per-row overwrite refusals ({id, reason:'newer_on_server',
+                   serverUpdatedAt}), ALWAYS present, [] when none. Additive key —
+                   a native decoder that never reads it is unaffected (the cap:null
+                   precedent). The authoritative rows are already in `setlists`
+                   above; the client drops these ids from its local-wins side of
+                   the union so the refused edit is not resurrected and re-pushed
+                   (§3.5). */
+                'conflicts' => $conflicts,
             ]);
             break;
 
