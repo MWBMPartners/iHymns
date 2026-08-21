@@ -35,6 +35,8 @@ declare(strict_types=1);
  * Copyright (c) 2026 iHymns. All rights reserved.
  */
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+
 if (!function_exists('ihymns_sim_fold')) {
     /**
      * The common fold shared by every normaliser in this file: lowercase,
@@ -47,7 +49,8 @@ if (!function_exists('ihymns_sim_fold')) {
      *
      * ELI5: squash any piece of text down to its bare lowercase words so
      * small spelling/typography differences don't stop two near-identical
-     * strings from matching.
+     * strings from matching — and, since #1908, a non-Latin script (CJK,
+     * Cyrillic, Greek, Thai, …) survives the squash instead of vanishing.
      *
      * DETAILED / WHY extracted (#1785 rule #22): before this, the fold
      * logic lived only inside ihymns_sim_normalise() (title fold, which
@@ -59,20 +62,68 @@ if (!function_exists('ihymns_sim_fold')) {
      * article-strip(ihymns_sim_fold($s)) below — byte-identical output,
      * proved by tests/php/test-song-similarity.php passing unchanged.
      *
-     * @see https://www.php.net/manual/en/function.iconv.php  (ASCII//TRANSLIT)
+     * #1908 — WHY THE DIACRITIC STEP CHANGED: this used to be a bare
+     * `iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s)`, the same
+     * locale-dependent, script-destructive mechanism `title_normalize.php`
+     * carried before its own #1908 fix (glibc TRANSLIT turns an
+     * untransliterable script into a run of literal '?' characters, e.g.
+     * "耶稣爱我" → "????", which the punctuation strip below then erased
+     * to '' — every non-Latin title scored 0.0 against everything,
+     * including itself). The fix mirrors `ihymns_normalize_title()`
+     * exactly (rule #22's "shared diacritic-strip step" — the two folds
+     * stay distinct functions, but this ONE step is now identical
+     * machinery in both): `Normalizer::FORM_KD` (ext-intl / ICU) when
+     * available, deterministic and non-destructive; the iconv fallback
+     * only on an intl-absent host, ACCEPTED only when it minted no NEW '?'
+     * (the D2 guard — see `ihymns_normalize_title()`'s doc-block for the
+     * full mechanism). `IHYMNS_FOLD_SPECIAL` (title_normalize.php) then
+     * folds the 10 letters NFKD can't decompose on its own (ł, ø, ß, …) —
+     * ONE shared map, required in rather than re-declared here.
+     *
+     * WHAT STAYS DISTINCT FROM ihymns_normalize_title() (rule #22 —
+     * do NOT merge these): after the diacritic strip, THIS fold turns
+     * stripped punctuation into a SPACE (`[^\p{L}\p{N}\s] → ' '`), not a
+     * deletion — "Church's" → "church s" (see
+     * tests/php/test-song-similarity.php's normalise assertions), because
+     * a fuzzy Levenshtein/token comparison wants "Church's" and
+     * "Churchs one foundation" to still share tokens. The exact dedup fold
+     * DELETES punctuation instead, because it is a strict equality key.
+     *
+     * @see https://www.php.net/manual/en/normalizer.normalize.php
+     * @see https://www.php.net/manual/en/function.iconv.php  (ASCII//TRANSLIT fallback)
+     * @see ihymns_normalize_title()  includes/title_normalize.php — the sibling
+     *      exact-dedup fold sharing this diacritic-strip shape + IHYMNS_FOLD_SPECIAL
      */
     function ihymns_sim_fold(string $s): string
     {
         // Lowercase first (mb-aware) so downstream regexes + compares are case-insensitive.
         $s = mb_strtolower($s, 'UTF-8');
-        // Strip diacritics by transliterating to ASCII. iconv() is wrapped: on
-        // hosts where TRANSLIT isn't available we keep the original rather than
-        // blanking the string (best-effort, locale-dependent).
-        $ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
-        if ($ascii !== false) {
-            $s = $ascii;
+        if (class_exists('Normalizer')) {
+            /* Deterministic, locale-independent (ext-intl / ICU) — see the
+               #1908 doc-block note above for why this replaced bare iconv. */
+            $n = \Normalizer::normalize($s, \Normalizer::FORM_KD);
+            if (is_string($n)) {
+                $s = $n;
+            }
+            $s = (string)preg_replace('/\p{M}+/u', '', $s);
+        } else {
+            /* intl-absent fallback: best-effort iconv, ACCEPTED only when it
+               minted no NEW '?' — glibc TRANSLIT substitutes '?' per
+               untransliterable char ("耶稣爱我" → "????"), which the
+               punctuation-to-space step below would otherwise turn into a
+               run of spaces instead of preserving the script. */
+            $folded = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
+            if (is_string($folded) && $folded !== ''
+                && substr_count($folded, '?') === substr_count($s, '?')) {
+                $s = $folded;
+            }
         }
+        // Fold the 10 letters NFKD leaves alone (ł, ø, ß, …) — shared map,
+        // see IHYMNS_FOLD_SPECIAL's own doc-block (title_normalize.php).
+        $s = strtr($s, IHYMNS_FOLD_SPECIAL);
         // Keep only letters / numbers / whitespace; everything else → space.
+        // UNTOUCHED by #1908 — this SPACE (not delete) is load-bearing, see
+        // the doc-block above ("church's" → "church s").
         $s = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s) ?? $s;
         // Collapse runs of whitespace to a single space.
         $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
@@ -110,23 +161,52 @@ if (!function_exists('ihymns_sim_text')) {
      * ELI5: 1.0 = identical strings, 0.0 = completely different. We measure how
      * many single-character edits turn one into the other, scaled by length.
      *
-     * PHP's levenshtein() caps at 255 bytes, so longer inputs (a long opening
-     * verse used as the first-line signal) are truncated to keep it defined.
+     * PHP's levenshtein() caps at 255 BYTES (not characters), so longer
+     * inputs (a long opening verse used as the first-line signal) are
+     * truncated to keep it defined.
+     *
+     * #1908 — WHY mb_strcut(), NOT mb_substr(): `mb_substr($a, 0, 255)`
+     * caps at 255 CHARACTERS, which was harmless while every non-Latin
+     * script folded to '' upstream (ihymns_sim_fold() erased it before it
+     * ever reached here) — but now that CJK/Thai/… text survives the fold,
+     * 255 multi-byte characters can run to 500-765+ BYTES, blowing straight
+     * through levenshtein()'s 255-byte ceiling. Past that ceiling
+     * levenshtein() returns -1 (not a real edit distance), which the old
+     * code fed straight into `1.0 - (-1 / $max)` — a similarity ABOVE 1.0,
+     * silently corrupting the composite score / confidence tier for any
+     * long non-Latin pair. `mb_strcut()` caps at 255 BYTES directly (and,
+     * per its own contract, never splits a multi-byte character in half —
+     * it backs off to the nearest whole-character boundary), so the
+     * truncated string handed to levenshtein() can never exceed the limit
+     * that produces -1 in the first place. The `$d < 0` guard below is the
+     * second, independent layer: even if some other future caller manages
+     * to hand levenshtein() an over-length pair, the corrupt-negative
+     * distance is caught and mapped to "completely different" (0.0)
+     * instead of silently propagating as "more than identical".
      *
      * @see https://www.php.net/manual/en/function.levenshtein.php
+     * @see https://www.php.net/manual/en/function.mb-strcut.php
      */
     function ihymns_sim_text(string $a, string $b): float
     {
         if ($a === '' && $b === '') {
             return 0.0;
         }
-        $a = mb_substr($a, 0, 255);
-        $b = mb_substr($b, 0, 255);
+        // BYTE cap (not char cap) at a UTF-8 character boundary — see the
+        // #1908 doc-block note above for why mb_substr() is wrong here.
+        $a = mb_strcut($a, 0, 255);
+        $b = mb_strcut($b, 0, 255);
         $max = max(strlen($a), strlen($b));
         if ($max === 0) {
             return 0.0;
         }
         $d = levenshtein($a, $b);
+        if ($d < 0) {
+            // levenshtein() signals "input too long" with -1, not a real
+            // distance (#1908). Treat as "nothing in common" rather than
+            // let `1.0 - (-1/$max)` mint a similarity > 1.0.
+            return 0.0;
+        }
         return 1.0 - ($d / $max);
     }
 }
