@@ -124,6 +124,39 @@ const shVer = (vendorSh.match(/sortablejs@([\d.]+)\/Sortable\.min\.js/) || [null
 check('download-vendor.sh fetches the SAME version the module loads',
     shVer !== null && cdnMatch !== null && shVer === cdnMatch[1]);
 
+/* ---- 3b. the fallback ITSELF is hash-verified, not just non-empty (#1666) --
+ *
+ * ELI5: sections 1-3 above prove a local fallback file EXISTS for the CDN
+ * load. They say nothing about whether that file is the RIGHT file. Before
+ * #1666, download-vendor.sh only checked "did curl hand back more than zero
+ * bytes" — a captive portal, a compromised mirror, or a tampered CDN
+ * response would satisfy that check while vendoring a completely different
+ * file under the trusted name. The whole reason the CDN loads themselves
+ * carry an `integrity` hash (rule #36) is that a mismatch there is refused;
+ * the local fallback they degrade to deserves the identical guarantee, or
+ * "verified fallback" is a claim this repo isn't actually keeping.
+ *
+ * These checks are deliberately ABOUT THE MECHANISM (computes a real SHA
+ * digest, reads the expected value from the SAME config.php registry every
+ * CDN <script>/<link> is already checked against above, and aborts loudly
+ * on a mismatch) rather than re-asserting one library's hash by name — that
+ * is what sections 1-3 already do, and re-typing a hash here would just be
+ * a FOURTH place that value has to agree with everyone else (rule #35).
+ */
+check('download-vendor.sh computes a real SHA-384 digest of each download (openssl dgst, not just a byte count)',
+    /openssl\s+dgst\s+-"?\$?\{?algo\}?"?/.test(vendorSh) || /openssl\s+dgst\s+-sha384/.test(vendorSh));
+
+check('download-vendor.sh reads the expected hash from APP_CONFIG[\'libraries\'] in config.php — '
+    + 'the SAME registry the CDN <script>/<link> checks above verify against — never a second, '
+    + 'hand-typed hash list',
+    /APP_CONFIG\[.libraries.\]/.test(vendorSh) && /_sri/.test(vendorSh));
+
+check('download-vendor.sh FAILS LOUDLY (non-zero exit) on a hash mismatch, not a warning-only log line',
+    /HASH MISMATCH/i.test(vendorSh) && /\bexit 1\b/.test(vendorSh));
+
+check('a file with no registry hash of its own (e.g. a webfont binary) is a skip-with-notice, never a hard failure',
+    /no SRI in registry/i.test(vendorSh));
+
 /* ---- 4. NO page hardcodes an un-hashed third-party load (#1676) -------
  *
  * Sections 1-3 check ONE library, named in this file. That is the shape of
