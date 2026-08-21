@@ -699,6 +699,12 @@ foreach ($sections as $s) {
                                 <strong>Per-line language, translations &amp; annotations</strong> — expand the per-line panel under the section to attach, line by line, a <em>translation</em> or <em>transliteration</em> (romanization) of a lyric line and Genius-style <em>annotations</em> (explanation / reference / scripture / history / trivia). These attach to the individual lyric line, not the section as a whole, and are saved as you add them (save the song first so each line is ready to attach to).
                             </p>
                             <p class="mb-2">
+                                <strong>Custom section name</strong> — each section has a per-section <em>language</em> box and, beside it, a <em>Label</em> box. Type a Label to show a custom heading ("Kyrie", or a language name for a multilingual song) instead of the automatic "Verse 1 / Chorus"; the <em>Use language name</em> button fills it from the section's language in one click. It's display-only &mdash; the app still treats the section as its underlying type (verse, chorus…) for highlighting and for every export format, so nothing downstream breaks. Leave the Label empty to keep the automatic heading.
+                            </p>
+                            <p class="mb-2">
+                                <strong>Source work (medleys)</strong> — for a medley, each section can point at the <a href="#works">Work</a> it excerpts, using the per-section "Source work" search-picker. This records which part of the medley came from which work; it only links to works that already exist (manage the works themselves on the <a href="#works">Works</a> page).
+                            </p>
+                            <p class="mb-2">
                                 <strong>Arrangement</strong> — below the section list, the Arrangement panel sets the song's actual running order for playback and export: which sections play, in what sequence, and how many times each repeats (e.g. Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus). Add sections from the pool and reorder them with the move-left/move-right buttons, or start from a quick-action preset ("Verses only", "Chorus after each verse", …) and adjust from there. Leaving it empty plays the sections in the order they're listed above.
                             </p>
                             <p class="mb-2 small text-muted">
@@ -1200,6 +1206,7 @@ foreach ($sections as $s) {
                     <dl class="actions">
                         <dt>Create</dt><dd>Title + slug (auto from title) + optional ISWC + optional parent Work + optional notes. Members are added via the Edit modal once the row exists.</dd>
                         <dt>Edit</dt><dd>Add / remove member songs (typeahead over the whole catalogue), mark one as <em>canonical</em>, set sort order, attach external links (the provider dropdown auto-detects from the URL).</dd>
+                        <dt>Constituent works (medley)</dt><dd>Define a Work as an ordered list of other Works &mdash; a medley. In the Edit modal, the <strong>Constituent works (medley)</strong> section takes a work-search typeahead; add each constituent and set its order. This is a &ldquo;contains&rdquo; relationship (distinct from the parent/variant Nesting below): the song page and public work page then show a read-only &ldquo;Medley of: A, B, C&rdquo; line, and a song's individual sections can point at the constituent they excerpt (the <a href="#editor">Song Editor</a> Structure tab's per-section &ldquo;Source work&rdquo; picker).</dd>
                         <dt>Delete</dt><dd>Memberships and external links are removed along with the Work. Child Works (if any) become independent rather than being deleted too.</dd>
                     </dl>
                     <h3 class="h6">Nesting</h3>

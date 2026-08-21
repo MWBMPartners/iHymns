@@ -34,6 +34,13 @@ with none of the behind-the-scenes technical detail.
 - **Reliability and security touch-ups** — Signed-in members no longer see a
   stray "sign in to sync" prompt in Settings, and a round of behind-the-scenes
   security work keeps the app safe without changing anything you'll notice.
+- **Name your own song sections** — A curator can give any part of a song its
+  own name — "Kyrie", or its language ("isiZulu") in a multilingual song — in
+  place of the usual "Verse 1 / Chorus". It's just a label: the app still knows
+  it's a verse or a chorus underneath.
+- **Medleys** — A song that stitches several hymns together can now be recorded
+  as a medley — an ordered list of the songs it's made from — and its page shows
+  a "Medley of: …" line so everyone can see what it's built from.
 
 ## 0.5160.0 — 12 August 2026
 

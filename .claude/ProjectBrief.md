@@ -4,6 +4,34 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-21 (round 2 — #1907 medley composition + custom component labels)
+
+The dormant #1860 work-identity schema is now **wired** (Phase 5), plus one new column, on commits
+`417a9160`→`734b6f29` (`claude/ilyrics-identity-work-model`). INFRA framing — user copy went to
+WHATS-NEW / help; dev mechanics recorded in `DEV_NOTES.md` (the new "Medley composition + component
+labels" architecture section) and CLAUDE.md rule #45. Full design:
+`.claude/medley-component-work-1860-phase5-plan.md`.
+
+- **Ordered medley composition** — `tblWorkComponents(MedleyWorkId, ComponentWorkId, SortOrder)`
+  (M:N "contains", NOT the variant-of `ParentWorkId`) written ONLY through the ONE `workMedley*()`
+  core in `includes/work_admin.php` (ready / constituents / constituentsMap / wouldCycle[bounded BFS] /
+  attach[idempotent, keep-existing — never overwrites a curator row] / replace). Both consumers — the
+  `/manage/works` "Constituent works (medley)" card-list (`manage_works`) and the `component_upsert`
+  §3.6b.2 additive-only, non-blocking lockstep — delegate to it. The public song page + `/work/<slug>`
+  show a read-only "Medley of: A, B, C" line (#1907).
+- **`tblSongComponents.Label` (NEW column) + `SourceWorkId`** — thin-row component METADATA siblings of
+  `Language` (#858), on the SAME `component_upsert`/`lyricLinesWriteComponents()` funnel, never the
+  `tblLyricLines` line path (rule #25 untouched). `Label` is DISPLAY-ONLY — `Type` stays authoritative
+  for CSS/chorus-highlight, arrangement resolution and every machine-export keyword (exporters carry
+  ZERO `.label`); D1 hide-when-equal stores NULL server-side. Read seam emits `label` SPARSELY (public)
+  / always-present (editor); the write path is silent-wipe-proof in THREE layers. Guards:
+  `tests/test-work-medley-core.php` + the tree-derived `tests/test-component-label-sites.js`.
+
+Suites now **176 PHP / 66 node** (both new guards included). Highest issue **#1910** (this session
+filed #1907 medley epic, #1908 Unicode, #1909 API webhooks, #1910 line-grain provenance). Version
+baseline stays tag-derived `v1.0.0` (#1899) — no bump. The #1710/#1699/#1673/#1896/#1667/#1905/#1906
+batch below is unchanged (round 1).
+
 ## 📌 Continuation note — 2026-08-21 (docs-sync — INFRA delta since the 2026-08-18 sweep)
 
 Documentation catch-up recording the batch that landed after the 2026-08-18 note (CHANGELOG

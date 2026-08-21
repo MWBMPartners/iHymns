@@ -552,6 +552,39 @@ never hardcode a second prefix map, never skip the column-existence gate.
 - **`includes/song_media_flags.php`** — `HasAudio`/`HasSheetMusic` auto-maintained from `tblSongMedia`;
   the editor's old manual checkboxes are gone (rule #44 — don't collect what can be derived).
 
+### Medley composition + component labels (#1907, #1860 Phase 5) — the shared modules you MUST reuse, not re-fork
+
+Wired the dormant #1860 work-identity schema and added one column, on commits `417a9160`→`734b6f29`
+(branch `claude/ilyrics-identity-work-model`). Full design: `.claude/medley-component-work-1860-phase5-plan.md`;
+contract in CLAUDE.md rule #45. Before touching medley/component-metadata code, reach for these:
+
+- **`workMedley*()`** in `includes/work_admin.php` — the ONE medley core
+  (`…Ready`/`…Constituents`/`…ConstituentsMap`/`…WouldCycle`[bounded-depth BFS, self-link + cycle guards]/
+  `…Attach`[idempotent `ON DUPLICATE KEY UPDATE MedleyWorkId=MedleyWorkId` — keep-existing, NEVER
+  overwrites a curator row]/`…Replace`) over `tblWorkComponents(MedleyWorkId, ComponentWorkId, SortOrder)`
+  (M:N "contains", deliberately NOT `ParentWorkId` = "is-a-variant-of", rule #14). Both consumers — the
+  `/manage/works` "Constituent works (medley)" editor (gate `manage_works`) and the `component_upsert`
+  §3.6b.2 additive-only, non-blocking lockstep from `tblSongComponents.SourceWorkId` — delegate to it.
+- **The thin-row component metadata** — the NEW `tblSongComponents.Label VARCHAR(100)` (custom section
+  name, e.g. "Kyrie"/"isiZulu") and `tblSongComponents.SourceWorkId` (per-section Work provenance) are
+  siblings of `Language` (#858), carried on the SAME `component_upsert`/`lyricLinesWriteComponents()`
+  funnel — **never the `tblLyricLines` line path** (rule #25 untouched — no line content). `Label` is
+  **DISPLAY-ONLY**: `Type` stays authoritative for CSS/chorus-highlight, arrangement resolution, and every
+  machine-export keyword, so `format-export.js`/`propresenter-export.js` carry **ZERO `.label`** (a
+  free-text label in an exporter breaks re-import). D1 hide-when-equal is server-side in `component_upsert`
+  (a label equal to the derived "Type Number" stores NULL, rule #27).
+- **The read/write seams** — `includes/lyric_lines_read.php` emits `label` **SPARSELY** in the public
+  shape (key present only when set, so the strict-`===` `test-lyric-lines-read.php` contract + 16k-song
+  byte-parity hold) and always-present `label`/`sourceWorkId` in the editor shape. The write path is
+  **silent-wipe-proof in THREE layers** (handler target-preserve + read-modify-write carry + writer
+  provided-flag preserve via `array_key_exists`) because `components_replace` (FIFO carry) and
+  `save_song_core` (PF1 carry) each rebuild a fixed shape and would otherwise NULL every label — an
+  omitted key means "preserve", explicit `null` means "clear". ONE shared column probe
+  (`lyricLinesComponentExtrasPresent()`, rule #35) gates every SELECT so nothing throws under STRICT on
+  an un-migrated install. The tree-derived, mutation-proven `tests/test-component-label-sites.js`
+  enumerates every deriver render site and asserts each reads `.label` (it already caught a `preview-tab.js`
+  gap the typed sweep missed, rule #33).
+
 ---
 
 ## 🚀 Deployment Architecture

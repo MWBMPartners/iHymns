@@ -11,7 +11,7 @@
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
 | 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 47 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1906 — see GitHub for live open/closed counts |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1910 — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
@@ -118,6 +118,10 @@ The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.410
 - **Org-admin Service Mode nav** (#1667) — organisation admins now see the Service Mode links (Projector Screen, Lead a Service) in the admin menu; they were always allowed to use them, only the menu visibility was gated too broadly (nav↔gate parity).
 - **Signed-in sync notice fix** (#1710) — a signed-in user is no longer wrongly told to "Sign in to sync…" on Settings; `api.php` now resolves the current user for non-cacheable fragments while cacheable fragments stay un-personalised for shared-cache safety.
 
+### 2026-08 (late) highlights ✅ — #1860 Phase 5: medley composition (#1907)
+
+- **Medley composition + custom component names** (#1860 Phase 5 / #1907) — the dormant #1860 work-identity schema is now wired (new `tblSongComponents.Label` column + `tblWorkComponents`). A curator can give any song section a custom display name ("Kyrie", or one-click its language name) instead of the automatic "Verse 1 / Chorus" — display-only, so the section *type* still drives chorus highlighting, slide grouping and every export format's structural keyword. A Work can now be defined as an ordered list of constituent Works via a "Constituent works (medley)" editor on `/manage/works`, so the song page and `/work/<slug>` show a read-only "Medley of: A, B, C" line, and each section can point at the Work it excerpts. One shared medley core (`workMedley*()` in `includes/work_admin.php`); tree-derived guard `tests/test-component-label-sites.js`.
+
 ---
 
 ## 📌 Next Milestones
@@ -158,7 +162,7 @@ container doesn't have.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1906 — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1910 — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
 - **Version**: 1.0.0 Alpha (authoritative: `includes/infoAppVer.php`) — tag-derived `MAJOR.RELEASE.BUILD` scheme (#1899): MAJOR hand-edited (rare), RELEASE automated at the beta→main promotion, BUILD = the monotonic per-commit git commit count (`Version.Build.Number`, deploy-injected; `NULL` on an undeployed checkout). The old minor-auto-bumping `version-bump.yml` is retired
 - **CI/CD**: 14 GitHub Actions workflows live

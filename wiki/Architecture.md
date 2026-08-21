@@ -163,7 +163,10 @@ includes/song_external_ids.php     — the tblSongs.Isrc -> tblSongExternalIds d
 includes/tune_helpers.php          — tuneFindOrCreateByName() (the ONE tune lookup) + ihymns_meter_normalize()
 includes/partials/external-links-panel.php — shared Work/Tune/Musician external-links editor
 includes/musician_duplicates.php   — registry-vs-registry duplicate scan (#1785) — pure candidate generator + the shared disambiguation-payload builder
+includes/work_admin.php            — workMedley*() ordered-medley core (#1907) — tblWorkComponents attach/replace/cycle-guard; the /manage/works editor AND the component_upsert lockstep both delegate here
 ```
+
+**Medley composition + component labels (#1907, #1860 Phase 5).** Two per-section concerns ride the existing component read/write path, never a fork: a custom **display** name (`tblSongComponents.Label`, DISPLAY-ONLY — `Type` stays authoritative for CSS + every machine-export keyword, so exporters carry zero `.label`, CI-guarded by `tests/test-component-label-sites.js`) and a per-section **source Work** (`SourceWorkId`, medley stitching). Both are thin-row metadata carried on `component_upsert` / `lyricLinesWriteComponents()` — never the `tblLyricLines` line path (rule #25). The read shape emits `label` **sparsely** (public) so the strict-`===` read contract holds unchanged; the write path is **silent-wipe-proof in three layers** (handler target-preserve + read-modify-write carry + writer provided-flag preserve) because `components_replace`/`save_song_core` rebuild fixed shapes. Setting a section's `SourceWorkId` additively syncs `tblWorkComponents` (the §3.6b.2 lockstep, non-blocking); the song page + `/work/<slug>` render a read-only "Medley of: A, B, C".
 
 In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the single place `tblSongs.TuneName`/`TuneId` are written — always together, so a tune edit (or a whole-song save, bulk import, or revision restore, all of which funnel through it) can never strand the registry link. See [[Database & Migrations]] for the entity tables and **DEV_NOTES.md → Architecture Decisions** for the reuse contract.
 
