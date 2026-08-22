@@ -5500,6 +5500,28 @@ CREATE TABLE IF NOT EXISTS tblIlyricsIdSequence (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-entity-type allocator for the sequential IL* internal ids (#1860 §2.3). One row per entity family; row-level FOR UPDATE serialises same-type mints only. Seeded by migrate-ilyrics-internal-ids.php; read/written ONLY by ilidAllocate().';
 
+-- ----------------------------------------------------------------------------
+-- tblQrCache (#1920) — server-side cache of CueRCode-generated QR images,
+-- keyed by a payload+options hash. Created by migrate-add-qr-cache.php;
+-- DORMANT until #1920 C3's read-through (cuercodeGenerateCached()) lands —
+-- schema-only until then, provably inert.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblQrCache (
+    CacheKey     CHAR(64)      NOT NULL COMMENT 'sha256 hex over the canonical payload+normalised-options JSON minted by cuercodeCacheKey() — the ONE key derivation (#1920)',
+    Payload      VARCHAR(1024) NOT NULL COMMENT 'the encoded text/URL (bounded by CUERCODE_MAX_PAYLOAD_LEN); informational/debug — CacheKey is authoritative',
+    ParamsJson   JSON          NOT NULL COMMENT 'the canonical normalised option map the key was derived from (format/size/ecc/type + optional colours today); a future option lands in the hash + here with NO schema change (rule #20)',
+    Mime         VARCHAR(100)  NOT NULL COMMENT 'Content-Type CueRCode answered with (image/svg+xml, image/png)',
+    Format       VARCHAR(10)   NOT NULL COMMENT 'svg | png today; VARCHAR not ENUM (rule #20)',
+    Bytes        MEDIUMBLOB    NOT NULL COMMENT 'the QR image bytes exactly as CueRCode returned them; served verbatim',
+    ByteLength   INT UNSIGNED  NOT NULL COMMENT 'strlen(Bytes), denormed so size accounting never reads blobs',
+    CreatedAt    DATETIME      NOT NULL COMMENT 'UTC mint instant; DATETIME not TIMESTAMP (rule #20) so TTL pruning never re-reads through a session zone',
+    LastAccessAt DATETIME      NULL DEFAULT NULL COMMENT 'DORMANT (#1920 one-pass, rule #20): reserved for a future LRU policy; v1 writes nothing here — TTL-on-CreatedAt is the shipped eviction',
+
+    PRIMARY KEY (CacheKey),
+    INDEX idx_CreatedAt (CreatedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Server-side cache of CueRCode-generated QR images, keyed by payload+options hash (#1920).';
+
 
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)

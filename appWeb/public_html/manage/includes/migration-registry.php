@@ -4452,4 +4452,19 @@ return [
            PublisherId FK depends on 'publishers-entity' having already run. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongCopyrightHolders'),
     ],
+
+    'qr-cache' => [
+        'script' => 'migrate-add-qr-cache.php',
+        'card' => [
+            'title'  => 'QR image cache (#1920)',
+            'body'   => 'Creates <code>tblQrCache</code> — a server-side cache of CueRCode-generated'
+                      . ' QR images keyed by a payload+options hash, so <code>/qr.php</code> and the'
+                      . ' server PDF renderer stop round-tripping the CueRCode service for a picture'
+                      . ' that never changes. Fail-open: absent table = today\'s behaviour.'
+                      . ' Additive, idempotent, dormant. Safe to re-run.',
+            'button' => 'Run QR Cache Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblQrCache'),
+    ],
 ];
