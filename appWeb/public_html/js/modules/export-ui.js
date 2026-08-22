@@ -40,6 +40,20 @@
  *  DISCOVERY differs: one `.songbook-export-menu` closed over one `abbr`
  *  vs. N `.songbook-list-export-menu` elements, each resolving its own
  *  `abbr` from its tile's `data-songbook-id` (see includes/pages/songbooks.php).
+ *
+ *  #1571 (safe subset) — Mission-Praise-scale (3,517 songs) exports get an
+ *  honest CONFIRM before the client spends real time encoding, plus coarse
+ *  PROGRESS toasts during the encode so a busy page doesn't look hung. The
+ *  count is read DOM-first (no extra fetch): `data-songbook-songs` on the
+ *  /songbooks list tile, or the new `data-songbook-song-count` on the
+ *  /songbook page's own `.page-songbook` — both same-for-everyone static
+ *  markup, so they stay valid on a SHARED-CACHE fragment (rule #6). When
+ *  neither is available (an older cached fragment) `exportSongbookAs()`
+ *  carries its own POST-fetch belt using the real `songs.length` — the
+ *  server work is already spent by then, but the client-side encode is the
+ *  bigger stall and is still worth consenting to. The heavy re-architecture
+ *  (chunked fetch / streaming ZIP) stays a surfaced owner decision (#1571
+ *  §8.1) — this is the safe, consent+visibility subset only.
  * ========================================================================== */
 
 import { apiFetch } from '../utils/api-client.js';
@@ -98,6 +112,62 @@ function toast(message, type) {
     if (window.iHymnsApp && typeof window.iHymnsApp.showToast === 'function') {
         window.iHymnsApp.showToast(message, type || 'info');
     }
+}
+
+/**
+ * #1571 — the song-count above which a songbook export is "large enough to
+ * warrant an honest heads-up" before the client starts encoding. Well above
+ * every book in the catalogue except Mission Praise (3,517) and any future
+ * full hymnal; low enough to nag on a 300-song book would just train users
+ * to click through it without reading.
+ *
+ * This is a CLIENT-ONLY UX constant — no server pair exists for it (nothing
+ * on the server enforces or even knows this number), so it is NOT a rule-#35
+ * "two files must agree" violation; there is nothing to drift against.
+ * `manage/editor/index.php`'s inline (non-module) export wiring repeats this
+ * SAME value deliberately (see the comment there) — that ONE duplication is
+ * kept in lockstep by `tests/test-export-ui.js`.
+ */
+const LARGE_EXPORT_SONG_THRESHOLD = 500;
+
+/**
+ * #1571 — an honest confirm before building a LARGE export. Returns true
+ * immediately (no dialog) for a small/unknown book — `count` may legitimately
+ * be `NaN` when the DOM didn't carry a count attribute (see the callers
+ * below), and an unknown count is treated as "don't nag".
+ * @param {number} count
+ * @returns {boolean} false = the user declined; the caller must quietly stop.
+ */
+function confirmLargeExport(count) {
+    if (!Number.isFinite(count) || count < LARGE_EXPORT_SONG_THRESHOLD) { return true; }
+    return window.confirm(
+        'This songbook has ' + count.toLocaleString() + ' songs. Building the export can take a few '
+        + 'minutes and the page may feel busy while it works. Continue?'
+    );
+}
+
+/**
+ * #1571 — build an `onProgress(done, total)` callback that surfaces coarse
+ * 20%-step toasts, but ONLY for a book at/over the large-export threshold —
+ * a 12-song set list encoding in a few hundred ms doesn't need a running
+ * commentary. Returns `undefined` (not a no-op function) for a small/unknown
+ * total so `buildBulkFiles()`'s own `typeof options.onProgress === 'function'`
+ * gate skips the per-song call entirely rather than invoking a function that
+ * does nothing 3,517 times.
+ * @param {number} total
+ * @returns {((done: number, total: number) => void)|undefined}
+ */
+function makeExportProgressToast(total) {
+    if (!Number.isFinite(total) || total < LARGE_EXPORT_SONG_THRESHOLD) { return undefined; }
+    let lastMilestone = 0;
+    return function (done, doneTotal) {
+        const pct = Math.floor((done / doneTotal) * 100);
+        const milestone = Math.floor(pct / 20) * 20;
+        if (milestone > lastMilestone && milestone < 100) {
+            lastMilestone = milestone;
+            toast('Building export… ' + milestone + '% (' + done.toLocaleString() + '/' + doneTotal.toLocaleString() + ')', 'info');
+        }
+    };
 }
 
 async function fetchJson(url) {
@@ -201,25 +271,48 @@ export function initSongExport(songId) {
  * @param {string} abbr    Songbook abbreviation (e.g. 'MP')
  * @param {string} fmtKey  One of the `data-export-format` keys in export-menu.php
  * @param {number} [linesPerSlide] 0 (default) = all on one slide (#1918)
- * @returns {Promise<void>} Resolves once the download has been triggered;
- *   rejects with an Error whose message is fit to show the user.
+ * @param {number} [knownSongCount] The DOM-first count the CALLER already
+ *   consulted (via `confirmLargeExport()`) before this fetch started — pass
+ *   `NaN`/`undefined` when no such count was available. #1571: this is what
+ *   lets the post-fetch belt below tell "the caller already asked and the
+ *   user already answered" apart from "nobody asked yet", so a book whose
+ *   DOM count WAS known never gets double-prompted once the real count
+ *   comes back from the server.
+ * @returns {Promise<void>} Resolves once the download has been triggered (or
+ *   the user declined the post-fetch belt's confirm — a QUIET return, no
+ *   error); rejects with an Error whose message is fit to show the user.
  */
-async function exportSongbookAs(abbr, fmtKey, linesPerSlide) {
+async function exportSongbookAs(abbr, fmtKey, linesPerSlide, knownSongCount) {
     const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
     const songs = data && data.songs;
     if (!Array.isArray(songs) || !songs.length) { throw new Error('no songs to export'); }
+    /* #1571 post-fetch belt: only re-consult the confirm when the caller's
+       OWN DOM-first count was unavailable (an older cached fragment missing
+       the count attribute) — when it WAS available, wireSongbookExportMenu()
+       already asked and the user already answered; asking again here would
+       double-prompt the common case. The server work is already spent
+       either way, but the CLIENT encode below is the bigger stall and is
+       still worth consenting to. */
+    if (!Number.isFinite(knownSongCount) && !confirmLargeExport(songs.length)) {
+        return; // quiet decline — no error toast, same as a small/normal export
+    }
     const meta = {
         name:         (data.songbook && (data.songbook.name || data.songbook.id)) || abbr,
         abbreviation: (data.songbook && (data.songbook.id || data.songbook.abbreviation)) || abbr,
     };
     const options = exportOptionsFor(fmtKey, linesPerSlide || 0);
     if (fmtKey === 'proPresenter7') {
-        /* PP7 exports a whole songbook as a .probundle (#887). */
+        /* PP7 exports a whole songbook as a .probundle (#887). Progress is
+           threaded through for THIS format only (#1571 §3.3c) — the text
+           formats below are synchronous string-builders measured in
+           hundreds of ms; threading progress through all eight of them is
+           deferred polish, not this fix. */
         await loadPP7();
         await window.iHymnsProPresenter.exportAllAsBundle(songs, {
             songbookAbbrev: meta.abbreviation,
             songbookName:   meta.name,
             linesPerSlide:  options.linesPerSlide,
+            onProgress:     makeExportProgressToast(songs.length),
         });
         return;
     }
@@ -238,8 +331,13 @@ async function exportSongbookAs(abbr, fmtKey, linesPerSlide) {
  * menu and WHICH abbr differ per caller.
  * @param {Element|null} menu
  * @param {string} abbr
+ * @param {number} [songCount] DOM-first song count for the #1571 confirm
+ *   (`data-songbook-songs` on the /songbooks list, or
+ *   `data-songbook-song-count` on /songbook — see each caller below).
+ *   `NaN`/`undefined` when unavailable; `exportSongbookAs()`'s post-fetch
+ *   belt then takes over once the real count is known.
  */
-function wireSongbookExportMenu(menu, abbr) {
+function wireSongbookExportMenu(menu, abbr, songCount) {
     if (!menu || menu.dataset.wired === '1' || !abbr) { return; }
     menu.dataset.wired = '1';
 
@@ -248,9 +346,13 @@ function wireSongbookExportMenu(menu, abbr) {
             const fmtKey = item.dataset.exportFormat;
             /* #1918: read the picker at click time (not wire time). */
             const linesPerSlide = readLinesPerSlide(menu);
+            /* #1571 — pre-fetch confirm, using whatever DOM-first count this
+               caller resolved. A decline is a quiet return: no fetch, no
+               toast, no error. */
+            if (!confirmLargeExport(songCount)) { return; }
             try {
                 toast('Preparing songbook export…', 'info');
-                await exportSongbookAs(abbr, fmtKey, linesPerSlide);
+                await exportSongbookAs(abbr, fmtKey, linesPerSlide, songCount);
             } catch (err) {
                 toast('Songbook export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
             }
@@ -263,10 +365,19 @@ function wireSongbookExportMenu(menu, abbr) {
  * ONE menu on the page. Signature unchanged (#1607): router.js still calls
  * `initSongbookExport(abbr)` with the single abbreviation read from
  * `.page-songbook`'s `data-songbook-abbr`.
+ *
+ * #1571 — the song count for the large-export confirm is read DOM-first
+ * from that SAME `.page-songbook` element's `data-songbook-song-count`
+ * (`includes/pages/songbook.php`, same-for-everyone static markup — safe on
+ * a shared-cache fragment, rule #6). `parseInt` of a missing/malformed
+ * attribute yields `NaN`, which `confirmLargeExport()`/`exportSongbookAs()`
+ * both already treat as "unknown — don't nag pre-fetch, check again after".
  * @param {string} abbr  Songbook abbreviation (e.g. 'MP')
  */
 export function initSongbookExport(abbr) {
-    wireSongbookExportMenu(document.querySelector('.songbook-export-menu'), abbr);
+    const page = document.querySelector('.page-songbook');
+    const songCount = page ? parseInt(page.dataset.songbookSongCount, 10) : NaN;
+    wireSongbookExportMenu(document.querySelector('.songbook-export-menu'), abbr, songCount);
 }
 
 /**
@@ -277,11 +388,17 @@ export function initSongbookExport(abbr) {
  * (includes/pages/songbooks.php), not passed in. `wireSongbookExportMenu()`'s
  * per-menu `dataset.wired` guard makes this idempotent across repeated
  * /songbooks navigations, same as the single-menu case.
+ *
+ * #1571 — the song count for the large-export confirm is read DOM-first
+ * from that SAME tile's PRE-EXISTING `data-songbook-songs` attribute
+ * (`includes/pages/songbooks.php:116`) — no new markup needed here, unlike
+ * the single-menu case above.
  */
 export function initSongbookListExport() {
     document.querySelectorAll('.songbook-list-export-menu').forEach((menu) => {
         const tile = menu.closest('[data-songbook-id]');
         const abbr = tile ? tile.dataset.songbookId : '';
-        wireSongbookExportMenu(menu, abbr);
+        const songCount = tile ? parseInt(tile.dataset.songbookSongs, 10) : NaN;
+        wireSongbookExportMenu(menu, abbr, songCount);
     });
 }

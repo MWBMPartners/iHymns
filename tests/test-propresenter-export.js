@@ -70,7 +70,12 @@ const sandbox = {
     Blob: globalThis.Blob,
     URL: undefined,
     document: undefined,
-    fetch: undefined
+    fetch: undefined,
+    /* #1571 — buildBulkFiles()'s cooperative macrotask yield calls
+       setTimeout(fn, 0) every 25 songs; a bulk test large enough to cross
+       that boundary needs the REAL Node timer (not a no-op stub), so the
+       yield actually resolves and the encode completes. */
+    setTimeout: setTimeout
 };
 vm.createContext(sandbox);
 vm.runInContext(scriptSource, sandbox, { filename: SCRIPT_PATH });
@@ -644,6 +649,74 @@ function createFreshExporter(overrides) {
             '0003 (MP) - MP small.pro',
             '3500 (MP) - MP big.pro'
         ]);
+    });
+
+    /* ---------------------------------------------------------------- */
+    console.log('\nProgress + macrotask yield (#1571):');
+
+    function stubSongs(n) {
+        return Array.from({ length: n }, (_v, i) => ({
+            songbook: 'CP', number: i + 1, title: 'Song ' + (i + 1),
+            components: [{ type: 'verse', number: 1, lines: ['x'] }]
+        }));
+    }
+
+    await test('buildBulkFiles() invokes onProgress once per song, with (done, total)', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const N = 30;
+        const calls = [];
+        const files = await exporter._internal.buildBulkFiles(stubSongs(N), {
+            onProgress: (done, total) => { calls.push([done, total]); }
+        });
+        assert.equal(files.length, N);
+        assert.equal(calls.length, N);
+        assert.deepEqual(calls[0], [1, N]);
+        assert.deepEqual(calls[N - 1], [N, N]);
+    });
+
+    await test('a throwing onProgress callback does not reject the build', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        /* Mutation target: removing buildBulkFiles()'s per-call try/catch
+           around onProgress would make THIS throw instead of resolving. */
+        const files = await exporter._internal.buildBulkFiles(stubSongs(5), {
+            onProgress: () => { throw new Error('onProgress boom'); }
+        });
+        assert.equal(files.length, 5);
+    });
+
+    await test('an absent onProgress is fine (the option is optional)', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const files = await exporter._internal.buildBulkFiles(stubSongs(3), {});
+        assert.equal(files.length, 3);
+    });
+
+    await test('buildBulkFiles() source contains a setTimeout(...) macrotask yield gated on a %25 boundary', () => {
+        /* Source-level check (mirrors tests/php/test-qr-cache.php's PHP-side
+           function-body extractor): brace-depth-bound the REAL function text
+           so a mutation that deletes the yield — which changes ONLY timing,
+           never the encoded output the functional tests above assert on —
+           still has something concrete to turn red against. None of this
+           function's string literals contain a brace character, so simple
+           depth counting is safe without a separate comment-strip pass. */
+        const idx = scriptSource.indexOf('async function buildBulkFiles');
+        assert.ok(idx !== -1, 'buildBulkFiles() not found in propresenter-export.js');
+        const openIdx = scriptSource.indexOf('{', idx);
+        let depth = 0;
+        let endIdx = -1;
+        for (let i = openIdx; i < scriptSource.length; i++) {
+            if (scriptSource[i] === '{') { depth++; }
+            else if (scriptSource[i] === '}') {
+                depth--;
+                if (depth === 0) { endIdx = i; break; }
+            }
+        }
+        assert.ok(endIdx !== -1, 'could not bound buildBulkFiles() by brace depth');
+        const body = scriptSource.slice(openIdx, endIdx + 1);
+        assert.ok(/setTimeout\s*\(/.test(body), 'expected a setTimeout(...) call inside buildBulkFiles()');
+        assert.ok(/%\s*25\s*===\s*0/.test(body), 'expected the yield gated on a "every 25 songs" boundary');
     });
 
     /* ---------------------------------------------------------------- */

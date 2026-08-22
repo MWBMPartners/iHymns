@@ -163,7 +163,7 @@ if (!empty($songs)) {
 <!-- ================================================================
      SONGBOOK PAGE — Song list for a specific songbook
      ================================================================ -->
-<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>" data-songbook-abbr="<?= htmlspecialchars($book['id']) ?>">
+<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>" data-songbook-abbr="<?= htmlspecialchars($book['id']) ?>" data-songbook-song-count="<?= count($songs) ?>">
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">

@@ -1022,7 +1022,22 @@
        highest song number we see in the bulk subset — so a Mission
        Praise (3,517-song) export pads to 4 digits and a Carol Praise
        (243-song) export pads to 3, even when the same export bundle
-       crosses both. */
+       crosses both.
+
+       #1571 — this is the ONE builder both bulk formats (.zip via
+       exportAllAsZip, .probundle via exportAllAsBundle) and both surfaces
+       (the public export-ui.js, the Song Editor) funnel through, so the
+       progress + yield behaviour below covers all of them at once:
+         - `options.onProgress?: (done, total) => void` — invoked once per
+           encoded song, in its OWN try/catch: a UI callback that throws must
+           never kill the export itself.
+         - a cooperative MACROTASK yield every 25 songs. `await
+           buildPresentation(...)` above already yields, but only to the
+           MICROTASK queue (a resolved-promise `await` never lets the browser
+           paint or handle input) — a real `setTimeout(fn, 0)` is required to
+           actually reach the macrotask queue, which is what lets a progress
+           toast paint and keeps the page responsive during a large
+           (thousands-of-songs) encode instead of looking hung. */
     async function buildBulkFiles(songs, options) {
         if (!Array.isArray(songs) || songs.length === 0) {
             throw new Error('buildBulkFiles: songs must be a non-empty array');
@@ -1065,6 +1080,8 @@
                 : (paddingBySongbook['*'] || 0);
         }
 
+        var onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+
         var files = [];
         for (var i = 0; i < songs.length; i++) {
             var song = songs[i];
@@ -1075,6 +1092,21 @@
                 }),
                 bytes: await buildPresentation(song, options)
             });
+
+            if (onProgress) {
+                try {
+                    onProgress(i + 1, songs.length);
+                } catch (progressErr) {
+                    /* #1571 — a UI callback error must never kill the export. */
+                }
+            }
+
+            /* #1571 — cooperative MACROTASK yield every 25 songs (see the
+               doc-comment above buildBulkFiles() for why a plain `await`
+               isn't enough on its own). */
+            if ((i + 1) % 25 === 0) {
+                await new Promise(function (resolve) { setTimeout(resolve, 0); });
+            }
         }
         ensureUniqueNames(files);
         return files;
