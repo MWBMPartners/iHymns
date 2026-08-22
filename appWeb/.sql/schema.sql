@@ -1223,6 +1223,8 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     EnforceIdleTimeout TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = the org LOCKS LiveIdleTimeoutMins for its members (their personal value is ignored). Only meaningful when LiveIdleTimeoutMins is non-NULL (#1770 req 5)',
     SetlistEditAudience VARCHAR(20) NULL DEFAULT NULL COMMENT 'G4-org #1791: this org''s preference for members'' set-list EDIT links — anyone | authenticated | NULL (no org opinion). App-validated VARCHAR vocab.',
     EnforceSetlistEditAudience TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'G4-org #1791: 0 = SetlistEditAudience is an advisory default a member may loosen; 1 = mandatory cap (a member''s edit links can never be more open than SetlistEditAudience). Mirrors EnforceIdleTimeout (#1770).',
+    BrandColor      VARCHAR(9)      NULL DEFAULT NULL COMMENT 'Org brand colour as a strict hex token — #rrggbb or #rrggbbaa, lowercase, app-validated by ihymnsOrgBrandColourNormalise() (includes/organisation_validation.php, #1840). NULL = no brand colour; every branded surface (OG share card band) stays dormant',
+    BrandJson       JSON            NULL DEFAULT NULL COMMENT 'Dormant grab-bag for future brand tokens (secondaryColor, darkColor, font…) — growable vocabulary is JSON, never new columns (rule #20/#28, the tblOrganisationLogos.MetaJson precedent). Nothing reads it yet (#1840)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 

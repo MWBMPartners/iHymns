@@ -4467,4 +4467,20 @@ return [
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblQrCache'),
     ],
+
+    'org-brand-colour' => [
+        'script' => 'migrate-org-brand-colour.php',
+        'card' => [
+            'title'  => 'Organisation brand colour (#1840)',
+            'body'   => 'Adds <code>tblOrganisations.BrandColor</code> (+ a dormant'
+                      . ' <code>BrandJson</code> token bag) so a church can set its brand'
+                      . ' colour for branded share-preview cards. Additive, idempotent,'
+                      . ' dormant until an org sets a colour. Safe to re-run.',
+            'button' => 'Run Brand Colour Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — a partial apply never shows the
+           card green. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblOrganisations', 'BrandColor')
+                                           || !_migProbe_columnExists($db, 'tblOrganisations', 'BrandJson'),
+    ],
 ];
