@@ -523,10 +523,36 @@ if ($brandSaveSites > 0 && $brandSaveSites < 2) {
     orgLogoFail($failures, "Found only {$brandSaveSites} 'brand_save' handler site(s) — the plan wires TWO (manage/organisations.php AND manage/my-organisations.php); one of them may have silently lost its case label or its own scan may be failing.");
 }
 
-/* og-image's READ side — self-activating once it exists AND mentions
-   BrandColor (commit 8). Never an inline hex-parse fork (e.g. a raw
-   sscanf('#%02x...') or substr/hexdec chain bypassing the shared parser). */
+/* =============================================================================
+ * (h) #1840 — og-image never self-requests. Logo bytes must be read
+ * DIRECTLY via orgLogoFetchServeRow() (the ONE read path) — mirrors
+ * _pdfInlineOrgLogo()'s (pdf_renderer.php) identical "never mPDF/GD
+ * self-request over HTTP" doctrine. Self-activating once og-image.php
+ * exists AND mentions the org-logo feature at all (commit 8).
+ * ============================================================================= */
+
 $ogImagePhpPath = $pub . '/og-image.php';
+if (is_file($ogImagePhpPath)) {
+    $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
+    if (str_contains($ogImageSrcRaw, 'orgLogo') || str_contains($ogImageSrcRaw, 'OrgLogo') || str_contains($ogImageSrcRaw, 'BrandColor')) {
+        if (!str_contains($ogImageSrcRaw, 'orgLogoFetchServeRow(')) {
+            orgLogoFail($failures, 'og-image.php references org branding but never calls orgLogoFetchServeRow() — logo bytes must be read directly, never via an HTTP self-request to org-logo.php (#1840).');
+        }
+        /* Ban an HTTP-fetch shape (curl_init(...) or file_get_contents('http...'))
+           whose target string contains org-logo.php — the string 'org-logo.php'
+           is legitimately present elsewhere in this file (e.g. inside a doc
+           comment describing the doctrine, already stripped above), so this
+           bans the SELF-REQUEST SHAPE specifically, not the bare substring. */
+        if (preg_match('/(curl_init\s*\(|file_get_contents\s*\(\s*[\'"]https?:)[^;]{0,400}org-logo\.php/s', $ogImageSrcRaw) === 1) {
+            orgLogoFail($failures, 'og-image.php appears to fetch org-logo.php over HTTP (curl/file_get_contents) instead of reading bytes directly via orgLogoFetchServeRow() (#1840).');
+        }
+    }
+}
+
+/* og-image's READ side for BrandColor specifically — self-activating once
+   it exists AND mentions BrandColor (commit 8). Never an inline hex-parse
+   fork (e.g. a raw sscanf('#%02x...') or substr/hexdec chain bypassing the
+   shared parser). */
 if (is_file($ogImagePhpPath)) {
     $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
     if (str_contains($ogImageSrcRaw, 'BrandColor') && !str_contains($ogImageSrcRaw, 'ihymnsOrgBrandColourRgb(')) {

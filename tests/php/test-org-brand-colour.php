@@ -91,6 +91,21 @@ check("rgb() defensively widens a bare 3-digit shorthand: '#fff' == [255, 255, 2
 check("rgb() on malformed input degrades to black [0, 0, 0], never a warning/garbage colour", ihymnsOrgBrandColourRgb('not-a-colour') === [0, 0, 0]);
 
 /* =============================================================================
+ * ihymnsOrgBrandColourIsLight() — the YIQ perceived-brightness helper
+ * (#1840 §7.3), the ONE contrast decision og-image.php's branded band uses.
+ * ============================================================================= */
+
+check('white [255,255,255] (YIQ 255) reads as LIGHT', ihymnsOrgBrandColourIsLight([255, 255, 255]) === true);
+check('black [0,0,0] (YIQ 0) reads as DARK', ihymnsOrgBrandColourIsLight([0, 0, 0]) === false);
+check("the plan's own #6a1b9a example [106,27,154] (YIQ ~65) reads as DARK", ihymnsOrgBrandColourIsLight([106, 27, 154]) === false);
+check('a pale grey [245,245,245] (YIQ 245) reads as LIGHT', ihymnsOrgBrandColourIsLight([245, 245, 245]) === true);
+check('the exact YIQ=150 boundary [150,150,150] is INCLUSIVE (reads as LIGHT, >= not >)', ihymnsOrgBrandColourIsLight([150, 150, 150]) === true);
+check('one unit below the boundary [149,149,149] (YIQ 149) reads as DARK', ihymnsOrgBrandColourIsLight([149, 149, 149]) === false);
+check('a saturated pure green [0,255,0] (YIQ 587*255/1000 ~= 149.7, just under the boundary) reads as DARK', ihymnsOrgBrandColourIsLight([0, 255, 0]) === false);
+check('a saturated pure blue [0,0,255] (YIQ 114*255/1000 ~= 29.1, blue weighted lightest) reads as DARK', ihymnsOrgBrandColourIsLight([0, 0, 255]) === false);
+check('pure yellow [255,255,0] (YIQ (299+587)*255/1000 ~= 226, red+green both heavy) reads as LIGHT', ihymnsOrgBrandColourIsLight([255, 255, 0]) === true);
+
+/* =============================================================================
  * Summary
  * ============================================================================= */
 

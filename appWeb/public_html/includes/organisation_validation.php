@@ -204,6 +204,30 @@ function ihymnsOrgBrandColourRgb(string $hex): array
 }
 
 /**
+ * #1840 §7.3 — YIQ perceived-brightness check for a band colour, so text
+ * drawn ON that band stays readable regardless of how pale or dark the
+ * org's chosen brand colour is. `(299R+587G+114B)/1000` is the standard
+ * YIQ luma weighting (the same formula behind the long-standing
+ * "should this background get light or dark foreground text" heuristic).
+ * One small pure helper beside `ihymnsOrgBrandColourRgb()` — its ONE
+ * consumer is og-image.php's branded share-card band.
+ *
+ * @param  array{0:int,1:int,2:int} $rgb  [r, g, b], each 0-255 — typically
+ *                                          `ihymnsOrgBrandColourRgb()`'s output.
+ * @return bool  true when the colour reads as LIGHT (YIQ >= 150) — the
+ *               caller should use a near-black foreground; false (a dark
+ *               band) means use white.
+ */
+function ihymnsOrgBrandColourIsLight(array $rgb): bool
+{
+    $r = (int)($rgb[0] ?? 0);
+    $g = (int)($rgb[1] ?? 0);
+    $b = (int)($rgb[2] ?? 0);
+    $yiq = ((299 * $r) + (587 * $g) + (114 * $b)) / 1000;
+    return $yiq >= 150;
+}
+
+/**
  * True when `tblOrganisations.BrandColor` + `BrandJson` both exist on this
  * install — the dormancy gate the admin `brand_save` handlers AND
  * `orgSetBrandColour()` itself check first, mirroring
