@@ -185,7 +185,8 @@ info:
     | `songs_index` | 120 / minute |
     | `song_detail` / `song_data` | 240 / minute |
     | `related_songs` | 240 / minute |
-    | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
+    | `songbook_export` (own `export` bucket, #1571) | 60 / minute |
+    | `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
     | `work` / `musician` | 120 / minute (or a per-key budget with a `catalogue:read` API key) |
 
     On exceed, the endpoint returns **429** with `Retry-After`,

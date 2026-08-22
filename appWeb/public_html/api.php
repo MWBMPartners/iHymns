@@ -1367,10 +1367,26 @@ if ($action !== null) {
          * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
-            /* #1354 — whole-songbook payload (heavy). Shares the 'bulk' budget
-               with bulk_songs/bulk_audio at 60/min: a full offline sync touches
-               each songbook a handful of times, well under the cap. Fail-open. */
-            enforceReadRateLimitKeyed('bulk', 60);
+            /* #1571 — OWN 'export' budget, split out of the shared 'bulk'
+               bucket (#1354). ELI5: a curator clicking "Export this songbook"
+               must never have to wait behind a native app's background
+               offline sync — they're different people doing different
+               things, so they get different budgets.
+               DETAIL: 'songbook_export' used to share the 60/min 'bulk'
+               bucket with bulk_songs/bulk_audio; a PWA's offline sync
+               (bulk_songs/bulk_audio) running at the same moment a curator
+               exports a songbook could push the SAME counter over the cap
+               and 429 one or the other for no reason connected to abuse —
+               they were never competing for the same resource, just sharing
+               a label. `Scope` is a free VARCHAR bucket label (rule #20 —
+               "reserves room for new endpoint limits with NO further
+               migration", read_rate_limit.php:133), so the split is a
+               one-word change with zero schema impact. Limit stays 60/min —
+               this is about INDEPENDENCE, not tightening; nobody who passes
+               today can newly 429 (a caller who was under 60/min shared now
+               gets 60/min all to themselves). Fail-open (an un-migrated
+               tblReadRateLimit degrades to unlimited, unchanged). */
+            enforceReadRateLimitKeyed('export', 60);
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
             if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
                 sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
