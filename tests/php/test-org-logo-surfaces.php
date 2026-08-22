@@ -3,13 +3,15 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Organisation-logo surfaces wiring guard (#1830)
+ * iHymns — Organisation-logo surfaces wiring guard (#1830, extended #1840)
  *
  * ELI5: derives EVERY file in the tree that talks about organisation logos
  * and checks the load-bearing safety rules from
- * `.claude/org-logos-1830-plan.md` §9.2 hold across every one of them —
- * never a typed list of "the files to check" (rule #34), so a NEW file that
- * starts touching logos is covered for free.
+ * `.claude/org-logos-1830-plan.md` §9.2 (base feature) and
+ * `.claude/org-logo-surfaces-1840-plan.md` §8.1 (the header/projector/
+ * og-image/brand-colour screen surfaces this file was extended for) hold
+ * across every one of them — never a typed list of "the files to check"
+ * (rule #34), so a NEW file that starts touching logos is covered for free.
  *
  * DERIVATION FINGERPRINT — CAUGHT ITS OWN UNDER-REPORT BEFORE COMMITTING
  * (rule #34's "a scanner that under-reports is worse than no scanner"): the
@@ -89,6 +91,89 @@ declare(strict_types=1);
  *     than being redundant with the equality check: a floor breach is
  *     reported with its OWN message even though the equality check would
  *     already have failed on the same input.)
+ * *   Each restored -> green.
+ *
+ * ----------------------------------------------------------------------------
+ * #1840 EXTENSION — checks (g)-(k), landed across commits 2/5/6/7/8, this
+ * commit (9) the plan's designated "finish the guard" pass for THIS
+ * feature (mirrors the #1830 commit-7 pass above): re-verify (g)-(k)
+ * end-to-end as one consolidated run and record every mutation here.
+ *
+ *   - (g) IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) <->
+ *     ORG_LOGO_SURFACE_PREFS (org-logo.js) lockstep — landed commit 2,
+ *     live immediately (both files existed in the SAME commit, unlike (c)/
+ *     (e)/(f)'s self-activating shape). (j) print's fold stays
+ *     variant-filtered — also commit 2.
+ *   - (i) brand colour goes through the ONE normaliser — WRITE half landed
+ *     commit 5 (live immediately, both admin pages' `brand_save` cases
+ *     shipped in that same commit); READ half (og-image.php) self-activated
+ *     commit 8.
+ *   - (k) header/projector emit a real `<img src="/org-logo.php?...">` —
+ *     half 1 (header-branding.js) landed commit 6, live immediately; half 2
+ *     (service-projection.php) landed commit 7.
+ *   - (h) og-image never self-requests — landed commit 8, live immediately.
+ *
+ * MUTATION-PROVEN (#1840 checks) — each broken on purpose in a scratch
+ * copy, confirmed red, restored to a byte-identical diff:
+ *   - (g) Swapped `emblem`/`favicon` order in org-logo.js's `header` kind
+ *     list -> RED ("Surface-prefs drift: 'header' kind list/order
+ *     differs"). Deleted the `'projector'` entry from PHP's
+ *     IHYMNS_ORG_LOGO_SURFACE_PREFS -> RED, TWO assertions at once (the
+ *     >=3-surface floor AND the key-order equality check — same
+ *     independent-coverage shape as the base guard's (f) floor proof).
+ *   - (j) Removed the `.variant` filter from print.js's
+ *     `fetchPrintOrgLogos()` fold -> RED ("no longer references .variant").
+ *   - (i) Replaced the normalise+persist calls in organisations.php's
+ *     `brand_save` case with a raw UPDATE bypassing
+ *     `ihymnsOrgBrandColourNormalise()` -> RED. (An EARLIER, weaker
+ *     mutation — swapping the persisted ARGUMENT from `$normalised` to
+ *     `$rawColour` while leaving the `orgSetBrandColour(` CALL text intact
+ *     — stayed GREEN, correctly: this check is a textual call-presence
+ *     assertion, not a data-flow analysis, so a call that's present but
+ *     fed the wrong variable is genuinely outside its stated scope, not a
+ *     missed catch.) Renamed my-organisations.php's `brand_save` case
+ *     label -> RED (floor breach, "only 1 site"). Once commit 8 activated
+ *     the READ half: replaced `ihymnsOrgBrandColourRgb(` with an inline
+ *     `sscanf()` in og-image.php -> RED ("a second, inline hex-parse
+ *     fork").
+ *   - (h) Replaced og-image.php's direct `orgLogoFetchServeRow()` read with
+ *     a `file_get_contents('https://.../org-logo.php...')` HTTP
+ *     self-request -> RED, TWO assertions at once (missing direct-read
+ *     call AND the banned self-request shape).
+ *   - (k) — THIS CHECK CAUGHT ITS OWN UNDER-REPORT (rule #34's "a scanner
+ *     that under-reports is worse than no scanner", the SAME lesson this
+ *     file's own header section already documents for the base #1830
+ *     fingerprint). The FIRST draft was a single file-wide test: "does
+ *     ANY `<img>` exist in the file AND does `/org-logo.php?` (or
+ *     `orgLogoUrl(`) appear ANYWHERE in the file?". A scripted trial that
+ *     deleted service-projection.php's `<img id="svc-proj-logo">` outright
+ *     stayed GREEN, because that page ALSO creates an unrelated `<img>`
+ *     for its QR code (#1339), and the server-side `/org-logo.php?`
+ *     resolution string was still present elsewhere in the file —
+ *     each independently satisfied the loose file-wide test even though
+ *     the ACTUAL corner-bug element was gone. Fixed by anchoring each half
+ *     on the feature's own distinguishing marker instead of a generic tag
+ *     search: header-branding.js's single `createElement('img')` call
+ *     windowed forward for `orgLogoUrl(`; service-projection.php's literal
+ *     `<img id="svc-proj-logo">` existence PLUS a symmetric (order-
+ *     independent) proximity check between the `OrgLogoUrl` property name
+ *     and the literal `/org-logo.php?` string (the PHP resolution code and
+ *     the JSON property it feeds appear in DIFFERENT relative orders
+ *     depending on how the surrounding code reads — a forward-only regex
+ *     window missed this on the first attempt too, fixed by measuring the
+ *     REAL byte offsets in the actual file rather than assuming an order).
+ *     Re-run after the fix: deleting `<img id="svc-proj-logo">` -> RED;
+ *     replacing the `/org-logo.php?` endpoint string -> RED; deleting
+ *     header-branding.js's `<img>` creation -> RED; bypassing
+ *     `orgLogoUrl()` with a hand-built URL -> RED. Every mutation restored
+ *     -> byte-identical (diffed to confirm, not just re-run to green).
+ *   - (commit 9, consolidation) A COMBINED mutation — breaking check (g) in
+ *     org-logo.js AND check (k) in service-projection.php in the SAME run
+ *     — reported BOTH failures together (the guard accumulates into
+ *     `$failures` rather than stopping at the first hit), confirming the
+ *     checks are independent and none masks another. Both restored ->
+ *     byte-identical.
+ *
  *   Each restored -> green.
  *
  *   php tests/php/test-org-logo-surfaces.php
