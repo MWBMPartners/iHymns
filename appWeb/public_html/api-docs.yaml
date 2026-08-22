@@ -2828,6 +2828,31 @@ paths:
                             user | expired | admin. App-validated VARCHAR
                             vocabulary, not an ENUM — new reasons need no
                             schema change.
+                  conflicts:
+                    type: array
+                    description: >
+                      #1675 — per-row overwrite REFUSALS. ALWAYS present ([]
+                      when none). A client that sent a `since` watermark is
+                      told which of its pushed rows were newer on the server
+                      (edited on another device since the client last
+                      absorbed): those rows were KEPT, not overwritten, and the
+                      authoritative copy is already in `setlists`. The client
+                      must take the server copy for these ids (drop them from
+                      its local-wins side of the union) and re-apply its edit.
+                      Additive key — a native decoder that ignores it is
+                      unaffected (the `cap: null` precedent). A client that sent
+                      no watermark never gets a non-empty array.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        reason:
+                          type: string
+                          description: "newer_on_server"
+                        serverUpdatedAt:
+                          type: string
+                          description: The kept server row's UpdatedAt (19-char).
         "400":
           description: Invalid request body
           content:
@@ -2848,8 +2873,15 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413":
           description: >
-            #1661 — request body exceeds the 4 MiB ceiling. NOTHING was
-            changed; this replaces the old silent truncation, which lost data.
+            NOTHING was changed (this replaces the old silent truncation, which
+            lost data). The JSON body carries a machine-readable `reason`
+            (clients branch on it, never on the prose — rule #35):
+            `body_too_large` (#1661 — over the 4 MiB ceiling; `maxBytes`),
+            `too_many_slots` (#1671 — plan over the slot cap; `maxSlots`), or
+            `too_many_songs` (#1662 — a set list over the 200-song cap;
+            `maxSongs` + the offending `setlistId`). The songs cap is enforced
+            only for protocol-2 clients (those sending `deleted`); a legacy
+            native still silently truncates the tail until it adopts protocol 2.
           content:
             application/json:
               schema:
@@ -6545,7 +6577,12 @@ paths:
         "403": { description: View-only link, cross-origin, or owner locked }
         "409": { description: Edit links not migrated on this server }
         "410": { description: Link revoked or expired }
-        "413": { description: Request body too large }
+        "413":
+          description: >
+            Nothing was changed. The body's `reason` is `too_many_songs`
+            (#1662 — the set list exceeds the 200-song cap; `maxSongs`) when the
+            payload is over-cap, or a plain body-too-large refusal otherwise.
+            Clients branch on the status + `reason`, never the prose (rule #35).
         "429": { description: Per-token rate limit exceeded }
 
   /api.php?action=setlist_share_list:
@@ -6827,7 +6864,9 @@ paths:
                 name:      { type: string, description: Optional rename; omit or send '' to leave the title alone }
                 songs:
                   type: array
-                  description: Full replacement song list, max 200 entries
+                  description: >
+                    Full replacement song list. Over the 200-song cap is a 413
+                    REJECTION (#1662 — nothing stored), never a silent slice.
                   items:
                     type: object
                     required: [id]
@@ -6856,6 +6895,11 @@ paths:
           description: Not authenticated
         "403":
           description: Caller has view-only access, or none at all
+        "413":
+          description: >
+            #1662 — the song list exceeds the 200-song cap. Nothing was
+            changed; `reason` is `too_many_songs` with `maxSongs` (clients
+            branch on the status + reason, never the prose — rule #35).
 
   # ===========================================================================
   # SYSTEM

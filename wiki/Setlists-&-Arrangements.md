@@ -117,9 +117,25 @@ view/edit counts — with a per-link **Revoke** (`setlist_share_revoke`, hard, i
 The row-move/remove markup and wiring are ONE shared pair of client helpers
 (`sharedSetlistRowsHtml()` / `bindSharedSetlistRowControls()` in `js/modules/setlist.js`), consumed by
 both the anonymous/token edit surface above and the pre-existing signed-in **email-invite Collaborators**
-detail view below — not two forks of the same row template.
+detail view below — not two forks of the same row template. Since **#1802** these surfaces also carry an
+**Add a song** search box (a third shared helper, `mountSetlistAddSongPicker()`): an accessible combobox
+over the public `?action=search` read that appends a picked song through the same write path — no new
+endpoint, nothing minted (a set-list entry only references a song).
 
 Both link types carry custom arrangements (if any) in the shared payload/live setlist.
+
+### Sync, conflicts & the song cap (#1662 / #1675 / #1660)
+
+- **The 200-song cap is a hard limit, not a silent trim.** A set list pushed with more than 200 songs is
+  refused with **HTTP 413** (`reason:"too_many_songs"`, `maxSongs`) and nothing is stored — the old
+  behaviour silently kept the first 200 and dropped the tail. (Legacy native apps still truncate until
+  they adopt sync protocol 2, #1923.)
+- **Multi-device sync is conflict-safe.** `user_setlists_sync` no longer blindly overwrites: a client that
+  sends a `since` watermark and pushes a row that was edited on **another device** since it last synced is
+  **refused for that row** (the server keeps the newer copy and lists it in a `conflicts[]` array). The
+  client takes the server's version, shows a "updated on another device — your last change wasn't applied"
+  toast, and the user re-applies the edit. An identical push is a no-op (it does not bump the row's
+  timestamp), so routine syncs never manufacture false conflicts.
 
 ---
 
