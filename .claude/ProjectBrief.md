@@ -4,6 +4,67 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-22 (Org logos on three screen surfaces — #1840)
+
+Implemented the locked `.claude/org-logo-surfaces-1840-plan.md` in full, 10 atomic commits
+`7b627adf`→`96f1b507` on `claude/ilyrics-identity-work-model` (NOT PUSHED — the reviewer pushes after
+a full gate + review). Extends the #1830 org-logo system (below) onto three screen surfaces the base
+plan deliberately deferred: the app header, the Service-Projection screen, and the shared-set-list
+OG-image share card. CLAUDE.md rule #42 updated in the SAME PR to retire its "Variant is dormant" /
+"scope is print-only" sentences, which the base plan itself flagged as certain to go stale.
+
+- **Commit 1** `7b627adf` — `IHYMNS_ORG_LOGO_SURFACE_PREFS` + `ihymnsOrgLogoResolveThemedAsset()`
+  (`includes/org_logo_helpers.php`) — the ONE per-surface kind-ladder + pure resolver every themed
+  surface below delegates to. `tests/php/test-org-logo-themed-resolver.php` truth table.
+- **Commit 2** `ab31472b` — `js/modules/org-logo.js` (the JS twin: `resolveThemedAsset()`/
+  `orgLogoUrl()`/`fetchMyOrgs()`, the last extracted from `print.js`'s private fetch on its second
+  consumer) + the load-bearing print fold fix (`.variant === 'default'` pin) landing BEFORE any
+  variant-upload UI could exist.
+- **Commit 3** `88c17c93` — light/dark variant upload slots on the shared admin logo card;
+  `orgLogoDeleteKindAll()`/`orgLogoSetActiveKind()` core helpers so a default-row removal cascades to
+  its variants and Show/Hide stays kind-level (never an orphan variant, never a half-hidden kind).
+- **Commit 4** `6771c8d1` — `tblOrganisations.BrandColor` + dormant `BrandJson` (one-pass, mirrors the
+  `tblOrganisationLogos.MetaJson` precedent), migration + schema.sql mirror + registry entry;
+  `ihymnsOrgBrandColourNormalise()`/`…Rgb()`/`orgSetBrandColour()` in `includes/organisation_validation.php`.
+- **Commit 5** `751ace0b` — the gated "Brand colour" field (shared colour-picker partial, #715) on both
+  `/manage/organisations` and `/manage/my-organisations`, each a standalone `brand_save` action.
+- **Commit 6** `e8db7fc0` — **App Header Option A**: `js/modules/header-branding.js`, a progressive-
+  enhancement emblem injected into `#logo-nav-btn`, theme-matched via a `MutationObserver` on
+  `<html data-bs-theme>` (rule #16), wired to the existing `EVT_AUTH_CHANGED` (no new event, rule #35).
+- **Commit 7** `9ad917ea` — **Projector Option B**: a top-left, low-opacity corner-bug logo on
+  `manage/service-projection.php`, resolved server-side per venue (theme hardcoded `'dark'`), gated by
+  a per-device `localStorage` operator toggle (default ON, owner sub-decision B.2). Had to REDESIGN
+  guard check (k) after a scripted mutation trial exposed a genuine under-report (see below).
+- **Commit 8** `39c7457d` — **Share Card Option B**: `og-image.php`'s branded setlist band, gated on the
+  link's own `ShowSharerName` consent (rule #44 — reuse the one consent already collected), PNG-only
+  logo bytes read directly (never an HTTP self-request), a new `ihymnsOrgBrandColourIsLight()` YIQ
+  contrast helper. **Found + fixed a real layout bug via GD rendering trials before committing**: the
+  org-name fallback's text-width cap ("45% of canvas") ignored the "via iHymns" credit's own footprint
+  and could visually overlap it for a long church name — fixed by computing the credit's geometry
+  first and constraining the name text to the space actually left over; re-verified with 5 rendered
+  trials (logo / long-name-light-band / long-name-dark-band / unbranded / small-visible-logo).
+- **Commit 9** `96f1b507` — guard consolidation: extended `test-org-logo-surfaces.php`'s own doc-block
+  with every #1840 check's mutation history (the file's established practice), plus a combined
+  multi-check mutation proving the guard accumulates failures rather than short-circuiting.
+- **Commit 10** (this one) — CLAUDE.md rule #42 updated (Variant live, three surfaces landed, new CI
+  guards listed); the plan doc marked IMPLEMENTED; CHANGELOG entry; admin card copy gained the plan's
+  §B.6 PNG-for-share-cards nudge. **No `iHymns.wiki/` checkout present in this environment** — the
+  Architecture/API-Reference pages this feature would touch could not be updated; flagged as a
+  follow-up for whoever has wiki push access.
+
+Judgement call worth recording: the plan's own §3.2 projector worked-example PROSE line ordered kinds
+differently from that section's own formal "per kind K: step 1, step 2" algorithm text — a
+spec-internal documentation slip, not a spec-vs-code disagreement. Implemented per the explicit
+numbered algorithm, which the header and og-card worked examples both independently confirm; recorded
+in `test-org-logo-themed-resolver.php`'s own header comment.
+
+Owner sub-decisions: all six (§B.1-§B.6) adopted at the plan's own recommended default, none blocked
+the build — B.2 (projector toggle default ON) and B.6 (PNG nudge copy) are the two with visible
+surface (localStorage default; admin card copy); B.1/B.3/B.4/B.5 are resolver/scope defaults baked
+into the themed-resolver design and the OG-image branding gate.
+
+---
+
 ## 📌 Continuation note — 2026-08-22 (Wave 3 perf & resilience pack — #1920 / #1921 / #1571 safe subset)
 
 Implemented the Fable-5-locked `.claude/perf-resilience-1920-1921-1571-plan.md` in full, C1→C7, on

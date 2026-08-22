@@ -461,13 +461,21 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
 
     return '<div class="card-admin p-3 mb-3 org-logo-card">'
         . '<h3 class="h6 mb-2"><i class="bi bi-image me-2"></i>Organisation logos</h3>'
-        . '<p class="text-muted small mb-2">Upload your organisation\'s logo so printed song sheets '
-        . 'can carry your branding. You can add several shapes — a main logo, wide and stacked layouts, '
-        . 'a symbol on its own, single-colour and light-on-dark versions — and printouts will use the '
-        . 'best one available.</p>'
-        . '<p class="text-muted small mb-3">SVG files look sharpest in print; PNG also works. For your '
+        . '<p class="text-muted small mb-2">Upload your organisation\'s logo so printed song sheets, '
+        . "the app's header (for signed-in members), your projector screen and shared set-list "
+        . 'pictures can carry your branding. You can add several shapes — a main logo, wide and '
+        . 'stacked layouts, a symbol on its own, single-colour and light-on-dark versions — and each '
+        . 'place will use the best one available.</p>'
+        . '<p class="text-muted small mb-2">SVG files look sharpest in print; PNG also works. For your '
         . 'safety we tidy SVG files on upload, so decorative effects like animation or embedded pictures '
         . "won't be kept.</p>"
+        /* #1840 §B.6 — the og-card share-preview picture is drawn by a
+           library that cannot read SVG at all; PNG rows are the only ones
+           it can composite. A one-sentence nudge here (never a hard
+           requirement — SVG still works everywhere else) is the whole fix;
+           trivially changeable if the wording ever needs to move. */
+        . '<p class="text-muted small mb-3">For share-preview images (like a shared set-list picture), '
+        . "add a PNG version of your light-on-dark logo too — that picture can't use an SVG file.</p>"
         . $rowsHtml
         . '</div>';
 }

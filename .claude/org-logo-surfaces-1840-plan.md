@@ -1,13 +1,27 @@
 # Org logos on three screen surfaces (#1840) — implementation plan
 
-**Status: PLAN ONLY — nothing implemented.** Written 2026-08-21 (Fable-5 deep
-design pass) on branch `claude/ilyrics-identity-work-model`, after a full read
-of the #1830 system this extends. Companion to `.claude/org-logos-1830-plan.md`
-(the base feature, IMPLEMENTED) and CLAUDE.md **rule #42** (binding doctrine:
-served as `<img src="/org-logo.php?...">`, never inlined; one kind registry;
-one read path; the surfaces this plan wires were explicitly deferred there —
-*"never wire them without a fresh design pass on placement/sizing/theme-variant"*.
-This is that design pass.)
+**Status: IMPLEMENTED** (2026-08-22, branch `claude/ilyrics-identity-work-model`,
+10 commits `7b627adf`→`96f1b507`). Written 2026-08-21 (Fable-5 deep design
+pass), after a full read of the #1830 system this extends. Companion to
+`.claude/org-logos-1830-plan.md` (the base feature, IMPLEMENTED) and CLAUDE.md
+**rule #42** (binding doctrine: served as `<img src="/org-logo.php?...">`,
+never inlined; one kind registry; one read path — rule #42 itself has been
+updated in the same PR to reflect the Variant axis going live and this plan's
+three surfaces landing; see rule #42's own text, not this paragraph, for the
+current state). Every commit in the plan's §10 breakdown landed as specified,
+including its recommended default for each of the six owner sub-decisions
+(§B.1-§B.6) — none blocked the build. Judgement call worth recording: §3.2's
+projector worked-example PROSE line ordered kinds differently from the
+section's own formal "per kind K: step 1, step 2" algorithm; the
+implementation follows the formal algorithm (confirmed self-consistent by
+both the header and og-card worked examples) — see
+`tests/php/test-org-logo-themed-resolver.php`'s header doc-comment for the
+full reasoning. A genuine bug was found and fixed during implementation
+(NOT a plan defect): §7.3's org-name fallback text on the OG-image band used
+a flat "45% of canvas width" cap that ignored the "via iHymns" credit's own
+footprint and could run into it for a long church name — fixed by computing
+the credit's geometry first and constraining the name text to the space
+actually left over.
 
 **The owner's LOCKED decisions (2026-08-21):**
 

@@ -120,7 +120,18 @@ These are enforced conventions; new code must follow them (see
   element and every filter/mask/pattern element. The only `url()` shape that
   survives anywhere is a same-document `url(#id)`. Logos are served by the
   standalone `org-logo.php` (`default-src 'none'; sandbox` CSP) and are
-  **never inlined** — always a plain `<img src>`.
+  **never inlined** — always a plain `<img src>`, now including the app
+  header, the Service-Projection corner bug, and the OG-image share card
+  (#1840), each resolving through one shared themed resolver rather than
+  forking kind/variant logic. The new org **brand colour** (`tblOrganisations
+  .BrandColor`) is a strict `#rrggbb`/`#rrggbbaa` allowlist
+  (`ihymnsOrgBrandColourNormalise()`) — anything else is rejected outright,
+  never stored, never echoed unescaped, never interpolated into CSS/HTML; the
+  branded share card additionally reads logo bytes **directly** via
+  `orgLogoFetchServeRow()`, never an HTTP self-request back to `org-logo.php`,
+  and carries no `&org=` URL parameter — the org is always derived
+  server-side from data already resolved, so branding can never be forged
+  onto content it doesn't legitimately belong to.
 - **Content access** — gated centrally via
   `includes/content_access.php::checkContentAccess()` against
   `tblContentRestrictions` + access tiers + organisation licences (never queried
