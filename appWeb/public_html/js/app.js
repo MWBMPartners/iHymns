@@ -42,6 +42,7 @@ import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { bootOfflineUi } from './modules/offline-ui.js';
 import { bootExternalLinkInterstitial } from './modules/external-link-interstitial.js';
+import { bootHeaderBranding } from './modules/header-branding.js';   /* #1840 — org emblem co-brand */
 import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
@@ -311,6 +312,15 @@ class iHymnsApp {
             if (this.settings && typeof this.settings.refreshAccountSection === 'function') {
                 this.settings.refreshAccountSection();
             }
+
+            /* Org emblem co-brand on the app header (#1840, App Header
+               Option A). AFTER setAuthHeaderProvider() above — its
+               fetchMyOrgs() call needs the bearer header wired to resolve
+               anything for an already-signed-in visitor. Progressive
+               enhancement: renders nothing when signed out / no org / no
+               resolvable logo, so placement relative to purely-visual
+               modules below doesn't matter. */
+            bootHeaderBranding();
 
             /* In-app notifications bell (#289). Shows unread count from
                tblNotifications for the signed-in user; hidden when

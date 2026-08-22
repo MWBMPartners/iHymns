@@ -534,6 +534,45 @@ if (is_file($ogImagePhpPath)) {
     }
 }
 
+/* =============================================================================
+ * (k) #1840 — the two NEW screen-surface consumers (header, projector) emit
+ * a real <img> whose src references /org-logo.php? — the never-inline
+ * rule's POSITIVE half (check (a) above already bans the negative: no
+ * inlined <svg>, no data-URI). Delegating to the shared orgLogoUrl() builder
+ * (js/modules/org-logo.js, which itself references /org-logo.php?) counts —
+ * this checks the CONSUMER emits a real <img src>, not that it re-types the
+ * URL literally. Half 1 (header-branding.js) is live from commit 6; half 2
+ * (service-projection.php) is SELF-ACTIVATING once commit 7 adds it.
+ * ============================================================================= */
+
+$imgOrgLogoConsumers = [
+    $pub . '/js/modules/header-branding.js',
+    $pub . '/manage/service-projection.php',
+];
+foreach ($imgOrgLogoConsumers as $consumerPath) {
+    if (!is_file($consumerPath)) {
+        continue; // not landed yet
+    }
+    $rawConsumer = (string)file_get_contents($consumerPath);
+    if (!str_contains($rawConsumer, 'orgLogo') && !str_contains($rawConsumer, 'org-logo.php') && !str_contains($rawConsumer, 'OrgLogoUrl')) {
+        continue; // doesn't mention the org-logo feature at all yet — vacuous until it does
+    }
+    $codeConsumer = orgLogoStripComments($rawConsumer);
+    $relConsumer  = 'appWeb/public_html/' . substr($consumerPath, strlen($pub) + 1);
+
+    $hasImgCreate = (preg_match('/createElement\(\s*[\'"]img[\'"]\s*\)/', $codeConsumer) === 1)
+        || (preg_match('/<img[\s>]/i', $codeConsumer) === 1);
+    if (!$hasImgCreate) {
+        orgLogoFail($failures, "$relConsumer mentions the org-logo feature but never creates an <img> element — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+        continue;
+    }
+
+    $hasEndpointRef = str_contains($codeConsumer, '/org-logo.php?') || str_contains($codeConsumer, 'orgLogoUrl(');
+    if (!$hasEndpointRef) {
+        orgLogoFail($failures, "$relConsumer creates an <img> for a logo but nothing in the file references /org-logo.php? (directly or via the shared orgLogoUrl() builder) (#1840).");
+    }
+}
+
 if ($failures) {
     fwrite(STDERR, 'FAIL: ' . count($failures) . " organisation-logo surface wiring smell(s):\n");
     foreach ($failures as $f) {

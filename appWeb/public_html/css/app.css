@@ -494,6 +494,30 @@ a.link-bare:hover {
     text-decoration: none;
 }
 
+/* #1840 — org emblem co-brand (App Header Option A). Injected by
+   js/modules/header-branding.js into #logo-nav-btn, BEFORE the existing
+   fa-music icon/wordmark, split by a hairline divider. Zero layout
+   reservation when absent — a signed-out visitor / no org / no resolvable
+   logo renders the header exactly as before this feature. */
+.header-org-emblem {
+    max-height: 28px;
+    max-width: 44px;
+    object-fit: contain;
+}
+
+.header-brand-divider {
+    width: 1px;
+    align-self: stretch;
+    margin: 2px 0;
+    /* currentColor follows the navbar's own foreground in both themes —
+       no separate light/dark token needed (rule #16's "one theme signal"
+       is already applied upstream, by header-branding.js choosing WHICH
+       image to show; this divider just inherits whatever colour the
+       surrounding button text already uses). */
+    background: currentColor;
+    opacity: 0.3;
+}
+
 /* Header icon buttons */
 .btn-header-icon {
     width: 40px;
