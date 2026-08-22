@@ -292,6 +292,95 @@ check('...returns songsDetailed (the object shape the editor needs)', /songsDeta
 check('...returns the server-confirmed shareId (closing the pre-#1791 sourceId gap)',
     /shareId:\s*typeof data\.shareId/.test(fetchFnBlock));
 
+/* ------------------------------------------------------------------------
+ * 7. #1802 — the add-a-song picker: ONE mount helper, both edit surfaces,
+ *    the public search endpoint via apiFetch, no place-search.js, no
+ *    hardcoded cap. All derived from the tree (counts/markers), never a
+ *    typed list of call sites (rule #34).
+ * ---------------------------------------------------------------------- */
+console.log('\nAssertion 7 — #1802 add-a-song picker: one helper, wired into both surfaces:');
+
+check('mountSetlistAddSongPicker() is defined exactly once',
+    src.split('function mountSetlistAddSongPicker').length === 2,
+    'a second definition would be a second, forked picker — the same regression #1216/#1791 already ruled out for the row template');
+
+/* Call-site count DERIVED by counting every mention of the identifier
+   followed by `(` and subtracting the ONE declaration — never a typed
+   "there are two call sites" assumption. `mountSetlistAddSongPicker(` also
+   matches inside `function mountSetlistAddSongPicker(...)` itself, hence
+   the subtraction. */
+const addSongDefCount   = (src.match(/function mountSetlistAddSongPicker\(/g) || []).length;
+const addSongMentions   = (src.match(/mountSetlistAddSongPicker\(/g) || []).length;
+const addSongCallSites  = addSongMentions - addSongDefCount;
+
+check('mountSetlistAddSongPicker() has >= 2 call sites (both edit surfaces), found by count not by name',
+    addSongDefCount === 1 && addSongCallSites >= 2,
+    `found ${addSongCallSites} call site(s) (${addSongMentions} total mentions, ${addSongDefCount} declaration(s))`);
+
+const addSongFnStart = src.indexOf('function mountSetlistAddSongPicker');
+const addSongFnEnd   = src.indexOf('\nexport class SetList', addSongFnStart);
+const addSongFnBlock = (addSongFnStart >= 0 && addSongFnEnd > addSongFnStart)
+    ? src.slice(addSongFnStart, addSongFnEnd)
+    : '';
+
+check('mountSetlistAddSongPicker() was located for inspection',
+    addSongFnBlock.length > 500,
+    `found ${addSongFnBlock.length} chars`);
+
+check('...searches via the EXISTING public ?action=search endpoint (no new endpoint minted, rule #40)',
+    /action=search/.test(addSongFnBlock));
+
+check('...issues that search through apiFetch(), never a bare fetch() (rule #31)',
+    /apiFetch\(/.test(addSongFnBlock) && !/(?<![\w.])fetch\(/.test(addSongFnBlock));
+
+check('...never references place-search.js — that bundle is /manage-only and must not load on this public surface',
+    !addSongFnBlock.includes('place-search'));
+
+/* Scoped to the picker function block, NOT the whole file: setlist.js is
+   large and a bare `200` (an HTTP status, a timeout, a char limit) can
+   legitimately appear elsewhere, so a file-wide ban would fail on correct
+   unrelated code and get weakened or deleted rather than fixed (rule #34's
+   second edge). The plan's guard-4 scope is "the picker/push client code" —
+   the add path is where a naive `if (list.length >= 200)` cap would land;
+   the server's 413 body (res.data.maxSongs) is the ONLY source of the limit
+   (rule #35, mirrors the #1662 client-side-cap ban). */
+check('no hardcoded 200 cap literal in the add-a-song picker — the limit only ever arrives via the 413 body',
+    !/(?<!\d)200(?!\d)/.test(addSongFnBlock));
+
+check('the token-edit surface (initSharedSetListPage) calls mountSetlistAddSongPicker() with getSongs/onPick',
+    (() => {
+        const start = src.indexOf('async initSharedSetListPage');
+        const end   = src.indexOf('async enrichSharedSongItems');
+        const block = (start >= 0 && end > start) ? src.slice(start, end) : '';
+        return block.includes('mountSetlistAddSongPicker(') && block.includes('getSongs:') && block.includes('onPick:');
+    })());
+
+check('the collab-detail surface (renderSharedSetListDetail) ALSO calls mountSetlistAddSongPicker() with getSongs/onPick',
+    (() => {
+        const start = src.indexOf('renderSharedSetListDetail(shared) {');
+        const end   = src.indexOf('importSharedSetlist(sharedData)');
+        const block = (start >= 0 && end > start) ? src.slice(start, end) : '';
+        return block.includes('mountSetlistAddSongPicker(') && block.includes('getSongs:') && block.includes('onPick:');
+    })());
+
+/* Shell fragment (rule #30) — static markup only. The AUTHORITATIVE guard
+   for "no executable inline <script>" is tests/php/test-fragment-inline-
+   scripts.php, which already scans every includes/pages/*.php (comment-
+   stripped first, so a doc-comment merely mentioning the tag can't false-
+   positive it — see that file's own doc-block). Re-implementing that scan
+   here would be the SAME regression rule #35 bans: two places computing
+   one policy with nothing keeping them in agreement. This assertion's
+   only job is the one the PHP guard does NOT do: confirm the #1802 host
+   block actually exists in the fragment at all (an absent host is a
+   silent no-op the PHP guard would never catch — it only bans scripts,
+   it doesn't require any particular markup to be present). */
+const SETLIST_SHARED_PHP = path.join(__dirname, '..', 'appWeb', 'public_html', 'includes', 'pages', 'setlist-shared.php');
+const setlistSharedPhpRaw = fs.readFileSync(SETLIST_SHARED_PHP, 'utf8');
+
+check('setlist-shared.php renders the #1802 add-a-song shell (host div + input)',
+    setlistSharedPhpRaw.includes('id="shared-setlist-add-song"')
+    && setlistSharedPhpRaw.includes('id="shared-setlist-add-input"'));
+
 /* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -24,6 +24,15 @@ import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_A
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
+/* #1802 (plan .claude/setlist-correctness-1675-plan.md §3.6) — side-effect
+   import for the add-a-song combobox's keyboard/ARIA handling
+   (mountSetlistAddSongPicker(), below). `combobox-a11y.js` deliberately
+   contains no import/export of its own (see that file's doc-block), so it
+   attaches `window.iHymnsComboboxA11y` whether loaded as a classic
+   <script src> or, as here, imported for its side effect — the exact
+   pattern js/modules/request-a-song.js already uses for the SAME reason
+   on a different public-page combobox. */
+import './combobox-a11y.js';
 
 /**
  * May the viewer WRITE to this shared set list? (#1638 / #1698)
@@ -148,6 +157,299 @@ function bindSharedSetlistRowControls(container, songs, opts) {
             opts.onMutate();
         });
     });
+}
+
+/* =========================================================================
+ * ADD-A-SONG PICKER (#1802, plan .claude/setlist-correctness-1675-plan.md
+ * §3.6) — module scope, beside the row-template pair above it completes:
+ * reorder/remove had a shared row template + binder (#1791); this is the
+ * missing third leg, "add", built the SAME way — ONE mount helper shared
+ * by BOTH edit surfaces rather than a fork per surface (modularity rule).
+ * ========================================================================= */
+
+/** Matches to request per keystroke — the literal `limit=` value sent on
+ *  the wire, so there is exactly one place this number lives (mirrors
+ *  request-a-song.js's SONGBOOK_MAX_RESULTS, same reasoning). */
+const ADD_SONG_MAX_RESULTS = 8;
+/** Debounce before a keystroke fires a real network search — longer than
+ *  request-a-song.js's 120 ms because that module filters an ALREADY
+ *  fetched, in-memory list (no round trip per keystroke); this one hits
+ *  the server every time, so it also needs the min-length floor below. */
+const ADD_SONG_DEBOUNCE_MS = 250;
+/** Below this length the query is not sent at all — a 1-character query
+ *  against the full song corpus is expensive and the result set is
+ *  useless (thousands of hits), so the endpoint isn't even asked. */
+const ADD_SONG_MIN_QUERY_LEN = 2;
+/** Fixed panel id. Mirrors request-a-song.js's SONGBOOK_PANEL_ID: at most
+ *  ONE add-a-song combobox is ever open at a time in this SPA (the two
+ *  edit surfaces this mounts on never render together — one lives on the
+ *  public shared-setlist page, the other inside the signed-in app's
+ *  setlist overview), so a single well-known node id is enough, and
+ *  removing-then-recreating it on every mount() call self-cleans a PRIOR
+ *  instance even if that instance's own returned teardown fn was never
+ *  invoked (belt; the collab-detail consumer below DOES call it, since
+ *  that surface re-mounts on every edit — see its own comment). */
+const ADD_SONG_PANEL_ID = 'setlist-add-song-picker-panel';
+
+/**
+ * mountSetlistAddSongPicker(hostEl, { getSongs, onPick }) → teardown fn
+ * -----------------------------------------------------------------------
+ * ELI5: turns a plain text box into a "start typing a song title or
+ * number and pick one from a short list underneath" control, then adds
+ * whatever you picked to the set list you're editing.
+ *
+ * DETAILED: built the `request-a-song.js` `initSongbookPicker()` way (see
+ * that function's own doc-block for the full rationale) — keyboard/ARIA
+ * via `combobox-a11y.js`'s `window.iHymnsComboboxA11y`, a small
+ * `position:absolute` listbox panel appended to `document.body` (so it
+ * paints above whatever Bootstrap component the host happens to sit
+ * inside), Escape/blur teardown, select-on-`mousedown` (fires before the
+ * input's blur handler tears the panel down).
+ *
+ * The one deliberate DIFFERENCE from request-a-song.js's picker: that one
+ * filters an already-fetched, in-memory songbook list client-side; this
+ * one is a real per-keystroke SERVER search, because there is no "fetch
+ * the whole song corpus once" equivalent here (CLAUDE.md rule #17 — reads
+ * are scoped, never a whole-corpus materialiser) and 14k+ songs would not
+ * fit a client-side filter anyway. It hits the EXISTING public read
+ * `?action=search` (rule #31 — via `apiFetch`, never a bare `fetch` call),
+ * the SAME endpoint `search.js`'s own live typeahead already debounces
+ * per keystroke — never `place-search.js` (a `/manage`-only bundle; this
+ * mount runs on a public page, the plan's own #1c doctrine).
+ *
+ * Find-or-create does NOT apply here (contrast rule #43's registry
+ * pickers): a set-list entry only REFERENCES an existing song, it never
+ * mints one, so a pick is pure selection — nothing is created, nothing
+ * is written until the caller's `onPick()` pushes through the existing
+ * `setlist_token_update` / `setlist_collab_update` write paths.
+ *
+ * @param {?HTMLElement} hostEl A container that already has an `<input>`
+ *        inside it (the `#shared-setlist-add-song` shell block for the
+ *        token surface; a small block `renderSharedSetListDetail()` renders
+ *        itself for the collab-detail surface). No-ops (returns a no-op
+ *        teardown) when absent or when it has no `<input>` — a trimmed or
+ *        stale-cached fragment degrades instead of throwing.
+ * @param {{getSongs: () => Array<object>, onPick: () => void}} opts
+ *        `getSongs()` returns the CALLER's live, mutable staged-songs
+ *        array (`editableSongs` / the closure-local `songs`) — this
+ *        function reads it for the duplicate check and `.push()`es the
+ *        new entry directly onto it, exactly like `bindSharedSetlistRowControls()`
+ *        mutates the same array via `.splice()`. `onPick()` is called
+ *        AFTER the push, with no arguments — the caller decides what
+ *        "after a change" means (re-sync the header, re-render the rows,
+ *        push to the server), matching `bindSharedSetlistRowControls()`'s
+ *        `onMutate` contract one level up.
+ * @returns {() => void} Idempotent teardown — clears any pending debounce
+ *        timer, unbinds the input's listeners, and removes the panel.
+ *        Consumer 1 (mounted once, permanently, on a stable input node
+ *        outside the songs list that re-renders) never needs to call it.
+ *        Consumer 2 (`renderSharedSetListDetail()`, which rebuilds its
+ *        WHOLE innerHTML — add-song block included — on every edit) calls
+ *        it at the top of its next render, before the old input is torn
+ *        out from under the old picker instance.
+ */
+function mountSetlistAddSongPicker(hostEl, opts) {
+    const input = hostEl instanceof HTMLElement ? hostEl.querySelector('input') : null;
+    if (!input || !opts || typeof opts.getSongs !== 'function' || typeof opts.onPick !== 'function') {
+        return () => {};
+    }
+
+    /* Self-clean a stale panel from a PRIOR mount (see ADD_SONG_PANEL_ID's
+       own comment above) before building this instance's panel. */
+    document.getElementById(ADD_SONG_PANEL_ID)?.remove();
+
+    const panel = document.createElement('div');
+    panel.id = ADD_SONG_PANEL_ID;
+    panel.setAttribute('role', 'listbox');
+    panel.style.position = 'absolute';
+    panel.style.zIndex = '20000';
+    panel.style.minWidth = '16rem';
+    panel.style.maxHeight = '16rem';
+    panel.style.overflowY = 'auto';
+    panel.style.background = 'var(--bs-body-bg, #1a1a1a)';
+    panel.style.color = 'var(--bs-body-color, #e8e8e8)';
+    panel.style.border = '1px solid var(--bs-border-color, #444)';
+    panel.style.borderRadius = '0.375rem';
+    panel.style.boxShadow = '0 0.5rem 1rem rgba(0,0,0,0.45)';
+    panel.style.display = 'none';
+    panel.style.fontSize = '0.875rem';
+    document.body.appendChild(panel);
+
+    /** @type {Array<object>} Current candidate rows from the last search. */
+    let items = [];
+    let activeIndex = -1;
+    let debounceTimer = null;
+    let blurTimer = null;
+    /** Bumped on every search so a slow, superseded response can detect
+     *  it is stale and drop itself rather than clobber a newer one — the
+     *  server round trip here (unlike request-a-song.js's client-side
+     *  filter of an already-resolved promise) can genuinely race. */
+    let searchSeq = 0;
+    /** Flips true once `teardown()` runs, so an in-flight search that
+     *  resolves afterwards can no-op instead of touching a removed panel. */
+    let destroyed = false;
+
+    function positionPanel() {
+        const rect = input.getBoundingClientRect();
+        panel.style.left = (window.scrollX + rect.left) + 'px';
+        panel.style.top = (window.scrollY + rect.bottom + 2) + 'px';
+        panel.style.width = Math.max(rect.width, 220) + 'px';
+    }
+
+    function closePanel() {
+        items = [];
+        activeIndex = -1;
+        panel.style.display = 'none';
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
+    }
+
+    /** Commit candidate `index` — the dedupe + append + notify contract
+     *  described in this function's own doc-block above. */
+    function pick(index) {
+        const song = items[index];
+        if (!song) return;
+        const list = opts.getSongs();
+        if (!Array.isArray(list)) { closePanel(); return; }
+
+        /* #1802 — same duplicate rule `addSong()` (:462) already uses for
+           a device's own local set lists: one list, one copy of a song. */
+        if (list.some(s => s && s.id === song.id)) {
+            window.iHymnsApp?.showToast?.('That song is already in this set list.', 'info', 2500);
+            input.value = '';
+            closePanel();
+            return;
+        }
+
+        /* The exact four-field shape setlistCollabSanitiseSongs() stores
+           (plan §1c/§3.6) — never the raw search-result row, which also
+           carries songbookName/writers/hasAudio/etc. the server strips
+           anyway and which would just be dead weight in localStorage /
+           the sync payload for the OWN-list callers of this same shape. */
+        list.push({
+            id: song.id,
+            title: song.title || '',
+            songbook: song.songbook || '',
+            number: song.number || 0,
+        });
+        input.value = '';
+        closePanel();
+        opts.onPick();
+    }
+
+    function renderPanel() {
+        if (!items.length) {
+            panel.style.display = 'none';
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+            return;
+        }
+        panel.innerHTML = '';
+        items.forEach((song, i) => {
+            const row = document.createElement('div');
+            row.style.padding = '0.4rem 0.6rem';
+            row.style.cursor = 'pointer';
+            row.style.whiteSpace = 'nowrap';
+            row.style.overflow = 'hidden';
+            row.style.textOverflow = 'ellipsis';
+            if (i === activeIndex) {
+                row.style.background = 'var(--bs-primary-bg-subtle, rgba(255, 193, 7, 0.18))';
+            }
+            /* Title + songbook/number meta line, matching what
+               sharedSetlistRowsHtml() itself shows for an already-added
+               row (songbookLabel() + the number) so a picked result looks
+               like the row it is about to become. */
+            const metaParts = [songbookLabel(song.songbook), song.number ? `#${song.number}` : ''].filter(Boolean);
+            row.innerHTML = `<div>${escapeHtml(toTitleCase(song.title || String(song.id)))}</div>` +
+                (metaParts.length ? `<div class="text-muted" style="font-size:0.8em">${escapeHtml(metaParts.join(' · '))}</div>` : '');
+            /* mousedown, not click: fires before the input's blur handler
+               (below) tears the panel down — matches request-a-song.js's
+               identical listener at its own renderPanel(). */
+            row.addEventListener('mousedown', (ev) => {
+                ev.preventDefault();
+                pick(i);
+            });
+            panel.appendChild(row);
+        });
+        positionPanel();
+        panel.style.display = 'block';
+        window.iHymnsComboboxA11y?.applyComboboxAria({
+            input,
+            panel,
+            items: Array.from(panel.children),
+            activeIndex,
+            idPrefix: (hostEl.id || 'setlist-add-song') + '-opt',
+        });
+    }
+
+    /** Debounced search against the EXISTING public `?action=search` read
+     *  (rule #31 — apiFetch, never a bare fetch call). Never throws: a network
+     *  hiccup here degrades to "no suggestions", never a broken add flow
+     *  — the same fail-soft posture request-a-song.js's own list fetch
+     *  documents for the identical reason. */
+    async function runSearch() {
+        const q = input.value.trim();
+        if (q.length < ADD_SONG_MIN_QUERY_LEN) { closePanel(); return; }
+        const seq = ++searchSeq;
+        let results = [];
+        try {
+            const res = await apiFetch(`/api?action=search&q=${encodeURIComponent(q)}&limit=${ADD_SONG_MAX_RESULTS}&lyrics=0`);
+            if (res.ok) {
+                const data = await res.json();
+                results = Array.isArray(data.results) ? data.results : [];
+            }
+        } catch (_e) {
+            results = [];
+        }
+        /* Stale response (a newer keystroke already won, or teardown()
+           ran while this was in flight) — drop it rather than paint an
+           answer to a question nobody is asking any more. */
+        if (destroyed || seq !== searchSeq) return;
+        items = results.slice(0, ADD_SONG_MAX_RESULTS);
+        activeIndex = items.length ? 0 : -1;
+        renderPanel();
+    }
+
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+
+    const onInput = () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runSearch, ADD_SONG_DEBOUNCE_MS);
+    };
+    const onKeydown = (ev) => {
+        if (!window.iHymnsComboboxA11y) return;
+        window.iHymnsComboboxA11y.handleComboboxKeydown(ev, {
+            isOpen: () => panel.style.display !== 'none',
+            getItems: () => Array.from(panel.children),
+            getActiveIndex: () => activeIndex,
+            setActiveIndex: (i) => { activeIndex = i; },
+            render: renderPanel,
+            onCommit: (i) => pick(i),
+            onClose: closePanel,
+        });
+    };
+    const onBlur = () => {
+        /* Delay so a mousedown pick on a panel row (above) registers
+           before the panel disappears — matches request-a-song.js. */
+        blurTimer = setTimeout(closePanel, 150);
+    };
+
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKeydown);
+    input.addEventListener('blur', onBlur);
+
+    return function teardown() {
+        if (destroyed) return;
+        destroyed = true;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        if (blurTimer) clearTimeout(blurTimer);
+        input.removeEventListener('input', onInput);
+        input.removeEventListener('keydown', onKeydown);
+        input.removeEventListener('blur', onBlur);
+        panel.remove();
+    };
 }
 
 export class SetList {
@@ -881,6 +1183,23 @@ export class SetList {
         const container = document.getElementById('setlist-container');
         if (!container || !shared) return;
 
+        /* #1802 — tear down any add-a-song picker instance a PREVIOUS
+           render of this container mounted, before `container.innerHTML`
+           below throws its `<input>` away. Unlike the token-edit surface
+           (mounted once, permanently, on a stable node the songs list
+           re-render never touches — see that surface's own #1802
+           comment), THIS surface rebuilds its whole innerHTML — add-song
+           block included — on every edit, so the picker is re-mounted on
+           every call and must clean up the PRIOR instance's panel/timers
+           first. Stashed on `shared` (not a closure-local) for the same
+           reason `shared._serverSongs` is: this method re-enters itself
+           on every edit, so a closure-local would not survive to the next
+           call. */
+        if (typeof shared._addSongTeardown === 'function') {
+            shared._addSongTeardown();
+            shared._addSongTeardown = null;
+        }
+
         /* Work on a COPY. Edits are staged locally and pushed explicitly, so
            an abandoned reorder never half-writes to the owner's list. */
         const songs = Array.isArray(shared.songs) ? shared.songs.map(s => ({ ...s })) : [];
@@ -945,6 +1264,12 @@ export class SetList {
                 You have view-only access. Ask ${escapeHtml(shared.ownerName)} for edit access to make changes.
             </div>` : '')}
             ${rowsHtml}
+            ${canEdit ? `
+            <div id="shared-detail-add-song" class="mt-3">
+                <label for="shared-detail-add-input" class="form-label small text-muted">Add a song</label>
+                <input type="text" id="shared-detail-add-input" class="form-control"
+                       autocomplete="off" placeholder="Search by title or number&hellip;">
+            </div>` : ''}
             <div id="shared-save-status" class="small mt-2" aria-live="polite"></div>`;
 
         container.querySelector('#shared-back-btn')?.addEventListener('click', () => {
@@ -1070,6 +1395,25 @@ export class SetList {
                 push();
             },
         });
+
+        /* #1802 — mount the add-a-song picker on the host the template
+           above just rendered (canEdit only — see that block). `onPick`
+           mirrors `bindSharedSetlistRowControls()`'s own `onMutate`
+           exactly: stage the mutation onto `shared.songs`, re-render the
+           whole detail view, then push through the SAME `setlist_collab_update`
+           write path reorder/remove already use — no new endpoint, one
+           write core (rule #40). */
+        shared._addSongTeardown = mountSetlistAddSongPicker(
+            container.querySelector('#shared-detail-add-song'),
+            {
+                getSongs: () => songs,
+                onPick: () => {
+                    shared.songs = songs;
+                    this.renderSharedSetListDetail(shared);
+                    push();
+                },
+            }
+        );
     }
 
     /**
@@ -3454,6 +3798,15 @@ export class SetList {
             let writeAllowed = true;
             let lastGoodSongs = editableSongs.map(s => ({ ...s }));
 
+            /* #1802 — the add-a-song host + its mount teardown. Un-hidden
+               and mounted ONCE below (this input lives on a stable node
+               OUTSIDE songsContainer, so — unlike the collab-detail
+               surface's own copy of this wiring — renderEditRows()
+               rebuilding the SONGS rows never tears this input out from
+               under the picker; no per-render remount is needed here). */
+            const addSongHost = document.getElementById('shared-setlist-add-song');
+            let addSongTeardown = null;
+
             /* Keeps the header count/plural AND the tap-to-play/Start order
                (sharedData.songIds) in step with every reorder/remove — those
                were fixed at page-load time and would otherwise go stale the
@@ -3504,6 +3857,15 @@ export class SetList {
                                 renderEditRows();
                                 editStatusEl?.classList.add('d-none');
                                 signinPromptEl?.classList.remove('d-none');
+                                /* #1802 — the add-a-song affordance is part of
+                                   "the whole surface" this branch already
+                                   downgrades (see this function's own #1791
+                                   comment above); hide it and stop its
+                                   in-flight debounce/listeners rather than
+                                   leaving a search box that would only ever
+                                   401 again on the next pick. */
+                                addSongHost?.classList.add('d-none');
+                                if (addSongTeardown) { addSongTeardown(); addSongTeardown = null; }
                                 return false;
                             }
                             /* Any other refusal (revoked / expired / rate-limited /
@@ -3525,7 +3887,23 @@ export class SetList {
                             }
                             return false;
                         }
-                        lastGoodSongs = editableSongs.map(s => ({ ...s }));
+                        /* #1802/rule #40 — adopt the SERVER's sanitised,
+                           stored copy (titles trimmed, malformed entries
+                           dropped) as the new confirmed baseline, rather
+                           than snapshotting the client's own pre-sanitise
+                           array. Previously only `lastGoodSongs` (the
+                           REVERT target) was updated this way; `editableSongs`
+                           itself — what's actually rendered and re-sent on
+                           the NEXT edit — kept the client's raw copy, so a
+                           sanitiser-trimmed field would silently diverge
+                           from what the server actually stored until the
+                           next full page load. Re-seeding + re-rendering
+                           here closes that gap immediately. */
+                        const confirmedSongs = Array.isArray(res.data.songs) ? res.data.songs : editableSongs;
+                        lastGoodSongs = confirmedSongs.map(s => ({ ...s }));
+                        editableSongs.splice(0, editableSongs.length, ...confirmedSongs.map(s => ({ ...s })));
+                        syncHeaderFromSongs();
+                        renderEditRows();
                         if (editStatusEl) editStatusEl.innerHTML = '<span class="text-success">Saved.</span>';
                         return true;
                     })
@@ -3536,6 +3914,24 @@ export class SetList {
             };
 
             renderEditRows();
+
+            /* #1802 — un-hide + mount the add-a-song picker now that we know
+               `writeAllowed` is true (this branch only runs at all when the
+               server granted canWrite — see the surrounding #1791 comment).
+               `getSongs` returns the SAME `editableSongs` array reorder/
+               remove already mutate; `onPick` rides the exact `onMutate`
+               flow those two use (sync the header, re-render, push). */
+            if (addSongHost) {
+                addSongHost.classList.remove('d-none');
+                addSongTeardown = mountSetlistAddSongPicker(addSongHost, {
+                    getSongs: () => editableSongs,
+                    onPick: () => {
+                        syncHeaderFromSongs();
+                        renderEditRows();
+                        pushTokenEdit();
+                    },
+                });
+            }
         }
     }
 
