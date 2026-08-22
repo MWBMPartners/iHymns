@@ -142,7 +142,7 @@ try {
         $mysql->query(
             "ALTER TABLE tblSongs
                 ADD COLUMN NormalizedTitle VARCHAR(500) NOT NULL DEFAULT '' COLLATE utf8mb4_unicode_ci
-                    COMMENT 'App-maintained fold of Title via ihymns_normalize_title() for a fast indexed dedup/match pre-filter; exact compare still runs in PHP (#1066 Theme D)'"
+                    COMMENT 'App-maintained fold of Title via ihymns_normalize_title() (Unicode NFKD, strip combining marks, lowercase, fold special letters; iconv//TRANSLIT fallback when ext-intl is absent) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)'"
         );
         _migNormTitle_output("  [OK] Added tblSongs.NormalizedTitle.");
     }
