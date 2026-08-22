@@ -343,3 +343,51 @@ function orgLogoSetActive(\mysqli $db, int $orgId, string $kind, string $variant
     $stmt->close();
     return $affected;
 }
+
+/**
+ * #1840 — delete EVERY variant row of one `(OrgId, Kind)` in one go — the
+ * `logo_remove` handler calls this when a curator removes a kind's
+ * `'default'` row, so its `light`/`dark` theme versions don't survive as
+ * invisible orphans the admin card can no longer manage (one theme would
+ * keep silently rendering them, the other would silently show nothing —
+ * exactly the half-feature state this codebase refuses to mint). Removing
+ * an EXPLICIT `light`/`dark` row alone still goes through the plain
+ * `orgLogoDelete()` above — only a `'default'`-row removal cascades.
+ *
+ * @return int  Number of rows actually deleted (0..3 — default + light + dark).
+ */
+function orgLogoDeleteKindAll(\mysqli $db, int $orgId, string $kind): int
+{
+    if ($orgId <= 0 || !in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+        return 0;
+    }
+    $stmt = $db->prepare('DELETE FROM tblOrganisationLogos WHERE OrgId = ? AND Kind = ?');
+    $stmt->bind_param('is', $orgId, $kind);
+    $stmt->execute();
+    $affected = (int)$stmt->affected_rows;
+    $stmt->close();
+    return max(0, $affected);
+}
+
+/**
+ * #1840 — toggle `IsActive` for EVERY variant row of one `(OrgId, Kind)` at
+ * once (unlike `orgLogoSetActive()` above, which is variant-scoped). The
+ * admin card's Show/Hide control is deliberately ONE switch per KIND
+ * (per-asset visibility), not one per rendition — a kind half-hidden (its
+ * `'default'` shown, its `'dark'` still hidden or vice-versa) is another
+ * silent-half state that would only misbehave on one theme, so `logo_toggle`
+ * calls this instead of looping `orgLogoSetActive()` per variant.
+ */
+function orgLogoSetActiveKind(\mysqli $db, int $orgId, string $kind, bool $active): bool
+{
+    if ($orgId <= 0 || !in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+        return false;
+    }
+    $activeInt = $active ? 1 : 0;
+    $stmt = $db->prepare('UPDATE tblOrganisationLogos SET IsActive = ? WHERE OrgId = ? AND Kind = ?');
+    $stmt->bind_param('iis', $activeInt, $orgId, $kind);
+    $stmt->execute();
+    $affected = $stmt->affected_rows > 0;
+    $stmt->close();
+    return $affected;
+}

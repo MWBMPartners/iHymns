@@ -313,10 +313,18 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
     $actRemove = 'logo_remove';
     $actToggle = 'logo_toggle';
 
-    $existingByKind = [];
+    /* #1840 — per-(kind,variant) lookup so the "Theme versions" strip below
+       can find each kind's light/dark rows alongside the existing
+       default-only $existingByKind fold (kept for the "is this row's kind
+       expanded at all" check, unchanged from #1830). */
+    $existingByKindVariant = [];
     foreach (orgLogoListForOrg($db, $orgId) as $row) {
-        if ($row['Variant'] === 'default') {
-            $existingByKind[$row['Kind']] = $row;
+        $existingByKindVariant[$row['Kind']][$row['Variant']] = $row;
+    }
+    $existingByKind = [];
+    foreach ($existingByKindVariant as $kind => $variants) {
+        if (isset($variants['default'])) {
+            $existingByKind[$kind] = $variants['default'];
         }
     }
 
@@ -359,7 +367,68 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
         $isActive  = ((int)$existing['IsActive'] === 1);
         $toggleTo  = $isActive ? '0' : '1';
         $toggleLabel = $isActive ? 'Hide' : 'Show';
-        $confirmRemove = "Remove the {$labelEsc} logo?";
+        /* #1840 — removing the DEFAULT row cascades to its light/dark theme
+           versions too (orgLogoDeleteKindAll(), so the confirm copy says so
+           up front rather than surprising a curator after the fact. */
+        $confirmRemove = "Remove the {$labelEsc} logo and its theme versions?";
+
+        /* #1840 §3.5 — "Theme versions (optional)" strip, ONE per expanded
+           kind row: a Light-theme and a Dark-theme slot, each independently
+           empty (Add form) or filled (preview + Replace/Remove), gated on
+           the kind already having a 'default' row (variants require the
+           default — an orphan dark-only row would show on dark screens and
+           silently vanish on light ones, the silent-half-feature class this
+           repo documents; enforced here by only ever rendering this strip
+           inside the ALREADY-expanded branch). No per-variant alt-text
+           input — AltText meaning rides the kind's default row (the variant
+           is the same asset re-drawn, one accessible name). */
+        $variantLabels = ['light' => 'Light theme', 'dark' => 'Dark theme'];
+        $variantSlotsHtml = '';
+        foreach ($variantLabels as $variant => $variantLabel) {
+            $variantLabelEsc = htmlspecialchars($variantLabel, ENT_QUOTES);
+            $variantRow = $existingByKindVariant[$kind][$variant] ?? null;
+
+            if ($variantRow === null) {
+                $variantSlotsHtml .= '<form method="POST" enctype="multipart/form-data"'
+                    . ' class="d-flex align-items-center gap-2 org-logo-variant-slot">'
+                    . $hiddenFields
+                    . '<input type="hidden" name="action" value="' . $actUpload . '">'
+                    . '<input type="hidden" name="variant" value="' . $variant . '">'
+                    . '<span class="small text-muted" style="min-width:6.5rem;">' . $variantLabelEsc . '</span>'
+                    . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+                    . ' class="form-control form-control-sm" style="max-width:170px;" required>'
+                    . '<button type="submit" class="btn btn-sm btn-outline-secondary">Add</button>'
+                    . '</form>';
+                continue;
+            }
+
+            $vSha = (string)$variantRow['Sha256'];
+            $vPreview = '/org-logo.php?org=' . $orgId . '&kind=' . rawurlencode($kind)
+                . '&variant=' . rawurlencode($variant) . '&v=' . rawurlencode($vSha);
+            $vPreviewEsc = htmlspecialchars($vPreview, ENT_QUOTES);
+            $variantSlotsHtml .= '<div class="d-flex align-items-center gap-2 org-logo-variant-slot">'
+                . '<img src="' . $vPreviewEsc . '" alt="' . $labelEsc . ' (' . $variantLabelEsc . ') preview"'
+                . ' style="max-height:44px;max-width:80px;object-fit:contain;background:#fff;border-radius:4px;padding:3px;">'
+                . '<span class="small text-muted" style="min-width:6.5rem;">' . $variantLabelEsc . '</span>'
+                . '<form method="POST" enctype="multipart/form-data" class="d-flex gap-1 align-items-center">'
+                . $hiddenFields
+                . '<input type="hidden" name="action" value="' . $actUpload . '">'
+                . '<input type="hidden" name="variant" value="' . $variant . '">'
+                . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+                . ' class="form-control form-control-sm" style="max-width:130px;" required>'
+                . '<button type="submit" class="btn btn-sm btn-outline-secondary">Replace</button>'
+                . '</form>'
+                . '<form method="POST" class="d-inline">' . $hiddenFields
+                . '<input type="hidden" name="action" value="' . $actRemove . '">'
+                . '<input type="hidden" name="variant" value="' . $variant . '">'
+                . '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>'
+                . '</div>';
+        }
+        $variantStripHtml = '<div class="org-logo-variant-strip mt-2 ps-2 border-start">'
+            . '<div class="text-muted small mb-1">Theme versions <span class="fw-normal">(optional)</span> '
+            . '— add a version drawn for light or dark screens and iHymns will pick the right one automatically.</div>'
+            . '<div class="d-flex flex-wrap gap-3">' . $variantSlotsHtml . '</div>'
+            . '</div>';
 
         $rowsHtml .= '<div class="org-logo-row border rounded p-2 mb-2">'
             . '<div class="d-flex align-items-start gap-3 flex-wrap">'
@@ -385,7 +454,9 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
             . '<form method="POST" class="d-inline" onsubmit="return confirm(' . json_encode($confirmRemove) . ');">' . $hiddenFields
             . '<input type="hidden" name="action" value="' . $actRemove . '">'
             . '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>'
-            . '</div></div></div></div>';
+            . '</div>'
+            . $variantStripHtml
+            . '</div></div></div>';
     }
 
     return '<div class="card-admin p-3 mb-3 org-logo-card">'

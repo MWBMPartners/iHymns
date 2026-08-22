@@ -440,6 +440,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Invalid request.';
                     break;
                 }
+                /* #1840 — the variant slot this upload targets; defaults to
+                   'default' so the pre-#1840 upload form (no `variant`
+                   field) keeps working byte-identically. Re-validated here
+                   even though orgLogoUpsert() validates again (rule #5). */
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
                 $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
                 $file    = $_FILES['logo_file'] ?? null;
                 $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
@@ -451,11 +460,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 try {
                     $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
-                    orgLogoUpsert($db, $orgId, $kind, 'default', $staged, $altText, (int)($currentUser['id'] ?? 0));
+                    orgLogoUpsert($db, $orgId, $kind, $variant, $staged, $altText, (int)($currentUser['id'] ?? 0));
                     logActivity('org.logo_upload', 'organisation', (string)$orgId, [
-                        'kind' => $kind, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                        'kind' => $kind, 'variant' => $variant, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
                     ]);
-                    $success = 'Logo uploaded.';
+                    $success = $variant === 'default' ? 'Logo uploaded.' : 'Theme version uploaded.';
                 } catch (\RuntimeException $e) {
                     $error = $e->getMessage(); // plain-English, safe to show verbatim (§4.4)
                 }
@@ -469,9 +478,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Invalid request.';
                     break;
                 }
-                orgLogoDelete($db, $orgId, $kind, 'default');
-                logActivity('org.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind]);
-                $success = 'Logo removed.';
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                /* #1840 — removing the DEFAULT row cascades to its light/dark
+                   theme versions too; an explicit light/dark row removes
+                   just that one. */
+                if ($variant === 'default') {
+                    orgLogoDeleteKindAll($db, $orgId, $kind);
+                } else {
+                    orgLogoDelete($db, $orgId, $kind, $variant);
+                }
+                logActivity('org.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind, 'variant' => $variant]);
+                $success = $variant === 'default' ? 'Logo removed.' : 'Theme version removed.';
                 break;
             }
 
@@ -483,7 +504,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     break;
                 }
                 $active = !empty($_POST['active']);
-                orgLogoSetActive($db, $orgId, $kind, 'default', $active);
+                /* #1840 — kind-level toggle: one visibility switch per ASSET
+                   (every variant together), never a half-hidden kind. */
+                orgLogoSetActiveKind($db, $orgId, $kind, $active);
                 logActivity('org.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
                 $success = $active ? 'Logo shown again.' : 'Logo hidden.';
                 break;
