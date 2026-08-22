@@ -422,5 +422,157 @@ check('legacy media regex DOES miss the flat /data/audio/<SongId>.mp3 shape',
 check('legacy `path.includes("/data/audio/mp/")` DOES miss the flat shape',
     '/data/audio/mp-1008.mp3'.includes('/data/audio/mp/') === false);
 
+/* ======================================================================
+ * 7 — #1921 SW half: conditional revalidation on songs_index
+ * ==================================================================== */
+console.log('\n#1921 — songs_index conditional revalidation (networkFirstRevalidated)\n');
+
+/* The fetch-handler branch itself: MUST call networkFirstRevalidated(), not
+   the plain networkFirstWithCache() (which has no notion of a validator
+   header at all — see that function's own doc-block for why reusing it
+   would be a silent no-op for this route, #1921 §1.2c). No nested braces
+   inside this specific branch, so a non-greedy match to the first `}` after
+   the opening one correctly bounds it. */
+const songsIndexBranch = jsSource.match(
+    /if\s*\(\s*url\.pathname\s*===\s*'\/api'\s*&&\s*url\.searchParams\.get\('action'\)\s*===\s*'songs_index'\s*\)\s*\{[\s\S]*?\}/
+);
+check('the songs_index fetch-handler branch was found', !!songsIndexBranch);
+if (songsIndexBranch) {
+    check('the songs_index branch dispatches to networkFirstRevalidated (NOT networkFirstWithCache)',
+        /networkFirstRevalidated\s*\(/.test(songsIndexBranch[0]) && !/networkFirstWithCache\s*\(/.test(songsIndexBranch[0]),
+        songsIndexBranch[0]);
+}
+
+/* Extract networkFirstRevalidated()'s own body by brace-depth counting (the
+   function contains no braces inside any string/comment, so this is safe
+   without a separate comment-stripping pass — unlike test-qr-cache.php's
+   PHP-side extractor, which does strip comments first because THAT file's
+   SQL-string literals are a real risk). */
+function extractJsFunctionBody(src, fnName) {
+    const idx = src.indexOf('function ' + fnName);
+    if (idx === -1) { return null; }
+    const openIdx = src.indexOf('{', idx);
+    if (openIdx === -1) { return null; }
+    let depth = 0;
+    for (let i = openIdx; i < src.length; i++) {
+        if (src[i] === '{') { depth++; }
+        else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) { return src.slice(openIdx, i + 1); }
+        }
+    }
+    return null;
+}
+const nfrSrc = extractJsFunctionBody(jsSource, 'networkFirstRevalidated');
+check('networkFirstRevalidated() source found in service-worker.js.php', !!nfrSrc);
+if (nfrSrc) {
+    check('sets If-None-Match from cached.headers.get(\'ETag\')',
+        /cached\.headers\.get\(\s*['"]ETag['"]\s*\)/.test(nfrSrc));
+    check('branches on response.status === 304', /response\.status\s*===\s*304/.test(nfrSrc));
+    check('retains cache: \'no-store\' (the layered-cache-bypass fix)',
+        /cache:\s*['"]no-store['"]/.test(nfrSrc));
+}
+
+/* Functional coverage — a SEPARATE tiny sandbox (not the `sw` object used by
+   every assertion above) so `fetch` and `caches.open()` can be fully
+   controlled per test case without disturbing sections 1-6. `fetch` is
+   passed as an explicit Function parameter (shadowing Node's own global
+   fetch, which would otherwise try a REAL network request against the fake
+   ihymns.app origin) exactly the way `self`/`caches` already are above. */
+let fetchImpl = async () => { throw new Error('fetchImpl not configured for this test case'); };
+let cacheStore = { match: async () => undefined, put: async () => {} };
+const fetchStub2 = (...args) => fetchImpl(...args);
+const cachesStub2 = {
+    open: async () => cacheStore,
+    keys: async () => [],
+    match: async () => undefined,
+    delete: async () => false,
+};
+const selfStub2 = {
+    addEventListener() { /* handlers registered but never dispatched here */ },
+    location: { origin: 'https://www.ihymns.app' },
+    registration: { active: null },
+    clients: { matchAll: async () => [], claim: async () => {} },
+    skipWaiting() {},
+};
+
+let nfr = null;
+try {
+    /* eslint-disable-next-line no-new-func */
+    const sw2 = new Function(
+        'self', 'caches', 'fetch',
+        jsSource + "\n;return { networkFirstRevalidated: (typeof networkFirstRevalidated !== 'undefined' ? networkFirstRevalidated : undefined) };"
+    )(selfStub2, cachesStub2, fetchStub2);
+    nfr = sw2 && sw2.networkFirstRevalidated;
+} catch (err) {
+    console.error(`  FATAL could not evaluate the #1921 sandbox: ${err.message}`);
+    failed++;
+}
+check('networkFirstRevalidated() harvested as a callable function', typeof nfr === 'function');
+
+if (typeof nfr === 'function') {
+    /* Top-level `await` (this file is loaded as an ES module, package.json
+       "type":"module") — each case MUST be awaited before the next runs, and
+       ALL of them before the final summary/exit below, or their `check()`
+       calls would still be pending microtasks when `process.exit()` fires
+       and would simply never run (a silent 0-assertion pass, exactly the
+       failure class this whole file exists to prevent elsewhere). */
+
+    /* --- A: fresh install / purged cache — no cached copy, network 200 --- */
+    cacheStore = { match: async () => undefined, putCalls: [], put: async function (req, res) { this.putCalls.push({ req, res }); } };
+    let capturedOptsA = null;
+    let capturedReqA = null;
+    fetchImpl = async (req, opts) => {
+        capturedReqA = req;
+        capturedOptsA = opts;
+        return new Response('{"songs":[]}', { status: 200, headers: { ETag: '"si1-fresh"' } });
+    };
+    const requestA = new Request('https://www.ihymns.app/api?action=songs_index');
+    const resultA = await nfr(requestA);
+    check('A: fetch is called with cache: \'no-store\'', !!capturedOptsA && capturedOptsA.cache === 'no-store');
+    check('A: no cached copy -> no If-None-Match is sent', !capturedReqA.headers.get('If-None-Match'));
+    check('A: the 200 response is returned', resultA.status === 200);
+    check('A: the 200 response is cached, keyed on the ORIGINAL request',
+        cacheStore.putCalls.length === 1 && cacheStore.putCalls[0].req === requestA);
+
+    /* --- B: cached copy exists, server says 304 (THE headline case) --- */
+    const priorEtagB = '"si1-cached123"';
+    const cachedResponseB = new Response('{"songs":["cached"]}', { status: 200, headers: { ETag: priorEtagB } });
+    cacheStore = { match: async () => cachedResponseB, putCalls: [], put: async function (req, res) { this.putCalls.push({ req, res }); } };
+    let capturedReqB = null;
+    fetchImpl = async (req) => { capturedReqB = req; return new Response(null, { status: 304 }); };
+    const requestB = new Request('https://www.ihymns.app/api?action=songs_index');
+    const resultB = await nfr(requestB);
+    check('B: If-None-Match sent matches the cached response\'s own ETag', capturedReqB.headers.get('If-None-Match') === priorEtagB);
+    check('B: the CACHED response is returned on a 304 (not a new/empty one)', resultB === cachedResponseB);
+    check('B: cache.put is NEVER called on a 304 (a 304 has no body to store)', cacheStore.putCalls.length === 0);
+
+    /* --- C: cached copy exists, catalogue actually changed (fresh 200) --- */
+    const oldEtagC = '"si1-old"';
+    const cachedResponseC = new Response('{"songs":["old"]}', { status: 200, headers: { ETag: oldEtagC } });
+    cacheStore = { match: async () => cachedResponseC, putCalls: [], put: async function (req, res) { this.putCalls.push({ req, res }); } };
+    const freshResponseC = new Response('{"songs":["new"]}', { status: 200, headers: { ETag: '"si1-new"' } });
+    fetchImpl = async () => freshResponseC;
+    const requestC = new Request('https://www.ihymns.app/api?action=songs_index');
+    const resultC = await nfr(requestC);
+    check('C: the fresh 200 response is returned (not the stale cached one)', resultC === freshResponseC);
+    check('C: the fresh response replaces the cache entry, keyed on the ORIGINAL request',
+        cacheStore.putCalls.length === 1 && cacheStore.putCalls[0].req === requestC);
+
+    /* --- D1/D2: network failure, WITH and WITHOUT a cached copy --- */
+    const cachedResponseD = new Response('{"songs":["cached-d"]}', { status: 200, headers: { ETag: '"si1-d"' } });
+    cacheStore = { match: async () => cachedResponseD, put: async () => {} };
+    fetchImpl = async () => { throw new TypeError('simulated network failure'); };
+    const requestD1 = new Request('https://www.ihymns.app/api?action=songs_index');
+    const resultD1 = await nfr(requestD1);
+    check('D1: network failure WITH a cached copy returns the cached response', resultD1 === cachedResponseD);
+
+    cacheStore = { match: async () => undefined, put: async () => {} };
+    fetchImpl = async () => { throw new TypeError('simulated network failure'); };
+    const requestD2 = new Request('https://www.ihymns.app/api?action=songs_index');
+    const resultD2 = await nfr(requestD2);
+    check('D2: network failure with NO cached copy falls back to the offline response (503)', resultD2.status === 503);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

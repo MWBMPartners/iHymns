@@ -823,14 +823,19 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- Slim song index (WS-I #1017): network-first, cached to the
-       CACHE_VERSION bucket so the OFFLINE browse/search fallback in
+    /* --- Slim song index (WS-I #1017): conditionally-revalidated, cached to
+       the CACHE_VERSION bucket so the OFFLINE browse/search fallback in
        search.js can read it. MUST precede the generic /api branch below,
        which returns a 503 for non-song-page API calls when offline rather
-       than serving the cached index. networkFirstWithCache() refreshes the
-       cached copy on every online fetch and serves it on network failure. */
+       than serving the cached index. networkFirstRevalidated() (#1921 SW
+       half) sends the previously-cached copy's ETag as If-None-Match, so an
+       unchanged catalogue costs a 304 instead of the full few-hundred-KB
+       payload — networkFirstWithCache() above has no notion of a validator
+       header at all, which is why this route gets its OWN strategy rather
+       than reusing that one (see networkFirstRevalidated()'s own doc-block
+       for why a server-only ETag would otherwise be a silent no-op here). */
     if (url.pathname === '/api' && url.searchParams.get('action') === 'songs_index') {
-        event.respondWith(networkFirstWithCache(event.request));
+        event.respondWith(networkFirstRevalidated(event.request));
         return;
     }
 
@@ -1205,6 +1210,104 @@ async function networkFirstWithCache(request) {
         }
 
         /* Nothing in cache either — show the branded offline page */
+        return offlineFallbackResponse();
+    }
+}
+
+/**
+ * Conditional-revalidation network-first strategy (#1921 SW half).
+ *
+ * ELI5: `networkFirstWithCache()` above always downloads the WHOLE thing
+ * again, every time. This does the smarter version for `songs_index`: "tell
+ * the server what version I already have (via `If-None-Match`); if it says
+ * 'nothing changed' (304), just keep using what I've got — don't even
+ * download it again."
+ *
+ * DETAIL — a DISTINCT function, not a modification of
+ * `networkFirstWithCache()`: that function ALSO serves CDN assets and page
+ * fragments that carry no ETag at all, so bolting conditional-revalidation
+ * onto it would be a behaviour change for every OTHER caller (rule #22's
+ * "smallest reusable unit" — a genuinely distinct behaviour is a distinct
+ * function).
+ *
+ * WHY THIS EXISTS AT ALL (#1921 §1.2c — the trap the issue missed): the
+ * server-side ETag alone (api.php's #1921 server half) is a SILENT NO-OP
+ * for the PWA's primary consumer of this route, because the existing route
+ * already fetches with `cache: 'no-store'` — deliberately, to defeat the
+ * browser's OWN HTTP cache (the "layered-cache trap" documented on
+ * `networkFirstWithCache()` above) — and `no-store` also means the browser
+ * never auto-attaches `If-None-Match` for us. Without THIS function, a
+ * server-side-only ETag would sit there doing nothing: everything still
+ * looks alive (the route still works, the response still has an ETag
+ * header), and only a byte-counter would ever notice the 304 never happens
+ * — precisely the rule #30/#33 failure class.
+ *
+ * ORDER IS LOAD-BEARING (mirrors #1921 §A.6's proof obligations):
+ *   1. Read whatever is ALREADY cached (and its ETag) FIRST — a fresh
+ *      install / a purged cache has no cached copy, so `etag` stays null and
+ *      this degrades to a plain conditional-less fetch (identical to
+ *      `networkFirstWithCache()`'s behaviour for that request).
+ *   2. Attach `If-None-Match` via a NEW `Headers` copied from the request's
+ *      own headers (never a fresh empty `Headers()`), so cross-cutting
+ *      headers a caller already set — `X-API-Version` / `X-Preferred-Languages`
+ *      (`apiFetch()`, CLAUDE.md rule #31) — still reach the server. This also
+ *      means a v2-tagged request revalidating against a v1-era cached entry
+ *      sends the OLD entry's v1 ETag; the server's version-folded compare
+ *      then naturally fails and returns a full v2 200, self-correcting with
+ *      no `Vary` gymnastics needed.
+ *   3. `cache: 'no-store'` is KEPT — the layered-cache fix stays fixed; this
+ *      function only adds a validator header on top of it.
+ *   4. A `304` NEVER reaches `cache.put()` (a 304 has no body — writing it
+ *      would poison the offline fallback with a bodiless entry). The 304
+ *      branch returns the EXISTING cached Response instead.
+ *   5. A `200` is written keyed on the ORIGINAL `request` (never the
+ *      ETag-carrying clone `req`), so a later `cache.match(request)` still
+ *      finds it under the same key the route always used.
+ *
+ * @param {Request} request The fetch request (the original, un-modified one).
+ * @returns {Promise<Response>} The fresh 200, the still-valid cached 200 (on
+ *   a 304 or a network failure), or the offline fallback.
+ */
+async function networkFirstRevalidated(request) {
+    const cache  = await caches.open(CACHE_VERSION);
+    const cached = await cache.match(request);
+    const etag   = cached ? cached.headers.get('ETag') : null;
+
+    try {
+        let req = request;
+        if (etag) {
+            /* Copy the request's OWN headers (preserves X-API-Version /
+               X-Preferred-Languages) rather than starting from an empty
+               Headers() — a new Request is needed at all only because
+               Request.headers is otherwise read-only. */
+            const h = new Headers(request.headers);
+            h.set('If-None-Match', etag);
+            req = new Request(request, { headers: h });
+        }
+
+        /* cache: 'no-store' — the SAME layered-cache-bypass fix
+           networkFirstWithCache() relies on; kept unconditionally here too. */
+        const response = await fetch(req, { cache: 'no-store' });
+
+        if (response.status === 304 && cached) {
+            /* No body to read, nothing new to store — the cached 200 IS
+               the answer. Never cache.put() a 304 (see doc-block point 4). */
+            return cached;
+        }
+        if (response.ok) {
+            /* Keyed on the ORIGINAL request (not `req`, which carries the
+               throwaway If-None-Match header) so future lookups by the
+               plain request URL still find this entry. */
+            cache.put(request, response.clone());
+        }
+        return response;
+
+    } catch (error) {
+        /* Network failed — serve the last-known-good cached copy, same
+           degrade-to-offline shape as networkFirstWithCache(). */
+        if (cached) {
+            return cached;
+        }
         return offlineFallbackResponse();
     }
 }
