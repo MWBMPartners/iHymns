@@ -400,3 +400,121 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
         . $rowsHtml
         . '</div>';
 }
+
+/* =============================================================================
+ * #1840 — SCREEN-SURFACE BRANDING: the ONE themed-surface registry + resolver
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Three new places on screen (the app's top header, the projector, and the
+ * shared "share this on social media" picture) want to show a church's logo
+ * too — but each of those places sits on a DIFFERENT background (a normal
+ * page, an always-dark projector screen, a coloured banner), so each one has
+ * its own short "wish list" of which logo SHAPE it would like, and whether
+ * light or dark artwork fits its background best. This is that ONE wish-list
+ * table, plus the ONE function that turns "here's what the org actually
+ * uploaded" into "here's the one picture to show" for a given place and a
+ * given light/dark theme.
+ *
+ * DETAILED
+ * --------
+ * `IHYMNS_ORG_LOGO_SURFACE_PREFS` names every consumer surface once — never a
+ * second copy per file (rule #35). Key order within a surface's `kinds` list
+ * IS that surface's resolution order (the SAME "key-order-is-the-ladder"
+ * doctrine `IHYMNS_ORG_LOGO_KINDS` already uses). `darkCapableOnly` marks a
+ * surface whose ground is permanently dark/coloured (never the plain white a
+ * `'default'`-variant rendition assumes) — for those surfaces the
+ * `'default'`-variant fallback step is skipped for every kind EXCEPT
+ * `'reversed'` (whose `'default'` rendition IS, by the registry's own
+ * definition, already light-on-dark — see `IHYMNS_ORG_LOGO_KINDS['reversed']`
+ * above).
+ *
+ * `ihymnsOrgLogoResolveThemedAsset()` is pure and DB-free (list-in,
+ * choice-out) — the same "unit-testable like `ihymnsOrgLogoResolveKind()`"
+ * shape that function already has. Algorithm, per kind K in the surface's
+ * `kinds` list, IN ORDER:
+ *   1. `(K, $theme)` — the exact theme-paired rendition.
+ *   2. `(K, 'default')` — skipped when the surface is `darkCapableOnly` AND
+ *      `K !== 'reversed'`.
+ * The first hit (in that per-kind, then-per-step order) wins; nothing found
+ * across every kind returns `null` — the caller renders NOTHING, never a
+ * broken image and never a kind the ladder doesn't document (rule #42's
+ * "never substitute a different kind" carried over from the print `'auto'`
+ * ladder to this new themed axis).
+ *
+ * @link .claude/org-logo-surfaces-1840-plan.md §3.2  the full design this implements
+ * @link appWeb/public_html/js/modules/org-logo.js     the exact client-side mirror (rule #35 lockstep)
+ * @see #1840
+ */
+
+/**
+ * Per-surface kind preference lists (§3.2 of the plan). Key order within
+ * each `kinds` array is that surface's resolution ladder.
+ *
+ * `'header'`    — the app's top nav-bar co-brand (small, ~28px slot).
+ * `'projector'` — the Service-Projection corner bug (always on a dark ground).
+ * `'og-card'`   — the social share-preview band (always on the org's own
+ *                 brand-colour ground, i.e. "dark-ish" by construction).
+ */
+const IHYMNS_ORG_LOGO_SURFACE_PREFS = [
+    'header'    => ['kinds' => ['emblem', 'favicon'],             'darkCapableOnly' => false],
+    'projector' => ['kinds' => ['emblem', 'reversed', 'favicon'], 'darkCapableOnly' => false],
+    'og-card'   => ['kinds' => ['reversed', 'emblem'],            'darkCapableOnly' => true],
+];
+
+/**
+ * Resolve WHICH (kind, variant) a themed screen surface should render, given
+ * the org's ACTIVE (kind, variant) rows and the viewer's current theme.
+ * Pure + DB-free — see this section's doc-block for the full algorithm.
+ *
+ * @param  list<array{kind:string,variant:string}> $available  ACTIVE rows
+ *         only (callers filter `IsActive`; the `og-card` surface additionally
+ *         pre-filters to PNG rows before calling this — that FILTER is the
+ *         caller's constraint, this ladder is shared regardless of it).
+ * @param  string $surface  One of `IHYMNS_ORG_LOGO_SURFACE_PREFS`'s keys.
+ *                           An unknown surface returns `null` (never throws —
+ *                           a typo'd surface name degrades to "show nothing",
+ *                           the same fail-safe posture as an unresolved kind).
+ * @param  string $theme    `'light'` or `'dark'`; anything else is treated
+ *                           as `'light'` (defensive default — a themed
+ *                           surface always resolves ONE of the two).
+ * @return array{kind:string,variant:string}|null  `null` => render NOTHING.
+ */
+function ihymnsOrgLogoResolveThemedAsset(array $available, string $surface, string $theme): ?array
+{
+    if (!isset(IHYMNS_ORG_LOGO_SURFACE_PREFS[$surface])) {
+        return null;
+    }
+    $prefs = IHYMNS_ORG_LOGO_SURFACE_PREFS[$surface];
+    $theme = ($theme === 'dark') ? 'dark' : 'light';
+
+    /* A fast (kind|variant) => true lookup set, built once, so the per-kind
+       ladder below is a cheap isset() rather than an O(n) scan per step. */
+    $have = [];
+    foreach ($available as $row) {
+        $kind    = (string)($row['kind'] ?? '');
+        $variant = (string)($row['variant'] ?? '');
+        if ($kind === '' || $variant === '') {
+            continue;
+        }
+        $have[$kind . '|' . $variant] = true;
+    }
+
+    foreach ($prefs['kinds'] as $kind) {
+        /* Step 1 — the exact theme-paired rendition. */
+        if (isset($have[$kind . '|' . $theme])) {
+            return ['kind' => $kind, 'variant' => $theme];
+        }
+        /* Step 2 — the 'default' rendition, skipped on a darkCapableOnly
+           surface for every kind except 'reversed' (whose 'default' IS
+           already light-on-dark by the kind registry's own definition). */
+        if ($prefs['darkCapableOnly'] && $kind !== 'reversed') {
+            continue;
+        }
+        if (isset($have[$kind . '|default'])) {
+            return ['kind' => $kind, 'variant' => 'default'];
+        }
+    }
+    return null;
+}
