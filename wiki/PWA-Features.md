@@ -50,7 +50,7 @@
 See [[Live Follow & Service Mode]] for the full comparison and setup requirements.
 
 ### Export & Present
-- **Export ▾** — on any song page or songbook page, download the words in the format your projection software uses: OpenSong, OpenLyrics/OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain chord-sheet file) — 8 formats, offered on both surfaces
+- **Export ▾** — on any song page or songbook page, download the words in the format your projection software uses: OpenSong, OpenLyrics/OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain chord-sheet file) — 8 formats, offered on both surfaces. Exporting a large songbook (500+ songs, e.g. Mission Praise) asks for confirmation first and shows progress while the ProPresenter bundle builds (#1571).
 - **Present** — opens a full-screen, one-stanza-at-a-time view for projection, no export needed
 - **Print & Download PDF** — Print a song or set list through a curator-designed **print template**; signed-in users also get **Download PDF** (a server-rendered PDF — a whole set list becomes one file, #1767 remainder) and CCLI copy reporting where the org holds a licence. See [[Setlists & Arrangements]] § Printing & PDF
 - If the Export menu opens but nothing downloads, a hard-reload once usually fixes it (an older cached service worker) — see [[Troubleshooting & FAQ]]
@@ -103,6 +103,7 @@ See [[Live Follow & Service Mode]] for the full comparison and setup requirement
 - **Downloaded songbooks** — songbooks you explicitly save are stored on-device; a slim id/number/title index enables offline search of what you've saved. The **saved-for-offline count** now also includes songs you deliberately downloaded, not just auto-cached views (#112)
 - **Popular songs offline** — falls back to localStorage view history when server unavailable
 - **Graceful degradation** — if the database is unreachable the app shows a friendly maintenance page; songbooks you previously downloaded stay readable
+- **Conditional catalogue refresh (#1921)** — the offline-search index (the slim id/number/title list above) is refetched via a conditional request: when the catalogue hasn't changed since your last visit, the server answers with an empty "not modified" reply instead of resending the whole index, so a routine app open costs far less data than it used to.
 
 ### Installation
 - **Install banner** — dismissible prompt for PWA installation

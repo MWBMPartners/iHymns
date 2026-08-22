@@ -87,9 +87,11 @@ A few notes on this batch's additions:
 - **`search`** accepts a multi-level `sort` param (#1786 — up to three "then by…" levels).
 - **`user_settings`** gained a `list_sorts` namespace for syncing a signed-in user's per-surface sort choices (returns 403 for anonymous callers).
 - The **IA-reconcile** tool exposes **no public API** — it is deliberately admin-page-local (actions on `/manage/ia-reconcile` only), never an `api.php` action.
-- **QR generation** is `/qr.php` (CueRCode-backed), not an `api.php` action — see [[Architecture]].
+- **QR generation** is `/qr.php` (CueRCode-backed), not an `api.php` action — see [[Architecture]]. It reads through a server-side cache (`tblQrCache`, #1920) before ever calling CueRCode.
 - **Organisation logo bytes** are `/org-logo.php` (#1830 — mirrors `/qr.php`'s standalone-image-endpoint shape), not an `api.php` action. `my_organisations` gains an additive, migration-gated `logos` field (meta only — kind/variant/Sha256/alt/dimensions, never blob bytes) that the print `logo` block resolves through the endpoint.
 - **`/manage/my-ccli-report`** (#1861) is a `/manage` page, not an `api.php` action — the org-scoped self-serve sibling of the system-wide CCLI Usage Report, backed by the shared `includes/ccli_report.php` query core.
+- **`songs_index` supports conditional revalidation (#1921).** A matching `If-None-Match` gets a **304 with no body** — the server skips its whole slim-index query. The `ETag` is an **opaque version-signal token** (`"si<contractVersion>-<hash>"`); echo it back verbatim, never parse it. The PWA's own service worker already does this; other clients get the benefit only if they implement the round-trip themselves — omitting `If-None-Match` simply degrades to today's full-200-every-time behaviour.
+- **`songbook_export` has its own `export` read-rate-limit bucket (#1571)**, split from the `bulk` budget `bulk_songs`/`bulk_audio` still share — a curator's export and a native app's background offline sync can no longer contend for the same counter. Same 60/min limit either way; see `api-docs.yaml`'s Rate Limiting section for the full table.
 
 ---
 

@@ -1059,9 +1059,15 @@ paths:
         `/manage/editor/api.php?action=songbook_export`. Backs the
         end-user "export my songbook" UI (`js/modules/export-ui.js`).
         Deliberately scoped to a single songbook, never the whole corpus
-        (rule #17). Shares the `bulk` read-rate-limit budget with
-        `bulk_songs` / `bulk_audio` (60 requests/minute combined,
-        fail-open — see the Rate Limiting section above).
+        (rule #17). **Own `export` read-rate-limit budget (#1571), 60
+        requests/minute, fail-open** — split out of the shared `bulk`
+        bucket so a curator exporting a songbook is never contended with
+        a native app's background offline sync (`bulk_songs`/`bulk_audio`
+        keep sharing `bulk`; see the Rate Limiting section above). Client
+        surfaces confirm before requesting a book of 500+ songs and show
+        coarse progress while building the ProPresenter bundle — a
+        client-side affordance only, with no effect on this endpoint's
+        response.
 
         **Export gating (#1120/#1141), dormant by default.** When
         `content_gating_enabled` is on, songs the caller may not EXPORT
@@ -1627,6 +1633,25 @@ paths:
         + run a basic title/number search and fall back to cached song
         pages. Online, every read is still the live API; this index is the
         offline-only fallback. No pagination, no lyrics.
+
+        **Conditional revalidation (#1921).** The response carries an
+        `ETag` — a version-signal fingerprint (`"si<contractVersion>-<hash>"`,
+        e.g. `"si1-1a2b3c4d5e6f7890"`), NOT a hash of the payload itself.
+        Treat it as an **opaque token**: echo it back verbatim via
+        `If-None-Match` on the next request, never parse or construct one.
+        A match answers **304 with no body** — the server skips the
+        underlying ~14.5k-row query entirely on a hit, so a conditional
+        request is far cheaper than a full one for both sides. The PWA's
+        own service worker already does this (`networkFirstRevalidated()`
+        in `service-worker.js.php`) using the ETag from its last cached
+        200; other clients (native apps, direct API callers) get the
+        header for free but must implement the `If-None-Match` round-trip
+        themselves to benefit — omitting it simply degrades to today's
+        full-200-every-time behaviour, never an error. The signal changes
+        whenever the corpus, the negotiated `X-API-Version`, or the
+        deployed build changes; an un-migrated/errored signal computation
+        fails OPEN (no `ETag` header at all, full 200) rather than ever
+        risking a stale 304.
       parameters:
         - name: action
           in: query
@@ -1634,9 +1659,22 @@ paths:
           schema:
             type: string
             enum: [songs_index]
+        - name: If-None-Match
+          in: header
+          required: false
+          description: >-
+            An ETag previously returned by this SAME endpoint, echoed back
+            verbatim (#1921). A match short-circuits to 304 with no body.
+          schema: { type: string, example: '"si1-1a2b3c4d5e6f7890"' }
       responses:
         "200":
           description: Slim song index
+          headers:
+            ETag:
+              description: >-
+                Opaque version-signal token (#1921) — echo via
+                `If-None-Match`, never parse.
+              schema: { type: string, example: '"si1-1a2b3c4d5e6f7890"' }
           content:
             application/json:
               schema:
@@ -1655,6 +1693,11 @@ paths:
                         language:     { type: string, example: en }
                         hasAudio:     { type: boolean }
                         hasSheetMusic: { type: boolean }
+        "304":
+          description: >-
+            Not Modified (#1921) — the caller's `If-None-Match` matched the
+            current version signal. No body; the client should keep using
+            its previously-cached `songs` array.
         "429":
           $ref: "#/components/responses/RateLimited"
 

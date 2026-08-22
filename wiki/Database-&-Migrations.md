@@ -198,6 +198,7 @@ This batch landed several feature families as additive, dormant, forward-looking
 | `tblAppSettings` | Key-value runtime configuration store |
 | `tblMigrations` | Schema migration version tracking |
 | `tblIntAppsSync` | MWBM-IntAppsAPI gateway local snapshot + refresh bookkeeping (Epic #1725) — one dormant table, keyed `(Scope, Channel, AppSlug)`; empty/unread until an admin enables the integration on `/manage/configuration`. See [[Architecture]] § External integrations. |
+| `tblQrCache` | Server-side cache of CueRCode-generated QR images (#1920), keyed by a sha256 of the canonical payload+options JSON. Additive, dormant until the CueRCode key is configured; a 90-day TTL + 20,000-row belt bound growth (`appWeb/.sql/cleanup.php`). Read/written only via `includes/qr_cache.php`, composed behind `cuercodeGenerateCached()` in the ONE CueRCode client. See [[Architecture]] § QR. |
 
 ---
 

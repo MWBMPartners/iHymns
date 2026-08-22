@@ -4,6 +4,75 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-22 (Wave 3 perf & resilience pack — #1920 / #1921 / #1571 safe subset)
+
+Implemented the Fable-5-locked `.claude/perf-resilience-1920-1921-1571-plan.md` in full, C1→C7, on
+`claude/ilyrics-identity-work-model`, commits `804a9700`→(this docs commit). INFRA framing — no
+user-copy program beyond the plain-language CHANGELOG/PROJECT_STATUS entries; dev mechanics recorded
+in the wiki (Architecture/API-Reference/Database-&-Migrations/PWA-Features pages) and DEV_NOTES.md's
+Read Rate Limiting table.
+
+- **C1** `804a9700` — `songbook_export` split onto its OWN `export` read-rate bucket (was sharing
+  `bulk` with the offline-sync endpoints). One-word `$scope` change (rule #20's reserved-room
+  design paid off exactly as intended); `api-docs.yaml` table split; new
+  `tests/php/test-read-rate-limit-docs.php` makes the docs<->code pairing a mechanism (rule #35) —
+  tree-derived from the docs table, not a typed action list.
+- **C2** `45f9232e` — `tblQrCache` one-pass dormant schema (`migrate-add-qr-cache.php` +
+  byte-identical `schema.sql` mirror + the ONE `'qr-cache'` registry entry, real `!tableExists`
+  probe). Zero readers/writers — provably inert until C3.
+- **C3** `77225ba0` — the QR read-through cache. `cuercodeGenerateCached()` in the ONE CueRCode
+  client composes the new `includes/qr_cache.php` module with the untouched `cuercodeGenerate()` —
+  dormancy-gate-before-cache-read, never-cache-a-failure, keep-existing `ON DUPLICATE KEY UPDATE`.
+  `cuercodeNormaliseOptions()` extracted from what was inlined in `cuercodeGenerate()` so the
+  cache-key fold and the HTTP-request fold can never drift apart; **found + fixed a latent bug**
+  in that extraction (a ternary re-read `$opts[...]` instead of the coalesced local, silently
+  nulling an omitted option) — harmless for both real callers (they always pass every key) but
+  material to the cache-key defaults invariant the new tests exercise directly. Both consumers
+  (`qr.php`, `pdf_renderer.php`) switched. **Closes #1920.**
+- **C4** `64560d43` — `songs_index` version-signal ETag (`includes/songs_index_etag.php` +
+  `SongData::slimIndexShapeToken()`): two cheap COUNT/MAX aggregates over `tblSongs`/`tblSongbooks`
+  (deliberately predicate-free — a visibility flip is an UPDATE, so filtering would blind the
+  signal to exactly the change it must detect; new `@disabled-visible:`/`@deleted-visible:`
+  marker satisfies the existing #1765/#1694 tree-wide visibility guards), folded with the API
+  contract version + deploy SHA + schema-shape token. A match answers 304 with **no body and no
+  slim-index query**. Server-only half — referenced by, does not close, #1921.
+- **C5** `967117ef` — the PWA half: `networkFirstRevalidated()` beside (not replacing)
+  `networkFirstWithCache()`, since the `songs_index` route's existing `cache: 'no-store'` fetch
+  (kept for the documented layered-browser-cache trap) also meant the SW never sent
+  `If-None-Match` — without this half C4 would have been a silent no-op for its own primary
+  consumer. Never `cache.put()`s a 304; `SW_CACHE_REVISION` NOT bumped (layout unchanged). **Closes
+  #1921.**
+- **C6** `48c48de9` — the #1571 buildable-now safe subset: `confirmLargeExport()` (500-song
+  threshold) on every export surface, DOM-first count (`data-songbook-songs` / the new
+  `data-songbook-song-count`) with a post-fetch belt that never double-prompts when the DOM count
+  was already known; `buildBulkFiles()` — the ONE builder every bulk format + both surfaces flow
+  through — gained `onProgress` (try/catch-wrapped) + a macrotask `setTimeout` yield every 25
+  songs. The Song Editor's classic-script export wiring gets the identical treatment via a small
+  shared inline helper, deliberately duplicating the ONE threshold constant (kept in lockstep by a
+  new test assertion) rather than loading an ES module into that non-module script world. The
+  heavy chunked-fetch re-architecture stays the surfaced owner decision — **#1571 stays open**,
+  carrying the plan's §8.1 table.
+- **C7** — this commit: docs only (api-docs.yaml ETag/304 + rate-bucket prose, CHANGELOG,
+  PROJECT_STATUS, README, DEV_NOTES, the wiki, this note).
+
+Every new/extended guard was mutation-tested by hand per-commit (break → confirm red → restore →
+confirm green) — see the commit bodies for the specific mutations. Full-suite gate at the end:
+**PHP 190/0** (baseline 187 + 3 new files: `test-read-rate-limit-docs.php`, `test-qr-cache.php`,
+`test-songs-index-etag.php`), **node 69/0** (baseline unchanged — every JS guard extended an
+existing suite in place rather than adding a new file). `.auth/db_credentials.php` moved aside for
+the PHP run and confirmed restored both times it was used.
+
+**Judgement calls (flagged, not blocking):** (a) `appWeb/.sql/cleanup.php`'s QR-cache TTL prune is
+a self-contained inline `DELETE`, NOT a call into `includes/qr_cache.php::qrCachePrune()` — that
+script is the one file in this repo that requires nothing from `public_html/includes/` today, and
+reaching in would recreate the exact renamed-docroot trap rule #41 exists to prevent (a CLI cron
+has no `IHYMNS_INCLUDES_DIR` to resolve `public_html_dev`/`_beta` correctly); the 90-day TTL number
+is duplicated with a cross-reference comment instead. (b) `/qr.php` has **no OpenAPI path entry** —
+verified during C7 that none of the sibling standalone-image endpoints (`og-image.php`,
+`org-logo.php`, `song-media.php`) have one either (deliberate house pattern: raw byte-streaming
+endpoints sit outside the JSON API surface), so the QR-cache note went to the wiki/CHANGELOG
+instead of inventing an inconsistent new path item.
+
 ## 📌 Continuation note — 2026-08-21 (round 2 — #1907 medley composition + custom component labels)
 
 The dormant #1860 work-identity schema is now **wired** (Phase 5), plus one new column, on commits

@@ -1289,9 +1289,17 @@ limits need **no further migration** (rule #20).
 | search | `search` | 120/min |
 | `songs_index` | `songs_index` | 120/min |
 | `related_songs` | `related_songs` | 240/min |
-| bulk (`bulk_songs` / `bulk_audio` / …) | `bulk` | 60/min |
+| `songbook_export` | `export` | 60/min |
+| bulk (`bulk_songs` / `bulk_audio`) | `bulk` | 60/min |
 
 Limits are deliberately **generous** — real clients never trip them; abusive volume does.
+
+`songbook_export` moved to its own `export` bucket (#1571) — it used to share
+`bulk` with `bulk_songs`/`bulk_audio`, so a curator's export click could
+contend with a device's background offline sync for the same counter even
+though the two are unrelated actors. Same 60/min limit either way; the split
+is purely about independence, and `$scope` being a free string (rule #20)
+made it a one-word change with no schema impact.
 
 ### Keyed per token-or-IP
 

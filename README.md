@@ -109,6 +109,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Background downloads** — continue when navigating away from Settings.
 - **Auto-update** — optional automatic update of saved offline songs; service-worker update toast (#396).
 - **Service worker** — precaches all app assets; cache version auto-derived from `infoAppVer.php` so every alpha build invalidates cleanly.
+- **Conditional catalogue refresh** — the offline slim index (`songs_index`) is revalidated via `If-None-Match`/`ETag`; an unchanged catalogue costs a 304 with no body instead of the full payload (#1921).
 - **Offline indicator** — shows connection status in UI.
 - **DB-direct reads, client-cache fallback** — song reads come live from MySQL (epic #1010 / WS-J; there is no server-side `songs.json` corpus cache and no JSON read fallback). When MySQL is unavailable the server returns a themed 503 (WS-K #1021); previously-downloaded songbooks remain available from the client offline cache.
 - **What's New page** (#1583) — `/whats-new` shows what changed in recent releases, extracted from the changelog on every deploy; linked from the footer version number and the environment-badge dropdown.
