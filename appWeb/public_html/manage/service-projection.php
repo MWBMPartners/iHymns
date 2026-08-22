@@ -43,6 +43,11 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* #1840 — Projector corner bug (Option B): ihymnsOrgLogoResolveThemedAsset()
+   + orgLogoListForOrg()/orgLogoTableExists(), used below to resolve each
+   venue's org logo ONCE, server-side (org + theme are both known here —
+   the overlay's ground is fixed dark, rule #16 does not even arise). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -119,6 +124,60 @@ if ($schemaReady) {
     }
 }
 
+/* #1840 §6.1 — resolve each DISTINCT org's projector corner-bug logo ONCE,
+   server-side (org known per venue; the overlay's ground is fixed dark
+   #0b1020, so theme is hardcoded 'dark' — never a client-side resolve, rule
+   #16 does not even arise here). Attached to every venue row as
+   `OrgLogoUrl`, riding the existing VENUES JSON below. Un-migrated / no
+   active logo for that org -> null -> the client shows nothing (§9's
+   dormancy matrix); a DB blip here degrades the SAME way, never a fatal on
+   the projector's setup screen. */
+if ($schemaReady && $venues) {
+    $orgLogoUrlByOrg = [];
+    foreach ($venues as $v) {
+        $vOrgId = (int)$v['OrgId'];
+        if (array_key_exists($vOrgId, $orgLogoUrlByOrg)) {
+            continue; // already resolved this org for an earlier venue
+        }
+        $orgLogoUrlByOrg[$vOrgId] = null;
+        if (!orgLogoTableExists($db)) {
+            continue;
+        }
+        try {
+            $activeRows = array_values(array_filter(
+                orgLogoListForOrg($db, $vOrgId),
+                static fn(array $r): bool => (int)$r['IsActive'] === 1
+            ));
+            $shaByKindVariant = [];
+            foreach ($activeRows as $r) {
+                $shaByKindVariant[$r['Kind'] . '|' . $r['Variant']] = (string)$r['Sha256'];
+            }
+            $asset = ihymnsOrgLogoResolveThemedAsset(
+                array_map(
+                    static fn(array $r): array => ['kind' => (string)$r['Kind'], 'variant' => (string)$r['Variant']],
+                    $activeRows
+                ),
+                'projector',
+                'dark'
+            );
+            if ($asset !== null) {
+                $sha = $shaByKindVariant[$asset['kind'] . '|' . $asset['variant']] ?? '';
+                $orgLogoUrlByOrg[$vOrgId] = '/org-logo.php?org=' . $vOrgId
+                    . '&kind=' . rawurlencode($asset['kind'])
+                    . '&variant=' . rawurlencode($asset['variant'])
+                    . '&v=' . rawurlencode($sha);
+            }
+        } catch (\Throwable $e) {
+            error_log('[manage/service-projection.php] org-logo resolve: ' . $e->getMessage());
+            /* leave null — the client simply shows no corner bug */
+        }
+    }
+    foreach ($venues as &$v) {
+        $v['OrgLogoUrl'] = $orgLogoUrlByOrg[(int)$v['OrgId']] ?? null;
+    }
+    unset($v);
+}
+
 /* Public join base — the host the congregant app lives on (same origin). */
 $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https://' : 'http://')
           . preg_replace('/[^a-zA-Z0-9.\-:]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'ihymns.app'));
@@ -189,6 +248,14 @@ if ($driverKeysReady && $venues) {
         .svc-proj-qr-fallback.d-none { display: none; }
         .svc-proj-foot { position: absolute; bottom: 3vmin; font-size: 2.4vmin; opacity: .6; }
         #svc-end-btn { position: absolute; top: 3vmin; right: 3vmin; }
+        /* #1840 §6.2/§6.3 — org corner bug: TOP-LEFT is the one always-free
+           corner (End button owns top-right, foot text bottom-centre, the
+           operator console bottom-centre up to 720px wide). Low opacity so it
+           reads as signage, never content; pointer-events:none so it can
+           never eat a click aimed at anything layered nearby. */
+        #svc-proj-logo { position: absolute; top: 3vmin; left: 3vmin;
+            max-height: 8vmin; max-width: 20vmin; object-fit: contain;
+            opacity: .35; pointer-events: none; }
         /* Operator console — docked bottom-left of the projection overlay so the
            worship leader can drive songs from the projection laptop. Light card
            on the dark overlay so the Bootstrap controls keep normal contrast.
@@ -236,6 +303,17 @@ if ($driverKeysReady && $venues) {
                     <div class="mb-3">
                         <label class="form-label small fw-semibold" for="svc-date">Date</label>
                         <input type="date" id="svc-date" class="form-control">
+                    </div>
+                    <!-- #1840 §6.4 — projector corner-bug operator toggle. Per-DEVICE
+                         preference (localStorage on THIS projection screen, not an
+                         org setting) — a projection laptop is stable and venue-bound,
+                         so "this screen, this room" is how the preference is
+                         actually exercised. Default ON (§6.4's justification). -->
+                    <div class="mb-3 form-check">
+                        <input class="form-check-input" type="checkbox" id="svc-logo-toggle-setup" checked>
+                        <label class="form-check-label small" for="svc-logo-toggle-setup">
+                            Show your organisation's logo on the projection
+                        </label>
                     </div>
                     <button type="button" id="svc-start-btn" class="btn btn-amber-solid"><i class="bi bi-play-fill me-1"></i>Start &amp; project</button>
                     <div id="svc-start-error" class="text-danger small mt-2" role="alert"></div>
@@ -329,6 +407,11 @@ if ($driverKeysReady && $venues) {
     <!-- Full-bleed projection overlay -->
     <div id="svc-projection" role="dialog" aria-label="Service join code">
         <button type="button" id="svc-end-btn" class="btn btn-outline-light btn-sm"><i class="bi bi-x-lg me-1"></i>End service</button>
+        <!-- #1840 §6.2 — org corner bug. alt="" + aria-hidden: purely decorative
+             signage, mirrors the QR's own accessibility posture above. Hidden by
+             default (d-none) until a src is set AND loads successfully — never a
+             broken-image glyph on a wall (§6.2/§A "Projector <img> failure"). -->
+        <img id="svc-proj-logo" class="d-none" alt="" aria-hidden="true">
         <div class="svc-proj-venue" id="svc-proj-venue"></div>
         <div class="svc-proj-instr">Scan the QR, or in iHymns tap <strong>Join service</strong> and enter:</div>
         <div class="svc-proj-join">
@@ -356,6 +439,10 @@ if ($driverKeysReady && $venues) {
                      state also mirrors to this Service session. Set on start;
                      display-only. -->
                 <span id="svc-op-session" class="small text-secondary" title="Enter this number in the iHymns app (TV Remote → Congregant Mirror) to mirror the TV to congregants"></span>
+                <!-- #1840 §6.4 — flip the corner-bug preference mid-service without
+                     ending the session. Drives the SAME localStorage state as the
+                     setup-card checkbox above. -->
+                <button type="button" id="svc-op-logo-toggle" class="btn btn-sm btn-outline-dark">Logo</button>
                 <button type="button" id="svc-op-toggle" class="btn btn-sm btn-outline-dark">Hide</button>
             </div>
             <div id="svc-op-body"></div>
@@ -392,6 +479,90 @@ if ($driverKeysReady && $venues) {
         const console_ = document.getElementById('svc-op-console');
         const consoleBody = document.getElementById('svc-op-body');
         const toggleBtn = document.getElementById('svc-op-toggle');
+
+        /* #1840 §6.4 — projector corner-bug operator toggle. PER-DEVICE
+           localStorage (this projection screen, not an org setting) — a
+           projection laptop is stable/venue-bound, so "this screen, this
+           room" matches how the preference is actually exercised. Default
+           ON: uploading a resolvable logo is already the org's deliberate
+           opt-in (no logo = the toggle changes nothing), and a default-OFF
+           toggle on a screen operators rarely explore is the
+           undiscovered-feature failure class this repo documents
+           elsewhere (rule #30's lesson, generalised). Wrapped in try/catch
+           (private-window safe), falling back to ON on any storage error. */
+        const LOGO_PREF_KEY = 'ihymns_svcproj_logo';
+        function logoPrefGet() {
+            try {
+                const v = localStorage.getItem(LOGO_PREF_KEY);
+                return v === null ? true : v === '1';
+            } catch (_e) { return true; }
+        }
+        function logoPrefSet(on) {
+            try { localStorage.setItem(LOGO_PREF_KEY, on ? '1' : '0'); } catch (_e) { /* private window — no-op */ }
+        }
+
+        const logoImg = document.getElementById('svc-proj-logo');
+        const logoSetupCheck = document.getElementById('svc-logo-toggle-setup');
+        const logoOpToggle = document.getElementById('svc-op-logo-toggle');
+        /* Set by the start handler below to whichever venue is live, so the
+           operator-console toggle (which has no venue context of its own)
+           can re-apply it. null while no session is active. */
+        let currentVenueForLogo = null;
+
+        /** Reflect the CURRENT stored preference onto both controls (setup
+         *  checkbox + operator button) — called on boot and after either
+         *  control changes it, so the two never disagree. */
+        function logoPrefReflectControls() {
+            const on = logoPrefGet();
+            if (logoSetupCheck) { logoSetupCheck.checked = on; }
+            if (logoOpToggle) {
+                logoOpToggle.classList.toggle('active', on);
+                logoOpToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+            }
+        }
+
+        /** Show/hide #svc-proj-logo for the CURRENT session's venue, honouring
+         *  the toggle. `<img onerror>`/`onload` — never a broken-image glyph
+         *  on a wall (§6.2/§A of the plan); called on session start AND
+         *  whenever the operator flips the toggle mid-service. */
+        function logoApplyForVenue(venue) {
+            if (!logoImg) { return; }
+            const url = venue && venue.OrgLogoUrl;
+            if (!logoPrefGet() || !url) {
+                logoImg.classList.add('d-none');
+                logoImg.removeAttribute('src');
+                return;
+            }
+            if (logoImg.getAttribute('src') !== url) {
+                logoImg.src = url;
+            }
+            /* If already loaded (cached), the load/error handlers below have
+               already fired once — re-check readiness directly. */
+            if (logoImg.complete && logoImg.naturalWidth > 0) {
+                logoImg.classList.remove('d-none');
+            }
+        }
+        if (logoImg) {
+            logoImg.addEventListener('load', function () { logoImg.classList.remove('d-none'); });
+            logoImg.addEventListener('error', function () {
+                logoImg.classList.add('d-none');
+                logoImg.removeAttribute('src');
+            });
+        }
+        logoPrefReflectControls();
+        if (logoSetupCheck) {
+            logoSetupCheck.addEventListener('change', function () {
+                logoPrefSet(logoSetupCheck.checked);
+                logoPrefReflectControls();
+            });
+        }
+        if (logoOpToggle) {
+            logoOpToggle.addEventListener('click', function () {
+                logoPrefSet(!logoPrefGet());
+                logoPrefReflectControls();
+                logoApplyForVenue(currentVenueForLogo);
+            });
+        }
 
         /* Default date = today (LOCAL, #1576). ELI5: `toISOString()` always
            reports the UTC calendar date, not the operator's own "today" —
@@ -520,6 +691,10 @@ if ($driverKeysReady && $venues) {
             if (broadcaster) { broadcaster.destroy(); broadcaster = null; }
             session = null;
             overlay.classList.remove('active');
+            /* #1840 — clear the corner bug with everything else; the NEXT
+               session re-applies logoApplyForVenue() for its own venue. */
+            currentVenueForLogo = null;
+            if (logoImg) { logoImg.classList.add('d-none'); logoImg.removeAttribute('src'); }
         }
 
         startBtn.addEventListener('click', function () {
@@ -539,6 +714,10 @@ if ($driverKeysReady && $venues) {
                 document.getElementById('svc-op-session').textContent = 'Session #' + session.sessionId;
                 showCode(d.code);
                 overlay.classList.add('active');
+                /* #1840 §6.1/§6.4 — apply the server-resolved corner-bug URL
+                   for THIS venue, honouring the operator's current toggle. */
+                currentVenueForLogo = v || null;
+                logoApplyForVenue(currentVenueForLogo);
                 startRotate();
                 /* Mount the song-driver console (the projection-laptop broadcaster). */
                 broadcaster = new ServiceBroadcaster({

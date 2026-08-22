@@ -536,40 +536,88 @@ if (is_file($ogImagePhpPath)) {
 
 /* =============================================================================
  * (k) #1840 — the two NEW screen-surface consumers (header, projector) emit
- * a real <img> whose src references /org-logo.php? — the never-inline
- * rule's POSITIVE half (check (a) above already bans the negative: no
- * inlined <svg>, no data-URI). Delegating to the shared orgLogoUrl() builder
- * (js/modules/org-logo.js, which itself references /org-logo.php?) counts —
- * this checks the CONSUMER emits a real <img src>, not that it re-types the
- * URL literally. Half 1 (header-branding.js) is live from commit 6; half 2
- * (service-projection.php) is SELF-ACTIVATING once commit 7 adds it.
+ * a real <img> whose src TRACES to /org-logo.php? — the never-inline rule's
+ * POSITIVE half (check (a) above already bans the negative: no inlined
+ * <svg>, no data-URI). PROXIMITY-anchored (not "does an <img> exist
+ * anywhere in the file" — service-projection.php ALSO creates an unrelated
+ * <img> for its QR code, so a file-wide "both exist somewhere" check would
+ * under-report: it stayed GREEN in a scripted trial that deleted the
+ * corner-bug <img> outright, because the QR's own <img> and the file's
+ * unrelated /org-logo.php? server-resolution string each independently
+ * satisfied a loose file-wide check. Fixed by anchoring EACH half on the
+ * feature's own distinguishing marker instead of a generic tag search).
+ * Half 1 (header-branding.js) is live from commit 6; half 2
+ * (service-projection.php) is live from commit 7.
  * ============================================================================= */
 
-$imgOrgLogoConsumers = [
-    $pub . '/js/modules/header-branding.js',
-    $pub . '/manage/service-projection.php',
-];
-foreach ($imgOrgLogoConsumers as $consumerPath) {
-    if (!is_file($consumerPath)) {
-        continue; // not landed yet
+/* -- Half 1: header-branding.js — createElement('img') immediately followed
+   (within a window) by a .src assignment that calls orgLogoUrl(). The file
+   has exactly ONE <img>-creation site (the emblem), so this is safe to
+   anchor on that call directly rather than a proximity window. */
+$headerBrandingPath = $pub . '/js/modules/header-branding.js';
+if (is_file($headerBrandingPath)) {
+    $headerCode = orgLogoStripComments((string)file_get_contents($headerBrandingPath));
+    $headerRel  = 'appWeb/public_html/' . substr($headerBrandingPath, strlen($pub) + 1);
+    if (preg_match('/createElement\(\s*[\'"]img[\'"]\s*\)/', $headerCode, $hm, PREG_OFFSET_CAPTURE)) {
+        $window = substr($headerCode, $hm[0][1], 600);
+        if (!str_contains($window, 'orgLogoUrl(')) {
+            orgLogoFail($failures, "$headerRel creates an <img> but its .src isn't built via the shared orgLogoUrl() (or a literal /org-logo.php?) within a reasonable window — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+        }
+    } elseif (str_contains($headerCode, 'orgLogo') || str_contains($headerCode, 'OrgLogo')) {
+        orgLogoFail($failures, "$headerRel mentions the org-logo feature but never creates an <img> element (#1840, rule #42).");
     }
-    $rawConsumer = (string)file_get_contents($consumerPath);
-    if (!str_contains($rawConsumer, 'orgLogo') && !str_contains($rawConsumer, 'org-logo.php') && !str_contains($rawConsumer, 'OrgLogoUrl')) {
-        continue; // doesn't mention the org-logo feature at all yet — vacuous until it does
-    }
-    $codeConsumer = orgLogoStripComments($rawConsumer);
-    $relConsumer  = 'appWeb/public_html/' . substr($consumerPath, strlen($pub) + 1);
+}
 
-    $hasImgCreate = (preg_match('/createElement\(\s*[\'"]img[\'"]\s*\)/', $codeConsumer) === 1)
-        || (preg_match('/<img[\s>]/i', $codeConsumer) === 1);
-    if (!$hasImgCreate) {
-        orgLogoFail($failures, "$relConsumer mentions the org-logo feature but never creates an <img> element — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
-        continue;
+/* -- Half 2: service-projection.php — a mixed PHP/JS page where the URL is
+   resolved SERVER-side (baked into the VENUES JSON as `OrgLogoUrl`) and
+   consumed CLIENT-side by a literal <img id="svc-proj-logo"> — the two
+   halves are naturally far apart in the file, so this checks EACH half's
+   own distinguishing marker: (A) the literal corner-bug <img> element
+   exists; (B) an `OrgLogoUrl` assignment/reference co-occurs with the
+   literal `/org-logo.php?` endpoint string within a generous window
+   (proximity, not "both exist somewhere in the whole file" — see this
+   check's own doc-block above for why a file-wide test under-reports here). */
+/** True when ANY occurrence of $needle1 sits within $maxDist characters of
+ *  ANY occurrence of $needle2, in either direction — a symmetric proximity
+ *  check (order-independent, unlike a single forward-only regex window),
+ *  needed here because the server-side URL-building code and the
+ *  `OrgLogoUrl` property NAME it feeds can appear in either order depending
+ *  on how the surrounding code is written. */
+function orgLogoProximity(string $code, string $needle1, string $needle2, int $maxDist): bool
+{
+    $pos1 = [];
+    $off = 0;
+    while (($p = strpos($code, $needle1, $off)) !== false) {
+        $pos1[] = $p;
+        $off = $p + 1;
     }
+    $pos2 = [];
+    $off = 0;
+    while (($p = strpos($code, $needle2, $off)) !== false) {
+        $pos2[] = $p;
+        $off = $p + 1;
+    }
+    foreach ($pos1 as $a) {
+        foreach ($pos2 as $b) {
+            if (abs($a - $b) <= $maxDist) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
-    $hasEndpointRef = str_contains($codeConsumer, '/org-logo.php?') || str_contains($codeConsumer, 'orgLogoUrl(');
-    if (!$hasEndpointRef) {
-        orgLogoFail($failures, "$relConsumer creates an <img> for a logo but nothing in the file references /org-logo.php? (directly or via the shared orgLogoUrl() builder) (#1840).");
+$svcProjPath = $pub . '/manage/service-projection.php';
+if (is_file($svcProjPath)) {
+    $svcProjCode = orgLogoStripComments((string)file_get_contents($svcProjPath));
+    $svcProjRel  = 'appWeb/public_html/' . substr($svcProjPath, strlen($pub) + 1);
+    if (str_contains($svcProjCode, 'OrgLogoUrl')) {
+        if (preg_match('/<img\b[^>]*\bid\s*=\s*["\']svc-proj-logo["\'][^>]*>/', $svcProjCode) !== 1) {
+            orgLogoFail($failures, "$svcProjRel resolves OrgLogoUrl but no <img id=\"svc-proj-logo\"> element exists — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+        }
+        if (!orgLogoProximity($svcProjCode, 'OrgLogoUrl', '/org-logo.php?', 700)) {
+            orgLogoFail($failures, "$svcProjRel references OrgLogoUrl but it isn't resolved from a literal /org-logo.php? URL within a reasonable window (#1840).");
+        }
     }
 }
 
