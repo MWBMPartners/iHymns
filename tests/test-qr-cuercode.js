@@ -78,9 +78,12 @@ check('includes/cuercode_client.php exists', clientPhp !== '');
 check('client sends the X-API-Key header (server-side auth)',
     /X-API-Key:\s*'\s*\.\s*\$config\['api_key'\]/.test(clientPhp) || /X-API-Key/.test(clientPhp));
 
-/* 2. /qr.php endpoint exists + uses the client */
+/* 2. /qr.php endpoint exists + uses the CACHED client wrapper (#1920 C3 —
+      qr.php reads through tblQrCache via cuercodeGenerateCached() instead of
+      calling the raw HTTP function directly; see check 5 below for the
+      "nobody else calls the raw function" inverse). */
 check('qr.php exists', qrPhp !== '');
-check('qr.php calls cuercodeGenerate()', /cuercodeGenerate\s*\(/.test(qrPhp));
+check('qr.php calls cuercodeGenerateCached()', /cuercodeGenerateCached\s*\(/.test(qrPhp));
 check('qr.php streams image bytes (Content-Type from CueRCode)',
     /header\('Content-Type: '\s*\.\s*\$qr\['mime'\]\)/.test(qrPhp) || /Content-Type/.test(qrPhp));
 
@@ -121,6 +124,26 @@ check('no client-side QR-library fingerprints remain under appWeb/public_html',
     offenders.length === 0, offenders.join('\n      '));
 check('scanned a plausible number of files (parser sanity)', files.length >= 50,
     `only ${files.length} js/php files walked — the tree walk under-read`);
+
+/* 5. The INVERSE of check 2 (#1920 C3) — the raw `cuercodeGenerate(` call
+      shape (the stem immediately followed by an opening paren; NOT
+      `cuercodeGenerateCached(`, whose next character after the stem is `C`,
+      not `(`) must appear in NO file except cuercode_client.php itself
+      (its own definition, plus cuercodeGenerateCached()'s one internal call
+      to the untouched HTTP path). Reuses the SAME tree-derived `files` list
+      and comment-stripping as check 4, so a doc-comment that merely MENTIONS
+      "cuercodeGenerate()" in prose (several files explain the relationship
+      to the cached wrapper this way) can never false-positive. */
+const RAW_CALL = /cuercodeGenerate\s*\(/;
+const rawCallSites = [];
+for (const f of files) {
+    const src = stripComments(read(f));
+    if (RAW_CALL.test(src) && path.basename(f) !== 'cuercode_client.php') {
+        rawCallSites.push(path.relative(REPO, f));
+    }
+}
+check('no file other than includes/cuercode_client.php calls the raw cuercodeGenerate()',
+    rawCallSites.length === 0, rawCallSites.join('\n      '));
 
 if (failures) {
     console.error(`\nFAIL: ${failures} QR-via-CueRCode wiring check(s) failed.`);

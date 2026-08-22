@@ -286,7 +286,7 @@ function _pdfInlineQrImage(string $src): ?string
            refused, never passed through. */
         return null;
     }
-    if (!function_exists('cuercodeGenerate')) {
+    if (!function_exists('cuercodeGenerateCached')) {
         return null; // should be unreachable — required at the top of this file
     }
     $query = parse_url($src, PHP_URL_QUERY);
@@ -303,7 +303,11 @@ function _pdfInlineQrImage(string $src): ?string
         'size'   => isset($params['size']) ? (int)$params['size'] : 512,
         'ecc'    => isset($params['ecc']) ? (string)$params['ecc'] : 'M',
     ];
-    $qr = cuercodeGenerate($data, $opts);
+    /* #1920 — cached read-through: same call shape as before, but a repeat
+       render of the SAME QR (a set-list PDF re-printed, a template preview
+       re-generated) now hits tblQrCache instead of round-tripping CueRCode
+       every single time mPDF needs this picture inlined. */
+    $qr = cuercodeGenerateCached($data, $opts);
     if ($qr === null || empty($qr['bytes']) || empty($qr['mime'])) {
         return null; // CueRCode dormant/unreachable — caller drops the <img>
     }

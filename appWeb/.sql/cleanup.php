@@ -193,6 +193,39 @@ try {
     echo "tblActivityLog:        ERROR — " . $e->getMessage() . "\n";
 }
 
+/* 6. QR image cache TTL prune (#1920).
+   ELI5: a QR code for a fixed link/text never changes, so we keep a copy of
+   it once CueRCode draws it — but a copy nobody's asked for in 90 days is
+   just disk space. This deletes those.
+   DETAIL: existence-gated (mirrors every other block in this file — a
+   missing table is caught by the surrounding try/catch and printed as an
+   informational line, never a fatal) so an un-migrated install is a clean
+   no-op. Time is SQL-side (DATE_SUB(UTC_TIMESTAMP(), …)) to match the UTC
+   frame CreatedAt was written in, exactly like block 4b above.
+   Deliberately INLINE rather than requiring includes/qr_cache.php's
+   qrCachePrune() (the "real" implementation, reused by any FUTURE in-process
+   caller that lives inside a docroot): this script runs from the un-renamed
+   appWeb/.sql/ sibling directory and — uniquely in this file — requires
+   NOTHING from appWeb/public_html/includes/ today. Reaching in from here
+   would be the exact cross-channel docroot-naming trap rule #41 exists to
+   prevent (alpha/beta deploy public_html_dev/public_html_beta, not
+   public_html, and this CLI cron has no IHYMNS_INCLUDES_DIR to resolve the
+   renamed sibling correctly). The 90-day figure is the SAME number as
+   QR_CACHE_TTL_DAYS in includes/qr_cache.php — that file's doc-block notes
+   this duplication and why it exists. */
+try {
+    $qrTtlDays = 90;
+    $stmt = $db->prepare('DELETE FROM tblQrCache WHERE CreatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)');
+    $stmt->bind_param('i', $qrTtlDays);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
+    echo "tblQrCache:            $count expired QR image(s) deleted\n";
+    $totalDeleted += $count;
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
+    echo "tblQrCache:            ERROR — " . $e->getMessage() . "\n";
+}
+
 echo str_repeat('-', 50) . "\n";
 echo "Total deleted: $totalDeleted row(s)\n";
 echo "Cleanup complete.\n";

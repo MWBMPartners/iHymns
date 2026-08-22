@@ -68,14 +68,13 @@ $size   = max(CUERCODE_MIN_SIZE, min(CUERCODE_MAX_SIZE, $size));
 $format = in_array(($_GET['format'] ?? 'svg'), CUERCODE_FORMATS, true) ? (string)$_GET['format'] : 'svg';
 $ecc    = in_array(($_GET['ecc'] ?? 'M'), CUERCODE_ECC_LEVELS, true) ? (string)$_GET['ecc'] : 'M';
 
-/* Not configured yet (no API key) → 503, so the caller degrades to text.
-   Kept explicit so a dormant install is a clean, cheap answer, not a curl
-   attempt. */
-if (!cuercodeConfigured()) {
-    _qrFail(503);
-}
-
-$qr = cuercodeGenerate($data, ['format' => $format, 'size' => $size, 'ecc' => $ecc]);
+/* #1920 — cuercodeGenerateCached() owns the "not configured yet" dormancy
+   check itself (checked BEFORE it ever consults the cache), so a dormant
+   install still answers a clean, cheap 503 here — no curl attempt, no cache
+   read. On a keyed install this is a cache-first read-through: a hit never
+   round-trips to CueRCode at all; a miss falls through to the untouched
+   HTTP path exactly as before this cache existed. */
+$qr = cuercodeGenerateCached($data, ['format' => $format, 'size' => $size, 'ecc' => $ecc]);
 if ($qr === null) {
     _qrFail(503);
 }
