@@ -2356,6 +2356,30 @@ class SongData
     }
 
     /**
+     * ELI5: a short fingerprint of "which SCHEMA STATE was
+     * getSongsSlimIndex() running under" — did it have the PublicId column
+     * to select, and which visibility predicate was it filtering by. Two
+     * installs on different migration states can emit a genuinely
+     * DIFFERENT-SHAPED slim index for the identical corpus content, so the
+     * #1921 ETag must change when either gate flips even if not one row
+     * changed.
+     * WHY a method here, not a second probe: `_hasPublicIdColumn()` and
+     * `_visible()` are this class's OWN memoized gates — the exact ones
+     * getSongsSlimIndex()'s SQL branches on (#1921 §1.2 axis 2). Reading
+     * them again here (rather than re-probing INFORMATION_SCHEMA a second
+     * way) is rule #35's "one mechanism" applied to a fingerprint: the ETag
+     * and the payload change together BY CONSTRUCTION, because both read
+     * the same two gates.
+     *
+     * @return string A stable xxh64 hex fingerprint of the current schema
+     *                 state this instance's slim-index query depends on.
+     */
+    public function slimIndexShapeToken(): string
+    {
+        return hash('xxh64', ((int)$this->_hasPublicIdColumn()) . '|' . $this->_visible());
+    }
+
+    /**
      * Get all songs, optionally filtered by songbook.
      *
      * When the hidden 'public_domain_only' feature flag is enabled,

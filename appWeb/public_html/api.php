@@ -1828,6 +1828,41 @@ if ($action !== null) {
                The SW precaches it once and rarely refetches, so 120/min is far
                above any real client yet caps a scraper polling it. Fail-open. */
             enforceReadRateLimitKeyed('songs_index', 120);
+            /* #1921 — version-signal conditional revalidation. ELI5: before
+               re-sending the whole catalogue index, ask "has ANYTHING
+               changed since the client's copy?" with two cheap COUNT/MAX
+               queries; if not, say so in four bytes (304) instead of the
+               whole payload. FAIL-OPEN: any miss, throw, or absent signal
+               serves today's full 200 (no ETag header at all) — this
+               conditional block can never make the endpoint WORSE than it
+               was before this feature existed. A 304 runs NO slim-index
+               query and sends NO body (rule #17: the cheapest read is the
+               one that never materialises). */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songs_index_etag.php';
+                $siSignal = songsIndexVersionSignal(getDbMysqli());
+                if ($siSignal !== null) {
+                    $siEtag = songsIndexEtag(
+                        $siSignal,
+                        apiContractVersion(),
+                        (string)($app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"] ?? ''),
+                        $songData->slimIndexShapeToken()
+                    );
+                    header('ETag: ' . $siEtag);
+                    /* Mirrors sendJson()'s OWN Cache-Control on the 200 path
+                       below (":no-cache, must-revalidate") — RFC 7232 §4.1
+                       says a 304 SHOULD carry the headers that would have
+                       gone on the 200, so this is the SAME policy on both
+                       responses, not a new one. */
+                    header('Cache-Control: no-cache, must-revalidate');
+                    if (songsIndexEtagMatches(trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')), $siEtag)) {
+                        http_response_code(304);
+                        exit;
+                    }
+                }
+            } catch (\Throwable $_e) {
+                /* fail-open — full payload below, exactly as before #1921 */
+            }
             sendJson(['songs' => $songData->getSongsSlimIndex()]);
             break;
 
