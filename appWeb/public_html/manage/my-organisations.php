@@ -96,6 +96,8 @@ $success = '';
 $orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
 /* #1791 G4-org — same posture, the set-list edit-audience org columns. */
 $setlistAudienceColsExist = setlistOrgAudienceColumnsExist($db);
+/* #1840 — same column-existence-tolerant posture, the brand-colour column. */
+$orgBrandColsExist = orgBrandColumnsExist($db);
 /* #1798 — declared here (not just before its query block below) because the
    $orgs-query branch can `goto render;` on an early empty-org exit (see
    below), which would otherwise skip straight past the declaration and
@@ -478,6 +480,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'brand_save': {
+                /* #1840 §4.3 — org brand colour, editable by the org's OWN
+                   admin. Column-existence-gated (rule #19, same posture as
+                   idle_timeout_update/setlist_edit_audience_update above). */
+                if (!$orgBrandColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $rawColour  = (string)($_POST['brand_colour'] ?? '');
+                $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+                if ($normalised === false) {
+                    /* Plain-English rejection (§4.3 quote) — the ONE
+                       allowlist (ihymnsOrgBrandColourNormalise()) is the
+                       gate; nothing malformed is ever stored or echoed. */
+                    $error = "That doesn't look like a colour code — use the picker or a value like #6a1b9a.";
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+                logActivity('org_admin.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+                $success = $normalised === null ? 'Brand colour cleared.' : 'Brand colour saved.';
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -498,10 +520,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $orgIdleSelectCols = $orgIdleColsExist ? ', LiveIdleTimeoutMins, EnforceIdleTimeout' : '';
 /* #1791 G4-org — same posture, the set-list edit-audience org columns. */
 $setlistAudienceSelectCols = $setlistAudienceColsExist ? ', SetlistEditAudience, EnforceSetlistEditAudience' : '';
+/* #1840 — same posture, the brand-colour column. */
+$orgBrandSelectCols = $orgBrandColsExist ? ', BrandColor' : '';
 try {
     if ($systemAdmin) {
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}{$orgBrandSelectCols}
                FROM tblOrganisations
               ORDER BY Name ASC"
         );
@@ -513,7 +537,7 @@ try {
         }
         $placeholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}{$orgBrandSelectCols}
                FROM tblOrganisations
               WHERE Id IN ({$placeholders})
               ORDER BY Name ASC"
@@ -1036,6 +1060,53 @@ $csrf = csrfToken();
                 </form>
                 <?php endif; ?>
 
+                <!-- #1840 §4.3 — org brand colour (Share Card Option B). Column-
+                     existence-gated (rule #19), same posture as the two blocks
+                     above. Reuses the shared colour-picker partial (rule: reuse a
+                     swatch widget, don't fork one, #1791/#715 precedent) rather
+                     than a bespoke <input type="color">. -->
+                <?php if ($orgBrandColsExist):
+                    $orgBrandColourVal = (string)($o['BrandColor'] ?? '');
+                ?>
+                <h3 class="h6 mt-3 mb-2">Brand colour</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-6">
+                        <?php
+                            /* Local vars consumed by the partial (its own
+                               documented contract) — never a hand-rolled
+                               <input type="color"> here. */
+                            $name        = 'brand_colour';
+                            $value       = $orgBrandColourVal;
+                            $idPrefix    = 'brand-colour-' . $orgId;
+                            $label       = 'Brand colour';
+                            $placeholder = '#6a1b9a';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'colour-picker.php';
+                        ?>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                </form>
+                <?php if ($orgBrandColourVal !== ''): ?>
+                <form method="POST" class="d-inline mt-1">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <input type="hidden" name="brand_colour" value="">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Clear brand colour</button>
+                </form>
+                <?php endif; ?>
+                <p class="text-muted small mb-0">
+                    Used where iHymns shows your church's branding — for example the coloured band
+                    on shared set-list preview images.
+                </p>
+                <?php endif; ?>
+
                 <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
                       echo orgLogoRenderAdminCard($db, $orgId, $csrf); ?>
             </div>
@@ -1048,6 +1119,16 @@ $csrf = csrfToken();
     import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
     bootSortableTables();
 </script>
+
+<?php if ($orgBrandColsExist): ?>
+<!-- #1840 — swatch<->hex two-way binding for every .colour-picker on the
+     page (the Brand colour field above), shared with songbooks.php rather
+     than a bespoke handler here. -->
+<script type="module">
+    import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+    bootColourPickers();
+</script>
+<?php endif; ?>
 
 <?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
 <!-- #1798 — "Members' live sessions" Extend wiring. Cookie-authed

@@ -491,6 +491,49 @@ if (is_file($printJsPath)) {
     }
 }
 
+/* =============================================================================
+ * (i) #1840 — brand colour goes through the ONE normaliser/write-path.
+ * WRITE half is live from commit 5 (both admin pages' 'brand_save' actions);
+ * the READ half (og-image.php) is SELF-ACTIVATING — vacuous until commit 8
+ * makes og-image.php actually reference BrandColor, mirrors checks (e)/(f)'s
+ * established self-activation shape from the base #1830 guard.
+ * ============================================================================= */
+
+$brandSaveSites = 0;
+foreach ($allFiles as $path) {
+    $raw  = (string)file_get_contents($path);
+    $code = orgLogoStripComments($raw);
+    if (preg_match("/case\\s+'brand_save'\\s*:/", $code, $bm, PREG_OFFSET_CAPTURE)) {
+        $offset = $bm[0][1];
+        /* Generous window (rule #34's "test-editor-api2-contract.php needed
+           widening from 120 to 300 chars" lesson) — mirrors check (c)'s
+           4000-char window. */
+        $window = substr($code, $offset, 3000);
+        $brandSaveSites++;
+        if (!str_contains($window, 'ihymnsOrgBrandColourNormalise(') && !str_contains($window, 'orgSetBrandColour(')) {
+            $rel = 'appWeb/public_html/' . substr($path, strlen($pub) + 1);
+            orgLogoFail($failures, "$rel has a 'brand_save' action that doesn't call ihymnsOrgBrandColourNormalise()/orgSetBrandColour() within a reasonable window — a write that could bypass the ONE hex allowlist (#1840).");
+        }
+    }
+}
+/* Anti-under-report floor (rule #34), mirrors check (c)'s floor: once ANY
+   'brand_save' site exists at all, there must be AT LEAST the two known
+   admin pages (manage/organisations.php + manage/my-organisations.php). */
+if ($brandSaveSites > 0 && $brandSaveSites < 2) {
+    orgLogoFail($failures, "Found only {$brandSaveSites} 'brand_save' handler site(s) — the plan wires TWO (manage/organisations.php AND manage/my-organisations.php); one of them may have silently lost its case label or its own scan may be failing.");
+}
+
+/* og-image's READ side — self-activating once it exists AND mentions
+   BrandColor (commit 8). Never an inline hex-parse fork (e.g. a raw
+   sscanf('#%02x...') or substr/hexdec chain bypassing the shared parser). */
+$ogImagePhpPath = $pub . '/og-image.php';
+if (is_file($ogImagePhpPath)) {
+    $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
+    if (str_contains($ogImageSrcRaw, 'BrandColor') && !str_contains($ogImageSrcRaw, 'ihymnsOrgBrandColourRgb(')) {
+        orgLogoFail($failures, 'og-image.php references BrandColor but never calls ihymnsOrgBrandColourRgb() — a second, inline hex-parse fork (#1840).');
+    }
+}
+
 if ($failures) {
     fwrite(STDERR, 'FAIL: ' . count($failures) . " organisation-logo surface wiring smell(s):\n");
     foreach ($failures as $f) {

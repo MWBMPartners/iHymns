@@ -512,6 +512,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            case 'brand_save': {
+                /* #1840 §4.3 — org brand colour, system-admin surface.
+                   Column-existence-gated (rule #19). Same field-name shape
+                   as the logo_* cases above. */
+                $orgId = (int)($_POST['org_id'] ?? 0);
+                if ($orgId <= 0) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                if (!orgBrandColumnsExist($db)) {
+                    $error = 'Not available on this environment yet.';
+                    break;
+                }
+                $rawColour  = (string)($_POST['brand_colour'] ?? '');
+                $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+                if ($normalised === false) {
+                    $error = "That doesn't look like a colour code — use the picker or a value like #6a1b9a.";
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+                logActivity('org.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+                $success = $normalised === null ? 'Brand colour cleared.' : 'Brand colour saved.';
+                break;
+            }
+
             default:
                 $error = 'Unknown action.';
         }
@@ -946,6 +971,54 @@ $csrf = csrfToken();
                 </button>
             </form>
 
+            <!-- #1840 §4.3 — org brand colour (Share Card Option B). A SEPARATE
+                 form/action (brand_save) rather than folded into the "Save
+                 settings" form above — mirrors the logo_* cases' own
+                 standalone-form shape. Column-existence-gated (rule #19). -->
+            <?php if (orgBrandColumnsExist($db)):
+                $orgBrandColourVal = (string)($editOrg['BrandColor'] ?? '');
+            ?>
+            <div class="card-admin p-3 mb-3">
+                <h3 class="h6 mb-2"><i class="bi bi-palette me-2"></i>Brand colour</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= (int)$editOrg['Id'] ?>">
+                    <div class="col-md-6">
+                        <?php
+                            /* Local vars consumed by the shared partial's
+                               documented contract — never a hand-rolled
+                               <input type="color"> here. */
+                            $name        = 'brand_colour';
+                            $value       = $orgBrandColourVal;
+                            $idPrefix    = 'edit-brand-colour';
+                            $label       = 'Brand colour';
+                            $placeholder = '#6a1b9a';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'colour-picker.php';
+                        ?>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                </form>
+                <?php if ($orgBrandColourVal !== ''): ?>
+                <form method="POST" class="d-inline mt-1">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= (int)$editOrg['Id'] ?>">
+                    <input type="hidden" name="brand_colour" value="">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Clear brand colour</button>
+                </form>
+                <?php endif; ?>
+                <p class="text-muted small mb-0">
+                    Used where iHymns shows this organisation's branding — for example the
+                    coloured band on shared set-list preview images.
+                </p>
+            </div>
+            <?php endif; ?>
+
             <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
                   echo orgLogoRenderAdminCard($db, (int)$editOrg['Id'], $csrf); ?>
 
@@ -1046,6 +1119,15 @@ $csrf = csrfToken();
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
     </script>
+
+    <?php if ($editOrg && orgBrandColumnsExist($db)): ?>
+    <!-- #1840 — swatch<->hex two-way binding for the Brand colour field
+         above, shared with songbooks.php rather than a bespoke handler. -->
+    <script type="module">
+        import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+        bootColourPickers();
+    </script>
+    <?php endif; ?>
 
     <!-- Live location autocomplete on the Physical city inputs
          (both create form + edit form). Powered by /manage/places-api.php
