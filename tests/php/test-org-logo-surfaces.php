@@ -377,6 +377,120 @@ foreach ($mentioning as $path => $raw) {
     }
 }
 
+/* =============================================================================
+ * (g) #1840 — surface-prefs PHP<->JS lockstep: IHYMNS_ORG_LOGO_SURFACE_PREFS
+ * (org_logo_helpers.php) must agree EXACTLY — same surface keys, in the same
+ * order, same per-surface kind list in the same order, same darkCapableOnly
+ * flag — with ORG_LOGO_SURFACE_PREFS (js/modules/org-logo.js). Order is the
+ * per-surface resolution ladder (mirrors check (f)'s kind-ladder discipline,
+ * rule #35: a mechanism, not a comment).
+ * ============================================================================= */
+
+/** Parse IHYMNS_ORG_LOGO_SURFACE_PREFS from org_logo_helpers.php, in source
+ *  order, WITHOUT requiring the file (pure text parse, mirrors
+ *  ihymnsOrgLogoKindKeysForGuard() above).
+ *  @return array<string, array{kinds: list<string>, darkCapableOnly: bool}> */
+function orgLogoSurfacePrefsFromPhp(string $helpersPhpPath): array
+{
+    $src = (string)file_get_contents($helpersPhpPath);
+    if (!preg_match('/const\s+IHYMNS_ORG_LOGO_SURFACE_PREFS\s*=\s*\[(.*?)\n\];/s', $src, $m)) {
+        return [];
+    }
+    $out = [];
+    preg_match_all(
+        "/'([\\w-]+)'\\s*=>\\s*\\['kinds'\\s*=>\\s*\\[([^\\]]*)\\]\\s*,\\s*'darkCapableOnly'\\s*=>\\s*(true|false)\\]/",
+        $m[1],
+        $entries,
+        PREG_SET_ORDER
+    );
+    foreach ($entries as $e) {
+        preg_match_all("/'(\\w+)'/", $e[2], $km);
+        $out[$e[1]] = ['kinds' => $km[1], 'darkCapableOnly' => $e[3] === 'true'];
+    }
+    return $out;
+}
+
+/** Parse ORG_LOGO_SURFACE_PREFS from js/modules/org-logo.js, in source order.
+ *  JS object keys may be bare identifiers (`header:`) or quoted (`'og-card':`).
+ *  @return array<string, array{kinds: list<string>, darkCapableOnly: bool}> */
+function orgLogoSurfacePrefsFromJs(string $jsPath): array
+{
+    $src = (string)file_get_contents($jsPath);
+    if (!preg_match('/const\s+ORG_LOGO_SURFACE_PREFS\s*=\s*\{(.*?)\n\};/s', $src, $m)) {
+        return [];
+    }
+    $out = [];
+    preg_match_all(
+        "/(?:'([\\w-]+)'|(\\w+))\\s*:\\s*\\{\\s*kinds:\\s*\\[([^\\]]*)\\]\\s*,\\s*darkCapableOnly:\\s*(true|false)\\s*\\}/",
+        $m[1],
+        $entries,
+        PREG_SET_ORDER
+    );
+    foreach ($entries as $e) {
+        $key = $e[1] !== '' ? $e[1] : $e[2];
+        preg_match_all("/'(\\w+)'/", $e[3], $km);
+        $out[$key] = ['kinds' => $km[1], 'darkCapableOnly' => $e[4] === 'true'];
+    }
+    return $out;
+}
+
+$orgLogoJsPath = $pub . '/js/modules/org-logo.js';
+if (is_file($orgLogoJsPath)) {
+    $surfacePrefsPhp = orgLogoSurfacePrefsFromPhp($helpersPhp);
+    $surfacePrefsJs  = orgLogoSurfacePrefsFromJs($orgLogoJsPath);
+
+    /* Anti-under-report floor (rule #34): the real registry is 3 surfaces,
+       >= 2 kinds each — a parser that silently matched a truncated subset on
+       BOTH sides could otherwise agree-by-coincidence. */
+    $surfaceMinCount = 3;
+    if (count($surfacePrefsPhp) > 0 && count($surfacePrefsPhp) < $surfaceMinCount) {
+        orgLogoFail($failures, sprintf('IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) parsed only %d surface(s) (< %d) — parser anchor moved or the map was emptied.', count($surfacePrefsPhp), $surfaceMinCount));
+    }
+    if (count($surfacePrefsJs) > 0 && count($surfacePrefsJs) < $surfaceMinCount) {
+        orgLogoFail($failures, sprintf('ORG_LOGO_SURFACE_PREFS (org-logo.js) parsed only %d surface(s) (< %d) — parser anchor moved or the map was emptied.', count($surfacePrefsJs), $surfaceMinCount));
+    }
+
+    if ($surfacePrefsPhp === [] || $surfacePrefsJs === []) {
+        orgLogoFail($failures, 'Could not parse IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) and/or ORG_LOGO_SURFACE_PREFS (org-logo.js) — parser anchor moved.');
+    } elseif (array_keys($surfacePrefsPhp) !== array_keys($surfacePrefsJs)) {
+        orgLogoFail($failures, 'Surface-prefs drift: surface KEYS/ORDER differ — PHP has ' . json_encode(array_keys($surfacePrefsPhp))
+            . ', JS has ' . json_encode(array_keys($surfacePrefsJs)) . ' (#1840).');
+    } else {
+        foreach ($surfacePrefsPhp as $surface => $phpDef) {
+            $jsDef = $surfacePrefsJs[$surface];
+            $kindMinCount = 2;
+            if (count($phpDef['kinds']) < $kindMinCount) {
+                orgLogoFail($failures, "Surface '$surface' (org_logo_helpers.php) parsed only " . count($phpDef['kinds']) . " kind(s) (< $kindMinCount).");
+            }
+            if ($phpDef['kinds'] !== $jsDef['kinds']) {
+                orgLogoFail($failures, "Surface-prefs drift: '$surface' kind list/order differs — PHP has " . json_encode($phpDef['kinds'])
+                    . ', JS has ' . json_encode($jsDef['kinds']) . ' — kind ORDER is the resolution ladder (rule #35); order drift is ladder drift (#1840).');
+            }
+            if ($phpDef['darkCapableOnly'] !== $jsDef['darkCapableOnly']) {
+                orgLogoFail($failures, "Surface-prefs drift: '$surface' darkCapableOnly is " . json_encode($phpDef['darkCapableOnly']) . ' in PHP but ' . json_encode($jsDef['darkCapableOnly']) . ' in JS (#1840).');
+            }
+        }
+    }
+}
+
+/* =============================================================================
+ * (j) #1840 — print's fold stays variant-filtered. Narrow by design (rule
+ * #34's "don't fail on correct code") — asserts the FILTER exists inside
+ * fetchPrintOrgLogos()'s fold, not its exact spelling, so a legitimate
+ * rewrite of the condition still passes as long as `.variant` is still
+ * examined somewhere in the fold.
+ * ============================================================================= */
+
+if (is_file($printJsPath)) {
+    $printJsSrcRaw = (string)file_get_contents($printJsPath);
+    if (preg_match('/function\s+fetchPrintOrgLogos\s*\([^)]*\)\s*\{/', $printJsSrcRaw, $fm, PREG_OFFSET_CAPTURE)) {
+        $window = substr($printJsSrcRaw, $fm[0][1], 2000);
+        if (!str_contains($window, '.variant')) {
+            orgLogoFail($failures, "print.js's fetchPrintOrgLogos() fold no longer references .variant — the byKind fold must stay pinned to the 'default' variant (#1840 §3.4), or the first light/dark logo upload will silently re-brand every print template (last-row-wins on an alphabetically-later variant).");
+        }
+    }
+}
+
 if ($failures) {
     fwrite(STDERR, 'FAIL: ' . count($failures) . " organisation-logo surface wiring smell(s):\n");
     foreach ($failures as $f) {
@@ -384,5 +498,5 @@ if ($failures) {
     }
     exit(1);
 }
-printf("OK: organisation-logo surfaces wired correctly — %d file(s) mentioning org-logo.php/tblOrganisationLogos scanned, no inline-SVG/ContentOriginal/raw-SQL/second-sanitiser/second-kind-list smell.\n", count($mentioning));
+printf("OK: organisation-logo surfaces wired correctly — %d file(s) mentioning org-logo.php/tblOrganisationLogos scanned, no inline-SVG/ContentOriginal/raw-SQL/second-sanitiser/second-kind-list/surface-prefs-drift/unfiltered-print-fold smell.\n", count($mentioning));
 exit(0);

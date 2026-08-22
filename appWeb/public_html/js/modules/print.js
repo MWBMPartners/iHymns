@@ -19,6 +19,7 @@
  * ========================================================================== */
 
 import { apiFetch } from '../utils/api-client.js';
+import { fetchMyOrgs } from './org-logo.js';   /* #1840 — the shared my_organisations fetch */
 
 /* Block-type registry — drives BOTH the renderer (below) and the editor's palette.
    `label` = editor display; `options` = editable per-block option keys + defaults. */
@@ -550,50 +551,41 @@ function printDoc(html) {
     return true;
 }
 
-/* #1830 §6.3 — session-cached my_organisations lookup feeding the print
-   `logo` block. Resolves the FIRST org (my_organisations' own `ORDER BY
-   Name ASC`) that has at least one ACTIVE logo, shaped exactly as
-   renderBlock('logo') reads it: `{ orgId, name, byKind: { <kind>: {kind,
-   variant, v, alt, width, height} } }`. A single in-flight/settled promise
-   is shared across every song a print session fetches (single-song print,
-   or a whole set-list/songbook batch) — my_organisations is a small,
-   rarely-changing list, the SAME "effectively static per session" treatment
-   printUsageContextFor() already gives its own per-song lookups (there,
-   keyed per song; here, there is only ever ONE relevant answer per session,
-   so a single shared promise is simpler and cheaper than a Map). Anonymous
-   user / no org / no org with an active logo / a failed fetch all resolve
-   to `null` — renderBlock('logo') then renders nothing (§6.3), never a
-   broken image. NOT reset between print sessions on purpose: the org list a
-   signed-in user belongs to does not change mid-session in any way stale
-   data here could meaningfully harm (worst case: one stale/missing logo
-   until the next full page load, mirroring printUsageContextFor()'s
-   identical trade-off note). */
-let _printOrgLogosPromise = null;
-async function fetchPrintOrgLogos(app) {
-    if (_printOrgLogosPromise) { return _printOrgLogosPromise; }
-    _printOrgLogosPromise = (async () => {
-        try {
-            const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
-            const res = await apiFetch(`${base}?action=my_organisations`,
-                { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', auth: true });
-            if (!res.ok) { return null; }
-            const json = await res.json();
-            const orgs = Array.isArray(json.organisations) ? json.organisations : [];
-            for (const org of orgs) {
-                const logos = Array.isArray(org.logos) ? org.logos : [];
-                if (!logos.length) { continue; }
-                const byKind = {};
-                logos.forEach((l) => { if (l && l.kind) { byKind[l.kind] = l; } });
-                if (Object.keys(byKind).length) {
-                    return { orgId: org.id, name: org.name || '', byKind };
-                }
-            }
-            return null; // signed in, but no org (or no org with an active logo)
-        } catch (_e) {
-            return null; // anonymous (401) or any network/parse failure — fail to "no logo"
+/* #1830 §6.3 / #1840 §3.3-3.4 — the print `logo` block's org-logo lookup.
+   Resolves the FIRST org (my_organisations' own `ORDER BY Name ASC`) that
+   has at least one ACTIVE logo, shaped exactly as renderBlock('logo') reads
+   it: `{ orgId, name, byKind: { <kind>: {kind, variant, v, alt, width,
+   height} } }`.
+   The NETWORK CALL itself now delegates to the shared `fetchMyOrgs()`
+   (js/modules/org-logo.js) — extracted the moment a second consumer (the
+   #1840 header co-brand module) needed the same session-cached
+   `my_organisations` lookup, so print and the header now share ONE
+   in-flight request instead of two (modularity rule).
+   The FOLD stays print-specific and is now VARIANT-FILTERED: `byKind[l.kind]
+   = l` used to take whichever row happened to sort last for a given kind —
+   harmless while only 'default' rows existed, but the moment #1840's admin
+   UI can create 'light'/'dark' rows too, `orgLogoListForOrg()`'s `ORDER BY
+   FIELD(Kind,…), Variant` makes 'light' (alphabetically after 'dark' and
+   'default') win, silently re-branding every existing print template with
+   whatever theme variant happened to be uploaded. Filtering to
+   `variant === 'default'` keeps print byte-identical to before variant
+   activation — paper is the 'default' rendition's home ground; a future
+   "prefer a variant on paper" enhancement is a deliberate one-line change,
+   not an accident (#1840 §3.4). This fix landing BEFORE any variant-upload
+   UI exists (commit 3) is load-bearing, not incidental ordering. */
+async function fetchPrintOrgLogos() {
+    const orgs = await fetchMyOrgs();
+    if (!Array.isArray(orgs)) { return null; } // anonymous / no orgs / fetch failure
+    for (const org of orgs) {
+        const logos = Array.isArray(org.logos) ? org.logos : [];
+        if (!logos.length) { continue; }
+        const byKind = {};
+        logos.forEach((l) => { if (l && l.kind && l.variant === 'default') { byKind[l.kind] = l; } });
+        if (Object.keys(byKind).length) {
+            return { orgId: org.id, name: org.name || '', byKind };
         }
-    })();
-    return _printOrgLogosPromise;
+    }
+    return null; // signed in, but no org (or no org with an active DEFAULT-variant logo)
 }
 
 export async function fetchSong(app, songId) {
@@ -611,7 +603,7 @@ export async function fetchSong(app, songId) {
         if (song) {
             /* #1830 — stash for renderBlock('logo'); absent when the lookup
                resolves to null (see fetchPrintOrgLogos()'s doc-block). */
-            song._printOrgLogos = await fetchPrintOrgLogos(app);
+            song._printOrgLogos = await fetchPrintOrgLogos();
         }
         return song;
     } catch (_e) { return null; }
