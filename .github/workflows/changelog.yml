@@ -216,22 +216,43 @@ jobs:
 
           git commit -m "chore: update changelogs for ${{ steps.version.outputs.version }} [skip ci]"
 
-          # Retry on non-fast-forward rejection — another automation (the
-          # release rollover in promotion-deploy-bridge.yml, #1899) may push to
-          # this branch first.
+          # Push the changelogs back. On a PROTECTED branch (beta/main) the
+          # repository ruleset rejects a direct push ("Changes must be made
+          # through a pull request" / GH013). That is EXPECTED here and MUST
+          # NOT fail the job (#1891): the branch-protection rejection is not a
+          # non-fast-forward, so the rebase-retry below could never clear it —
+          # it just exhausted 5 attempts and exited 1, painting a cosmetic red
+          # on every beta push while `CI Lint & Validation` and `Deploy via
+          # SFTP` were green on the same commit (red-fatigue risk, zero effect
+          # on the deployed app). The changelog updates ride to main via the
+          # normal alpha→beta→main promotion PR instead, and the SFTP upload
+          # step below still runs. A GENUINE non-fast-forward (the release
+          # rollover in promotion-deploy-bridge.yml, #1899, pushing first) is
+          # still retried with a rebase; anything still unpushed after that is
+          # a best-effort no-op, never a false-red.
+          PUSH_ERR=/tmp/cl_push_err.txt
           for attempt in 1 2 3 4 5; do
-            if git push origin "HEAD:${BRANCH}"; then
+            if git push origin "HEAD:${BRANCH}" 2>"$PUSH_ERR"; then
               echo "Pushed on attempt $attempt"
               exit 0
             fi
-            echo "Push rejected on attempt $attempt — rebasing on origin/${BRANCH} and retrying"
+            cat "$PUSH_ERR"
+            if grep -qiE 'rule violations|must be made through a pull request|protected branch|GH013' "$PUSH_ERR"; then
+              echo "::warning::Branch '${BRANCH}' is protected — changelog push-back skipped (expected; the update rides the promotion PR). #1891"
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt (non-fast-forward?) — rebasing on origin/${BRANCH} and retrying"
             git fetch origin "${BRANCH}"
-            git rebase "origin/${BRANCH}"
+            if ! git rebase "origin/${BRANCH}"; then
+              git rebase --abort 2>/dev/null || true
+              echo "::warning::Rebase onto origin/${BRANCH} failed — changelog push-back skipped (best-effort, no false-red). #1891"
+              exit 0
+            fi
             sleep $((attempt * 2))
           done
 
-          echo "::error::Failed to push changelog after 5 attempts"
-          exit 1
+          echo "::warning::Could not push changelog after 5 attempts — best-effort skip (no false-red). #1891"
+          exit 0
 
       # -----------------------------------------------------------------------
       # Step 6: (Optional) Resolve SFTP target + auth method
