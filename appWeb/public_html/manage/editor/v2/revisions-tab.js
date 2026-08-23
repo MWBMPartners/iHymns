@@ -555,3 +555,188 @@ function addedRemoved(beforeSet, afterSet) {
         removed: [...beforeSet].filter((n) => !afterSet.has(n)),
     };
 }
+
+/* ==========================================================================
+ *  canonicalScalarsOf(snap, fieldMap) — a snapshot's blame-tracked SCALAR
+ *  fields, folded to canonical tblSongs COLUMN keys, whichever of the three
+ *  shapes the snapshot is (#1122).
+ *
+ *  ELI5: three eras stored a song's fields under different key names — a v2
+ *  snapshot and the old bare-row shape use Uppercase column names (`Title`),
+ *  while the oldest editor-payload shape uses lowercase field keys (`title`).
+ *  This flattens all three to ONE key set (the Uppercase column) so blame can
+ *  compare a `Title` from 2024 against a `title` from 2022 without pretending
+ *  they are different fields.
+ *
+ *  DETAILED: reuses the shipped scalarsOf() (v2 `.song` / bare row / payload
+ *  root — the ONE shape picker, rule #22). For each fieldMap entry
+ *  (fieldKey -> Column) it takes the Column value when present (v2/bare), else
+ *  the lowercase fieldKey value when present (payload), else the field is
+ *  ABSENT (not added to the map — a distinct state from a cleared value: a
+ *  shape that never carried a field must never read as "cleared it", plan D2).
+ *  Only the fieldMap columns are kept — derived/noise columns (UpdatedAt,
+ *  NormalizedTitle, LyricsText, …) are NOT in the map and are dropped, so an
+ *  auto-updating UpdatedAt never shows every pair as "changed".
+ *
+ * @param {*} snap a decoded revision snapshot (any of the 3 shapes, or null)
+ * @param {Object<string,string>} fieldMap fieldKey -> Column (served, ED2_META_FIELDS-derived)
+ * @returns {Object<string,{value:*,present:true}>} keyed by Column; absent keys omitted
+ * ========================================================================== */
+export function canonicalScalarsOf(snap, fieldMap) {
+    const raw = scalarsOf(snap);
+    const out = {};
+    if (!raw || typeof raw !== 'object' || !fieldMap || typeof fieldMap !== 'object') { return out; }
+    Object.keys(fieldMap).forEach((field) => {
+        const col = fieldMap[field];
+        if (Object.prototype.hasOwnProperty.call(raw, col)) {
+            out[col] = { value: raw[col], present: true };
+        } else if (Object.prototype.hasOwnProperty.call(raw, field)) {
+            out[col] = { value: raw[field], present: true };
+        }
+        /* else: absent in this shape — deliberately omitted (absent != cleared). */
+    });
+    return out;
+}
+
+/* ==========================================================================
+ *  blameFromSnapshots(rows, base, fieldMap, noRollback) — per-field BLAME over
+ *  a song's whole revision window (#1122). PURE (no DOM), so it runs under Node
+ *  (tests/test-revision-blame.js) exactly as in the browser — the same
+ *  testable-without-a-DOM discipline as diffSnapshots (rule #34).
+ *
+ *  ELI5: "who last changed this field, and when" for every scalar field the
+ *  song currently has — walked across the whole history, tolerant of the three
+ *  snapshot shapes, honest when it genuinely cannot attribute a field.
+ *
+ *  DETAILED — the walk (plan §2/D2):
+ *    1. Build an oldest->newest sequence of {snap, attrib}. `base` (the window
+ *       pre-state, no attribution) leads when present; then each row's newData,
+ *       oldest first. A row whose newData is null (undecodable) is BRIDGED
+ *       (skipped) — never invents a change.
+ *    2. For each canonical column CURRENTLY present, walk adjacent pairs:
+ *       - present-on-both AND value differs => a CHANGE; the CUR revision is
+ *         recorded (newest wins => last-writer attribution).
+ *       - absent->present => the field's first APPEARANCE (introducing row).
+ *    3. Verdict (rule #20 vocabulary): 'changed' (attributed to the last
+ *       writer), 'firstRecorded' (introduced in-window / present since the
+ *       first ROW and never changed — attributed to that row), or
+ *       'unchangedInWindow' (present since `base`, i.e. predating any row we
+ *       hold, never changed — NO author is claimed).
+ *
+ *  SCOPE (v1): SCALAR fields only — the issue's load-bearing case ("who changed
+ *  this copyright line"). Structured-group blame (components / credits / tags /
+ *  links, set-level) is a recorded fast-follow, alongside the same-scoped
+ *  structured-field ROLLBACK (plan D3) — the shipped whole-revision Restore
+ *  already covers "the lyrics are wrong, go back".
+ *
+ * @param {Array} rows newest-first [{id, action, createdAt, userId, username, newData}]
+ * @param {*} base the window pre-state snapshot (oldest row's PreviousData) or null
+ * @param {Object<string,string>} fieldMap fieldKey -> Column (served)
+ * @param {Array<string>} noRollback field keys with no per-field Revert
+ * @returns {Array<{key:string, field:?string, verdict:string,
+ *   last:?object, firstRecorded:?object, canRevert:boolean, currentValue:*}>}
+ *   one entry per currently-present scalar field, sorted by column key.
+ * ========================================================================== */
+export function blameFromSnapshots(rows, base, fieldMap, noRollback) {
+    const map = (fieldMap && typeof fieldMap === 'object') ? fieldMap : {};
+    const noRoll = new Set(Array.isArray(noRollback) ? noRollback : []);
+    const colToField = {};
+    Object.keys(map).forEach((f) => { colToField[map[f]] = f; });
+
+    /* (1) oldest->newest sequence, bridging null-newData rows. */
+    const seq = [];
+    if (base && typeof base === 'object') { seq.push({ snap: base, attrib: null }); }
+    const ordered = Array.isArray(rows) ? rows.slice().reverse() : [];
+    ordered.forEach((r) => {
+        if (r && r.newData && typeof r.newData === 'object') {
+            seq.push({
+                snap: r.newData,
+                attrib: {
+                    revisionId: r.id,
+                    action:     r.action,
+                    createdAt:  r.createdAt,
+                    userId:     (r.userId === undefined ? null : r.userId),
+                    username:   (r.username === undefined ? null : r.username),
+                },
+            });
+        }
+    });
+    if (seq.length === 0) { return []; }
+    const currentIdx = seq.length - 1;
+    if (seq[currentIdx].attrib === null) { return []; } /* only `base`, no attributable row */
+
+    /* Memoise each snapshot's canonical scalar map once. */
+    const canon = seq.map((step) => canonicalScalarsOf(step.snap, map));
+    const canonCur = canon[currentIdx];
+
+    const out = [];
+    Object.keys(map).forEach((field) => {
+        const col = map[field];
+        if (!Object.prototype.hasOwnProperty.call(canonCur, col)) { return; } /* not a current field */
+
+        let last = null;
+        let firstAppear = null;
+        for (let i = 1; i < seq.length; i++) {
+            const pvPresent = Object.prototype.hasOwnProperty.call(canon[i - 1], col);
+            const cvPresent = Object.prototype.hasOwnProperty.call(canon[i], col);
+            if (pvPresent && cvPresent && !sameValue(canon[i - 1][col].value, canon[i][col].value)) {
+                last = { attrib: seq[i].attrib, before: canon[i - 1][col].value, after: canon[i][col].value };
+            } else if (!pvPresent && cvPresent && firstAppear === null) {
+                firstAppear = { attrib: seq[i].attrib };
+            }
+        }
+
+        const presentAtStart = Object.prototype.hasOwnProperty.call(canon[0], col);
+        const startIsRow = seq[0].attrib !== null;
+
+        let verdict;
+        let lastOut = null;
+        let firstRecordedOut = null;
+        if (last) {
+            verdict = 'changed';
+            lastOut = {
+                revisionId: last.attrib.revisionId,
+                action:     last.attrib.action,
+                createdAt:  last.attrib.createdAt,
+                userId:     last.attrib.userId,
+                username:   last.attrib.username,
+                before:     last.before,
+                after:      last.after,
+            };
+        } else if (firstAppear) {
+            verdict = 'firstRecorded';
+            firstRecordedOut = {
+                revisionId: firstAppear.attrib.revisionId,
+                createdAt:  firstAppear.attrib.createdAt,
+                userId:     firstAppear.attrib.userId,
+                username:   firstAppear.attrib.username,
+            };
+        } else if (presentAtStart && startIsRow) {
+            /* present since the very first ROW, never changed -> that row introduced it */
+            verdict = 'firstRecorded';
+            firstRecordedOut = {
+                revisionId: seq[0].attrib.revisionId,
+                createdAt:  seq[0].attrib.createdAt,
+                userId:     seq[0].attrib.userId,
+                username:   seq[0].attrib.username,
+            };
+        } else {
+            /* present since `base` (predates any row we hold) and never changed
+               in-window — we cannot honestly attribute an author. */
+            verdict = 'unchangedInWindow';
+        }
+
+        out.push({
+            key:           col,
+            field:         Object.prototype.hasOwnProperty.call(colToField, col) ? colToField[col] : null,
+            verdict:       verdict,
+            last:          lastOut,
+            firstRecorded: firstRecordedOut,
+            canRevert:     !!colToField[col] && !noRoll.has(colToField[col]),
+            currentValue:  canonCur[col].value,
+        });
+    });
+
+    out.sort((x, y) => (x.key < y.key ? -1 : (x.key > y.key ? 1 : 0)));
+    return out;
+}
