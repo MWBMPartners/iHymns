@@ -3434,6 +3434,16 @@ paths:
                 password:
                   type: string
                   format: password
+                captcha_token:
+                  type: string
+                  description: >-
+                    CAPTCHA challenge answer (#947/#340). Required ONLY when an
+                    admin has enabled the challenge for the `login` form (see
+                    `app_status.captcha.forms`); ignored otherwise. The SAME
+                    `captcha_token` body key applies identically to every gated
+                    endpoint (auth_register, auth_forgot_password,
+                    auth_email_login_request, song_request_submit); a missing or
+                    invalid token there returns the same 403 documented below.
       responses:
         "200":
           description: Login successful
@@ -3456,13 +3466,25 @@ paths:
               example:
                 error: Invalid username or password.
         "403":
-          description: Account disabled
+          description: >-
+            Account disabled, OR the CAPTCHA challenge is enabled for this form
+            and the supplied `captcha_token` was missing/invalid. The two are
+            distinguished by the machine-readable `reason`: a CAPTCHA refusal
+            carries `reason: "captcha_required"` (clients branch on the status +
+            reason, never the prose — rule #35; re-render/reset the widget and
+            retry). This 403 shape is identical across every gated endpoint.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                error: Account is disabled.
+              examples:
+                accountDisabled:
+                  value:
+                    error: Account is disabled.
+                captchaRequired:
+                  value:
+                    error: Please complete the verification challenge and try again.
+                    reason: captcha_required
 
   /api.php?action=auth_apple:
     post:
@@ -4782,7 +4804,12 @@ paths:
                     example: true
                   captchaProvider:
                     type: string
-                    description: Active CAPTCHA provider key ('none' when disabled).
+                    description: >-
+                      Legacy flat CAPTCHA-provider key ('none' when disabled).
+                      Kept for the native-app contract (#1685). Web clients use
+                      the richer `captcha` object below instead, which is present
+                      only when the challenge is actually configured AND at least
+                      one form is gated (#947/#340).
                     example: none
                   adsEnabled:
                     type: boolean
@@ -4852,6 +4879,46 @@ paths:
                       web.sotd_card:
                         enabled: true
                         metadata: null
+                  captcha:
+                    type: object
+                    description: >-
+                      CAPTCHA challenge configuration for web clients (#947/#340).
+                      **Emitted ONLY when a provider + both keys are configured
+                      AND at least one form is gated** — the key is ABSENT (not
+                      an empty object) when dormant, which is the shipped default
+                      on every environment (so a dormant install's app_status is
+                      byte-identical to before this feature). Carries the PUBLIC
+                      facts a browser needs to draw + read the widget; the secret
+                      key is NEVER emitted. `js/modules/captcha-widget.js` reads
+                      this to decide which forms to challenge and how to render.
+                    properties:
+                      provider:
+                        type: string
+                        description: The active provider key.
+                        example: turnstile
+                      siteKey:
+                        type: string
+                        description: Public site key (safe for browsers; draws the widget).
+                      scriptUrl:
+                        type: string
+                        description: The provider's widget script URL (its origin is added to the page CSP).
+                        example: https://challenges.cloudflare.com/turnstile/v0/api.js
+                      renderGlobal:
+                        type: string
+                        description: The window global exposing render/getResponse/reset.
+                        example: turnstile
+                      field:
+                        type: string
+                        description: The POST field a plain (non-SPA) form submits the token under.
+                        example: cf-turnstile-response
+                      forms:
+                        type: array
+                        items: { type: string }
+                        description: >-
+                          The form keys the challenge is enforced on. One of
+                          registration, login, password_reset, email_login,
+                          song_request, manage_login.
+                        example: [song_request]
 
   /api.php?action=ccli_validate:
     post:

@@ -61,6 +61,36 @@ These are enforced conventions; new code must follow them (see
   the session id is regenerated (`session_regenerate_id`) when the API-token
   session is adopted into the `manage/*` PHP session, so a pre-planted session
   id cannot survive authentication.
+- **Login brute-force — per-IP AND per-account, on both login doors** (#1027).
+  On top of the per-IP failure cap, both login surfaces — the public API
+  (`api.php` `auth_login`) and the `/manage` admin form
+  (`manage/includes/auth.php` `attemptLogin()`) — count failures **per account**
+  (keyed on a hash of the submitted username), so an attacker rotating IPs can
+  no longer grind one password below the per-IP radar. Both doors derive the
+  bucket key from the ONE shared `authLoginAcctKey()` with an identical
+  username fold, so guesses split across `/api` and `/manage` draw down a
+  single 20/15-min allowance rather than two. The counter advances inside the
+  shared unknown-user/wrong-password branch, so it fills identically for real
+  and imaginary accounts (no enumeration oracle), and the 429 is byte-identical
+  to the per-IP one. Fail-open on a counter-table blip. The email-login-code
+  **request** endpoint additionally gained a per-IP flood cap (#1927) — it had
+  none, so one IP could trigger real emails to an unbounded list of addresses.
+- **CAPTCHA (bot protection) — opt-in, provider-agnostic, dormant by default**
+  (#947/#340, `includes/captcha.php`). An admin can switch a challenge
+  (Cloudflare Turnstile / hCaptcha / Google reCAPTCHA v2) onto sign-up,
+  sign-in, password-reset, email-login and the song-request forms from
+  `/manage/configuration`. Verified **server-side** — the provider secret key
+  never reaches a browser and is encrypted at rest (`secretSettingKeys()`); the
+  siteverify URL is a constant from source (SSRF-safe). The gate is **fail-open
+  on infrastructure** (a provider outage never locks a congregation out —
+  the rate limits below stay in force underneath) but **fail-closed on the
+  challenge** (a missing/invalid token on a gated form is a `403`
+  `reason: captcha_required`). It is **entirely dormant and a verified
+  byte-identical no-op until an admin configures a provider + both keys and
+  ticks a form** — the CSP, the API responses and every page are unchanged on
+  an unconfigured install. The challenge raises an attacker's per-attempt cost;
+  it does not replace the per-IP / per-account / per-identifier budgets, which
+  stack underneath it.
 - **Authorization** — role hierarchy (`user` < `editor` < `admin` <
   `global_admin`) plus a fine-grained **entitlement** system
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call
