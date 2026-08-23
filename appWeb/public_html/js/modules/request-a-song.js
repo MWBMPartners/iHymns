@@ -58,6 +58,10 @@
 
 import { offlineQueue } from './offline-queue.js';
 import { apiFetch } from '../utils/api-client.js';
+/* #947/#340 — the dormant CAPTCHA widget. A no-op unless an admin has ticked
+   the 'song_request' form + configured a provider (captchaRequired() false), so
+   nothing below changes behaviour on a normal install. */
+import { captchaRequired, mountCaptcha, isCaptchaRefusal, CAPTCHA_BODY_KEY } from './captcha-widget.js';
 /* #1867 (epic #1863, rule #43) — side-effect import for the Songbook
    field's combobox keyboard/ARIA handling. `combobox-a11y.js` deliberately
    contains no import/export (see its own doc-block), so it attaches
@@ -153,7 +157,12 @@ async function send(payload) {
        failure and fall through to the generic message below. */
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
-        throw new Error(data.error || 'Request failed.');
+        const e = new Error(data.error || 'Request failed.');
+        /* #947/#340 — flag a CAPTCHA refusal on the error (status + machine
+           reason, never prose — rule #35) so the submit handler can reset the
+           widget for a retry. Harmless on every non-captcha failure. */
+        if (isCaptchaRefusal(res.status, data)) { e.captchaRefusal = true; }
+        throw e;
     }
     return data;
 }
@@ -615,6 +624,19 @@ export function initRequestASong(params = {}) {
        care either way — it only reacts to future input. */
     initSongbookPicker(root);
 
+    /* #947/#340 — mount the CAPTCHA challenge into the static host div the
+       fragment emits (#request-captcha) when the 'song_request' form is gated.
+       Dormant no-op otherwise (captchaRequired() false → no widget, no token,
+       byte-identical submit). Async mount resolves long before the user hits
+       submit; the handle is read from this closure in the submit handler. */
+    let captchaWidget = null;
+    if (captchaRequired('song_request')) {
+        const captchaHost = root.querySelector('#request-captcha');
+        if (captchaHost) {
+            mountCaptcha(captchaHost, 'song_request').then((h) => { captchaWidget = h; });
+        }
+    }
+
     form.addEventListener('submit', async (e) => {
         /* Suppress the native form POST — the #711 `action="…"` attribute is
            the no-JS fallback and must not double-submit alongside fetch(). */
@@ -639,6 +661,11 @@ export function initRequestASong(params = {}) {
             }
 
             try {
+                /* #947/#340 — attach the challenge answer ONLY on the live
+                   (online) path, just before the POST — never into the
+                   offline-queued payload above, whose token would be stale by
+                   drain time. */
+                if (captchaWidget) { payload[CAPTCHA_BODY_KEY] = captchaWidget.getToken(); }
                 const data = await send(payload);
                 const idEl = ui.ok?.querySelector('#request-tracking-id');
                 if (idEl) idEl.textContent = data.trackingId ? `Reference: #${data.trackingId}` : '';
@@ -672,6 +699,10 @@ export function initRequestASong(params = {}) {
                         'Could not reach the server and could not save offline.'
                     );
                 } else {
+                    /* #947/#340 — a CAPTCHA refusal: reset the widget so the
+                       user gets a fresh challenge, then show the server's
+                       message (never invented prose). */
+                    if (err.captchaRefusal) { captchaWidget?.reset(); }
                     showError(ui, err.message || 'Could not submit — please try again later.');
                 }
             }

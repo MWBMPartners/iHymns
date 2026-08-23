@@ -18,6 +18,10 @@
  */
 
 import { apiFetch } from '../utils/api-client.js';
+/* #947/#340 — dormant CAPTCHA widget for the quick-request modal (the second
+   song_request_submit surface beside the /request page). No-op unless the
+   'song_request' form is ticked + a provider configured. */
+import { captchaRequired, mountCaptcha, isCaptchaRefusal, CAPTCHA_BODY_KEY } from './captcha-widget.js';
 
 export class SongRequest {
     /**
@@ -96,6 +100,9 @@ export class SongRequest {
                                 <input type="email" class="form-control" id="request-email"
                                        placeholder="So we can let you know when it's added">
                             </div>
+                            <!-- #947/#340 — CAPTCHA host (markup only). Mounted
+                                 on show only when 'song_request' is gated. -->
+                            <div id="request-modal-captcha" class="mb-2"></div>
                         </form>
                     </div>
                     <div class="modal-footer">
@@ -112,13 +119,24 @@ export class SongRequest {
         const bsModal = new bootstrap.Modal(modal);
         bsModal.show();
 
+        /* #947/#340 — mount the challenge into the modal host when gated.
+           Dormant no-op otherwise (captchaRequired() false → no widget, no
+           token). The handle is read in handleSubmit(). */
+        this._captchaWidget = null;
+        if (captchaRequired('song_request')) {
+            const host = modal.querySelector('#request-modal-captcha');
+            if (host) {
+                mountCaptcha(host, 'song_request').then((h) => { this._captchaWidget = h; });
+            }
+        }
+
         /* Submit handler */
         modal.querySelector('#request-submit-btn')?.addEventListener('click', () => {
             this.handleSubmit(bsModal);
         });
 
         /* Clean up on close */
-        modal.addEventListener('hidden.bs.modal', () => modal.remove());
+        modal.addEventListener('hidden.bs.modal', () => { this._captchaWidget = null; modal.remove(); });
     }
 
     /**
@@ -157,14 +175,26 @@ export class SongRequest {
 
         /* POST to the DB-backed endpoint — same contract as the /request page.
            `website` is the honeypot (must stay empty for a real submission). */
+        /* #947/#340 — attach the challenge answer when the widget is mounted. */
+        const body = { title, songbook, details: notes || '', email: email || '', website: '' };
+        if (this._captchaWidget) { body[CAPTCHA_BODY_KEY] = this._captchaWidget.getToken(); }
+
         try {
             const res = await apiFetch('/api?action=song_request_submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ title, songbook, details: notes || '', email: email || '', website: '' }),
+                body: JSON.stringify(body),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data || !data.ok) {
+                /* #947/#340 — a CAPTCHA refusal (status + reason, never prose):
+                   reset the widget and show the SERVER's message so the user
+                   knows to solve the challenge, rather than the generic toast. */
+                if (isCaptchaRefusal(res.status, data)) {
+                    this._captchaWidget?.reset();
+                    this.app.showToast((data && data.error) || 'Please complete the verification challenge.', 'warning', 5000);
+                    return;
+                }
                 throw new Error((data && data.error) || 'Request failed.');
             }
             /* Only now — on a real server OK — do we confirm success. */

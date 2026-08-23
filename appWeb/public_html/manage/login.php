@@ -184,6 +184,20 @@ $csrf = csrfToken();
                        required>
             </div>
 
+            <?php
+            /* #947/#340 — the CAPTCHA challenge widget. captchaWidgetHtml()
+               returns '' unless a provider is configured AND the 'manage_login'
+               form is ticked, so this whole block is a byte-identical no-op on
+               a dormant install. The provider's auto-render script (the <script
+               src> the helper emits) draws the widget and injects its answer
+               under the provider's own POST field, which the gate above reads —
+               no JS module needed on this server-rendered page. */
+            $captchaWidget = captchaWidgetHtml('manage_login');
+            if ($captchaWidget !== ''):
+            ?>
+                <div class="mb-3"><?= $captchaWidget ?></div>
+            <?php endif; ?>
+
             <button type="submit" class="btn btn-amber w-100">
                 <i class="bi bi-box-arrow-in-right me-1"></i>Sign In
             </button>

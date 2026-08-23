@@ -195,6 +195,12 @@ if ($_serverError !== '') {
                    style="position:absolute; left:-9999px; top:-9999px;" aria-hidden="true">
         </div>
 
+        <!-- #947/#340 — static host for the CAPTCHA widget. Markup ONLY (rule
+             #30 — no inline script); js/modules/request-a-song.js mounts the
+             challenge here via captcha-widget.js ONLY when an admin has ticked
+             the 'song_request' form. Empty + invisible on a dormant install. -->
+        <div id="request-captcha" class="mt-3"></div>
+
         <div class="mt-4 d-flex gap-2">
             <button type="submit" class="btn btn-primary" id="request-submit-btn">
                 <i class="fa-solid fa-paper-plane me-1" aria-hidden="true"></i>
