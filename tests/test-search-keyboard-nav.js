@@ -194,14 +194,40 @@ if (inputHandlerBody) {
         /\.focus\s*\(\s*\)/.test(inputHandlerBody));
 }
 
-console.log('\n5 — rows stay real, natively-focusable anchors (no tabindex surgery, no combobox revival)\n');
+console.log('\n5 — the #1903 results-list nav COEXISTS with the #1936 typeahead dropdown (not replaced by it)\n');
 
-check('result rows are still real <a href> elements (Enter opens them natively)',
-    /<a href="\/song\/\$\{escapeHtml\(song\.id\)\}"/.test(searchJs)
-    || /<a\s+href="\/song\//.test(searchJs));
-check('this is NOT a combobox/typeahead revival — combobox-a11y stays uninvolved',
-    !/combobox-a11y/.test(searchJs),
-    'combobox-a11y.js was removed from this module as dead code in #812 and must stay out');
+/* HISTORY: this section once asserted `!combobox-a11y` — "the helper was
+   removed as dead code in #812 and must stay out". #1936 deliberately reverses
+   that: the /search page now has a REAL typeahead suggestion dropdown that
+   legitimately uses the shared combobox helper (owner-directed rebuild of
+   #307). So the invariant this section guards changed from "no combobox at
+   all" to "the two keyboard models COEXIST": the #1903 results-list
+   ArrowDown-into-results branch is PRESERVED and gated behind the dropdown's
+   route-through, so it still runs whenever the dropdown is closed. The full
+   #1936 wiring (fetch, render, navigate-on-pick, reachability) is guarded by
+   tests/test-search-typeahead.js; this file stays about the #1903 nav. */
+
+check('the FULL results rows are still real <a href> elements (Enter opens them natively)',
+    /<a href="\/song\/\$\{escapeHtml\(song\.id\)\}"/.test(searchJs));
+
+check('combobox-a11y is now imported (the #1936 typeahead dropdown uses the shared helper)',
+    /import\s+['"]\.\/combobox-a11y\.js['"]\s*;/.test(searchJs),
+    '#1936 rebuilt the /search typeahead on the shared combobox helper — the old `!combobox-a11y` ban no longer applies');
+
+if (inputHandlerBody) {
+    check('the input handler gives the #1936 dropdown FIRST refusal, then falls through to #1903',
+        /_handleSuggestKeydown\s*\(\s*e\s*\)\s*\)\s*return/.test(inputHandlerBody),
+        'the combobox must consume open-dropdown keys (return early) BEFORE the #1903 ArrowDown-into-results branch runs');
+    /* Prove the #1903 branch is genuinely still THERE and after the
+       route-through, not that the route-through swallowed it: the input
+       handler must still focus a result row on ArrowDown when the dropdown is
+       closed. §4 already asserts the .song-list-item + focus() parts; here we
+       assert the ORDER — the route-through appears before the row focus. */
+    const routeThroughIdx = inputHandlerBody.search(/_handleSuggestKeydown\s*\(\s*e\s*\)/);
+    const rowFocusIdx = inputHandlerBody.search(/firstRow\.focus\s*\(\s*\)/);
+    check('the #1936 route-through comes BEFORE the #1903 results-list focus (open dropdown wins the key)',
+        routeThroughIdx >= 0 && rowFocusIdx >= 0 && routeThroughIdx < rowFocusIdx);
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
