@@ -6118,7 +6118,12 @@ paths:
     get:
       operationId: listTags
       tags: [Discovery]
-      summary: List every curated song tag
+      summary: List every curated song tag (flat, unranked)
+      description: >
+        The full tag list, ordered by name — id/name/slug/description only, NO
+        counts. Web clients use ?action=popular_tags (the home strip) and the
+        /themes A–Z index page instead; this endpoint is kept as a documented
+        public API (published contracts outlive their first caller, rule #33).
       parameters:
         - name: action
           in: query
@@ -6126,7 +6131,7 @@ paths:
           schema: { type: string, enum: [tags] }
       responses:
         "200":
-          description: Tag list with song counts
+          description: The flat tag list (id, name, slug, description).
           content:
             application/json:
               schema:
@@ -6137,10 +6142,10 @@ paths:
                     items:
                       type: object
                       properties:
-                        id:       { type: integer }
-                        name:     { type: string, example: Easter }
-                        slug:     { type: string, example: easter }
-                        songCount: { type: integer }
+                        id:          { type: integer }
+                        name:        { type: string, example: Easter }
+                        slug:        { type: string, example: easter }
+                        description: { type: string, nullable: true }
 
   /api.php?action=popular_tags:
     get:
@@ -6149,9 +6154,11 @@ paths:
       summary: Top themes ranked by usage, with song counts
       description: >
         Powers the compact "Popular themes" home strip (#1148). Returns
-        only tags that are actually in use, ordered by song count
-        (descending) then name. Scoped/DB-direct — never a whole-corpus
-        load.
+        only tags actually in use, ordered by song count (descending) then
+        name. The counts are the VISIBLE-song counts — soft-deleted songs and
+        disabled songbooks excluded — so a chip's number matches the /tag/<slug>
+        page it links to (the shared includes/theme_index.php count core).
+        Scoped/DB-direct — never a whole-corpus load.
       parameters:
         - name: action
           in: query
