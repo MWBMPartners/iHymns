@@ -285,34 +285,16 @@ async function loadTags() {
     const seen = new Set();
     el.innerHTML = tags.map(t => renderThemeChip(t, seen)).join('');
 
-    /* If we filled the popular cap there are probably more themes — offer
-       a one-click inline reveal of the remaining set. The popular chips
-       (with counts) stay; the rest append without counts. */
+    /* If we filled the popular cap there are probably more themes — link to
+       the searchable /themes A–Z index (#1148) rather than re-creating the
+       unbounded chip wall inline (the exact failure #1148 was filed about, one
+       click deep). The [data-navigate] delegation (app.js) handles the SPA
+       navigation, so this module makes no further fetch. */
     if (tags.length >= POPULAR_TAGS_LIMIT) {
-        const moreBtn = document.createElement('button');
-        moreBtn.type = 'button';
-        moreBtn.className = 'btn btn-sm btn-link theme-show-all px-1';
-        moreBtn.textContent = 'Browse all themes →';
-        el.appendChild(moreBtn);
-
-        moreBtn.addEventListener('click', async () => {
-            moreBtn.disabled = true;
-            let all = [];
-            try {
-                const res  = await apiFetch('/api?action=tags');
-                const data = await res.json();
-                all = Array.isArray(data.tags) ? data.tags : [];
-            } catch {
-                /* Network blip — leave the popular strip as-is. */
-            }
-            const extra = all.filter(t => !seen.has(t.slug || ''));
-            if (extra.length) {
-                moreBtn.insertAdjacentHTML(
-                    'beforebegin',
-                    extra.map(t => renderThemeChip(t, seen)).join('')
-                );
-            }
-            moreBtn.remove();
-        });
+        el.insertAdjacentHTML(
+            'beforeend',
+            '<a href="/themes" data-navigate="themes" class="btn btn-sm btn-link theme-show-all px-1">'
+            + 'Browse all themes <span aria-hidden="true">&rarr;</span></a>'
+        );
     }
 }

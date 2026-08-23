@@ -12,11 +12,9 @@
  * (C3) and the nav entry (C4) join the checked set automatically as they land —
  * no typed list of emitters to keep in sync.
  *
- * STAGING NOTE: the home strip still fetches ?action=tags for its inline
- * "Browse all themes" reveal at C2; C3 replaces that with the /themes link and
- * TIGHTENS this guard (adds the "home emits /themes + no action=tags"
- * assertions). This C2 version asserts the route PLUMBING only, tolerant of the
- * reveal still existing.
+ * The home strip navigates to /themes (C3 retired its old inline ?action=tags
+ * reveal); Assertion 8 pins that. Assertion 7 stays tree-derived so the nav
+ * entry (C4) joins the checked emitter set automatically as it lands.
  *
  *   node tests/test-themes-route.js
  *
@@ -143,6 +141,17 @@ const emitters = emitterFiles.filter((f) => {
    in 2). This assertion just proves no emitter is orphaned. */
 check(`every /themes emitter has a router case (emitters found: ${emitters.length})`,
     emitters.length === 0 || tCaseStart >= 0);
+
+console.log('\nAssertion 8 — the home strip navigates to /themes; the inline reveal is retired (C3):');
+const HOME_PAGE_JS = join(WEB_ROOT, 'js', 'modules', 'home-page.js');
+const homeSrc = existsSync(HOME_PAGE_JS) ? readFileSync(HOME_PAGE_JS, 'utf8') : '';
+/* Comment-stripped: a doc-block may legitimately explain the retired reveal. */
+const homeCode = homeSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+check('home-page.js emits the /themes link (data-navigate="themes")',
+    /data-navigate="themes"/.test(homeCode) && /href="\/themes"/.test(homeCode));
+check('home-page.js no longer fetches ?action=tags (the unbounded inline reveal is gone)',
+    !/action=tags/.test(homeCode));
+check('at least one /themes emitter now exists (the home strip)', emitters.length >= 1);
 
 /* ------------------------------------------------------------------ */
 console.log(`\n${passed} passed, ${failed} failed`);
