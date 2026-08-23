@@ -170,3 +170,64 @@ function themeIndexCounts(\mysqli $db, ?int $limit = null, string $order = 'name
 
     return $rows;
 }
+
+/**
+ * Resolve ONE theme by slug, with its VISIBLE-song count — for the /tag/<slug>
+ * OG matcher (#1148 §3.6).
+ *
+ * ELI5: "what's this theme's name + description + how many songs a visitor can
+ * see carry it?", for the social-preview meta tags.
+ *
+ * WHY A SIBLING IN THIS FILE, NOT AN INLINE COUNT IN index.php (A.5): an OG
+ * description count that disagreed with the page it advertises would be the
+ * same count-drift bug in a crawler's clothes. This resolves the tag row, then
+ * counts its visible songs with the SAME songVisibleSql + songServableSql
+ * filter tag.php lists by — so the OG count and the page count are one number.
+ * A known-but-empty slug returns a real row with useCount 0 (it's a valid
+ * page); an unknown slug returns null (the caller falls through to the generic
+ * OG block).
+ *
+ * @return array{id:int,name:string,slug:string,description:?string,useCount:int}|null
+ */
+function themeIndexOne(\mysqli $db, string $slug): ?array
+{
+    $slug = trim($slug);
+    if ($slug === '' || !themeIndexReady($db)) {
+        return null;
+    }
+    try {
+        /* 1. Resolve the tag row (indexed on Slug). */
+        $stmt = $db->prepare('SELECT Id, Name, Slug, Description FROM tblSongTags WHERE Slug = ?');
+        $stmt->bind_param('s', $slug);
+        $stmt->execute();
+        $tag = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$tag) {
+            return null;   /* unknown slug — caller uses the generic OG block */
+        }
+        /* 2. Its visible-song count — the SAME filter tag.php lists by, so the
+           OG count matches the page (source-constant fragments, rule #5). */
+        $visible  = songVisibleSql($db, 's');
+        $servable = songServableSql($db, 's');
+        $cstmt = $db->prepare(
+            "SELECT COUNT(*) AS c
+               FROM tblSongTagMap m JOIN tblSongs s ON s.SongId = m.SongId
+              WHERE m.TagId = ? AND {$visible} AND {$servable}"
+        );
+        $tid = (int)$tag['Id'];
+        $cstmt->bind_param('i', $tid);
+        $cstmt->execute();
+        $crow = $cstmt->get_result()->fetch_assoc();
+        $cstmt->close();
+    } catch (\Throwable $e) {
+        error_log('[theme_index] one: ' . $e->getMessage());
+        return null;
+    }
+    return [
+        'id'          => (int)$tag['Id'],
+        'name'        => (string)$tag['Name'],
+        'slug'        => (string)$tag['Slug'],
+        'description' => $tag['Description'] !== null ? (string)$tag['Description'] : null,
+        'useCount'    => (int)($crow['c'] ?? 0),
+    ];
+}

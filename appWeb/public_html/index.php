@@ -780,6 +780,41 @@ try {
             ['name' => 'Shared',   'url' => $canonicalUrl],
         ];
     }
+    /* #1148 — the /themes A–Z index. Static OG (no DB read). */
+    elseif ($requestPath === '/themes') {
+        $pageType = 'other';
+        $ogTitle = 'Browse songs by theme — ' . $app["Application"]["Name"];
+        $ogDescription = 'Browse the full catalogue of worship songs and hymns by theme on '
+                       . $app["Application"]["Name"] . '.';
+        $breadcrumbItems = [
+            ['name' => 'Home',   'url' => getCanonicalUrl('/')],
+            ['name' => 'Themes', 'url' => $canonicalUrl],
+        ];
+    }
+    /* #1148 — a per-theme page: the OG description carries the ALIGNED
+       visible-song count (themeIndexOne — the SAME number the page lists), so
+       the crawler card can never disagree with the page. Unknown slug falls
+       through to the generic block (the writer matcher's posture). */
+    elseif (preg_match('#^/tag/([a-z0-9\-]{1,50})$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $ogTag = null;
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'theme_index.php';
+            $ogTag = themeIndexOne(getDbMysqli(), $matches[1]);
+        } catch (\Throwable $_e) { /* pre-#1152 / outage — generic OG */ }
+        if ($ogTag) {
+            $ogTitle = htmlspecialchars($ogTag['name']) . ' — songs by theme — ' . $app["Application"]["Name"];
+            $ogDescription = number_format($ogTag['useCount']) . ' '
+                           . ($ogTag['useCount'] === 1 ? 'song' : 'songs')
+                           . ' tagged "' . htmlspecialchars($ogTag['name']) . '" on '
+                           . $app["Application"]["Name"] . '.';
+            $breadcrumbItems = [
+                ['name' => 'Home',            'url' => getCanonicalUrl('/')],
+                ['name' => 'Themes',          'url' => getCanonicalUrl('/themes')],
+                ['name' => $ogTag['name'],    'url' => $canonicalUrl],
+            ];
+        }
+    }
     /* Songbooks listing page */
     elseif ($requestPath === '/songbooks') {
         $pageType = 'other';
@@ -1269,6 +1304,9 @@ if (!empty($breadcrumbItems)) {
                         </a></li>
                         <li><a class="dropdown-item" href="/songbooks" data-navigate="songbooks">
                             <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbooks
+                        </a></li>
+                        <li><a class="dropdown-item" href="/themes" data-navigate="themes">
+                            <i class="fa-solid fa-tags me-2" aria-hidden="true"></i> Themes
                         </a></li>
                         <li><a class="dropdown-item" href="/favorites" data-navigate="favorites">
                             <i class="fa-solid fa-heart me-2" aria-hidden="true"></i> Favourites

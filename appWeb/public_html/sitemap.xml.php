@@ -86,6 +86,7 @@ $urls = [];
 $staticPages = [
     '/'          => ['priority' => '1.0', 'changefreq' => 'daily'],
     '/songbooks' => ['priority' => '0.9', 'changefreq' => 'weekly'],
+    '/themes'    => ['priority' => '0.6', 'changefreq' => 'weekly'],   /* #1148 — the browse-by-theme index */
     '/search'    => ['priority' => '0.7', 'changefreq' => 'monthly'],
     '/favorites' => ['priority' => '0.5', 'changefreq' => 'monthly'],
     '/help'      => ['priority' => '0.4', 'changefreq' => 'monthly'],
@@ -175,6 +176,29 @@ try {
     }
     $mus->close();
 } catch (\Throwable $_e) { /* pre-migration / outage — omit musician URLs */ }
+
+/* --- Theme pages (#1148) ---
+   One <loc> per /tag/<slug>, sourced from the ONE visible-song count core
+   (themeIndexCounts) — INNER JOIN, so only themes with at least one visible
+   song are advertised (no thin/empty crawlable pages, and the sitemap can
+   never advertise a theme the /themes index hides). Registry-driven +
+   outage-tolerant, exactly the musician-loop model above: a pre-#1152 install
+   or a DB blip returns [] and emits no theme URLs rather than fataling. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'theme_index.php';
+try {
+    foreach (themeIndexCounts(getDbMysqli()) as $theme) {
+        $slug = (string)($theme['slug'] ?? '');
+        if ($slug === '') {
+            continue;
+        }
+        $urls[] = [
+            'loc'        => $baseUrl . '/tag/' . rawurlencode($slug),
+            'lastmod'    => $today,
+            'changefreq' => 'monthly',
+            'priority'   => '0.5',
+        ];
+    }
+} catch (\Throwable $_e) { /* pre-#1152 / outage — omit theme URLs */ }
 
 /* =========================================================================
  * OUTPUT XML SITEMAP

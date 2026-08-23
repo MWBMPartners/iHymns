@@ -153,6 +153,21 @@ check('home-page.js no longer fetches ?action=tags (the unbounded inline reveal 
     !/action=tags/.test(homeCode));
 check('at least one /themes emitter now exists (the home strip)', emitters.length >= 1);
 
+console.log('\nAssertion 9 — SEO surfaces + nav are wired to the ONE core (C4):');
+const SITEMAP = join(WEB_ROOT, 'sitemap.xml.php');
+const INDEX = join(WEB_ROOT, 'index.php');
+const sitemapSrc = existsSync(SITEMAP) ? readFileSync(SITEMAP, 'utf8') : '';
+const indexSrc = existsSync(INDEX) ? readFileSync(INDEX, 'utf8') : '';
+check('sitemap.xml.php lists /themes as a static page', /'\/themes'/.test(sitemapSrc));
+check('sitemap.xml.php emits /tag/<slug> URLs from themeIndexCounts() (aligned, outage-tolerant)',
+    /themeIndexCounts\(/.test(sitemapSrc) && /\/tag\/'/.test(sitemapSrc));
+check('index.php has a /tag/<slug> OG matcher using the aligned themeIndexOne() count (never an inline count)',
+    /\^\/tag\//.test(indexSrc) && /themeIndexOne\(/.test(indexSrc));
+check('index.php has a /themes OG matcher',
+    /requestPath === '\/themes'/.test(indexSrc));
+check('a "Themes" nav entry links to /themes (joins the emitter set above)',
+    /data-navigate="themes"/.test(indexSrc));
+
 /* ------------------------------------------------------------------ */
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
