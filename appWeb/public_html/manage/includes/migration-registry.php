@@ -4545,4 +4545,29 @@ return [
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblOrganisations', 'BrandColor')
                                            || !_migProbe_columnExists($db, 'tblOrganisations', 'BrandJson'),
     ],
+
+    'webhooks' => [
+        'script' => 'migrate-add-webhooks.php',
+        'card' => [
+            'title'  => 'Partner webhooks platform (#1909)',
+            'body'   => 'Creates the three dormant tables that back outbound partner'
+                      . ' webhooks: <code>tblWebhookSubscriptions</code> (partner endpoints +'
+                      . ' signing secret + event selectors), <code>tblWebhookEvents</code> (the'
+                      . ' durable event ledger / outbox — ONE frozen payload per event) and'
+                      . ' <code>tblWebhookDeliveries</code> (per-subscription delivery queue,'
+                      . ' retry state and dead-letter surface). External systems subscribe to'
+                      . ' events (song/songbook changed, set-list shared, service live) and'
+                      . ' receive signed HTTP POST callbacks with retry + dead-lettering.'
+                      . ' <strong>Entirely dormant</strong> until'
+                      . ' <code>webhooks_enabled_channels</code> names a channel — until then a'
+                      . ' clean no-op. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Partner Webhooks Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until ALL THREE tables exist,
+           so a partial apply never shows the card green. Detects real completion. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblWebhookSubscriptions')
+            || !_migProbe_tableExists($db, 'tblWebhookEvents')
+            || !_migProbe_tableExists($db, 'tblWebhookDeliveries'),
+    ],
 ];
