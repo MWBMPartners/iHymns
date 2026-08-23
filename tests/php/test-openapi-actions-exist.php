@@ -340,6 +340,7 @@ $PAGE_INTERNAL = [
     'stats'          => 'SPA-internal HTML fragment, auth-required user-specific view',
     'writer'         => 'forever-kept alias (rule #33) rendering the SAME fragment as the documented ?page=musician — no independent contract of its own',
     'tag'            => 'SPA-internal HTML fragment (theme page) — no external consumer',
+    'themes'         => 'SPA-internal HTML fragment (the #1148 /themes A–Z index) — no external consumer; the /tags alias folds to this before the switch',
     'request-a-song' => 'alias of ?page=request, documented inside that path item\'s `page` parameter enum rather than as a second path item',
 ];
 

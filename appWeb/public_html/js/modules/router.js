@@ -343,6 +343,14 @@ export class Router {
                    slug renders the page's own "no songs for this theme"
                    state (includes/pages/tag.php), same as work/tune/iswc. */
                 return { page: 'tag', params: { slug: segments[1] || '' } };
+            case 'themes':
+            case 'tags':
+                /* #1148 — the searchable /themes A–Z index (the follow-on to
+                   the home Top-8 strip). `/tags` is a forgiving alias (the
+                   people/person, work/works convention); api.php folds it to
+                   `themes` BEFORE the cache key so the two never double-cache
+                   identical content. */
+                return { page: 'themes', params: {} };
             case 'tune':
                 /* #940 — /tune/<slug> lists every song that uses the
                    named tune. Slugified upstream (lowercase + hyphen-
@@ -653,6 +661,11 @@ export class Router {
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
             'musician': 'Musician — ' + appName,
+            /* #1148 — the theme surfaces. `tag` had NO entry before this (its
+               per-theme pages titled as the bare app name since #1637); added
+               here alongside the new `themes` index it belongs to. */
+            'themes': 'Themes — ' + appName,
+            'tag': 'Theme — ' + appName,
             /* #1741 P3 — the six external-identifier alias pages (iswc had
                no title entry before this either; added here for
                consistency with its five new siblings). */
@@ -920,6 +933,15 @@ export class Router {
             import('./home-page.js')
                 .then(m => m.initHomePage())
                 .catch(err => console.error('[Router] home-page init failed:', err));
+        }
+
+        /* #1148 — the /themes A–Z index: filter + letter jump bar, wired as a
+           real ES module (the shared-cache fragment carries no inline script,
+           rule #30). Reads its inputs DOM-first from the fragment's data-*. */
+        if (page === 'themes') {
+            import('./themes-page.js')
+                .then(m => m.initThemesPage())
+                .catch(err => console.error('[Router] themes-page init failed:', err));
         }
 
         /* Songbook language filter (#679). Booted on both /home and

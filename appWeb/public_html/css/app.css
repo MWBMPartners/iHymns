@@ -3703,6 +3703,25 @@ body.reduce-motion .theme-chip:focus-visible {
     transform: none;
 }
 
+/* #1148 — /themes A–Z index jump bar. A sticky letter strip that follows the
+   viewport as the user scrolls the (potentially long) list. JS-built + revealed
+   (the host ships `hidden`), so no-JS visitors never see an empty bar. */
+.themes-jump-bar {
+    position: sticky;
+    top: 0.5rem;
+    z-index: 2;
+    background: var(--bs-body-bg);
+    padding: 0.35rem 0;
+    margin-bottom: 0.75rem;
+    border-bottom: 1px solid var(--bs-border-color-translucent);
+}
+.themes-jump-letter {
+    min-width: 2rem;   /* keeps the >=44px tap target comfortable */
+}
+.themes-jump-letter.disabled {
+    opacity: 0.4;
+}
+
 /* ==========================================================================
  * CUSTOMISABLE HOME SECTIONS — edit-mode chrome (#448)
  * Public-home counterpart of the admin dashboard's card-layout styling

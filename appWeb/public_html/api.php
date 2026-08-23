@@ -453,6 +453,15 @@ $action = isset($_GET['action']) ? trim($_GET['action']) : null;
 if ($page === 'person' || $page === 'people') {
     $page = 'musician';
 }
+/* #1148 — `page=themes` is canonical; `page=tags` is a forgiving alias
+   (the people/person, work/works convention). Normalised HERE, before the
+   $_cacheablePages membership check and the ETag cache key below, so the alias
+   shares the SAME cached fragment as the canonical value (two page values
+   hashing to two cache entries for identical content is the silent
+   cache-fragmentation bug the person/people fold above avoids). */
+if ($page === 'tags') {
+    $page = 'themes';
+}
 
 /* =========================================================================
  * LIVENESS PROBE — GET /api?action=health  (#1022)
@@ -628,6 +637,12 @@ if ($page !== null) {
            The query string carries the slug so /api?page=tag&slug=grace and
            &slug=worship hash to distinct ETags below. */
         'tag',
+        /* #1148 — the /themes A–Z index: same-for-everyone by construction (it
+           reads only tblSongTags ⋈ tblSongTagMap ⋈ tblSongs, no per-user data),
+           so it caches on the same terms as `tag`. The `tags` alias was folded
+           to `themes` above (before this membership check), so both spellings
+           share one cached fragment. */
+        'themes',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     /* #1769 P3 — when content gating is ON, the page=song fragment is
@@ -807,6 +822,16 @@ if ($page !== null) {
                which only the page template has enough context to word). */
             $tagSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tag.php';
+            break;
+
+        case 'themes':
+            /* #1148 — the searchable /themes A–Z index (the follow-on to the
+               home Top-8 "Popular themes" strip; the `tags` alias was folded to
+               `themes` before the cache-key logic above). Shared-cache fragment
+               (in $_cacheablePages) — reads only the theme registry, no
+               per-user data. Renders its own empty-state when no themes exist
+               (an index with nothing in it is a 200, not a 404). */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'themes.php';
             break;
 
         case 'tune':

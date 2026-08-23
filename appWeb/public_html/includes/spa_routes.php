@@ -81,6 +81,7 @@ const IHYMNS_SPA_ROUTE_ALIASES = [
     'person',       // → musician (legacy)
     'writer',       // → musician (legacy; index.php 301s a resolvable writer)
     'request',      // → request-a-song (canonical fragment is request-a-song.php)
+    'tags',         // → themes (#1148 forgiving alias; api.php folds page=tags→themes)
     /* client-only route — no server fragment */
     'login',
     /* admin portal — .htaccess handles these before index.php; listed for drift-resistance */
