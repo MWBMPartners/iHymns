@@ -910,6 +910,56 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_cuercode] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_captcha') {
+            /* CAPTCHA provider (#947/#340). Provider must be a SELECTABLE
+               registry key (or 'none' = off); the public site key is stored
+               plain; the secret key follows the blank-=-keep idiom every secret
+               field here uses (encrypted at rest via $saveSetting because
+               captcha_secret_key is in secretSettingKeys()); the enabled forms
+               are the ticked subset of captchaFormKeys(), stored as CSV (rule
+               #20 — a growable vocabulary as a CSV, never an ENUM/SET column, so
+               NO DDL). Requires captcha.php for the constants + the registry
+               (rule #35 — one source of truth for the provider/form vocab). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+            try {
+                $provIn    = trim((string)($_POST[CAPTCHA_SETTING_PROVIDER] ?? 'none'));
+                $providers = captchaProviders();
+                if ($provIn !== 'none' && (!isset($providers[$provIn]) || empty($providers[$provIn]['selectable']))) {
+                    throw new \RuntimeException('Unknown or non-selectable CAPTCHA provider.');
+                }
+                $siteIn   = trim((string)($_POST[CAPTCHA_SETTING_SITE_KEY] ?? ''));
+                $secretIn = trim((string)($_POST[CAPTCHA_SETTING_SECRET_KEY] ?? ''));
+
+                /* Checkbox array → validated CSV (⊆ captchaFormKeys()). An
+                   unknown key is dropped, never fatal — fail closed-to-disabled. */
+                $postedForms = (array)($_POST['captcha_forms'] ?? []);
+                $validForms  = captchaFormKeys();
+                $formsOut    = [];
+                foreach ($postedForms as $f) {
+                    $f = trim((string)$f);
+                    if (in_array($f, $validForms, true) && !in_array($f, $formsOut, true)) {
+                        $formsOut[] = $f;
+                    }
+                }
+                $formsCsv = implode(',', $formsOut);
+
+                $changedKeys = [CAPTCHA_SETTING_PROVIDER, CAPTCHA_SETTING_SITE_KEY, CAPTCHA_SETTING_FORMS];
+                $saveSetting($db, CAPTCHA_SETTING_PROVIDER, $provIn);
+                $saveSetting($db, CAPTCHA_SETTING_SITE_KEY, $siteIn);
+                $saveSetting($db, CAPTCHA_SETTING_FORMS, $formsCsv);
+                if ($secretIn !== '') {
+                    $changedKeys[] = CAPTCHA_SETTING_SECRET_KEY;
+                    $saveSetting($db, CAPTCHA_SETTING_SECRET_KEY, $secretIn);
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', CAPTCHA_SETTING_PROVIDER,
+                        ['keys' => $changedKeys, 'forms' => $formsCsv], 'success'); /* key NAMES + form list only — never the secret VALUE */
+                }
+                $saveSuccess = 'CAPTCHA settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_captcha] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         } elseif ($action === 'save_live_follow_idle') {
             /* #1770 §4.7 — the APP layer of the leader-idle precedence chain
                (includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
@@ -1059,6 +1109,29 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 $cuercodeBaseUrlVal = (string)(getAppSetting(CUERCODE_SETTING_BASE_URL, CUERCODE_DEFAULT_BASE_URL) ?? CUERCODE_DEFAULT_BASE_URL);
 $cuercodeApiKeySet  = ((string)(getAppSetting(CUERCODE_SETTING_API_KEY, '') ?? '')) !== '';
 $cuercodeConfigured = cuercodeConfigured();
+
+/* CAPTCHA provider (#947/#340) — dormant until a provider + BOTH keys are set
+   AND a form is ticked. Same secret convention: the site key echoes as-typed;
+   the secret VALUE is never read into a form var, only whether it is SET. The
+   provider list + form list come from the registry (rule #35 — one source). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+$captchaProviderVal   = (string)(getAppSetting(CAPTCHA_SETTING_PROVIDER, 'none') ?? 'none');
+$captchaSiteKeyVal    = (string)(getAppSetting(CAPTCHA_SETTING_SITE_KEY, '') ?? '');
+$captchaSecretSet     = ((string)(getAppSetting(CAPTCHA_SETTING_SECRET_KEY, '') ?? '')) !== '';
+$captchaEnabledFormsV = captchaEnabledFormsList();
+$captchaConfiguredNow = captchaConfigured();
+$captchaProvidersReg  = captchaProviders();
+/* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
+   captchaFormKeys() value; a key without an entry falls back to a generic
+   caption, so the card can never silently drop a newly-added form. */
+$captchaFormMeta = [
+    'registration'   => ['label' => 'Registration',        'caption' => 'Breaks native app sign-up until the apps add widget support.'],
+    'login'          => ['label' => 'Login',               'caption' => 'Breaks native sign-in. Login already carries the strongest rate limits — enable last, if at all.'],
+    'password_reset' => ['label' => 'Password reset',      'caption' => 'Breaks native password reset until the apps add widget support.'],
+    'email_login'    => ['label' => 'Email login (code)',  'caption' => 'Breaks native magic-link login until the apps add widget support.'],
+    'song_request'   => ['label' => 'Song requests',       'caption' => 'Web-only endpoint — no native impact. Ends the no-JS form fallback while enabled.'],
+    'manage_login'   => ['label' => 'Admin login (/manage)','caption' => 'Admin login page — no native impact.'],
+];
 
 /* #1770 §4.7 — the APP-DEFAULT layer of the leader-idle precedence chain;
    read via the SAME resolver-adjacent constants service_mode.php declares
@@ -1445,6 +1518,98 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>Save CueRCode settings
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         CAPTCHA SECTION (#947/#340) — dormant until a provider + both keys + a form
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
+            </h2>
+            <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                A "prove you're human" challenge on the forms you tick below. Verified server-side; the
+                secret key never reaches a browser. <strong>Dormant until keyed</strong>: with no provider
+                and both keys saved — and at least one form ticked — nothing changes. The per-IP,
+                per-account and per-identifier rate limits stay in force underneath regardless.
+            </p>
+            <?php if (!$captchaConfiguredNow): ?>
+                <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
+                    Pick a provider, paste its site key + secret key (create an account with the provider
+                    first), then tick the forms to guard. The challenge goes live the moment all three are set.
+                </p>
+            <?php endif; ?>
+            <form method="post" class="row g-3 align-items-end mb-2">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_captcha">
+                <div class="col-md-4">
+                    <label for="captcha_provider" class="form-label">Provider</label>
+                    <select name="captcha_provider" id="captcha_provider" class="form-select">
+                        <option value="none"<?= $captchaProviderVal === 'none' ? ' selected' : '' ?>>None (off)</option>
+                        <?php foreach ($captchaProvidersReg as $pKey => $pEntry): ?>
+                            <?php if (empty($pEntry['selectable'])) { continue; } ?>
+                            <option value="<?= htmlspecialchars((string)$pKey, ENT_QUOTES, 'UTF-8') ?>"<?= $captchaProviderVal === $pKey ? ' selected' : '' ?>>
+                                <?= htmlspecialchars((string)($pEntry['label'] ?? $pKey), ENT_QUOTES, 'UTF-8') ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Turnstile, hCaptcha and reCAPTCHA v2 are supported.</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="captcha_site_key" class="form-label">Site key</label>
+                    <input type="text" name="captcha_site_key" id="captcha_site_key"
+                           class="form-control" autocomplete="off"
+                           value="<?= htmlspecialchars($captchaSiteKeyVal, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Public — sent to browsers to draw the widget.</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="captcha_secret_key" class="form-label">
+                        Secret key <?= $captchaSecretSet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <input type="password" name="captcha_secret_key" id="captcha_secret_key"
+                           class="form-control" autocomplete="off"
+                           placeholder="<?= $captchaSecretSet ? '(unchanged — leave blank to keep)' : 'provider secret key' ?>">
+                    <div class="form-text">Server-side only. Encrypted at rest; never sent to a browser.</div>
+                </div>
+                <div class="col-12">
+                    <label class="form-label mb-1">Guard these forms</label>
+                    <div class="row g-2">
+                        <?php foreach (captchaFormKeys() as $fKey): ?>
+                            <?php
+                            $fMeta   = $captchaFormMeta[$fKey] ?? ['label' => $fKey, 'caption' => ''];
+                            $fId     = 'captcha_form_' . preg_replace('/[^a-z0-9_]/', '', (string)$fKey);
+                            $fOn     = in_array($fKey, $captchaEnabledFormsV, true);
+                            ?>
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="captcha_forms[]"
+                                           value="<?= htmlspecialchars((string)$fKey, ENT_QUOTES, 'UTF-8') ?>"
+                                           id="<?= htmlspecialchars($fId, ENT_QUOTES, 'UTF-8') ?>"<?= $fOn ? ' checked' : '' ?>>
+                                    <label class="form-check-label" for="<?= htmlspecialchars($fId, ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars((string)$fMeta['label'], ENT_QUOTES, 'UTF-8') ?>
+                                    </label>
+                                    <?php if (($fMeta['caption'] ?? '') !== ''): ?>
+                                        <div class="form-text small"><?= htmlspecialchars((string)$fMeta['caption'], ENT_QUOTES, 'UTF-8') ?></div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save CAPTCHA settings
                     </button>
                 </div>
             </form>

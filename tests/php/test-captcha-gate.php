@@ -340,6 +340,32 @@ cg($literalLeaks === [],
     '5.4 no captcha-provider hostname literal outside includes/captcha.php (leaks: '
         . implode(', ', $literalLeaks) . ')');
 
+/* ===========================================================================
+ * SECTION 6 — the admin configuration card (C6)
+ * ======================================================================== */
+
+$cfgRaw = (string)file_get_contents($docroot . '/manage/configuration.php');
+$cfg    = cgStripComments($cfgRaw);
+
+cg(strpos($cfg, "\$action === 'save_captcha'") !== false,
+    '6.1 configuration.php has a save_captcha handler');
+/* Provider validation: rejects a non-selectable / unknown provider. */
+cg(strpos($cfg, "empty(\$providers[\$provIn]['selectable'])") !== false,
+    '6.2 the save handler rejects a non-selectable provider');
+/* Forms validated against the registry list (⊆ captchaFormKeys()). */
+cg(strpos($cfg, 'captchaFormKeys()') !== false && strpos($cfg, "\$_POST['captcha_forms']") !== false,
+    '6.3 the save handler validates the ticked forms against captchaFormKeys()');
+/* The secret is a PASSWORD input (never echoed back / exposed as text), and its
+   VALUE is never read into a render var — only whether it is SET. */
+cg((bool)preg_match('/type="password"[^>]*name="captcha_secret_key"/', $cfgRaw),
+    '6.4 the secret key is a password input (never rendered as text)');
+cg(strpos($cfg, 'value="<?= htmlspecialchars($captchaSecretVal') === false
+   && strpos($cfg, '$captchaSecretVal') === false,
+    '6.5 the secret VALUE is never read into a render variable (only $captchaSecretSet)');
+/* The card is fed from the registry, not a typed provider/form list. */
+cg(strpos($cfg, '$captchaProvidersReg') !== false && strpos($cfg, 'captchaProviders()') !== false,
+    '6.6 the provider <select> is built from captchaProviders() (no typed list)');
+
 /* ======================================================================== */
 
 echo "\n{$passed} passed, {$failures} failed\n";
