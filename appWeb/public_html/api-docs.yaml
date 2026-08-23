@@ -6224,10 +6224,12 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
-  # /api.php?action=suggest — REMOVED in #307 (header-search autocomplete was
-  # dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
+  # /api.php?action=suggest — REMOVED in #307 (the old header-search autocomplete
+  # was dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
   # endpoint had no in-repo, native or documented-external consumer). The live
-  # search is `action=search`. Re-add if a real typeahead is ever built.
+  # /search typeahead rebuilt in #1936 deliberately REUSES `action=search` with a
+  # low `limit` (documented above) rather than reviving a `suggest` endpoint —
+  # there is intentionally no separate suggest action.
 
   /api.php?action=related_songs:
     get:
