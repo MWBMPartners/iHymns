@@ -17061,6 +17061,67 @@ components:
 
   schemas:
     # -------------------------------------------------------------------------
+    # Outbound webhooks (#1909) — the body iHymns POSTs to a partner's endpoint
+    # -------------------------------------------------------------------------
+
+    WebhookEventEnvelope:
+      type: object
+      description: >-
+        The JSON body of every outbound webhook delivery (#1909). iHymns is the
+        CLIENT here — it POSTs this to a partner-registered `https://` endpoint.
+        The body is BYTE-IDENTICAL across retries (only the signature timestamp
+        moves), so a receiver can de-duplicate on `id`.
+
+        Signature: each request carries `X-iHymns-Signature: t=<unix>,v1=<hex>`
+        (Stripe-compatible). Verify with
+        `HMAC-SHA256("<t>.<raw request body>", <subscription secret>)` and reject
+        if `|now - t| > 300s`. During a secret rotation the header carries two
+        `v1=` values (current + previous) — accept if either matches. Other
+        headers: `X-iHymns-Event-Id`, `X-iHymns-Event-Type`,
+        `X-iHymns-Delivery-Id`, `X-iHymns-Attempt`.
+
+        THE ONE PAYLOAD RULE: `data` is identity + metadata ONLY — never lyric
+        content, media bytes/URLs, share tokens or service join codes. Fetch
+        content through the gated read API. Delivery is at-least-once; respond
+        2xx quickly, then process asynchronously.
+      required: [id, type, api_version, channel, occurred_at, data]
+      properties:
+        id:
+          type: string
+          example: "evt_9f2c1a4b7e0d8c6f5a2b3c4d5e6f7a8b"
+          description: "Globally-unique event id (evt_ + 32 hex). The receiver's de-dupe key."
+        type:
+          type: string
+          example: "song.updated"
+          description: >-
+            Dotted event type. v1 vocabulary: song.created / song.updated /
+            song.deleted / song.restored / songbook.created / songbook.updated /
+            songbook.deleted / songbook.import_completed / setlist.shared /
+            service.started / service.ended / webhook.verify / webhook.test.
+        api_version:
+          type: string
+          example: "1"
+          description: "Payload contract version. Additive changes do NOT bump it; a breaking reshape mints \"2\"."
+        channel:
+          type: string
+          enum: [alpha, beta, production]
+          description: "The docroot environment that emitted the event (assert it if your receiver is env-specific)."
+        occurred_at:
+          type: string
+          format: date-time
+          example: "2026-08-23T12:34:56Z"
+          description: "UTC instant the event occurred, frozen at emit."
+        data:
+          type: object
+          description: >-
+            Type-specific identity/metadata. e.g. song.*:
+            {song_id, public_id, songbook_abbr, title, changed_fields (names
+            only, updated), url}. songbook.*: {abbr, title, is_official, url}.
+            setlist.shared: {setlist_title, scope, owner_org_id} (NEVER the
+            token/URL). service.*: {session_kind, org_id, venue_id,
+            occurrence_date, ended_reason} (NEVER the join code).
+
+    # -------------------------------------------------------------------------
     # Core domain models
     # -------------------------------------------------------------------------
 
