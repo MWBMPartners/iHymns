@@ -29,6 +29,52 @@ if (!function_exists('ihymns_songbook_abbr_label')) {
     }
 }
 
+if (!function_exists('ihymns_songbook_name_label')) {
+    /**
+     * The full-songbook-NAME sub-line label for a song list row (#1531),
+     * server-side twin of the JS `songbookLabel(abbr, fullName)`
+     * (js/constants.js) — emit the SAME markup so a PHP-rendered list row and a
+     * client-rendered one look identical and the CSS in app.css (Section
+     * `.songbook-name-full` / `.songbook-name-abbr`, #1531) governs both.
+     *
+     * ELI5: under a song's title, show the book's FULL NAME ("Seventh-day
+     * Adventist Hymnal") instead of the jargon code ("SDAH"). This one helper
+     * builds that little grey line so every page does it the same way (rule
+     * #22) rather than hand-inlining the two spans.
+     *
+     * Mirrors `songbookLabel()` branch-for-branch: when no distinct full name
+     * is available (empty, or byte-equal to the abbreviation) it returns the
+     * bare escaped abbreviation — never an empty label and never the name
+     * duplicated. Otherwise it returns BOTH the full name and the abbreviation,
+     * each in its own span, so the responsive CSS can swap the full name for
+     * the compact code on a narrow viewport (the abbr span is display:none by
+     * default, shown only under ~360px — the same width-toggle the JS relies
+     * on). The caller supplies the name (e.g. from a `tblSongbooks` JOIN); this
+     * helper does NOT query — there is no server-side songbook registry, and
+     * adding one per row would be the whole-corpus anti-pattern (rule #17).
+     *
+     * All output is HTML-escaped here, so the caller passes raw values.
+     *
+     * @param string|null $abbr The songbook Abbreviation (the SongId prefix; rule #27).
+     * @param string|null $name The songbook full name / Title (NULL/'' ⇒ show the abbr alone).
+     * @return string HTML: either the bare escaped abbr, or the two-span name+abbr structure.
+     */
+    function ihymns_songbook_name_label(?string $abbr, ?string $name): string
+    {
+        $abbr = trim((string) $abbr);
+        $name = trim((string) $name);
+        $safeAbbr = htmlspecialchars($abbr, ENT_QUOTES, 'UTF-8');
+        /* No distinct full name (absent, or identical to the code) ⇒ show the
+           code alone, exactly as songbookLabel() returns `safeAbbr` when
+           `full === abbr`. strcasecmp so "MP" vs "mp" collapses too. */
+        if ($name === '' || strcasecmp($name, $abbr) === 0) {
+            return $safeAbbr;
+        }
+        return '<span class="songbook-name-full">' . htmlspecialchars($name, ENT_QUOTES, 'UTF-8') . '</span>'
+            . '<span class="songbook-name-abbr">' . $safeAbbr . '</span>';
+    }
+}
+
 if (!function_exists('ihymns_songbook_show_abbr')) {
     /**
      * Whether to render a songbook's Abbreviation badge alongside its Title.

@@ -24,7 +24,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
-import { SONGBOOK_NAMES, STORAGE_HISTORY, STORAGE_AUTH_TOKEN } from '../constants.js';
+import { songbookLabel, STORAGE_HISTORY, STORAGE_AUTH_TOKEN } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 
 /**
@@ -157,7 +157,6 @@ function renderPopularRow(s, opts = {}) {
        so it carries no songbook prefix; fall back to '' (the empty badge renders the
        book-glyph) rather than mis-using the whole PublicId as an abbreviation. */
     const book     = s.songbook || (id.includes('-') ? id.split('-')[0] : '') || '';
-    const bookName = s.songbookName || SONGBOOK_NAMES[book] || book;
     const number   = s.number ?? '';
     const views    = s.views ?? 0;
 
@@ -181,8 +180,14 @@ function renderPopularRow(s, opts = {}) {
                 <div class="song-info flex-grow-1">
                     <span class="song-title">${escapeHtml(title)}</span>
                     <small class="text-muted d-block">
-                        <span class="songbook-name-full">${escapeHtml(bookName)}</span>
-                        <span class="songbook-name-abbr">${escapeHtml(book)}</span>
+                        ${/* #1531 — the ONE shared abbr→full-NAME resolver (registry-
+                             backed, covers EVERY songbook not just the six SONGBOOK_NAMES
+                             fallbacks the hand-rolled version used) — matches search /
+                             favorites / history / setlist rows. songbookLabel emits the
+                             same two-span structure, so app.css's responsive width-swap
+                             still applies; a book with no resolved name degrades to the
+                             bare abbr. */''}
+                        ${songbookLabel(book, s.songbookName)}
                     </small>
                 </div>
                 ${viewsBadge}
