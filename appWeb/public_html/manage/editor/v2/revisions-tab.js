@@ -23,21 +23,75 @@ export function mountRevisionsTab(container, opts) {
     const { api, songId } = opts;
     const toast = opts.toast || function () {};
 
+    /* ---- C3/C4 (#1122) — persistent view switch (History / Field history),
+     *  built ONCE at mount: a small header holding the switch, followed by a
+     *  `contentEl` div the active view renders into. Every render/error path
+     *  in this file now targets `contentEl` (never `container` directly) so
+     *  the switch survives every re-render — only `teardown()` at the bottom
+     *  still clears the whole `container`. */
+    container.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'mb-2';
+
+    const switchGroup = document.createElement('div');
+    switchGroup.className = 'btn-group btn-group-sm';
+    switchGroup.setAttribute('role', 'group');
+    switchGroup.setAttribute('aria-label', 'Revisions view');
+
+    const historyBtn = document.createElement('button');
+    historyBtn.type = 'button';
+    historyBtn.className = 'btn btn-outline-secondary active';
+    historyBtn.setAttribute('aria-pressed', 'true');
+    historyBtn.textContent = 'History';
+
+    const fieldHistoryBtn = document.createElement('button');
+    fieldHistoryBtn.type = 'button';
+    fieldHistoryBtn.className = 'btn btn-outline-secondary';
+    fieldHistoryBtn.setAttribute('aria-pressed', 'false');
+    fieldHistoryBtn.textContent = 'Field history';
+
+    switchGroup.append(historyBtn, fieldHistoryBtn);
+    header.appendChild(switchGroup);
+
+    const contentEl = document.createElement('div');
+
+    container.append(header, contentEl);
+
+    /** Switches the active view. 'history' re-runs the existing load() path
+     *  (unchanged behaviour, just now targeting contentEl); 'field' shows the
+     *  fetch-once-and-cache Field history view (below). */
+    function setMode(mode) {
+        const isHistory = mode === 'history';
+        historyBtn.classList.toggle('active', isHistory);
+        historyBtn.setAttribute('aria-pressed', isHistory ? 'true' : 'false');
+        fieldHistoryBtn.classList.toggle('active', !isHistory);
+        fieldHistoryBtn.setAttribute('aria-pressed', !isHistory ? 'true' : 'false');
+        if (isHistory) {
+            load();
+        } else {
+            showFieldHistory();
+        }
+    }
+
+    historyBtn.addEventListener('click', () => setMode('history'));
+    fieldHistoryBtn.addEventListener('click', () => setMode('field'));
+
     function fmtAction(a) {
         return String(a || 'edit').replace(/[_.]/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
     }
 
     async function load() {
-        container.innerHTML = '<p class="text-muted small mb-0">Loading history…</p>';
+        contentEl.innerHTML = '<p class="text-muted small mb-0">Loading history…</p>';
         try {
             const res = await api.listRevisions(songId);
             render(res.revisions || []);
         } catch (e) {
-            container.innerHTML = '';
+            contentEl.innerHTML = '';
             const err = document.createElement('div');
             err.className = 'alert alert-danger py-2 small mb-0';
             err.textContent = 'Could not load revisions: ' + e.message;
-            container.appendChild(err);
+            contentEl.appendChild(err);
         }
     }
 
@@ -273,7 +327,7 @@ export function mountRevisionsTab(container, opts) {
     }
 
     function render(revs) {
-        container.innerHTML = '';
+        contentEl.innerHTML = '';
 
         /* #1628 item 4 — say WHICH state a restore lands on. The old editor's
            Restore went one step further back (PreviousData vs NewData); the
@@ -285,13 +339,13 @@ export function mountRevisionsTab(container, opts) {
             + 'Restore brings the song back to that state — not to the state before the edit, '
             + 'which is what the legacy editor\'s Restore did. Use "Changes" to see exactly what '
             + 'this entry altered before you restore it.';
-        container.appendChild(intro);
+        contentEl.appendChild(intro);
 
         if (!revs.length) {
             const empty = document.createElement('p');
             empty.className = 'text-muted';
             empty.textContent = 'No revisions yet — they appear as you edit.';
-            container.appendChild(empty);
+            contentEl.appendChild(empty);
             return;
         }
 
@@ -334,7 +388,264 @@ export function mountRevisionsTab(container, opts) {
             list.appendChild(item);
             list.appendChild(diffPanel);
         });
-        container.appendChild(list);
+        contentEl.appendChild(list);
+    }
+
+    /* ---- C3 — "Field history" (per-field blame) view (#1122) --------------
+     *
+     * ELI5: instead of a list of edits in time order, this shows one row PER
+     * FIELD — who last touched it, and when — so "who changed the copyright
+     * line" doesn't mean scrolling through unrelated history entries.
+     *
+     * Detail: built on the already-tested pure blameFromSnapshots() above —
+     * this view only renders its output, never recomputes the blame logic.
+     */
+
+    /** field key -> human label for the common metadata fields (ED2_META_FIELDS
+     *  in api2.php). A field key not listed here (or a null `field`, meaning
+     *  the column wasn't in the served fieldMap) falls back to
+     *  titleCaseFromKey() below rather than silently omitting the row. */
+    const FIELD_LABELS = {
+        title: 'Title',
+        number: 'Number',
+        songbook: 'Songbook',
+        language: 'Language',
+        copyright: 'Copyright',
+        ccli: 'CCLI',
+        iswc: 'ISWC',
+        isrc: 'ISRC',
+        tuneName: 'Tune name',
+        subtitle: 'Subtitle',
+        disambiguation: 'Disambiguation',
+        firstPublishedYear: 'First published year',
+        copyrightYears: 'Copyright years',
+        copyrightHolder: 'Copyright holder',
+        originCity: 'Origin city',
+        originCityId: 'Origin city (place)',
+        verified: 'Verified',
+        lyricsPublicDomain: 'Public domain (lyrics)',
+        musicPublicDomain: 'Public domain (music)',
+        hasAudio: 'Has audio',
+        hasSheetMusic: 'Has sheet music',
+        lyricsRightsLicenceKey: 'Lyrics rights licence',
+        musicRightsLicenceKey: 'Music rights licence',
+    };
+
+    /** Generic fallback label for a key not in FIELD_LABELS: split camelCase
+     *  ("firstPublishedYear" -> "first Published Year") and underscores, then
+     *  title-case each word. Never throws on an odd key — worst case it just
+     *  echoes the key back title-cased. */
+    function titleCaseFromKey(k) {
+        const spaced = String(k)
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .trim();
+        if (!spaced) { return String(k); }
+        return spaced.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    }
+
+    /** The human label for one blame entry: FIELD_LABELS[entry.field] first,
+     *  else a title-cased fallback of the field key — or, when `field` is
+     *  null (column absent from the served fieldMap), of the raw column
+     *  `key` instead. */
+    function fieldLabel(entry) {
+        if (entry.field && FIELD_LABELS[entry.field]) { return FIELD_LABELS[entry.field]; }
+        return titleCaseFromKey(entry.field || entry.key);
+    }
+
+    let fieldHistoryData = null; // { res, blame } — cached after the first successful fetch
+
+    /** Lazy, fetch-once (mirrors toggleDiff's posture above): the first
+     *  activation of "Field history" fetches api.listRevisionSnapshots() and
+     *  runs it through blameFromSnapshots(); every later activation just
+     *  re-renders the cached result — the blame for a given song's saved
+     *  history doesn't change without a new edit, and a new edit reloads the
+     *  whole page anyway (restore()/revertField() below). */
+    async function showFieldHistory() {
+        if (fieldHistoryData) {
+            renderFieldHistory(fieldHistoryData);
+            return;
+        }
+        contentEl.innerHTML = '<p class="text-muted small mb-0">Loading field history…</p>';
+        try {
+            const res = await api.listRevisionSnapshots(songId);
+            const blame = blameFromSnapshots(res.revisions || [], res.base, res.fieldMap || {}, res.noRollback || []);
+            fieldHistoryData = { res: res, blame: blame };
+            renderFieldHistory(fieldHistoryData);
+        } catch (e) {
+            contentEl.innerHTML = '';
+            const err = document.createElement('div');
+            err.className = 'alert alert-danger py-2 small mb-0';
+            err.textContent = 'Could not load field history: ' + e.message;
+            contentEl.appendChild(err);
+        }
+    }
+
+    function renderFieldHistory(data) {
+        contentEl.innerHTML = '';
+        const res = data.res;
+        const blame = data.blame;
+
+        const intro = document.createElement('p');
+        intro.className = 'text-muted small';
+        intro.textContent = 'Who last changed each field, across this song\'s saved history.';
+        contentEl.appendChild(intro);
+
+        if (!blame.length) {
+            const empty = document.createElement('p');
+            empty.className = 'text-muted';
+            empty.textContent = 'No field history yet — it builds as the song is edited.';
+            contentEl.appendChild(empty);
+            return;
+        }
+
+        const list = document.createElement('div');
+        list.className = 'list-group';
+        blame.forEach((entry) => { list.appendChild(buildFieldHistoryItem(entry)); });
+        contentEl.appendChild(list);
+
+        if (res.truncated) {
+            const note = document.createElement('p');
+            note.className = 'text-muted small mt-2 mb-0';
+            note.textContent = 'Older history exists beyond the most recent snapshots shown.';
+            contentEl.appendChild(note);
+        }
+    }
+
+    /** One field's blame row: label + current value, a verdict line (who/when,
+     *  or — for 'unchangedInWindow' — a muted notice with NO author claimed,
+     *  since none can be honestly attributed), a "Show change" toggle for a
+     *  'changed' entry, and (C4, when canRevert) a Revert button beside it. */
+    function buildFieldHistoryItem(entry) {
+        const item = document.createElement('div');
+        item.className = 'list-group-item';
+
+        const top = document.createElement('div');
+        top.className = 'd-flex justify-content-between align-items-start gap-2 flex-wrap';
+
+        const left = document.createElement('div');
+        const label = document.createElement('div');
+        label.className = 'fw-semibold';
+        label.textContent = fieldLabel(entry);
+        const value = document.createElement('div');
+        value.className = 'small text-muted';
+        value.textContent = 'Current: ' + fmtScalarValue(entry.currentValue);
+        left.append(label, value);
+
+        const actions = document.createElement('div');
+        actions.className = 'd-flex align-items-center gap-2';
+
+        const diffPanel = document.createElement('div');
+        diffPanel.className = 'bg-body-tertiary py-2 small d-none mt-2';
+
+        if (entry.verdict === 'changed') {
+            const showBtn = document.createElement('button');
+            showBtn.type = 'button';
+            showBtn.className = 'btn btn-sm btn-outline-secondary';
+            showBtn.innerHTML = '<i class="bi bi-file-diff me-1"></i>Show change';
+            showBtn.addEventListener('click', () => toggleFieldDiff(entry, diffPanel));
+            actions.appendChild(showBtn);
+
+            if (entry.canRevert) {
+                const revertBtn = document.createElement('button');
+                revertBtn.type = 'button';
+                revertBtn.className = 'btn btn-sm btn-outline-secondary';
+                revertBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Revert';
+                revertBtn.addEventListener('click', () => revertField(entry));
+                actions.appendChild(revertBtn);
+            }
+        }
+
+        top.append(left, actions);
+        item.appendChild(top);
+
+        const verdictLine = document.createElement('div');
+        verdictLine.className = 'small mt-1';
+        verdictLine.appendChild(buildVerdictContent(entry));
+        item.appendChild(verdictLine);
+
+        item.appendChild(diffPanel);
+        return item;
+    }
+
+    /** The verdict sentence for one blame entry, as a DOM fragment so the
+     *  author/date sits in a badge — the same badge+meta shape the History
+     *  list above uses for its own action badge. */
+    function buildVerdictContent(entry) {
+        const frag = document.createDocumentFragment();
+        if (entry.verdict === 'changed' || entry.verdict === 'firstRecorded') {
+            const info = (entry.verdict === 'changed') ? entry.last : entry.firstRecorded;
+            const prefix = document.createElement('span');
+            prefix.textContent = (entry.verdict === 'changed') ? 'Last changed by ' : 'First recorded by ';
+            const badge = document.createElement('span');
+            badge.className = 'badge bg-secondary mx-1';
+            badge.textContent = info.username || 'unknown';
+            const suffix = document.createElement('span');
+            suffix.textContent = 'on ' + (info.createdAt || '');
+            frag.append(prefix, badge, suffix);
+        } else {
+            const muted = document.createElement('span');
+            muted.className = 'text-muted';
+            muted.textContent = 'Not changed in the recent saved history';
+            frag.appendChild(muted);
+        }
+        return frag;
+    }
+
+    /** Toggle one field's inline before/after panel. The pair is already in
+     *  `entry.last` (blameFromSnapshots computed it up front), so — unlike
+     *  toggleDiff() above — there is nothing to fetch; the first click just
+     *  renders it and flips the "already built" flag for later toggles. */
+    function toggleFieldDiff(entry, panel) {
+        if (panel.dataset.loaded === '1') {
+            panel.classList.toggle('d-none');
+            return;
+        }
+        panel.classList.remove('d-none');
+        panel.innerHTML = '';
+        const before = document.createElement('div');
+        before.textContent = 'Before: ' + fmtScalarValue(entry.last.before);
+        const after = document.createElement('div');
+        after.textContent = 'After: ' + fmtScalarValue(entry.last.after);
+        panel.append(before, after);
+        panel.dataset.loaded = '1';
+    }
+
+    /**
+     * C4 (#1122) — per-field Revert. Writes a NEW edit via
+     * api.updateMetadata(songId, field, previousValue); it does not delete or
+     * alter any saved history row, so the revert itself shows up in both
+     * views the next time they're fetched.
+     *
+     * ELI5: a per-field Undo — puts just this one field back the way it was,
+     * without touching every other field the way a whole-revision Restore
+     * (above) would.
+     *
+     * Detail: mirrors restore()'s reload pattern exactly — a metadata write
+     * can ripple into derived/denormalised state elsewhere on the song, so a
+     * full reload re-hydrates every tab from the server rather than patching
+     * the DOM in place (same rationale as restore()'s doc-block above).
+     */
+    async function revertField(entry) {
+        const label = fieldLabel(entry);
+        const toValue = fmtScalarValue(entry.last.before);
+        const fromValue = fmtScalarValue(entry.currentValue);
+        const who = (entry.last.username || 'unknown') + ' on ' + (entry.last.createdAt || 'an earlier date');
+        if (!window.confirm(
+            'Revert "' + label + '" to "' + toValue + '"?\n\n'
+            + 'This replaces the current value, "' + fromValue + '", and undoes the change made by '
+            + who + '.\n\n'
+            + 'This writes a NEW edit — it does not delete or change any saved history.'
+        )) {
+            return;
+        }
+        try {
+            await api.updateMetadata(songId, entry.field, entry.last.before);
+            toast('Reverted — reloading…', 'success');
+            window.location.reload();   // re-hydrate every tab from the reverted state
+        } catch (e) {
+            toast('Revert failed: ' + e.message, 'danger');
+        }
     }
 
     load();
