@@ -16383,6 +16383,65 @@ paths:
           description: Missing songId
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=revision_snapshots:
+    get:
+      operationId: editorRevisionSnapshots
+      tags: [Editor API v2]
+      summary: Every revision's raw snapshot for a song (per-field blame source, #1122)
+      description: |
+        GET, editor role only. Returns the raw decoded `NewData` of EVERY
+        revision for a song in one response (newest first), plus the window
+        `base` (the oldest row's own `PreviousData` — no before-ladder; blame's
+        pre-state chain is the consecutive `NewData` rows), the
+        `ED2_META_FIELDS`-derived `fieldMap` (field key → tblSongs column) and
+        the `noRollback` field-key list. The client's per-field blame walk
+        (`blameFromSnapshots()`) consumes this with the one shipped shape
+        normaliser. A NULL/undecodable `NewData` is a row-level `null`, never a
+        409.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [revision_snapshots] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Raw revision snapshots + blame context
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        action: { type: string }
+                        createdAt: { type: string }
+                        userId: { type: integer, nullable: true }
+                        username: { type: string, nullable: true }
+                        newData: { type: object, nullable: true, description: "Decoded NewData snapshot (one of three shapes); null when NULL/undecodable" }
+                  base: { type: object, nullable: true, description: "The oldest row's PreviousData (window pre-state)" }
+                  baseSource: { type: string, enum: [previousData, none] }
+                  truncated: { type: boolean, description: "Older revisions exist beyond this window" }
+                  fieldMap: { type: object, description: "field key → tblSongs column, derived from ED2_META_FIELDS" }
+                  noRollback:
+                    type: array
+                    items: { type: string }
+                    description: "Field keys with no per-field Revert (songbook re-keys; hasAudio/hasSheetMusic are derived)"
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=revision_get:
     get:
       operationId: editorRevisionGet

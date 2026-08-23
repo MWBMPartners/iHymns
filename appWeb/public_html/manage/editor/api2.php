@@ -256,6 +256,17 @@ declare(strict_types=1);
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
+ *   GET  revision_snapshots?songId=<id>&limit=                -> { ok, revisions[], base, baseSource, truncated, fieldMap, noRollback }
+ *                               #1122 — the RAW decoded NewData of EVERY
+ *                               revision for one song (newest first) + the window
+ *                               base (the oldest row's own PreviousData, NO
+ *                               ladder — blame's chain is the consecutive NewData
+ *                               rows) + the ED2_META_FIELDS-derived fieldMap + the
+ *                               noRollback field-key list, so the client computes
+ *                               per-field BLAME by walking the whole history with
+ *                               the ONE shipped normaliser (diffSnapshots(), rule
+ *                               #22). A NULL/undecodable NewData is a ROW-LEVEL
+ *                               null, not a 409 (a whole list renders around it).
  *   GET  revision_get?revisionId=<id>[&songId=<id>]           -> { ok, revision, after, before, beforeSource }
  *                               #1628 item 4 — the before/after snapshot PAIR
  *                               for one revision, so the client can render a
@@ -6538,6 +6549,102 @@ try {
         }
         $q->close();
         ed2_respond(['ok' => true, 'revisions' => $rows]);
+        break;
+    }
+
+    /* ---- revision_snapshots (GET) — the RAW decoded NewData of EVERY revision
+           for one song in ONE response (newest first), plus the window's base
+           pre-state and the field-key -> column map, so the client can compute
+           per-field BLAME ("who last changed this field, and when") by walking
+           the whole history with the ONE shipped normaliser (diffSnapshots()'s
+           shape logic, extended) — never a second server-side resolver (#1122,
+           rule #22).
+
+           Companion to revision_list (metadata only) and revision_get (ONE
+           before/after PAIR, with its before-ladder): this is the BULK raw read,
+           and — unlike revision_get — it carries NO before-ladder. Blame's
+           pre-state chain IS the consecutive NewData rows (ed2_touchRevision()'s
+           #1743-C2 chain rule below, api2.php:1983-1997), so `base` is simply the
+           OLDEST returned row's own PreviousData (already selected, zero extra
+           SQL) — the left side of the window's first pair, nothing more.
+
+           Ordering + limit BYTE-MIRROR revision_list (rule #35: one ordering,
+           not two): (CreatedAt, Id) DESC, default 50, max 200. We fetch limit+1
+           to set `truncated` (older rows exist beyond the window) without a
+           second COUNT.
+
+           `fieldMap` is DERIVED from ED2_META_FIELDS at runtime (never a
+           re-typed list) so the client can fold a legacy payload-shape lowercase
+           key (`title`) to its canonical column (`Title`) with NO JS copy of the
+           map. `noRollback` names the field keys whose metadata_field_update is
+           NOT a plain field write — `songbook` re-keys via songRelocate(), and
+           `hasAudio`/`hasSheetMusic` are DERIVED and ignore the sent value (rule
+           #44) — so the client renders those blame-only, with no Revert button.
+
+           A row whose NewData is NULL/undecodable is a ROW-LEVEL `null` (never a
+           409, unlike revision_get: there is a whole list to render around one
+           bad row). Pure read; no entitlement beyond the file-wide editor gate,
+           no logActivity — identical posture to revision_list. ---- */
+    case 'revision_snapshots': {
+        $songId = trim((string)($_GET['songId'] ?? $_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        $limit = (int)($_GET['limit'] ?? 50);
+        if ($limit < 1 || $limit > 200) { $limit = 50; }
+        $fetch = $limit + 1;   /* one extra row -> `truncated` without a COUNT */
+        $rows = [];
+        $q = $db->prepare(
+            'SELECT r.Id, r.Action, r.CreatedAt, r.UserId, u.Username, r.PreviousData, r.NewData
+               FROM tblSongRevisions r LEFT JOIN tblUsers u ON u.Id = r.UserId
+              WHERE r.SongId = ? ORDER BY r.CreatedAt DESC, r.Id DESC LIMIT ?'
+        );
+        $q->bind_param('si', $songId, $fetch);
+        $q->execute();
+        $res = $q->get_result();
+        while ($r = $res->fetch_assoc()) {
+            $nd = $r['NewData'] !== null ? json_decode((string)$r['NewData'], true) : null;
+            $rows[] = [
+                'id'        => (int)$r['Id'],
+                'action'    => (string)$r['Action'],
+                'createdAt' => (string)$r['CreatedAt'],
+                'userId'    => $r['UserId'] !== null ? (int)$r['UserId'] : null,
+                'username'  => $r['Username'] !== null ? (string)$r['Username'] : null,
+                'newData'   => is_array($nd) ? $nd : null,   /* row-level null; never a 409 */
+                '_prev'     => $r['PreviousData'],           /* internal: only the oldest row's is used, stripped below */
+            ];
+        }
+        $q->close();
+
+        /* limit+1 fetch: if the probe (oldest extra) row came back, older
+           history exists beyond this window. Drop it before building `base`. */
+        $truncated = count($rows) > $limit;
+        if ($truncated) { array_pop($rows); }
+
+        /* base = the OLDEST returned row's own PreviousData (last element, since
+           the order is newest-first) — the pre-state of the window's first pair.
+           No ladder (that is revision_get's job); a decode miss degrades to
+           baseSource:'none', a designed empty left side, never an error. */
+        $base = null; $baseSource = 'none';
+        if ($rows) {
+            $oldestPrev = $rows[count($rows) - 1]['_prev'];
+            if ($oldestPrev !== null) {
+                $decoded = json_decode((string)$oldestPrev, true);
+                if (is_array($decoded)) { $base = $decoded; $baseSource = 'previousData'; }
+            }
+        }
+        foreach ($rows as &$row) { unset($row['_prev']); }
+        unset($row);
+
+        $fieldMap = array_map(static fn(array $v): string => $v[0], ED2_META_FIELDS);
+
+        ed2_respond([
+            'ok'         => true,
+            'revisions'  => $rows,
+            'base'       => $base,
+            'baseSource' => $baseSource,   /* 'previousData' | 'none' (rule #20 vocabulary) */
+            'truncated'  => $truncated,
+            'fieldMap'   => $fieldMap,
+            'noRollback' => ['songbook', 'hasAudio', 'hasSheetMusic'],
+        ]);
         break;
     }
 

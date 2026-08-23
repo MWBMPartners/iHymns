@@ -371,6 +371,11 @@ export const editorApi = {
        re-implements that chain (rule #35) — it only reads `beforeSource` and
        branches on it. */
     listRevisions:     (songId)                  => getJson('revision_list', { songId: songId }),
+    /* #1122 — the whole-history raw snapshot bulk read that per-field BLAME walks
+       (blameFromSnapshots() in revisions-tab.js). Newest-first, with the window
+       base + ED2_META_FIELDS-derived fieldMap + noRollback list; see api2.php's
+       revision_snapshots doc-block. */
+    listRevisionSnapshots: (songId, limit)       => getJson('revision_snapshots', { songId: songId, limit: limit }),
     getRevision:       (revisionId, songId)      => getJson('revision_get', { revisionId: revisionId, songId: songId }),
     restoreRevision:   (revisionId, songId)      => postJson('revision_restore', { revisionId: revisionId, songId: songId }),
 
