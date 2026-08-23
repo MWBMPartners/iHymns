@@ -565,6 +565,71 @@ check(
 );
 
 /* =============================================================================
+ * 4b. revision_snapshots — the per-field BLAME bulk read (#1122)
+ * =============================================================================
+ *
+ * ELI5: blame ("who last changed this field") walks the WHOLE revision history
+ * client-side with the ONE shipped shape normaliser. This endpoint is the bulk
+ * raw read it walks. Two things must hold or blame silently drifts: the served
+ * fieldMap must be DERIVED from ED2_META_FIELDS (never a second typed list —
+ * rule #35, there is deliberately NO JS copy of the map), and its ORDER BY must
+ * be byte-equal to revision_list's (one ordering, not two).
+ */
+echo "\n#1122 — revision_snapshots per-field blame bulk read\n\n";
+
+/* Isolate the case body (comments stripped, same machinery as revision_get). */
+$snapStart = strpos($apiNoComments, "case 'revision_snapshots':");
+$snapBody = '';
+if ($snapStart !== false) {
+    if (preg_match('/\n    case \'/', $apiNoComments, $mEndS, PREG_OFFSET_CAPTURE, $snapStart + 1)) {
+        $snapBody = substr($apiNoComments, $snapStart, $mEndS[0][1] - $snapStart);
+    } else {
+        $snapBody = substr($apiNoComments, $snapStart);
+    }
+}
+check("api2.php has a 'revision_snapshots' case", $snapBody !== '');
+check(
+    "revision_snapshots' isolated case body is a real handler, not a stub (>= 300 chars)",
+    strlen($snapBody) >= 300
+);
+
+/* (a) fieldMap DERIVED from ED2_META_FIELDS — never a re-typed list (rule #35). */
+check(
+    "revision_snapshots derives its fieldMap from ED2_META_FIELDS (not a second typed map)",
+    strpos($snapBody, 'ED2_META_FIELDS') !== false
+);
+
+/* (b) ORDER BY byte-equal to revision_list's — both parsed from source, neither
+   typed into this test (rule #35: one ordering, not two). */
+$listStart = strpos($apiNoComments, "case 'revision_list':");
+$listBody = '';
+if ($listStart !== false && preg_match('/\n    case \'/', $apiNoComments, $mEndL, PREG_OFFSET_CAPTURE, $listStart + 1)) {
+    $listBody = substr($apiNoComments, $listStart, $mEndL[0][1] - $listStart);
+}
+$orderOf = static function (string $body): ?string {
+    return preg_match('/ORDER BY\s+(.+?)\s+LIMIT/s', $body, $m)
+        ? preg_replace('/\s+/', ' ', trim($m[1]))
+        : null;
+};
+$listOrder = $orderOf($listBody);
+$snapOrder = $orderOf($snapBody);
+check(
+    "revision_snapshots' ORDER BY is byte-equal to revision_list's (parsed from source): '"
+        . ($snapOrder ?? 'MISSING') . "'",
+    $listOrder !== null && $snapOrder !== null && $listOrder === $snapOrder
+);
+
+/* (c) the client method exists and asks for the action (the derived action<->case
+   check in section 2 already proves the case is real). */
+check(
+    "v2 api-client exposes listRevisionSnapshots() calling the 'revision_snapshots' action",
+    (bool)preg_match(
+        "/listRevisionSnapshots\s*:\s*\([^)]*\)\s*=>\s*getJson\(\s*'revision_snapshots'/",
+        $client
+    )
+);
+
+/* =============================================================================
  * 5. bulk_move / bulk_delete — the per-song funnel discipline (Wave 4 C4, #1628 item 3)
  * =============================================================================
  *
