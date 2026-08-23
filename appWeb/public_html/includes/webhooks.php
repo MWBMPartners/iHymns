@@ -684,9 +684,40 @@ function webhookEmit(string $type, array $facts, array $opts = []): void
 
         $emitted++;
         webhookFanOut($db, $eventId, $chan, $type, $expiresAt);
+        webhookScheduleFirstAttempt();
     } catch (\Throwable $e) {
         error_log('[webhooks] emit failed for ' . $type . ': ' . $e->getMessage());
     }
+}
+
+/**
+ * ELI5: after this request has finished responding to the user, quietly try to
+ * deliver the webhook(s) it just queued — so the FIRST attempt is near-instant
+ * without making the user's save one millisecond slower.
+ * WHY: the hybrid outbox's immediate first attempt (design §6.2). Registered ONCE
+ * per request (a static flag). On FPM it flushes the response first
+ * (fastcgi_finish_request — the established api2.php import_zip shape) then drains
+ * a small bounded batch. With NO FPM it does nothing (never add latency a user can
+ * feel); the cron / piggyback backlog path delivers instead.
+ */
+function webhookScheduleFirstAttempt(): void
+{
+    static $registered = false;
+    if ($registered) {
+        return;
+    }
+    $registered = true;
+    register_shutdown_function(static function (): void {
+        try {
+            if (!function_exists('fastcgi_finish_request')) {
+                return; /* no FPM ⇒ no post-flush work (design §6.2) */
+            }
+            fastcgi_finish_request(); /* respond to the user FIRST, then keep working */
+            webhookDrainPass(getDbMysqli(), ['budget_ms' => 5000, 'max' => 3]);
+        } catch (\Throwable $e) {
+            error_log('[webhooks] post-flush first attempt failed: ' . $e->getMessage());
+        }
+    });
 }
 
 /**

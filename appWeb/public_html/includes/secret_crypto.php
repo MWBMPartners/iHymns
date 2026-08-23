@@ -492,6 +492,16 @@ function secretSettingKeys(): array
            every browser to draw the widget, and listing a non-secret would make
            secretInventory() report a false exposure every time it is read. */
         'captcha_secret_key',
+        /* #1909 — the outbound-webhooks drain key. It authorises /webhook-drain.php
+           (a cron / uptime-monitor hits it to progress retries), so it is a genuine
+           tblAppSettings secret — registered here so it is encrypted at rest from
+           its first save on the /manage/configuration webhooks card, and read back
+           transparently decrypted via getAppSetting() (includes/webhooks.php never
+           touches the encryption layer). The per-SUBSCRIPTION signing secrets are
+           NOT here: those live in a table column (tblWebhookSubscriptions.Secret),
+           enveloped by the engine directly — secretSettingKeys() governs
+           tblAppSettings rows only. */
+        'webhook_drain_key',
     ];
 }
 
