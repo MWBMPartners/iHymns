@@ -672,6 +672,44 @@ function editorSaveSongCore(): array
                honestly instead of committing a partially-written row. */
             ilidStampNewRow($db, 'song', $songId, 'SongId');
 
+            /* #1744 Rev-2 — mint the opaque PublicId permalink for a song
+               created through THIS shared save core, the same way the v2
+               create paths already do (api2.php:2155/2244,
+               songPublicId_mintUnique()). Before this, a song created via the
+               legacy whole-song save (or an importer) landed with PublicId
+               NULL — no /s/<publicid> permalink — while a v2-created song got
+               one: a v1↔v2 parity gap surfaced by the #1737 write-set audit.
+               ELI5: whichever path just wrote this song, make sure it also has
+               its short public link — the newer editor already did, the older
+               one forgot.
+               Self-healing + idempotent, exactly like ilidStampNewRow() above:
+               called on create AND edit, but the actual mint only runs when the
+               row still LACKS a PublicId (a cheap SELECT first), so an ordinary
+               re-save is a no-op and a pre-fix NULL row is backfilled on its
+               next save — never re-minted / overwritten (the UPDATE's own
+               `PublicId IS NULL` guard is a second belt). Gated on
+               songPublicId_columnReady() so it is a byte-identical no-op on an
+               un-migrated install (rule #28 fail-open). Inside the same
+               transaction as the UPSERT, so a later failure rolls the mint back
+               honestly. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            if (songPublicId_columnReady($db)) {
+                $pubChk = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ?');
+                $pubChk->bind_param('s', $songId);
+                $pubChk->execute();
+                $pubCur = $pubChk->get_result()->fetch_row();
+                $pubChk->close();
+                if ($pubCur && ($pubCur[0] === null || $pubCur[0] === '')) {
+                    $newPublicId = songPublicId_mintUnique($db);
+                    $pubSet = $db->prepare(
+                        'UPDATE tblSongs SET PublicId = ? WHERE SongId = ? AND (PublicId IS NULL OR PublicId = \'\')'
+                    );
+                    $pubSet->bind_param('ss', $newPublicId, $songId);
+                    $pubSet->execute();
+                    $pubSet->close();
+                }
+            }
+
             /* Places adoption — write the composition-origin
                columns in a separate small UPDATE so the carefully-
                tuned 16/17-param UPSERT above stays untouched.
