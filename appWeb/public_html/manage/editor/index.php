@@ -1617,7 +1617,7 @@ try {
          JSON for each revision + a Restore button per row. -->
     <div class="modal fade" id="history-modal" tabindex="-1" aria-labelledby="history-modal-title" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content bg-dark text-light border-info">
+            <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="history-modal-title">
                         <i class="bi bi-clock-history me-2"></i>Revision history
@@ -1638,7 +1638,7 @@ try {
          All section-card UI is built in editor.js (reflowRender). -->
     <div class="modal fade" id="reflow-modal" tabindex="-1" aria-labelledby="reflow-modal-title" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content bg-dark text-light border-info">
+            <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="reflow-modal-title">
                         <i class="bi bi-magic me-2"></i>Paste &amp; Reflow
@@ -1665,7 +1665,7 @@ try {
                     </div>
                     <label for="reflow-input" class="form-label small mb-1">Raw lyrics</label>
                     <textarea id="reflow-input"
-                              class="form-control bg-dark text-light border-secondary"
+                              class="form-control border-secondary"
                               rows="8"
                               placeholder="Verse 1&#10;Amazing grace, how sweet the sound&#10;That saved a wretch like me&#10;&#10;Chorus&#10;Praise God, praise God&#10;&#10;Verse 2&#10;..."></textarea>
                     <div class="d-flex gap-2 mt-2 align-items-center">

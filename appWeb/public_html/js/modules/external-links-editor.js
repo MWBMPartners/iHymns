@@ -117,7 +117,7 @@
         var noteMax = Number(opts.noteMaxLen) || 255;
 
         var card = document.createElement('div');
-        card.className = 'card bg-dark border-secondary ihymns-ext-link-row';
+        card.className = 'card bg-body-tertiary border-secondary ihymns-ext-link-row';
         card.innerHTML =
             '<div class="card-body py-2">' +
               '<div class="d-flex align-items-start gap-2">' +

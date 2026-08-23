@@ -5225,7 +5225,7 @@ $csrf = csrfToken();
            IIFE's closure-free namespace by attaching to window. */
         window._iHymnsBuildCompilerRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const pid = Number(data.personId) || 0;
             const nm  = String(data.personName || '');
             const sl  = String(data.personSlug || '');
@@ -5345,7 +5345,7 @@ $csrf = csrfToken();
 
         window._iHymnsBuildPublisherRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const pid  = Number(data.publisherId) || 0;
             const nm   = String(data.publisherName || '');
             const sl   = String(data.publisherSlug || '');
@@ -5436,7 +5436,7 @@ $csrf = csrfToken();
            rebuild the list on modal-open. */
         window._iHymnsBuildAltNameRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const t  = String(data.title || '');
             const nt = String(data.note  || '');
             card.innerHTML =

@@ -5829,7 +5829,7 @@ function reflowRender() {
 
         var body = document.createElement('div');
         body.className = 'card-body py-2';
-        bodyTextarea.className = 'form-control form-control-sm bg-dark text-light border-secondary reflow-text';
+        bodyTextarea.className = 'form-control form-control-sm border-secondary reflow-text';
         bodyTextarea.rows = Math.min(Math.max(block.lines.length, 2), 12);
         bodyTextarea.value = block.lines.join('\n');
         bodyTextarea.setAttribute('aria-label', 'Section lyrics');
@@ -6526,7 +6526,7 @@ function renderHistoryList(revisions, listEl, detailEl) {
     revisions.forEach(function (rev) {
         var item = document.createElement('button');
         item.type = 'button';
-        item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+        item.className = 'list-group-item list-group-item-action border-secondary d-flex justify-content-between align-items-center';
         var badgeClass = rev.action === 'create' ? 'bg-success'
             : rev.action === 'restore' ? 'bg-info'
             : 'bg-secondary';

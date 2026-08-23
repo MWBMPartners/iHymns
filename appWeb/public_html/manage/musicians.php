@@ -2239,25 +2239,25 @@ try {
         <!-- Summary tiles -->
         <div class="row g-2 mb-3">
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Total distinct names</div>
                     <div class="h5 mb-0"><?= number_format($totalNames) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Cited by &ge; 1 song</div>
                     <div class="h5 mb-0"><?= number_format($totalInUse) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">In registry</div>
                     <div class="h5 mb-0"><?= number_format($totalInRegistry) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Registry-only (not yet used)</div>
                     <div class="h5 mb-0"><?= number_format($totalRegistryOnly) ?></div>
                 </div>
@@ -2265,7 +2265,7 @@ try {
         </div>
 
         <!-- Search + filters -->
-        <div class="card bg-dark border-secondary p-3 mb-3">
+        <div class="card bg-body-tertiary border-secondary p-3 mb-3">
             <div class="row g-2 align-items-center">
                 <div class="col-md-5">
                     <label for="mus-search" class="visually-hidden">Search names</label>
@@ -2310,7 +2310,7 @@ try {
         </div>
 
         <!-- People table -->
-        <div class="card bg-dark border-secondary p-2 mb-3">
+        <div class="card bg-body-tertiary border-secondary p-2 mb-3">
             <div class="table-responsive">
                 <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
@@ -2555,7 +2555,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musDeleteModal" tabindex="-1" aria-labelledby="musDeleteLabel" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="delete_from_registry">
@@ -2611,7 +2611,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musViewSongsModal" tabindex="-1" aria-labelledby="musViewSongsLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="musViewSongsLabel">
                         <i class="bi bi-music-note-list me-2"></i>
@@ -2644,7 +2644,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musRenameModal" tabindex="-1" aria-labelledby="musRenameLabel" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="rename">
@@ -2690,7 +2690,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musMergeModal" tabindex="-1" aria-labelledby="musMergeLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="merge">
@@ -3248,7 +3248,7 @@ try {
         $linkCatOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
     ?>
     <template id="mus-link-row-template">
-        <div class="card bg-dark border-secondary mus-link-row" data-row-kind="link">
+        <div class="card bg-body-tertiary border-secondary mus-link-row" data-row-kind="link">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3319,7 +3319,7 @@ try {
         window._musIdentifierConfig = <?= json_encode(creditIdentifierClientConfig(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
     <template id="mus-ipi-row-template">
-        <div class="card bg-dark border-secondary mus-ipi-row" data-row-kind="ipi">
+        <div class="card bg-body-tertiary border-secondary mus-ipi-row" data-row-kind="ipi">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3349,7 +3349,7 @@ try {
         </div>
     </template>
     <template id="mus-isni-row-template">
-        <div class="card bg-dark border-secondary mus-isni-row" data-row-kind="isni">
+        <div class="card bg-body-tertiary border-secondary mus-isni-row" data-row-kind="isni">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3386,7 +3386,7 @@ try {
          <select> is constrained to the same allow-list the server validates
          against ($normaliseOtherId): viaf / wikidata / orcid. -->
     <template id="mus-otherid-row-template">
-        <div class="card bg-dark border-secondary mus-otherid-row" data-row-kind="otherid">
+        <div class="card bg-body-tertiary border-secondary mus-otherid-row" data-row-kind="otherid">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3462,7 +3462,7 @@ try {
         </div>
     </template>
     <template id="mus-alias-row-template">
-        <div class="card bg-dark border-secondary mus-alias-row" data-row-kind="alias">
+        <div class="card bg-body-tertiary border-secondary mus-alias-row" data-row-kind="alias">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">

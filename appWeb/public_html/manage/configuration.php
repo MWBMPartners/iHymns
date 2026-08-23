@@ -1270,7 +1270,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          SYSTEM MAINTENANCE SECTION (WS-K #1021)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-cone-striped me-2"></i>System maintenance
@@ -1346,7 +1346,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          FEATURE GATING SECTION (#1481 — two-flag nested topology)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4" id="feature-gating">
+    <div class="card bg-body-tertiary border-secondary mb-4" id="feature-gating">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-shield-lock me-2"></i>Feature gating
@@ -1408,7 +1408,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          SONG EDITOR SECTION (#1601 — the v2 cutover switch)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-pencil-square me-2"></i>Song Editor
@@ -1451,7 +1451,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          INTAPPSAPI GATEWAY SECTION (#1725/#1732) — dormant by design
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
@@ -1539,7 +1539,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          CUERCODE QR SECTION (owner directive 2026-08-05) — dormant until keyed
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-qr-code me-2"></i>CueRCode QR Generator
@@ -1594,7 +1594,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          CAPTCHA SECTION (#947/#340) — dormant until a provider + both keys + a form
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
@@ -1686,7 +1686,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          OUTBOUND WEBHOOKS SECTION (#1909)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-broadcast me-2"></i>Partner webhooks
@@ -1785,7 +1785,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          LIVE FOLLOW SECTION (#1770 §4.7 — app-default idle timeout)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-broadcast-pin me-2"></i>Live Follow
@@ -1829,7 +1829,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          PUBLIC-DOMAIN SUGGESTION SECTION (#1862, epic #1863)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-shield-check me-2"></i>Public-domain suggestion
@@ -1870,7 +1870,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          APPLE NATIVE APP SECTION (#1401 Team ID + #1402 Sign in with Apple)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-apple me-2"></i>Apple native app
@@ -2080,7 +2080,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          NATIVE APP STORES SECTION (#1403/#1462)
          =========================== -->
     <?php $nativeAppsAnySet = ($nativeAppIos !== '' || $nativeAppAndroid !== '' || $nativeAppAmazon !== ''); ?>
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-phone me-2"></i>Native app stores
@@ -2153,7 +2153,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          EMAIL SERVICE SECTION
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-envelope-at me-2"></i>Email service
@@ -2523,7 +2523,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          STEP-BY-STEP INSTRUCTIONS
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header">
             <h2 class="h5 mb-0">
                 <i class="bi bi-book me-2"></i>Step-by-step provider setup
@@ -2532,9 +2532,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <div class="accordion" id="email-instructions">
                 <!-- #1311 — Microsoft Graph (OAuth2, recommended for M365) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-graph">
                             <i class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
                         </button>
@@ -2555,9 +2555,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- #1311 — Gmail API (OAuth2, recommended for Google Workspace) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gmail-api">
                             <i class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
                         </button>
@@ -2578,9 +2578,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Microsoft 365 (priority) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-m365">
                             <i class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
                         </button>
@@ -2615,9 +2615,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Google Workspace -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gws">
                             <i class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
                         </button>
@@ -2653,9 +2653,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Custom SMTP + future-direction note -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-smtp">
                             <i class="bi bi-server me-2"></i>SMTP — any other provider (custom)
                         </button>
@@ -2684,9 +2684,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- SendGrid -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-sendgrid">
                             <i class="bi bi-cloud me-2"></i>SendGrid — API key
                         </button>
@@ -2706,9 +2706,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Mailgun -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-mailgun">
                             <i class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
                         </button>
@@ -2728,9 +2728,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- SES -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-ses">
                             <i class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
                         </button>

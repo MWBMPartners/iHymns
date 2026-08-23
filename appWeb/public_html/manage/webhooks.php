@@ -189,7 +189,7 @@ function _webhookStatusBadgeClass(string $status): string
         case 'pending_verification': return 'bg-warning text-dark';
         case 'paused':                return 'bg-secondary';
         case 'disabled_failing':      return 'bg-danger';
-        case 'revoked':                return 'bg-dark';
+        case 'revoked':                return 'text-bg-secondary';
         default:                       return 'bg-secondary';
     }
 }

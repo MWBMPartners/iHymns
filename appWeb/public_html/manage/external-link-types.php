@@ -329,7 +329,7 @@ $categoryLabels = [
                 <h2 class="h6 mb-3 text-uppercase text-muted"><?= htmlspecialchars($catLabel) ?></h2>
                 <div class="vstack gap-3">
                     <?php foreach ($typesByCategory[$catKey] as $t): ?>
-                        <details class="card bg-dark border-secondary">
+                        <details class="card bg-body-tertiary border-secondary">
                             <summary class="card-header d-flex align-items-center gap-2 user-select-none" style="cursor:pointer; list-style-position: outside;">
                                 <?php if (!empty($t['iconClass'])): ?>
                                     <i class="<?= htmlspecialchars($t['iconClass']) ?>" aria-hidden="true"></i>

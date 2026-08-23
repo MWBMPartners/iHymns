@@ -342,7 +342,7 @@ if (!empty($songs)) {
         ];
         if (!empty($links)):
     ?>
-        <div class="card bg-dark border-secondary mb-3">
+        <div class="card bg-body-tertiary border-secondary mb-3">
             <div class="card-body">
                 <h2 class="h6 mb-3 text-muted">
                     <i class="fa-solid fa-link me-1" aria-hidden="true"></i>

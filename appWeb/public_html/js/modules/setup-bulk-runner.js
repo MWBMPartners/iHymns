@@ -252,7 +252,7 @@ function ensurePanel(scope) {
     panel = document.createElement('section');
     panel.dataset.bulkRunnerPanel = '';
     panel.dataset.state = 'idle';
-    panel.className = 'card bg-dark border-secondary mb-4';
+    panel.className = 'card bg-body-tertiary border-secondary mb-4';
     panel.setAttribute('role', 'region');
     panel.setAttribute('aria-label', 'Bulk migration progress');
     panel.innerHTML = `

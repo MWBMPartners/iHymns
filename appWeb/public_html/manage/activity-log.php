@@ -428,7 +428,7 @@ $renderActivityRows = function (array $rowsToRender) use ($hasObsCols, $resultBa
                         'production' => 'bg-success',
                         'beta'       => 'bg-info text-dark',
                         'alpha'      => 'bg-secondary',
-                        default      => 'bg-dark border',
+                        default      => 'bg-secondary-subtle text-body',
                     };
                 ?>
                     <span class="badge <?= $envCls ?>"><?= htmlspecialchars($env, ENT_QUOTES, 'UTF-8') ?></span>

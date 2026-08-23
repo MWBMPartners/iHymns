@@ -194,7 +194,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         <?php endif; ?>
 
-        <div class="card bg-dark border-secondary mb-4">
+        <div class="card bg-body-tertiary border-secondary mb-4">
             <div class="card-header d-flex align-items-center justify-content-between">
                 <h2 class="h6 mb-0"><i class="bi bi-clock-history me-1"></i>Scope: features</h2>
                 <?php if ($featuresRow !== null): ?>

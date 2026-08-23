@@ -481,7 +481,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          without losing their current filter. -->
     <div class="row g-2 mb-3">
         <div class="col-6 col-md-3">
-            <div class="card bg-dark border-secondary">
+            <div class="card bg-body-tertiary border-secondary">
                 <div class="card-body p-3">
                     <div class="text-secondary small">Total</div>
                     <div class="h5 mb-0"><?= number_format((int)$summary['total']) ?></div>
@@ -489,7 +489,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card bg-dark border-secondary">
+            <div class="card bg-body-tertiary border-secondary">
                 <div class="card-body p-3">
                     <div class="text-secondary small">Active</div>
                     <div class="h5 mb-0"><?= number_format((int)$summary['active']) ?></div>
@@ -497,7 +497,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card bg-dark border-secondary">
+            <div class="card bg-body-tertiary border-secondary">
                 <div class="card-body p-3">
                     <div class="text-secondary small">NativeName filled</div>
                     <div class="h5 mb-0"><?= number_format((int)$summary['native_filled']) ?></div>
@@ -505,7 +505,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         </div>
         <div class="col-6 col-md-3">
-            <div class="card bg-dark border-secondary">
+            <div class="card bg-body-tertiary border-secondary">
                 <div class="card-body p-3">
                     <div class="text-secondary small">RTL languages</div>
                     <div class="h5 mb-0"><?= number_format((int)$summary['rtl']) ?></div>
@@ -665,7 +665,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <!-- Add / Edit modal — one form, mode-switched on open via data-mode. -->
 <div class="modal fade" id="languageModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content bg-dark text-light">
+        <div class="modal-content">
             <form id="languageForm">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" id="lm-action" value="create">
@@ -738,7 +738,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
      two-step. -->
 <div class="modal fade" id="languageDeleteModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content bg-dark text-light">
+        <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Delete language</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
