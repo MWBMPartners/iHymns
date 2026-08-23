@@ -232,6 +232,7 @@ $saveSetting = function (mysqli $db, string $key, string $value): void {
 $saveSuccess = '';
 $saveError   = '';
 $saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved SMTP host) */
+$webhookNewDrainKey = null;   /* #1909 — one-shot: a freshly regenerated drain key, shown ONCE */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
 
 /* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
@@ -960,6 +961,56 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_captcha] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_webhooks') {
+            /* Outbound partner-webhooks platform (#1909). Three settings + an
+               optional drain-key regeneration:
+                 - webhooks_enabled_channels: the ticked subset of {alpha,beta,
+                   production}, stored as CSV (rule #20 — a growable vocabulary as
+                   a CSV, never an ENUM; a channel allow-list, not a boolean, so
+                   the shared tblAppSettings can drive an alpha-only soak).
+                 - webhook_allow_loopback: a '1'/'0' test knob (http://127.0.0.1
+                   receivers in local testing only).
+                 - webhook_drain_key: a tblAppSettings SECRET (encrypted at rest via
+                   $saveSetting — it is in secretSettingKeys()). Regenerated on
+                   demand and shown ONCE; never echoed again.
+               Requires webhooks.php for the setting-key constants (rule #35). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';
+            try {
+                /* Channels → validated CSV (⊆ {alpha,beta,production}); unknown
+                   dropped, never fatal — fail closed-to-dormant. */
+                $postedChans = (array)($_POST['webhooks_channels'] ?? []);
+                $validChans  = ['alpha', 'beta', 'production'];
+                $chansOut    = [];
+                foreach ($postedChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validChans, true) && !in_array($c, $chansOut, true)) {
+                        $chansOut[] = $c;
+                    }
+                }
+                $chansCsv = implode(',', $chansOut);
+
+                $loopbackOut = !empty($_POST['webhook_allow_loopback']) ? '1' : '0';
+
+                $changedKeys = [WEBHOOK_SETTING_ENABLED_CHANNELS, WEBHOOK_SETTING_ALLOW_LOOPBACK];
+                $saveSetting($db, WEBHOOK_SETTING_ENABLED_CHANNELS, $chansCsv);
+                $saveSetting($db, WEBHOOK_SETTING_ALLOW_LOOPBACK, $loopbackOut);
+
+                /* Regenerate the drain key on demand (192-bit). Shown ONCE below. */
+                if (!empty($_POST['webhook_regenerate_drain_key'])) {
+                    $newDrainKey = bin2hex(random_bytes(24));
+                    $saveSetting($db, WEBHOOK_SETTING_DRAIN_KEY, $newDrainKey);
+                    $changedKeys[] = WEBHOOK_SETTING_DRAIN_KEY;
+                    $webhookNewDrainKey = $newDrainKey; /* one-shot render var — never persisted */
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', WEBHOOK_SETTING_ENABLED_CHANNELS,
+                        ['keys' => $changedKeys, 'channels' => $chansCsv], 'success'); /* key NAMES only — the drain-key VALUE is never logged */
+                }
+                $saveSuccess = 'Webhook settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_webhooks] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         } elseif ($action === 'save_live_follow_idle') {
             /* #1770 §4.7 — the APP layer of the leader-idle precedence chain
                (includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
@@ -1121,6 +1172,22 @@ $captchaSecretSet     = ((string)(getAppSetting(CAPTCHA_SETTING_SECRET_KEY, '') 
 $captchaEnabledFormsV = captchaEnabledFormsList();
 $captchaConfiguredNow = captchaConfigured();
 $captchaProvidersReg  = captchaProviders();
+
+/* #1909 — outbound-webhooks card render prep. webhook_admin.php pulls in the
+   engine (constants + gates + webhookDrainHealth()). All reads are gate/schema
+   tolerant, so an un-migrated env renders "dormant" rather than throwing. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+$webhookChannelsV   = webhookEnabledChannels();                    /* subset of {alpha,beta,production} */
+$webhookLoopbackV   = ((string)(getAppSetting(WEBHOOK_SETTING_ALLOW_LOOPBACK, '0') ?? '0')) === '1';
+$webhookDrainKeySet = ((string)(getAppSetting(WEBHOOK_SETTING_DRAIN_KEY, '') ?? '')) !== '';
+$webhookEnabledHere = webhooksEnabled();
+$webhookThisChannel = ihymns_environment();
+try {
+    $webhookHealthV = webhookDrainHealth($db);
+} catch (\Throwable $_e) {
+    $webhookHealthV = ['due_now' => 0, 'oldest_due_age_secs' => null, 'last_drain_at' => null, 'active_subs' => 0];
+}
+
 /* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
    captchaFormKeys() value; a key without an entry falls back to a generic
    caption, so the card can never silently drop a newly-added form. */
@@ -1613,6 +1680,105 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         OUTBOUND WEBHOOKS SECTION (#1909)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-broadcast me-2"></i>Partner webhooks
+            </h2>
+            <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
+                <i class="bi bi-list-ul me-1"></i>Manage subscriptions
+            </a>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                Outbound event delivery (#1909): external systems subscribe on
+                <a href="/manage/webhooks" class="link-light">Webhooks</a> and receive signed HTTP callbacks
+                when songs / songbooks change, a set-list is shared, or a service goes live. This card is the
+                <strong>master switch</strong> and the drain-key custody — the tables do nothing until a channel
+                is ticked below.
+            </p>
+            <?php if ($webhookNewDrainKey !== null): ?>
+                <div class="alert alert-warning" role="alert">
+                    <strong>New drain key — copy it now, it is shown only once:</strong>
+                    <code class="user-select-all d-block mt-1"><?= htmlspecialchars($webhookNewDrainKey, ENT_QUOTES, 'UTF-8') ?></code>
+                    <span class="small">Use it as <code>?key=…</code> on the drain endpoint (below).</span>
+                </div>
+            <?php endif; ?>
+            <form method="post" class="mb-3">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_webhooks">
+                <div class="mb-3">
+                    <label class="form-label mb-1">Enabled channels</label>
+                    <div class="d-flex flex-wrap gap-3">
+                        <?php foreach (['alpha', 'beta', 'production'] as $chOpt): ?>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="webhooks_channels[]"
+                                       value="<?= $chOpt ?>" id="wh_ch_<?= $chOpt ?>"<?= in_array($chOpt, $webhookChannelsV, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="wh_ch_<?= $chOpt ?>">
+                                    <?= ucfirst($chOpt) ?>
+                                    <?php if ($chOpt === $webhookThisChannel): ?><span class="badge bg-info text-dark ms-1">this env</span><?php endif; ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text">
+                        Empty = fully dormant (no delivery on any channel). Ticking a channel activates delivery
+                        there — the three docroots share one database, so this is per-environment.
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" name="webhook_allow_loopback"
+                           value="1" id="wh_loopback"<?= $webhookLoopbackV ? ' checked' : '' ?>>
+                    <label class="form-check-label" for="wh_loopback">
+                        Allow <code>http://127.0.0.1</code> targets (local testing only)
+                    </label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label mb-1">
+                        Drain key
+                        <?= $webhookDrainKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="webhook_regenerate_drain_key"
+                               value="1" id="wh_regen">
+                        <label class="form-check-label" for="wh_regen">
+                            Regenerate the drain key on save (shown once)
+                        </label>
+                    </div>
+                    <div class="form-text">
+                        Authorises the drain endpoint a cron / uptime monitor pokes to progress retries:<br>
+                        <code>curl -fsS "https://<?= htmlspecialchars($webhookThisChannel === 'production' ? 'ihymns.app' : ($webhookThisChannel === 'beta' ? 'beta.ihymns.app' : 'dev.ihymns.app'), ENT_QUOTES, 'UTF-8') ?>/webhook-drain.php?key=&lt;drain key&gt;"</code>
+                        every minute. Server-side secret, encrypted at rest.
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save webhook settings
+                </button>
+            </form>
+            <hr class="border-secondary">
+            <div class="small">
+                <div class="mb-1">
+                    <strong>Status on this environment (<?= htmlspecialchars($webhookThisChannel, ENT_QUOTES, 'UTF-8') ?>):</strong>
+                    <?php if ($webhookEnabledHere): ?>
+                        <span class="badge bg-success">enabled</span>
+                    <?php else: ?>
+                        <span class="badge bg-secondary">dormant</span>
+                    <?php endif; ?>
+                </div>
+                <div>Active subscriptions: <strong><?= (int)$webhookHealthV['active_subs'] ?></strong></div>
+                <div>Deliveries due now: <strong><?= (int)$webhookHealthV['due_now'] ?></strong>
+                    <?php if ($webhookHealthV['oldest_due_age_secs'] !== null): ?>
+                        (oldest waiting <?= (int)round($webhookHealthV['oldest_due_age_secs'] / 60) ?> min)
+                    <?php endif; ?>
+                </div>
+                <div>Last drain: <strong><?= $webhookHealthV['last_drain_at'] !== null ? htmlspecialchars((string)$webhookHealthV['last_drain_at'], ENT_QUOTES, 'UTF-8') . ' UTC' : 'never — cron not wired' ?></strong></div>
+            </div>
         </div>
     </div>
 

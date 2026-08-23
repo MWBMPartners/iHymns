@@ -153,6 +153,7 @@ const ENTITLEMENTS = [
        external services write to the public API is the most sensitive admin
        surface, so global_admin only. */
     'manage_api_keys'      => ['global_admin'],
+    'manage_webhooks'      => ['global_admin'],   // outbound partner-event webhooks (#1909)
     'request_api_keys'     => ['admin', 'global_admin'],   // self-serve key requests (Phase D); global admins still approve via manage_api_keys
 
     /* Duplicate-songs review + merge (#1064) — destructive merge, so admin+. */

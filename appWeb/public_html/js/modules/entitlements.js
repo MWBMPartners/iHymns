@@ -150,6 +150,7 @@ export const ENTITLEMENTS = {
     view_api_docs:              ['editor', 'admin', 'global_admin'],
     request_api_keys:           ['admin', 'global_admin'],
     manage_api_keys:            ['global_admin'],
+    manage_webhooks:            ['global_admin'],
 
     /* Org self-service — deliberately open to plain users: someone must be able
        to administer their OWN organisation without holding a site-wide role. */

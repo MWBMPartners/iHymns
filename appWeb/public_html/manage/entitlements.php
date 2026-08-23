@@ -91,7 +91,7 @@ $groups = [
     'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_publishers', 'manage_external_link_types', 'manage_duplicate_songs'],
     'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_licence_types', 'manage_feature_gating'],
     'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report', 'view_org_ccli_report'],
-    'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
+    'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys', 'manage_webhooks'],
     'Personalisation'    => ['manage_default_card_layout', 'customise_own_card_layout'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
@@ -195,6 +195,7 @@ $ENTITLEMENT_LABELS = [
     'view_org_ccli_report'      => ['View own organisation\'s CCLI report', 'Pull the CCLI usage return for an organisation you own or admin (#1861)'],
     'request_api_keys'          => ['Request an API key',             'Ask for a machine-to-machine key; a Global Admin approves it'],
     'manage_api_keys'           => ['Manage API keys',                'Mint, approve and revoke machine-to-machine API keys'],
+    'manage_webhooks'           => ['Manage webhooks',                'Register, verify and triage outbound partner-event webhooks (#1909)'],
 ];
 
 $entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {

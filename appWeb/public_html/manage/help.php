@@ -341,6 +341,12 @@ $sections = [
         'group' => 'Operations',
     ],
     [
+        'id'    => 'webhooks',
+        'icon'  => 'bi-broadcast',
+        'title' => 'Webhooks',
+        'group' => 'Operations',
+    ],
+    [
         'id'    => 'mobile-admin',
         'icon'  => 'bi-phone',
         'title' => 'Mobile admin (responsive lists)',
@@ -2018,6 +2024,37 @@ foreach ($sections as $s) {
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Treat a minted key like a password &mdash; it grants its scope to anyone holding it, with no user behind it. If a key leaks, revoke it immediately and re-issue; never paste a raw key into a ticket, chat or log.
+                    </div>
+                </section>
+
+                <section id="webhooks" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        Let an external system be <strong>told</strong> when something changes in iHymns &mdash; a song is created, updated or deleted, a songbook changes, a set list is shared, or a live service starts or ends. Unlike an <a href="#api-keys">API key</a> (which lets a partner <em>ask</em> us for data), a webhook lets us <em>push</em> a small signed notification to a URL the partner controls, the moment the event happens.
+                    </p>
+                    <h3 class="h6">The one rule about what a webhook contains</h3>
+                    <p>
+                        A webhook payload carries <strong>identity and metadata only &mdash; never content</strong>: an id, a title, which fields changed (by name, never their values), a link. It never contains lyrics, media, a share token or a service join code. A partner that needs the actual content fetches it through the read API, where licensing and access rules still apply. This is deliberate: a webhook is a doorbell, not a delivery van.
+                    </p>
+                    <h3 class="h6">Registering an endpoint</h3>
+                    <ul>
+                        <li><strong>Add a subscription</strong> &mdash; give it a label, the partner's <code>https://</code> URL, and tick which events it wants (a single event, a whole family like <em>every song event</em>, or everything).</li>
+                        <li><strong>Verify it.</strong> A new or URL-changed subscription starts <em>pending</em> and receives nothing until it passes a one-off <strong>verification</strong>: we send a signed challenge, and the endpoint must echo it back. This proves the partner really controls that URL &mdash; so a subscription can't be pointed at some unsuspecting third party and then used to spray it with traffic.</li>
+                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once on create; you can <em>Reveal</em> it (logged) or <em>Rotate</em> it &mdash; rotation keeps the old secret valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
+                    </ul>
+                    <h3 class="h6">Delivery, retries and dead-letters</h3>
+                    <p>
+                        The first attempt is near-instant. A failed delivery is retried on a widening schedule for about <strong>2.2 days</strong> (1&nbsp;min &rarr; 5&nbsp;min &rarr; &hellip; &rarr; 24&nbsp;hours); after that it is marked <em>dead</em> and shown in the delivery log, where you can <strong>re-drive</strong> it once the partner is healthy again. A subscription that keeps failing for days is auto-disabled with a red badge (re-enable is one click). Delivery is <em>at-least-once</em> &mdash; a receiver that occasionally sees the same event twice should de-duplicate on the event id in the header.
+                    </p>
+                    <h3 class="h6">Turning it on (and the drain job)</h3>
+                    <p>
+                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain.php?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> a subscription is walled to the environment (alpha / beta / production) it was created on &mdash; the three share one database but never each other's webhook traffic. Test on alpha first; a production partner should be registered on production.
                     </div>
                 </section>
 

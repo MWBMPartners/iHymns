@@ -166,6 +166,7 @@ $_adminLinks = [
     ['gating-noop-verify',   '/manage/gating-noop-verify',   'bi-shield-check',      'Content Lock Safety Check','manage_configuration',        'System & Reports'    ],
     ['notifications',        '/manage/notifications',        'bi-bell',              'Notifications',            'manage_notifications',        'System & Reports'    ],
     ['api-keys',             '/manage/api-keys',             'bi-key',               'API Keys',                 'request_api_keys',            'System & Reports'    ],
+    ['webhooks',             '/manage/webhooks',             'bi-broadcast',         'Webhooks',                 'manage_webhooks',             'System & Reports'    ],
 
     /* Help */
     ['help',                 '/manage/help',                 'bi-life-preserver',    'Help / Guides',            null,                          'Help'                ],
