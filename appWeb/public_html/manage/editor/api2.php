@@ -333,6 +333,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for songbook.import_completed (ONE summary event per import, dormant no-op) */
 /* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
    file's hand-rolled INSERT INTO tblNotifications, which was one of three
    drifting copies. */
@@ -5547,6 +5548,20 @@ try {
             'failed'  => (int)($summary['songs_failed'] ?? 0),
             'dryRun'  => $dryRun,
         ]);
+        /* #1909 — ONE summary partner webhook per real import (never per-song —
+           design §A.9). A dry-run preview creates nothing, so it emits nothing.
+           abbr comes from the summary when the import targeted a single book;
+           a multi-book import leaves it empty (still a valid "import finished"
+           signal). Dormant no-op until enabled. */
+        if (!$dryRun) {
+            webhookEmit('songbook.import_completed', [
+                'abbr'          => (string)($summary['songbook'] ?? $summary['abbr'] ?? ''),
+                'songs_created' => (int)($summary['songs_created'] ?? 0),
+                'songs_updated' => (int)($summary['songs_updated'] ?? 0),
+                'songs_skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+                'dry_run'       => false,
+            ], ['source' => 'bulk_import', 'entity_id' => (string)($summary['songbook'] ?? $summary['abbr'] ?? '')]);
+        }
         /* #1674 — a KEY, not prose (rule #35), so import2.php's renderSummary()
            can branch on it rather than parse a sentence. */
         $summary['dry_run'] = $dryRun;
@@ -5635,6 +5650,17 @@ try {
                        _bulkImport_saveSong() with. */
                     if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
                     logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0), 'dryRun' => $dryRun]);
+                    /* #1909 — ONE summary partner webhook for this sync zip path
+                       (never per-song; design §A.9). Dormant no-op until enabled. */
+                    if (!$dryRun) {
+                        webhookEmit('songbook.import_completed', [
+                            'abbr'          => (string)($summary['songbook'] ?? $summary['abbr'] ?? ''),
+                            'songs_created' => (int)($summary['songs_created'] ?? 0),
+                            'songs_updated' => (int)($summary['songs_updated'] ?? 0),
+                            'songs_skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+                            'dry_run'       => false,
+                        ], ['source' => 'bulk_import', 'entity_id' => (string)($summary['songbook'] ?? $summary['abbr'] ?? '')]);
+                    }
                     /* #1911 — a KEY, not prose (rule #35): import2.php's
                        renderSummary() branches on this for the sync-render
                        path importZip() falls back to when `data.async` is

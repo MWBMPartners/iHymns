@@ -327,6 +327,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
  * handled by the JSON error handler above as a 503).
  * ========================================================================= */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for the setlist_share / service_session_* funnels (dormant no-op) */
 enforceMaintenanceForApi();
 
 /* Themed error-card renderer for the ?page= partials (song/songbook/work/…
@@ -2667,6 +2668,18 @@ if ($action !== null) {
                     'edit_audience'    => $shareScope === 'edit' ? $editAudience : null,
                 ]
             );
+
+            /* #1909 — partner webhook, only on the INITIAL mint (not an update of
+               an existing share). NEVER the token or the URL — the share token IS
+               the capability (rule #40); partners are told a share happened, not
+               handed the key. Dormant no-op until enabled. */
+            if (!$isUpdate) {
+                webhookEmit('setlist.shared', [
+                    'setlist_title' => $setlistName,
+                    'scope'         => $shareScope,
+                    'owner_org_id'  => null,
+                ], ['source' => 'api', 'entity_id' => $shareId]);
+            }
 
             /* #1791 G3/G4 — echo back what was actually STORED (not merely
                requested): editAudience may have been silently clamped to an
@@ -18595,6 +18608,14 @@ if ($action !== null) {
                 'occurrence_date'  => $occDate,
                 'superseded'       => $superseded,
             ]);
+            /* #1909 — partner webhook (dormant no-op). NEVER the join code — the
+               venue rotating code IS proof-of-presence (rule #26). */
+            webhookEmit('service.started', [
+                'session_kind'    => 'service',
+                'org_id'          => $orgId,
+                'venue_id'        => $venueId,
+                'occurrence_date' => $occDate,
+            ], ['source' => 'api', 'entity_id' => (string)$newSessionId]);
             sendJson(['ok' => true, 'sessionId' => $newSessionId, 'code' => $code, 'occurrenceEnd' => $endUtc]);
             break;
         }
@@ -18684,6 +18705,12 @@ if ($action !== null) {
                     $db->commit();
                 } catch (\Throwable $e) { $db->rollback(); throw $e; }
                 logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                /* #1909 — partner webhook (dormant no-op). Operator-initiated end. */
+                webhookEmit('service.ended', [
+                    'session_kind' => 'service',
+                    'org_id'       => $orgId,
+                    'ended_reason' => 'operator',
+                ], ['source' => 'api', 'entity_id' => (string)$sessionId]);
                 liveActivitySessionPush($db, $sessionId, 'end');
                 sendJson(['ok' => true]);
                 break;

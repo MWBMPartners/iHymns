@@ -724,6 +724,107 @@ function webhookFanOut(\mysqli $db, int $eventId, string $chan, string $type, st
     $ins->close();
 }
 
+/**
+ * ELI5: emit a song.* event, filling in the song's title / songbook / stable
+ * public id from the database so every song funnel is a genuine one-liner.
+ * WHY: the ONE song-fact gatherer (rule #22) — a caller passes the type + id (and
+ * anything it already has, e.g. changed_fields), and this resolves the rest. It
+ * SHORT-CIRCUITS on the dormancy gates BEFORE any DB read, so a save on an
+ * install with webhooks off (or no active subscription) pays nothing. public_id
+ * is column-gated (null on a pre-#1343 install), never a throw under STRICT.
+ *
+ * @param string $type  song.created | song.updated | song.deleted | song.restored
+ * @param string $songId The SongId (e.g. MP-1008).
+ * @param array  $extra Facts already known to the caller (title, songbook_abbr,
+ *                       changed_fields) — used verbatim, not re-fetched.
+ * @param array  $opts  webhookEmit() opts (source, source_ref, actor_user_id).
+ */
+function webhookEmitSongEvent(\mysqli $db, string $type, string $songId, array $extra = [], array $opts = []): void
+{
+    try {
+        if (!webhooksEnabled() || !webhookSchemaReady($db) || !webhookHasActiveSubscriptions($db)) {
+            return; /* dormant / nobody subscribed — before any DB read */
+        }
+        $facts = ['song_id' => $songId] + $extra;
+
+        /* @deleted-visible: @disabled-visible: webhook emission reads the specific
+           song by its SongId to build an INTERNAL partner notification — including
+           a song.deleted / song.restored event ABOUT a just-soft-deleted row, and a
+           song in a disabled/unofficial book. It must therefore NOT apply the
+           catalogue visibility (#1694) or the disabled-songbook (#1765) predicate:
+           that would hide the very row the event is announcing. This is a
+           notification, never a public catalogue read (#1909). */
+        if (!isset($facts['title']) || !isset($facts['songbook_abbr'])) {
+            $stmt = $db->prepare("SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($row) {
+                $facts['title']         = $facts['title']         ?? (string)$row['Title'];
+                $facts['songbook_abbr'] = $facts['songbook_abbr'] ?? (string)$row['SongbookAbbr'];
+            }
+        }
+        if (!isset($facts['public_id']) && function_exists('songPublicId_columnReady') && songPublicId_columnReady($db)) {
+            $p = $db->prepare("SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $p->bind_param('s', $songId);
+            $p->execute();
+            $pr = $p->get_result()->fetch_assoc();
+            $p->close();
+            if ($pr && $pr['PublicId'] !== null && $pr['PublicId'] !== '') {
+                $facts['public_id'] = (string)$pr['PublicId'];
+            }
+        }
+        $opts['entity_id'] = $opts['entity_id'] ?? $songId;
+        webhookEmit($type, $facts, $opts);
+    } catch (\Throwable $e) {
+        error_log('[webhooks] song-event helper failed for ' . $songId . ': ' . $e->getMessage());
+    }
+}
+
+/**
+ * ELI5: emit a songbook.* event, filling in the songbook's name + official flag
+ * from the database when the caller didn't already pass them.
+ * WHY: the ONE songbook-fact gatherer (rule #22), sibling of
+ * webhookEmitSongEvent(). SHORT-CIRCUITS on the dormancy gates before any DB
+ * read. For songbook.deleted the row is already gone, so the caller passes what
+ * it captured and no lookup is attempted.
+ *
+ * @param string $type  songbook.created | songbook.updated | songbook.deleted
+ * @param string $abbr  The Abbreviation (the SongId prefix / entity id).
+ * @param array  $extra title / is_official already known to the caller.
+ * @param array  $opts  webhookEmit() opts.
+ */
+function webhookEmitSongbookEvent(\mysqli $db, string $type, string $abbr, array $extra = [], array $opts = []): void
+{
+    try {
+        if (!webhooksEnabled() || !webhookSchemaReady($db) || !webhookHasActiveSubscriptions($db)) {
+            return;
+        }
+        $facts = ['abbr' => $abbr] + $extra;
+        /* @disabled-visible: webhook emission reads the specific songbook by its
+           Abbreviation to build an INTERNAL partner notification — it must NOT
+           filter out a disabled or unofficial (IsOfficial=0) book; a webhook about
+           a book applies whatever its status. This is a notification, never a
+           public catalogue read (#1765 / #1909). */
+        if ($type !== 'songbook.deleted' && (!isset($facts['title']) || !isset($facts['is_official']))) {
+            $stmt = $db->prepare("SELECT Name, IsOfficial FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1");
+            $stmt->bind_param('s', $abbr);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($row) {
+                $facts['title']       = $facts['title']       ?? (string)$row['Name'];
+                $facts['is_official'] = $facts['is_official'] ?? (bool)$row['IsOfficial'];
+            }
+        }
+        $opts['entity_id'] = $opts['entity_id'] ?? $abbr;
+        webhookEmit($type, $facts, $opts);
+    } catch (\Throwable $e) {
+        error_log('[webhooks] songbook-event helper failed for ' . $abbr . ': ' . $e->getMessage());
+    }
+}
+
 /* =========================================================================
  * DELIVERY — claim, attempt, drain pass, prune
  * ========================================================================= */

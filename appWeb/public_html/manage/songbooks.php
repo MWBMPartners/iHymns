@@ -45,6 +45,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    default rights-key pickers draw from + validate against (rule #35, no second
    list). Falls back to the byte-exact P1 seeds on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongbookEvent(), fired beside the songbook.create/edit/delete logActivity (dormant no-op) */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -1270,6 +1271,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     }
                 }
+                /* #1909 — partner webhook (dormant no-op until enabled). */
+                webhookEmitSongbookEvent($db, 'songbook.created', $abbr,
+                    ['title' => $name, 'is_official' => (bool)$isOfficial], ['source' => 'admin']);
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -2152,6 +2156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $auditExtras['rights_applied_music']  = $rightsAppliedMusic ?? 0;
                         }
                     }
+                    /* #1909 — partner webhook (dormant no-op; helper resolves
+                       name + official flag from the just-updated row). */
+                    webhookEmitSongbookEvent($db, 'songbook.updated', (string)($afterRow['Abbreviation'] ?? ''),
+                        [], ['source' => 'admin']);
                     logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
                         'before'             => array_intersect_key($beforeRow, array_flip($changed)),
@@ -2326,6 +2334,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* Audit (#535) — capturing abbreviation in Details
                    means the row remains useful even after the FK
                    nulls out / the songbook is gone. */
+                /* #1909 — partner webhook (dormant no-op; the row is gone so the
+                   payload carries the abbr only). */
+                webhookEmitSongbookEvent($db, 'songbook.deleted', $abbr, [], ['source' => 'admin']);
                 logActivity('songbook.delete', 'songbook', (string)$id, [
                     'abbreviation' => $abbr,
                 ]);
@@ -2408,6 +2419,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $db->commit();
 
+                    /* #1909 — partner webhook (dormant no-op; row gone → abbr only).
+                       Per-song song.deleted events are deliberately NOT emitted for
+                       a cascade — one songbook.deleted summarises it (design §A.9). */
+                    webhookEmitSongbookEvent($db, 'songbook.deleted', $abbr, [], ['source' => 'admin']);
                     logActivity('songbook.delete_cascade', 'songbook', (string)$id, [
                         'abbreviation' => $abbr,
                         'song_count'   => $songCount,

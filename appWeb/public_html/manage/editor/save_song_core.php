@@ -58,6 +58,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -1380,6 +1381,18 @@ function editorSaveSongCore(): array
                     $logDetails
                 );
             }
+
+            /* #1909 — partner webhook (dormant no-op until webhooks_enabled_channels
+               names this channel AND an active subscription matches). Best-effort,
+               never throws (the logActivity posture); title + songbook are already
+               in scope so the shared gatherer only resolves public_id. */
+            webhookEmitSongEvent(
+                $db,
+                $action === 'create' ? 'song.created' : 'song.updated',
+                $songId,
+                ['title' => $title, 'songbook_abbr' => $songbookAbbr],
+                ['source' => 'editor_save']
+            );
 
             /* Works auto-link (#1860 go-live) — delegates to the ONE shared
                core (rule #22; this REPLACES the pre-#1860 inline ISWC-only

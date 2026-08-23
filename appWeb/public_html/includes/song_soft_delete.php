@@ -56,6 +56,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'sql_identifier.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_public_id.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired post-commit from the core (dormant no-op) */
 
 /**
  * The complete DeletedReason vocabulary — key => human label.
@@ -524,6 +525,14 @@ function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reas
            forget it. */
         songSoftDeleteNotify($db, 'deleted', $songId,
             (string)($state['title'] ?? ''), $userId);
+        /* #1909 — partner webhook, post-commit like the notify above and for the
+           same reason: it must never roll back or fail a delete that has already
+           succeeded (webhookEmitSongEvent swallows everything, dormant no-op).
+           Fired from the core so every delete funnel (editor api/api2, bulk) gets
+           it (rule #22). */
+        webhookEmitSongEvent($db, 'song.deleted', $songId,
+            ['title' => (string)($state['title'] ?? ''), 'songbook_abbr' => (string)($state['songbookAbbr'] ?? '')],
+            ['source' => 'soft_delete', 'actor_user_id' => $userId]);
         return $verdict + [
             'title'    => (string)($state['title'] ?? ''),
             'songbook' => (string)($state['songbookAbbr'] ?? ''),
@@ -587,6 +596,11 @@ function songRestore(\mysqli $db, string $songId, ?int $userId): array
            direction would make the queue look self-clearing. */
         songSoftDeleteNotify($db, 'restored', $songId,
             (string)($state['title'] ?? ''), $userId);
+        /* #1909 — partner webhook (post-commit, dormant no-op; see the delete
+           twin above for the post-commit / core-fired rationale). */
+        webhookEmitSongEvent($db, 'song.restored', $songId,
+            ['title' => (string)($state['title'] ?? ''), 'songbook_abbr' => (string)($state['songbookAbbr'] ?? '')],
+            ['source' => 'restore', 'actor_user_id' => $userId]);
         return $verdict + [
             'title'    => (string)($state['title'] ?? ''),
             'songbook' => (string)($state['songbookAbbr'] ?? ''),
