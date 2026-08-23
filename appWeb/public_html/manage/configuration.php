@@ -1129,7 +1129,7 @@ $captchaFormMeta = [
     'login'          => ['label' => 'Login',               'caption' => 'Breaks native sign-in. Login already carries the strongest rate limits — enable last, if at all.'],
     'password_reset' => ['label' => 'Password reset',      'caption' => 'Breaks native password reset until the apps add widget support.'],
     'email_login'    => ['label' => 'Email login (code)',  'caption' => 'Breaks native magic-link login until the apps add widget support.'],
-    'song_request'   => ['label' => 'Song requests',       'caption' => 'Web-only endpoint — no native impact. Ends the no-JS form fallback while enabled.'],
+    'song_request'   => ['label' => 'Song requests',       'caption' => 'Guards the web /request form only — no native impact. The native-app request endpoint and any direct API submission carry no widget, so they stay bounded by the per-IP daily cap instead. Ends the no-JS form fallback while enabled.'],
     'manage_login'   => ['label' => 'Admin login (/manage)','caption' => 'Admin login page — no native impact.'],
 ];
 

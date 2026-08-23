@@ -340,6 +340,30 @@ cg($literalLeaks === [],
     '5.4 no captcha-provider hostname literal outside includes/captcha.php (leaks: '
         . implode(', ', $literalLeaks) . ')');
 
+/* 5.5 (adversarial-review follow-up) — index.php must inline NONE of the
+   provider CSP origins; they belong ONLY via captchaCspOrigins(). Derived from
+   the REGISTRY (every selectable provider's cspScript+cspFrame hosts), so a new
+   provider's hosts are covered automatically, and the reCAPTCHA-v2 bare hosts
+   (www.google.com / www.gstatic.com) that 5.4's fixed pattern list omits (they
+   appear legitimately elsewhere in the tree) are caught here — SCOPED to
+   index.php, where those hosts have no legitimate non-captcha use. */
+$providerCspHosts = [];
+foreach (captchaProviders() as $pe) {
+    if (empty($pe['selectable'])) { continue; }
+    foreach (array_merge((array)($pe['cspScript'] ?? []), (array)($pe['cspFrame'] ?? [])) as $o) {
+        $h = preg_replace('#^https?://#', '', (string)$o);
+        $h = ltrim((string)$h, '*.');   /* '*.hcaptcha.com' → 'hcaptcha.com' */
+        if ($h !== '' && !in_array($h, $providerCspHosts, true)) { $providerCspHosts[] = $h; }
+    }
+}
+$indexInlined = [];
+foreach ($providerCspHosts as $h) {
+    if (strpos($indexSrc, $h) !== false) { $indexInlined[] = $h; }
+}
+cg($indexInlined === [],
+    '5.5 index.php inlines NO provider CSP host (they arrive via captchaCspOrigins) — inlined: '
+        . implode(',', $indexInlined));
+
 /* ===========================================================================
  * SECTION 6 — the admin configuration card (C6)
  * ======================================================================== */
