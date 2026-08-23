@@ -4756,6 +4756,29 @@ if ($action !== null) {
                 break;
             }
 
+            /* PER-IP FLOOD CONTROL (residual gap closed with #340/#947's
+               account-security pack). Before this, the ONLY throttle on this
+               endpoint was the per-EMAIL 5/hr cap inside
+               generateEmailLoginToken() — so ONE address could trigger real
+               SMTP sends to an unbounded number of DISTINCT victims (5 per
+               victim per hour x any number of victims): inbox-spray abuse,
+               paid-sender cost, and sender-reputation damage. This mirrors
+               #1028's per-IP arm on auth_forgot_password: 15/hr per IP,
+               spend-only-when-allowed (the house pattern), FAIL-OPEN via the
+               shared limiter (a counter-table blip degrades to today's
+               behaviour). Unlike the per-identifier cap — which MUST stay a
+               silent generic 200 to avoid an account-existence oracle — this
+               bucket is keyed purely on the CALLER'S OWN address, so a visible
+               429 leaks nothing about any account. The per-email cap stays
+               exactly where it is, inside generateEmailLoginToken(). */
+            $reqIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            if ($reqIp !== '' && !checkRateLimit('auth_email_login_request_ip', $reqIp, 15, 3600, false)) {
+                logActivity('auth.login_email_request', '', '', ['reason' => 'rate_limited_ip'], 'failure');
+                sendJson(['error' => 'Too many requests. Please try again later.'], 429);
+                break;
+            }
+            if ($reqIp !== '') { recordRateLimitHit('auth_email_login_request_ip', $reqIp); }
+
             /* THE ONE 200 BODY (#1635). Every non-error outcome of this
                endpoint answers with this exact array: address unknown,
                address registered-but-unverified, address ambiguous (a
