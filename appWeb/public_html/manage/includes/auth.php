@@ -79,6 +79,15 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    as anything in the /manage/ stack runs. Best-effort, never throws. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'activity_log.php';
+
+/* Shared rate-limit helpers (#1027) — attemptLogin() below shares the
+   per-account login bucket with api.php's auth_login via authLoginAcctKey()
+   + checkRateLimit()/recordRateLimitHit(). require_once dedupes (api.php
+   already pulls this file into API requests; a /manage page load is a
+   separate request that needs it loaded here). Pure function defs + a
+   direct-access guard, so loading it in the bootstrap is side-effect-free. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'rate_limit.php';
 /* Mirror every uncaught \Throwable + PHP fatal across the entire
    /manage/* admin surface into tblActivityLog. Every admin page
    requires this auth bootstrap first, so installing the global
@@ -586,6 +595,28 @@ function attemptLogin(string $username, string $password): ?array
         }
     }
 
+    /* SECURITY (#1027 — the /manage half) — per-ACCOUNT lockout, sharing the
+       SAME action name + SAME key derivation as api.php's auth_login. The
+       per-IP block above only stops ONE address; this bucket counts bad
+       guesses aimed at one account from ANY address, so a botnet giving each
+       node fewer than 10 tries can no longer grind an admin password forever
+       through /manage — the surface #1386's own comment calls "the
+       highest-value accounts: admin / global_admin". Because it is the SAME
+       'auth_login_acct' bucket the public API fills, an attacker splitting
+       guesses across /api and /manage draws down ONE 20/15-min allowance, not
+       two. Checked BEFORE the user fetch + password_verify() so a hammered
+       account is refused without spending a bcrypt. FAIL-OPEN via the shared
+       limiter (a counter-table blip degrades to today's behaviour, never a
+       Sunday-morning lockout). Uses $username (the raw submission) not
+       $normalised: the fold lives inside authLoginAcctKey() so both surfaces
+       bucket identically (see includes/rate_limit.php). */
+    $acctKey = authLoginAcctKey($username);
+    if (!checkRateLimit(IHYMNS_AUTH_ACCT_ACTION, $acctKey, IHYMNS_AUTH_ACCT_MAX, IHYMNS_AUTH_ACCT_WINDOW, false)) {
+        logActivity('auth.login', 'user', $normalised,
+            ['reason' => 'rate_limited_account'], 'failure');
+        return null;   /* caller shows the same generic invalid-credentials error */
+    }
+
     $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
     $stmt->bind_param('s', $normalised);
     $stmt->execute();
@@ -601,6 +632,14 @@ function attemptLogin(string $username, string $password): ?array
             $fa->execute();
             $fa->close();
         }
+        /* #1027 — the SAME failure also fills the per-account bucket checked at
+           the top of this function, written through the shared helper so the
+           read and the write stay one pair (includes/rate_limit.php). This
+           line sits INSIDE the shared "unknown user OR wrong password" branch,
+           so the counter advances identically for a real and an imaginary
+           account — keeping the lockout from becoming a username-existence
+           oracle, exactly as api.php's auth_login does. */
+        recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION, $acctKey, false);
         /* Failed login (#535) — record reason without leaking whether
            the username existed (the `reason` distinguishes "no such
            user" from "wrong password" only at the row level, never

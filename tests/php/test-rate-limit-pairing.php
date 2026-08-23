@@ -197,6 +197,40 @@ $discarded = []; // "file:line action" for verdict-discarding calls
 $unparsed  = []; // "file:line" for calls whose args could not be split
 $keyExpr   = []; // action => list of the 2nd-argument source text
 
+/* -------------------------------------------------------------------------
+ * COMPILE-TIME ACTION CONSTANTS (#1027)
+ *
+ * An action name passed as a bare `const` identifier (e.g.
+ * IHYMNS_AUTH_ACCT_ACTION) is NOT a "computed action name" the way a variable
+ * or a concatenation is: a `const NAME = 'literal';` is fixed at parse time,
+ * so a check and a record that both name it still pair statically — the
+ * property this scanner exists to protect is intact. Resolving these keeps the
+ * guard capable of understanding named-constant call sites (the shared
+ * per-account login bucket uses one) instead of rejecting them as unpairable.
+ *
+ * Only `const NAME = '<action-charset>';` definitions are collected (the action
+ * charset is [a-z0-9_]); anything whose value is not a bare lowercase string
+ * literal is deliberately NOT resolved, so a genuinely computed name still
+ * falls through to the unparsed/FAIL path. rate_limit.php IS included here
+ * (unlike the call-site scan, which skips it) because that is where the shared
+ * constants are defined.
+ * ---------------------------------------------------------------------- */
+$actionConsts = [];   // CONST_NAME => 'resolved literal action'
+$constIt = new RecursiveIteratorIterator(
+    new RecursiveDirectoryIterator($scanRoot, FilesystemIterator::SKIP_DOTS)
+);
+foreach ($constIt as $cf) {
+    if (!$cf->isFile() || strtolower($cf->getExtension()) !== 'php') { continue; }
+    $cpath = str_replace('\\', '/', $cf->getPathname());
+    if (strpos($cpath, '/vendor/') !== false) { continue; }
+    $craw = (string)file_get_contents($cf->getPathname());
+    if (strpos($craw, 'const ') === false) { continue; }
+    $csrc = rlpStripComments($craw);
+    if (preg_match_all('/const\s+([A-Z_][A-Z0-9_]*)\s*=\s*\'([a-z0-9_]+)\'\s*;/', $csrc, $cm, PREG_SET_ORDER)) {
+        foreach ($cm as $one) { $actionConsts[$one[1]] = $one[2]; }
+    }
+}
+
 $it = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($scanRoot, FilesystemIterator::SKIP_DOTS)
 );
@@ -230,13 +264,19 @@ foreach ($it as $file) {
             $args = rlpCallArgs($src, $pos + strlen($fn));
             if ($args === null || $args === []) { $unparsed[] = "$rel:$line ($fn)"; continue; }
 
-            /* First argument must be a single-quoted literal action name — a
-               computed action name would defeat static pairing entirely. */
-            if (!preg_match('/^\'([a-z0-9_]+)\'$/', $args[0], $m)) {
+            /* First argument must resolve to a fixed action name — either a
+               single-quoted literal, or a compile-time `const` that holds one
+               (see $actionConsts above). A RUNTIME-computed name (a variable, a
+               concatenation, a function call) would defeat static pairing and
+               is deliberately rejected as unparsed. */
+            if (preg_match('/^\'([a-z0-9_]+)\'$/', $args[0], $m)) {
+                $action = $m[1];
+            } elseif (preg_match('/^([A-Z_][A-Z0-9_]*)$/', $args[0], $m) && isset($actionConsts[$m[1]])) {
+                $action = $actionConsts[$m[1]];
+            } else {
                 $unparsed[] = "$rel:$line ($fn — non-literal action " . $args[0] . ')';
                 continue;
             }
-            $action = $m[1];
 
             if ($fn === 'recordRateLimitHit') {
                 $records[$action][] = "$rel:$line";

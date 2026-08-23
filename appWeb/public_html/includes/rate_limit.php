@@ -64,6 +64,64 @@ function rateLimitKey(string $ip, ?int $userId = null): string
     return $userId !== null && $userId > 0 ? 'user:' . $userId : $ip;
 }
 
+/* =========================================================================
+ * PER-ACCOUNT LOGIN BUCKET (#1027) — the ONE shared derivation
+ * =========================================================================
+ * ELI5: a second lock on the login door that counts bad guesses aimed at
+ * ONE account no matter which address they come from — so a botnet giving
+ * each node only nine tries (just under the per-IP cap of 10) can no longer
+ * grind a single password forever.
+ *
+ * WHY THIS DERIVATION LIVES HERE, NOT INLINE AT EACH LOGIN SURFACE.
+ * There are TWO login surfaces — api.php `auth_login` (the public app + the
+ * native clients) and manage/includes/auth.php `attemptLogin()` (the /manage
+ * admin form) — and #1027's own scope said "apply identically in both". The
+ * api.php half shipped 2026-08-18; the /manage half did not, so the exact
+ * attack #1027 was filed to stop still worked against the highest-value
+ * accounts. The remainder (this constant trio + helper + the manage-side
+ * check/record) closes it.
+ *
+ * The trap a second inline copy would fall into: api.php normalises the
+ * submitted username with mb_strtolower(trim()) and attemptLogin() with
+ * strtolower(trim()). Those are identical for the registered [a-z0-9_.\-]
+ * charset but NOT for arbitrary submitted bytes — and a submitted username
+ * IS arbitrary (an attacker sends whatever they like). Two surfaces deriving
+ * the bucket key from differently-folded inputs would fill two DIFFERENT
+ * buckets for the same target account, so an attacker splitting guesses
+ * across /api and /manage would get two independent allowances instead of
+ * one shared 20/15-min budget. ONE function, ONE fold (mb_strtolower(trim())),
+ * closes that gap by construction.
+ *
+ * The bucket rides tblLoginAttempts with NO schema change: the shared
+ * checkRateLimit()/recordRateLimitHit() convention is "bucket key in the
+ * IpAddress column, action name in Username". Keying on
+ *   'acct:' . substr(sha256(folded username), 0, 40)   → 45 chars, fits VARCHAR(45)
+ * rides the existing idx_IpTime index (a cheap indexed lookup, not a table
+ * scan) and cannot collide with a real account name written under the raw IP.
+ * It is NOT a secrecy measure — usernames are low-entropy and tblLoginAttempts
+ * already stores them plainly in the Username column of the per-IP rows.
+ */
+const IHYMNS_AUTH_ACCT_ACTION = 'auth_login_acct';
+const IHYMNS_AUTH_ACCT_MAX    = 20;   /* 2x the per-IP 10 — same 15-min window, so the two compose */
+const IHYMNS_AUTH_ACCT_WINDOW = 900;  /* 15 minutes, a self-healing sliding window */
+
+/**
+ * Canonical per-account login-bucket key (#1027).
+ *
+ * The FOLD LIVES HERE deliberately (see the block comment above): both login
+ * surfaces MUST derive the bucket from an identically-folded username or they
+ * fill two buckets for one account. mb_strtolower is the multibyte-correct
+ * fold (matching api.php's auth_login handler); trim() drops surrounding
+ * whitespace an attacker could vary to dodge the counter.
+ *
+ * @param string $submittedUsername The RAW submitted username (pre-lookup).
+ * @return string 'acct:' + first 40 hex chars of sha256 → 45 chars (VARCHAR(45)).
+ */
+function authLoginAcctKey(string $submittedUsername): string
+{
+    return 'acct:' . substr(hash('sha256', mb_strtolower(trim($submittedUsername))), 0, 40);
+}
+
 /**
  * Check whether a request is within the rate limit for a given action.
  *

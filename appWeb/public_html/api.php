@@ -3268,8 +3268,16 @@ if ($action !== null) {
              * that self-heals with no admin action, which is the standard
              * accepted balance against unbounded distributed guessing.
              * ============================================================= */
-            $loginAcctKey = 'acct:' . substr(hash('sha256', $username), 0, 40);
-            if (!checkRateLimit('auth_login_acct', $loginAcctKey, 20, 900, false)) {
+            /* #1027 — derive the per-account bucket key via the ONE shared
+               helper (includes/rate_limit.php), NOT a second inline copy. The
+               /manage login surface derives its key from the SAME function, so
+               an attacker cannot get two independent allowances by splitting
+               guesses across /api and /manage. $username is already
+               mb_strtolower(trim())'d above, so this is behaviour-identical to
+               the previous inline `'acct:' . substr(hash('sha256', $username), 0, 40)`
+               — proven by string equality in tests/php/test-auth-rate-limit.php. */
+            $loginAcctKey = authLoginAcctKey($username);
+            if (!checkRateLimit(IHYMNS_AUTH_ACCT_ACTION, $loginAcctKey, IHYMNS_AUTH_ACCT_MAX, IHYMNS_AUTH_ACCT_WINDOW, false)) {
                 logActivity(
                     'auth.login',
                     'user',
@@ -3328,7 +3336,7 @@ if ($action !== null) {
                    advances identically for a real and an imaginary account —
                    that is what keeps the lockout from becoming a
                    username-existence oracle. */
-                recordRateLimitHit('auth_login_acct', $loginAcctKey, false);
+                recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION, $loginAcctKey, false);
 
                 logActivity(
                     'auth.login',

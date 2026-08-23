@@ -15,10 +15,17 @@ declare(strict_types=1);
  *          user-enumeration hole: the response an attacker can observe must be
  *          identical whether or not the submitted account exists.
  *
- *   #1027  ?action=auth_login has a PER-ACCOUNT lockout on top of the existing
+ *   #1027  BOTH login surfaces — api.php auth_login AND manage/includes/auth.php
+ *          attemptLogin() — have a PER-ACCOUNT lockout on top of the existing
  *          per-IP one, keyed on the SUBMITTED username (so it fills identically
- *          for a real and an imaginary account) and emitting a message
- *          byte-identical to the per-IP 429 (so the two are indistinguishable).
+ *          for a real and an imaginary account) via the ONE shared derivation
+ *          authLoginAcctKey() (includes/rate_limit.php). The api.php half
+ *          emits a message byte-identical to the per-IP 429; the /manage half
+ *          returns the same generic invalid-credentials failure. Section 3
+ *          derives the login-surface set FROM THE TREE, so a future third
+ *          login path is automatically required to check the shared bucket —
+ *          and asserts the helper is the SOLE 'acct:' derivation, closing the
+ *          key-drift gap that caused the 2026-08-18 api-half-only mis-close.
  *
  *   #1022  A cheap unauthenticated liveness probe exists, is answered BEFORE
  *          any app bootstrapping (so a DB-down probe can never fall through to
@@ -303,50 +310,179 @@ if ($forgotCase !== null) {
 }
 
 /* ===========================================================================
- * SECTION 3 — #1027 per-account login lockout
+ * SECTION 3 — #1027 per-account login lockout (both surfaces, one derivation)
+ * ===========================================================================
+ * The 2026-08-18 close shipped the api.php half only; #1027's own scope said
+ * "apply identically in both" login surfaces (api.php auth_login AND
+ * manage/includes/auth.php attemptLogin). The remainder (this session) adds
+ * the /manage half and folds BOTH surfaces onto the ONE shared derivation
+ * authLoginAcctKey() + the IHYMNS_AUTH_ACCT_* constants in
+ * includes/rate_limit.php. This section pins: the shared helper's behaviour,
+ * that it is the SOLE 'acct:' derivation tree-wide, and that EVERY login
+ * surface (derived from the tree, not a typed list) checks the shared bucket
+ * before password_verify() and records into it on failure.
  * ======================================================================== */
 
+$repoRoot     = dirname(__DIR__, 2);
+$docroot      = $repoRoot . '/appWeb/public_html';
+$rateFile     = $docroot . '/includes/rate_limit.php';
+$manageAuthFn = $docroot . '/manage/includes/auth.php';
+
+$rateSrcRaw   = is_readable($rateFile)     ? (string)file_get_contents($rateFile)     : '';
+$manageSrcRaw = is_readable($manageAuthFn) ? (string)file_get_contents($manageAuthFn) : '';
+$rateSrc      = $rateSrcRaw   !== '' ? tarlStripComments($rateSrcRaw)   : '';
+$manageSrc    = $manageSrcRaw !== '' ? tarlStripComments($manageSrcRaw) : '';
+
+/* --- 3a. The shared helper's behaviour (functional, no DB) --------------- */
+$fnAcctKey = $rateSrc !== '' ? tarlExtractFunction($rateSrc, 'authLoginAcctKey') : null;
+tarl($fnAcctKey !== null, '3.1 authLoginAcctKey() is defined in includes/rate_limit.php');
+
+if ($fnAcctKey !== null) {
+    eval($fnAcctKey);
+
+    /* One fold for both surfaces: mb_strtolower(trim()). If the two login
+       surfaces folded differently they would fill two buckets for one
+       account (the exact drift that produced the mis-close). */
+    tarl(authLoginAcctKey(' UsEr ') === authLoginAcctKey('user'),
+        '3.2 authLoginAcctKey() folds case + surrounding whitespace (one bucket per account)');
+    tarl(authLoginAcctKey('alice') !== authLoginAcctKey('bob'),
+        '3.3 different accounts get different buckets');
+
+    /* Behaviour-identity proof for the api.php swap: for an ALREADY-normalised
+       input, the shared helper equals the previous inline derivation
+       ('acct:' . substr(hash('sha256', $username), 0, 40) where $username was
+       already mb_strtolower(trim())'d). So swapping to the helper changed
+       nothing about the key api.php files under. */
+    $legacyInline = 'acct:' . substr(hash('sha256', 'user'), 0, 40);
+    tarl(authLoginAcctKey('user') === $legacyInline,
+        '3.4 for an already-normalised username the helper equals the legacy inline derivation (api.php swap is behaviour-identical)');
+
+    /* Fits tblLoginAttempts.IpAddress VARCHAR(45): 'acct:' (5) + 40 hex = 45. */
+    tarl(strlen(authLoginAcctKey(str_repeat('x', 300))) === 45,
+        '3.5 the key is 45 chars (fits VARCHAR(45)) even for a very long submission');
+}
+
+/* --- 3b. The shared helper is the SOLE 'acct:' derivation ---------------- */
+/* Exactly one definition; and no other file re-derives an 'acct:' + sha256
+   key by hand (the drift that mis-closed #1027). Comment-stripped so a
+   doc-block mentioning the pattern can't false-positive. */
+$acctDefs = 0;
+$acctInlineDerivations = [];
+$phpFiles = [];
+$rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($docroot, FilesystemIterator::SKIP_DOTS));
+foreach ($rii as $f) {
+    if ($f->isFile() && strtolower($f->getExtension()) === 'php') { $phpFiles[] = $f->getPathname(); }
+}
+sort($phpFiles);
+foreach ($phpFiles as $pf) {
+    $src = tarlStripComments((string)file_get_contents($pf));
+    $acctDefs += preg_match_all('/function\s+authLoginAcctKey\s*\(/', $src);
+    /* An inline "'acct:' . ... hash('sha256'" derivation anywhere BUT the
+       shared helper's own file is the forbidden fork. */
+    if (basename($pf) !== 'rate_limit.php'
+        && preg_match("/'acct:'\s*\.\s*substr\(\s*hash\(/", $src)) {
+        $acctInlineDerivations[] = str_replace($docroot . '/', '', $pf);
+    }
+}
+tarl($acctDefs === 1,
+    '3.6 exactly ONE authLoginAcctKey() definition tree-wide (found ' . $acctDefs . ')');
+tarl($acctInlineDerivations === [],
+    '3.7 no file re-derives an \'acct:\' bucket key by hand outside the shared helper (found: '
+        . implode(',', $acctInlineDerivations) . ')');
+
+/* --- 3c. api.php auth_login uses the shared bucket, correctly ordered ---- */
 $loginCase = tarlExtractCase($apiSrc, 'auth_login');
-tarl($loginCase !== null, "3.1 case 'auth_login' found in the action switch");
+tarl($loginCase !== null, "3.8 case 'auth_login' found in the action switch");
 
 if ($loginCase !== null) {
-    tarl(strpos($loginCase, "checkRateLimit('auth_login_acct'") !== false,
-        '3.2 a per-account failure bucket is checked');
-    tarl(strpos($loginCase, "recordRateLimitHit('auth_login_acct'") !== false,
-        '3.3 failures are recorded into the per-account bucket (read and write are paired)');
+    $posCheck   = strpos($loginCase, 'checkRateLimit(IHYMNS_AUTH_ACCT_ACTION');
+    $posVerify  = strpos($loginCase, 'password_verify(');
+    $posRecord  = strpos($loginCase, 'recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION');
+    $posKey     = strpos($loginCase, 'authLoginAcctKey($username)');
 
-    /* Keyed on the SUBMITTED username, never on a resolved row — a bucket that
-       only existed for real accounts would be an existence oracle by itself. */
-    tarl(preg_match("/\\\$loginAcctKey\s*=\s*'acct:'\s*\.\s*substr\(hash\('sha256',\s*\\\$username\)/", $loginCase) === 1,
-        '3.4 the account bucket is keyed on a hash of the SUBMITTED username');
+    tarl($posKey !== false,
+        '3.9 the account key is derived via the shared authLoginAcctKey() helper (no inline copy)');
+    tarl($posCheck !== false && $posVerify !== false && $posCheck < $posVerify,
+        '3.10 the per-account bucket is checked BEFORE password_verify() (a hammered account never spends a bcrypt)');
+    tarl($posRecord !== false,
+        '3.11 failures are recorded into the shared per-account bucket (read and write are paired)');
 
     /* The recorder must sit inside the SHARED "unknown user OR wrong password"
-       branch, so the counter advances identically for a real and an imaginary
-       account. Offsets prove the nesting without parsing PHP. */
+       branch, so the counter advances identically for a real and imaginary
+       account (no username-existence oracle). Offsets prove the nesting. */
     $posBranch  = strpos($loginCase, 'if (!$user || !password_verify(');
-    $posRecord  = strpos($loginCase, "recordRateLimitHit('auth_login_acct'");
     $posActive  = strpos($loginCase, "if (!\$user['IsActive'])");
     tarl(
         $posBranch !== false && $posRecord !== false && $posActive !== false
             && $posBranch < $posRecord && $posRecord < $posActive,
-        '3.5 the account failure is recorded inside the shared unknown-user/wrong-password branch'
+        '3.12 the account failure is recorded inside the shared unknown-user/wrong-password branch'
     );
 
     /* Both 429s must read identically to the client, or the account lockout
        becomes distinguishable from the per-IP one. */
     tarl(
         substr_count($loginCase, "sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);") === 2,
-        '3.6 the account 429 message is byte-identical to the per-IP 429 message'
+        '3.13 the account 429 message is byte-identical to the per-IP 429 message'
     );
+}
 
-    /* The account cap must exceed the per-IP cap, or it would fire on a single
-       fat-fingering user before the per-IP limit ever did. */
-    if (preg_match("/checkRateLimit\('auth_login_acct',\s*\\\$loginAcctKey,\s*(\d+),\s*(\d+)/", $loginCase, $m)) {
-        tarl((int)$m[1] > 10, '3.7 account cap (' . $m[1] . ') exceeds the per-IP cap (10) — unreachable from one address');
-        tarl((int)$m[2] === 900, '3.8 account window matches the per-IP 15-minute window so the two compose');
-    } else {
-        tarl(false, '3.7 account cap/window are readable from the checkRateLimit() call');
+/* --- 3d. The shared constants compose with the per-IP cap ---------------- */
+if ($rateSrc !== '') {
+    $accMax = preg_match('/const\s+IHYMNS_AUTH_ACCT_MAX\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
+    $accWin = preg_match('/const\s+IHYMNS_AUTH_ACCT_WINDOW\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
+    tarl($accMax > 10,
+        '3.14 IHYMNS_AUTH_ACCT_MAX (' . $accMax . ') exceeds the per-IP cap (10) — unreachable from one address');
+    tarl($accWin === 900,
+        '3.15 IHYMNS_AUTH_ACCT_WINDOW (' . $accWin . ') matches the per-IP 15-minute window so the two compose');
+}
+
+/* --- 3e. EVERY login surface got the shared bucket (tree-derived) -------- */
+/* Derive the login-surface set from the tree rather than a typed list: a
+   credential-LOGIN lockout surface is one that verifies a password AND carries
+   the per-IP login brute-force count query `IpAddress = ? AND Success = 0`. The
+   IpAddress-keyed query is what distinguishes a LOGIN (an anonymous caller
+   establishing a session, keyed on the client IP) from a RE-AUTH gate (an
+   already-signed-in admin re-proving identity — e.g. setup-database.php's
+   secret_rotate, which looks up by session Id and keys its own isolated
+   lockout on `Username = ?` with an EMPTY IpAddress, and MUST NOT share the
+   login bucket per #1466). A future third login surface following the house
+   per-IP-lockout pattern is then automatically DEMANDED to check the shared
+   account bucket. */
+$loginSurfaceFiles = [];
+foreach ($phpFiles as $pf) {
+    $src = tarlStripComments((string)file_get_contents($pf));
+    $isLoginLockoutSurface = strpos($src, 'password_verify(') !== false
+        && strpos($src, 'IpAddress = ? AND Success = 0') !== false;
+    if ($isLoginLockoutSurface) { $loginSurfaceFiles[] = $pf; }
+}
+tarl(count($loginSurfaceFiles) >= 2,
+    '3.16 at least the two known login surfaces (api.php + manage/includes/auth.php) are detected (found '
+        . count($loginSurfaceFiles) . ')');
+$missingAcctBucket = [];
+foreach ($loginSurfaceFiles as $pf) {
+    $src = tarlStripComments((string)file_get_contents($pf));
+    if (strpos($src, 'checkRateLimit(IHYMNS_AUTH_ACCT_ACTION') === false
+        || strpos($src, 'recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION') === false) {
+        $missingAcctBucket[] = str_replace($docroot . '/', '', $pf);
     }
+}
+tarl($missingAcctBucket === [],
+    '3.17 every login-lockout surface checks AND records the shared per-account bucket (missing: '
+        . implode(',', $missingAcctBucket) . ')');
+
+/* --- 3f. The /manage attemptLogin() half specifically ------------------- */
+$attemptFn = $manageSrc !== '' ? tarlExtractFunction($manageSrc, 'attemptLogin') : null;
+tarl($attemptFn !== null, '3.18 attemptLogin() is defined in manage/includes/auth.php');
+if ($attemptFn !== null) {
+    $mCheck  = strpos($attemptFn, 'checkRateLimit(IHYMNS_AUTH_ACCT_ACTION');
+    $mVerify = strpos($attemptFn, 'password_verify(');
+    $mRecord = strpos($attemptFn, 'recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION');
+    tarl($mCheck !== false && $mVerify !== false && $mCheck < $mVerify,
+        '3.19 /manage attemptLogin() checks the shared account bucket BEFORE password_verify()');
+    tarl($mRecord !== false && $mVerify !== false && $mRecord > $mVerify,
+        '3.20 /manage attemptLogin() records a failure into the shared account bucket after the verify branch opens');
+    tarl(strpos($attemptFn, 'authLoginAcctKey($username)') !== false,
+        '3.21 /manage attemptLogin() derives its key via the shared helper (no inline copy, same fold as api.php)');
 }
 
 /* ===========================================================================
