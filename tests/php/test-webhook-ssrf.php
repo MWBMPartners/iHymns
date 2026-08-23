@@ -91,6 +91,21 @@ check('::ffff:169.254.169.254 refused (metadata in v6 clothing)', webhookIpIsPub
 check('::ffff:127.0.0.1 refused (loopback in v6 clothing)', webhookIpIsPublic('::ffff:127.0.0.1') === false);
 check('::ffff:8.8.8.8 is public (public v4 in v6 clothing)', webhookIpIsPublic('::ffff:8.8.8.8') === true);
 
+echo "\n5b — OTHER embedded-IPv4 IPv6 transition forms (#1909 review: NAT64 / 6to4 /\n";
+echo "     IPv4-compatible) must be judged by their embedded v4, not passed blind\n";
+/* NAT64 well-known prefix 64:ff9b::/96 — a DNS64/NAT64 gateway rewrites these to
+   the embedded v4, so a private/metadata embed must be refused. */
+check('64:ff9b::a9fe:a9fe refused (NAT64 embedding 169.254.169.254 metadata)', webhookIpIsPublic('64:ff9b::a9fe:a9fe') === false);
+check('64:ff9b::a00:1 refused (NAT64 embedding 10.0.0.1)', webhookIpIsPublic('64:ff9b::a00:1') === false);
+check('64:ff9b::808:808 is public (NAT64 embedding 8.8.8.8)', webhookIpIsPublic('64:ff9b::808:808') === true);
+/* 6to4 2002::/16 — embedded v4 in bytes 2..5. */
+check('2002:a00:1:: refused (6to4 embedding 10.0.0.1)', webhookIpIsPublic('2002:a00:1::') === false);
+check('2002:a9fe:a9fe:: refused (6to4 embedding 169.254.169.254)', webhookIpIsPublic('2002:a9fe:a9fe::') === false);
+check('2002:808:808:: is public (6to4 embedding 8.8.8.8)', webhookIpIsPublic('2002:808:808::') === true);
+/* Deprecated IPv4-compatible ::/96. */
+check('::10.0.0.1 refused (IPv4-compatible embedding 10.0.0.1)', webhookIpIsPublic('::10.0.0.1') === false);
+check('::169.254.169.254 refused (IPv4-compatible embedding metadata)', webhookIpIsPublic('::169.254.169.254') === false);
+
 echo "\n6 — non-IP garbage never reads as public\n";
 foreach (['', 'not-an-ip', '999.1.1.1', 'example.com', '10.0.0.1/8', ' 8.8.8.8 '] as $junk) {
     check("garbage refused: '" . $junk . "'", webhookIpIsPublic($junk) === false);

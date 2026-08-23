@@ -1382,18 +1382,6 @@ function editorSaveSongCore(): array
                 );
             }
 
-            /* #1909 — partner webhook (dormant no-op until webhooks_enabled_channels
-               names this channel AND an active subscription matches). Best-effort,
-               never throws (the logActivity posture); title + songbook are already
-               in scope so the shared gatherer only resolves public_id. */
-            webhookEmitSongEvent(
-                $db,
-                $action === 'create' ? 'song.created' : 'song.updated',
-                $songId,
-                ['title' => $title, 'songbook_abbr' => $songbookAbbr],
-                ['source' => 'editor_save']
-            );
-
             /* Works auto-link (#1860 go-live) — delegates to the ONE shared
                core (rule #22; this REPLACES the pre-#1860 inline ISWC-only
                fork above — CCLI now participates too: a CCLI-only save
@@ -1643,6 +1631,26 @@ function editorSaveSongCore(): array
                throws — see pd_suggest.php's header) so a denorm hiccup can
                never cost the curator this save. */
             pdRecomputeForSong($db, $songId);
+
+            /* #1909 — partner webhook, fired AFTER $db->commit() (like the
+               soft-delete twin and pdRecomputeForSong above), NOT inside the
+               transaction. Rationale (design §5.1, and the #1909 adversarial
+               review): webhookEmitSongEvent is best-effort and swallows every
+               \Throwable — including a transaction-fatal deadlock/lock-timeout —
+               so if it ran pre-commit and its (webhooks-active only) SELECT hit
+               such an error, the swallow would let the code fall through to
+               commit() a transaction the engine had already rolled back: a
+               silent false-success that discards the curator's save. Post-commit
+               the save is already durable, so a swallowed webhook hiccup can cost
+               nothing. Dormant no-op until enabled; title + songbook are still in
+               scope so the shared gatherer only resolves public_id. */
+            webhookEmitSongEvent(
+                $db,
+                $action === 'create' ? 'song.created' : 'song.updated',
+                $songId,
+                ['title' => $title, 'songbook_abbr' => $songbookAbbr],
+                ['source' => 'editor_save']
+            );
 
             /* WS-J #1020: no songs.json cache to refresh — all reads are now
                live MySQL (editor sidebar via load_index, songbook export via

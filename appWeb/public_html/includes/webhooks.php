@@ -355,6 +355,35 @@ function webhookIpIsPublic(string $ip): bool
         if ($b[0] === 0xff) {                       return false; } /* ff00::/8 multicast */
         if ($b[0] === 0xfe && ($b[1] & 0xc0) === 0x80) { return false; } /* fe80::/10 link-local */
         if (($b[0] & 0xfe) === 0xfc) {              return false; } /* fc00::/7 ULA */
+
+        /* Embedded-IPv4 IPv6 TRANSITION forms (#1909 adversarial review): an
+           attacker AAAA can smuggle a private/metadata IPv4 inside an IPv6 literal
+           that is NOT the ::ffff: mapped form handled at the top. Each carries an
+           embedded v4 in known byte positions — re-judge it with the SAME v4 truth
+           table, so a private/metadata embed is refused while a genuinely public
+           embed (which a DNS64/NAT64/6to4 gateway would route to that public v4) is
+           allowed. Left un-decoded, all of these fell through to `return true`. */
+        if ($b[0] === 0x00 && $b[1] === 0x64 && $b[2] === 0xff && $b[3] === 0x9b
+            && $b[4] === 0 && $b[5] === 0 && $b[6] === 0 && $b[7] === 0
+            && $b[8] === 0 && $b[9] === 0 && $b[10] === 0 && $b[11] === 0) {
+            /* NAT64 well-known prefix 64:ff9b::/96 — embedded v4 in bytes 12..15
+               (a DNS64/NAT64 gateway rewrites this to that v4, e.g. 169.254.169.254). */
+            return _webhookIpv4IsPublic($b[12], $b[13], $b[14], $b[15]);
+        }
+        if ($b[0] === 0x20 && $b[1] === 0x02) {
+            /* 6to4 2002::/16 — embedded v4 in bytes 2..5. */
+            return _webhookIpv4IsPublic($b[2], $b[3], $b[4], $b[5]);
+        }
+        $compat = true;
+        for ($i = 0; $i < 12; $i++) {
+            if ($b[$i] !== 0) { $compat = false; break; }
+        }
+        if ($compat) {
+            /* Deprecated IPv4-compatible ::/96 (:: and ::1 already handled above)
+               — embedded v4 in bytes 12..15. */
+            return _webhookIpv4IsPublic($b[12], $b[13], $b[14], $b[15]);
+        }
+
         return true;
     }
 
