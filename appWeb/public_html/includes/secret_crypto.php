@@ -480,6 +480,18 @@ function secretSettingKeys(): array
            credentials). Read back transparently decrypted via getAppSetting();
            includes/cuercode_client.php never touches the encryption layer. */
         'cuercode_api_key',
+        /* #947/#340 — the CAPTCHA provider's server-side secret key
+           (Turnstile / hCaptcha / reCAPTCHA v2 all use one). Registered the
+           moment the /manage/configuration card can write it, so it is
+           encrypted at rest from its very first save — same custody pattern as
+           the CueRCode / intapps credentials. Read back transparently
+           decrypted via getAppSetting(); includes/captcha.php never touches the
+           encryption layer, and the secret appears in NO client emit (it is
+           server-proxied only — rule #38's custody). Its PUBLIC sibling
+           captcha_site_key is deliberately NOT here: that value is handed to
+           every browser to draw the widget, and listing a non-secret would make
+           secretInventory() report a false exposure every time it is read. */
+        'captcha_secret_key',
     ];
 }
 
