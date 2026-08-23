@@ -229,6 +229,117 @@ cg($secretLeaks === [],
     '3.4 no browser-reachable file (index.php, js/, includes/pages, includes/partials) names captcha_secret_key (leaks: '
         . implode(',', $secretLeaks) . ')');
 
+/* ===========================================================================
+ * SECTION 4 — enforcement COVERAGE (tree-derived) + gate ORDERING (C4)
+ * ======================================================================== */
+
+/** All docroot .php files, comment-stripped, keyed by relative path. */
+$phpSources = [];
+$rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($docroot, FilesystemIterator::SKIP_DOTS));
+foreach ($rii as $f) {
+    if ($f->isFile() && strtolower($f->getExtension()) === 'php') {
+        $phpSources[str_replace($docroot . '/', '', $f->getPathname())] = cgStripComments((string)file_get_contents($f->getPathname()));
+    }
+}
+
+/* Every form key (derived by CALLING captchaFormKeys(), never a typed list)
+   must have at least one captchaGate('<key>' enforcement site somewhere under
+   the docroot. A new form key is then automatically demanded a gate. */
+$uncovered = [];
+foreach (captchaFormKeys() as $fk) {
+    $needle = "captchaGate('" . $fk . "'";
+    $found = false;
+    foreach ($phpSources as $src) {
+        if (strpos($src, $needle) !== false) { $found = true; break; }
+    }
+    if (!$found) { $uncovered[] = $fk; }
+}
+cg($uncovered === [], '4.1 every captchaFormKeys() key has a captchaGate() enforcement site (uncovered: '
+    . implode(',', $uncovered) . ')');
+
+$apiRel = 'api.php';
+$api = $phpSources[$apiRel] ?? '';
+
+/** Position of $target inside the case that begins with $gate, or -1. Bounds
+ *  the search to the next `\n        case '` so a later case can't satisfy it. */
+function cgOrder(string $src, string $gate, string $target): int
+{
+    $g = strpos($src, $gate);
+    if ($g === false) { return -1; }
+    $next = preg_match('/\n        case \'/', $src, $m, PREG_OFFSET_CAPTURE, $g) ? $m[0][1] : strlen($src);
+    $t = strpos($src, $target, $g);
+    return ($t !== false && $t < $next && $t > $g) ? 1 : 0;
+}
+
+cg(cgOrder($api, "captchaGate('registration'", 'password_hash(') === 1,
+    '4.2 auth_register gate precedes password_hash() (no bcrypt spent on a refused signup)');
+cg(cgOrder($api, "captchaGate('password_reset'", 'generatePasswordResetToken(') === 1,
+    '4.3 auth_forgot_password gate precedes generatePasswordResetToken()');
+cg(cgOrder($api, "captchaGate('email_login'", 'generateEmailLoginToken(') === 1,
+    '4.4 auth_email_login_request gate precedes generateEmailLoginToken()');
+/* The email-login per-IP bucket must ALSO precede token generation (budget-first). */
+$ipBucketPos = strpos($api, "checkRateLimit('auth_email_login_request_ip'");
+$emailTokPos = strpos($api, 'generateEmailLoginToken(');
+cg($ipBucketPos !== false && $emailTokPos !== false && $ipBucketPos < $emailTokPos,
+    '4.5 the email-login per-IP bucket precedes generateEmailLoginToken() (budget-first)');
+
+/* song_request_submit: honeypot BEFORE the gate (a 403 must never tip off a
+   honeypot bot), gate BEFORE the INSERT. */
+$honeyPos  = strpos($api, "if (\$honey !== '')");
+$srGatePos = strpos($api, "captchaGate('song_request'");
+cg($honeyPos !== false && $srGatePos !== false && $honeyPos < $srGatePos,
+    '4.6 song_request honeypot check precedes the CAPTCHA gate (a 403 never tips off a honeypot bot)');
+/* cgOrder bounds the INSERT search to the song_request_submit case, so the
+   OTHER INSERT INTO tblSongRequests (in the song-correction case) can't
+   satisfy it. */
+cg(cgOrder($api, "captchaGate('song_request'", 'INSERT INTO tblSongRequests') === 1,
+    '4.7 song_request CAPTCHA gate precedes the INSERT (same case)');
+
+/* auth_login: gate after both buckets, before password_verify(). */
+cg(cgOrder($api, "captchaGate('login'", 'password_verify(') === 1,
+    '4.8 auth_login gate precedes password_verify()');
+
+/* ===========================================================================
+ * SECTION 5 — conditional CSP + app_status emit + hostname-literal ban (C4)
+ * ======================================================================== */
+
+$indexSrc = $phpSources['index.php'] ?? '';
+cg(strpos($indexSrc, 'captchaCspOrigins(') !== false,
+    '5.1 index.php builds the CSP captcha origins via captchaCspOrigins()');
+cg(strpos($indexSrc, '{$cspCaptchaScript}') !== false && strpos($indexSrc, '{$cspCaptchaFrame}') !== false,
+    '5.2 index.php appends the captcha origins to script-src and frame-src');
+
+/* The app_status emit uses captchaClientConfig() (never the secret). */
+cg(strpos($api, 'captchaClientConfig()') !== false,
+    '5.3 api.php app_status emits the captcha client config via captchaClientConfig()');
+
+/* Captcha-provider hostnames live ONLY in includes/captcha.php (the registry) —
+   index.php and every other file must reach them through captchaCspOrigins(),
+   never a literal (rule #35: the registry is the one source). Comment-stripped
+   so a doc mention can't false-positive; scans php + js. */
+$hostnamePatterns = ['challenges.cloudflare.com', 'js.hcaptcha.com', 'api.hcaptcha.com', '*.hcaptcha.com', 'recaptcha/api'];
+$literalLeaks = [];
+$scanFiles = $phpSources;   /* php (already comment-stripped) */
+foreach (['js'] as $dir) {  /* + js/ (raw is fine — a hostname in a JS comment would still be a leak to investigate) */
+    $jd = $docroot . '/' . $dir;
+    if (!is_dir($jd)) { continue; }
+    $jrii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($jd, FilesystemIterator::SKIP_DOTS));
+    foreach ($jrii as $jf) {
+        if ($jf->isFile() && strtolower($jf->getExtension()) === 'js') {
+            $scanFiles[str_replace($docroot . '/', '', $jf->getPathname())] = (string)file_get_contents($jf->getPathname());
+        }
+    }
+}
+foreach ($scanFiles as $rel => $src) {
+    if ($rel === 'includes/captcha.php') { continue; }   /* the registry — allowed */
+    foreach ($hostnamePatterns as $pat) {
+        if (strpos($src, $pat) !== false) { $literalLeaks[] = "$rel ($pat)"; break; }
+    }
+}
+cg($literalLeaks === [],
+    '5.4 no captcha-provider hostname literal outside includes/captcha.php (leaks: '
+        . implode(', ', $literalLeaks) . ')');
+
 /* ======================================================================== */
 
 echo "\n{$passed} passed, {$failures} failed\n";

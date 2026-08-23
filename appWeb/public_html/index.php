@@ -136,6 +136,13 @@ enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? nu
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 enforceMaintenanceForPublicSite();
 
+/* #947/#340 — the dormant CAPTCHA core, loaded before the CSP block below so
+   captchaCspOrigins() can conditionally widen script-src/frame-src for the
+   active provider ONLY when configured (byte-identical CSP when dormant). The
+   origins come from the provider registry alone — no hostname literal appears
+   in index.php (guard-enforced). Side-effect-free to require. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */
@@ -212,13 +219,28 @@ if (!empty(APP_CONFIG['analytics']['matomo_url'])) {
     $cspMatomoUrl = ' ' . rtrim(APP_CONFIG['analytics']['matomo_url'], '/');
 }
 
+/* #947/#340 — widen script-src/frame-src for the ACTIVE CAPTCHA provider only
+   when configured (the same conditional-append shape as $cspMatomoUrl above).
+   Both strings are '' when dormant, so the CSP header is byte-identical to
+   today on every unconfigured install. Origins come from the provider registry
+   (captchaCspOrigins()) — index.php never names a captcha hostname (guard §6.2). */
+$cspCaptchaScript = '';
+$cspCaptchaFrame  = '';
+$captchaCsp = captchaCspOrigins();
+if (!empty($captchaCsp['script'])) {
+    $cspCaptchaScript = ' ' . implode(' ', $captchaCsp['script']);
+}
+if (!empty($captchaCsp['frame'])) {
+    $cspCaptchaFrame = ' ' . implode(' ', $captchaCsp['frame']);
+}
+
 $cspDirectives = [
     "default-src 'self'",
     /* appleid.cdn-apple.com serves the "Sign in with Apple JS" SDK for web SIWA (#1470 W2,
        #1484). The popup is a window.open to appleid.apple.com (not an iframe → no frame-src),
        and the token exchange is server-side (no connect-src needed). Harmless while web SIWA
        is dormant; required the moment an admin enables it. */
-    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}",
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}{$cspCaptchaScript}",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     /* #1906 — no plugin content exists anywhere in the app (grep: zero real
@@ -231,7 +253,7 @@ $cspDirectives = [
     "object-src 'none'",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
-    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app",
+    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app{$cspCaptchaFrame}",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
     "base-uri 'self'",

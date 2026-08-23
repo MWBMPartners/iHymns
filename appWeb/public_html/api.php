@@ -192,6 +192,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    "Go Live" never started (latent since #1335; surfaced on first live use).
    Load it top-level so it is always defined for every endpoint. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+/* #947/#340 — the dormant, provider-agnostic CAPTCHA core. Side-effect-free to
+   require (declares functions/constants only; opens no connection). Loaded
+   top-level so every gated endpoint below can call captchaGate() and the
+   app_status emit can call captchaClientConfig(). A no-op until an admin
+   configures a provider + both keys AND ticks a form on /manage/configuration. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
 /* #1448 — validation helpers for the first-party analytics ingestion
    endpoint (analyticsIngestValidateEvent()/analyticsIngestValidatePlatform()).
    Loaded top-level like its rate-limiting neighbours above. */
@@ -2928,6 +2934,15 @@ if ($action !== null) {
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
 
+            /* CAPTCHA gate (#947/#340) — AFTER the per-IP registration cap +
+               record (so a flooding IP is bounded before any outbound verify
+               call) and BEFORE input validation / the uniqueness lookups /
+               password_hash() (so the 403 precedes every account-shaped
+               response AND the cost-12 bcrypt). Dormant no-op unless the
+               'registration' form is ticked + a provider configured. */
+            $cg = captchaGate('registration', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
+
             $username    = mb_strtolower(trim($body['username'] ?? ''));
             $password    = $body['password'] ?? '';
             $displayName = trim($body['display_name'] ?? '');
@@ -3290,6 +3305,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
                 break;
             }
+
+            /* CAPTCHA gate (#947/#340) — AFTER both rate-limit buckets (so a
+               hammering IP/account is 429'd without ever spending a verify
+               call) and BEFORE the user fetch + password_verify(). Dormant
+               no-op unless an admin has ticked the 'login' form AND configured
+               a provider. 403 { reason:'captcha_required' } — clients branch
+               on the status + reason, never the prose (rule #35). */
+            $cg = captchaGate('login', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
 
             /* AvatarService (#616) only included when the column exists
                so a partly-migrated install can still log users in. */
@@ -4551,6 +4575,15 @@ if ($action !== null) {
                 }
             }
 
+            /* CAPTCHA gate (#947/#340) — AFTER the #1028 budgets (budget-first)
+               and BEFORE apiForgotPasswordDecision() / generatePasswordResetToken().
+               The 403 depends ONLY on the caller's own token — it is account-
+               INDEPENDENT — so the #898/#1028 anti-enumeration contract (the
+               byte-identical 200 for real vs imaginary accounts) is untouched.
+               Dormant no-op unless the 'password_reset' form is ticked. */
+            $cg = captchaGate('password_reset', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
+
             $forgotDecision = apiForgotPasswordDecision($forgotIpOk, $forgotIdOk);
             if (!$forgotDecision['send']) {
                 /* Both non-send outcomes exit here. The identifier-throttled
@@ -4778,6 +4811,15 @@ if ($action !== null) {
                 break;
             }
             if ($reqIp !== '') { recordRateLimitHit('auth_email_login_request_ip', $reqIp); }
+
+            /* CAPTCHA gate (#947/#340) — AFTER the per-IP budget above and
+               BEFORE generateEmailLoginToken() (so a refused request never mints
+               a token or pays for an SMTP send). Account-independent, like the
+               forgot-password gate, so the #1635 anti-enumeration 200 contract
+               is untouched. Dormant no-op unless the 'email_login' form is
+               ticked. */
+            $cg = captchaGate('email_login', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
 
             /* THE ONE 200 BODY (#1635). Every non-error outcome of this
                endpoint answers with this exact array: address unknown,
@@ -7127,6 +7169,17 @@ if ($action !== null) {
                 $intAppsStatusPayload['remoteFeatures'] = $intAppsFeatures;
             }
 
+            /* #947/#340 — the dormant CAPTCHA client config (provider, public
+               site key, widget script URL, JS global, POST field, gated forms).
+               ABSENT key when unconfigured, exactly like remoteFeatures above,
+               so a dormant install's app_status is byte-identical (P1). NEVER
+               the secret — captchaClientConfig() cannot carry it. */
+            $captchaStatusPayload = [];
+            $captchaClient = captchaClientConfig();
+            if ($captchaClient !== null) {
+                $captchaStatusPayload['captcha'] = $captchaClient;
+            }
+
             sendJson([
                 'maintenance'         => $inMaintenance,
                 'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
@@ -7158,7 +7211,7 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
-            ] + $intAppsStatusPayload);
+            ] + $intAppsStatusPayload + $captchaStatusPayload);
 
             /* #1725/#1730 — the gateway refresh happens AFTER the response is
                already on the wire, never on this endpoint's critical path.
@@ -12588,6 +12641,21 @@ if ($action !== null) {
                 $stmt->close();
                 if ((int)($row[0] ?? 0) >= $dailyCap) {
                     $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
+                    break;
+                }
+
+                /* CAPTCHA gate (#947/#340) — AFTER the honeypot (which must keep
+                   returning silent fake success to a bot — a 403 would tip it
+                   off AND spend a verify call) and AFTER the daily cap (so verify
+                   volume is bounded), BEFORE the INSERT. The no-JS form fallback
+                   (#711) carries no token, so with 'song_request' enabled it
+                   takes the $respondErr redirect branch (an error banner on
+                   /request); the JS path gets the JSON body WITH the reason so
+                   the widget can reset (rule #35). Dormant no-op otherwise. */
+                $cg = captchaGate('song_request', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+                if ($cg !== null) {
+                    if ($isFormPost) { $respondErr($cg['error'], 403); }   /* exits (302) */
+                    sendJson($cg, 403);                                    /* JS path — carries reason */
                     break;
                 }
 
