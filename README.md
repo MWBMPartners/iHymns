@@ -15,7 +15,7 @@
 
 **iHymns** provides searchable hymn and worship-song lyrics from a curated library of hymnals, designed to enhance Christian worship across all devices. Browse, search, and save your favourite hymns — online or offline — in any of the ~20 languages currently catalogued.
 
-**Website**: [iHymns.app](https://ihymns.app) · **Alpha**: [dev.iHymns.app](https://dev.ihymns.app) · **Beta**: [beta.iHymns.app](https://beta.ihymns.app)
+**Website**: [www.iHymns.app](https://www.iHymns.app) · **Alpha**: [dev.iHymns.app](https://dev.iHymns.app) · **Beta**: [beta.iHymns.app](https://beta.iHymns.app)
 
 ---
 
