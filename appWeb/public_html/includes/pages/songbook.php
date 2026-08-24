@@ -20,6 +20,43 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 /* #1786 — ihymns_title_sort_key() for the song list's Title sort key. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
+/* #1860 Phase 4 — dual-addressing pre-step: an IL internal id ('ILB…')
+   resolves to the songbook's real Abbreviation, and $bookId is replaced
+   with it, so getSongbook() below (and the canonical-URL rendering that
+   follows) behaves exactly as if the curator had typed the real
+   abbreviation. No ambiguity with a real abbreviation: Abbreviation is
+   <=10 chars (rule #27) while an ILB id is always 13. A miss (not an IL
+   id, the column doesn't exist yet, or no row carries it) leaves $bookId
+   UNCHANGED. try/catch-swallowed + column-probe-gated so this fragment can
+   never white-screen on an un-migrated install (the #1228 lesson). The
+   canonical URL stays the Abbreviation form — this pre-step only resolves
+   the LOOKUP, it does not change what getSongbook() returns or renders. */
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    $_ilParsed = ilidParse((string)($bookId ?? ''));
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'songbook') {
+        $_ilDb = getDbMysqli();
+        $_ilColProbe = $_ilDb->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbooks' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $_ilDb->prepare('SELECT Abbreviation FROM tblSongbooks WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Abbreviation'] ?? '') !== '') {
+                $bookId = (string)$_ilRow['Abbreviation'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through with $bookId unchanged
+}
+
 /* Fetch songbook. */
 $book = $songData->getSongbook($bookId);
 
@@ -126,7 +163,7 @@ if (!empty($songs)) {
 <!-- ================================================================
      SONGBOOK PAGE — Song list for a specific songbook
      ================================================================ -->
-<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>" data-songbook-abbr="<?= htmlspecialchars($book['id']) ?>">
+<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>" data-songbook-abbr="<?= htmlspecialchars($book['id']) ?>" data-songbook-song-count="<?= count($songs) ?>">
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -258,7 +295,7 @@ if (!empty($songs)) {
             <div class="btn-group">
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm dropdown-toggle btn-export-songbook"
-                        data-bs-toggle="dropdown" aria-expanded="false"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                         aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format">
                     <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                     Export
@@ -305,7 +342,7 @@ if (!empty($songs)) {
         ];
         if (!empty($links)):
     ?>
-        <div class="card bg-dark border-secondary mb-3">
+        <div class="card bg-body-tertiary border-secondary mb-3">
             <div class="card-body">
                 <h2 class="h6 mb-3 text-muted">
                     <i class="fa-solid fa-link me-1" aria-hidden="true"></i>

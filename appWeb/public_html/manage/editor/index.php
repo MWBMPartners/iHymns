@@ -1599,24 +1599,25 @@ try {
 
     <!-- =================================================================
          JAVASCRIPT DEPENDENCIES
-         Bootstrap 5.3 JS bundle (includes Popper for dropdowns) loaded
-         from CDN, followed by the editor's own JavaScript module.
+         Bootstrap 5.3 JS (includes Popper for dropdowns, incl. tabs and
+         other interactive components) arrives ONCE, from admin-footer.php
+         at the bottom of the page — followed by the editor's own
+         JavaScript module.
          ================================================================= -->
 
     <!-- Toast notification container — dynamically populated by editor.js -->
     <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
 
-    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other
-         interactive components. #1676: emitted by the shared helper so the version
-         tracks APP_CONFIG rather than a literal pinned here. -->
-    <?= ihymns_bootstrap_js_script() ?>
+    <?php /* Bootstrap JS is emitted ONCE, by admin-footer.php below (#1676's
+             shared emitter) — re-emitting here would double-load the bundle
+             and double-register its delegated data-API listeners (#1858). */ ?>
 
     <!-- Revision history modal (#400). Populated on demand when the
          History button is clicked; shows the timeline + side-by-side
          JSON for each revision + a Restore button per row. -->
     <div class="modal fade" id="history-modal" tabindex="-1" aria-labelledby="history-modal-title" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content bg-dark text-light border-info">
+            <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="history-modal-title">
                         <i class="bi bi-clock-history me-2"></i>Revision history
@@ -1637,7 +1638,7 @@ try {
          All section-card UI is built in editor.js (reflowRender). -->
     <div class="modal fade" id="reflow-modal" tabindex="-1" aria-labelledby="reflow-modal-title" aria-hidden="true">
         <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content bg-dark text-light border-info">
+            <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="reflow-modal-title">
                         <i class="bi bi-magic me-2"></i>Paste &amp; Reflow
@@ -1664,7 +1665,7 @@ try {
                     </div>
                     <label for="reflow-input" class="form-label small mb-1">Raw lyrics</label>
                     <textarea id="reflow-input"
-                              class="form-control bg-dark text-light border-secondary"
+                              class="form-control border-secondary"
                               rows="8"
                               placeholder="Verse 1&#10;Amazing grace, how sweet the sound&#10;That saved a wretch like me&#10;&#10;Chorus&#10;Praise God, praise God&#10;&#10;Verse 2&#10;..."></textarea>
                     <div class="d-flex gap-2 mt-2 align-items-center">
@@ -1734,6 +1735,29 @@ try {
     <script src="protos/pp7-proto-static.js"></script>
     <script src="propresenter-export.js"></script>
     <script>
+    /* #1571 — an honest confirm before building a LARGE songbook export,
+       shared by BOTH export wiring blocks below (the PP7 bundle wiring and
+       the file-format wiring further down this page). Deliberately a plain
+       global (not ES-module-imported): this editor page's export wiring is
+       classic inline `<script>`, not a module, and js/modules/export-ui.js's
+       OWN copy of this same logic (`confirmLargeExport()`,
+       LARGE_EXPORT_SONG_THRESHOLD) lives in a separate non-module script
+       world the public song/songbook pages load — loading an ES module here
+       just for one constant + one function would be more machinery than the
+       duplication it avoids. The ONE number this deliberately repeats
+       (LARGE_EXPORT_SONG_THRESHOLD) is kept in lockstep with export-ui.js's
+       copy by tests/test-export-ui.js (rule #35 — the mechanism, not a
+       comment, is what keeps two copies from drifting). */
+    var LARGE_EXPORT_SONG_THRESHOLD = 500;
+    function iHymnsConfirmLargeExport(count) {
+        if (!Number.isFinite(count) || count < LARGE_EXPORT_SONG_THRESHOLD) { return true; }
+        return window.confirm(
+            'This songbook has ' + count.toLocaleString() + ' songs. Building the export can take a few '
+            + 'minutes and the page may feel busy while it works. Continue?'
+        );
+    }
+    </script>
+    <script>
     /* #887 — wire the ProPresenter dropdown to the exporter. Self-contained:
        reads editor.js globals (currentSongId / songData / EDITOR_API_URL /
        getSelectedSongbookFilter / _loadSongsFull) + the ?action=songbook_export
@@ -1772,16 +1796,39 @@ try {
         async function exportCurrentSongbook() {
             var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
             if (!abbr) { notify('Filter the song list to one songbook first (sidebar dropdown), then export it.', 'warning'); return; }
+            /* #1571 — pre-fetch confirm using the sidebar's already-loaded
+               songbook meta (no extra request needed — songData.songbooks
+               is loaded with the page). A decline is a quiet return. */
+            var sbMetaPre = (songData.songbooks || []).find(function (x) { return x.id === abbr; });
+            if (!iHymnsConfirmLargeExport(sbMetaPre ? sbMetaPre.songCount : NaN)) { return; }
             notify('Building ProPresenter bundle for ' + abbr + '…', 'info');
             var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
             if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
             var payload = await resp.json();
             var songs = payload.songs || [];
             if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            /* Post-fetch belt (#1571): only re-consult when the sidebar
+               meta's count wasn't available — mirrors export-ui.js's
+               exportSongbookAs() belt exactly, and for the same reason
+               (never double-prompt when the pre-fetch check already asked). */
+            if (!Number.isFinite(sbMetaPre ? sbMetaPre.songCount : NaN) && !iHymnsConfirmLargeExport(songs.length)) { return; }
             var sb = payload.songbook || {};
+            var lastMilestone = 0;
             var result = await window.iHymnsProPresenter.exportAllAsBundle(songs, {
                 songbookAbbrev: abbr,
-                songbookName: sb.name || sb.Name || abbr
+                songbookName: sb.name || sb.Name || abbr,
+                /* #1571 — coarse 20%-step progress toasts for a large book;
+                   silent for anything under the threshold (a 12-song set
+                   list doesn't need a running commentary). */
+                onProgress: function (done, total) {
+                    if (total < LARGE_EXPORT_SONG_THRESHOLD) { return; }
+                    var pct = Math.floor((done / total) * 100);
+                    var milestone = Math.floor(pct / 20) * 20;
+                    if (milestone > lastMilestone && milestone < 100) {
+                        lastMilestone = milestone;
+                        notify('Building export… ' + milestone + '% (' + done + '/' + total + ')', 'info');
+                    }
+                }
             });
             notify('Exported ' + result.count + ' song' + (result.count === 1 ? '' : 's') + ' → ' + result.filename, 'success');
         }
@@ -1866,12 +1913,18 @@ try {
         async function exportSongbook(formatKey, label) {
             var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
             if (!abbr) { notify('Filter the song list to one songbook first, then export it.', 'warning'); return; }
+            /* #1571 — confirm only (no progress): these exporters are
+               synchronous string-builders measured in hundreds of ms even
+               for Mission Praise, so a running commentary would be noise. */
+            var sbMetaPre = (songData.songbooks || []).find(function (x) { return x.id === abbr; });
+            if (!iHymnsConfirmLargeExport(sbMetaPre ? sbMetaPre.songCount : NaN)) { return; }
             notify('Building ' + label + ' export for ' + abbr + '…', 'info');
             var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
             if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
             var payload = await resp.json();
             var songs = payload.songs || [];
             if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            if (!Number.isFinite(sbMetaPre ? sbMetaPre.songCount : NaN) && !iHymnsConfirmLargeExport(songs.length)) { return; }
             var sb = payload.songbook || {};
             var r = window.iHymnsFormatExport[formatKey].exportSongbook(songs, exportOptions({
                 songbookAbbr: abbr,

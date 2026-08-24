@@ -23,6 +23,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 /* #1765 — PUBLICATION_IDENTIFIER_TYPES + mediaIdentifierPublicationClean(),
    the ONE validator for the isbn/issn/ark_id/openlibrary_work_id/
@@ -748,13 +749,14 @@ if ($hasSchema) {
                            placeholder="e.g. Songs of Fellowship">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Slug
-                        <small class="text-muted">(auto)</small>
-                    </label>
-                    <input type="text" name="slug" id="create-slug"
-                           class="form-control form-control-sm"
-                           maxlength="120" pattern="[a-z0-9-]+"
-                           placeholder="songs-of-fellowship">
+                    <?= ihymns_slug_advanced_field([
+                        'id'          => 'create-slug',
+                        'value'       => '',
+                        'maxlength'   => 120,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'songs-of-fellowship',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">Description (optional)</label>
@@ -838,11 +840,14 @@ if ($hasSchema) {
                                            class="form-control" maxlength="120" required>
                                 </div>
                                 <div class="col-sm-5">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-slug"
-                                           class="form-control" maxlength="120"
-                                           pattern="[a-z0-9-]+">
-                                    <div class="form-text small">URL-safe lowercase id used by /series/&lt;slug&gt; pages.</div>
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-slug',
+                                        'value'     => '',
+                                        'maxlength' => 120,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                        'help'      => 'URL-safe lowercase id used by /series/&lt;slug&gt; pages.',
+                                    ]) ?>
                                 </div>
                             </div>
                             <div class="mb-3">

@@ -918,6 +918,28 @@ function _migProbe_hasNullPublicId(\mysqli $db): bool
     return $has;
 }
 
+/** True if any LYRICS-BEARING tblSongs row still lacks its folded search mirror
+ *  (#1039 Part A) — drives the search-synonyms backfill probe so the card stays
+ *  pending until every song with lyrics has been folded. False (done) when the
+ *  column is absent (the column probe handles that state). The predicate is
+ *  `LyricsTextFolded IS NULL AND LyricsText <> ''` — NOT a bare NULL check: an
+ *  empty-lyrics song (a freshly-created create_song row) legitimately carries a
+ *  NULL fold with '' lyrics and must NOT re-pend the card, whereas a lyrics-bearing
+ *  un-backfilled row must. */
+function _migProbe_hasUnfoldedLyrics(\mysqli $db): bool
+{
+    if (!_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded')) { return false; }
+    /* @deleted-visible: migration probe (#1039) — backfill completeness is a
+       PHYSICAL property; a hidden song with lyrics still needs its fold mirror so
+       search reaches it once restored.
+       @disabled-visible: same reasoning, one predicate over (#1765) — a song in a
+       publicly-disabled book still needs its fold mirror backfilled. */
+    $res = $db->query("SELECT 1 FROM tblSongs WHERE LyricsTextFolded IS NULL AND LyricsText <> '' LIMIT 1");
+    $has = $res && $res->fetch_row() !== null;
+    if ($res) { $res->free(); }
+    return $has;
+}
+
 /** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
 function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column): bool
 {
@@ -2427,7 +2449,7 @@ if ($hasCredentials && defined('DB_HOST')) {
         <!-- ============================================================
              DB CREDENTIALS FORM (#272)
              ============================================================ -->
-        <div class="card bg-dark border-secondary mb-4">
+        <div class="card bg-body-tertiary border-secondary mb-4">
             <div class="card-body">
                 <h5 class="card-title mb-2">
                     <?= $hasCredentials ? 'Reconfigure Database Credentials' : 'Configure Database Credentials' ?>
@@ -2688,7 +2710,7 @@ if ($hasCredentials && defined('DB_HOST')) {
              ============================================================ -->
         <div class="row g-3 mb-4">
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">1. Install Tables</h5>
                         <p class="card-text text-secondary small">
@@ -2712,7 +2734,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                  "Apply all pending" on the registry migration cards → content via the
                  Song Editor's bulk importers, or restore.php from a real backup. -->
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">2. Migrate Users &amp; Setlists</h5>
                         <p class="card-text text-secondary small">
@@ -2730,7 +2752,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                  web-only on shared DreamHost, so the gate that arms the drop must be
                  runnable here, not just from the CLI). -->
             <div class="col-12">
-                <div class="card bg-dark border-info h-100">
+                <div class="card bg-body-tertiary border-info h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
@@ -2835,7 +2857,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     $dryRunHref = '?action=' . htmlspecialchars($migAction);
                     ?>
                     <div class="col-md-6">
-                        <div class="card bg-dark <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
+                        <div class="card bg-body-tertiary <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
                             <div class="card-body">
                                 <h5 class="card-title"><?= $card['title'] ?></h5>
                                 <?php if ($isManual): ?>
@@ -2886,7 +2908,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             ?>
             <?php if (!empty($_appliedRenderable)): ?>
                 <div class="col-12">
-                    <details class="card bg-dark border-secondary applied-migrations-details">
+                    <details class="card bg-body-tertiary border-secondary applied-migrations-details">
                         <summary class="card-header d-flex align-items-center gap-2 text-secondary small" style="cursor: pointer;">
                             <i class="bi bi-check2-circle text-success" aria-hidden="true"></i>
                             <span>
@@ -2910,7 +2932,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php endif; ?>
 
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">3. Cleanup Expired Tokens</h5>
                         <p class="card-text text-secondary small">
@@ -2927,7 +2949,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <!-- #1290 — reset the PHP runtime code cache. The fix for "deployed code
                  isn't running" on shared hosting (stale OPcache). -->
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-cpu me-1" aria-hidden="true"></i>
@@ -2951,7 +2973,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                  an opcache.file_cache resurrecting bytecode, or multiple app servers.
                  Writes nothing — no reset, no DB mutation. Run twice to spot multi-server. -->
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-search me-1" aria-hidden="true"></i>
@@ -2972,7 +2994,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 </div>
             </div>
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">4. Backup Database</h5>
                         <p class="card-text text-secondary small">
@@ -3083,7 +3105,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 }
             ?>
             <div class="col-md-6">
-                <div class="card bg-dark border-danger h-100">
+                <div class="card bg-body-tertiary border-danger h-100">
                     <div class="card-body">
                         <h5 class="card-title">5. Restore from Backup</h5>
                         <p class="card-text text-secondary small">
@@ -3203,7 +3225,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 </div>
             </div>
             <div class="col-md-6">
-                <div class="card bg-dark border-danger h-100">
+                <div class="card bg-body-tertiary border-danger h-100">
                     <div class="card-body">
                         <h5 class="card-title">6. Drop Legacy Tables</h5>
                         <p class="card-text text-secondary small">
@@ -3333,7 +3355,7 @@ if ($hasCredentials && defined('DB_HOST')) {
         <h4 class="mb-3">Secret encryption <span class="text-secondary small">(#1466)</span></h4>
         <div class="row g-3 mb-4">
             <div class="col-12">
-                <div class="card bg-dark <?= $secretSentinel === 'red' ? 'border-danger' : 'border-secondary' ?> h-100">
+                <div class="card bg-body-tertiary <?= $secretSentinel === 'red' ? 'border-danger' : 'border-secondary' ?> h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-shield-lock me-1" aria-hidden="true"></i>
@@ -3434,7 +3456,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                  the page ever claiming to know something it can't verify.
                  ============================================================ -->
             <div class="col-12">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-diagram-3 me-1" aria-hidden="true"></i>
@@ -3507,7 +3529,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             </div>
 
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-body-tertiary border-secondary h-100">
                     <div class="card-body">
                         <h5 class="card-title"><i class="bi bi-key me-1" aria-hidden="true"></i>Generate master key</h5>
                         <p class="card-text text-secondary small">
@@ -3536,7 +3558,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             </div>
 
             <div class="col-md-6">
-                <div class="card bg-dark border-danger h-100">
+                <div class="card bg-body-tertiary border-danger h-100">
                     <div class="card-body">
                         <h5 class="card-title">
                             <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>

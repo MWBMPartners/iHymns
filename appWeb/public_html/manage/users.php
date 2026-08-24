@@ -477,7 +477,7 @@ function canManage(array $target, array $actor): bool {
                                 </span>
                             </td>
                             <td>
-                                <span class="badge bg-dark border border-secondary text-light" style="font-size: 0.7rem;">
+                                <span class="badge text-bg-secondary border border-secondary" style="font-size: 0.7rem;">
                                     <?= htmlspecialchars((string)($u['access_tier'] ?? 'free')) ?>
                                 </span>
                             </td>

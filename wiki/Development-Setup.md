@@ -156,6 +156,20 @@ docs: update wiki with API reference
 
 ---
 
+## Versioning
+
+Versions are **tag-derived** as `MAJOR.RELEASE.BUILD` off a `v1.0.0` baseline (#1899):
+
+| Part | Source |
+|---|---|
+| `MAJOR` | Hand-edited, rare — a deliberate line bump |
+| `RELEASE` | Automated at each beta→main promotion (`promotion-deploy-bridge.yml`) |
+| `BUILD` | Monotonic per-commit id (git commit count) |
+
+The old "auto-bump the minor on every merge" flow (`version-bump.yml`) is **retired**; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline that replaced it. There are **14** GitHub Actions workflows under `.github/workflows/` (see [[Deployment & CI/CD]]).
+
+---
+
 ## Project File Reference
 
 | File | Purpose |

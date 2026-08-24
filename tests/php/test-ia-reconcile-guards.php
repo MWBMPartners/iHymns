@@ -353,23 +353,33 @@ check('the six real numbered candidates carry exactly headingNumber 1..6 (page n
 $amazingGrace = $byTitle['Amazing Grace'] ?? null;
 check('fixture carries an "Amazing Grace" candidate to drive the exact-match scoring test', $amazingGrace !== null);
 
-/* One synthetic Greek-script candidate, hand-built (not from the fixture
-   blob) to exercise the unscorable path — a non-Latin title/first-line pair
-   that ihymns_sim_normalise()'s iconv TRANSLIT step folds to ''. */
-$greekCandidate = [
+/* One synthetic SYMBOLS-ONLY candidate, hand-built (not from the fixture
+   blob) to exercise the unscorable path. #1908 rewired ihymns_sim_fold()'s
+   diacritic step onto the same Unicode-preserving Normalizer::FORM_KD
+   mechanism as ihymns_normalize_title() (title_normalize.php), so a
+   non-Latin SCRIPT like Greek no longer folds to '' — see the dedicated
+   "Greek-script candidate is now SCORABLE" check just below, which used to
+   be exactly this fixture's sanity check before #1908. The genuinely
+   unscorable case now is text with NO letters/digits at all: \p{So}
+   musical dingbats (♪ ♫ ♬), which ihymns_sim_fold()'s
+   `[^\p{L}\p{N}\s] → ' '` step still turns into whitespace and the
+   subsequent collapse/trim reduces to ''. */
+$symbolsCandidate = [
     'index'         => 99,
     'headingNumber' => null,
     'pageGuess'     => null,
-    'rawTitle'      => 'Χριστός Ανέστη',
-    'firstLine'     => 'Χριστός ανέστη εκ νεκρών',
-    'bodyExcerpt'   => 'Χριστός ανέστη εκ νεκρών',
+    'rawTitle'      => '♪ ♫ ♬',
+    'firstLine'     => '♪♪♪♪',
+    'bodyExcerpt'   => '♪♪♪♪',
     'lineStart'     => 0,
     'lineEnd'       => 1,
 ];
-check('sanity: the Greek fixture title really does fold to empty via ihymns_sim_normalise() (proves the unscorable path is genuinely exercised)',
-    ihymns_sim_normalise($greekCandidate['rawTitle']) === '' && ihymns_sim_normalise($greekCandidate['firstLine']) === '');
+check('sanity: the symbols-only fixture title really does fold to empty via ihymns_sim_normalise() (proves the unscorable path is genuinely exercised)',
+    ihymns_sim_normalise($symbolsCandidate['rawTitle']) === '' && ihymns_sim_normalise($symbolsCandidate['firstLine']) === '');
+check('#1908: a Greek-script candidate is now SCORABLE (the Unicode-preserving fold no longer erases non-Latin scripts to \'\')',
+    ihymns_sim_normalise('Χριστός Ανέστη') === 'χριστος ανεστη');
 
-$scoringCandidates = $amazingGrace !== null ? [$amazingGrace, $byTitle['All Hail the Power'] ?? [], $greekCandidate] : [$greekCandidate];
+$scoringCandidates = $amazingGrace !== null ? [$amazingGrace, $byTitle['All Hail the Power'] ?? [], $symbolsCandidate] : [$symbolsCandidate];
 
 $songFeatures = [];
 if ($amazingGrace !== null) {
@@ -407,8 +417,8 @@ check('scoring: exact match carries bestScore 1.000',
         })());
 check('scoring: "All Hail the Power" candidate verdict is gap (nothing remotely similar in the tiny feature set)',
     ($verdictByTitle['All Hail the Power'] ?? null) === 'gap');
-check('scoring: the Greek-script candidate verdict is unscorable',
-    ($verdictByTitle['Χριστός Ανέστη'] ?? null) === 'unscorable');
+check('scoring: the symbols-only candidate verdict is unscorable',
+    ($verdictByTitle['♪ ♫ ♬'] ?? null) === 'unscorable');
 
 check('scoring: exactly one exact / one gap / one unscorable in this run',
     ($result['summary']['counts']['exact'] ?? 0) === 1

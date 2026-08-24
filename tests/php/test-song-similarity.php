@@ -61,6 +61,13 @@ assertEq(ihymns_sim_normalise('Niño Jesús'), 'nino jesus',
 assertEq(ihymns_sim_normalise('Angels, from the Realms of Glory'), 'angels from the realms of glory',
     'normalise: drops punctuation; only the LEADING article is stripped (interior "the" kept)');
 
+/* #1908 — non-Latin scripts now SURVIVE the fuzzy fold (previously every
+   non-Latin title folded to '' via iconv's "????"-then-strip mechanism). */
+assertEq(ihymns_sim_normalise('耶稣爱我'), '耶稣爱我',
+    'normalise: #1908 — CJK title survives the fold unchanged (was \'\' pre-#1908)');
+assertEq(ihymns_sim_normalise('Χριστός Ανέστη'), 'χριστος ανεστη',
+    'normalise: #1908 — Greek folds like any other script (lowercase, accents stripped)');
+
 /* -------------------------------------------------------------------- */
 /* Text similarity                                                       */
 /* -------------------------------------------------------------------- */
@@ -68,6 +75,25 @@ assertEq(ihymns_sim_text('abcdef', 'abcdef'), 1.0, 'text: identical strings → 
 assertTrue(ihymns_sim_text('immanuel', 'emmanuel') > 0.7, 'text: one-letter drift scores high');
 assertTrue(ihymns_sim_text('be thou my vision', 'be still my soul') < 0.7,
     'text: different hymns sharing a frame score below 0.7');
+
+/* #1908 — non-Latin pairs are now fuzzy-SCORABLE (previously both sides
+   folded to '' upstream and ihymns_sim_text('', '') short-circuits 0.0). */
+assertTrue(ihymns_sim_text(ihymns_sim_normalise('耶稣爱我'), ihymns_sim_normalise('耶稣爱他')) > 0.0,
+    'text: #1908 — near-identical CJK pair (one character differs) scores > 0');
+assertEq(ihymns_sim_text(ihymns_sim_normalise('耶稣爱我'), ihymns_sim_normalise('耶稣爱我')), 1.0,
+    'text: #1908 — identical CJK pair scores exactly 1.0');
+
+/* #1908 — the byte-cap fix: a >255-BYTE CJK pair (255 mb_substr CHARS would
+   have been 500-765+ bytes, overflowing levenshtein's byte ceiling and, on
+   a PHP build where levenshtein() still signals overflow with -1, minting a
+   similarity > 1.0 via `1.0 - (-1/max)`) must stay within [0, 1]. Built at
+   300 chars (900 bytes at 3 bytes/char) to comfortably clear 255 bytes. */
+$longCjkA = str_repeat('耶', 300);
+$longCjkB = str_repeat('穌', 300);
+assertTrue(strlen($longCjkA) > 255, 'text: #1908 fixture sanity — the raw CJK string exceeds 255 bytes');
+$longScore = ihymns_sim_text($longCjkA, $longCjkB);
+assertTrue($longScore >= 0.0 && $longScore <= 1.0,
+    'text: #1908 — a >255-byte CJK pair returns a value in [0, 1] (the levenshtein -1 guard)');
 
 /* -------------------------------------------------------------------- */
 /* Authors Jaccard                                                       */

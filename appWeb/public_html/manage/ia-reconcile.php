@@ -298,7 +298,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <div class="alert alert-warning py-2 mb-4"><?= $amberMessage /* pre-composed, own strings only */ ?></div>
         <?php endif; ?>
 
-        <div class="card bg-dark border-secondary mb-4">
+        <div class="card bg-body-tertiary border-secondary mb-4">
             <div class="card-header"><h2 class="h6 mb-0">Run a reconcile</h2></div>
             <div class="card-body">
                 <form method="post" class="row gy-3 align-items-end" id="ia-reconcile-form">
@@ -354,14 +354,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             ?>
             <div class="d-flex flex-wrap gap-3 mb-4">
                 <?php foreach ([
-                    ['Candidates', $totalCandidates, 'text-bg-dark'],
+                    ['Candidates', $totalCandidates, 'text-bg-secondary'],
                     ['Exact', $counts['exact'] ?? 0, 'text-bg-success-subtle'],
                     ['Strong', $counts['strong'] ?? 0, 'text-bg-success-subtle'],
                     ['Review', $counts['review'] ?? 0, 'text-bg-warning-subtle'],
                     ['Gaps', $counts['gap'] ?? 0, 'text-bg-danger-subtle'],
                     ['Unscorable', $counts['unscorable'] ?? 0, 'text-bg-secondary-subtle'],
                 ] as [$label, $value, $cls]): ?>
-                    <div class="card bg-dark border-secondary" style="min-width:8rem;">
+                    <div class="card bg-body-tertiary border-secondary" style="min-width:8rem;">
                         <div class="card-body py-2 px-3 text-center">
                             <div class="small text-secondary"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></div>
                             <div class="h5 mb-0"><span class="badge <?= $cls ?>"><?= (int)$value ?></span></div>
@@ -369,7 +369,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 <?php endforeach; ?>
                 <?php if ($coveragePct !== null): ?>
-                    <div class="card bg-dark border-secondary" style="min-width:10rem;">
+                    <div class="card bg-body-tertiary border-secondary" style="min-width:10rem;">
                         <div class="card-body py-2 px-3 text-center">
                             <div class="small text-secondary">Songbook coverage</div>
                             <div class="h5 mb-0"><?= htmlspecialchars(number_format((float)$coveragePct, 1), ENT_QUOTES, 'UTF-8') ?>%</div>
@@ -424,7 +424,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
 
             <?php if (!empty($reportResult['notFoundSongs'])): ?>
-                <div class="card bg-dark border-secondary mb-4">
+                <div class="card bg-body-tertiary border-secondary mb-4">
                     <div class="card-header"><h2 class="h6 mb-0">In songbook, not found in OCR</h2></div>
                     <div class="table-responsive">
                         <table class="table table-sm mb-0">

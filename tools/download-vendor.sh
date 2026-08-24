@@ -17,6 +17,13 @@
 # The script reads library URLs from includes/config.php comments below,
 # then creates the directory structure and downloads each file.
 #
+# INTEGRITY (#1666): every download is verified against the SRI hash already
+# pinned for it in includes/config.php's APP_CONFIG['libraries'] registry
+# (rule #36) — not just checked for being non-empty. A hash mismatch aborts
+# the script immediately rather than silently vendoring a divergent file; a
+# file with no registry hash of its own (e.g. a webfont binary) is skipped
+# with a notice, never a hard failure. See the VENDOR_SRI block below.
+#
 # NOTE: Run this script after updating library versions in config.php.
 # The CI/CD pipeline should also run this during deployment.
 # ============================================================================
@@ -25,11 +32,64 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENDOR_DIR="$REPO_ROOT/appWeb/public_html/vendor"
+PUB_DIR="$REPO_ROOT/appWeb/public_html"
+VENDOR_DIR="$PUB_DIR/vendor"
+CONFIG_PHP="$PUB_DIR/includes/config.php"
 
 echo "=== iHymns: Downloading vendor libraries for offline fallback ==="
 echo "    Target: $VENDOR_DIR"
 echo ""
+
+# ----------------------------------------------------------------------------
+# #1666 — SRI registry lookup (local vendored path -> expected integrity hash)
+#
+# ELI5: before this existed, the script only checked "did SOMETHING get
+# downloaded" (a non-empty file). That means a captive portal, a compromised
+# mirror, or a tampered-with CDN response could silently hand us a DIFFERENT
+# file under the same name and this script would call it a success. The whole
+# point of the registry's `integrity` hashes (rule #36 — every CDN load in
+# this app is pinned + SRI-checked) is that the browser refuses a mismatched
+# file; the vendored LOCAL fallback those loads degrade to deserves the exact
+# same guarantee, or it is a fallback in name only.
+#
+# WHY READ config.php INSTEAD OF RE-TYPING THE HASHES HERE: rule #36's whole
+# point is ONE source of truth for a library's version + hash — a second,
+# hand-copied hash list in this script is exactly the "two lists that must
+# agree with nothing enforcing it" failure class rule #35 keeps finding in
+# this codebase (event names, rate-limit pairs, entitlement maps). So this
+# script asks PHP itself to read `APP_CONFIG['libraries']` (config.php is a
+# plain `define()`, safe to load standalone — its "direct access" guard only
+# fires when a WEB REQUEST's SCRIPT_FILENAME matches this file, which is never
+# true for a CLI `-r` snippet) and prints every `{variant}_local` path paired
+# with its `{variant}_sri` hash (variant = css/js/worker/preset — whichever
+# ones a given library entry has). A library file with NO `_sri` sibling for
+# its `_local` path (e.g. the bootstrap-icons/Font-Awesome webfont binaries,
+# which the registry only hashes at the CSS level) simply never appears in
+# this map, which is exactly the "skip-with-notice" case below wants.
+# https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
+declare -A VENDOR_SRI
+while IFS=$'\t' read -r _rel _hash; do
+    [ -n "$_rel" ] && VENDOR_SRI["$_rel"]="$_hash"
+done < <(IHYMNS_CONFIG_PATH="$CONFIG_PHP" php -r '
+    require getenv("IHYMNS_CONFIG_PATH");
+    foreach (APP_CONFIG["libraries"] as $lib) {
+        foreach ($lib as $field => $value) {
+            if (substr($field, -4) !== "_sri" || !is_string($value)) { continue; }
+            $variant   = substr($field, 0, -4);
+            $localPath = $lib[$variant . "_local"] ?? "";
+            if ($localPath !== "") {
+                echo $localPath . "\t" . $value . "\n";
+            }
+        }
+    }
+')
+
+if [ "${#VENDOR_SRI[@]}" -eq 0 ]; then
+    echo "FATAL: read zero SRI hashes from $CONFIG_PHP — the registry parse is broken" >&2
+    echo "       (rule #34: a check that finds nothing is evidence the DERIVATION broke," >&2
+    echo "       not that there is nothing to verify). Refusing to download unverified." >&2
+    exit 1
+fi
 
 # Create vendor directory structure
 mkdir -p "$VENDOR_DIR/bootstrap"
@@ -44,7 +104,8 @@ mkdir -p "$VENDOR_DIR/swagger-ui"
 mkdir -p "$VENDOR_DIR/sortablejs"
 mkdir -p "$VENDOR_DIR/bootstrap-icons/fonts"
 
-# Helper: download a file, verify it's not empty
+# Helper: download a file, verify it's not empty, then verify its hash
+# against the registry (#1666) when one is on file for this path.
 download() {
     local url="$1"
     local dest="$2"
@@ -54,12 +115,51 @@ download() {
     if curl -fsSL --retry 3 --retry-delay 2 -o "$dest" "$url"; then
         local size
         size=$(wc -c < "$dest")
-        if [ "$size" -gt 0 ]; then
-            echo "OK ($(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "${size}B"))"
-        else
+        if [ "$size" -eq 0 ]; then
             echo "WARN: empty file"
             rm -f "$dest"
+            return
         fi
+        local human_size
+        human_size=$(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "${size}B")
+
+        # #1666 — hash verification. `dest` is absolute; the registry keys
+        # its map on the path RELATIVE to public_html/ (e.g.
+        # "vendor/bootstrap/bootstrap.min.css"), matching config.php's
+        # `*_local` values verbatim.
+        local rel="${dest#"$PUB_DIR"/}"
+        local expected="${VENDOR_SRI[$rel]:-}"
+        if [ -z "$expected" ]; then
+            # Skip-with-notice, not a failure: some vendored files (font
+            # binaries a CSS-level hash doesn't cover) legitimately have no
+            # registry entry of their own.
+            echo "OK ($human_size) [no SRI in registry for $rel — skipped]"
+            return
+        fi
+
+        local algo actual
+        algo="${expected%%-*}"
+        actual="${algo}-$(openssl dgst -"$algo" -binary "$dest" | openssl base64 -A)"
+        if [ "$actual" != "$expected" ]; then
+            echo "HASH MISMATCH"
+            {
+                echo ""
+                echo "SRI VERIFICATION FAILED for '$label' ($dest)"
+                echo "  expected (config.php $rel): $expected"
+                echo "  got (downloaded file):      $actual"
+                echo ""
+                echo "The download does NOT match the integrity hash pinned in"
+                echo "includes/config.php APP_CONFIG['libraries']. Refusing to keep a"
+                echo "vendored fallback that would silently diverge from what the SRI-"
+                echo "checked CDN load expects (rule #36). If the library version"
+                echo "genuinely changed, update the registry hash there FIRST, then"
+                echo "re-run this script — never delete the integrity check to make a"
+                echo "mismatch go away (that is exactly how #1647 happened)."
+            } >&2
+            rm -f "$dest"
+            exit 1
+        fi
+        echo "OK ($human_size) [SRI verified]"
     else
         echo "FAILED"
         rm -f "$dest"

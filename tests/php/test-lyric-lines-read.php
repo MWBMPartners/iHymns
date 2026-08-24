@@ -47,6 +47,13 @@ function row(int $lineId, ?int $cid, string $text, array $o = []): array
         'comp_lang'     => $o['comp_lang']     ?? null,
         'line_parttype' => $o['line_parttype'] ?? null,
         'line_partnum'  => $o['line_partnum']  ?? null,
+        /* #1860 Phase 5 §2.5 — optional comp_label (sparse public/export 'label'
+           key, SD3). Defaults to null so cases 1-8 above are untouched: with
+           comp_label absent-or-null, lyricLinesAssembleFromRows() never adds a
+           'label' key, so every existing fixture's exact expected array stays
+           correct byte-for-byte — that this file needed NO edits to those
+           fixtures is itself the sparse-emit proof SD3 promises. */
+        'comp_label'    => array_key_exists('comp_label', $o) ? $o['comp_label'] : null,
     ];
 }
 
@@ -172,7 +179,49 @@ assertEq(
 );
 
 /* ==================================================================== */
-/* 9 — the EDITOR shape carries lineIds too (#1627)                       */
+/* 9 — #1860 Phase 5 §2.5: comp_label present -> sparse 'label' emitted   */
+/*     (placed right after 'language', before 'lineIds' — see the        */
+/*     $flush ordering in lyric_lines_read.php)                          */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows([
+        row(1, 80, 'Kyrie eleison', ['comp_type' => 'other', 'comp_number' => 0, 'comp_label' => 'Kyrie']),
+    ]),
+    [[
+        'type' => 'other', 'number' => 0, 'lines' => ['Kyrie eleison'],
+        'chords' => null, 'language' => null, 'label' => 'Kyrie', 'lineIds' => [1],
+    ]],
+    "#1860 Phase 5 - comp_label present -> assembled component carries 'label' => 'Kyrie'"
+);
+
+/* ==================================================================== */
+/* 10 — #1860 Phase 5 §2.5: comp_label null/'' -> NO 'label' key          */
+/*      (strict === on the FULL array is what proves sparseness — a      */
+/*      loose == would not catch an extra null-valued key)               */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows([
+        row(1, 81, 'a', ['comp_label' => null]),
+    ]),
+    [[
+        'type' => 'verse', 'number' => 1, 'lines' => ['a'],
+        'chords' => null, 'language' => null, 'lineIds' => [1],
+    ]],
+    '#1860 Phase 5 - null comp_label -> no label key (sparse, byte-identical to pre-Phase-5 shape)'
+);
+assertEq(
+    lyricLinesAssembleFromRows([
+        row(1, 82, 'a', ['comp_label' => '']),
+    ]),
+    [[
+        'type' => 'verse', 'number' => 1, 'lines' => ['a'],
+        'chords' => null, 'language' => null, 'lineIds' => [1],
+    ]],
+    "#1860 Phase 5 - empty-string comp_label -> no label key (sparse)"
+);
+
+/* ==================================================================== */
+/* 11 — the EDITOR shape carries lineIds too (#1627)                      */
 /*                                                                        */
 /* lyricLinesEditableComponents() takes a live \mysqli, so unlike          */
 /* lyricLinesAssembleFromRows() above it cannot be exercised as a pure     */
@@ -215,6 +264,16 @@ assertEq(
     str_contains($editableFn, "'line_id'"),
     true,
     'editor shape reads the line_id its own query selects (ll.Id AS line_id)'
+);
+assertEq(
+    str_contains($editableFn, "'label'"),
+    true,
+    "#1860 Phase 5 §2.3 — editor shape emits 'label' (REQ 3b, always-present)"
+);
+assertEq(
+    str_contains($editableFn, "'sourceWorkId'"),
+    true,
+    "#1860 Phase 5 §2.3 — editor shape emits 'sourceWorkId' (REQ 2, always-present)"
 );
 
 echo "\n  ----------------------------------------\n";

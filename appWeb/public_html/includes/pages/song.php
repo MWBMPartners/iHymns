@@ -18,6 +18,10 @@ declare(strict_types=1);
 
 /* #1328 — hide the songbook abbreviation badge when it just repeats the name. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+/* #1862 — the ONE copyright display-statement fold (ihymns_copyright_statement()),
+   shared with the Editor2 metadata tab's live preview via the fixture-driven
+   PHP<->JS lockstep test. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'copyright_display.php';
 
 /* Fetch the full song data — UNLESS a caller already injected one.
    #1598 — the bulk_songs loop in api.php sets $song (= $bulkSong, already
@@ -178,9 +182,11 @@ $copyrightHolder = trim((string)($song['copyrightHolder'] ?? ''));
    (#1741 P1 contract, mirrors the CopyrightYears schema COMMENT: legacy
    Copyright is NOT auto-parsed). Web and native must render identically —
    this precedence rule is part of the #1750/#4 API contract, never
-   concatenate both. */
-$copyrightSplit   = trim($copyrightYears . ' ' . $copyrightHolder);
-$copyrightDisplay = $copyrightSplit !== '' ? $copyrightSplit : trim((string)$copyright);
+   concatenate both. #1862 — extracted to the ONE shared fold
+   (ihymns_copyright_statement(), includes/copyright_display.php) so the
+   Editor2 metadata tab's live preview can share this exact decision;
+   behaviour here is byte-identical to the inline pair this replaced. */
+$copyrightDisplay = ihymns_copyright_statement($copyrightYears, $copyrightHolder, (string)$copyright);
 
 /* #1750 — prefer the tblTunes registry slug (via the existing scoped
    include-block reader) over the name-fold, exactly as work.php does
@@ -1057,7 +1063,7 @@ foreach ($components as $_c) {
                 <div class="btn-group song-toolbar-btn">
                     <button type="button"
                             class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
-                            data-bs-toggle="dropdown" aria-expanded="false"
+                            data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
                             aria-label="Export this song to a worship-presentation format">
                         <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                         Export
@@ -1226,11 +1232,26 @@ foreach ($components as $_c) {
                    The editor stores `number: 0` as a sentinel for "this is the
                    only one of its kind" (issue #795). Treat any non-positive
                    or non-numeric value as "no number" so single-component songs
-                   render as plain "Verse" / "Chorus" rather than "Verse 0". */
+                   render as plain "Verse" / "Chorus" rather than "Verse 0".
+
+                   #1860 Phase 5 Commit 8 — custom-first: a curator-set
+                   `component.label` (e.g. "Kyrie", "isiZulu") REPLACES the
+                   derived "Verse 1" heading entirely when present (D1). The
+                   derived name is still computed unconditionally because it
+                   remains the fallback AND (unchanged) the value the
+                   Structure-tab placeholder / server-side hide-when-equal
+                   fold compare against. $typeClass, the #858 language badge
+                   and the aria-label below all reuse $label as before, so
+                   they automatically inherit the custom label with no
+                   separate wiring. */
                 $displayType = ($type === 'refrain') ? 'chorus' : $type;
                 $label = ucfirst($displayType);
                 if (is_numeric($number) && (int)$number > 0) {
                     $label .= ' ' . (int)$number;
+                }
+                $custom = trim((string)($component['label'] ?? ''));
+                if ($custom !== '') {
+                    $label = $custom;
                 }
 
                 /* CSS class for styling different component types */
@@ -1608,7 +1629,11 @@ foreach ($components as $_c) {
            SongData::_worksMap (#840). Lists each Work this song belongs
            to with its sibling members ("other versions of this work")
            grouped under it. Hidden when empty + when the schema isn't
-           applied. */
+           applied. #1860 Phase 5 Commit 7 adds a "Medley of: A, B, C"
+           line per Work when that Work is itself a medley
+           ($w['constituents'], gated on workMedleyReady() —
+           includes/work_admin.php — and empty/absent on a non-medley
+           Work or an un-migrated tblWorkComponents). */
         $songWorks = $song['works'] ?? [];
         if (!empty($songWorks)):
     ?>
@@ -1633,6 +1658,29 @@ foreach ($components as $_c) {
                         <span class="badge bg-success-subtle text-success-emphasis">Canonical version</span>
                     <?php endif; ?>
                 </div>
+                <?php if (!empty($w['constituents'])): ?>
+                    <?php
+                        /* #1860 Phase 5 Commit 7 — "Medley of: A, B, C".
+                           $w['constituents'] is attached by SongData::_worksMap()
+                           step 4, already SortOrder-ordered by
+                           workMedleyConstituentsMap()'s own ORDER BY — no
+                           client-side re-sort needed. Link markup mirrors
+                           the work title link two rows up (same href/
+                           data-navigate/data-work-slug shape) — PLAIN
+                           fragment markup only, no inline <script> (rule
+                           #30 — this fragment can be served through the
+                           shared-cache page=song path with no per-request
+                           CSP nonce). */
+                        $constituentCount = count($w['constituents']);
+                    ?>
+                    <div class="text-muted small mb-1">
+                        Medley of:
+                        <?php foreach ($w['constituents'] as $ci => $cw): ?><a
+                               href="/work/<?= htmlspecialchars($cw['slug']) ?>"
+                               data-navigate="work"
+                               data-work-slug="<?= htmlspecialchars($cw['slug']) ?>"><?= htmlspecialchars($cw['title']) ?></a><?php if ($ci < $constituentCount - 1): ?>,&nbsp;<?php endif; ?><?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
                 <?php
                     $siblings = array_values(array_filter(
                         $w['members'] ?? [],

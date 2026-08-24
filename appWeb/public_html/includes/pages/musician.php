@@ -94,6 +94,40 @@ $db = getDbMysqli();
  * @see includes/musician_helpers.php musicianResolveLegacySlugDb()
  * @link .claude/catalogue-1741-P4a3-plan.md §1.2 the ladder's design
  */
+/* #1860 Phase 4 — dual-addressing pre-step, ahead of the legacy-slug ladder
+   below: an IL internal id ('ILM…') resolves to the registry's real Slug
+   and $personSlug is replaced with it, so every rung after this one (incl.
+   the legacy-slug ladder and the name-based fallback) sees a canonical
+   value exactly as if the curator had typed the real slug. A miss (not an
+   IL id, or the column doesn't exist yet) leaves $personSlug UNCHANGED —
+   never rejects, never errors. try/catch-swallowed + column-probe-gated so
+   this page can never white-screen on an un-migrated install (the #1228
+   lesson). */
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    $_ilParsed = ilidParse((string)($personSlug ?? ''));
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'musician') {
+        $_ilColProbe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $db->prepare('SELECT Slug FROM tblMusicians WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
+                $personSlug = (string)$_ilRow['Slug'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through to the legacy-slug ladder unchanged
+}
+
 if (!function_exists('musicianResolveLegacySlugDb')) {
     require_once dirname(__DIR__) . '/musician_helpers.php';
 }
@@ -334,10 +368,18 @@ $matchedSongIds = [];
 foreach ($roleTables as $roleKey => $cfg) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_visibility.php';   /* #1765 */
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';       /* #1531 — ihymns_songbook_name_label() */
     $creditPh = implode(',', array_fill(0, count($creditNames), '?'));
-    $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
+    /* #1531 — pull the songbook full NAME (tblSongbooks.Name) alongside the
+       abbreviation so the discography sub-line can show "Seventh-day Adventist
+       Hymnal" instead of the bare "SDAH" code, via the shared
+       ihymns_songbook_name_label() helper (server twin of JS songbookLabel()).
+       LEFT JOIN so a song whose songbook row is missing still lists (name
+       degrades to the abbr in the helper). */
+    $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number, sb.Name AS SongbookName
               FROM {$cfg['table']} c
               JOIN tblSongs s ON s.SongId = c.SongId
+              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
              WHERE c.Name IN ($creditPh) AND " . songVisibleSql($db, 's') . "
                AND " . songServableSql($db, 's') . "
              ORDER BY s.SongbookAbbr, s.Number";   /* #1694/#1765 — visible songs only, in a non-disabled songbook */
@@ -1030,7 +1072,9 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                         <div class="song-info flex-grow-1">
                             <span class="song-title"><?= htmlspecialchars(toTitleCase((string)$s['Title'])) ?></span>
                             <small class="text-muted d-block">
-                                <?= htmlspecialchars($s['SongbookAbbr']) ?>
+                                <?php /* #1531 — full songbook NAME (registry twin of JS songbookLabel);
+                                         self-escaping helper, degrades to the abbr when no name. */ ?>
+                                <?= ihymns_songbook_name_label((string)$s['SongbookAbbr'], (string)($s['SongbookName'] ?? '')) ?>
                             </small>
                         </div>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

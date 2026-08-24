@@ -162,6 +162,24 @@ export const editorApi = {
        and the toolbar button are what make it reachable, and their absence for
        part of a day is exactly the orphan class #1671 is about. */
     bulkTagDetach:     (songIds, name)           => postJson('bulk_tag_detach', { songIds: songIds, name: name }),
+    /* #1628 item 3 — the other two bulk actions v1 had that v2 shipped
+       without: moving many songs to a different songbook, and deleting many
+       at once. Both delegate server-side to the SAME per-song cores the
+       single-song actions use (songRelocate() / songSoftDelete()) — see
+       api2.php's doc-block for the full contract. Neither is all-or-
+       nothing: the response always carries BOTH a success list and a
+       `failed:[{id,error,status}]` list, so a curator moving/deleting 300
+       songs can see exactly which few refused, never a single opaque error
+       for the whole batch.
+       bulkMove's `moved` list carries `{oldId,newId}` pairs — option B
+       (#1679) re-keys every SongId it touches, so the caller MUST treat
+       every id it just sent as stale and re-key its own selection from
+       this response (never assume the old ids still resolve directly —
+       they only resolve via the redirect layer, editor2.php's handler
+       refreshes the sidebar's index unconditionally for exactly this
+       reason). */
+    bulkMove:          (songIds, targetAbbr)     => postJson('bulk_move', { songIds: songIds, targetAbbr: targetAbbr }),
+    bulkDelete:        (songIds, reason)         => postJson('bulk_delete', { songIds: songIds, reason: reason || '' }),
     loadSong:          (id)                      => getJson('load_song', { id: id }),
 
     /* Song lifecycle */
@@ -236,6 +254,55 @@ export const editorApi = {
     searchTunes:       (q, limit, meter)         => getJson('tune_search', Object.assign({ q: q || '', limit: limit || 10 }, meter ? { meter: meter } : {})),
     setSongTune:       (songId, tuneName)        => postJson('song_tune_set', { songId: songId, tuneName: tuneName }),
 
+    /* Publisher registry typeahead + the ONE copyright-holder write (#1862,
+       activating the #1864 dormant CopyrightHolderId FK). searchPublishers
+       mirrors searchTunes's shape (q/limit only — no meter-style extra leg).
+       setCopyrightHolder is consumed by metadata-tab.js's holder control on
+       `change` (blur) + a typeahead pick — deliberately NOT on every
+       keystroke, the exact #1679/#1741 P5c reasoning restated for
+       publishers (a debounced write could find-or-CREATE a junk
+       tblPublishers row per keystroke pause). `publisherId` is the
+       picker's CLAIMED id (or null when nothing was picked / it was
+       cleared by free-typing) — trust-but-verify happens server-side
+       (publisherResolvePickedOrCreate()), never assumed by this client. An
+       empty `name` is a legal CLEAR (both columns -> cleared server-side). */
+    searchPublishers:   (q, limit)                  => getJson('publisher_search', { q: q || '', limit: limit || 10 }),
+    setCopyrightHolder: (songId, name, publisherId) => postJson('song_copyright_holder_set', { songId: songId, name: name, publisherId: publisherId }),
+
+    /* Multi-holder copyright (#1900 Wave 4 C8) — the ordered chip-list
+       sibling of setCopyrightHolder above. listCopyrightHolders is a plain
+       read; setCopyrightHolders REPLACES the FULL ordered list in one call
+       (never a per-chip add/remove endpoint — the server always resolves
+       the whole thing atomically, rule #35's read-back: metadata-tab.js
+       re-renders its chips from THIS response's `holders`, never from the
+       `holders` array it just sent). Both 409 on an install that hasn't run
+       the #1900 migration card — metadata-tab.js feature-detects that via
+       `err.status`, never the error sentence, and falls back to the
+       original single-pick control above when it sees one. `holders` is
+       `[{publisherId?, name, role?}]`; `role` defaults server-side to
+       `'holder'` when omitted. */
+    listCopyrightHolders: (songId)          => getJson('song_copyright_holders', { id: songId }),
+    setCopyrightHolders:  (songId, holders) => postJson('song_copyright_holders_set', { songId: songId, holders: holders }),
+
+    /* Work registry typeahead + the two "Part of work" writes (#1860 Phase 5
+       Commit 9, design §3.7 items 1-2). searchWorks mirrors searchPublishers'
+       /searchTunes' shape (q/limit only). autolinkWork is the commit-time
+       hook metadata-tab.js fires after a CCLI/ISWC field's `change` (blur)
+       lands — server-authoritative: it reads the song's STORED Ccli/Iswc,
+       never anything this client sends (rule #35's read-back posture), so
+       the request carries only songId. setSongWork is the manual "Part of
+       work" picker's write: EXACTLY ONE of `opts.workId` (a typeahead pick)
+       or `opts.title` (find-or-create for an identifier-less hymn) per call
+       — never both, per api2.php's `song_work_set` contract (400 otherwise).
+       Both endpoints answer HTTP 409 when the work-identity migration cards
+       haven't been applied yet; metadata-tab.js's callers branch on
+       `err.status`, never on the error sentence (rule #35). A work-link
+       CONFLICT is not a failure — it rides back as a `conflict` string on
+       the 200 body (a work-link ambiguity must never fail the song save). */
+    searchWorks:  (q, limit)     => getJson('work_search', { q: q || '', limit: limit || 10 }),
+    autolinkWork: (songId)       => postJson('song_work_autolink', { songId: songId }),
+    setSongWork:  (songId, opts) => postJson('song_work_set', Object.assign({ songId: songId }, opts || {})),
+
     /* External links — whole sub-form reconcile (the shared card-list editor model).
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
@@ -268,6 +335,21 @@ export const editorApi = {
     addExternalId:     (songId, idType, idValue) => postJson('song_external_id_add', { songId: songId, idType: idType, idValue: idValue }),
     deleteExternalId:  (songId, id)              => postJson('song_external_id_delete', { songId: songId, id: id }),
 
+    /* Alternative titles (#1669, epic #832) — tblSongAlternativeTitles' first
+       UI write path. Per-song FREE TEXT "also known as" titles (NOT a
+       registry reference — rule #43 does not apply, see
+       includes/song_alt_titles.php's doc-block), shown on the Metadata tab
+       beside the Title field (alt-titles-panel.js). `created:false` on
+       addAltTitle means the exact title already existed for this song
+       (INSERT IGNORE server-side, the uq_song_title unique key);
+       err.status carries the failure KIND (409 = un-migrated, 422 =
+       empty/over-length title, an unrecognised language tag, or the title
+       being just the song's own main title again) per rule #35 — the panel
+       branches on that, never on err.message. */
+    listAltTitles:     (songId)                          => getJson('song_alt_titles', { id: songId }),
+    addAltTitle:       (songId, title, language, note)   => postJson('song_alt_title_add', { songId: songId, title: title, language: language || '', note: note || '' }),
+    deleteAltTitle:    (songId, id)                       => postJson('song_alt_title_delete', { songId: songId, id: id }),
+
     /* Media — file metadata reads; upload is multipart; only annotation is mutable. */
     listMedia:         (songId)                  => getJson('media_list', { id: songId }),
     uploadMedia:       (songId, kind, file, annotation) => {
@@ -282,8 +364,19 @@ export const editorApi = {
     deleteMedia:       (mediaId)                 => postJson('media_delete', { mediaId: mediaId }),
     reorderMedia:      (songId, kind, ids)       => postJson('media_reorder', { songId: songId, kind: kind, ids: ids }),
 
-    /* Revisions — history (metadata) + full-snapshot restore */
+    /* Revisions — history (metadata) + before/after diff pair + full-snapshot
+       restore. getRevision is the #1628 item 4 diff-view read: the server
+       resolves the before-snapshot LADDER (previousData -> priorRevision ->
+       none, api2.php's revision_get doc-block) so this client never
+       re-implements that chain (rule #35) — it only reads `beforeSource` and
+       branches on it. */
     listRevisions:     (songId)                  => getJson('revision_list', { songId: songId }),
+    /* #1122 — the whole-history raw snapshot bulk read that per-field BLAME walks
+       (blameFromSnapshots() in revisions-tab.js). Newest-first, with the window
+       base + ED2_META_FIELDS-derived fieldMap + noRollback list; see api2.php's
+       revision_snapshots doc-block. */
+    listRevisionSnapshots: (songId, limit)       => getJson('revision_snapshots', { songId: songId, limit: limit }),
+    getRevision:       (revisionId, songId)      => getJson('revision_get', { revisionId: revisionId, songId: songId }),
     restoreRevision:   (revisionId, songId)      => postJson('revision_restore', { revisionId: revisionId, songId: songId }),
 
     /* Arrangement — the song's running order (#161 / #1627 item 2). `arrangement`

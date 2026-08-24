@@ -366,7 +366,16 @@ $api2Src = (string)file_get_contents($api2File);
 $tabSrc  = (string)file_get_contents($tabFile);
 
 /* ---- Every derived (#1741 P1) column name appears in ED2_META_FIELDS AND
-   in metadata-tab.js's FIELDS. ---- */
+   in metadata-tab.js's FIELDS — EXCEPT CopyrightHolder (#1862), which became
+   a bespoke tblPublishers-backed picker (rule #43 — never a free-text box
+   into a registry) and so is no longer a FIELDS row at all. Same posture as
+   the pre-existing 'isrc'/Isrc hand-named carve-out immediately below: the
+   tree-derivation still finds CopyrightHolder (it IS #1741 P1-tagged in
+   schema.sql — the FK column is dormant, the free-text mirror column isn't),
+   but its wiring is asserted EXPLICITLY, by name, against the bespoke
+   control instead of the generic FIELDS/GATED_COLUMNS machinery. ---- */
+$fieldsCheckCols = array_values(array_diff($taggedCols, ['CopyrightHolder']));
+
 $metaFieldsSlice = sifSliceConstArray($api2Src, 'ED2_META_FIELDS');
 $fieldsJsSlice   = sifSliceJsConstArray($tabSrc, 'FIELDS');
 if ($metaFieldsSlice === '') {
@@ -376,14 +385,35 @@ if ($fieldsJsSlice === '') {
     $failures[] = 'Could not locate the FIELDS const array in metadata-tab.js';
 }
 if ($metaFieldsSlice !== '') {
+    /* CopyrightHolder DOES stay a key of api2.php's ED2_META_FIELDS (rule
+       #33 — a stale cached client sending the old plain field must still be
+       caught by the CopyrightHolder alias branch, never silently reach the
+       generic column write) — so the allow-list side is NOT excluded here,
+       only the client FIELDS side below. */
     foreach (sifMissing($metaFieldsSlice, $taggedCols) as $missingCol) {
         $failures[] = "tblSongs.{$missingCol} (#1741 P1) is not referenced inside api2.php's ED2_META_FIELDS";
     }
 }
 if ($fieldsJsSlice !== '') {
-    foreach (sifMissing($fieldsJsSlice, $taggedCols) as $missingCol) {
+    foreach (sifMissing($fieldsJsSlice, $fieldsCheckCols) as $missingCol) {
         $failures[] = "tblSongs.{$missingCol} (#1741 P1) is not referenced inside metadata-tab.js's FIELDS";
     }
+}
+
+/* ---- CopyrightHolder's bespoke replacement (#1862) is actually present:
+   the zero-extra-request client gate (`'CopyrightHolder' in song`, the same
+   idiom GATED_COLUMNS itself uses) AND the picker's own control id. Comment-
+   stripped (rpfPhpCode-equivalent inline here, mirroring
+   test-rights-panel-fields.php's own JS strip) so a doc-comment describing
+   the removal (this file's own explanatory prose, elsewhere) can't satisfy
+   a check for the real gate. ---- */
+$tabSrcStripped = preg_replace('#/\*[\s\S]*?\*/#', '', $tabSrc) ?? $tabSrc;
+$tabSrcStripped = preg_replace('#(^|[^:])//.*$#m', '$1', $tabSrcStripped) ?? $tabSrcStripped;
+if (strpos($tabSrcStripped, "'CopyrightHolder' in song") === false) {
+    $failures[] = "metadata-tab.js does not gate the Copyright Holder picker on \"'CopyrightHolder' in song\" — the #1741 P1 zero-extra-request client gate (#1862 replacement for GATED_COLUMNS)";
+}
+if (strpos($tabSrcStripped, 'meta-copyrightHolder') === false) {
+    $failures[] = 'metadata-tab.js has no sign of the bespoke Copyright Holder picker control (id="meta-copyrightHolder", #1862)';
 }
 
 /* ---- 'isrc' is hand-named (Isrc predates P1, so the tree-derivation above
@@ -445,12 +475,19 @@ if ($gatedColsSlice === '') {
 if ($gatedColsSlice === '') {
     $failures[] = 'Could not locate the GATED_COLUMNS declaration in metadata-tab.js';
 } else {
-    $p1OnlyCols = array_values(array_diff($taggedCols, ['Isrc']));   // Isrc is deliberately never gated
+    /* Isrc is deliberately never gated (predates #1741 P1). CopyrightHolder
+       is deliberately EXCLUDED here too (#1862) — its bespoke picker gates
+       itself directly on `'CopyrightHolder' in song`, asserted separately
+       above, rather than going through this shared Set. */
+    $p1OnlyCols = array_values(array_diff($taggedCols, ['Isrc', 'CopyrightHolder']));
     foreach (sifMissing($gatedColsSlice, $p1OnlyCols) as $missingCol) {
         $failures[] = "tblSongs.{$missingCol} (#1741 P1) is missing from metadata-tab.js's GATED_COLUMNS — an un-migrated install would render a dead control for it";
     }
     if (strpos($gatedColsSlice, "'Isrc'") !== false) {
         $failures[] = "metadata-tab.js's GATED_COLUMNS wrongly includes 'Isrc' — Isrc (#1064) predates #1741 P1 and needs no existence gate";
+    }
+    if (strpos($gatedColsSlice, "'CopyrightHolder'") !== false) {
+        $failures[] = "metadata-tab.js's GATED_COLUMNS wrongly includes 'CopyrightHolder' — #1862 moved its gate to a direct \"'CopyrightHolder' in song\" check on the bespoke picker, not this shared Set";
     }
 }
 
@@ -474,9 +511,10 @@ if ($failures || $mutationFailures) {
 
 echo "PASS: Song-editor identity fields guard — " . count($taggedCols)
    . ' tree-derived #1741 P1 tblSongs column(s) (' . implode(', ', $taggedCols) . ') '
-   . "all referenced in api2.php's ED2_META_FIELDS and metadata-tab.js's FIELDS; 'isrc' present "
-   . "in both (hand-named); metadata_field_update canonicalises + shape-validates ISRC and "
-   . "consults ed2_songIdentityColsPresent(); ed2_applySongSnapshot() consults the same gate; "
-   . "metadata-tab.js's GATED_COLUMNS covers every P1 column and excludes Isrc; all mutation "
-   . "self-tests went red as expected.\n";
+   . "all referenced in api2.php's ED2_META_FIELDS; all except CopyrightHolder (#1862's bespoke "
+   . "picker, asserted separately) referenced in metadata-tab.js's FIELDS; 'isrc' present in both "
+   . "(hand-named); metadata_field_update canonicalises + shape-validates ISRC and consults "
+   . "ed2_songIdentityColsPresent(); ed2_applySongSnapshot() consults the same gate; "
+   . "metadata-tab.js's GATED_COLUMNS covers every P1 column except Isrc + CopyrightHolder "
+   . "(both gate themselves directly); all mutation self-tests went red as expected.\n";
 exit(0);

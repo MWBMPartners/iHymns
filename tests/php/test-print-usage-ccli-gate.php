@@ -18,11 +18,19 @@ declare(strict_types=1);
  *
  *   A1. `printUsageLog()`'s function body calls `printUsageResolveCcliLicence(`
  *       and contains the `=== null` guard's `return false` BEFORE the
- *       `INSERT INTO tblSongUsageEvents` text — i.e. the gate textually
- *       precedes the write, not just "exists somewhere in the function".
- *   A2. Exactly ONE `INSERT INTO tblSongUsageEvents` literal exists anywhere
- *       under `appWeb/public_html` (the ONE-WRITER rule, §6.2 — never a
- *       second, ungated writer bypassing the gate above).
+ *       `_usageEventInsert(` DELEGATION call — i.e. the gate textually precedes
+ *       the write, not just "exists somewhere in the function". (#1897 W2
+ *       re-anchored this from the raw `INSERT` literal, which moved into the
+ *       shared core `_usageEventInsert()`.)
+ *   A2. Exactly ONE FILE under `appWeb/public_html` contains the
+ *       `INSERT INTO tblSongUsageEvents` literal — `includes/print_usage.php`
+ *       (the ONE-WRITER rule, §6.2 — never a second, ungated writer file).
+ *   A2b. That literal appears EXACTLY ONCE in `print_usage.php`, inside
+ *       `_usageEventInsert()` (the shared core both the print funnel
+ *       `printUsageLog()` and the projection funnel `projectionUsageLog()`
+ *       delegate to), and NO longer inside `printUsageLog()` itself —
+ *       occurrence-count, so a re-inlined second copy is caught even though A2
+ *       (file membership) would stay green.
  *   A3. `manage/print-pdf.php`: `printUsageResolveCcliLicence(` is called
  *       BEFORE `ihymnsPdfRender(` — the footer decision is made (from a
  *       RE-RESOLVED licence) before conversion, never left for later.
@@ -141,7 +149,12 @@ $logBody = pucFunctionBody($printUsageSrc, 'printUsageLog');
 puc($logBody !== null, 'A1.0 extracted the printUsageLog() function body');
 if ($logBody !== null) {
     $gatePos   = strpos($logBody, 'printUsageResolveCcliLicence(');
-    $insertPos = strpos($logBody, 'INSERT INTO tblSongUsageEvents');
+    /* A1.2 re-anchored (#1897 W2): the `INSERT INTO tblSongUsageEvents`
+       literal moved OUT of printUsageLog() into the shared `_usageEventInsert()`
+       core (so the projected funnel can share the one writer, rule #22). The
+       write printUsageLog() now reaches is the `_usageEventInsert(` DELEGATION
+       call; the gate must still textually precede THAT. */
+    $insertPos = strpos($logBody, '_usageEventInsert(');
     puc($gatePos !== false, 'A1.1 printUsageLog() calls printUsageResolveCcliLicence(');
 
     /* A1.2 anchors on the COMPOUND pattern
@@ -164,7 +177,7 @@ if ($logBody !== null) {
             && $gatePos < $gateGuardPos && $gateGuardPos < $insertPos,
         'A1.2 printUsageLog() has an "if ($licence === null) { return false; }" guard (the ACTUAL gate, '
             . 'not any other return-false in the function) that appears AFTER the '
-            . 'printUsageResolveCcliLicence() call and BEFORE "INSERT INTO tblSongUsageEvents" — the write '
+            . 'printUsageResolveCcliLicence() call and BEFORE the _usageEventInsert() delegation — the write '
             . 'can never be reached without a qualifying licence'
     );
 }
@@ -193,6 +206,29 @@ puc(
     $writerSites === ['includes/print_usage.php'],
     'A2 exactly ONE file writes "INSERT INTO tblSongUsageEvents" — includes/print_usage.php'
         . (count($writerSites) === 1 && $writerSites === ['includes/print_usage.php'] ? '' : ' (found: ' . (implode(', ', $writerSites) ?: 'none') . ')')
+);
+
+/* =============================================================================
+ * A2b (#1897 W2) — the INSERT literal moved into the ONE shared core. It
+ * appears EXACTLY ONCE in print_usage.php, inside _usageEventInsert(), and NO
+ * LONGER inside printUsageLog() (which now delegates). This counts OCCURRENCES
+ * — not just file membership (A2) — so a re-inlined second copy is caught even
+ * though A2 (which allows any number in the one file) would stay green.
+ * Mutation: duplicating the INSERT literal in print_usage.php → A2b red.
+ * ============================================================================= */
+$insertLiteralCount = substr_count($printUsageSrc, 'INSERT INTO tblSongUsageEvents');
+puc(
+    $insertLiteralCount === 1,
+    'A2b exactly ONE "INSERT INTO tblSongUsageEvents" literal in includes/print_usage.php (found ' . $insertLiteralCount . ')'
+);
+$coreBody = pucFunctionBody($printUsageSrc, '_usageEventInsert');
+puc(
+    $coreBody !== null && str_contains($coreBody, 'INSERT INTO tblSongUsageEvents'),
+    'A2b.1 the one INSERT literal lives inside _usageEventInsert() (the shared write core both funnels delegate to)'
+);
+puc(
+    $logBody !== null && !str_contains($logBody, 'INSERT INTO tblSongUsageEvents'),
+    'A2b.2 printUsageLog() no longer holds the INSERT literal itself — it delegates to _usageEventInsert()'
 );
 
 /* =============================================================================

@@ -16,7 +16,9 @@ declare(strict_types=1);
  * and licensing information.
  *
  * This file is auto-updated by the CI/CD pipeline:
- * - Version number bumped by version-bump.yml workflow
+ * - Version.Number: the MAJOR is committed here (hand-edited, rare); the
+ *   RELEASE (minor) + BUILD (patch) are injected at deploy time from the
+ *   latest production `v*` tag + the commit count (deploy.yml, #1899).
  * - Build metadata (commit SHA, date, URL) injected by deploy.yml
  *
  * STRUCTURE:
@@ -36,8 +38,13 @@ declare(strict_types=1);
  * ========================================================================= */
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
-    header('Location: ' . dirname($_SERVER['REQUEST_URI'] ?? '', 2) . '/', true, 302);
-    exit('<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=../"></head><body>Redirecting to <a href="../">iHymns</a>...</body></html>');
+    /* #1906 — redirect to a FIXED site-root path, never build the Location
+       header from the raw request URI. header() already rejects CR/LF, but a
+       tainted REQUEST_URI in a redirect is an open-redirect / cache-key smell;
+       for every legitimate direct hit dirname('/includes/infoAppVer.php', 2)
+       was already '/', so this is behaviour-identical for real traffic. */
+    header('Location: /', true, 302);
+    exit('<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=/"></head><body>Redirecting to <a href="/">iHymns</a>...</body></html>');
 }
 
 /* =========================================================================
@@ -77,11 +84,22 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * ========================================================================= */
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
-/* Bumped BY HAND after every large alpha batch. The version-bump GitHub Action
-   is configured for alpha+beta (#1596), but auto-merged alpha PRs push via
-   GITHUB_TOKEN, and GitHub does NOT re-trigger workflows on a GITHUB_TOKEN push
-   — so in practice the bumper never fires on alpha and the number stands still
-   until bumped manually. Do not rely on a "+1 on merge" happening here.
+/* TAG-DERIVED SCHEME (#1899). This committed value is:
+     - the LOCAL-DEV / pre-first-tag display, and
+     - the Apple MAJOR-parity anchor: appApple/Scripts/sync-version.sh reads
+       THIS file (never a deployed artifact) and enforces that its MAJOR equals
+       Versioning.xcconfig's MARKETING_VERSION major, so it MUST stay three
+       plain integers "X.Y.Z" (no suffix — the regex `"[0-9]+\.[0-9]+\.[0-9]+"`
+       would otherwise fail).
+   MAJOR is hand-edited here (rare — a product-identity decision). The DEPLOYED
+   value is `MAJOR.RELEASE.BUILD`, rewritten by deploy.yml from the latest
+   production `v*` tag (RELEASE = the tag's minor) + the commit count (BUILD);
+   an untagged checkout deploys this committed value unchanged. The `v*` tags
+   are minted by promotion-deploy-bridge.yml at each beta→main promotion. The
+   old auto-bumper (version-bump.yml) that ballooned the minor to 5250 is
+   RETIRED — do NOT rely on a "+1 on merge" happening here, and keep
+   api-docs.yaml's info.version in lockstep on any manual edit
+   (tests/php/test-openapi-actions-exist.php guards it).
 
    History:
    - 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch (the 214-commit
@@ -129,7 +147,16 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "0.5250.0";
+$app["Application"]["Version"]["Number"] = "1.0.0";
+
+/* Build number — the git commit count (`git rev-list --count HEAD`): a
+ * monotonic, per-commit build identifier that advances on every landed commit,
+ * independent of the semantic MAJOR.MINOR.PATCH above. NULL in source; the
+ * deploy pipeline injects the real value via sed at deploy time — the same
+ * no-commit-back mechanism as the commit SHA/date below — so it is never
+ * bumped by hand and never churns git history. An un-injected checkout (local
+ * dev) reads NULL. See deploy.yml, step "Inject build info into infoAppVer.php". */
+$app["Application"]["Version"]["Build"]["Number"] = NULL;
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
 $app["Application"]["Version"]["Name"] = NULL;
@@ -272,3 +299,64 @@ $app["Application"]["Repo"]["URL"] = "https://github.com/MWBMPartners/iHymns";
 
 /* GitHub issues URL */
 $app["Application"]["Repo"]["Issues"]["URL"] = "https://github.com/MWBMPartners/iHymns/issues";
+
+/* =========================================================================
+ * X-POWERED-BY BRANDING (#1906)
+ *
+ * ELI5: instead of letting the header quietly announce "PHP/8.x" (which tells
+ * a scanner exactly which runtime — and which known runtime bugs — we run), we
+ * replace it with our OWN name and app version, e.g. "iHymns/1.0.0". It says
+ * who we are, not what we're built on.
+ *
+ * WHY here / WHY a function: the app version is a PHP value injected at deploy
+ * time into $app["Application"]["Version"]["Number"] (deploy.yml, #1899), so the
+ * ONLY place that knows the real version at runtime is PHP — a static .htaccess
+ * can't read it. This file is that single source of truth, so the emitter lives
+ * with it. It is a FUNCTION (not an unconditional side-effect) because
+ * infoAppVer.php is also required in header-late contexts (admin-footer),
+ * non-HTTP contexts (the setup-database CLI probe) and the service worker; those
+ * callers must be able to read $app WITHOUT emitting a header. The two
+ * scanner-facing entry points (index.php, api.php) call it explicitly right
+ * after they load this file.
+ *
+ * SECURITY: this is BRANDING, not the leak defence. The actual PHP-version
+ * fingerprint is suppressed at the source by `expose_php = Off` in the sibling
+ * .user.ini, with a mod_headers `edit ^PHP/` in .htaccess as the belt-and-braces
+ * for a mod_php host that ignores .user.ini. Advertising our own app version is
+ * a deliberate, low-sensitivity disclosure (it is already public in the footer,
+ * the PWA manifest and api-docs.yaml) — never the PHP runtime version.
+ *
+ * @see https://www.php.net/manual/en/function.header.php
+ * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Powered-By
+ */
+if (!function_exists('ihymns_emit_powered_by_header')) {
+    /**
+     * Emit `X-Powered-By: <Name>[/<Version>]` for the current response.
+     *
+     * @param array $app The application-metadata array built above (Name +
+     *                    Version.Number are read; both degrade gracefully).
+     */
+    function ihymns_emit_powered_by_header(array $app): void
+    {
+        /* Never over an already-flushed response (would emit a PHP warning and
+           do nothing), and never on the CLI SAPI (header() is a no-op there —
+           the setup-database probe and test harness load this file). */
+        if (PHP_SAPI === 'cli' || headers_sent()) {
+            return;
+        }
+
+        /* Name is a constant identity; Version.Number is the deploy-injected
+           MAJOR.RELEASE.BUILD (or the committed dev value on an untagged build).
+           If the version is somehow absent, fall back to the bare app name —
+           still branded, still no runtime fingerprint. */
+        $name    = (string) ($app['Application']['Name'] ?? 'iHymns');
+        $version = $app['Application']['Version']['Number'] ?? null;
+        $value   = ($version !== null && $version !== '')
+            ? $name . '/' . (string) $version
+            : $name;
+
+        /* header() with an existing name REPLACES it, so this also overrides any
+           default X-Powered-By PHP itself set (belt-and-braces with expose_php). */
+        header('X-Powered-By: ' . $value);
+    }
+}

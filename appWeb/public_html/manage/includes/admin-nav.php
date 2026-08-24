@@ -54,22 +54,30 @@ $_roleBadge   = match($_role) {
    source and stay in lock-step. `visibleAdminLinks()` applies the
    per-link entitlement gate for the current role. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-links.php';
-$_visibleAdminLinks = visibleAdminLinks($_role);
+/* userId drives the optional per-row 'org_admin' sentinel (#1667) so an org
+   admin sees the Service Mode broadcaster links even without manage_organisations. */
+$_adminNavUserId    = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
+$_visibleAdminLinks = visibleAdminLinks($_role, $_adminNavUserId);
 
-/* Data-driven hide for `my-organisations` (#707). The entitlement
-   `manage_own_organisation` is open to every signed-in role so the
-   role-based filter alone would surface the link to every user.
-   The actual restriction is "user holds an admin or owner row in
-   tblOrganisationMembers" — checked via userHasOwnOrganisation().
-   system_admin / global_admin keep the link unconditionally
-   because they can manage any org via /manage/organisations. */
+/* Data-driven hide for `my-organisations` + `my-ccli-report` (#707 / #1861).
+   Both entitlements (`manage_own_organisation`, `view_org_ccli_report`) are
+   open to every signed-in role so the role-based filter alone would surface
+   both links to every user. The actual restriction for both is "user holds
+   an admin or owner row in tblOrganisationMembers" — checked via
+   userHasOwnOrganisation() (same underlying userIsOrgAdminOf() lookup
+   my-ccli-report.php's own page gate uses, rule #22: reuse, don't reinvent).
+   system_admin / global_admin keep both links unconditionally: they can
+   manage any org via /manage/organisations, and see every org's CCLI usage
+   via /manage/ccli-report (an org-less system admin clicking My CCLI Report
+   gets the friendly pointer page — the harmless "widening" direction of
+   #1587, same trade-off as my-organisations). */
 if (!in_array($_role, ['admin', 'global_admin'], true)) {
     $_userIdForOrgCheck = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
     if (function_exists('userHasOwnOrganisation')
         && !userHasOwnOrganisation($_userIdForOrgCheck)) {
         $_visibleAdminLinks = array_values(array_filter(
             $_visibleAdminLinks,
-            static fn(array $l): bool => $l[0] !== 'my-organisations'
+            static fn(array $l): bool => !in_array($l[0], ['my-organisations', 'my-ccli-report'], true)
         ));
     }
 }

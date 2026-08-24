@@ -33,6 +33,25 @@ declare(strict_types=1);
  *   GET  easyworship_export?id=<SongId>|abbr=<BOOK>[&maxLinesPerSlide=N] -> streams an EasyWorship Songs.db (#1059/#1678)
  *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
  *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
+ *   POST bulk_move   { songIds:[...], targetAbbr }  -> { ok, moved:[{oldId,newId}], failed:[{id,error,status}] }
+ *                               #1628 item 3 — each song re-keyed through the SAME
+ *                               songRelocate() core the single-song
+ *                               metadata_field_update(field=songbook) branch uses
+ *                               (#1679 option B). PER-SONG verdicts — one bad row
+ *                               never aborts the batch. `targetAbbr` is validated
+ *                               ONCE up front (422 on an unknown book, before the
+ *                               loop); every OTHER per-song failure lands in
+ *                               `failed`, never a 500 for the whole request.
+ *                               `moved` carries the NEW ids — option B means every
+ *                               selected id is stale the instant this returns.
+ *   POST bulk_delete { songIds:[...], reason?, note? } -> { ok, deleted:[ids], failed:[{id,error,status}] }
+ *                               #1628 item 3 — each song SOFT-deleted through the
+ *                               SAME songSoftDelete() core the single-song
+ *                               delete_song case uses (#1694); restorable from
+ *                               /manage/deleted-songs. Entitlement is
+ *                               `delete_songs` (the single-delete gate), not
+ *                               `bulk_edit_songs` — a bulk delete repeats the same
+ *                               destructive act N times.
  *   GET  load_song?id=<SongId>                              -> { ok, song, components, credits, tags, links, media, … }
  *                               credits[role][] now carries first/surname/suffix
  *                               alongside {id,name} (#960 plan §4 item 3) — the
@@ -68,7 +87,18 @@ declare(strict_types=1);
  *                               ed2_songTuneApply() core song_tune_set (below)
  *                               uses, so TuneName can never again be written
  *                               without TuneId; answers { ok, field:'tuneName', tuneId }.
- *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
+ *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?,label?,sourceWorkId?} }
+ *                               -> { ok, componentId, label, sourceWorkId, sourceWorkIdIgnored }
+ *                               #1860 Phase 5 §3.2 — `label`/`sourceWorkId` are PRESENCE-gated
+ *                               (an absent key preserves the stored value, never wipes it — the
+ *                               "provided-else-preserve" contract §3's three layers exist for).
+ *                               D1/rule #27: a `label` equal to the derived "Type Number" heading
+ *                               folds to NULL server-side (hide-when-equal), so the client never
+ *                               has to duplicate that comparison. SD1: an unresolvable
+ *                               `sourceWorkId` is coerced to NULL — never a 422 — with
+ *                               `sourceWorkIdIgnored:true` in the response so the client can toast;
+ *                               the response is read BACK from the stored row (rule #35), not
+ *                               echoed from the request.
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
  *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
@@ -156,6 +186,34 @@ declare(strict_types=1);
  *                               same idempotent-double-click posture as song_link_remove.
  *                               409 table missing. Deleting the P5d mirror row is harmless —
  *                               the next ISRC save re-mints it.
+ *   GET  song_alt_titles?id=<SongId>                          -> { ok, altTitles, tableMissing? }
+ *                               #1669 (epic #832) — tblSongAlternativeTitles' FIRST UI write
+ *                               path (the read half — SongData::_songAltTitlesMap(), the
+ *                               public song page, the OG image, the #832 search boost — has
+ *                               been live for a while; this is what finally lets a curator
+ *                               CREATE the first row). Row shape { id, title, language, note,
+ *                               sortOrder }, ordered SortOrder ASC, Title ASC — the SAME
+ *                               ordering the read half uses. tableMissing:true on an
+ *                               un-migrated install (empty list, not a 500), the same
+ *                               convention song_external_ids above uses. Per-song FREE TEXT
+ *                               (rule #43 does NOT apply — an alt title is a title string, not
+ *                               a reference to a registry entity).
+ *   POST song_alt_title_add     { songId, title, language?, note? } -> { ok, altTitle, created }
+ *                               404 unknown song; 409 table missing (names the
+ *                               'alternative-titles' migration card); 422 empty/over-length
+ *                               title, an unrecognised language tag, or the title being just
+ *                               the song's own main title again ("That is already the song's
+ *                               main title."). INSERT IGNORE on uq_song_title
+ *                               (SongId,Title) — a duplicate re-selects the existing row, so
+ *                               the echo is always canonical; `created` tells the client
+ *                               whether a NEW row actually landed. No ed2_touchRevision —
+ *                               alt titles sit outside the content snapshot, the SAME posture
+ *                               tblSongExternalIds/tblSongLinks take above.
+ *   POST song_alt_title_delete  { songId, id }               -> { ok, deleted }
+ *                               `SongId` is part of the WHERE (cross-song defence-in-depth,
+ *                               not just `id`); already-gone -> { ok:true, deleted:0 }, the
+ *                               same idempotent-double-click posture as song_external_id_delete.
+ *                               409 table missing.
  *   GET  tune_search?q=&limit=&meter=                          -> { ok, suggestions, tableMissing? }
  *                               #1741 P5c — typeahead over the tblTunes registry (mirror of
  *                               tag_search above). Alias-JOINed (tblTuneAliases, when present)
@@ -180,17 +238,96 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
- *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
  *     format=auto on a .xml/.opensong upload resolves via the shared XML
  *     auto-router (_bulkImport_processXmlAuto(), #882) — it sniffs
  *     OpenLyrics vs OpenSong and tries the other parser once on a primary
  *     parse failure; the response's top-level `format` echoes back the
  *     format that actually parsed.
+ *     #1674 — dryRun="1" runs every real pre-flight decision (existence +
+ *     title-dedupe) but writes nothing; the response echoes `dry_run` (a
+ *     KEY, not prose) so the client can brand the summary as a preview.
+ *     `songs_failed` under dry-run reflects parse/mapping failures only —
+ *     DB-level failures are unreproducible without actually writing.
  *   POST import_zip    (MULTIPART: file=.zip, dedupeMode?)    -> { ok, async, job_id, poll_url } (async) | { ok, songs_created, ... } (sync fallback / EasyWorship)
+ *     #1674 — dryRun="1" is REFUSED with 422 (ZIP dry-run is deferred: the
+ *     async job has no spare column for the flag, which needs a migration).
+ *     Import a single file to preview instead.
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
+ *   GET  revision_snapshots?songId=<id>&limit=                -> { ok, revisions[], base, baseSource, truncated, fieldMap, noRollback }
+ *                               #1122 — the RAW decoded NewData of EVERY
+ *                               revision for one song (newest first) + the window
+ *                               base (the oldest row's own PreviousData, NO
+ *                               ladder — blame's chain is the consecutive NewData
+ *                               rows) + the ED2_META_FIELDS-derived fieldMap + the
+ *                               noRollback field-key list, so the client computes
+ *                               per-field BLAME by walking the whole history with
+ *                               the ONE shipped normaliser (diffSnapshots(), rule
+ *                               #22). A NULL/undecodable NewData is a ROW-LEVEL
+ *                               null, not a 409 (a whole list renders around it).
+ *   GET  revision_get?revisionId=<id>[&songId=<id>]           -> { ok, revision, after, before, beforeSource }
+ *                               #1628 item 4 — the before/after snapshot PAIR
+ *                               for one revision, so the client can render a
+ *                               diff before committing to Restore. `after` is
+ *                               the decoded NewData; `before` resolves through
+ *                               a server-side LADDER — this row's own
+ *                               PreviousData when decodable (the #1743-C2
+ *                               chain, f18c54ac, populates it for every
+ *                               revision written since), else the
+ *                               immediately-older revision's own NewData
+ *                               (one extra bound SELECT, same
+ *                               (CreatedAt, Id) DESC ordering revision_list
+ *                               uses), else null. `beforeSource` names which
+ *                               rung answered — 'previousData' |
+ *                               'priorRevision' | 'none' (rule #20 — a
+ *                               vocabulary string, never a boolean pair) — so
+ *                               the client never re-implements the fallback
+ *                               chain (rule #35). 409 when THIS revision's own
+ *                               NewData is NULL/undecodable (the same
+ *                               "no snapshot" semantics revision_restore
+ *                               uses). A legacy bare-tblSongs-row snapshot
+ *                               (the pre-#1743 v1 shape) is returned AS-IS —
+ *                               shape normalisation is the client's rendering
+ *                               concern, not this endpoint's.
  *   POST revision_restore       { revisionId }                -> { ok, songId }
+ *   GET  work_search?q=&limit=                                -> { ok, suggestions, tableMissing? }
+ *                               #1860 Phase 3 — typeahead over the tblWorks registry (mirror of
+ *                               tune_search above). tableMissing:true on an un-migrated (no
+ *                               tblWorks) install, never a 500. `ccli` is included only when the
+ *                               column exists (boolean-gated SQL fragment, rule #5 carve-out) —
+ *                               a pre-works-identity install still returns ISWC-based rows.
+ *   POST song_work_autolink     { songId }                    -> { ok, linked, workId, workTitle,
+ *                               workSlug, songCount, created, createdParent, rehomed, refined,
+ *                               conflict, iswcInvalid }
+ *                               #1860 Phase 3 — the commit-time hook Editor2 fires after a
+ *                               CCLI/ISWC field save lands (§7, a FOLLOW-UP build). Server-
+ *                               authoritative: reads the song's STORED Ccli/Iswc from tblSongs,
+ *                               never a client-sent value (rule #35's read-back posture). A
+ *                               work-link CONFLICT is a field on the 200 body, never an HTTP
+ *                               failure (a work-link ambiguity must never fail the song save).
+ *                               404 unknown song; 409 when the work-identity migration cards
+ *                               (`works` + `works-identity` + `work-identity-model`) haven't
+ *                               all been applied yet. Delegates entirely to
+ *                               workFindOrLinkByIdentifier() (includes/work_admin.php) — no
+ *                               decision logic lives here.
+ *   POST song_work_set          { songId, workId } -> link to an existing work
+ *                               { songId, title }  -> the manual picker's find-or-create for
+ *                                                     identifier-less hymns (§3.7.2)
+ *                               { songId, workId, unlink:true } -> the ONLY manual-unlink
+ *                                                     surface (§3.3.1 reserves unlink to humans)
+ *                               -> { ok, linked, workId, workTitle, workSlug, songCount, created,
+ *                                    createdParent:false, rehomed:false, refined:false,
+ *                                    conflict:null, iswcInvalid:false } (link / create-by-title)
+ *                               -> { ok, unlinked:true, deleted } (unlink; already-gone -> deleted:0,
+ *                                    the idempotent-double-click posture of song_link_remove above)
+ *                               #1860 Phase 3 — exactly one mode per request (400 otherwise);
+ *                               empty/whitespace title -> 400. 404 unknown song, or an unknown
+ *                               workId on the link/unlink modes. 409 un-migrated install. All
+ *                               writes delegate to includes/work_admin.php (workExists() /
+ *                               workFindOrCreateByTitle() / workLinkSongRow() /
+ *                               workUnlinkSongRow()) — never a second inline INSERT/DELETE.
  *
  * tblSongRevisions NewData is the FULL hydrated record (ed2_buildSongSnapshot) —
  * the same shape load_song returns (minus media) — so a revision restores in full.
@@ -207,6 +344,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for songbook.import_completed (ONE summary event per import, dormant no-op) */
 /* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
    file's hand-rolled INSERT INTO tblNotifications, which was one of three
    drifting copies. */
@@ -272,6 +410,14 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+/* #1669 — songAltTitlesTableExists()/songAltTitlesList()/songAltTitleAdd()/
+   songAltTitleDelete()/songAltTitleIsRedundant() (includes/song_alt_titles.php):
+   the ONE tblSongAlternativeTitles write core (rule #22), mirroring
+   song_external_ids.php immediately above byte-for-byte in shape. The
+   song_alt_titles* cases below are its first UI write path — the table's
+   read half (SongData::_songAltTitlesMap(), the #832 search boost) has been
+   live for a while; only the ADD/DELETE side was missing. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_alt_titles.php';
 /* #1741 P5c — tuneFindOrCreateByName() (P4b's find-or-create funnel, the
    TuneName<->TuneId lockstep every write path here consumes, never re-forks
    — rule #22) + ihymns_meter_normalize() (this phase's addition, tune_search's
@@ -280,6 +426,42 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    tune_search AND ed2_applySongSnapshot()'s revision-restore all reach the one
    tune write core (ed2_songTuneApply()) from different points in this file. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1862 (epic #1863) — publisherSearchRows() / publisherResolvePickedOrCreate()
+   / publisherFindOrCreateByName() (#1864 cores, rule #22 — never re-forked):
+   the Copyright Holder picker's write core (ed2_songCopyrightHolderApply())
+   and its typeahead (publisher_search) both delegate here, mirroring the
+   tune_helpers.php require immediately above. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+/* #1900 Wave 4 C8 — songCopyrightHoldersTableExists() / …List() / …Replace():
+   the ONE tblSongCopyrightHolders read+write core (rule #22). On a migrated
+   install this is now the SOLE writer of the CopyrightHolder/CopyrightHolderId
+   denorm too (ed2_songCopyrightHolderApply() below delegates to it), so the
+   single-pick field and the multi-pick chip list can never diverge. Loaded at
+   module scope like publisher_helpers.php immediately above — every action
+   this file serves that might touch a song's copyright holders (the two new
+   song_copyright_holders* cases, PLUS song_copyright_holder_set and the
+   metadata_field_update CopyrightHolder alias, both further down) needs it. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_copyright_holders.php';
+/* #1862 — songMediaRecomputeFlags() (HasAudio/HasSheetMusic derivation,
+   consumed by the media_upload/media_delete hooks + the metadata_field_update
+   alias branch below) and pdRecomputeForSong() (public-domain suggestion
+   denorm, consumed by credit_upsert/credit_delete + save_song_core.php's
+   post-commit tail). Loaded at module scope like every other shared core on
+   this page — never a lazy per-branch require for a hook every relevant
+   action needs. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_flags.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+/* #1860 Phase 3 — workFindOrLinkByIdentifier() / workLinkPlan() / workAdminReady()
+   / workSlugify() / workExists() / workSnapshot() / workFindOrCreateByTitle() /
+   workLinkSongRow() / workUnlinkSongRow() — the ONE shared work-identity write
+   core (rule #22, mirrors the tune_helpers.php require immediately above).
+   Consumers below: work_search, song_work_autolink, song_work_set. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+/* #1860 go-live — ilidStampNewRow() for create_song / duplicate_song /
+   media_upload / the pending-duplicates songbook ensure below; work_admin.php
+   already pulls this in transitively, but every mint call site requires it
+   explicitly (rule #22 — never rely on an implicit transitive load). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -445,7 +627,10 @@ const ED2_META_FIELDS = [
 /* --------------------------------------------------------------- Helpers --- */
 
 /** App-maintained NormalizedTitle fold (best-effort; '' if the normalizer
- *  isn't loadable, matching the column's NOT NULL DEFAULT ''). */
+ *  isn't loadable, matching the column's NOT NULL DEFAULT ''). #1908 D6: capped
+ *  to the column width — NFKD can EXPAND a title (Hangul decomposes to 2-3
+ *  jamo per syllable), so an uncapped write of a long non-Latin title could
+ *  exceed VARCHAR(500) and throw under STRICT mysqli. */
 function ed2_normalizeTitle(string $t): string {
     static $loaded = null;
     if ($loaded === null) {
@@ -453,7 +638,8 @@ function ed2_normalizeTitle(string $t): string {
         $loaded = is_file($p);
         if ($loaded) { require_once $p; }
     }
-    return ($loaded && function_exists('ihymns_normalize_title')) ? ihymns_normalize_title($t) : '';
+    $folded = ($loaded && function_exists('ihymns_normalize_title')) ? ihymns_normalize_title($t) : '';
+    return mb_substr($folded, 0, 500);
 }
 
 /** Canonicalise a tag name — uses the SAME normalisation rules as the legacy
@@ -538,7 +724,12 @@ function ed2_ensurePendingSongbook(\mysqli $db): void {
     }
     $ins->bind_param('ss', $abbr, $name);
     $ins->execute();
+    $newSongbookId = (int)$db->insert_id;
     $ins->close();
+    /* #1860 go-live — mint this fixture songbook's permanent IL-id (ILB…);
+       autocommit here (no open transaction — see the comment above this
+       function's call site), which ilidStampNewRow() tolerates. */
+    ilidStampNewRow($db, 'songbook', $newSongbookId);
     $done = true;
 }
 
@@ -717,6 +908,54 @@ function ed2_tuneAliasesTableExists(\mysqli $db): bool {
 }
 
 /**
+ * Memoised probe: does `tblWorks` exist at all (#1860 Phase 3)? Deliberately
+ * NOT `workAdminReady()` (which also requires `tblWorks.Ccli` + `tblWorkSongs`
+ * and answers a different question — "is the WRITE core usable") — a
+ * pre-works-identity install still has plain `tblWorks` with `Iswc` only, and
+ * `work_search` should keep returning ISWC-based results on such an install
+ * rather than degrading to `tableMissing`. Same `static`-memoised idiom as
+ * `ed2_tuneAliasesTableExists()` immediately above.
+ */
+function ed2_worksTableExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * Memoised probe: does `tblWorks.Ccli` exist (the 'works-identity' card,
+ * #1741 P1)? `work_search` gates its `Ccli` SELECT fragment on this — the
+ * same boolean-gated-SQL-fragment shape `tune_search` uses for
+ * `tblTuneAliases` (rule #5 carve-out: the interpolated text is a hardcoded
+ * literal chosen by a boolean, never request input).
+ */
+function ed2_worksCcliColumnExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' AND COLUMN_NAME = 'Ccli' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
  * The ONE tblSongs tune write: TuneName + TuneId in lockstep (#1741 P5c,
  * parent plan §3B). Consumes `tuneFindOrCreateByName()` (P4b, rule #22 —
  * never a second lookup fork). `case 'song_tune_set'`, the `TuneName` alias
@@ -784,6 +1023,135 @@ function ed2_songTuneApply(\mysqli $db, string $songId, string $rawName): array 
     return ['tuneId' => $tuneId, 'tuneName' => $tuneName, 'slug' => $slug, 'meterCode' => $meterCode];
 }
 
+/**
+ * Memoised probe: does `tblSongs.CopyrightHolderId` exist on this install
+ * (#1864's dormant column, activated by #1862)? Same shape as
+ * `ed2_tuneIdColumnExists()` just above — a dedicated, self-contained probe
+ * rather than reaching into publisher_helpers.php for a generic one, since
+ * that file's own probes are about `tblPublishers` existing, not this
+ * specific `tblSongs` column.
+ */
+function ed2_copyrightHolderIdColPresent(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs' AND COLUMN_NAME = 'CopyrightHolderId' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * The ONE tblSongs copyright-holder write: CopyrightHolder + CopyrightHolderId
+ * in lockstep (#1862, activating the #1864 dormant column). Mirrors
+ * `ed2_songTuneApply()` immediately above — same shape, same reasoning:
+ * `case 'song_copyright_holder_set'` and the `CopyrightHolder` alias branch
+ * inside `metadata_field_update` both delegate here, so there is exactly ONE
+ * place in this editor a song's copyright holder can be written from.
+ *
+ * ELI5: a curator types (or picks) a publisher name; this finds or creates
+ * that publisher's registry row and writes BOTH the display name and the
+ * registry link onto the song in one go — the same TuneName/TuneId shape,
+ * applied to publishers.
+ *
+ * #1900 WAVE 4 C8 — SINGLE-WRITER UNIFICATION (A.7). On a MIGRATED install
+ * (`tblSongCopyrightHolders` exists), this function no longer writes
+ * `tblSongs.CopyrightHolder`/`CopyrightHolderId` itself — it hands the ONE
+ * curator-typed/picked name off to the multi-holder core
+ * (`songCopyrightHoldersReplace()`, includes/song_copyright_holders.php) as a
+ * single-row list `[{name, publisherId, role:'holder'}]` (or `[]` to clear).
+ * That core is now the SOLE writer of the denorm pair — it re-syncs
+ * `CopyrightHolder`/`CopyrightHolderId` to the FIRST-listed holder (rule #37)
+ * after every write, single-pick or multi-pick, so the two UI surfaces
+ * (this function's single text field, and metadata-tab.js's chip list
+ * calling `song_copyright_holders_set` directly) can never disagree about
+ * what the denorm mirror should hold. `$ownTransaction=false` is passed
+ * because EVERY caller of this function already holds an open transaction
+ * (+ its own `ed2_touchRevision()` snapshot) — the core borrows it and
+ * RE-THROWS on a write failure, so this function's own caller's `catch` rolls
+ * back the whole unit (see `songCopyrightHoldersReplace()`'s doc-block).
+ *
+ * On an UN-MIGRATED install (no `tblSongCopyrightHolders` yet), this keeps
+ * the pre-#1900 behaviour byte-for-byte: a direct `tblSongs` UPDATE, so a
+ * single-holder save never regresses on an install that has run the #1864
+ * `CopyrightHolderId` column migration but not yet the #1900
+ * `tblSongCopyrightHolders` one.
+ *
+ * DETAILED: empty/whitespace `$rawName` clears BOTH columns — a legal "no
+ * holder set", not an error (`CopyrightHolder` is `NOT NULL DEFAULT ''`, so
+ * it's set to `''`, never left NULL). A non-empty name is capped to 255
+ * chars (`tblSongs.CopyrightHolder` is VARCHAR(255) — the same cap
+ * `publisherResolvePickedOrCreate()`/`publisherFindOrCreateByName()` apply
+ * internally, belt-and-braces). `$claimedId` is TRUSTED-BUT-VERIFIED —
+ * `publisherResolvePickedOrCreate()` on the un-migrated path, or the core's
+ * own equivalent resolution on the migrated path — never a raw
+ * client-supplied id written unverified (rule #43's find-or-create
+ * contract). When `tblSongs.CopyrightHolderId` doesn't exist yet (pre-#1864
+ * install), the un-migrated branch degrades to a CopyrightHolder-only
+ * UPDATE — safe ONLY because there is then no id column to strand (the
+ * works.php / ed2_songTuneApply() asymmetry, restated for publishers).
+ *
+ * @param \mysqli  $db
+ * @param string   $songId
+ * @param string   $rawName   Curator-typed or picked holder name, any whitespace.
+ * @param ?int     $claimedId The picker's claimed `tblPublishers.Id`, or null
+ *                            when nothing was picked (free-typed / cleared).
+ * @param ?int     $userId    The signed-in curator (`$ed2UserId`) — threaded
+ *                            through to `songCopyrightHoldersReplace()`'s own
+ *                            reserved `$userId` param (rule #44 — not read by
+ *                            anything yet, but this call site is where a
+ *                            future audit-log wiring would need it, so the
+ *                            plumbing goes in now rather than as a second
+ *                            signature change later).
+ * @return array{holderName: string, publisherId: ?int}
+ * @link appWeb/public_html/includes/publisher_helpers.php        publisherResolvePickedOrCreate() (un-migrated path)
+ * @link appWeb/public_html/includes/song_copyright_holders.php   songCopyrightHoldersReplace() (migrated path, THE single writer)
+ * @link appWeb/public_html/manage/works.php:294-360               the sibling Work-side lockstep this mirrors
+ */
+function ed2_songCopyrightHolderApply(\mysqli $db, string $songId, string $rawName, ?int $claimedId, ?int $userId = null): array {
+    $name = trim($rawName);
+    if ($name !== '') { $name = mb_substr($name, 0, 255); }
+
+    /* MIGRATED install — the #1900 multi-holder core is the ONE denorm
+       writer (A.7). A single-holder set collapses to exactly this one row
+       (or an empty list, to clear); the core resolves + re-syncs the denorm
+       from its OWN read-back, so we must not also write CopyrightHolder/
+       CopyrightHolderId here — that would be a second writer, the exact
+       drift rule #37 exists to forbid. */
+    if (function_exists('songCopyrightHoldersTableExists') && songCopyrightHoldersTableExists($db)) {
+        $rows  = $name === '' ? [] : [['name' => $name, 'publisherId' => $claimedId, 'role' => 'holder']];
+        $res   = songCopyrightHoldersReplace($db, $songId, $rows, $userId, false);
+        $first = $res['holders'][0] ?? null;
+        return [
+            'holderName'  => (string)($first['name'] ?? ''),
+            'publisherId' => $first['publisherId'] ?? null,
+        ];
+    }
+
+    /* UN-MIGRATED install — the pre-#1900 direct denorm UPDATE, unchanged. */
+    if (ed2_copyrightHolderIdColPresent($db)) {
+        $publisherId = $name === '' ? null : publisherResolvePickedOrCreate($db, $name, $claimedId);
+        $u = $db->prepare('UPDATE tblSongs SET CopyrightHolder = ?, CopyrightHolderId = ? WHERE SongId = ?');
+        $u->bind_param('sis', $name, $publisherId, $songId);
+        $u->execute();
+        $u->close();
+    } else {
+        $publisherId = null;
+        $u = $db->prepare('UPDATE tblSongs SET CopyrightHolder = ? WHERE SongId = ?');
+        $u->bind_param('ss', $name, $songId);
+        $u->execute();
+        $u->close();
+    }
+
+    return ['holderName' => $name, 'publisherId' => $publisherId];
+}
+
 /** Shape a tblSongMedia row for the v2 client (camelCase, like the other slices).
  *  NEVER returns the file bytes — playback is via the gated /song-media/<id>
  *  stream route (#853), the only way to the content. */
@@ -808,6 +1176,24 @@ function ed2_bulkJobsTableExists(\mysqli $db): bool {
     if ($exists !== null) { return $exists; }
     try {
         $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblBulkImportJobs' LIMIT 1");
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/** Memoised probe: does tblBulkImportJobs.DryRun exist (#1911 — ZIP dry-run
+ *  preview, migrate-bulk-import-dryrun.php)? Column-existence-gated so an
+ *  un-migrated install keeps the honest pre-#1911 422 refusal (rule #33)
+ *  instead of a silently-ignored flag or a STRICT-mode throw the moment the
+ *  status poll's SELECT tries to read a column that isn't there. */
+function ed2_bulkJobsDryRunColumnExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblBulkImportJobs' AND COLUMN_NAME = 'DryRun' LIMIT 1");
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
@@ -970,6 +1356,31 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
     $u->bind_param('ss', $text, $songId);
     $u->execute();
     $u->close();
+
+    /* #1039 Part A — keep the diacritic-folded search mirror in lockstep with
+       the LyricsText we just rebuilt (and repair NormalizedTitle). The rebuild
+       only has $songId, so read back the CURRENT Title for the fold; every v2
+       title change funnels through its own NormalizedTitle write, so this
+       Title is authoritative at this instant. Dormant + fail-open no-op on an
+       un-migrated install. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+    /* Gated so an un-migrated install does the ONE memoised readiness probe and
+       nothing more — no extra Title read-back until the feature is live. */
+    if (searchFoldReady($db)) {
+        /* @deleted-visible: editor LyricsText rebuild (#1039) — this runs after a
+           component mutation on the song the curator is actively editing; a
+           soft-deleted song under review is still edited (restore-first), so its
+           fold mirror must be kept current too.
+           @disabled-visible: same reasoning, one predicate over (#1765) — a song in
+           a publicly-disabled book is still edited in the admin editor; this is a
+           write-support read-back of the CURRENT Title, not a public read. */
+        $ts = $db->prepare('SELECT Title FROM tblSongs WHERE SongId = ?');
+        $ts->bind_param('s', $songId);
+        $ts->execute();
+        $trow = $ts->get_result()->fetch_row();
+        $ts->close();
+        searchFoldSyncSong($db, $songId, $trow ? (string)$trow[0] : '', $text);
+    }
 }
 
 /**
@@ -1001,10 +1412,15 @@ function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?
 
 /**
  * #1235 P4/C5 — a song's components in the editor shape
- * ({id,type,number,sortOrder,lines,chords,language,languages}), drop-safely. The ONE
- * read for the v2 mutators' read-modify-write + ed2_buildSongSnapshot. Sourced from the
- * authoritative tblLyricLines (assembler) when the mirror exists; the legacy LinesJson
- * read is the un-migrated-install fallback only.
+ * ({id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}),
+ * drop-safely. The ONE read for the v2 mutators' read-modify-write +
+ * ed2_buildSongSnapshot. Sourced from the authoritative tblLyricLines (assembler)
+ * when the mirror exists; the legacy LinesJson read is the un-migrated-install
+ * fallback only. Since #1860 Phase 5 (SD4), the fallback branch ALSO reads
+ * Label/SourceWorkId (gated per-column, mirroring the LanguagesJson `$langCol`
+ * treatment) — without this, an install with the Label column but no
+ * tblLyricLines mirror yet would silently no-op the Structure-tab Label input
+ * (rule #30's silent-partial class).
  *
  * @return list<array<string,mixed>>
  */
@@ -1014,14 +1430,22 @@ function ed2_currentComponents(\mysqli $db, string $songId): array {
         return lyricLinesEditableComponents($db, $songId);
     }
     /* lines-json-fallback (#1235 P4): un-migrated install — LanguagesJson optional
-       (hardcoded column name, never input — rule #5). */
+       (hardcoded column name, never input — rule #5). #1860 Phase 5 §2.4 (SD4):
+       Label/SourceWorkId are gated the SAME way, independently of each other and
+       of LanguagesJson. */
     $out = [];
-    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
-    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
+    $langCol    = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
+    $extras     = lyricLinesComponentExtrasPresent($db);
+    $labelCol   = $extras['Label'] ? 'Label' : 'NULL AS Label';
+    $srcWorkCol = $extras['SourceWorkId'] ? 'SourceWorkId' : 'NULL AS SourceWorkId';
+    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}, {$labelCol}, {$srcWorkCol}
                           FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
     $cs->bind_param('s', $songId);
     $cs->execute();
     $cr = $cs->get_result();
+    /* lines-json-fallback (#1235 P4) continued from above — LinesJson/ChordsJson/
+       LanguagesJson here are the SAME column-existence-gated un-migrated-install
+       read the doc-block + $langCol above describe. */
     while ($row = $cr->fetch_assoc()) {
         $out[] = [
             'id'        => (int)$row['Id'],
@@ -1032,6 +1456,8 @@ function ed2_currentComponents(\mysqli $db, string $songId): array {
             'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
             'language'  => $row['Language'],
             'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
+            'label'        => ($row['Label'] !== null && $row['Label'] !== '') ? (string)$row['Label'] : null,
+            'sourceWorkId' => $row['SourceWorkId'] !== null ? (int)$row['SourceWorkId'] : null,
         ];
     }
     $cs->close();
@@ -1061,7 +1487,27 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
         $del->bind_param('s', $songId);
         $del->execute();
         $del->close();
-        $ins = $db->prepare('INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        /* #1860 Phase 5 §3.5 (SD4) — Label/SourceWorkId are appended to the legacy
+           INSERT ONLY when each column exists (the ONE shared probe, rule #35),
+           independently of the tblLyricLines mirror itself: an install can have run
+           the Label/SourceWorkId migration cards without yet running the mirror
+           migration, and this branch is exactly what runs there. Without this gate,
+           an install with the column but still on the legacy write path would
+           silently drop every Label/SourceWorkId write (rule #30's silent-partial
+           class) — the very install SD4 exists to protect. */
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras     = lyricLinesComponentExtrasPresent($db);
+        $extraCols  = [];
+        $extraTypes = '';
+        if ($extras['Label'])        { $extraCols[] = 'Label';        $extraTypes .= 's'; }
+        if ($extras['SourceWorkId']) { $extraCols[] = 'SourceWorkId'; $extraTypes .= 'i'; }
+        /* lines-json-fallback (#1235 P4) continued from above — LinesJson/
+           ChordsJson below are the SAME un-migrated-install columns named in
+           this branch's opening comment. */
+        $insCols  = array_merge(['SongId', 'Type', 'Number', 'SortOrder', 'LinesJson', 'ChordsJson', 'Language'], $extraCols);
+        $insPlace = implode(',', array_fill(0, count($insCols), '?'));
+        $insTypes = 'ssiisss' . $extraTypes;
+        $ins = $db->prepare('INSERT INTO tblSongComponents (' . implode(',', $insCols) . ") VALUES ({$insPlace})");
         foreach ($components as $i => $comp) {
             $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
             $number    = max(0, (int)($comp['number'] ?? 0));
@@ -1070,7 +1516,16 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
             $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
             $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
             $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
-            $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
+            $vals = [$songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language];
+            if ($extras['Label']) {
+                $vals[] = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                    ? mb_substr(trim((string)$comp['label']), 0, 100)
+                    : null;
+            }
+            if ($extras['SourceWorkId']) {
+                $vals[] = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0) ? (int)$comp['sourceWorkId'] : null;
+            }
+            $ins->bind_param($insTypes, ...$vals);
             $ins->execute();
             ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
         }
@@ -1080,11 +1535,110 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
 }
 
 /**
+ * #1860 Phase 5 Commit 9 (D6, design §3.7 items 1-3) — a song's Work
+ * membership(s) in the LEAN shape Editor2's "Part of work" line needs:
+ * {id,title,slug,iswc,isCanonical,songCount,constituents}. Deliberately NOT
+ * `SongData::_worksMap()`'s heavier public-page shape (sibling members +
+ * work-level external links, `SongData.php:5650`) — this consumer only ever
+ * renders the badge text + a read-only "Medley of: A, B, C" line, never the
+ * member list, so pulling that extra data here would be dead weight on
+ * every editor load. `songCount` mirrors `work_search`'s `UsageCount`
+ * (`:3612` above) — a live count of every song the Work is linked to, not
+ * just "1" for the row just fetched.
+ *
+ * ELI5: "which Work(s), if any, does this song belong to, and what does
+ * each contain if it's a medley?" — just enough to draw one line per Work.
+ *
+ * Gated on `ed2_worksTableExists()` (mirrors `SongData::_hasWorksSchema()`'s
+ * bare-`tblWorks`-existence probe, `SongData.php:5406`) — `tblWorkSongs` is
+ * created BY THE SAME "works" migration card as `tblWorks`
+ * (`work_admin.php`'s `workAdminReady()` doc-block), so the one probe is
+ * enough to guarantee the JOIN below won't throw under STRICT on an
+ * un-migrated install; `[]` there, same as `_worksMap()`. Constituents are
+ * attached via the SHARED bulk `workMedleyConstituentsMap()` core the
+ * public song page (Commit 7) and `/manage/works` (Commit 6) both use
+ * (rule #22 — never a second inline medley query), itself gated on
+ * `workMedleyReady()` (a SEPARATE migration card from `tblWorks`/
+ * `tblWorkSongs` — an install can have one without the other).
+ *
+ * @return list<array{id:int,title:string,slug:string,iswc:?string,
+ *                     isCanonical:bool,songCount:int,
+ *                     constituents:list<array{id:int,title:string,slug:string,sortOrder:int}>}>
+ */
+function ed2_songWorksLean(\mysqli $db, string $songId): array {
+    if (!ed2_worksTableExists($db)) { return []; }
+
+    $wq = $db->prepare(
+        'SELECT w.Id AS Id, w.Title AS Title, w.Slug AS Slug, w.Iswc AS Iswc,
+                ws.IsCanonical AS IsCanonical,
+                (SELECT COUNT(*) FROM tblWorkSongs ws2 WHERE ws2.WorkId = w.Id) AS SongCount
+           FROM tblWorkSongs ws
+           JOIN tblWorks w ON w.Id = ws.WorkId
+          WHERE ws.SongId = ?
+          ORDER BY w.Title ASC'
+    );
+    $wq->bind_param('s', $songId);
+    $wq->execute();
+    $wr = $wq->get_result();
+    $works   = [];   // Id -> shaped row, so step 2 below can key back in by id
+    $workIds = [];
+    while ($row = $wr->fetch_assoc()) {
+        $wid = (int)$row['Id'];
+        $workIds[] = $wid;
+        $works[$wid] = [
+            'id'           => $wid,
+            'title'        => (string)$row['Title'],
+            'slug'         => (string)$row['Slug'],
+            'iswc'         => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+            'isCanonical'  => (bool)$row['IsCanonical'],
+            'songCount'    => (int)$row['SongCount'],
+            'constituents' => [],
+        ];
+    }
+    $wq->close();
+    if (!$works) { return []; }
+
+    /* Step 2 — medley constituents, batched across every Work surfaced above
+       in ONE query (the same N+1-avoidance the bulk map's own doc-block
+       names, `work_admin.php:1230-1236`). A medley id with no constituent
+       rows is simply absent from the map — `?? []` below leaves that
+       Work's `constituents` at the [] it was seeded with. */
+    if (workMedleyReady($db)) {
+        $constMap = workMedleyConstituentsMap($db, $workIds);
+        foreach ($constMap as $mid => $list) {
+            if (!isset($works[$mid])) { continue; }
+            $works[$mid]['constituents'] = array_map(static fn(array $c): array => [
+                'id'        => $c['workId'],
+                'title'     => $c['title'],
+                'slug'      => $c['slug'],
+                'sortOrder' => $c['sortOrder'],
+            ], $list);
+        }
+    }
+
+    return array_values($works);
+}
+
+/**
  * Build the full editable song record — { song, components, credits, tags, links }
  * — in the SAME shapes load_song returns (minus media, which is a separate file
  * lifecycle). The single source for BOTH the load_song hydration and the
  * tblSongRevisions snapshot, so a restored snapshot re-hydrates the editor
  * identically. Returns null if the song is gone.
+ *
+ * `$song['works']` (#1860 Phase 5 Commit 9) mirrors `SongData::getSongById()`'s
+ * OWN exact attach convention (`$row['works'] = $worksMap[$songId] ?? [];`,
+ * `SongData.php:4442-4443`) rather than a new sibling top-level snapshot key —
+ * so `store.set('song', data.song)` (editor2.php's existing `loadSong()`,
+ * unchanged) already carries it to the client with no new store wiring, and
+ * metadata-tab.js's existing `store.subscribe('song', render)` already
+ * re-renders on it. RESTORE-SAFETY: `ed2_applySongSnapshot()` below writes
+ * `tblSongs` scalars ONLY for the columns named in `ED2_META_FIELDS`
+ * (`:464-` above) via `array_key_exists($column, $songRow)` per named
+ * column — 'works' is not, and never will be, one of those keys, so this
+ * extra array on `$songRow` is silently ignored on every restore/duplicate
+ * path (`ed2_applySongSnapshot()`, `duplicate_song`) exactly like the
+ * un-plumbed `IsDeleted`/every other non-ED2_META_FIELDS column already is.
  */
 function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     /* @deleted-visible: editor load + revision snapshot (#1694) — a curator
@@ -1104,6 +1658,12 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     /* #1235 P4/C5 — components in the editor/snapshot shape from the AUTHORITATIVE
        tblLyricLines (drop-safe), so the revision NewData + v2 load are line-sourced. */
     $components = ed2_currentComponents($db, $songId);
+
+    /* #1860 Phase 5 Commit 9 (D6) — this song's Work membership(s), read-only
+       in Editor2's "Part of work" line. See ed2_songWorksLean()'s doc-block
+       for the shape + gating; see THIS function's own doc-block for why it
+       is attached onto $song rather than as a new sibling snapshot key. */
+    $song['works'] = ed2_songWorksLean($db, $songId);
 
     $credits = [];
     $creditNames = [];   // distinct names credited on this song, any role
@@ -1427,6 +1987,25 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
  * (used for restores, which must always land in the audit trail). Best-effort —
  * a revision failure never breaks the edit; the precise per-edit trail lives in
  * tblActivityLog via logActivity().
+ *
+ * ELI5: every time we save a snapshot of the song, we now also remember what the
+ * PREVIOUS snapshot looked like, so "undo" has something real to go back to.
+ *
+ * DETAILED — #1743 THE CHAIN RULE: revision N's PreviousData := revision N-1's
+ * NewData, copied verbatim, in WHATEVER shape that prior row's NewData happens to
+ * be stored in (editor-payload lowercase-keys, the v2 full-snapshot {song:{...}},
+ * or a bare tblSongs-row — see api.php's restore_revision, #1743-C3, for the
+ * consumer that tolerates all three). This function never inspects or reshapes
+ * the prior value — it is a pure "what came immediately before" pointer, one link
+ * in the chain. Because this function COALESCES writes into ~15s bursts (the
+ * check just above), "the previous revision's NewData" is not literally the
+ * state one keystroke ago — it IS the last state that was actually audited, i.e.
+ * the correct pre-state at the audit trail's own granularity. A song that has no
+ * prior row in tblSongRevisions yet (legacy data saved before the revision table
+ * existed, or this song's genuine first save) legitimately keeps PreviousData
+ * NULL — there is nothing before it to chain to, and that NULL is itself
+ * meaningful downstream (api.php's restore_revision reads a NULL PreviousData as
+ * "this is the initial create, there is nothing to restore back to").
  */
 function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $actionTag, bool $force = false): void {
     try {
@@ -1443,14 +2022,31 @@ function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $ac
             if ($recent) { return; }
         }
 
+        /* #1743 — chain PreviousData from the immediately preceding revision row's
+           NewData (verbatim, whatever shape it is stored in — see the doc-block
+           above). NULL when there is no prior row for this song at all, OR when
+           the prior row's own NewData was itself NULL (fetch_row() returning a
+           row whose single column is null already collapses to that). */
+        $prev = $db->prepare(
+            'SELECT NewData FROM tblSongRevisions
+              WHERE SongId = ?
+              ORDER BY Id DESC
+              LIMIT 1'
+        );
+        $prev->bind_param('s', $songId);
+        $prev->execute();
+        $prevRow = $prev->get_result()->fetch_row();
+        $prev->close();
+        $previousData = $prevRow !== null ? $prevRow[0] : null;
+
         $snapshot = ed2_buildSongSnapshot($db, $songId);
         $newData  = $snapshot !== null ? json_encode($snapshot, JSON_UNESCAPED_UNICODE) : null;
 
         $rev = $db->prepare(
             'INSERT INTO tblSongRevisions (SongId, UserId, Action, PreviousData, NewData, Status)
-             VALUES (?, ?, ?, NULL, ?, "approved")'
+             VALUES (?, ?, ?, ?, ?, "approved")'
         );
-        $rev->bind_param('siss', $songId, $userId, $actionTag, $newData);
+        $rev->bind_param('sisss', $songId, $userId, $actionTag, $previousData, $newData);
         $rev->execute();
         $rev->close();
     } catch (\Throwable $_e) {
@@ -1569,6 +2165,8 @@ try {
             }
             $ins->execute();
             $ins->close();
+            /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
+            ilidStampNewRow($db, 'song', $songId, 'SongId');
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
             $db->commit();
         } catch (\Throwable $e) {
@@ -1653,6 +2251,9 @@ try {
             }
             $ins->execute();
             $ins->close();
+            /* #1860 go-live — mint the duplicate's OWN permanent IL-id (ILS…),
+               never copied from the source (a duplicate is a distinct row). */
+            ilidStampNewRow($db, 'song', $newId, 'SongId');
 
             /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
                flags reset above), components + lyric lines + per-line chords,
@@ -1820,6 +2421,32 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1860 go-live — Works auto-link for the duplicate's OWN row.
+           Post-commit (ownTransaction=true — the duplicate itself is
+           already safely committed above); re-READ the stored Ccli/Iswc
+           rather than trusting $snap (rule #35's read-back posture — the
+           snapshot is the INPUT to ed2_applySongSnapshot(), not proof of
+           what actually landed). Linking the duplicate to the SAME work as
+           its source is correct — two renderings of one work.
+           @deleted-visible: identifier read (#1860) — $newId is the row this
+           very request just inserted and committed above; it cannot be
+           soft-deleted, but the read is by direct SongId (editor-write-path
+           posture), not a listing, so no filter is needed either way.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in the hidden staging book is still fully editable here. */
+        $dupIdStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $dupIdStmt->bind_param('s', $newId);
+        $dupIdStmt->execute();
+        $dupIdRow = $dupIdStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $dupIdStmt->close();
+        workAutolinkSafe($db, $newId, (string)($dupIdRow['Ccli'] ?? ''), (string)($dupIdRow['Iswc'] ?? ''), true);
+
+        /* #1862 — the snapshot copy above (ed2_applySongSnapshot()) carried
+           the source's full credit set onto $newId; the duplicate could
+           already qualify for a PD suggestion the instant it exists.
+           Post-commit, own failure boundary. */
+        pdRecomputeForSong($db, $newId);
 
         /* Post-commit, best-effort (parity with create_song, #1742). */
         try { songbookRecomputeSongCount($db, $pendingAbbr); }
@@ -2013,6 +2640,54 @@ try {
             ed2_respond(['ok' => true, 'field' => 'tuneName', 'tuneId' => $tuneResult['tuneId']]);
         }
 
+        /* ---- #1862 — COPYRIGHT HOLDER is not a generic scalar update either ----
+           Writing CopyrightHolder through the generic coercion + UPDATE below
+           would leave CopyrightHolderId stranded — the exact TuneId-stranding
+           drift class rule #33 names. `copyrightHolder` stays a valid
+           wire-contract KEY (a stale Service-Worker-cached metadata-tab.js may
+           still send the OLD plain field) but is now an ALIAS into the SAME
+           shared lockstep core `song_copyright_holder_set` uses
+           (`ed2_songCopyrightHolderApply()`), never the bare column write.
+           Mirrors the TuneName branch immediately above in shape — but never a
+           picker-claimed publisherId here: a stale client sending this KEY
+           never carried one, so this always resolves via the name-only
+           find-or-create funnel (ed2_songCopyrightHolderApply()'s own
+           $claimedId=null path — a genuine picker pick goes through
+           song_copyright_holder_set instead, which DOES carry the claimed id). */
+        if ($column === 'CopyrightHolder') {
+            $db->begin_transaction();
+            try {
+                $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)($raw ?? ''), null, $ed2UserId);
+                ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.metadata', 'song', $songId, ['field' => $field, 'publisherId' => $holderResult['publisherId']]);
+            ed2_respond(['ok' => true, 'field' => 'copyrightHolder', 'value' => $holderResult['holderName'], 'publisherId' => $holderResult['publisherId']]);
+        }
+
+        /* ---- #1862 — HasAudio / HasSheetMusic are DERIVED, never curator-set --
+           The manual checkboxes were removed from the Editor2 client (rule #44
+           — a value the app can already derive gets no editable control), but
+           the two keys STAY in ED2_META_FIELDS (rule #33 — a stale cached
+           client may still send one). This branch IGNORES whatever value the
+           client sent, recomputes the honest UNION
+           (songMediaRecomputeFlags(), includes/song_media_flags.php) and
+           echoes the DERIVED truth back — so a stale checkbox click "saves"
+           nothing but a snap-back to reality, never a lie the client typed. */
+        if ($column === 'HasAudio' || $column === 'HasSheetMusic') {
+            songMediaRecomputeFlags($db, $songId);
+            /* Column name comes from the ED2_META_FIELDS constant only. */
+            $derived = $db->prepare("SELECT `{$column}` FROM tblSongs WHERE SongId = ? LIMIT 1");
+            $derived->bind_param('s', $songId);
+            $derived->execute();
+            $derivedRow = $derived->get_result()->fetch_assoc() ?: [$column => 0];
+            $derived->close();
+            ed2_respond(['ok' => true, 'field' => $field, 'value' => (int)$derivedRow[$column]]);
+        }
+
         /* ---- #1769 P4 — RIGHTS FACTS are not a generic scalar update -------
            A per-song rights key must be either cleared ('' → NULL) or a licence
            key that EXISTS in the live registry — never arbitrary free text (the
@@ -2154,6 +2829,39 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1860 go-live — a committed CCLI/ISWC write re-runs the work
+           auto-link server-side (fail-safe, own txn, additive response
+           key). Without this hook go-live would only cover the legacy
+           whole-song save; Editor2 saves these fields per-field via THIS
+           action, so its songs would stay unlinked until the Phase-5 client
+           badge ships (rule #35 — the invariant must not depend on future
+           client wiring). The Phase-5 badge will call song_work_autolink
+           for the same result; both routes hit the ONE core
+           (workAutolinkSafe -> workFindOrLinkByIdentifier) so they cannot
+           diverge. own-transaction mode (true): THIS field's own txn is
+           already committed above, so a swallowed link failure here still
+           leaves the field save fully intact. */
+        $workAutolink = null;
+        if ($column === 'Ccli' || $column === 'Iswc') {
+            /* @deleted-visible / @disabled-visible: identifier read (#1860)
+               — the exact SELECT song_work_autolink uses (this action has
+               already confirmed the song exists, via ed2_songExists() near
+               the top of this case), same editor-write-path posture. */
+            $idStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $idStmt->bind_param('s', $songId);
+            $idStmt->execute();
+            $idRow = $idStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+            $idStmt->close();
+            $workAutolink = workAutolinkSafe(
+                $db,
+                $songId,
+                (string)($idRow['Ccli'] ?? ''),
+                (string)($idRow['Iswc'] ?? ''),
+                true
+            );
+        }
+
         logActivity('song.metadata', 'song', $songId, ['field' => $field]);
         /* #1749 — for field=isrc, echo the STORE's projected value (never
            the caller's raw $value): a clear-with-manual promotion (§2.1) is
@@ -2162,7 +2870,8 @@ try {
            OTHER field, so `?? $value` degrades to exactly the pre-#1749
            echo — additive-only, no response-shape change for non-isrc
            fields. */
-        ed2_respond(['ok' => true, 'field' => $field, 'value' => $isrcFinal ?? $value]);
+        ed2_respond(['ok' => true, 'field' => $field, 'value' => $isrcFinal ?? $value]
+            + ($workAutolink !== null ? ['workAutolink' => $workAutolink] : []));
         break;
     }
 
@@ -2200,6 +2909,295 @@ try {
         break;
     }
 
+    /* ---- song_copyright_holder_set (POST) — the ONE copyright-holder write
+           (#1862, activating the #1864 dormant tblSongs.CopyrightHolderId).
+           Same shared core (ed2_songCopyrightHolderApply()) the
+           `CopyrightHolder` alias branch inside metadata_field_update
+           delegates to — mirrors song_tune_set immediately above in every
+           respect: `name` MAY be '' (a legal clear), `publisherId` is the
+           picker's CLAIMED id (trust-but-verify inside the write core —
+           never written unverified), and the existence gate 409s on the
+           SAME #1741 P1 identity-column presence map CopyrightHolder
+           already uses (ed2_songIdentityColsPresent(), so this endpoint
+           can't 500 under STRICT on an un-migrated install). ---- */
+    case 'song_copyright_holder_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '' || !array_key_exists('name', $body)) {
+            ed2_respond(['ok' => false, 'error' => 'songId + name (may be empty, to clear) are required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        $ed2IdentityPresence = ed2_songIdentityColsPresent($db);
+        if (!$ed2IdentityPresence['CopyrightHolder']) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the song-identity-fields migration card yet (run it at /manage/setup-database).'], 409);
+        }
+        $claimedId = isset($body['publisherId']) && $body['publisherId'] !== null && $body['publisherId'] !== ''
+            ? (int)$body['publisherId'] : null;
+
+        $db->begin_transaction();
+        try {
+            $holderResult = ed2_songCopyrightHolderApply($db, $songId, (string)$body['name'], $claimedId, $ed2UserId);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.metadata', 'song', $songId, ['field' => 'copyrightHolder', 'publisherId' => $holderResult['publisherId']]);
+        ed2_respond([
+            'ok'          => true,
+            'field'       => 'copyrightHolder',
+            'holderName'  => $holderResult['holderName'],
+            'publisherId' => $holderResult['publisherId'],
+        ]);
+        break;
+    }
+
+    /* ---- song_copyright_holders (GET) — the ordered multi-holder list
+           (#1900 Wave 4 C8). Read counterpart of song_copyright_holders_set
+           immediately below; delegates entirely to the ONE #1900 core
+           (songCopyrightHoldersList(), includes/song_copyright_holders.php)
+           — no local SQL. 409 (never an empty-list 200) on an un-migrated
+           install, the SAME honest-409 posture song_copyright_holder_set
+           above already uses for its OWN (different) migration gate — this
+           is a DIFFERENT table (tblSongCopyrightHolders) from that
+           endpoint's song-identity-fields column check, so it needs its own
+           presence probe. metadata-tab.js's chip list feature-detects by
+           THIS status (err.status === 409), never by the error sentence
+           (rule #35). ---- */
+    case 'song_copyright_holders': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!songCopyrightHoldersTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the multi-holder-copyright migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        ed2_respond(['ok' => true, 'holders' => songCopyrightHoldersList($db, $songId)]);
+        break;
+    }
+
+    /* ---- song_copyright_holders_set (POST) — replace the FULL ordered
+           holder list (#1900 Wave 4 C8). The multi-pick sibling of
+           song_copyright_holder_set above: that endpoint (and
+           metadata_field_update's CopyrightHolder alias branch) write ONE
+           holder through ed2_songCopyrightHolderApply(), which — on a
+           migrated install — now itself delegates to the SAME core this
+           case calls directly (songCopyrightHoldersReplace()), so there is
+           exactly ONE write path into tblSongCopyrightHolders + the
+           tblSongs denorm mirror regardless of which UI surface (the
+           single field or the chip list) a curator used (rule #22/#35 — no
+           second resolve/write path). `$ownTransaction=false` — THIS case
+           owns the transaction (+ the revision touch); the core borrows it
+           and RE-THROWS on a write failure, so the catch below rolls back
+           both the holder rows and the (not-yet-taken) revision snapshot
+           together, never one without the other. A `bad_role` rejection is
+           422 (a curator/client mistake — an unknown role string), never
+           500; the response always carries the machine-readable `reason`
+           so the client branches on THAT, not on prose. ---- */
+    case 'song_copyright_holders_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!songCopyrightHoldersTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the multi-holder-copyright migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* Defensive shape coercion — never trust the client's array
+           structure blindly. A non-array entry is dropped outright; the
+           core's own normalisation pass (_songCopyHolders_normalizeRows())
+           handles de-dup/ordering once these are shape-safe. `publisherId`
+           uses the SAME `!== null && !== ''` guard song_copyright_holder_set
+           above uses for its single `publisherId`. */
+        $rawHolders = is_array($body['holders'] ?? null) ? $body['holders'] : [];
+        $rows = [];
+        foreach ($rawHolders as $h) {
+            if (!is_array($h)) { continue; }
+            $rows[] = [
+                'name'        => isset($h['name']) ? (string)$h['name'] : '',
+                'publisherId' => isset($h['publisherId']) && $h['publisherId'] !== null && $h['publisherId'] !== ''
+                               ? (int)$h['publisherId'] : null,
+                'role'        => isset($h['role']) ? (string)$h['role'] : 'holder',
+            ];
+        }
+
+        $db->begin_transaction();
+        try {
+            $res = songCopyrightHoldersReplace($db, $songId, $rows, $ed2UserId, false);
+            if (!$res['ok']) {
+                /* A validation rejection (bad_role) — nothing was written.
+                   Roll back (no-op for the DB, but keeps this path
+                   symmetrical with the exception path below) and respond
+                   WITHOUT falling through to ed2_touchRevision()/commit() —
+                   rule #35: never 200 a failed write. */
+                $db->rollback();
+                ed2_respond(
+                    ['ok' => false, 'error' => 'Could not save copyright holders.', 'reason' => $res['reason'], 'holders' => $res['holders']],
+                    $res['reason'] === 'bad_role' ? 422 : 500
+                );
+            }
+            ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.metadata', 'song', $songId, ['field' => 'copyrightHolders', 'count' => count($res['holders'])]);
+        ed2_respond(['ok' => true, 'field' => 'copyrightHolders', 'holders' => $res['holders']]);
+        break;
+    }
+
+    /* ---- song_work_autolink (POST) — Editor2's post-save CCLI/ISWC commit
+           hook (#1860 Phase 3, design §3.3/§3.7; the client wiring itself is
+           a FOLLOW-UP build — this endpoint exists now so that build has a
+           contract to code against). Server-authoritative: reads the song's
+           STORED Ccli/Iswc from tblSongs, never a client-sent identifier
+           value (rule #35's read-back posture) — the request carries only
+           songId. A work-link CONFLICT is a field on the 200 body, never an
+           HTTP failure (design §3.3 preamble — a work-link ambiguity must
+           never cost a curator their song save). No ed2_touchRevision() —
+           work membership sits outside the content snapshot, the same
+           posture as tblSongLinks / song_external_id_add above. ---- */
+    case 'song_work_autolink': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!workAdminReady($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the work-identity migration cards yet (run them at /manage/setup-database).'], 409);
+        }
+
+        /* @deleted-visible: identifier read (#1860) — ed2_songExists() just
+           above already confirmed this SongId exists (deliberately visible
+           to a soft-deleted row, by that function's own reasoning); reading
+           its CCLI/ISWC to plan a work link is the same editor-write-path
+           posture, never a public listing.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in a publicly-disabled book is still fully editable here. */
+        $idStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $idStmt->bind_param('s', $songId);
+        $idStmt->execute();
+        $idRow = $idStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $idStmt->close();
+
+        $db->begin_transaction();
+        try {
+            $result = workFindOrLinkByIdentifier(
+                $db,
+                $songId,
+                (string)($idRow['Ccli'] ?? ''),
+                (string)($idRow['Iswc'] ?? '')
+            );
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.work_autolink', 'song', $songId, [
+            'workId'   => $result['workId'],
+            'created'  => $result['created'],
+            'rehomed'  => $result['rehomed'],
+            'conflict' => $result['conflict'],
+        ]);
+        ed2_respond([
+            'ok'            => true,
+            'linked'        => $result['linked'],
+            'workId'        => $result['workId'],
+            'workTitle'     => $result['workTitle'],
+            'workSlug'      => $result['workSlug'],
+            'songCount'     => $result['songCount'],
+            'created'       => $result['created'],
+            'createdParent' => $result['createdParent'],
+            'rehomed'       => $result['rehomed'],
+            'refined'       => $result['refined'],
+            'conflict'      => $result['conflict'],
+            'iswcInvalid'   => $result['iswcInvalid'],
+        ]);
+        break;
+    }
+
+    /* ---- song_work_set (POST) — manual "Part of work" picker (#1860 Phase
+           3, design §3.7.2). Exactly one mode per request: link to an
+           existing work ({songId, workId}), find-or-create by title for
+           identifier-less hymns ({songId, title}), or unlink ({songId,
+           workId, unlink:true} — the ONLY manual-unlink surface, §3.3.1
+           reserves unlink to humans). No ed2_touchRevision() — same posture
+           as song_work_autolink above. ---- */
+    case 'song_work_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!workAdminReady($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the work-identity migration cards yet (run them at /manage/setup-database).'], 409);
+        }
+
+        $hasWorkId = array_key_exists('workId', $body) && (int)$body['workId'] > 0;
+        $hasTitle  = array_key_exists('title', $body) && trim((string)$body['title']) !== '';
+        $unlink    = !empty($body['unlink']);
+
+        if ($unlink) {
+            if (!$hasWorkId) { ed2_respond(['ok' => false, 'error' => 'workId is required to unlink.'], 400); }
+            $workId = (int)$body['workId'];
+            $db->begin_transaction();
+            try {
+                $deleted = workUnlinkSongRow($db, $workId, $songId);
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.work_unlink', 'song', $songId, ['workId' => $workId, 'deleted' => $deleted]);
+            ed2_respond(['ok' => true, 'unlinked' => true, 'deleted' => $deleted]);
+            break;
+        }
+
+        if ($hasWorkId === $hasTitle) {
+            /* Neither, or both, supplied — exactly one mode is required. */
+            ed2_respond(['ok' => false, 'error' => 'Provide exactly one of workId or title.'], 400);
+        }
+
+        $created = false;
+        $db->begin_transaction();
+        try {
+            if ($hasWorkId) {
+                $workId = (int)$body['workId'];
+                if (!workExists($db, $workId)) {
+                    $db->rollback();
+                    ed2_respond(['ok' => false, 'error' => 'Work not found.'], 404);
+                }
+            } else {
+                $found = workFindOrCreateByTitle($db, (string)$body['title']);
+                /* $found is never null here — $hasTitle already proved the
+                   trimmed title is non-empty. */
+                $workId  = $found['id'];
+                $created = $found['created'];
+            }
+            workLinkSongRow($db, $workId, $songId);
+            $snap = workSnapshot($db, $workId);
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.work_set', 'song', $songId, ['workId' => $workId, 'created' => $created]);
+        ed2_respond([
+            'ok'            => true,
+            'linked'        => true,
+            'workId'        => $snap['workId']    ?? $workId,
+            'workTitle'     => $snap['workTitle'] ?? null,
+            'workSlug'      => $snap['workSlug']  ?? null,
+            'songCount'     => $snap['songCount'] ?? 0,
+            'created'       => $created,
+            'createdParent' => false,
+            'rehomed'       => false,
+            'refined'       => false,
+            'conflict'      => null,
+            'iswcInvalid'   => false,
+        ]);
+        break;
+    }
+
     /* ---- component_upsert (POST) ---- */
     case 'component_upsert': {
         $songId = trim((string)($body['songId'] ?? ''));
@@ -2213,6 +3211,34 @@ try {
         $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : $number;
         $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
         $language  = isset($comp['language']) && trim((string)$comp['language']) !== '' ? trim((string)$comp['language']) : null;
+
+        /* #1860 Phase 5 §3.2 — accept `label` (REQ 3b) + `sourceWorkId` (REQ 2).
+           KEY-PRESENT = intent (array_key_exists, not isset): an explicit `label:null`
+           clears a set label, while an OMITTED key means "leave it alone" — the
+           target-preserve block below reads the stored value back onto $entry for
+           exactly that omitted case, so the handler never wipes a label/link the
+           caller didn't mention (§3's silent-wipe defence, layer 1 of 3). */
+        $hasLabel   = array_key_exists('label', $comp);
+        $labelIn    = $hasLabel ? mb_substr(trim((string)($comp['label'] ?? '')), 0, 100) : '';
+        /* D1 / rule #27 — server-side hide-when-equal: fold a label equal to the
+           derived display name back to NULL so no funnel can store the redundancy.
+           Compare against the ALIASED display derivation (refrain renders "Chorus"),
+           case-insensitively. */
+        $derived = ucfirst($type === 'refrain' ? 'chorus' : $type) . ($number > 0 ? ' ' . $number : '');
+        $label   = ($labelIn !== '' && mb_strtolower($labelIn) !== mb_strtolower($derived)) ? $labelIn : null;
+        $hasSrcWork    = array_key_exists('sourceWorkId', $comp);
+        $srcWorkIn     = $hasSrcWork ? (int)($comp['sourceWorkId'] ?? 0) : 0;
+        $sourceWorkId  = $srcWorkIn > 0 ? $srcWorkIn : null;
+        $srcWorkIgnored = false;
+        /* SD1 — an unresolvable sourceWorkId is COERCED to null, never a 422: a
+           work-link problem must not fail the section save. work_admin.php is
+           already `require_once`d at module scope (:339) for the other work
+           endpoints on this file, so workExists()/workAdminReady() are always
+           defined here — the function_exists guard is belt-and-braces only, so
+           this accept path never fatals even if that include set ever changes. */
+        if ($sourceWorkId !== null && function_exists('workExists') && workAdminReady($db) && !workExists($db, $sourceWorkId)) {
+            $sourceWorkId = null; $srcWorkIgnored = true;   /* SD1 — coerce, never fail the save */
+        }
 
         $db->begin_transaction();
         try {
@@ -2231,11 +3257,25 @@ try {
                 'languages' => (isset($comp['languages']) && is_array($comp['languages'])) ? array_values($comp['languages']) : null,
                 '_target'   => true,   // marker to resolve the resulting Id (stripped by the writer)
             ];
+            /* #1860 Phase 5 §3.2 — key-present-only: an omitted key leaves $entry
+               without it here, so the target-preserve block below (which DOES run
+               for every matched existing component) is what actually fills it from
+               the stored row; a brand-new component with no explicit label/work
+               link simply has neither key, which the writer treats as "not
+               provided" -> NULL on INSERT (exactly right for a fresh section). */
+            if ($hasLabel)   { $entry['label']        = $label; }
+            if ($hasSrcWork) { $entry['sourceWorkId'] = $sourceWorkId; }
             $found = false;
             foreach ($comps as $idx => $c) {
                 if ($compId > 0 && (int)($c['id'] ?? 0) === $compId) {
                     if (!isset($comp['chords']))    { $entry['chords']    = $c['chords'] ?? null; }
                     if (!isset($comp['languages'])) { $entry['languages'] = $c['languages'] ?? null; }
+                    /* #1860 Phase 5 §3.2 — target-preserve, layer 1 of §3's three-layer
+                       silent-wipe defence: an omitted key on an UPDATE reads the CURRENT
+                       stored value straight off the pre-write row ($c, from
+                       ed2_currentComponents()) rather than letting it default to null. */
+                    if (!$hasLabel)   { $entry['label']        = $c['label']        ?? null; }
+                    if (!$hasSrcWork) { $entry['sourceWorkId'] = $c['sourceWorkId'] ?? null; }
                     $comps[$idx] = $entry;
                     $found = true;
                     break;
@@ -2255,6 +3295,67 @@ try {
             foreach ($comps as $idx => $c) { if (!empty($c['_target'])) { $targetPos = $idx; break; } }
             $after  = ed2_currentComponents($db, $songId);
             $compId = isset($after[$targetPos]['id']) ? (int)$after[$targetPos]['id'] : $compId;
+
+            /* #1860 §3.6b.2 — additive work-grain lockstep (SD2,
+               `.claude/medley-component-work-1860-phase5-plan.md` §5.2).
+               Setting a section's source work on a song that belongs
+               (tblWorkSongs) to other work(s) upserts the matching
+               (MedleyWorkId, ComponentWorkId) rows on `tblWorkComponents` —
+               "a section sourcing a DIFFERENT work than its song's own
+               membership IS the stitching evidence" (design §3.6b). ADDITIVE
+               ONLY: never removes on a section link being CLEARED (§3.3.1's
+               never-auto-unlink posture, reapplied to this table);
+               `workMedleyAttach()` itself never overwrites an existing row's
+               SortOrder/Note (SD2 — a curator's own /manage/works ordering
+               must never be silently touched by an unrelated section save).
+               Runs under component_upsert's OWN file-level editor gate +
+               X-Requested-With CSRF gate (rule #29) — deliberately NOT
+               clamped to manage_works: this is an ADDITIVE CONSEQUENCE of an
+               edit the curator can already make (setting a section's source
+               work), not the destructive/orderly medley editing that stays
+               behind manage_works on works.php (§6). Flagged in the PR body
+               for owner veto per the spec.
+
+               NON-BLOCKING (own try/catch, NOT the outer one): this sits
+               INSIDE the handler's existing transaction, so an uncaught
+               throw here would propagate to the outer catch and roll back
+               the WHOLE section save over a work-grain concern — exactly
+               what "the section save must never fail on a work concern"
+               forbids. Every ordinary guard failure inside workMedleyAttach()
+               (not ready / self-link / missing work / would-cycle) already
+               returns false rather than throwing, so this catch is a
+               belt-and-braces net for a genuine DB hiccup — mirrors
+               `ed2_touchRevision()`'s own catch immediately below and
+               `workAutolinkSafe()`'s $ownTransaction=false mode
+               (work_admin.php `:1054-1063`): re-throw ONLY when
+               songRelocateIsTransactionFatal() says the caller's transaction
+               is already dead (a deadlock/lock-wait-timeout victim — #1688
+               A1), because swallowing THAT would let $db->commit() below
+               succeed trivially over a rolled-back transaction (a false
+               "ok:true"). Every other throwable is logged and swallowed. */
+            if ($sourceWorkId !== null && workAdminReady($db) && workMedleyReady($db)) {
+                try {
+                    $memberStmt = $db->prepare('SELECT WorkId FROM tblWorkSongs WHERE SongId = ?');
+                    $memberStmt->bind_param('s', $songId);
+                    $memberStmt->execute();
+                    $memberRes = $memberStmt->get_result();
+                    $memberWorkIds = [];
+                    while ($memberRow = $memberRes->fetch_assoc()) {
+                        $memberWorkIds[] = (int)$memberRow['WorkId'];
+                    }
+                    $memberStmt->close();
+                    foreach ($memberWorkIds as $mw) {
+                        if ($mw !== $sourceWorkId) {
+                            workMedleyAttach($db, $mw, $sourceWorkId, $sortOrder /* the section's */, null);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    if (songRelocateIsTransactionFatal($e)) { throw $e; }
+                    error_log('[work medley lockstep] ' . $songId . ': ' . $e->getMessage());
+                    /* swallow — a work-grain hiccup must never fail the section save */
+                }
+            }
+
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();
         } catch (\Throwable $e) {
@@ -2262,7 +3363,17 @@ try {
             throw $e;
         }
         logActivity('song.component', 'song', $songId, ['componentId' => $compId, 'type' => $type]);
-        ed2_respond(['ok' => true, 'componentId' => $compId]);
+        /* #1860 Phase 5 §3.2 — rule #35 read-back: the response reflects what
+           $after (the freshly re-read stored row) actually holds, never the raw
+           request — so the client's own D1 fold + SD1 coercion always agree with
+           the server, and a stale/omitted client value is corrected visibly. */
+        ed2_respond([
+            'ok'                  => true,
+            'componentId'         => $compId,
+            'label'               => $after[$targetPos]['label']        ?? null,
+            'sourceWorkId'        => $after[$targetPos]['sourceWorkId'] ?? null,
+            'sourceWorkIdIgnored' => $srcWorkIgnored,
+        ]);
         break;
     }
 
@@ -2578,11 +3689,50 @@ try {
                 $u->execute();
                 $u->close();
             } else {
-                $i = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
-                $i->bind_param('ss', $songId, $name);
-                $i->execute();
-                $creditId = (int)$db->insert_id;
-                $i->close();
+                /* #1744-A5 — same-name dedup, mirroring the v1 whole-song
+                   save's $seenCredit set (manage/editor/save_song_core.php,
+                   #1178): a "new credit" call for a name that ALREADY sits
+                   in this role's table for this song must update the
+                   existing row's spelling rather than insert a duplicate
+                   link — a client accumulation bug (or a curator re-adding
+                   a name that autocomplete already offered) would otherwise
+                   list the same person twice in the same role. Scoped to
+                   (songId, table) exactly like v1's per-role-key
+                   $seenCredit reset.
+                   ELI5: before adding "John Newton" as a Writer, check
+                   whether this song already HAS a Writer named that —
+                   if so, just touch up the existing row instead of adding
+                   a second one.
+                   Case-insensitive comparison comes for free from the
+                   table's utf8mb4_unicode_ci collation (schema.sql) — the
+                   SAME bare `WHERE Name = ?` idiom
+                   registerMusicianByName() already uses against
+                   tblMusicians (includes/musician_helpers.php) — never a
+                   second, re-forked name-matching rule (rule #22).
+                   `FOR UPDATE` serialises this against a concurrent
+                   debounced add for the same name, the same reason the
+                   $creditId > 0 branch above locks its row. */
+                $dupe = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? AND Name = ? FOR UPDATE");
+                $dupe->bind_param('ss', $songId, $name);
+                $dupe->execute();
+                $dupeRow = $dupe->get_result()->fetch_assoc();
+                $dupe->close();
+
+                if ($dupeRow) {
+                    $creditId = (int)$dupeRow['Id'];
+                    $oldName  = (string)$dupeRow['Name'];
+
+                    $u = $db->prepare("UPDATE `{$table}` SET Name = ? WHERE Id = ? AND SongId = ?");
+                    $u->bind_param('sis', $name, $creditId, $songId);
+                    $u->execute();
+                    $u->close();
+                } else {
+                    $i = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
+                    $i->bind_param('ss', $songId, $name);
+                    $i->execute();
+                    $creditId = (int)$db->insert_id;
+                    $i->close();
+                }
             }
             /* #960 — the ACTUAL regression fix: promote the name into the
                tblMusicians registry in the SAME transaction as the
@@ -2596,6 +3746,14 @@ try {
             ]);
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
+
+            /* #1862 — a credit add/edit can change the PD-suggestion contributor
+               set (or a death date via the registry read below); recompute the
+               denorm post-commit, own failure boundary (pdRecomputeForSong()
+               never throws — see pd_suggest.php's header). Tree-derived wiring
+               guard: tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongWriters` (etc.) and asserts this reference. */
+            pdRecomputeForSong($db, $songId);
 
             /* #1843 — post-commit best-effort janitor. If this save RENAMED the
                credit (the old spelling differs from the new one), the old
@@ -2680,6 +3838,10 @@ try {
             $d->close();
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
+
+            /* #1862 — same post-commit PD recompute as credit_upsert above —
+               removing a credit can change the contributor set too. */
+            pdRecomputeForSong($db, $songId);
 
             /* #1843 — post-commit best-effort janitor. A delete has no
                successor name, so keepRegistryId = 0: reap the removed credit's
@@ -2853,6 +4015,88 @@ try {
             }
             $rows = array_slice($rows, 0, $limit);
         }
+
+        ed2_respond(['ok' => true, 'suggestions' => $rows]);
+        break;
+    }
+
+    /* ---- publisher_search (GET) — typeahead for the Copyright Holder picker
+           (#1862, rule #22). Mirrors tune_search above in posture, but does
+           NO local SQL of its own — delegates entirely to the ONE shared
+           publisher typeahead core (publisherSearchRows(), #1864), the same
+           core /manage/publishers, /manage/songbooks and /manage/works
+           already share. `[]` pre-migration — the helper itself degrades
+           gracefully when tblPublishers is absent. ---- */
+    case 'publisher_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 50) { $limit = 50; }
+
+        $rows = publisherSearchRows($db, $term, $limit);
+        ed2_respond([
+            'ok'          => true,
+            'suggestions' => array_map(
+                static fn(array $p): array => ['id' => $p['id'], 'name' => $p['name'], 'slug' => $p['slug'], 'kind' => $p['kind']],
+                $rows
+            ),
+        ]);
+        break;
+    }
+
+    /* ---- work_search (GET) — typeahead over the tblWorks registry (#1860
+           Phase 3), mirrors tune_search above in posture. ---- */
+    case 'work_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 20) { $limit = 20; }
+
+        if (!ed2_worksTableExists($db)) {
+            ed2_respond(['ok' => true, 'suggestions' => [], 'tableMissing' => true]);
+        }
+
+        /* Ccli is a rule-#5 boolean-gated SQL fragment — a hardcoded literal
+           chosen by a schema probe, never request input. Iswc is always
+           selected: it predates the works-identity migration entirely. */
+        $hasCcli       = ed2_worksCcliColumnExists($db);
+        $ccliSelectSql = $hasCcli ? 'w.Ccli' : 'NULL';
+        $ccliGroupSql  = $hasCcli ? ', w.Ccli' : '';
+
+        $sql = "SELECT w.Id, w.Title, w.Slug, w.Disambiguation, w.ParentWorkId, w.Iswc,
+                       {$ccliSelectSql} AS Ccli, COUNT(DISTINCT ws.SongId) AS UsageCount
+                  FROM tblWorks w
+                  LEFT JOIN tblWorkSongs ws ON ws.WorkId = w.Id";
+        $types  = '';
+        $params = [];
+        if ($term !== '') {
+            $sql .= ' WHERE w.Title LIKE ?';
+            $types .= 's';
+            $params[] = '%' . $term . '%';
+        }
+        $sql .= " GROUP BY w.Id, w.Title, w.Slug, w.Disambiguation, w.ParentWorkId, w.Iswc{$ccliGroupSql}"
+              . ' ORDER BY UsageCount DESC, w.Title ASC LIMIT ?';
+        $types .= 'i';
+        $params[] = $limit;
+
+        $q = $db->prepare($sql);
+        $q->bind_param($types, ...$params);
+        $q->execute();
+        $r = $q->get_result();
+        $rows = [];
+        while ($row = $r->fetch_assoc()) {
+            $rows[] = [
+                'id'             => (int)$row['Id'],
+                'title'          => (string)$row['Title'],
+                'slug'           => (string)$row['Slug'],
+                'disambiguation' => (string)$row['Disambiguation'],
+                'iswc'           => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+                'ccli'           => $row['Ccli'] !== null ? (string)$row['Ccli'] : null,
+                'parentWorkId'   => $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null,
+                'usage'          => (int)$row['UsageCount'],
+            ];
+        }
+        $q->close();
 
         ed2_respond(['ok' => true, 'suggestions' => $rows]);
         break;
@@ -3680,6 +4924,135 @@ try {
         break;
     }
 
+    /* =========================================================================
+     * song_alt_titles / song_alt_title_add / song_alt_title_delete (#1669,
+     * epic #832) — tblSongAlternativeTitles' FIRST UI write path.
+     *
+     * ELI5: a song can be catalogued under more than one name — "Amazing
+     * Grace" is also "Faith's Review and Expectation" — and this is the
+     * little list on the Metadata tab (beside the Title field) where a
+     * curator can see and add those.
+     *
+     * DETAILED
+     * --------------------------------------------------------------------
+     * The table has existed since #832 (`migrate-alternative-titles.php`)
+     * and its READ half has been live the whole time —
+     * `SongData::_songAltTitlesMap()` feeds the public song page's "Also
+     * known as" line, the OG image, and the #832 search boost (a query
+     * matching an alt title ranks the song top) — but until now the ONLY
+     * `INSERT` anywhere in the tree was the `duplicate_song` case's
+     * `INSERT … SELECT` COPY of an EXISTING song's rows (above), which can
+     * never create a FIRST row. This is that write path. It reuses, never
+     * re-forks, the ONE core `includes/song_alt_titles.php` (rule #22) —
+     * every case body below is a thin delegate, no inline
+     * tblSongAlternativeTitles SQL here.
+     *
+     * WHY NOT RULE #43's FIND-OR-CREATE PICKER: an alt title is per-song
+     * FREE TEXT — a title string, not a reference to a registry entity
+     * (tblTunes/tblPublishers/tblMusicians/…) that could be shared or
+     * looked up across songs. Nothing here mints or reuses a cross-song
+     * row, so rule #43 does not apply (see song_alt_titles.php's own
+     * doc-block for the full reasoning).
+     *
+     * No `ed2_touchRevision()` call anywhere below: alt titles are not part
+     * of the song record a revision snapshot restores — the SAME posture
+     * tblSongExternalIds (see that section's comment above) and
+     * tblSongLinks take.
+     *
+     * ENTITLEMENT: the file-level editor-role gate only (matches
+     * credit_upsert/tag_attach/song_external_id_add) — adding or removing
+     * an alt title is ordinary curation, not a destructive class like
+     * delete_song.
+     * ===================================================================== */
+
+    /* ---- song_alt_titles (GET) — a song's alternative titles. ---- */
+    case 'song_alt_titles': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!songAltTitlesTableExists($db)) {
+            /* Un-migrated read degrades to an empty list + tableMissing:true,
+               matching song_external_ids above — never a mysqli-STRICT
+               throw (rule #35: status/flag is the contract). */
+            ed2_respond(['ok' => true, 'altTitles' => [], 'tableMissing' => true]);
+        }
+
+        ed2_respond(['ok' => true, 'altTitles' => songAltTitlesList($db, $songId)]);
+        break;
+    }
+
+    /* ---- song_alt_title_add (POST) — add one alternative title. ---- */
+    case 'song_alt_title_add': {
+        $songId   = trim((string)($body['songId'] ?? ''));
+        $title    = trim((string)($body['title'] ?? ''));
+        $language = (string)($body['language'] ?? '');
+        $note     = (string)($body['note'] ?? '');
+
+        if ($songId === '') {
+            ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!songAltTitlesTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the alternative titles (#832) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* An alt title identical to the song's own CURRENT main title
+           (case-insensitive) is refused with a specific message rather
+           than silently stored as a pointless duplicate-of-itself row —
+           songAltTitleIsRedundant() is the shared pure check (also used by
+           the optional C9 importer path). Read fresh from tblSongs rather
+           than trusting any client-sent title, since the client's copy of
+           the song could be stale.
+           @deleted-visible: editor admin surface (#1694) — the redundancy
+             check reads the song's own CURRENT main title by KNOWN SongId
+             (existence already gated by ed2_songExists above). A soft-deleted
+             song's title must still be compared; applying the visibility
+             predicate here would blank $mainTitle and silently SKIP the
+             redundancy guard, not protect anything.
+           @disabled-visible: editor admin surface (#1765) — same read: the
+             editor operates on one known song regardless of whether its
+             songbook is disabled, and the comparison needs the real stored
+             title. */
+        $ts = $db->prepare('SELECT Title FROM tblSongs WHERE SongId = ?');
+        $ts->bind_param('s', $songId);
+        $ts->execute();
+        $mainTitleRow = $ts->get_result()->fetch_row();
+        $ts->close();
+        $mainTitle = $mainTitleRow ? (string)$mainTitleRow[0] : '';
+        if (songAltTitleIsRedundant($title, $mainTitle)) {
+            ed2_respond(['ok' => false, 'error' => "That is already the song's main title."], 422);
+        }
+
+        try {
+            $result = songAltTitleAdd($db, $songId, $title, $language, $note);
+        } catch (\InvalidArgumentException $e) {
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 422);
+        }
+
+        logActivity('song.alt_title.add', 'song', $songId, ['title' => $result['row']['title']]);
+        ed2_respond(['ok' => true, 'altTitle' => $result['row'], 'created' => $result['created']]);
+        break;
+    }
+
+    /* ---- song_alt_title_delete (POST) — remove one alternative title. ---- */
+    case 'song_alt_title_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) {
+            ed2_respond(['ok' => false, 'error' => 'songId and id are required.'], 400);
+        }
+        if (!songAltTitlesTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the alternative titles (#832) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        $deleted = songAltTitleDelete($db, $songId, $id);
+
+        logActivity('song.alt_title.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $deleted]);
+        break;
+    }
+
     /* ---- media_list (GET) — file metadata for a song (never bytes) ---- */
     case 'media_list': {
         $songId = trim((string)($_GET['id'] ?? ''));
@@ -3772,6 +5145,8 @@ try {
                 $ins->execute();
                 $newId = (int)$db->insert_id;
                 $ins->close();
+                /* #1860 go-live — mint this media row's permanent IL-id (ILD…). */
+                ilidStampNewRow($db, 'document', $newId);
 
                 ed2_touchRevision($db, $songId, $ed2UserId, 'media');
                 $db->commit();
@@ -3779,6 +5154,13 @@ try {
                 $db->rollback();
                 throw $e;
             }
+
+            /* #1862 — a new media row can flip HasAudio/HasSheetMusic; recompute
+               the derived UNION post-commit (own failure boundary, never throws —
+               see song_media_flags.php's header). Tree-derived wiring guard:
+               tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongMedia` and asserts this hook is referenced. */
+            songMediaRecomputeFlags($db, $songId);
 
             logActivity('song-media.upload', 'song', $songId, [
                 'media_id' => $newId, 'kind' => $kind, 'backend' => $staged['backend'],
@@ -3872,6 +5254,12 @@ try {
             'StorageBackend' => (string)$mrow['StorageBackend'],
             'StoragePath'    => (string)($mrow['StoragePath'] ?? ''),
         ]);
+        /* #1862 — a removed media row can flip HasAudio/HasSheetMusic; recompute
+           the derived UNION post-commit, same posture as the media_upload hook
+           above (own failure boundary, never throws). Tree-derived wiring guard:
+           tests/php/test-editor2-metadata-1862.php scans every
+           `DELETE FROM tblSongMedia` and asserts this hook is referenced. */
+        songMediaRecomputeFlags($db, $mSongId);
         logActivity('song-media.delete', 'song', $mSongId, [
             'mediaId' => $mediaId, 'kind' => (string)$mrow['Kind'], 'fileName' => (string)$mrow['FileName'],
         ]);
@@ -3941,11 +5329,17 @@ try {
                (which rebuilds STRUCTURE, not enrichment) never silently drops it. Client-
                sent values always win. */
             $existing = ed2_currentComponents($db, $songId);
-            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null]
+            /* #1860 Phase 5 §3.3 — Paste & Reflow REBUILDS structure; the pasted rows
+               never carry `label`/`sourceWorkId` at all, so without a carry every
+               reflow would silently wipe every custom label + work link on the song
+               (layer 2 of §3's three-layer silent-wipe defence — this funnel's own
+               FIFO carry, distinct from the generic handler/writer preserve layers,
+               because it REPLACES the whole set rather than patching one row). */
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null,'lb'=>label|null,'sw'=>sourceWorkId|null]
             if ($mode === 'replace') {
                 foreach ($existing as $pc) {
                     $ck = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
-                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages']];
+                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages'], 'lb' => $pc['label'] ?? null, 'sw' => $pc['sourceWorkId'] ?? null];
                 }
             }
 
@@ -3967,6 +5361,17 @@ try {
                 $langs  = (isset($comp['languages']) && is_array($comp['languages']))
                     ? array_values($comp['languages'])
                     : ($carried !== null ? $carried['l'] : null);
+                /* #1860 Phase 5 §3.3 — explicit-wins-else-carried, mirroring the
+                   chords/languages shape immediately above (isset-based "was this
+                   provided" test, not array_key_exists — this funnel rebuilds
+                   STRUCTURE, so an incoming row without a real label/work-link value
+                   simply carries the position-matched original forward). */
+                $label = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                    ? mb_substr(trim((string)$comp['label']), 0, 100)
+                    : ($carried !== null ? $carried['lb'] : null);
+                $sourceWorkId = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0)
+                    ? (int)$comp['sourceWorkId']
+                    : ($carried !== null ? $carried['sw'] : null);
                 $incoming[] = [
                     'type'      => $type,
                     'number'    => $number,
@@ -3974,6 +5379,8 @@ try {
                     'lines'     => $lines,
                     'chords'    => is_array($chords) ? $chords : null,
                     'languages' => is_array($langs) ? $langs : null,
+                    'label'         => $label,
+                    'sourceWorkId'  => $sourceWorkId,
                 ];
             }
             $count = count($incoming);
@@ -4006,6 +5413,10 @@ try {
         if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
         $format = strtolower(trim((string)($_POST['format'] ?? 'auto')));
         $dedupe = ((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off';
+        /* #1674 — dry-run preview: '1' opts in, anything else (including
+           absence) is a real import. Parsed beside dedupeMode so both
+           per-request mode flags are set from the same place. */
+        $dryRun = ((string)($_POST['dryRun'] ?? '0') === '1');
 
         if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
             $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
@@ -4076,6 +5487,10 @@ try {
 
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
         _bulkImport_dedupeMode($dedupe);
+        /* #1674 — set explicitly BOTH ways (true and false), never left to the
+           function's default, so a stale flag from an earlier request in the
+           same PHP process/worker can never leak into this one. */
+        _bulkImport_dryRun($dryRun);
 
         /* #882 — 'xmlauto' is the internal auto-resolution target reached
            only via format=auto on a .xml/.opensong extension (never offered
@@ -4119,8 +5534,12 @@ try {
         if (!is_array($summary)) { ed2_respond(['ok' => false, 'error' => 'Importer returned no result.'], 500); }
 
         /* Regenerate songbook-derived state after a successful import (mirrors the
-           legacy bulk_import_* handlers). Best-effort + guarded. */
-        if ((int)($summary['songs_created'] ?? 0) > 0) {
+           legacy bulk_import_* handlers). Best-effort + guarded.
+           #1674 — skipped entirely under dry-run: nothing was created, so
+           there is no songbook-derived state to regenerate; SongCount /
+           other maintenance work would be a pure no-op at best and a
+           misleading side-effecting call at worst. */
+        if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) {
             ed2_runSongbookMaintenance($db, 'import_file');
         }
         /* #882 — the auto-router (format 'xmlauto') stamps its own resolved
@@ -4129,12 +5548,34 @@ try {
            the format that was actually used to parse. Same value feeds
            both the activity log and the response so they can't disagree. */
         $resolvedFormat = (string)($summary['format'] ?? $format);
+        /* #1674 — the activity row STAYS even under dry-run (an audit trail
+           entry about a preview is itself correct information), with
+           'dryRun' in its detail so the log distinguishes a preview from a
+           real import. */
         logActivity('song.import_file', 'import', $origName, [
             'format'  => $resolvedFormat,
             'created' => (int)($summary['songs_created'] ?? 0),
             'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
             'failed'  => (int)($summary['songs_failed'] ?? 0),
+            'dryRun'  => $dryRun,
         ]);
+        /* #1909 — ONE summary partner webhook per real import (never per-song —
+           design §A.9). A dry-run preview creates nothing, so it emits nothing.
+           abbr comes from the summary when the import targeted a single book;
+           a multi-book import leaves it empty (still a valid "import finished"
+           signal). Dormant no-op until enabled. */
+        if (!$dryRun) {
+            webhookEmit('songbook.import_completed', [
+                'abbr'          => (string)($summary['songbook'] ?? $summary['abbr'] ?? ''),
+                'songs_created' => (int)($summary['songs_created'] ?? 0),
+                'songs_updated' => (int)($summary['songs_updated'] ?? 0),
+                'songs_skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+                'dry_run'       => false,
+            ], ['source' => 'bulk_import', 'entity_id' => (string)($summary['songbook'] ?? $summary['abbr'] ?? '')]);
+        }
+        /* #1674 — a KEY, not prose (rule #35), so import2.php's renderSummary()
+           can branch on it rather than parse a sentence. */
+        $summary['dry_run'] = $dryRun;
         /* #882 — every single-file processor's contract is "ok=false ⇔ parse
            failed" (a save failure lands as ok=true + songs_failed>0
            instead); a parse failure is a genuine client error (bad/wrong
@@ -4157,6 +5598,33 @@ try {
            ed2_respond (which exit()s) — it echoes, flushes, then keeps working. ---- */
     case 'import_zip': {
         if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        /* #1911 — ZIP dry-run preview. Parsed the same way import_file parses
+           it (#1674, beside dedupeMode below). #1674 originally REFUSED this
+           flag outright: the async job's state lives on tblBulkImportJobs,
+           which had no spare column to carry it across the worker's separate
+           execution (post-fastcgi_finish_request) — a migration (rule #19),
+           not something this endpoint could improvise. That column now
+           exists (migrate-bulk-import-dryrun.php), so the refusal is
+           column-existence-gated instead of unconditional: an un-migrated
+           install still gets the honest 422 (rule #33 — never a silently
+           ignored flag), a migrated one gets a working preview. */
+        $dryRun = ((string)($_POST['dryRun'] ?? '0') === '1');
+        if ($dryRun && !ed2_bulkJobsDryRunColumnExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'Dry run is not yet supported for ZIP imports on this deployment — import a single file to preview instead, or ask an admin to run the pending migration (see #1911).'], 422);
+        }
+        /* #1911 — set explicitly BOTH ways (mirrors import_file's #1674
+           placement in this same file), so a stale flag from an earlier
+           request in the same PHP process/worker can never leak into this
+           one. This one call is what gates every write below that never
+           gets a job row to read DryRun back from — the EasyWorship inline
+           branch and both "no job row yet" sync fallbacks — via the SAME
+           static flag _bulkImport_saveSong() / _bulkImport_upsertSongbook()
+           already consult. The async worker section (after
+           fastcgi_finish_request()) re-derives the flag from the job row
+           instead, inside _bulkImport_processZip() itself — see that
+           function's own read, keyed off this request's persisted DryRun
+           column rather than this in-process variable. */
+        _bulkImport_dryRun($dryRun);
         _bulkImport_dedupeMode(((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off');
         if (!class_exists('ZipArchive')) { ed2_respond(['ok' => false, 'error' => 'Server is missing the PHP zip extension.'], 500); }
         if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
@@ -4185,8 +5653,30 @@ try {
                 $ewProbe->close();
                 if ($hasSongsDb) {
                     $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
-                    if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
-                    logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                    /* #1911 — this branch bypasses the async worker entirely
+                       (the "synchronous EasyWorship-zip fallback" the plan's
+                       risk register calls out), so it gates its own
+                       maintenance write on the SAME $dryRun the top-of-case
+                       _bulkImport_dryRun() call already primed
+                       _bulkImport_saveSong() with. */
+                    if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
+                    logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0), 'dryRun' => $dryRun]);
+                    /* #1909 — ONE summary partner webhook for this sync zip path
+                       (never per-song; design §A.9). Dormant no-op until enabled. */
+                    if (!$dryRun) {
+                        webhookEmit('songbook.import_completed', [
+                            'abbr'          => (string)($summary['songbook'] ?? $summary['abbr'] ?? ''),
+                            'songs_created' => (int)($summary['songs_created'] ?? 0),
+                            'songs_updated' => (int)($summary['songs_updated'] ?? 0),
+                            'songs_skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+                            'dry_run'       => false,
+                        ], ['source' => 'bulk_import', 'entity_id' => (string)($summary['songbook'] ?? $summary['abbr'] ?? '')]);
+                    }
+                    /* #1911 — a KEY, not prose (rule #35): import2.php's
+                       renderSummary() branches on this for the sync-render
+                       path importZip() falls back to when `data.async` is
+                       absent. */
+                    $summary['dry_run'] = $dryRun;
                     ed2_respond(array_merge(['ok' => (bool)($summary['ok'] ?? false)], $summary), ($summary['ok'] ?? false) ? 200 : 400);
                 }
             }
@@ -4198,8 +5688,16 @@ try {
         if (!ed2_bulkJobsTableExists($db)) {
             try {
                 $summary = _bulkImport_processZip($tmpPath);
-                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync'); }
-                logActivity('song.import_zip', 'import', $origName, ['mode' => 'sync', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                /* #1911 — no job row exists on this branch (the table itself
+                   is absent, so no DryRun column could exist for it either),
+                   so _bulkImport_processZip() has nothing to read a flag
+                   back from; the top-of-case _bulkImport_dryRun($dryRun)
+                   call already primed it for this request, and $dryRun
+                   gates the maintenance write the same way as every other
+                   branch in this case. */
+                if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync'); }
+                logActivity('song.import_zip', 'import', $origName, ['mode' => 'sync', 'created' => (int)($summary['songs_created'] ?? 0), 'dryRun' => $dryRun]);
+                $summary['dry_run'] = $dryRun;
                 ed2_respond(array_merge(['ok' => true], $summary));
             } catch (\Throwable $e) {
                 error_log('[editor-v2-api import_zip sync] ' . $e->getMessage());
@@ -4213,10 +5711,14 @@ try {
         if (!is_dir($persistDir)) { @mkdir($persistDir, 0700, true); }
         $persistPath = $persistDir . DIRECTORY_SEPARATOR . 'job-' . bin2hex(random_bytes(8)) . '-' . preg_replace('/[^A-Za-z0-9._-]/', '_', $origName);
         if (!@move_uploaded_file($tmpPath, $persistPath)) {
-            /* move failed → sync fallback so the import still succeeds. */
+            /* move failed → sync fallback so the import still succeeds. No
+               job row exists yet at this point either (#1911 — same
+               reasoning as the table-absent branch above), so the
+               top-of-case $dryRun still gates this. */
             try {
                 $summary = _bulkImport_processZip($tmpPath);
-                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync_fallback'); }
+                if (!$dryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync_fallback'); }
+                $summary['dry_run'] = $dryRun;
                 ed2_respond(array_merge(['ok' => true], $summary));
             } catch (\Throwable $e) {
                 error_log('[editor-v2-api import_zip move-fallback] ' . $e->getMessage());
@@ -4228,11 +5730,23 @@ try {
         /* Create the queued job row. Bind a guaranteed-int UserId (the auth gate
            guarantees a logged-in editor; the ?? 0 keeps the stored UserId
            consistent with the `?? 0` ownership filter in import_zip_status /
-           import_zip_skipped_csv, so a row is never un-pollable on a NULL≠0 mismatch). */
-        $insUid = (int)($ed2UserId ?? 0);
+           import_zip_skipped_csv, so a row is never un-pollable on a NULL≠0 mismatch).
+           #1911 — DryRun is written column-existence-gated: reaching this
+           INSERT with $dryRun===true already implies the column exists (the
+           gate at the top of this case would have 422'd otherwise), but the
+           INSERT itself must still branch so a real (non-dry-run) import on
+           an UN-migrated install keeps working exactly as before. */
+        $insUid       = (int)($ed2UserId ?? 0);
+        $hasDryRunCol = ed2_bulkJobsDryRunColumnExists($db);
         try {
-            $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status) VALUES (?, ?, ?, ?, "queued")');
-            $j->bind_param('issi', $insUid, $origName, $persistPath, $sizeBytes);
+            if ($hasDryRunCol) {
+                $dryRunInt = $dryRun ? 1 : 0;
+                $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status, DryRun) VALUES (?, ?, ?, ?, "queued", ?)');
+                $j->bind_param('issii', $insUid, $origName, $persistPath, $sizeBytes, $dryRunInt);
+            } else {
+                $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status) VALUES (?, ?, ?, ?, "queued")');
+                $j->bind_param('issi', $insUid, $origName, $persistPath, $sizeBytes);
+            }
             $j->execute();
             $jobId = (int)$db->insert_id;
             $j->close();
@@ -4272,7 +5786,15 @@ try {
         try {
             $db = getDbMysqli();
             _bulkImport_jobMark($db, $jobId, 'running', ['StartedAt' => 'NOW()']);
-            $summary = _bulkImport_processZip($persistPath, $db, $jobId);
+            /* #1911 — _bulkImport_processZip() reads DryRun off THIS job row
+               itself (not off the $dryRun PHP variable above) before its
+               per-file loop starts, so the flag its writes obey is the
+               persisted column, not request-local state — see that
+               function's own doc-block. Read it back via the getter (no
+               args) rather than trusting the local $dryRun, so the gates
+               below reflect what the worker actually resolved. */
+            $summary      = _bulkImport_processZip($persistPath, $db, $jobId);
+            $jobWasDryRun = _bulkImport_dryRun();
             _bulkImport_jobMark($db, $jobId, 'completed', [
                 'CompletedAt'           => 'NOW()',
                 'SongbooksCreatedJson'  => json_encode($summary['songbooks_created']  ?? [], JSON_UNESCAPED_UNICODE),
@@ -4286,8 +5808,20 @@ try {
                 'PhaseLabel'            => 'completed',
                 'TempPath'              => '',
             ]);
+            /* #1911 — TempPath cleanup is NEVER gated by dry-run: a preview
+               run that leaked its upload into .bulk_import_uploads/ forever
+               would be a disk-fill regression nobody would think to check
+               for, precisely because dry-run promises to leave no trace. */
             @unlink($persistPath);
-            if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
+            /* #1911 — under dry-run, skip maintenance AND the completion
+               notification: both are finalisation writes beyond the job
+               row's own counters/status, and a dry run promises to write
+               nothing beyond that row (mirrors import_file's #1674 gate on
+               ed2_runSongbookMaintenance). logActivity() below stays
+               UNCONDITIONAL, same as import_file — an audit-trail entry
+               recording that a preview ran is itself correct information,
+               tagged via the 'dryRun' detail key rather than suppressed. */
+            if (!$jobWasDryRun && (int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
 
             /* Best-effort completion notification so the curator finds the result later.
                #1638 — was a hand-rolled INSERT INTO tblNotifications, one of
@@ -4295,7 +5829,7 @@ try {
                which owns the best-effort try/catch, the column-width clipping
                and the #1238 Environment/ExpiresAt migration gate that this copy
                never had. */
-            if ($ed2UserId !== null) {
+            if (!$jobWasDryRun && $ed2UserId !== null) {
                 $c = (int)($summary['songs_created'] ?? 0); $s = (int)($summary['songs_skipped_existing'] ?? 0); $fl = (int)($summary['songs_failed'] ?? 0);
                 notifyUser(
                     $db,
@@ -4311,6 +5845,7 @@ try {
                 'created' => (int)($summary['songs_created'] ?? 0),
                 'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
                 'failed'  => (int)($summary['songs_failed'] ?? 0),
+                'dryRun'  => $jobWasDryRun,
             ]);
         } catch (\Throwable $e) {
             error_log('[editor-v2-api import_zip worker] ' . $e->getMessage());
@@ -4335,10 +5870,16 @@ try {
         if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Bulk-import job tracking is not enabled on this deployment.', 'migration_needed' => true], 404); }
 
         $uid = $ed2UserId ?? 0;
+        /* #1911 — DryRun is column-existence-gated in the SELECT list itself:
+           an un-migrated install's tblBulkImportJobs has no such column, and
+           naming it unconditionally would throw under STRICT (unknown
+           column) on every single poll tick until the migration runs. */
+        $hasDryRunCol = ed2_bulkJobsDryRunColumnExists($db);
         $s = $db->prepare(
             'SELECT Id, UserId, Filename, SizeBytes, Status, TotalEntries, ProcessedEntries,
                     SongbooksCreatedJson, SongbooksExistingJson, SongsCreated, SongsSkippedExisting,
-                    SongsFailed, ErrorsJson, PerSongbookJson, PhaseLabel, StartedAt, CompletedAt, CreatedAt, UpdatedAt
+                    SongsFailed, ErrorsJson, PerSongbookJson, PhaseLabel, StartedAt, CompletedAt, CreatedAt, UpdatedAt'
+                    . ($hasDryRunCol ? ', DryRun' : '') . '
                FROM tblBulkImportJobs WHERE Id = ? AND UserId = ? LIMIT 1'
         );
         $s->bind_param('ii', $jobId, $uid);
@@ -4365,6 +5906,14 @@ try {
             'errors'                 => $decode($row['ErrorsJson'])            ?? [],
             'per_songbook'           => $decode($row['PerSongbookJson'])       ?? null,
             'skip_reason'            => 'existing-in-db',
+            /* #1911 — a KEY, not prose (rule #35): bulk-import-progress.js's
+               render() branches on this to show the same dry-run banner
+               import2.php's renderSummary() shows for the single-file /
+               sync-fallback paths. Always false on an un-migrated install —
+               the column-existence gate on import_zip itself means no job on
+               such a deployment could ever have been created with
+               DryRun=1 in the first place. */
+            'dry_run'                => $hasDryRunCol && (int)($row['DryRun'] ?? 0) === 1,
             /* #1855: extensionless — this becomes an <a href> the browser
                navigates to as a plain GET download. Survives a 301 either way,
                but the sibling v1 handler (api.php's bulk_import_skipped_csv
@@ -4422,8 +5971,10 @@ try {
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename="' . $safeName . '"');
         header('Cache-Control: no-store, no-cache, must-revalidate');
-        echo "\xEF\xBB\xBF";   // UTF-8 BOM for Excel
-        $out = fopen('php://output', 'w');
+        /* #1908 Commit 4 — shared emitter replaces the old inline
+           echo BOM + fopen() pair (never both — see the double-BOM
+           ban in test-csv-bom.php). */
+        $out = ihymns_csv_output_begin();
         ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
         foreach ($skipped as $sid) {
             $sid = (string)$sid; $r = $byId[$sid] ?? null;
@@ -4556,6 +6107,147 @@ try {
         }
         logActivity('song.bulk_tag_detach', 'song', '', ['tag' => $name, 'count' => count($ids), 'detached' => $detached]);
         ed2_respond(['ok' => true, 'tag' => ['id' => $tagId, 'name' => $name, 'slug' => $slug], 'detached' => $detached, 'count' => count($ids)]);
+        break;
+    }
+
+    /* ---- bulk_move (POST) — move many songs to a different songbook in one
+           request (#1628 item 3). Each song gets its OWN transaction through
+           the SAME songRelocate() core the single-song
+           `metadata_field_update` (field=songbook) branch above uses — #1679
+           is RESOLVED option B, so a move re-keys the SongId; there is no
+           other legal way to change a song's book (rule #27, enforced by
+           tests/php/test-song-relocate-funnels.php — never write
+           `SongbookAbbr` directly here).
+           PER-SONG VERDICTS, never all-or-nothing (#1690 A7): one row that
+           refuses (a stale FK, an already-relocated concurrent edit) must
+           not abort the rest of a 300-song batch. The two-tier catch below
+           is a literal mirror of the single-song block's (:2480-2492):
+           \InvalidArgumentException is ordinary bad input (a per-song 422
+           verdict, loop continues); \Throwable is a real server fault
+           (rolled back, recorded, loop continues — never rethrown, or one
+           bad row would 500 the whole batch).
+           `targetAbbr` is validated ONCE up front (A3): a typo'd/unknown
+           book must refuse the WHOLE request with one clear 422, not 300
+           identical per-song failures — reusing songRelocate()'s own
+           existence check rather than a second, possibly-divergent one.
+           Response: `{ok, moved:[{oldId,newId}], failed:[{id,error,status}]}`
+           — the NEW ids are the point: option B means every selected id is
+           stale the instant this returns, so the client MUST re-key its
+           selection from `moved`, never assume the old ids still resolve
+           (they only resolve via the redirect layer). ---- */
+    case 'bulk_move': {
+        ed2_requireEntitlement('bulk_edit_songs');
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        if (!$ids) { ed2_respond(['ok' => false, 'error' => 'songIds are required.'], 400); }
+        if (count($ids) > 300) {
+            ed2_respond(['ok' => false, 'error' => 'Too many songs selected (max 300 per bulk move).'], 400);
+        }
+        $targetAbbr = trim((string)($body['targetAbbr'] ?? ''));
+        if ($targetAbbr === '') {
+            ed2_respond(['ok' => false, 'error' => 'A target songbook abbreviation is required.'], 400);
+        }
+
+        /* A3 — probe the destination ONCE, before the per-song loop. Mirrors
+           songRelocate()'s own step 2 existence check (song_relocate.php) —
+           a bad book name is a request-level mistake, not a per-song one.
+           @disabled-visible: admin write-path (#1765) — the SAME reasoning
+           song_relocate.php's own identical check carries: a curator moving
+           songs must be able to target ANY songbook, including one that is
+           currently disabled (e.g. relocating songs OUT of a disabled book,
+           or into the hidden staging book) — this pre-check is not a public
+           listing, it exists only to name a bad targetAbbr precisely. */
+        $bk = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+        $bk->bind_param('s', $targetAbbr);
+        $bk->execute();
+        $bkFound = $bk->get_result()->fetch_row() !== null;
+        $bk->close();
+        if (!$bkFound) {
+            ed2_respond(['ok' => false, 'error' => 'Unknown target songbook "' . $targetAbbr . '".'], 422);
+        }
+
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        $moved  = [];
+        $failed = [];
+        foreach ($ids as $songId) {
+            $db->begin_transaction();
+            try {
+                $rel = songRelocate($db, $songId, $targetAbbr, $ed2UserId);
+                ed2_touchRevision($db, $rel['songId'], $ed2UserId, 'metadata');
+                $db->commit();
+                $moved[] = ['oldId' => $songId, 'newId' => $rel['songId']];
+            } catch (\InvalidArgumentException $e) {
+                $db->rollback();
+                $failed[] = ['id' => $songId, 'error' => $e->getMessage(), 'status' => 422];
+            } catch (\Throwable $e) {
+                $db->rollback();
+                $failed[] = ['id' => $songId, 'error' => $e->getMessage(), 'status' => 500];
+            }
+        }
+
+        logActivity('song.bulk_move', 'song', '', [
+            'targetAbbr' => $targetAbbr,
+            'count'      => count($ids),
+            'moved'      => count($moved),
+            'failed'     => count($failed),
+        ]);
+        ed2_respond(['ok' => true, 'moved' => $moved, 'failed' => $failed]);
+        break;
+    }
+
+    /* ---- bulk_delete (POST) — soft-delete many songs in one request (#1628
+           item 3). Each song goes through the SAME songSoftDelete() core the
+           single-song `delete_song` case above uses (#1694) — a bulk delete
+           writes NOTHING via a raw `DELETE FROM tblSongs`; that would be the
+           hard-delete cascade songPurge() alone is allowed to run, and only
+           from the deleted state.
+           Entitlement is `delete_songs`, not `bulk_edit_songs`: a bulk
+           delete is N repetitions of the SAME destructive act
+           `delete_song` already gates on `delete_songs`, so the single-song
+           entitlement governs — an operator who can delete one song can
+           delete many, and revoking `delete_songs` must revoke both.
+           PER-SONG VERDICTS: songSoftDelete() already returns a pure verdict
+           per call (409 un-migrated/already-deleted, 422 unknown reason,
+           404 absent, 200 ok) — this loop simply collects them, same
+           posture as bulk_move above. Soft delete writes no redirects
+           (#1694) and is restorable from /manage/deleted-songs, which is
+           what makes a BULK version of a destructive action acceptable at
+           all. ---- */
+    case 'bulk_delete': {
+        ed2_requireEntitlement('delete_songs');
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        if (!$ids) { ed2_respond(['ok' => false, 'error' => 'songIds are required.'], 400); }
+        if (count($ids) > 300) {
+            ed2_respond(['ok' => false, 'error' => 'Too many songs selected (max 300 per bulk delete).'], 400);
+        }
+        $reason = trim((string)($body['reason'] ?? ''));
+        $note   = trim((string)($body['note'] ?? ''));
+
+        $deleted = [];
+        $failed  = [];
+        foreach ($ids as $songId) {
+            /* songSoftDelete() runs its OWN begin_transaction/commit per call
+               (song_soft_delete.php) — no wrapping transaction here, matching
+               how the single-song delete_song case above calls it. */
+            $verdict = songSoftDelete($db, $songId, $ed2UserId, $reason === '' ? null : $reason, $note);
+            if ($verdict['ok']) {
+                $deleted[] = $songId;
+            } else {
+                $failed[] = ['id' => $songId, 'error' => $verdict['error'], 'status' => $verdict['status']];
+            }
+        }
+
+        logActivity('song.bulk_delete', 'song', '', [
+            'count'   => count($ids),
+            'deleted' => count($deleted),
+            'failed'  => count($failed),
+            'reason'  => $reason === '' ? null : $reason,
+        ]);
+        ed2_respond(['ok' => true, 'deleted' => $deleted, 'failed' => $failed]);
         break;
     }
 
@@ -4829,7 +6521,9 @@ try {
     }
 
     /* ---- revision_list (GET) — revision history for a song, newest first
-           (metadata only; the full NewData snapshot is fetched on restore). ---- */
+           (metadata only; the before/after snapshot PAIR for one revision is
+           fetched via revision_get below; the full NewData snapshot alone is
+           fetched on restore). ---- */
     case 'revision_list': {
         $songId = trim((string)($_GET['songId'] ?? $_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
@@ -4855,6 +6549,241 @@ try {
         }
         $q->close();
         ed2_respond(['ok' => true, 'revisions' => $rows]);
+        break;
+    }
+
+    /* ---- revision_snapshots (GET) — the RAW decoded NewData of EVERY revision
+           for one song in ONE response (newest first), plus the window's base
+           pre-state and the field-key -> column map, so the client can compute
+           per-field BLAME ("who last changed this field, and when") by walking
+           the whole history with the ONE shipped normaliser (diffSnapshots()'s
+           shape logic, extended) — never a second server-side resolver (#1122,
+           rule #22).
+
+           Companion to revision_list (metadata only) and revision_get (ONE
+           before/after PAIR, with its before-ladder): this is the BULK raw read,
+           and — unlike revision_get — it carries NO before-ladder. Blame's
+           pre-state chain IS the consecutive NewData rows (ed2_touchRevision()'s
+           #1743-C2 chain rule below, api2.php:1983-1997), so `base` is simply the
+           OLDEST returned row's own PreviousData (already selected, zero extra
+           SQL) — the left side of the window's first pair, nothing more.
+
+           Ordering + limit BYTE-MIRROR revision_list (rule #35: one ordering,
+           not two): (CreatedAt, Id) DESC, default 50, max 200. We fetch limit+1
+           to set `truncated` (older rows exist beyond the window) without a
+           second COUNT.
+
+           `fieldMap` is DERIVED from ED2_META_FIELDS at runtime (never a
+           re-typed list) so the client can fold a legacy payload-shape lowercase
+           key (`title`) to its canonical column (`Title`) with NO JS copy of the
+           map. `noRollback` names the field keys whose metadata_field_update is
+           NOT a plain field write — `songbook` re-keys via songRelocate(), and
+           `hasAudio`/`hasSheetMusic` are DERIVED and ignore the sent value (rule
+           #44) — so the client renders those blame-only, with no Revert button.
+
+           A row whose NewData is NULL/undecodable is a ROW-LEVEL `null` (never a
+           409, unlike revision_get: there is a whole list to render around one
+           bad row). Pure read; no entitlement beyond the file-wide editor gate,
+           no logActivity — identical posture to revision_list. ---- */
+    case 'revision_snapshots': {
+        $songId = trim((string)($_GET['songId'] ?? $_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        $limit = (int)($_GET['limit'] ?? 50);
+        if ($limit < 1 || $limit > 200) { $limit = 50; }
+        $fetch = $limit + 1;   /* one extra row -> `truncated` without a COUNT */
+        $rows = [];
+        $q = $db->prepare(
+            'SELECT r.Id, r.Action, r.CreatedAt, r.UserId, u.Username, r.PreviousData, r.NewData
+               FROM tblSongRevisions r LEFT JOIN tblUsers u ON u.Id = r.UserId
+              WHERE r.SongId = ? ORDER BY r.CreatedAt DESC, r.Id DESC LIMIT ?'
+        );
+        $q->bind_param('si', $songId, $fetch);
+        $q->execute();
+        $res = $q->get_result();
+        while ($r = $res->fetch_assoc()) {
+            $nd = $r['NewData'] !== null ? json_decode((string)$r['NewData'], true) : null;
+            $rows[] = [
+                'id'        => (int)$r['Id'],
+                'action'    => (string)$r['Action'],
+                'createdAt' => (string)$r['CreatedAt'],
+                'userId'    => $r['UserId'] !== null ? (int)$r['UserId'] : null,
+                'username'  => $r['Username'] !== null ? (string)$r['Username'] : null,
+                'newData'   => is_array($nd) ? $nd : null,   /* row-level null; never a 409 */
+                '_prev'     => $r['PreviousData'],           /* internal: only the oldest row's is used, stripped below */
+            ];
+        }
+        $q->close();
+
+        /* limit+1 fetch: if the probe (oldest extra) row came back, older
+           history exists beyond this window. Drop it before building `base`. */
+        $truncated = count($rows) > $limit;
+        if ($truncated) { array_pop($rows); }
+
+        /* base = the OLDEST returned row's own PreviousData (last element, since
+           the order is newest-first) — the pre-state of the window's first pair.
+           No ladder (that is revision_get's job); a decode miss degrades to
+           baseSource:'none', a designed empty left side, never an error. */
+        $base = null; $baseSource = 'none';
+        if ($rows) {
+            $oldestPrev = $rows[count($rows) - 1]['_prev'];
+            if ($oldestPrev !== null) {
+                $decoded = json_decode((string)$oldestPrev, true);
+                if (is_array($decoded)) { $base = $decoded; $baseSource = 'previousData'; }
+            }
+        }
+        foreach ($rows as &$row) { unset($row['_prev']); }
+        unset($row);
+
+        $fieldMap = array_map(static fn(array $v): string => $v[0], ED2_META_FIELDS);
+
+        ed2_respond([
+            'ok'         => true,
+            'revisions'  => $rows,
+            'base'       => $base,
+            'baseSource' => $baseSource,   /* 'previousData' | 'none' (rule #20 vocabulary) */
+            'truncated'  => $truncated,
+            'fieldMap'   => $fieldMap,
+            'noRollback' => ['songbook', 'hasAudio', 'hasSheetMusic'],
+        ]);
+        break;
+    }
+
+    /* ---- revision_get (GET) — the before/after snapshot PAIR for ONE
+           revision, so a curator can see WHAT changed before committing to
+           Restore (#1628 item 4). Companion to revision_list (metadata only,
+           above) and revision_restore (writes, below) — never a third reader
+           of tblSongRevisions with its own resolution logic (rule #22).
+
+           ELI5: this is the one place that works out "what did the song look
+           like right before this edit, and right after it" so the browser
+           can just draw the two side by side — the browser never has to
+           guess or re-derive that itself.
+
+           DETAILED — the before-snapshot LADDER (rule #35: resolved ONCE,
+           here, server-side; the client only reads the answer + its
+           `beforeSource` label, never re-implements the chain):
+             1. This row's OWN `PreviousData`, when non-NULL and decodable —
+                the #1743-C2 chain (f18c54ac) populates this for every
+                revision `ed2_touchRevision()` has written since, verbatim
+                from whatever the immediately preceding row's NewData held.
+             2. Else the immediately OLDER revision's own `NewData` (one
+                extra bound SELECT, ordered `(CreatedAt, Id) DESC` — the SAME
+                ordering revision_list above uses — and excluding this row
+                itself) — the fallback for a pre-chain row whose
+                PreviousData was never populated, or one where PreviousData
+                failed to decode.
+             3. Else `null` — genuinely nothing recorded before this
+                revision: the song's very first revision, or an install with
+                no earlier row at all.
+           `beforeSource` names which rung answered as a VOCABULARY STRING
+           ('previousData' | 'priorRevision' | 'none') — never a boolean pair
+           (rule #20's discipline applied here in miniature) — so the client
+           can render "No earlier state recorded" for 'none' without
+           re-deriving which case it is.
+
+           `after` (this row's own NewData) 409s with the same "no snapshot"
+           wording revision_restore uses (below) when it is NULL/undecodable
+           — there is nothing to diff either side against. `before` failing
+           to resolve past rung 1/2 is NOT an error — it degrades to
+           beforeSource:'none', a designed rendering (plan §A.1), never a
+           thrown failure.
+
+           Three snapshot SHAPES coexist in NewData/PreviousData (see
+           ed2_touchRevision()'s doc-block below): the v2 full snapshot
+           `{song:{...}, components, credits, tags, links}`, a bare
+           tblSongs-row (the pre-#1743 v1 shape), or an old editor-payload
+           lowercase-keys shape. This endpoint returns whichever shape each
+           side actually is, untouched — normalising/diffing that is the
+           CLIENT's job (diffSnapshots() in v2/revisions-tab.js), never
+           this endpoint's. ---- */
+    case 'revision_get': {
+        $revisionId   = (int)($_GET['revisionId'] ?? 0);
+        $expectSongId = trim((string)($_GET['songId'] ?? ''));   // optional defense-in-depth
+        if ($revisionId <= 0) { ed2_respond(['ok' => false, 'error' => 'revisionId is required.'], 400); }
+
+        $sel = $db->prepare(
+            'SELECT r.Id, r.SongId, r.Action, r.CreatedAt, r.UserId, u.Username, r.PreviousData, r.NewData
+               FROM tblSongRevisions r LEFT JOIN tblUsers u ON u.Id = r.UserId
+              WHERE r.Id = ? LIMIT 1'
+        );
+        $sel->bind_param('i', $revisionId);
+        $sel->execute();
+        $row = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$row) { ed2_respond(['ok' => false, 'error' => 'Revision not found.'], 404); }
+
+        $songId = (string)$row['SongId'];
+        /* Guard against a client passing a revisionId from a different song —
+           the same defence-in-depth revision_restore applies (below,
+           $expectSongId). */
+        if ($expectSongId !== '' && $expectSongId !== $songId) {
+            ed2_respond(['ok' => false, 'error' => 'Revision does not belong to the expected song.'], 409);
+        }
+
+        $after = $row['NewData'] !== null ? json_decode((string)$row['NewData'], true) : null;
+        if (!is_array($after)) {
+            /* Same "no snapshot" semantics revision_restore uses below —
+               nothing to diff either side against. */
+            ed2_respond(['ok' => false, 'error' => 'This revision has no snapshot to restore.'], 409);
+        }
+
+        /* The before-snapshot ladder — see the doc-block above for the full
+           reasoning. $beforeSource stays null until a rung actually answers;
+           the response coalesces null -> the 'none' vocabulary string right
+           at the end (below), so 'none' never has to be a placeholder default
+           threaded through the middle of this logic — it is purely the
+           terminal, nothing-answered case, textually and logically last.
+
+           Rung 1: this row's own chained PreviousData. */
+        $before       = null;
+        $beforeSource = null;
+        if ($row['PreviousData'] !== null) {
+            $decodedPrev = json_decode((string)$row['PreviousData'], true);
+            if (is_array($decodedPrev)) {
+                $before       = $decodedPrev;
+                $beforeSource = 'previousData';
+            }
+        }
+        /* Rung 2: the immediately older revision row for this SongId, by the
+           SAME (CreatedAt, Id) DESC ordering revision_list uses — only
+           reached when rung 1 didn't answer (PreviousData NULL or
+           undecodable). */
+        if ($beforeSource === null) {
+            $createdAt = (string)$row['CreatedAt'];
+            $prior = $db->prepare(
+                'SELECT NewData FROM tblSongRevisions
+                  WHERE SongId = ? AND (CreatedAt < ? OR (CreatedAt = ? AND Id < ?))
+                  ORDER BY CreatedAt DESC, Id DESC LIMIT 1'
+            );
+            $prior->bind_param('sssi', $songId, $createdAt, $createdAt, $revisionId);
+            $prior->execute();
+            $priorRow = $prior->get_result()->fetch_assoc();
+            $prior->close();
+            if ($priorRow && $priorRow['NewData'] !== null) {
+                $decodedPrior = json_decode((string)$priorRow['NewData'], true);
+                if (is_array($decodedPrior)) {
+                    $before       = $decodedPrior;
+                    $beforeSource = 'priorRevision';
+                }
+            }
+        }
+        /* Rung 3 (implicit, resolved by the ?? below): neither rung
+           answered — $before stays null, $beforeSource is reported as
+           'none'. */
+
+        ed2_respond([
+            'ok'       => true,
+            'revision' => [
+                'id'        => (int)$row['Id'],
+                'action'    => (string)$row['Action'],
+                'createdAt' => (string)$row['CreatedAt'],
+                'userId'    => $row['UserId'] !== null ? (int)$row['UserId'] : null,
+                'username'  => $row['Username'] !== null ? (string)$row['Username'] : null,
+            ],
+            'after'        => $after,
+            'before'       => $before,
+            'beforeSource' => $beforeSource ?? 'none',
+        ]);
         break;
     }
 
@@ -4890,6 +6819,40 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1860 go-live — a restore can reintroduce identifiers a later
+           save had cleared, or clear ones a linked work still reflects;
+           re-run the Works auto-link so tblWorkSongs agrees with whatever
+           the restore actually wrote. Post-commit (ownTransaction=true);
+           re-READ the stored Ccli/Iswc rather than trusting $snap (rule
+           #35 — the snapshot is INPUT to ed2_applySongSnapshot(), not proof
+           of what landed).
+           @deleted-visible: identifier read (#1860) — ed2_songExists($db,
+           $songId) just above already confirmed this SongId exists
+           (deliberately visible to a soft-deleted row, by that function's
+           own reasoning); reading CCLI/ISWC by direct SongId to re-run the
+           work link is the same editor-write-path posture, never a listing.
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           a song in a publicly-disabled book is still fully editable here. */
+        $restoreIdStmt = $db->prepare('SELECT Ccli, Iswc FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $restoreIdStmt->bind_param('s', $songId);
+        $restoreIdStmt->execute();
+        $restoreIdRow = $restoreIdStmt->get_result()->fetch_assoc() ?: ['Ccli' => '', 'Iswc' => null];
+        $restoreIdStmt->close();
+        workAutolinkSafe($db, $songId, (string)($restoreIdRow['Ccli'] ?? ''), (string)($restoreIdRow['Iswc'] ?? ''), true);
+
+        /* #1862 — a restore round-trips the snapshot's OWN HasAudio/
+           HasSheetMusic/credit scalars (ed2_applySongSnapshot()'s generic
+           ED2_META_FIELDS loop has no special case for the two flags, and the
+           credit tables were just replaced too), so both derived denorms can
+           legitimately go stale the instant a restore lands. Same
+           "restore keeps the snapshot, then live truth immediately re-wins"
+           contract as the legacy v1 restore path (manage/editor/api.php's
+           song_restore case) — post-commit, own failure boundaries, neither
+           call ever throws. */
+        songMediaRecomputeFlags($db, $songId);
+        pdRecomputeForSong($db, $songId);
+
         logActivity('song.revision.restore', 'song', $songId, ['fromRevisionId' => $revisionId]);
         ed2_respond(['ok' => true, 'songId' => $songId]);
         break;

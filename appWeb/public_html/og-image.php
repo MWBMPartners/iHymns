@@ -41,11 +41,44 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #1840 §7 — Share Card Option B (the branded setlist band). Both
+   side-effect-free to require (no connection opened until actually called,
+   mirroring pdf_renderer.php's identical discipline for org_logo_helpers.php):
+   organisation_validation.php for ihymnsOrgBrandColourRgb()/
+   orgBrandColumnsExist(); org_logo_helpers.php for orgLogoListForOrg()/
+   orgLogoFetchServeRow()/orgLogoTableExists()/ihymnsOrgLogoResolveThemedAsset(). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken OG image (e.g. GD failure, SongData migration drift)
    surfaces in /manage/activity-log alongside other server errors. */
 installGlobalActivityLogHandlers('og_image');
+
+/* #1906 — defensive headers matching the qr.php / org-logo.php sibling image
+   endpoints. Set BEFORE the rate-limit exit below so even a 429 carries them.
+   nosniff stops a content-type-confusion sniff of the PNG bytes; the CSP
+   sandboxes a DIRECT navigation to this URL (a PNG needs nothing, so
+   `default-src 'none'; sandbox` is the tightest correct policy); no-referrer
+   keeps the ?song=/?setlist= id out of the outbound Referer. */
+header('X-Content-Type-Options: nosniff');
+header("Content-Security-Policy: default-src 'none'; sandbox");
+header('Referrer-Policy: no-referrer');
+
+/* #1906 — rate-limit the heaviest public render (fail-open, per-token/IP),
+   mirroring the qr.php / org-logo.php sibling image endpoints. og-image builds a
+   1200×630 truecolor canvas + TTF layout + icon resample + DB reads on EVERY
+   request, and a cache-busting query param (?song=X&_=rand) defeats the
+   Cache-Control max-age below — so without this, a varying-URL loop forces
+   unbounded fresh GD renders. Generous ceiling; real crawlers/unfurlers never
+   trip it. Placed before any output so a 429 carries no image content-type. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
+try {
+    enforceReadRateLimitKeyed('og_image', 240);
+} catch (\Throwable $e) {
+    /* fail-open — never let the limiter itself break the endpoint */
+}
 
 /* Cache for 24 hours — images rarely change */
 header('Cache-Control: public, max-age=86400');
@@ -91,6 +124,11 @@ $songInfo    = null;
 $bookInfo    = null;
 $setlistInfo = null;
 $mode        = 'generic';
+/* #1840 §7 — resolved ONLY for mode==='setlist'; null means "render the
+   card unbranded" (no org, no consent, no BrandColor, un-migrated install,
+   or any resolution failure — see _ogResolveSetlistBranding()'s own
+   doc-block for the full fail-open posture). */
+$setlistBrand = null;
 
 try {
     $songData = new SongData();
@@ -120,6 +158,10 @@ try {
             if (is_array($wire) && empty($wire['unavailable'])) {
                 $setlistInfo = $wire;   /* ['name','songs','arrangements','live','unavailable'] */
                 $mode = 'setlist';
+                /* #1840 §7.2 — org branding, own try/catch inside the
+                   resolver itself (never lets a branding failure blank the
+                   card — rule #28-C's fail-open posture). */
+                $setlistBrand = _ogResolveSetlistBranding($cleanId);
             }
         }
     }
@@ -275,6 +317,147 @@ function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold)
             imagedestroy($icon);
             imagettftext($img, 12, 0, (int)$iconX + 34, $brandY + 20, $grey, $fontBold, 'iHymns');
         }
+    }
+}
+
+/**
+ * #1840 §7.2 — resolve the org branding for a SHARED SETLIST card, or
+ * `null` when nothing should be branded. EVERY failure path here falls
+ * through to `null` (an unbranded, today's-behaviour card) — never a
+ * fatal, never a half-rendered image (rule #28-C's fail-open posture,
+ * mirrored from the content-access gate above).
+ *
+ * STRUCTURAL SCOPE (§7.1 of the plan): only a SETLIST card carries an
+ * identity chain to an org at all (`?setlist=<shareId>` ->
+ * `tblSharedSetlists.OwnerUserId` -> `tblOrganisationMembers`) — song and
+ * songbook og:image URLs carry no sharer identity, so this function is
+ * never called for those modes.
+ *
+ * PRIVACY GATE (§7.2 point 2): brands ONLY when the share link's OWN
+ * `ShowSharerName` consent is set — a branded band names the sharer's
+ * church far louder than a plain byline would, so this reuses the ONE
+ * consent the owner already gave per link rather than minting a second,
+ * parallel "show my church" flag (rule #44).
+ *
+ * NO `&org=` parameter exists anywhere in this flow — the org is derived
+ * SERVER-SIDE from the share row's owner, so a crafted og-image URL can
+ * only ever brand a card with the branding ITS OWN share row legitimately
+ * resolves to (never an attacker-chosen org).
+ *
+ * @return array{orgName:string, brandColor:string, logoBytes:?string, logoMime:?string}|null
+ */
+function _ogResolveSetlistBranding(string $shareId): ?array
+{
+    try {
+        $raw = sharedSetlistGet($shareId);
+        if (!is_array($raw) || empty($raw['_showSharerName'])) {
+            return null; // no per-link consent to name the sharer -> no consent to brand
+        }
+        $ownerUserId = $raw['_ownerUserId'] ?? null;
+        if (!$ownerUserId) {
+            return null; // legacy/anonymous share with no resolvable owner
+        }
+
+        $db = getDbMysqli();
+        if (!orgBrandColumnsExist($db)) {
+            return null; // un-migrated install — column-gated, rule #9
+        }
+
+        /* Owner's orgs, SAME order the my_organisations API uses (Name ASC)
+           — every surface agrees on "first org" — filtered to the first
+           with a non-NULL BrandColor. */
+        $stmt = $db->prepare(
+            'SELECT o.Id, o.Name, o.BrandColor
+               FROM tblOrganisationMembers m
+               JOIN tblOrganisations o ON o.Id = m.OrgId
+              WHERE m.UserId = ? AND o.IsActive = 1 AND o.BrandColor IS NOT NULL
+              ORDER BY o.Name ASC
+              LIMIT 1'
+        );
+        $stmt->bind_param('i', $ownerUserId);
+        $stmt->execute();
+        $org = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$org) {
+            return null; // no org of the owner's has set a brand colour
+        }
+
+        /* Never trust the stored value unchecked — re-run it through the
+           ONE normaliser even though it was validated at write time (a
+           stale row from before a stricter allowlist, or a hand-edited DB
+           row, must never reach GD unchecked). */
+        $normalisedColour = ihymnsOrgBrandColourNormalise((string)$org['BrandColor']);
+        if ($normalisedColour === false || $normalisedColour === null) {
+            return null;
+        }
+
+        /* Logo: ACTIVE rows, PNG only (GD cannot rasterise SVG), resolved
+           via the 'og-card' themed ladder (always 'dark' context — the
+           ground is the org's own brand colour). Bytes read DIRECTLY via
+           orgLogoFetchServeRow() — the SAME "never mPDF/GD self-request
+           over HTTP" doctrine _pdfInlineOrgLogo() (pdf_renderer.php)
+           documents — never an HTTP round-trip to org-logo.php from here. */
+        $logoBytes = null;
+        $logoMime  = null;
+        if (orgLogoTableExists($db)) {
+            $activeRows = array_values(array_filter(
+                orgLogoListForOrg($db, (int)$org['Id']),
+                static fn(array $r): bool => (int)$r['IsActive'] === 1 && (string)$r['Mime'] === 'image/png'
+            ));
+            $asset = ihymnsOrgLogoResolveThemedAsset(
+                array_map(
+                    static fn(array $r): array => ['kind' => (string)$r['Kind'], 'variant' => (string)$r['Variant']],
+                    $activeRows
+                ),
+                'og-card',
+                'dark'
+            );
+            if ($asset !== null) {
+                $row = orgLogoFetchServeRow($db, (int)$org['Id'], $asset['kind'], $asset['variant']);
+                if ($row !== null && !empty($row['ContentSanitised']) && (string)$row['Mime'] === 'image/png') {
+                    $logoBytes = (string)$row['ContentSanitised'];
+                    $logoMime  = (string)$row['Mime'];
+                }
+            }
+        }
+
+        return [
+            'orgName'    => (string)$org['Name'],
+            'brandColor' => $normalisedColour,
+            'logoBytes'  => $logoBytes,
+            'logoMime'   => $logoMime,
+        ];
+    } catch (\Throwable $e) {
+        error_log('[og-image] setlist branding resolve failed, rendering unbranded: ' . $e->getMessage());
+        return null;
+    }
+}
+
+/* #1906 — CONTENT-ACCESS GATE for the song card's lyric preview. The song
+   render below draws the first ~4 lyric lines — copyrighted content that MUST
+   obey the SAME gate every other read path runs (song-media.php, song.php,
+   contentGatingApply()); og-image was the one path that skipped it, so a
+   require_licence-restricted song's share card leaked the verse. On a DENY,
+   downgrade to the generic branding image (never the lyrics). Anonymous by
+   design — a social unfurler carries no auth; a present congregant's
+   ihymns_sf_presence_token cookie still rides the org CCLI licence. DORMANT
+   no-op today: with content_gating_enabled='0' the gate allows every song and
+   the card renders byte-identically (rule #28A). checkContentAccess is
+   fail-open internally, so a probe error also renders the song unchanged. */
+if ($mode === 'song' && $songId !== null) {
+    $ogPresence = null;
+    if (isset($_COOKIE['ihymns_sf_presence_token'])
+        && preg_match('/^[A-Za-z0-9_\-]{43}$/D', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+        $ogPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
+    }
+    try {
+        $ogGate = checkContentAccess('song', (string)$songId, null, 'PWA', $ogPresence);
+        if (empty($ogGate['allowed'])) {
+            $mode = 'generic';   // gated → branding card, not the lyric preview
+        }
+    } catch (\Throwable $e) {
+        /* fail-open — a gate probe error must not blank the share card (#28C) */
+        error_log('[og-image] content gate probe failed, rendering unchanged: ' . $e->getMessage());
     }
 }
 
@@ -454,9 +637,14 @@ elseif ($mode === 'setlist') {
     /* --- Song titles preview (up to 5) --- */
     $previewY = $lineY + 30;
     $maxSongs = min(5, $songCount);
+    /* #1840 §7.3 — the branded band occupies the bottom 84px (H-84..H); the
+       floor tightens from H-70 to H-110 so a title line can never sit
+       underneath it (unbranded mode is untouched — H-70, exactly as before
+       this feature). */
+    $previewFloor = ($setlistBrand !== null) ? $H - 110 : $H - 70;
     if ($maxSongs > 0 && isset($songData)) {
         for ($i = 0; $i < $maxSongs; $i++) {
-            if ($previewY > $H - 70) break; /* Leave room for branding */
+            if ($previewY > $previewFloor) break; /* Leave room for the band / branding */
             $sid = $songs[$i] ?? '';
             if (!is_string($sid)) continue;
 
@@ -488,8 +676,91 @@ elseif ($mode === 'setlist') {
         }
     }
 
-    /* --- App branding (bottom centre) --- */
-    drawBranding($img, $W, $H, $grey, $fontBold);
+    /* --- #1840 §7.3 — branded band (Share Card Option B), or the plain
+           App branding (bottom centre) when nothing resolved to brand. The
+           credit replaces drawBranding() in branded mode — never two
+           iHymns marks on the one card. --- */
+    if ($setlistBrand !== null) {
+        $bandY1 = $H - 84;
+        $bandY2 = $H;
+        $bandRgb = ihymnsOrgBrandColourRgb($setlistBrand['brandColor']);
+        $bandColor = imagecolorallocate($img, $bandRgb[0], $bandRgb[1], $bandRgb[2]);
+        imagefilledrectangle($img, 0, $bandY1, $W, $bandY2, $bandColor);
+
+        /* Contrast: a pale brand colour still gets a readable name/credit —
+           near-black on a light band, white on a dark one. */
+        $bandFg = ihymnsOrgBrandColourIsLight($bandRgb)
+            ? imagecolorallocate($img, 0x1e, 0x20, 0x30)
+            : $white;
+
+        $bandCenterY = (int)(($bandY1 + $bandY2) / 2);
+        $bandLeftX   = (int)$safeLeft + 30; // inside the crop-safe zone
+
+        /* "via iHymns" credit geometry — computed BEFORE the logo/org-name
+           on the left so the org-NAME fallback (below) can be constrained
+           to the space actually left over. A fixed "45% of $W" cap on the
+           name text ignored the credit's own footprint and could run
+           straight into it (caught by a rendering trial with a genuinely
+           long org name — never assume a percentage-of-canvas budget when
+           a SIBLING element on the same row has its own footprint). */
+        $creditText = 'via iHymns';
+        $creditBbox = imagettfbbox(12, 0, $fontBold, $creditText);
+        $creditTextW = abs($creditBbox[4] - $creditBbox[0]);
+        $creditIconSize = 20;
+        $creditTextX = (int)$safeRight - 30 - $creditTextW;
+        $creditIconX = $creditTextX - $creditIconSize - 8;
+
+        if ($setlistBrand['logoBytes'] !== null) {
+            /* Resample to max-height 56px, proportional, capped at
+               max-width ~240px (never a distorted logo). */
+            $logo = @imagecreatefromstring($setlistBrand['logoBytes']);
+            if ($logo !== false) {
+                $logoSrcW = imagesx($logo);
+                $logoSrcH = imagesy($logo);
+                if ($logoSrcW > 0 && $logoSrcH > 0) {
+                    $maxLogoH = 56;
+                    $maxLogoW = 240;
+                    $targetH = $maxLogoH;
+                    $targetW = (int)round($logoSrcW * ($targetH / $logoSrcH));
+                    if ($targetW > $maxLogoW) {
+                        $targetW = $maxLogoW;
+                        $targetH = (int)round($logoSrcH * ($targetW / $logoSrcW));
+                    }
+                    $logoY = $bandCenterY - (int)round($targetH / 2);
+                    /* imagealphablending()/imagesavealpha() are already set
+                       true on $img at canvas creation (top of file) — the
+                       resampled copy alpha-composites onto the band
+                       correctly with no extra toggling here. */
+                    imagecopyresampled($img, $logo, $bandLeftX, $logoY, 0, 0, $targetW, $targetH, $logoSrcW, $logoSrcH);
+                }
+                imagedestroy($logo);
+            }
+        } else {
+            /* No PNG logo resolves (SVG-only org, or nothing dark-capable
+               uploaded) -> the org NAME instead, in contrast text — still
+               branded, never a broken/illegible mark. Width-capped to
+               whatever space is left before the credit block (never the
+               credit's own footprint, per the note above); a 60px floor
+               keeps a pathologically narrow gap from truncating to nothing. */
+            $availableNameW = max(60, $creditIconX - $bandLeftX - 20);
+            $orgNameText = truncateText($setlistBrand['orgName'], 16, $fontBold, $availableNameW);
+            imagettftext($img, 16, 0, $bandLeftX, $bandCenterY + 6, $bandFg, $fontBold, $orgNameText);
+        }
+
+        /* "via iHymns" credit — right side of the safe zone inside the band
+           (geometry already computed above). */
+        $creditIconPath = __DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'icon-512.png';
+        if (file_exists($creditIconPath)) {
+            $creditIcon = imagecreatefrompng($creditIconPath);
+            if ($creditIcon) {
+                imagecopyresampled($img, $creditIcon, $creditIconX, $bandCenterY - (int)($creditIconSize / 2), 0, 0, $creditIconSize, $creditIconSize, imagesx($creditIcon), imagesy($creditIcon));
+                imagedestroy($creditIcon);
+            }
+        }
+        imagettftext($img, 12, 0, $creditTextX, $bandCenterY + 4, $bandFg, $fontBold, $creditText);
+    } else {
+        drawBranding($img, $W, $H, $grey, $fontBold);
+    }
 }
 
 /* =========================================================================

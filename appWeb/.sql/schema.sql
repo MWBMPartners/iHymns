@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS tblPlaces (
 CREATE TABLE IF NOT EXISTS tblSongbooks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Abbreviation    VARCHAR(10)     NOT NULL UNIQUE,
+    IlId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILB + 10 zero-padded digits, e.g. ILB0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     DisplayAbbr     VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Optional free-text display label shown in place of Abbreviation (any chars incl. - _ :); Abbreviation stays the alphanumeric SongId prefix. NULL = show Abbreviation (#1332).',
     Name            VARCHAR(255)    NOT NULL,
     SongCount       INT UNSIGNED    NOT NULL DEFAULT 0,
@@ -226,6 +227,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_DisplayOrder (DisplayOrder),
     INDEX idx_ParentSongbook (ParentSongbookId),
     INDEX idx_PublicationCityId (PublicationCityId),
@@ -267,9 +269,10 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SongId              VARCHAR(20)     NOT NULL UNIQUE COMMENT 'Canonical ID, e.g. CP-0001',
     PublicId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'Opaque stable permalink id (IHUID, #1343-B); Crockford base32, uppercase, no I/L/O/U/0/1. Location-independent — survives songbook move/renumber. SongId stays the PK; this is additive.',
+    IlId                VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILS + 10 zero-padded digits, e.g. ILS0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
-    NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title (iconv ASCII//TRANSLIT + mb_strtolower + unicode-property strip via ihymns_normalize_title()) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL 8 cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
+    NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title via ihymns_normalize_title() (Unicode NFKD, strip combining marks, lowercase, fold special letters; iconv//TRANSLIT fallback when ext-intl is absent) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
     Subtitle            VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Optional song subtitle (#1741 P1)',
     Disambiguation      VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named songs (#1741 P1)',
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation; the songbook NAME is read live via JOIN to tblSongbooks.Name (de-normalised SongbookName dropped in WS-E #1013 ph2)',
@@ -277,6 +280,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
     CopyrightYears      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1); Copyright stays as the legacy as-printed denorm string and is NOT auto-parsed into this + CopyrightHolder',
     CopyrightHolder     VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1); see CopyrightYears comment re: the legacy Copyright column',
+    CopyrightHolderId   INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblPublishers.Id (#1864 one-pass rider for the #1862 family, rule #20); DORMANT — no reader/writer yet. CopyrightHolder stays the JOIN-free denorm display mirror. FK added via trailing ALTER — tblPublishers is defined later in this file',
     FirstPublishedYear  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymns predate it. Same column added to tblWorks in the same P1 batch (Song AND Work editors both need it, rule #20)',
     /* Composition / first-performance origin (places sweep #2). The
        VARCHAR mirror keeps reads JOIN-free; the FK lets the future
@@ -292,6 +296,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Verified            TINYINT(1)      NOT NULL DEFAULT 0,
     LyricsPublicDomain  TINYINT(1)      NOT NULL DEFAULT 0,
     MusicPublicDomain   TINYINT(1)      NOT NULL DEFAULT 0,
+    LyricsPdFromYear    SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'First calendar year the LYRICS are suggested public domain under life+70 (#1862): MAX(YEAR(DeathDate)) over tblSongWriters+tblSongAdaptors+tblSongTranslators, +71. NULL = cannot conclude (no credits, or any contributor unresolved/undated). Denorm, recomputed on credit/death-date change; a SUGGESTION only — never auto-sets LyricsPublicDomain',
+    MusicPdFromYear     SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Same as LyricsPdFromYear (#1862) for the MUSIC part: MAX(YEAR(DeathDate)) over tblSongComposers+tblSongArrangers, +71. NULL = cannot conclude. Denorm; a SUGGESTION only — never auto-sets MusicPublicDomain',
     LyricsRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song LYRICS-rights requirement FACT (#1769 P1, Model 2): tblLicenceTypes.LicenceKey a viewer must hold (via their org licence set or Service-Mode presence) for gated lyric actions on this song. NULL = no per-song requirement — plan caps + LyricsPublicDomain alone govern. NO FK, degrade-safe like tblUsers.AccessTier: an unknown or retired key degrades to no-requirement, never blocks a save or read. DORMANT until the P2 resolver reads it',
     MusicRightsLicenceKey VARCHAR(30) NULL DEFAULT NULL COMMENT 'Per-song MUSIC-rights requirement FACT (#1769 P1 / #1768): tblLicenceTypes.LicenceKey required for music-reproduction actions (chord display, sheet music, MusicXML, MIDI — plan Q3: MIDI counts). NULL = no per-song requirement — plan caps + MusicPublicDomain alone govern. NO FK (degrade-safe, see LyricsRightsLicenceKey). Song-grain first (#1768 Q2); the arrangement-grain override is the reserved pair on tblSongArrangements. DORMANT until the P2 resolver reads it',
     Availability        VARCHAR(20)     NOT NULL DEFAULT 'available' COMMENT 'available | paid_only | unavailable (#1090 audit). Owner-driven rights gate read by content_access.php — distinct from the blanket PD flags; VARCHAR not ENUM',
@@ -322,6 +328,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_NormalizedTitle   (NormalizedTitle),
     INDEX idx_TuneName          (TuneName),
     INDEX idx_TuneId            (TuneId),
+    INDEX idx_CopyrightHolderId (CopyrightHolderId),
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
@@ -331,10 +338,13 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_MusicRightsLicence  (MusicRightsLicenceKey),
     INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
+    UNIQUE KEY uq_IlId          (IlId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
     FULLTEXT ft_LyricsTextFolded (LyricsTextFolded),
+    FULLTEXT ft_NormalizedTitle (NormalizedTitle),
+    FULLTEXT ft_NormTitleLyricsFolded (NormalizedTitle, LyricsTextFolded),
 
     /* Why the FK targets Abbreviation and not tblSongbooks.Id: SongbookAbbr IS
        the SongId prefix ("MP" in MP-1008), so the natural key is what every
@@ -536,6 +546,7 @@ CREATE TABLE IF NOT EXISTS tblMusicians (
        numeric suffixes so two "John Smith" rows still map to two
        distinct slugs. Used for the public /people/<slug> page. */
     Slug            VARCHAR(255)    NULL UNIQUE,
+    IlId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILM + 10 zero-padded digits, e.g. ILM0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     MusicBrainzArtistMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Artist MBID (#1090 P6) — typed home for artist dedup/enrichment, vs a parsed external-link URL',
     /* Special-case + Group flags (#584 / #585) — distinguish
        Anonymous / Traditional / Public Domain / Unknown ("special
@@ -581,6 +592,7 @@ CREATE TABLE IF NOT EXISTS tblMusicians (
 
     UNIQUE KEY uk_Name (Name),
     UNIQUE KEY uq_MbArtist (MusicBrainzArtistMBID),
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_Name (Name),
     INDEX idx_Slug (Slug),
     INDEX idx_BirthPlaceId (BirthPlaceId),
@@ -717,13 +729,19 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     Number      INT UNSIGNED    NOT NULL COMMENT 'Component number (e.g., verse 1, verse 2)',
     SortOrder   INT UNSIGNED    NOT NULL COMMENT 'Display order within the song',
     Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
+    SourceWorkId INT UNSIGNED   NULL DEFAULT NULL COMMENT 'Optional provenance: the Work this section excerpts (medley stitching, #1860 §3.6b). Links the WORK, not a songbook song, so it survives songbook re-keys (#1679). NULL = whole-song default (the song''s own tblWorkSongs membership). DORMANT until Phase 5 wires component_upsert',
+    Label       VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional custom DISPLAY name for this section, overriding the derived "Type Number" heading (e.g. a Zulu verse shown as "isiZulu", a "Kyrie"). DISPLAY-ONLY: Type stays authoritative for CSS highlighting, arrangement resolution, chorus-repeat and machine-export section keywords. NULL = derive from Type+Number (stored NULL when a typed label equals the derived name, rule #27). Rendered inside the section''s own lang/dir context (#858). Per-section override sibling of Language (#858) and SourceWorkId (#1860 §3.6b). DORMANT until the #1860 Phase-5 wiring reads it',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),
+    INDEX idx_SourceWork    (SourceWorkId),
 
     CONSTRAINT fk_Components_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE
+    -- fk_Component_SourceWork is a TRAILING ALTER further down this file
+    -- (tblWorks is declared ~2400 lines later) — see fk_Works_Tune's
+    -- neighbouring comment for why.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -1205,6 +1223,8 @@ CREATE TABLE IF NOT EXISTS tblOrganisations (
     EnforceIdleTimeout TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = the org LOCKS LiveIdleTimeoutMins for its members (their personal value is ignored). Only meaningful when LiveIdleTimeoutMins is non-NULL (#1770 req 5)',
     SetlistEditAudience VARCHAR(20) NULL DEFAULT NULL COMMENT 'G4-org #1791: this org''s preference for members'' set-list EDIT links — anyone | authenticated | NULL (no org opinion). App-validated VARCHAR vocab.',
     EnforceSetlistEditAudience TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'G4-org #1791: 0 = SetlistEditAudience is an advisory default a member may loosen; 1 = mandatory cap (a member''s edit links can never be more open than SetlistEditAudience). Mirrors EnforceIdleTimeout (#1770).',
+    BrandColor      VARCHAR(9)      NULL DEFAULT NULL COMMENT 'Org brand colour as a strict hex token — #rrggbb or #rrggbbaa, lowercase, app-validated by ihymnsOrgBrandColourNormalise() (includes/organisation_validation.php, #1840). NULL = no brand colour; every branded surface (OG share card band) stays dormant',
+    BrandJson       JSON            NULL DEFAULT NULL COMMENT 'Dormant grab-bag for future brand tokens (secondaryColor, darkColor, font…) — growable vocabulary is JSON, never new columns (rule #20/#28, the tblOrganisationLogos.MetaJson precedent). Nothing reads it yet (#1840)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -2070,9 +2090,10 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.'),
-    ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
-    ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
+    ('captcha_provider', 'none', 'CAPTCHA provider: none, turnstile, hcaptcha, recaptcha_v2 (#947/#340). Verified server-side by includes/captcha.php — dormant until a provider and both keys are configured on /manage/configuration and at least one form is ticked.'),
+    ('captcha_site_key', '', 'CAPTCHA provider public site key (#947/#340) — safe to send to browsers; used to draw the widget. Dormant until a provider is configured.'),
+    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key (#947/#340) — encrypted at rest (secretSettingKeys()), server-proxied only, never sent to a browser. Dormant until a provider is configured.'),
+    ('captcha_enabled_forms', '', 'CSV of forms the CAPTCHA challenge is enforced on (#947/#340): registration, login, password_reset, email_login, song_request, manage_login. Empty = none. App-validated against captchaFormKeys(); unknown keys ignored.'),
     ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
     ('ads_provider', 'none', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom'),
     ('ads_publisher_id', '', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built'),
@@ -2238,6 +2259,7 @@ CREATE TABLE IF NOT EXISTS tblBulkImportJobs (
     TempPath                 VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Server-side path to the moved temp file; cleared on completion',
     SizeBytes                BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Original upload size in bytes (display only)',
     Status                   ENUM('queued','running','completed','failed') NOT NULL DEFAULT 'queued',
+    DryRun                   TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Preview-only flag (#1911) — set from the import_zip request at job-creation time and read back by the async worker (post-fastcgi_finish_request) and by import_zip_status polls, since neither can see the per-request _bulkImport_dryRun() static flag that gates single-file import (#1674). 1 = the worker must not write songs/songbooks or run songbook maintenance; SongsCreated/SongsSkippedExisting keep their normal meaning but describe what WOULD happen. Column-existence-gated everywhere it is read; an un-migrated install keeps the pre-#1911 422 refusal for dryRun=1 ZIP imports',
     TotalEntries             INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Real .txt entries the worker has classified for processing',
     ProcessedEntries         INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Counter the worker bumps every ~50 rows so the polling endpoint can render a percentage',
     SongbooksCreatedJson     JSON NULL COMMENT 'Result summary — list of abbrevs created in this run',
@@ -2537,6 +2559,7 @@ CREATE TABLE IF NOT EXISTS tblSearchQueries (
 CREATE TABLE IF NOT EXISTS tblCatalogues (
     Id           INT UNSIGNED      AUTO_INCREMENT PRIMARY KEY,
     Slug         VARCHAR(255)      NOT NULL,
+    IlId         VARCHAR(16)       NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILC + 10 zero-padded digits, e.g. ILC0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Title        VARCHAR(255)      NOT NULL,
     Description  TEXT              NULL,
     SortOrder    SMALLINT          NOT NULL DEFAULT 0,
@@ -2550,6 +2573,7 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     OpenLibraryWorkId     VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Work id for the collection, e.g. OL102749W (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryWorkId',
     OpenLibraryEditionId  VARCHAR(20) NULL DEFAULT NULL COMMENT 'Open Library Edition id for the collection, e.g. OL7357422M (Feature 3, epic #1765); mirrors tblSongbooks.OpenLibraryEditionId',
     UNIQUE KEY uk_Slug (Slug),
+    UNIQUE KEY uq_IlId (IlId),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -3085,6 +3109,7 @@ CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongMedia (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    IlId            VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILD + 10 zero-padded digits, e.g. ILD0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     SongId          VARCHAR(20)  NOT NULL,
     Kind            VARCHAR(20)  NOT NULL COMMENT 'audio | sheet-music | midi | musicxml | notation-source | pdf (app-validated via SongMediaStorage::allKinds(); widened from ENUM #1090 so new media kinds — e.g. Forte .fnf notation-source — need no ALTER)',
     StorageBackend  ENUM('filesystem','database') NOT NULL,
@@ -3100,6 +3125,7 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     UploadedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    UNIQUE KEY uq_IlId  (IlId),
     INDEX idx_song_kind (SongId, Kind, SortOrder),
     INDEX idx_kind      (Kind),
     INDEX idx_sha256    (Sha256),
@@ -3136,6 +3162,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     MusicBrainzWorkMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID (composition identity). Lives on the work, NOT the recording-level identity map, so work-dedup has one home (#1066 Theme D / stress-C2)',
     Title         VARCHAR(255) NOT NULL,
     Slug          VARCHAR(80)  NOT NULL,
+    IlId          VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILW + 10 zero-padded digits, e.g. ILW0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     /* Identity + descriptive fields (#1741 P1 §2.2). Ccli is NULL (not '')
        so absent values coexist under uq_ccli — every NULL is distinct.
        TuneName/TuneId mirror the tblSongs pair; fk_Works_Tune is a
@@ -3149,6 +3176,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     FirstPublishedYear SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymn works predate it. Same column added to tblSongs in the same P1 batch (Song AND Work editors both need it, rule #20)',
     CopyrightYears VARCHAR(100) NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1)',
     CopyrightHolder VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1)',
+    CopyrightHolderId INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblPublishers.Id (#1864); mirrors TuneId — CopyrightHolder stays the JOIN-free denorm display mirror, written in lockstep by publisherResolvePickedOrCreate(). FK added via trailing ALTER — tblPublishers is defined later in this file',
     Notes         TEXT         NULL,
     /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
     OriginCity    VARCHAR(255) NULL,
@@ -3161,10 +3189,12 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_mbwork (MusicBrainzWorkMBID),
     UNIQUE KEY uq_ccli   (Ccli),
     UNIQUE KEY uq_bowi   (Bowi),
+    UNIQUE KEY uq_IlId   (IlId),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
     INDEX      idx_TuneId (TuneId),
+    INDEX      idx_CopyrightHolderId (CopyrightHolderId),
 
     CONSTRAINT fk_work_parent
         FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
@@ -3218,6 +3248,60 @@ CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
     CONSTRAINT fk_link_type_work
         FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorkExternalIds (#1860 §3.5) — extensible work-grain external-ID
+-- overflow. Mirrors tblSongExternalIds with two deliberate deltas: the
+-- UNIQUE is TABLE-WIDE (IdType, IdValue) — a work identifier maps to at
+-- most ONE work globally, unlike recording ids which repeat per song —
+-- and there is no IdScope column (everything here is work-grain by
+-- construction). DORMANT until a WORK_IDENTIFIER_TYPES storage entry
+-- flips to this table (migrate-work-identity-model.php).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkExternalIds (
+    Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    WorkId    INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — the composition this identifier belongs to (#1860 §3.5)',
+    IdType    VARCHAR(40)  NOT NULL COMMENT 'Registry/society identifier key, e.g. ascap | bmi | prs | … — app-validated against includes/media_identifiers.php WORK_IDENTIFIER_TYPES (VARCHAR not ENUM, rule #20). The four column-backed keys (iswc/ccli/bowi/musicbrainz-work) stay on tblWorks'' own uq_* columns — this table is the extensible overflow, never their replacement',
+    IdValue   VARCHAR(191) NOT NULL COMMENT 'The identifier value as issued by the authority. VARCHAR(191) keeps the utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit (mirrors tblSongExternalIds.IdValue)',
+    Source    VARCHAR(40)  NULL DEFAULT NULL COMMENT 'Provenance system that supplied this row, e.g. manual | musicbrainz | luminate (free text, mirrors tblSongExternalIds.Source)',
+    SourceRef VARCHAR(191) NULL DEFAULT NULL COMMENT 'External primary id from Source for idempotent re-import / dedup; NULL for manual entry — the (Source, SourceRef) pattern, rule #20',
+    CreatedAt TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Type_Value (IdType, IdValue),
+    INDEX      idx_Work      (WorkId),
+
+    CONSTRAINT fk_WorkExtIds_Work
+        FOREIGN KEY (WorkId) REFERENCES tblWorks(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Key/value work-grain external-ID overflow (#1860 §3.5). Two deliberate deltas from tblSongExternalIds: the UNIQUE is TABLE-WIDE (IdType, IdValue) — a work identifier maps to at most ONE work globally, unlike recording ids which repeat per song — and there is no IdScope column (everything here is work-grain by construction). DORMANT until a WORK_IDENTIFIER_TYPES storage entry flips to this table.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblWorkComponents (#1860 §3.6) — medley composition. A medley Work (with
+-- its OWN CCLI) CONTAINS independent constituent Works — many-to-many,
+-- deliberately NOT ParentWorkId (which means is-a-variant-of, §3.2). App-
+-- level guards (MedleyWorkId <> ComponentWorkId, bounded-depth cycle
+-- reject) live in the write core, the DB cannot express them. DORMANT
+-- until the /manage/works constituent editor lands (Phase 5).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblWorkComponents (
+    MedleyWorkId    INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — the medley (a Work with its OWN CCLI) that CONTAINS the constituent works (#1860 §3.6). M:N contains — deliberately NOT ParentWorkId, which means is-a-variant-of (§3.2)',
+    ComponentWorkId INT UNSIGNED NOT NULL COMMENT 'FK to tblWorks.Id — an independent constituent work; keeps its own tblWorkSongs memberships and identity untouched',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Order of the constituent inside the medley (mirrors tblWorkSongs.SortOrder)',
+    Note            VARCHAR(255) NULL COMMENT 'Optional curator note (mirrors tblWorkSongs.Note)',
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (MedleyWorkId, ComponentWorkId),
+    INDEX idx_component (ComponentWorkId),
+
+    CONSTRAINT fk_medley_work
+        FOREIGN KEY (MedleyWorkId)    REFERENCES tblWorks(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_component_work
+        FOREIGN KEY (ComponentWorkId) REFERENCES tblWorks(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Medley composition (#1860 §3.6): a medley Work CONTAINS independent constituent Works (M:N). App-level guards live in the write core, the DB cannot express them: MedleyWorkId <> ComponentWorkId, bounded-depth cycle reject. DORMANT until the /manage/works constituent editor lands (Phase 5).';
 
 
 -- ============================================================================
@@ -3739,6 +3823,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     Id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Name                VARCHAR(120) NOT NULL COMMENT 'Canonical tune name, e.g. HYFRYDOL',
     Slug                VARCHAR(140) NOT NULL COMMENT 'URL-safe handle',
+    IlId                VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILT + 10 zero-padded digits, e.g. ILT0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Subtitle            VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional tune subtitle (#1741 P1)',
     Disambiguation      VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named tunes (#1741 P1)',
     MeterCode           VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Hymn metre, e.g. 87.87 D | CM | LM | 86.86 (VARCHAR not ENUM)',
@@ -3751,6 +3836,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     UNIQUE KEY uq_Name   (Name),
     UNIQUE KEY uq_Slug   (Slug),
     UNIQUE KEY uq_MbWork (MusicBrainzWorkMBID),
+    UNIQUE KEY uq_IlId   (IlId),
     INDEX      idx_Meter (MeterCode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Hymn tunes as first-class entities (#1090 P4).';
@@ -3843,6 +3929,16 @@ ALTER TABLE tblWorks
     ADD CONSTRAINT fk_Works_Tune
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
+-- Back-reference FK from tblSongComponents.SourceWorkId -> tblWorks (#1860
+-- §3.6b; added here for the same reason as fk_Works_Tune immediately above:
+-- tblSongComponents is declared before tblWorks in this file, so the FK
+-- cannot be inline. The column + index are declared inline in the
+-- tblSongComponents block above). ON DELETE SET NULL, never CASCADE —
+-- deleting a Work must never delete a song's section.
+ALTER TABLE tblSongComponents
+    ADD CONSTRAINT fk_Component_SourceWork
+        FOREIGN KEY (SourceWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL;
+
 -- Back-reference FK from tblSongs.DeletedBy -> tblUsers (added here rather than
 -- inline for the same reason as fk_Songs_Tune: tblSongs is created before
 -- tblUsers in this file; the columns + index are declared inline in the
@@ -3876,6 +3972,7 @@ CREATE TABLE IF NOT EXISTS tblPublishers (
     ParentId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'Self-FK: imprint / catalogue grouping — an imprint points to its parent publisher (mirrors tblWorks.ParentWorkId / tblSongTags.ParentId). NULL = top-level. (#93)',
     Name           VARCHAR(255) NOT NULL COMMENT 'Publisher display name (company name, or the person''s name for a person-publisher).',
     Slug           VARCHAR(120) NOT NULL COMMENT 'URL-safe handle, unique.',
+    IlId           VARCHAR(16)  NULL DEFAULT NULL COMMENT 'iLyrics internal id (#1860 §2.2): ILP + 10 zero-padded digits, e.g. ILP0000012345 — sequential catalogue-master identity minted by ilidAllocate() in includes/ilyrics_id.php. Move/rename-stable (never re-keyed). NULL until the Phase-2 backfill/mint-on-create; DORMANT in Phase 1 (no readers).',
     Kind           VARCHAR(20)  NOT NULL DEFAULT 'company' COMMENT 'Publisher kind — app-validated vocabulary, VARCHAR not ENUM (rule #20): company | person | imprint | society | other.',
     MusicianId     INT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional FK to tblMusicians for a person-publisher, so a musician who also publishes is not duplicated. NULL for a pure company. (#93)',
     Subtitle       VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional publisher subtitle / tagline.',
@@ -3892,6 +3989,7 @@ CREATE TABLE IF NOT EXISTS tblPublishers (
     UNIQUE KEY uq_Slug     (Slug),
     UNIQUE KEY uq_Ipi      (Ipi),
     UNIQUE KEY uq_Isni     (Isni),
+    UNIQUE KEY uq_IlId     (IlId),
     INDEX      idx_Parent   (ParentId),
     INDEX      idx_Kind     (Kind),
     INDEX      idx_Musician (MusicianId),
@@ -3936,6 +4034,42 @@ CREATE TABLE IF NOT EXISTS tblSongbookPublishers (
         FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Songbook<->publisher many-to-many for multi-publisher copyright (#93).';
+
+-- ----------------------------------------------------------------------------
+-- tblSongCopyrightHolders (#1900, Wave 4 Commit C7) — the many-to-many between
+-- songs and publishers (multi-holder copyright). Mirrors tblSongbookPublishers
+-- exactly in shape; Role is an app-validated VARCHAR vocabulary (not ENUM,
+-- rule #20) — a DISTINCT vocab from tblSongbookPublishers.Role, since a
+-- copyright holder is about ownership of the SONG's rights, not a role on a
+-- SONGBOOK. SongId's FK is ON UPDATE CASCADE (not just ON DELETE CASCADE) so
+-- the songbook-relocate re-key (rule #1690/#1695) never freezes a song that
+-- has holder rows. PublisherId is ON DELETE RESTRICT (unlike the CASCADE on
+-- tblSongbookPublishers.PublisherId) — an actively-cited holder must not
+-- silently vanish if its registry row is deleted. Nullable ValidFrom/ValidTo
+-- reserve rights-window tracking so a future need costs no ALTER (rule #20
+-- forward-looking). Dormant until Wave 4 Commit C8 wires the picker + API.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongCopyrightHolders (
+    Id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId       VARCHAR(20)  NOT NULL,
+    PublisherId  INT UNSIGNED NOT NULL,
+    Role         VARCHAR(30)  NOT NULL DEFAULT 'holder' COMMENT 'Role this publisher plays in this song''s copyright — app-validated, VARCHAR not ENUM (rule #20): holder | co-holder | administrator | publisher. Default holder.',
+    SortOrder    INT UNSIGNED NOT NULL DEFAULT 0,
+    Note         VARCHAR(255) NULL DEFAULT NULL,
+    ValidFrom    DATE         NULL DEFAULT NULL COMMENT 'Reserved (#1900): start of this holder''s rights window for this song. Dormant until a rights-window feature lands.',
+    ValidTo      DATE         NULL DEFAULT NULL COMMENT 'Reserved (#1900): end of this holder''s rights window for this song. Dormant until a rights-window feature lands.',
+    CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_song_pub_role (SongId, PublisherId, Role),
+    INDEX      idx_sch_song (SongId),
+    INDEX      idx_sch_pub  (PublisherId),
+
+    CONSTRAINT fk_CopyHolders_Song
+        FOREIGN KEY (SongId)      REFERENCES tblSongs(SongId)   ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_CopyHolders_Pub
+        FOREIGN KEY (PublisherId) REFERENCES tblPublishers(Id)  ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Song<->publisher many-to-many for multi-holder copyright (#1900).';
 
 -- ----------------------------------------------------------------------------
 -- tblPublisherAliases (#93) — alternate names a publisher is known by (former
@@ -3983,6 +4117,21 @@ CREATE TABLE IF NOT EXISTS tblPublisherExternalLinks (
         FOREIGN KEY (LinkTypeId)  REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-publisher external-link rows (#93), mirroring tblTuneExternalLinks.';
+
+-- Back-reference FKs from tblWorks.CopyrightHolderId / tblSongs.CopyrightHolderId
+-- -> tblPublishers (#1864; added here for the same reason as fk_Works_Tune /
+-- fk_Publisher_Parent above: both tblWorks and tblSongs are declared before
+-- tblPublishers in this file, so neither FK can be inline. The columns +
+-- indexes are declared inline in their respective CREATE TABLE blocks
+-- above). ON DELETE SET NULL, never CASCADE — deleting a publisher must
+-- never delete a Work or a Song.
+ALTER TABLE tblWorks
+    ADD CONSTRAINT fk_Works_CopyrightHolder
+        FOREIGN KEY (CopyrightHolderId) REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+ALTER TABLE tblSongs
+    ADD CONSTRAINT fk_Songs_CopyrightHolder
+        FOREIGN KEY (CopyrightHolderId) REFERENCES tblPublishers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on
@@ -5339,6 +5488,148 @@ CREATE TABLE IF NOT EXISTS tblIaImportCandidates (
     INDEX idx_Item_Run (Identifier, RunSha)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Segmented OCR candidates + reconcile verdicts for the #94 audit; Phase-2 import queue (dormant).';
+
+-- ----------------------------------------------------------------------------
+-- tblIlyricsIdSequence (#1860) — per-entity-type allocator for the sequential
+-- IL* internal ids. Created + seeded by migrate-ilyrics-internal-ids.php;
+-- DORMANT until Phase 2.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIlyricsIdSequence (
+    EntityType VARCHAR(20)     NOT NULL COMMENT 'song | work | musician | tune | publisher | catalogue | songbook | document — app-validated against IHYMNS_ILID_TYPES in includes/ilyrics_id.php (VARCHAR not ENUM, rule #20; the internal type stays catalogue, never collection — rule #24)',
+    Prefix     VARCHAR(4)      NOT NULL COMMENT 'ILS | ILW | ILM | ILT | ILP | ILC | ILB | ILD — informational denorm of IHYMNS_ILID_TYPES; the map is the source of truth',
+    NextValue  BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Next candidate number for this type. The counter is a SEED, not the claim set — ilidAllocate() claim-checks the entity table''s uq_IlId before returning (restore-safety, #1860 §6)',
+    UpdatedAt  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (EntityType)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-entity-type allocator for the sequential IL* internal ids (#1860 §2.3). One row per entity family; row-level FOR UPDATE serialises same-type mints only. Seeded by migrate-ilyrics-internal-ids.php; read/written ONLY by ilidAllocate().';
+
+-- ----------------------------------------------------------------------------
+-- tblQrCache (#1920) — server-side cache of CueRCode-generated QR images,
+-- keyed by a payload+options hash. Created by migrate-add-qr-cache.php;
+-- DORMANT until #1920 C3's read-through (cuercodeGenerateCached()) lands —
+-- schema-only until then, provably inert.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblQrCache (
+    CacheKey     CHAR(64)      NOT NULL COMMENT 'sha256 hex over the canonical payload+normalised-options JSON minted by cuercodeCacheKey() — the ONE key derivation (#1920)',
+    Payload      VARCHAR(1024) NOT NULL COMMENT 'the encoded text/URL (bounded by CUERCODE_MAX_PAYLOAD_LEN); informational/debug — CacheKey is authoritative',
+    ParamsJson   JSON          NOT NULL COMMENT 'the canonical normalised option map the key was derived from (format/size/ecc/type + optional colours today); a future option lands in the hash + here with NO schema change (rule #20)',
+    Mime         VARCHAR(100)  NOT NULL COMMENT 'Content-Type CueRCode answered with (image/svg+xml, image/png)',
+    Format       VARCHAR(10)   NOT NULL COMMENT 'svg | png today; VARCHAR not ENUM (rule #20)',
+    Bytes        MEDIUMBLOB    NOT NULL COMMENT 'the QR image bytes exactly as CueRCode returned them; served verbatim',
+    ByteLength   INT UNSIGNED  NOT NULL COMMENT 'strlen(Bytes), denormed so size accounting never reads blobs',
+    CreatedAt    DATETIME      NOT NULL COMMENT 'UTC mint instant; DATETIME not TIMESTAMP (rule #20) so TTL pruning never re-reads through a session zone',
+    LastAccessAt DATETIME      NULL DEFAULT NULL COMMENT 'DORMANT (#1920 one-pass, rule #20): reserved for a future LRU policy; v1 writes nothing here — TTL-on-CreatedAt is the shipped eviction',
+
+    PRIMARY KEY (CacheKey),
+    INDEX idx_CreatedAt (CreatedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Server-side cache of CueRCode-generated QR images, keyed by payload+options hash (#1920).';
+
+
+-- =====================================================================
+-- PARTNER-EVENT OUTBOUND WEBHOOKS (#1909)
+--
+-- ELI5: external systems (partner churches, sibling projects) subscribe to
+-- iHymns events (a song changed, a set-list was shared, a service went live)
+-- and receive signed HTTP POST callbacks with retry + dead-lettering.
+--
+-- Three dormant tables (design: .claude/webhooks-1909-design.md §4). Every
+-- table carries a Channel column filtered in EVERY query — the 3 docroots share
+-- ONE MySQL (rule #26). All retry/TTL instants are DATETIME (UTC), never
+-- TIMESTAMP; all vocab columns VARCHAR app-validated against a central map,
+-- never ENUM (rule #20). Nothing reads/writes these until
+-- tblAppSettings.webhooks_enabled_channels names a channel (design §9).
+-- Referenced tables (tblOrganisations, tblExternalSystems, tblUsers) are all
+-- defined earlier in this file, so the inline FKs resolve on a fresh install.
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS tblWebhookSubscriptions (
+    Id            INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    Channel       VARCHAR(20)   NOT NULL COMMENT 'alpha | beta | production — the docroot env this subscription belongs to (rule #26). EVERY query filters it; a subscription never receives another channel''s events',
+    OrgId         INT UNSIGNED  NULL DEFAULT NULL COMMENT 'Reserved (dormant in v1): org-scoped subscription — receives only events whose payload org matches. NULL = global (admin-created partner feed)',
+    SystemId      INT UNSIGNED  NULL DEFAULT NULL COMMENT 'Optional link to the tblExternalSystems registry (#1327) so a subscription is associated with a registered external system; informational, never an auth path',
+    Label         VARCHAR(120)  NOT NULL COMMENT 'Human label, e.g. "iLyricsDB sync"',
+    TargetUrl     VARCHAR(500)  NOT NULL COMMENT 'https:// delivery endpoint (app-validated: https, default port, public host — includes/webhooks.php SSRF gate)',
+    TargetHost    VARCHAR(190)  NOT NULL COMMENT 'Lowercased host derived from TargetUrl at save (never client-supplied) — per-host caps + abuse queries without URL parsing in SQL',
+    Secret        VARCHAR(500)  NOT NULL COMMENT 'HMAC signing secret (whsec_…): enc:v1 envelope when secret encryption is active, else plaintext bridge (secret_crypto.php). Needed in clear to sign — never a hash',
+    SecretPrevious VARCHAR(500) NULL DEFAULT NULL COMMENT 'Previous secret retained during rotation grace — deliveries carry a second v1= signature under it until SecretPreviousExpiresAt',
+    SecretPreviousExpiresAt DATETIME NULL DEFAULT NULL COMMENT 'UTC end of the dual-signing rotation grace window; NULL = no rotation in flight',
+    Events        VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'Space-separated event selectors: exact type, family.* wildcard, or * — app-validated against IHYMNS_WEBHOOK_EVENTS (VARCHAR vocabulary, rule #20). Mirrors tblApiKeys.Scope',
+    ApiVersion    VARCHAR(10)   NOT NULL DEFAULT '1' COMMENT 'Payload contract version this subscriber receives — a future breaking payload reshape mints "2" with no migration',
+    HeadersJson   JSON          NULL DEFAULT NULL COMMENT 'Reserved (dormant in v1): extra request headers some receivers require, {name:value} app-validated against a header-name allow-list (never Authorization/Host/Content-*)',
+    FilterJson    JSON          NULL DEFAULT NULL COMMENT 'Reserved (dormant in v1): finer-than-type delivery filters (e.g. {"songbooks":["MP"]}) — growable vocabulary as JSON, never new columns (rule #28 Capabilities precedent)',
+    Status        VARCHAR(30)   NOT NULL DEFAULT 'pending_verification' COMMENT 'pending_verification | active | paused | disabled_failing | revoked — app-validated, VARCHAR not ENUM (rule #20)',
+    VerifyToken   CHAR(64)      NULL DEFAULT NULL COMMENT 'Reserved: outstanding async-verification challenge hash (v1 verification is synchronous and stores nothing)',
+    VerifiedAt    DATETIME      NULL DEFAULT NULL COMMENT 'UTC instant the endpoint last passed the challenge-echo handshake',
+    ConsecutiveFailures INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Dead deliveries in a row since the last success — drives the auto-disable ladder',
+    FailingSince  DATETIME      NULL DEFAULT NULL COMMENT 'UTC start of the current consecutive-failure run; NULL when healthy',
+    LastAttemptAt DATETIME      NULL DEFAULT NULL COMMENT 'Denorm for the admin list (rule #44: earns its read)',
+    LastSuccessAt DATETIME      NULL DEFAULT NULL COMMENT 'Denorm for the admin list',
+    CreatedBy     INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblUsers.Id of the admin who created it',
+    CreatedAt     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_ChannelStatus (Channel, Status),
+    INDEX idx_TargetHost    (TargetHost),
+    INDEX idx_Org           (OrgId),
+
+    CONSTRAINT fk_WebhookSub_Org       FOREIGN KEY (OrgId)     REFERENCES tblOrganisations(Id)   ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_WebhookSub_System    FOREIGN KEY (SystemId)  REFERENCES tblExternalSystems(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_WebhookSub_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)           ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Outbound partner-webhook subscriptions (#1909). Secret is enc:v1-enveloped at rest; Events mirrors tblApiKeys.Scope; Channel walls the 3 docroots (rule #26).';
+
+CREATE TABLE IF NOT EXISTS tblWebhookEvents (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    EventUid    VARCHAR(40)   NOT NULL COMMENT 'evt_<32 hex> — the id in the envelope; the receiver''s dedupe key',
+    Channel     VARCHAR(20)   NOT NULL COMMENT 'ihymns_environment() at emit (rule #26)',
+    EventType   VARCHAR(60)   NOT NULL COMMENT 'Dotted type app-validated against IHYMNS_WEBHOOK_EVENTS (VARCHAR vocabulary, rule #20)',
+    EntityType  VARCHAR(30)   NOT NULL DEFAULT '' COMMENT 'song | songbook | setlist | service | webhook — mirrors the activity-log entity vocabulary for admin filtering',
+    EntityId    VARCHAR(190)  NOT NULL DEFAULT '' COMMENT 'The subject''s id as text (SongId, abbr, numeric id) — display/filtering, never a FK (subjects outlive/predate events)',
+    PayloadJson MEDIUMTEXT    NOT NULL COMMENT 'The FROZEN full envelope-data JSON built at emit — redelivery is byte-identical (only the signature timestamp moves)',
+    OccurredAt  DATETIME      NOT NULL COMMENT 'UTC emit instant (DATETIME not TIMESTAMP, rule #20)',
+    ActorUserId INT UNSIGNED  NULL DEFAULT NULL COMMENT 'Who performed the action — internal audit only, NEVER emitted in partner payloads',
+    Source      VARCHAR(100)  NOT NULL DEFAULT '' COMMENT 'Emitting funnel (editor_save | lyrics_ingest | bulk_import | api | admin) — provenance + the idempotency pair below',
+    SourceRef   VARCHAR(190)  NULL DEFAULT NULL COMMENT 'Optional natural idempotency ref from the funnel (e.g. ingest job id) — with Source, re-runs re-emit nothing; NULL rows coexist freely (rule #20)',
+    ExpiresAt   DATETIME      NOT NULL COMMENT 'Retention TTL (emit + 30 days) — rows past this are prune-eligible',
+    CreatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_EventUid  (EventUid),
+    UNIQUE KEY uq_SourceRef (Source, SourceRef),
+    INDEX idx_ChannelOccurred (Channel, OccurredAt),
+    INDEX idx_Type            (EventType),
+    INDEX idx_Entity          (EntityType, EntityId),
+    INDEX idx_Expires         (ExpiresAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Durable webhook event ledger / outbox (#1909): one frozen payload per event, fanned out to N tblWebhookDeliveries rows. (Source,SourceRef) UNIQUE = idempotent re-emission (rule #20).';
+
+CREATE TABLE IF NOT EXISTS tblWebhookDeliveries (
+    Id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    EventId        BIGINT UNSIGNED NOT NULL COMMENT 'FK tblWebhookEvents.Id — the frozen payload',
+    SubscriptionId INT UNSIGNED    NOT NULL COMMENT 'FK tblWebhookSubscriptions.Id',
+    Channel        VARCHAR(20)     NOT NULL COMMENT 'Denorm of the subscription channel (app-derived) so the claim query is index-only with no join (rule #26: filtered in EVERY claim/drain)',
+    Status         VARCHAR(20)     NOT NULL DEFAULT 'pending' COMMENT 'pending | delivering | succeeded | failed | dead | cancelled — app-validated, VARCHAR not ENUM (rule #20). failed = scheduled for retry; dead = attempts exhausted (dead-letter); cancelled = subscription revoked/paused mid-queue',
+    AttemptCount   TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Attempts made since enqueue (reset to 0 by an admin re-drive; history stays in AttemptLogJson)',
+    NextAttemptAt  DATETIME        NOT NULL COMMENT 'UTC due time — the claim predicate (DATETIME not TIMESTAMP, rule #20)',
+    ClaimToken     CHAR(32)        NULL DEFAULT NULL COMMENT 'Lease held by the drain pass that claimed this row — two concurrent drains can never double-send',
+    ClaimedAt      DATETIME        NULL DEFAULT NULL COMMENT 'UTC lease start; a delivering row older than the lease timeout is reclaimable (crashed worker recovery)',
+    LastHttpStatus SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Last response status; 0 = transport error (DNS/TLS/timeout/refused)',
+    LastError      VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Sanitised last failure detail for triage — never response bodies, never secrets',
+    LastAttemptAt  DATETIME        NULL DEFAULT NULL,
+    DeliveredAt    DATETIME        NULL DEFAULT NULL COMMENT 'UTC instant of the 2xx',
+    AttemptLogJson JSON            NULL DEFAULT NULL COMMENT 'Bounded per-attempt history [{at,status,ms,err}] — capped at the attempt ceiling, display-only',
+    ExpiresAt      DATETIME        NOT NULL COMMENT 'Retention TTL (enqueue + 30 days) — prune-eligible past this',
+    CreatedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Event_Subscription (EventId, SubscriptionId),
+    INDEX idx_Due          (Channel, Status, NextAttemptAt),
+    INDEX idx_Subscription (SubscriptionId, CreatedAt),
+    INDEX idx_Expires      (ExpiresAt),
+
+    CONSTRAINT fk_WebhookDel_Event FOREIGN KEY (EventId)        REFERENCES tblWebhookEvents(Id)        ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_WebhookDel_Sub   FOREIGN KEY (SubscriptionId) REFERENCES tblWebhookSubscriptions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-subscription webhook delivery queue, retry state and dead-letter surface (#1909). uq_Event_Subscription = fan-out idempotency; idx_Due = the drain claim predicate.';
+
 
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)

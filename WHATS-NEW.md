@@ -10,6 +10,86 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.0.0 — 24 August 2026
+
+- **Search suggestions as you type** — Start typing in the search box and a short
+  list of matching song titles now drops down; tap one to jump straight to that
+  song. The full results list is still right below it, and you can press the down
+  arrow to step through the results with the keyboard.
+- **Full songbook names everywhere** — The home page's popular and recently-viewed
+  songs, and a musician's list of songs, now show each songbook's full name (like
+  "Seventh-day Adventist Hymnal") instead of just a short code — matching the rest
+  of the app.
+- **Browse every theme** — A new Themes page lists every theme from A to Z with a
+  quick filter box and letter jumps, so you can find a thematic collection without
+  scrolling a wall of tags. Each theme's song count now always matches what you see
+  when you open it.
+- **Add songs to a shared set list** — When someone shares a set list you're allowed
+  to help edit, you can now add songs to it directly, and everyone's changes stay in
+  step more reliably even when a few people edit at once.
+- **Your church's logo in more places** — Beyond printed song sheets, a church's logo
+  can now appear in the app header for signed-in members, as a subtle mark in the
+  corner of the live projection screen, and — with a chosen brand colour — on the
+  preview picture of a shared set list.
+- **Big exports check with you first** — Exporting a very large songbook now asks
+  before it starts and shows progress while it builds, so a huge download never looks
+  frozen.
+- **Imports keep their details** — Bringing songs in from other worship software now
+  keeps the copyright line, song number and public-domain markings the file came
+  with, instead of leaving them blank.
+- **Faster and safer behind the scenes** — The catalogue refreshes more efficiently
+  on repeat visits, and signing in has extra protection against repeated wrong-guess
+  attempts.
+
+## 0.5300.0 — 18 August 2026
+
+- **See your own church's CCLI report** — Organisation admins can now pull their
+  own church's printed-copy usage report straight from the admin area, without
+  needing full system-wide report access.
+- **Less form-filling in the Song Editor** — Copyright lines, public-domain
+  status, and audio/sheet-music indicators now fill themselves in from what the
+  catalogue already knows, instead of asking a curator to type or tick them by
+  hand.
+- **Fewer duplicate entries** — When adding a song, songbook, publisher, tune,
+  or person, you now pick from a live search list instead of typing a name —
+  so two curators typing the same thing slightly differently no longer creates
+  two separate entries for the same thing.
+- **Search that shrugs off accents and apostrophes** — Searching for songs,
+  songwriters, tunes or places now looks past accents and curly quotes, so
+  "Cafe" finds "Café" and "dont" finds "don't". It works the same whether
+  you're online or using songs you've saved for offline.
+- **Shared set lists stop sharing when they expire** — If you put an end date
+  on a set list you've shared, the link now stops showing it once that date
+  passes, however it's opened — so an out-of-date set list won't keep going
+  round.
+- **Reliability and security touch-ups** — Signed-in members no longer see a
+  stray "sign in to sync" prompt in Settings, and a round of behind-the-scenes
+  security work keeps the app safe without changing anything you'll notice.
+- **Name your own song sections** — A curator can give any part of a song its
+  own name — "Kyrie", or its language ("isiZulu") in a multilingual song — in
+  place of the usual "Verse 1 / Chorus". It's just a label: the app still knows
+  it's a verse or a chorus underneath.
+- **Medleys** — A song that stitches several hymns together can now be recorded
+  as a medley — an ordered list of the songs it's made from — and its page shows
+  a "Medley of: …" line so everyone can see what it's built from.
+- **Alternative titles now survive export and re-import** — If you export a
+  song and bring it back in later, any alternative titles it had travel with
+  it instead of being quietly dropped.
+- **Keyboard-friendly search results** — On the search page, press the down
+  arrow from the search box to move into the results list, keep arrowing to
+  step between them, and press Enter to open the one you've landed on.
+- **See what changed before you restore an old version** — The Song Editor's
+  history list now shows exactly what each past edit changed, so you can tell
+  what you're restoring before you commit to it.
+- **Handle several songs at once** — In the Song Editor you can now select a
+  batch of songs and move, delete, or export them together in one go.
+- **Preview a bulk import before it saves anything** — When importing a ZIP
+  of songs, tick "preview only" first to see what would be added or skipped
+  without actually saving it — useful for checking an unfamiliar bundle before
+  committing to it.
+- **More than one copyright holder** — A song can now list several copyright
+  holders in order, for the cases where credit is genuinely shared.
+
 ## 0.5160.0 — 12 August 2026
 
 - **A more inspiring Song of the Day** — The little lyric taster on the home

@@ -112,10 +112,14 @@ $formats = [
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="col-12 col-sm-5 d-flex align-items-end">
+                    <div class="col-12 col-sm-5 d-flex flex-column justify-content-end gap-1">
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="imp-dedupe">
                             <label class="form-check-label small" for="imp-dedupe">Skip title duplicates</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="imp-dryrun">
+                            <label class="form-check-label small" for="imp-dryrun">Dry run (preview only — nothing is written)</label>
                         </div>
                     </div>
                 </div>
@@ -141,6 +145,7 @@ $formats = [
         const fileEl   = document.getElementById('imp-file');
         const fmtEl    = document.getElementById('imp-format');
         const dedupeEl = document.getElementById('imp-dedupe');
+        const dryRunEl = document.getElementById('imp-dryrun');
         const goBtn    = document.getElementById('imp-go');
         const statusEl = document.getElementById('imp-status');
         const resultEl = document.getElementById('imp-result');
@@ -150,21 +155,33 @@ $formats = [
             return m ? (m.getAttribute('content') || '') : '';
         }
 
-        /* Render a sync summary as Bootstrap alerts — server text via textContent only. */
+        /* Render a sync summary as Bootstrap alerts — server text via textContent only.
+           #1674 — branches ONLY on the `dry_run` key the server echoes back
+           (rule #35: a status/data key is the contract, never a re-derived
+           guess client-side). */
         function renderSummary(data) {
             resultEl.innerHTML = '';
+            const isDryRun = data.dry_run === true;
+            if (isDryRun) {
+                const note = document.createElement('div');
+                note.className = 'alert alert-info';
+                note.textContent = 'DRY RUN — nothing was written.';
+                resultEl.appendChild(note);
+            }
             const created = Number(data.songs_created || 0);
             const skipped = Number(data.songs_skipped_existing || 0);
             const failed  = Number(data.songs_failed || 0);
             const box = document.createElement('div');
             box.className = 'alert ' + (failed > 0 ? 'alert-warning' : 'alert-success');
-            box.textContent = created + ' new · ' + skipped + ' already in DB (skipped) · ' + failed + ' failed';
+            box.textContent = isDryRun
+                ? (created + ' would be created · ' + skipped + ' already in DB (would skip) · ' + failed + ' failed to parse')
+                : (created + ' new · ' + skipped + ' already in DB (skipped) · ' + failed + ' failed');
             resultEl.appendChild(box);
             const books = (data.songbooks_created || []);
             if (books.length) {
                 const bp = document.createElement('p');
                 bp.className = 'small mb-1';
-                bp.textContent = 'Songbooks created: ' + books.join(', ');
+                bp.textContent = (isDryRun ? 'Songbooks that would be created: ' : 'Songbooks created: ') + books.join(', ');
                 resultEl.appendChild(bp);
             }
             const errs = (data.errors || []);
@@ -193,6 +210,10 @@ $formats = [
             const fd = new FormData();
             fd.append('file', file);
             fd.append('dedupeMode', dedupeEl.checked ? 'skip-title' : 'off');
+            /* #1911 — round-trips through tblBulkImportJobs.DryRun; the
+               poll widget renders the preview banner from the server's own
+               `dry_run` echo (rule #35), never from this checkbox state. */
+            fd.append('dryRun', dryRunEl.checked ? '1' : '0');
             startUploadTracking({ filename: file.name, sizeBytes: file.size });
             const xhr = new XMLHttpRequest();
             /* #1855: extensionless — the literal .php URL is 301'd by
@@ -244,6 +265,7 @@ $formats = [
             fd.append('file', file);
             fd.append('format', fmtEl.value);
             fd.append('dedupeMode', dedupeEl.checked ? 'skip-title' : 'off');
+            fd.append('dryRun', dryRunEl.checked ? '1' : '0');
             /* #1855: extensionless — see the XHR above; a literal .php URL
                here would 301 and silently strip this POST's body. */
             fetch('/manage/editor/api2?action=import_file', {
@@ -273,10 +295,18 @@ $formats = [
         goBtn.addEventListener('click', () => {
             const file = fileEl.files && fileEl.files[0];
             if (!file) { statusEl.textContent = 'Choose a file first.'; return; }
+            const isZip = /\.zip$/i.test(file.name);
+            /* #1911 — ZIP dry-run now round-trips through the async job row
+               (tblBulkImportJobs.DryRun), so the client-side refusal that
+               used to live here (#1674) is gone: import_zip carries the
+               flag exactly like import_file already does. An un-migrated
+               deployment still answers with its own 422, surfaced by
+               importZip()'s xhr.onload → showError() below — this page
+               doesn't pre-guess that outcome. */
             goBtn.disabled = true;
             statusEl.textContent = 'Importing…';
             resultEl.innerHTML = '';
-            if (/\.zip$/i.test(file.name)) { importZip(file); }
+            if (isZip) { importZip(file); }
             else { importSingle(file); }
         });
     </script>

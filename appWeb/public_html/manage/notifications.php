@@ -578,7 +578,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          top of this file — rather than assumed, because Batch 6 found
          ten decorative permission keys in this codebase.
          =========================== -->
-    <div class="card bg-dark border-secondary mb-3">
+    <div class="card bg-body-tertiary border-secondary mb-3">
         <div class="card-body">
             <h2 class="h6 mb-2">
                 <i class="fa-solid fa-mobile-screen-button me-2"></i>Web Push
@@ -714,7 +714,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          FILTER RAIL
          =========================== -->
-    <div class="card bg-dark border-secondary mb-3">
+    <div class="card bg-body-tertiary border-secondary mb-3">
         <div class="card-body">
             <form method="get" class="row g-2 align-items-end">
                 <div class="col-md-3">
@@ -757,7 +757,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          FEED TABLE
          =========================== -->
-    <div class="card bg-dark border-secondary">
+    <div class="card bg-body-tertiary border-secondary">
         <div class="card-header d-flex justify-content-between align-items-center">
             <span class="small text-secondary">
                 <?= number_format($totalRows) ?> notification<?= $totalRows === 1 ? '' : 's' ?>
@@ -854,7 +854,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
      =========================== -->
 <div class="modal fade" id="notify-compose-modal" tabindex="-1" aria-labelledby="notify-compose-label" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
-        <div class="modal-content bg-dark border-secondary">
+        <div class="modal-content border-secondary">
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action"     value="compose">

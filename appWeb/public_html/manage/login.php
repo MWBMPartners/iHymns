@@ -9,6 +9,10 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* #947/#340 — the dormant CAPTCHA core: gate the admin login POST and (in the
+   form below) render the provider widget. Side-effect-free to require; a no-op
+   unless an admin has ticked the 'manage_login' form + configured a provider. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
 
 /**
  * Constrain a post-login redirect target to a SAME-SITE path. Rejects
@@ -99,6 +103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Invalid form submission. Please try again.';
     } elseif ($username === '' || $password === '') {
         $error = 'Username and password are required.';
+    } elseif (($cg = captchaGate('manage_login',
+                   ($captchaCfg = captchaConfig()) !== null ? ($_POST[$captchaCfg['field']] ?? null) : null
+               )) !== null) {
+        /* CAPTCHA gate (#947/#340) — AFTER the same-origin/CSRF check + the
+           empty-field guard, BEFORE attemptLogin(). The widget injects its
+           answer under the provider's own POST field (captchaConfig()['field']);
+           a missing/rejected token re-renders the page with the same generic
+           error styling (and the widget, below). Dormant no-op unless the
+           'manage_login' form is ticked. */
+        $error = $cg['error'];
     } else {
         $user = attemptLogin($username, $password);
         if ($user) {
@@ -169,6 +183,20 @@ $csrf = csrfToken();
                        autocomplete="current-password"
                        required>
             </div>
+
+            <?php
+            /* #947/#340 — the CAPTCHA challenge widget. captchaWidgetHtml()
+               returns '' unless a provider is configured AND the 'manage_login'
+               form is ticked, so this whole block is a byte-identical no-op on
+               a dormant install. The provider's auto-render script (the <script
+               src> the helper emits) draws the widget and injects its answer
+               under the provider's own POST field, which the gate above reads —
+               no JS module needed on this server-rendered page. */
+            $captchaWidget = captchaWidgetHtml('manage_login');
+            if ($captchaWidget !== ''):
+            ?>
+                <div class="mb-3"><?= $captchaWidget ?></div>
+            <?php endif; ?>
 
             <button type="submit" class="btn btn-amber w-100">
                 <i class="bi bi-box-arrow-in-right me-1"></i>Sign In

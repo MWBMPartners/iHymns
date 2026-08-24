@@ -41,6 +41,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for publisherAdminCreate() below */
 
 /**
  * True when $table.$column exists in the current database (INFORMATION_SCHEMA).
@@ -319,6 +320,8 @@ function publisherAdminCreate(\mysqli $db, array $fields, array $gates): int
     $ins->execute();
     $newId = (int)$db->insert_id;
     $ins->close();
+    /* #1860 go-live — mint this publisher's permanent IL-id (ILP…). */
+    ilidStampNewRow($db, 'publisher', $newId);
     publisherAdminPersistFields($db, $newId, $fields, $gates);
     return $newId;
 }

@@ -48,6 +48,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    admin_musician_* API endpoints in /api.php so a tweak to the
    link-type set or the row-shape rules lands on both surfaces. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1862 (epic #1863) — pdRecomputeForMusicianName(): a DeathDate change here
+   (create/update/rename) can change the public-domain suggestion for every
+   song this person is credited on. Required explicitly (rule #22 — never
+   rely on an implicit transitive load, even though musician_helpers.php
+   also pulls this in). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
 /* #1785 §7/§8 — the registry-duplicate scan helper (the cheap Bucket-A-
    only CTA-badge count below) + the shared disambiguation payload
    builder the merge-target typeahead/Merge-modal preview consume
@@ -59,6 +65,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    legacy BirthPlace / DeathPlace display strings. Schema-tolerant —
    no-ops on installs that haven't run migrate-places.php yet. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the add-person create below */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -917,6 +924,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+                    /* #1860 go-live — mint this person's permanent IL-id
+                       (ILM…). One stamp covers all four INSERT shapes above
+                       since they share the same $newId. */
+                    ilidStampNewRow($db, 'musician', $newId);
 
                     /* #1741 P4a — THE ONE flags/Type write funnel (rule
                        guard: tests/php/test-musician-profile-fields.php's
@@ -1018,6 +1029,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                         replaceMusicianAliases($db, $newId, $aliases);
                     }
                     $db->commit();
+
+                    /* #1862 — a brand-new registry row can already have a
+                       DeathDate AND already be referenced by existing song
+                       credits (a curator registering a row for a name
+                       already credited on songs) — recompute the
+                       PD-suggestion denorm for every song this name touches,
+                       post-commit, own failure boundary. */
+                    pdRecomputeForMusicianName($db, $name);
 
                     $logMusician('add', (string)$newId, [
                         'name'        => $name,
@@ -1314,6 +1333,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                             $changed[] = $k;
                         }
                     }
+
+                    /* #1862 — only when DeathDate actually changed (the one
+                       field the PD-suggestion fold reads); recompute every
+                       song this name touches, post-commit, own failure
+                       boundary. Cheap either way, but the guard keeps a
+                       routine notes-only edit from paying for a scan. */
+                    if (in_array('DeathDate', $changed, true)) {
+                        pdRecomputeForMusicianName($db, $name);
+                    }
+
                     $logMusician('update_person', (string)$id, [
                         'name'       => $name,
                         'type'       => $musicianType, // #1741 P4a
@@ -1422,6 +1451,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     $stmt->close();
 
                     $db->commit();
+
+                    /* #1862 — every song-credit row was just re-pointed to
+                       $newName; recompute the PD-suggestion denorm for every
+                       song that name touches (the death date itself didn't
+                       change, but the OLD name's songs now resolve under a
+                       different — identical — registry row, so this is a
+                       cheap no-op unless something else was ALSO mid-flight;
+                       correctness over skipping a rare edge). Post-commit,
+                       own failure boundary. */
+                    pdRecomputeForMusicianName($db, $newName);
 
                     $logMusician('rename', (string)$id, [
                         'before'   => ['name' => $oldName],
@@ -2200,25 +2239,25 @@ try {
         <!-- Summary tiles -->
         <div class="row g-2 mb-3">
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Total distinct names</div>
                     <div class="h5 mb-0"><?= number_format($totalNames) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Cited by &ge; 1 song</div>
                     <div class="h5 mb-0"><?= number_format($totalInUse) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">In registry</div>
                     <div class="h5 mb-0"><?= number_format($totalInRegistry) ?></div>
                 </div>
             </div>
             <div class="col-6 col-md-3">
-                <div class="card bg-dark border-secondary p-2">
+                <div class="card bg-body-tertiary border-secondary p-2">
                     <div class="small text-secondary">Registry-only (not yet used)</div>
                     <div class="h5 mb-0"><?= number_format($totalRegistryOnly) ?></div>
                 </div>
@@ -2226,7 +2265,7 @@ try {
         </div>
 
         <!-- Search + filters -->
-        <div class="card bg-dark border-secondary p-3 mb-3">
+        <div class="card bg-body-tertiary border-secondary p-3 mb-3">
             <div class="row g-2 align-items-center">
                 <div class="col-md-5">
                     <label for="mus-search" class="visually-hidden">Search names</label>
@@ -2271,7 +2310,7 @@ try {
         </div>
 
         <!-- People table -->
-        <div class="card bg-dark border-secondary p-2 mb-3">
+        <div class="card bg-body-tertiary border-secondary p-2 mb-3">
             <div class="table-responsive">
                 <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead class="text-muted small">
@@ -2516,7 +2555,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musDeleteModal" tabindex="-1" aria-labelledby="musDeleteLabel" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="delete_from_registry">
@@ -2572,7 +2611,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musViewSongsModal" tabindex="-1" aria-labelledby="musViewSongsLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="musViewSongsLabel">
                         <i class="bi bi-music-note-list me-2"></i>
@@ -2605,7 +2644,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musRenameModal" tabindex="-1" aria-labelledby="musRenameLabel" aria-hidden="true">
         <div class="modal-dialog">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="rename">
@@ -2651,7 +2690,7 @@ try {
          ========================================================================= -->
     <div class="modal fade" id="musMergeModal" tabindex="-1" aria-labelledby="musMergeLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content bg-dark border-secondary">
+            <div class="modal-content border-secondary">
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="merge">
@@ -3209,7 +3248,7 @@ try {
         $linkCatOrder = ['official','information','read','sheet-music','listen','watch','purchase','authority','social','other'];
     ?>
     <template id="mus-link-row-template">
-        <div class="card bg-dark border-secondary mus-link-row" data-row-kind="link">
+        <div class="card bg-body-tertiary border-secondary mus-link-row" data-row-kind="link">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3280,7 +3319,7 @@ try {
         window._musIdentifierConfig = <?= json_encode(creditIdentifierClientConfig(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
     <template id="mus-ipi-row-template">
-        <div class="card bg-dark border-secondary mus-ipi-row" data-row-kind="ipi">
+        <div class="card bg-body-tertiary border-secondary mus-ipi-row" data-row-kind="ipi">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3310,7 +3349,7 @@ try {
         </div>
     </template>
     <template id="mus-isni-row-template">
-        <div class="card bg-dark border-secondary mus-isni-row" data-row-kind="isni">
+        <div class="card bg-body-tertiary border-secondary mus-isni-row" data-row-kind="isni">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3347,7 +3386,7 @@ try {
          <select> is constrained to the same allow-list the server validates
          against ($normaliseOtherId): viaf / wikidata / orcid. -->
     <template id="mus-otherid-row-template">
-        <div class="card bg-dark border-secondary mus-otherid-row" data-row-kind="otherid">
+        <div class="card bg-body-tertiary border-secondary mus-otherid-row" data-row-kind="otherid">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">
@@ -3423,7 +3462,7 @@ try {
         </div>
     </template>
     <template id="mus-alias-row-template">
-        <div class="card bg-dark border-secondary mus-alias-row" data-row-kind="alias">
+        <div class="card bg-body-tertiary border-secondary mus-alias-row" data-row-kind="alias">
             <div class="card-body py-2">
                 <div class="d-flex align-items-start gap-2">
                     <div class="flex-grow-1">

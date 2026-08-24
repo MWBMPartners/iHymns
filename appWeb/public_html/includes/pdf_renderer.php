@@ -286,7 +286,7 @@ function _pdfInlineQrImage(string $src): ?string
            refused, never passed through. */
         return null;
     }
-    if (!function_exists('cuercodeGenerate')) {
+    if (!function_exists('cuercodeGenerateCached')) {
         return null; // should be unreachable — required at the top of this file
     }
     $query = parse_url($src, PHP_URL_QUERY);
@@ -303,7 +303,11 @@ function _pdfInlineQrImage(string $src): ?string
         'size'   => isset($params['size']) ? (int)$params['size'] : 512,
         'ecc'    => isset($params['ecc']) ? (string)$params['ecc'] : 'M',
     ];
-    $qr = cuercodeGenerate($data, $opts);
+    /* #1920 — cached read-through: same call shape as before, but a repeat
+       render of the SAME QR (a set-list PDF re-printed, a template preview
+       re-generated) now hits tblQrCache instead of round-tripping CueRCode
+       every single time mPDF needs this picture inlined. */
+    $qr = cuercodeGenerateCached($data, $opts);
     if ($qr === null || empty($qr['bytes']) || empty($qr['mime'])) {
         return null; // CueRCode dormant/unreachable — caller drops the <img>
     }
@@ -683,6 +687,57 @@ function ihymnsPdfRender(array $docs, string $css, array $pageOptions, array $op
         $mpdf = new \Mpdf\Mpdf([
             'tempDir' => _pdfTempDir(),
             'format'  => _pdfMpdfFormatForPageSize($pageOptions['pageSize'] ?? null),
+
+            /* #1908 Commit 7 — mPDF non-Latin AUTOFONT.
+               ELI5: without these two flags, mPDF draws EVERY character with
+               ONE font (DejaVu), and DejaVu simply has no glyphs for CJK,
+               Arabic, Hebrew, Thai, or most other non-Latin scripts — those
+               songs render as blank space where the lyrics should be. These
+               two flags tell mPDF "look at each run of text, work out what
+               SCRIPT it's actually written in, and pick one of your OWN
+               already-shipped fonts for that script automatically".
+               DETAIL:
+               - `autoScriptToLang` — per text run, detect the Unicode SCRIPT
+                 (Han, Hebrew, Arabic, Thai, …) and map it to a language code.
+               - `autoLangToFont`   — map that language code to one of mPDF's
+                 own vendored fonts (see `ttfonts/`): Sun-ExtA/B for CJK,
+                 Garuda for Thai, KhmerOS for Khmer, Padauk for Burmese,
+                 XB Riyaz / LateefRegOT for Arabic, TaameyDavidCLM for Hebrew,
+                 UnBatang for Korean. NO new font files and NO custom
+                 `fontDir` are added by this change — every one of those
+                 fonts already ships inside the vendored
+                 `private_html/lib/pdf/vendor/mpdf/mpdf/ttfonts/` tree; these
+                 two flags only turn ON mPDF's own built-in resolver that
+                 picks among them per script. The existing 2-entry DejaVu
+                 family map in `_pdfAdaptCss()` above is untouched and still
+                 applies first for the two Latin font substitutions it
+                 handles (Georgia/Times → DejaVu Serif, Courier New → DejaVu
+                 Sans Mono) — autofont only engages for scripts that map
+                 doesn't already cover.
+               ⚠️ INTERACTS WITH THE `@page`-STRIP WORKAROUND ABOVE
+               (`_pdfAdaptCss()` — see its own doc-block at roughly :196-221):
+               that `preg_replace` removes `printCss()`'s `@page { size: … }`
+               rule because combining it with FONT SUBSTITUTION previously
+               sent this vendored mPDF into a page-metrics runaway (a
+               1-line snippet inflating to 104-111 pages). Turning on
+               per-script font substitution here is the SAME class of change
+               (font resolution), so that strip MUST stay in place — do NOT
+               remove or relax it without re-running the exact before/after
+               page-count check that workaround's doc-block describes.
+               ONE-TIME CACHE COST: the FIRST render that actually uses a
+               non-Latin script (in a given `tempDir`, `_pdfTempDir()` above)
+               makes mPDF generate and cache that font's `ttfontdata` cache
+               file — Sun-ExtA (CJK) is the largest of the vendored fonts, so
+               that specific first render is measurably slower/heavier than
+               steady-state; every later render in the same tempDir reuses
+               the cache.
+               @see #1908 (epic: full non-Latin Unicode support)
+               @see .claude/unicode-nonlatin-1908-plan.md §7 (Commit 7 — this exact change)
+               @link https://mpdf.github.io/reference/mpdf-functions/construct.html            mPDF constructor options (autoScriptToLang / autoLangToFont)
+               @link https://mpdf.github.io/multi-language-support/language-support.html        mPDF's per-script automatic font selection */
+            'autoScriptToLang' => true,
+            'autoLangToFont'   => true,
+
             /* Everything else stays mPDF's own upstream default — its
                shipped DejaVu/Free* font set (vendor/mpdf/mpdf/ttfonts/) is
                used as-is; no custom fontDir is needed for the font map

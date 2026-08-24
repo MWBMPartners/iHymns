@@ -110,8 +110,8 @@ function makeItem(exportFormat) {
         async click() { for (const fn of this._handlers) { await fn(); } }
     };
 }
-function makeTileMenu(items, songbookId) {
-    const tile = songbookId === null ? null : { dataset: { songbookId } };
+function makeTileMenu(items, songbookId, songbookSongs) {
+    const tile = songbookId === null ? null : { dataset: { songbookId, songbookSongs } };
     return { dataset: {}, querySelectorAll: () => items, closest: () => tile };
 }
 
@@ -121,13 +121,17 @@ function resetRecorders() {
     fetchLog = [];
     fetchFixture = () => ({});
 }
-function installGlobals({ menus, formatExport }) {
+/** @param {Function} [confirmImpl] #1571 — defaults to a function that
+ *  THROWS if called, so a test not expecting a confirm dialog fails loudly
+ *  rather than silently calling an undefined `window.confirm`. */
+function installGlobals({ menus, formatExport, confirmImpl }) {
     globalThis.document = {
         querySelectorAll: (sel) => (sel === '.songbook-list-export-menu' ? menus : [])
     };
     globalThis.window = {
         iHymnsFormatExport: formatExport,
-        iHymnsApp: { showToast: (msg, type) => toasts.push({ msg, type }) }
+        iHymnsApp: { showToast: (msg, type) => toasts.push({ msg, type }) },
+        confirm: confirmImpl || (() => { throw new Error('window.confirm() was not expected to be called in this test'); })
     };
     globalThis.fetch = async (url) => {
         fetchLog.push(url);
@@ -200,6 +204,49 @@ await (async function testIdempotent() {
 
     check('calling initSongbookListExport twice binds each tile\'s listener once',
         item._handlers.length === 1);
+})();
+
+await (async function testLargeExportConfirmOnListSurface() {
+    /* #1571 — the /songbooks LIST surface reads its confirm count from the
+       tile's PRE-EXISTING data-songbook-songs attribute (unlike the single
+       /songbook page, which needed a NEW attribute — see test-export-ui.js
+       for that half). Declining must never fetch; confirming must fetch
+       exactly once (no double-prompt from exportSongbookAs()'s post-fetch
+       belt, since the tile's count was already known). */
+    resetRecorders();
+    let confirmCalls = 0;
+    const item = makeItem('openSong');
+    const menu = makeTileMenu([item], 'MP', '3517'); // Mission-Praise-scale tile
+    installGlobals({
+        menus: [menu],
+        formatExport: { openSong: { exportSongbook: () => {} } },
+        confirmImpl: () => { confirmCalls++; return false; }
+    });
+
+    initSongbookListExport();
+    await item.click();
+
+    check('a large tile (data-songbook-songs >= threshold) shows exactly one confirm',
+        confirmCalls === 1);
+    check('declining the tile confirm never fetches',
+        fetchLog.length === 0);
+})();
+
+await (async function testSmallTileNeverConfirms() {
+    resetRecorders();
+    fetchFixture = () => ({ songbook: { id: 'CP' }, songs: [{ id: 'CP-0001' }] });
+    const item = makeItem('openSong');
+    const menu = makeTileMenu([item], 'CP', '243'); // Carol-Praise-scale, well under threshold
+    installGlobals({
+        menus: [menu],
+        formatExport: { openSong: { exportSongbook: () => {} } }
+        /* no confirmImpl — installGlobals()'s default throws if ever called. */
+    });
+
+    initSongbookListExport();
+    await item.click(); // must not throw
+
+    check('a small tile never triggers a confirm dialog', true);
 })();
 
 /* ===================================================================== *

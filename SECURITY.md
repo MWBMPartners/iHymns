@@ -53,11 +53,55 @@ These are enforced conventions; new code must follow them (see
   `global_admin` inside one transaction with `SELECT … FOR UPDATE`, closing a
   TOCTOU where two registrations racing on a virgin install could otherwise
   both read zero users and both become the top-privilege account.
+  **Brute-force throttles on account creation and email-code entry now actually
+  engage** (#1906) — a previously-dead registration throttle was wired in, and
+  the magic-link/email-code check, which had been per-IP only, gained a
+  per-email bucket so a single IP can no longer grind codes across many accounts.
+  A **session-fixation** gap on cross-surface admin sign-in is closed (#1906):
+  the session id is regenerated (`session_regenerate_id`) when the API-token
+  session is adopted into the `manage/*` PHP session, so a pre-planted session
+  id cannot survive authentication.
+- **Login brute-force — per-IP AND per-account, on both login doors** (#1027).
+  On top of the per-IP failure cap, both login surfaces — the public API
+  (`api.php` `auth_login`) and the `/manage` admin form
+  (`manage/includes/auth.php` `attemptLogin()`) — count failures **per account**
+  (keyed on a hash of the submitted username), so an attacker rotating IPs can
+  no longer grind one password below the per-IP radar. Both doors derive the
+  bucket key from the ONE shared `authLoginAcctKey()` with an identical
+  username fold, so guesses split across `/api` and `/manage` draw down a
+  single 20/15-min allowance rather than two. The counter advances inside the
+  shared unknown-user/wrong-password branch, so it fills identically for real
+  and imaginary accounts (no enumeration oracle), and the 429 is byte-identical
+  to the per-IP one. Fail-open on a counter-table blip. The email-login-code
+  **request** endpoint additionally gained a per-IP flood cap (#1927) — it had
+  none, so one IP could trigger real emails to an unbounded list of addresses.
+- **CAPTCHA (bot protection) — opt-in, provider-agnostic, dormant by default**
+  (#947/#340, `includes/captcha.php`). An admin can switch a challenge
+  (Cloudflare Turnstile / hCaptcha / Google reCAPTCHA v2) onto sign-up,
+  sign-in, password-reset, email-login and the song-request forms from
+  `/manage/configuration`. Verified **server-side** — the provider secret key
+  never reaches a browser and is encrypted at rest (`secretSettingKeys()`); the
+  siteverify URL is a constant from source (SSRF-safe). The gate is **fail-open
+  on infrastructure** (a provider outage never locks a congregation out —
+  the rate limits below stay in force underneath) but **fail-closed on the
+  challenge** (a missing/invalid token on a gated form is a `403`
+  `reason: captcha_required`). It is **entirely dormant and a verified
+  byte-identical no-op until an admin configures a provider + both keys and
+  ticks a form** — the CSP, the API responses and every page are unchanged on
+  an unconfigured install. The challenge raises an attacker's per-attempt cost;
+  it does not replace the per-IP / per-account / per-identifier budgets, which
+  stack underneath it.
 - **Authorization** — role hierarchy (`user` < `editor` < `admin` <
   `global_admin`) plus a fine-grained **entitlement** system
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call
   `requireAdmin()`/`requireEditor()`/`userHasEntitlement()`. **Global Admin
   always bypasses the invite-only channel gate** so it can't lock itself out.
+  **Org-scoped reads are structurally isolated, not just entitlement-gated**
+  (#1861) — `/manage/my-ccli-report`'s only row source refuses to run without a
+  non-empty, `tblOrganisationMembers`-derived org-id list, so an org admin can
+  never see another organisation's CCLI usage regardless of the entitlement
+  check alone; the system-wide `/manage/ccli-report` stays a separate,
+  higher-privileged view.
 - **CSRF** — state-changing requests are verified by `validateCsrfRequest()`
   (`manage/includes/auth.php`): it passes when EITHER a valid per-session token is
   present OR the request is provably same-origin — it requires the
@@ -106,7 +150,18 @@ These are enforced conventions; new code must follow them (see
   element and every filter/mask/pattern element. The only `url()` shape that
   survives anywhere is a same-document `url(#id)`. Logos are served by the
   standalone `org-logo.php` (`default-src 'none'; sandbox` CSP) and are
-  **never inlined** — always a plain `<img src>`.
+  **never inlined** — always a plain `<img src>`, now including the app
+  header, the Service-Projection corner bug, and the OG-image share card
+  (#1840), each resolving through one shared themed resolver rather than
+  forking kind/variant logic. The new org **brand colour** (`tblOrganisations
+  .BrandColor`) is a strict `#rrggbb`/`#rrggbbaa` allowlist
+  (`ihymnsOrgBrandColourNormalise()`) — anything else is rejected outright,
+  never stored, never echoed unescaped, never interpolated into CSS/HTML; the
+  branded share card additionally reads logo bytes **directly** via
+  `orgLogoFetchServeRow()`, never an HTTP self-request back to `org-logo.php`,
+  and carries no `&org=` URL parameter — the org is always derived
+  server-side from data already resolved, so branding can never be forged
+  onto content it doesn't legitimately belong to.
 - **Content access** — gated centrally via
   `includes/content_access.php::checkContentAccess()` against
   `tblContentRestrictions` + access tiers + organisation licences (never queried
@@ -127,7 +182,10 @@ These are enforced conventions; new code must follow them (see
   standing content unlock live for every congregant who had ever joined. It is
   **fail-open and STRICT-safe** (an un-migrated/edge env returns
   data unchanged rather than throwing) and **entirely dormant** — a verified
-  no-op — unless `tblAppSettings.content_gating_enabled='1'`.
+  no-op — unless `tblAppSettings.content_gating_enabled='1'`. **#1906** closes a
+  matching leak on the social share-image endpoint (`og-image.php`), which could
+  render copyrighted lyric text onto a share card even while content-locking is
+  on.
 - **Read rate limiting** — the heaviest sessionless public reads (`song_detail`,
   `search`, `songs_index`, `related_songs`, bulk) carry a fixed-window
   per-requester limit (`includes/read_rate_limit.php`, #1354) — keyed per session
@@ -136,7 +194,9 @@ These are enforced conventions; new code must follow them (see
   computed SQL-side (no per-node clock drift). It is **fail-open** (any error or
   an un-migrated `tblReadRateLimit` table allows the request) so it can never take
   the site down, and blunts scraping/volumetric abuse without affecting real
-  clients.
+  clients. **#1906** brings further heavy public endpoints under the same
+  fixed-window limiter — `og-image`, `random`, `song_of_the_day` and the media
+  reads.
 - **File / XML handling** — uploaded XML (MusicXML, PPTX, OpenSong, OpenLyrics,
   TTML) is parsed with `LIBXML_NONET` and no entity expansion (XXE/SSRF-safe on
   PHP 8); ZIP imports are read in-memory (no `extractTo`), validate entry names
@@ -164,6 +224,19 @@ These are enforced conventions; new code must follow them (see
   (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`); SPA fragments must never
   carry executable inline scripts, since a shared-cache fragment cannot carry a
   per-request nonce (CI guard `tests/php/test-fragment-inline-scripts.php`).
+  **#1906** extends header coverage to the `manage/*` admin area and the
+  social-card endpoint (`og-image.php`), which previously shipped no CSP or
+  hardening headers of their own.
+- **HTTP-layer hardening** (#1905 / #1906) — an unknown route (a `/wp-admin/`
+  scanner probe, any made-up path) now returns a real **404** rather than a soft
+  HTTP-200 app shell; the valid-route allow-list is **derived** from the app's
+  own pages and CI-locked in step with the client router (#1905). Security
+  response headers are emitted **on error responses too** (`Header always set`),
+  not just on `200`s. `X-Powered-By` now advertises the app's own
+  `iHymns/<version>` identity while the PHP runtime version is suppressed at
+  source (`expose_php=Off`), so the stack no longer volunteers its component
+  versions to a scanner. An owner/host-gated remainder (`Options -Indexes`,
+  `ServerSignature Off`) is still pending an alpha check.
 - **Client error telemetry** — uncaught browser errors are beaconed
   (`?action=client_error_report`) to the existing activity log, not a new store.
   Reports are privacy-scrubbed on both the client and the server (bearer tokens,

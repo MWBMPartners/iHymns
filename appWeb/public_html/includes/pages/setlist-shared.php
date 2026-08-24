@@ -151,6 +151,21 @@ declare(strict_types=1);
              only when the server grants canWrite on this link). -->
         <div id="shared-setlist-edit-status" class="small mt-2 d-none" aria-live="polite"></div>
 
+        <!-- #1802 — add-a-song host for the token-edit surface. Hidden until
+             JS (initSharedSetListPage(), js/modules/setlist.js) confirms
+             canWrite; static markup only (rule #30 — no inline <script> in a
+             page fragment; the SPA router imports setlist.js as a real ES
+             module, and THAT wires this input via mountSetlistAddSongPicker(),
+             never a script tag baked into this fragment). The input has no
+             `name`/form ancestor — it is a search-only combobox, not
+             something that gets submitted, so there is no accidental
+             double-post to guard against. -->
+        <div id="shared-setlist-add-song" class="mt-3 d-none">
+            <label for="shared-setlist-add-input" class="form-label small text-muted">Add a song</label>
+            <input type="text" id="shared-setlist-add-input" class="form-control"
+                   autocomplete="off" placeholder="Search by title or number&hellip;">
+        </div>
+
         <!-- #1790 — Import demoted to ONE secondary "Save a copy" button (was two
              primary "Import" buttons that steered every recipient into the wrong
              flow). The id stays `shared-setlist-import-btn-bottom` so the #1535

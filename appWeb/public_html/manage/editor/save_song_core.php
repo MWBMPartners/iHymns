@@ -55,6 +55,10 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -254,8 +258,17 @@ function editorSaveSongCore(): array
         $verified     = (int)($song['verified']           ?? 0);
         $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? 0);
         $musicPD      = (int)($song['musicPublicDomain']  ?? 0);
-        $hasAudio     = (int)($song['hasAudio']           ?? 0);
-        $hasSheet     = (int)($song['hasSheetMusic']      ?? 0);
+        /* #1862 — HasAudio/HasSheetMusic are DERIVED, never curator-set (the
+           manual checkboxes were removed from the editor entirely — rule #44).
+           Coerced to 0 here regardless of whatever a stale cached client still
+           sends: a brand-new song (the only case this INSERT value is ever
+           actually used for — see the ON DUPLICATE KEY UPDATE tail below,
+           which no longer touches either column on an UPDATE) has no media or
+           static files yet, so 0 is always correct at creation time; live
+           truth is established by songMediaRecomputeFlags() the moment media
+           is actually attached. */
+        $hasAudio     = 0;
+        $hasSheet     = 0;
 
         /* Build lyrics_text for FULLTEXT index */
         $lyricsLines = [];
@@ -576,6 +589,16 @@ function editorSaveSongCore(): array
                #1679 — the test is $mintedNewId, NOT `$assignedId !== null`: a songbook
                move ALSO sets $assignedId (it shares the client-relabel contract) but
                its row already exists, so it needs the UPDATE tail, not a plain INSERT. */
+            /* #1862 — HasAudio/HasSheetMusic are DELIBERATELY ABSENT from this
+               UPDATE tail (they used to be here). The two flags are now
+               DERIVED-only (songMediaRecomputeFlags(), rule #44); an UPDATE
+               that overwrote them with $hasAudio/$hasSheet (unconditionally
+               coerced to 0 above, since the client can no longer edit them)
+               would CLOBBER live media truth on every ordinary re-save of an
+               existing song — the exact regression this omission prevents.
+               The INSERT column list a few lines down still binds
+               $hasAudio/$hasSheet — needed only for the brand-new-song path
+               (see that variable's own comment above). */
             $upsertDuplicateClause = $mintedNewId
                 ? ''
                 : ' ON DUPLICATE KEY UPDATE
@@ -587,7 +610,6 @@ function editorSaveSongCore(): array
                         Verified = VALUES(Verified),
                         LyricsPublicDomain = VALUES(LyricsPublicDomain),
                         MusicPublicDomain = VALUES(MusicPublicDomain),
-                        HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
                         LyricsText = VALUES(LyricsText)';
 
             /* UPSERT tblSongs — now carries TuneName + Iswc (#497) and
@@ -638,6 +660,55 @@ function editorSaveSongCore(): array
             }
             $upsert->execute();
             $upsert->close();
+
+            /* #1860 go-live — mint this song's permanent IL-id (ILS…) right
+               after the row is safely committed-to. Called UNCONDITIONALLY
+               on both create AND edit — ilidStampNewRow()'s own idempotency
+               (a non-NULL IlId is returned as-is, no allocation) is what
+               makes that safe, and it self-heals a pre-#1860 row's missing
+               IlId the next time a curator saves it. Fail-safe: swallows
+               everything except a transaction-fatal deadlock/lock-timeout,
+               which it re-throws so this save's own catch below rolls back
+               honestly instead of committing a partially-written row. */
+            ilidStampNewRow($db, 'song', $songId, 'SongId');
+
+            /* #1744 Rev-2 — mint the opaque PublicId permalink for a song
+               created through THIS shared save core, the same way the v2
+               create paths already do (api2.php:2155/2244,
+               songPublicId_mintUnique()). Before this, a song created via the
+               legacy whole-song save (or an importer) landed with PublicId
+               NULL — no /s/<publicid> permalink — while a v2-created song got
+               one: a v1↔v2 parity gap surfaced by the #1737 write-set audit.
+               ELI5: whichever path just wrote this song, make sure it also has
+               its short public link — the newer editor already did, the older
+               one forgot.
+               Self-healing + idempotent, exactly like ilidStampNewRow() above:
+               called on create AND edit, but the actual mint only runs when the
+               row still LACKS a PublicId (a cheap SELECT first), so an ordinary
+               re-save is a no-op and a pre-fix NULL row is backfilled on its
+               next save — never re-minted / overwritten (the UPDATE's own
+               `PublicId IS NULL` guard is a second belt). Gated on
+               songPublicId_columnReady() so it is a byte-identical no-op on an
+               un-migrated install (rule #28 fail-open). Inside the same
+               transaction as the UPSERT, so a later failure rolls the mint back
+               honestly. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            if (songPublicId_columnReady($db)) {
+                $pubChk = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ?');
+                $pubChk->bind_param('s', $songId);
+                $pubChk->execute();
+                $pubCur = $pubChk->get_result()->fetch_row();
+                $pubChk->close();
+                if ($pubCur && ($pubCur[0] === null || $pubCur[0] === '')) {
+                    $newPublicId = songPublicId_mintUnique($db);
+                    $pubSet = $db->prepare(
+                        'UPDATE tblSongs SET PublicId = ? WHERE SongId = ? AND (PublicId IS NULL OR PublicId = \'\')'
+                    );
+                    $pubSet->bind_param('ss', $newPublicId, $songId);
+                    $pubSet->execute();
+                    $pubSet->close();
+                }
+            }
 
             /* Places adoption — write the composition-origin
                columns in a separate small UPDATE so the carefully-
@@ -693,6 +764,16 @@ function editorSaveSongCore(): array
                 $tuneStmt->close();
             }
 
+            /* #1039 Part A — maintain the diacritic-folded search mirror
+               (LyricsTextFolded) + repair NormalizedTitle in the SAME
+               transaction as the UPSERT above, via the ONE shared write helper.
+               Dormant + fail-open: a no-op on an un-migrated install (the gate
+               is column+index existence), so this is byte-identical there. The
+               UPSERT wrote $lyricsText and $title a few lines up; both fold
+               with the exact fold the query side uses. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+            searchFoldSyncSong($db, $songId, $title, $lyricsText);
+
             /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
                A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
                POSTs components WITHOUT `chords` / `languages`, so a naive recreate
@@ -711,6 +792,16 @@ function editorSaveSongCore(): array
             $ll_syncReady = lyricLinesSyncReady($db);
             $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list (arrays when mirrored; JSON strings legacy)
             $carryLangs   = [];
+            /* #1860 Phase 5 §3.4 — the same FIFO carry, for the two new thin-metadata
+               columns. This whole-song save REBUILDS a fixed component shape below
+               ($writeComps[] / the legacy re-INSERT), so without a carry a save from a
+               client that never learned about Label/SourceWorkId (a stale-cached
+               editor, or simply not touching the Structure tab) would silently wipe
+               every custom label + work link on the song — layer 2 of §3's
+               three-layer silent-wipe defence (this funnel's own carry, distinct from
+               the generic writer-level preserve in lyricLinesUpsertComponents()). */
+            $carryLabels      = [];
+            $carrySourceWorks = [];
             $pf1HasChords = false;
             $pf1HasLangs  = false;
             /* Clean a component's per-line `chords` (array OR space-separated string per
@@ -740,6 +831,11 @@ function editorSaveSongCore(): array
                     $key = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
                     $carryChords[$key][] = $pc['chords'];      // prior parallel chords array, or null
                     $carryLangs[$key][]  = $pc['languages'];   // prior per-line override array, or null
+                    /* #1860 Phase 5 §3.4 — lyricLinesEditableComponents() ALWAYS emits
+                       both keys (§2.3, null default), so no isset/array_key_exists guard
+                       is needed here — mirrors the chords/languages lines above. */
+                    $carryLabels[$key][]      = $pc['label'];
+                    $carrySourceWorks[$key][] = $pc['sourceWorkId'];
                 }
             } else {
                 /* lines-json-fallback (#1235 P4): un-migrated install (no mirror).
@@ -759,10 +855,22 @@ function editorSaveSongCore(): array
                     /* default false */
                 }
                 $pf1HasLangs = lyricLinesComponentsLangReady($db);
-                if ($pf1HasChords || $pf1HasLangs) {
+                /* #1860 Phase 5 §3.4 — Label/SourceWorkId are independent of the
+                   mirror AND of ChordsJson/LanguagesJson (each ships in its own
+                   migration), so they need their own gate via the ONE shared probe
+                   (rule #35). lyric_lines_read.php is only required on the mirrored
+                   branch above (:790) — this legacy branch needs its own require. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+                $pf1Extras = lyricLinesComponentExtrasPresent($db);
+                if ($pf1HasChords || $pf1HasLangs || $pf1Extras['Label'] || $pf1Extras['SourceWorkId']) {
                     $snapCols = 'Type, Number, LinesJson';
                     if ($pf1HasChords) { $snapCols .= ', ChordsJson'; }
                     if ($pf1HasLangs)  { $snapCols .= ', LanguagesJson'; }
+                    if ($pf1Extras['Label'])        { $snapCols .= ', Label'; }
+                    if ($pf1Extras['SourceWorkId']) { $snapCols .= ', SourceWorkId'; }
+                    /* lines-json-fallback (#1235 P4) continued from above —
+                       LinesJson/ChordsJson/LanguagesJson below are the SAME
+                       un-migrated-install columns the probes above gated on. */
                     $snap = $db->prepare(
                         "SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
                     );
@@ -775,6 +883,8 @@ function editorSaveSongCore(): array
                         $key     = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . $lc;
                         if ($pf1HasChords) { $carryChords[$key][] = $snapRow['ChordsJson']; }
                         if ($pf1HasLangs)  { $carryLangs[$key][]  = $snapRow['LanguagesJson']; }
+                        if ($pf1Extras['Label'])        { $carryLabels[$key][]      = $snapRow['Label']; }
+                        if ($pf1Extras['SourceWorkId']) { $carrySourceWorks[$key][] = $snapRow['SourceWorkId']; }
                     }
                     $snap->close();
                 }
@@ -926,6 +1036,25 @@ function editorSaveSongCore(): array
                         $carriedL = !empty($carryLangs[$pf1Key]) ? array_shift($carryLangs[$pf1Key]) : null;
                         $cLangs = is_array($carriedL) ? $carriedL : null;
                     }
+                    /* #1860 Phase 5 §3.4 — label/sourceWorkId: same explicit-vs-carry
+                       rule as chords/languages above (array_key_exists — even an
+                       explicit `null` counts as "the client addressed this field").
+                       The resolved value is handed to lyricLinesWriteComponents()
+                       WITH the key always present, so its own labelProvided/
+                       sourceWorkIdProvided flags read true and it simply stores what
+                       this funnel already carried forward — the writer-level
+                       preserve (§3.1) only has work left to do for OTHER funnels that
+                       omit the key entirely. */
+                    if (array_key_exists('label', $comp)) {
+                        $cLabel = $comp['label'];
+                    } else {
+                        $cLabel = !empty($carryLabels[$pf1Key]) ? array_shift($carryLabels[$pf1Key]) : null;
+                    }
+                    if (array_key_exists('sourceWorkId', $comp)) {
+                        $cSourceWorkId = $comp['sourceWorkId'];
+                    } else {
+                        $cSourceWorkId = !empty($carrySourceWorks[$pf1Key]) ? array_shift($carrySourceWorks[$pf1Key]) : null;
+                    }
                     $writeComps[] = [
                         'type'      => $cType,
                         'number'    => $cNum,
@@ -933,6 +1062,8 @@ function editorSaveSongCore(): array
                         'lines'     => $cLines,
                         'chords'    => $cChords,
                         'languages' => $cLangs,
+                        'label'         => $cLabel,
+                        'sourceWorkId'  => $cSourceWorkId,
                     ];
                 }
                 lyricLinesWriteComponents($db, $songId, $writeComps);
@@ -995,24 +1126,30 @@ function editorSaveSongCore(): array
                 ? $db->prepare('UPDATE tblSongComponents SET LanguagesJson = ? WHERE Id = ?')
                 : null;
 
-            if ($hasComponentLanguage) {
-                $insComp = $db->prepare(
-                    'INSERT INTO tblSongComponents
-                        (SongId, Type, Number, SortOrder, LinesJson, Language)
-                     VALUES (?, ?, ?, ?, ?, ?)'
-                );
-            } else {
-                $insComp = $db->prepare(
-                    'INSERT INTO tblSongComponents
-                        (SongId, Type, Number, SortOrder, LinesJson)
-                     VALUES (?, ?, ?, ?, ?)'
-                );
-            }
+            /* #1860 Phase 5 §3.4 (SD4) — Label/SourceWorkId are appended to the legacy
+               re-INSERT the SAME way Language already is: gated on the column
+               actually existing, via the ONE shared probe ($pf1Extras, already
+               fetched above for the carry-snapshot — memoised, so re-touching it here
+               costs nothing — rule #35). Built as a dynamic column/placeholder/type
+               list (mirroring lyricLinesUpsertComponents()'s $insCols/$insTypes shape
+               in lyric_lines_sync.php) so the two-variant $hasComponentLanguage
+               if/else above still degrades correctly when Label/SourceWorkId are
+               ALSO absent — byte-identical to the pre-#1860 SQL on that install. */
+            $insColsLegacy  = ['SongId', 'Type', 'Number', 'SortOrder', 'LinesJson'];
+            $insTypesLegacy = 'ssiis';
+            if ($hasComponentLanguage)      { $insColsLegacy[] = 'Language';     $insTypesLegacy .= 's'; }
+            if ($pf1Extras['Label'])        { $insColsLegacy[] = 'Label';        $insTypesLegacy .= 's'; }
+            if ($pf1Extras['SourceWorkId']) { $insColsLegacy[] = 'SourceWorkId'; $insTypesLegacy .= 'i'; }
+            $insPlaceLegacy = implode(',', array_fill(0, count($insColsLegacy), '?'));
+            $insComp = $db->prepare(
+                'INSERT INTO tblSongComponents (' . implode(',', $insColsLegacy) . ") VALUES ({$insPlaceLegacy})"
+            );
             $order = 0;
             foreach ($song['components'] ?? [] as $comp) {
                 $type   = (string)($comp['type'] ?? 'verse');
                 $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
                 $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+                $bindValsLegacy = [$songId, $type, $cNum, $order, $lines];
                 if ($hasComponentLanguage) {
                     /* Trim + cap to 35 chars (the BCP 47 column width).
                        Empty / null = inherit from the song; only persist
@@ -1023,10 +1160,38 @@ function editorSaveSongCore(): array
                     } else {
                         $lang = function_exists('mb_substr') ? mb_substr($lang, 0, 35) : substr($lang, 0, 35);
                     }
-                    $insComp->bind_param('ssiiss', $songId, $type, $cNum, $order, $lines, $lang);
-                } else {
-                    $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                    $bindValsLegacy[] = $lang;
                 }
+                /* #1860 Phase 5 §3.4 — Label/SourceWorkId, gated + PF1-carried exactly
+                   like chords/languages below: explicit (even empty/null) wins,
+                   omitted reclaims the pre-delete value for the position-matched part
+                   (FIFO by Type|Number|line-count — the same key shape the chords/
+                   languages carries use, computed fresh here since it's needed before
+                   $newCompId exists). */
+                if ($pf1Extras['Label'] || $pf1Extras['SourceWorkId']) {
+                    $pf1KeyExtra = $type . "\x1f" . (string)$cNum . "\x1f"
+                                 . (is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0);
+                    if ($pf1Extras['Label']) {
+                        if (array_key_exists('label', $comp)) {
+                            $labelVal = (isset($comp['label']) && trim((string)$comp['label']) !== '')
+                                ? (function_exists('mb_substr') ? mb_substr(trim((string)$comp['label']), 0, 100)
+                                                                : substr(trim((string)$comp['label']), 0, 100))
+                                : null;
+                        } else {
+                            $labelVal = !empty($carryLabels[$pf1KeyExtra]) ? array_shift($carryLabels[$pf1KeyExtra]) : null;
+                        }
+                        $bindValsLegacy[] = $labelVal;
+                    }
+                    if ($pf1Extras['SourceWorkId']) {
+                        if (array_key_exists('sourceWorkId', $comp)) {
+                            $srcWorkVal = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0) ? (int)$comp['sourceWorkId'] : null;
+                        } else {
+                            $srcWorkVal = !empty($carrySourceWorks[$pf1KeyExtra]) ? array_shift($carrySourceWorks[$pf1KeyExtra]) : null;
+                        }
+                        $bindValsLegacy[] = $srcWorkVal;
+                    }
+                }
+                $insComp->bind_param($insTypesLegacy, ...$bindValsLegacy);
                 $insComp->execute();
                 /* Capture the new component Id ONCE — the chords UPDATE below
                    would zero $db->insert_id, so the per-line-language write that
@@ -1255,121 +1420,28 @@ function editorSaveSongCore(): array
                 );
             }
 
-            /* ISWC auto-link to tblWorks (admin audit follow-up).
-               When this song carries an ISWC the editor expects a
-               matching Work row to exist so the public /song page
-               can show the "Part of work X" panel and so the Works
-               admin reflects every catalogued composition. The
-               batch backfill-works-from-iswc migration handles
-               existing rows; this block keeps the invariant on
-               every NEW save. Schema-tolerant: silently skips when
-               tblWorks isn't present yet (pre-migration installs). */
-            if ($iswc !== null && $iswc !== '') {
-                try {
-                    /* Probe schema once per request. */
-                    static $hasWorksSchema = null;
-                    if ($hasWorksSchema === null) {
-                        $probe = $db->prepare(
-                            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                              WHERE TABLE_SCHEMA = DATABASE()
-                                AND TABLE_NAME   IN ('tblWorks', 'tblWorkSongs')"
-                        );
-                        $probe->execute();
-                        $hasWorksSchema = count($probe->get_result()->fetch_all()) === 2;
-                        $probe->close();
-                    }
-                    if ($hasWorksSchema) {
-                        /* Look for an existing Work keyed on this ISWC. */
-                        $wStmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? LIMIT 1');
-                        $wStmt->bind_param('s', $iswc);
-                        $wStmt->execute();
-                        $wRow = $wStmt->get_result()->fetch_row();
-                        $wStmt->close();
-
-                        if ($wRow) {
-                            $workId = (int)$wRow[0];
-                        } else {
-                            /* Create a new Work — Title mirrors this song's
-                               title; Slug derived from Title with
-                               collision suffix to satisfy uq_slug. */
-                            $slugBase = mb_strtolower(trim((string)$title));
-                            if (class_exists('Normalizer')) {
-                                $slugBase = \Normalizer::normalize($slugBase, \Normalizer::FORM_KD);
-                                $slugBase = preg_replace('/\p{M}+/u', '', $slugBase) ?? '';
-                            }
-                            $slugBase = preg_replace('/[^\p{L}\p{N}]+/u', '-', $slugBase) ?? '';
-                            $slugBase = trim((string)$slugBase, '-');
-                            if ($slugBase === '') $slugBase = 'work';
-                            if (mb_strlen($slugBase) > 76) $slugBase = mb_substr($slugBase, 0, 76);
-
-                            $slug      = $slugBase;
-                            $slugCheck = $db->prepare('SELECT 1 FROM tblWorks WHERE Slug = ? LIMIT 1');
-                            $suffix    = 1;
-                            while (true) {
-                                $slugCheck->bind_param('s', $slug);
-                                $slugCheck->execute();
-                                $taken = $slugCheck->get_result()->fetch_row() !== null;
-                                if (!$taken) break;
-                                $suffix++;
-                                $slug = $slugBase . '-' . $suffix;
-                            }
-                            $slugCheck->close();
-
-                            $notes = sprintf('Auto-created from ISWC %s when song %s was saved.', $iswc, $songId);
-                            $wIns  = $db->prepare(
-                                'INSERT INTO tblWorks (Iswc, Title, Slug, Notes) VALUES (?, ?, ?, ?)'
-                            );
-                            $wIns->bind_param('ssss', $iswc, $title, $slug, $notes);
-                            $wIns->execute();
-                            $workId = (int)$db->insert_id;
-                            $wIns->close();
-
-                            if (function_exists('logActivity')) {
-                                logActivity('work.auto_create', 'work', (string)$workId, [
-                                    'iswc'      => $iswc,
-                                    'title'     => $title,
-                                    'slug'      => $slug,
-                                    'source'    => 'song_editor.save_song',
-                                    'song_id'   => $songId,
-                                ]);
-                            }
-                        }
-
-                        /* Idempotent membership. IsCanonical defaults to 0
-                           — the first member of a brand-new Work is
-                           promoted to canonical inline via a follow-up
-                           UPDATE only when no canonical member exists. */
-                        $linkStmt = $db->prepare(
-                            'INSERT IGNORE INTO tblWorkSongs (WorkId, SongId, IsCanonical, SortOrder)
-                             VALUES (?, ?, 0, 0)'
-                        );
-                        $linkStmt->bind_param('is', $workId, $songId);
-                        $linkStmt->execute();
-                        $linkStmt->close();
-
-                        $canonStmt = $db->prepare(
-                            'SELECT 1 FROM tblWorkSongs WHERE WorkId = ? AND IsCanonical = 1 LIMIT 1'
-                        );
-                        $canonStmt->bind_param('i', $workId);
-                        $canonStmt->execute();
-                        $hasCanon = $canonStmt->get_result()->fetch_row() !== null;
-                        $canonStmt->close();
-                        if (!$hasCanon) {
-                            $upd = $db->prepare(
-                                'UPDATE tblWorkSongs SET IsCanonical = 1 WHERE WorkId = ? AND SongId = ?'
-                            );
-                            $upd->bind_param('is', $workId, $songId);
-                            $upd->execute();
-                            $upd->close();
-                        }
-                    }
-                } catch (\Throwable $_e) {
-                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
-                    /* Best-effort — Works linkage must never block the
-                       core song save. The user's edit is already
-                       captured in tblSongs + tblSongRevisions. */
-                    error_log('[editor save_song] Works auto-link failed: ' . $_e->getMessage());
-                }
+            /* Works auto-link (#1860 go-live) — delegates to the ONE shared
+               core (rule #22; this REPLACES the pre-#1860 inline ISWC-only
+               fork above — CCLI now participates too: a CCLI-only save
+               creates/links a standalone CCLI-keyed work, and ISWC+CCLI
+               together create the parent/child pair per workLinkPlan()
+               §3.3 — this is the feature, not a side effect). Inside this
+               save's own transaction (ownTransaction=false); fail-safe: a
+               link failure NEVER costs the curator their save
+               (transaction-fatal deadlock/lock-timeout rethrows via the
+               wrapper so this save's own catch below rolls back honestly;
+               everything else is logged and swallowed). Canonical-member
+               promotion is PRESERVED — it now lives in the ONE membership
+               writer, workLinkSongRow(), so every entry route gets it. */
+            $workAutolink = workAutolinkSafe($db, $songId, (string)$ccli, (string)($iswc ?? ''), false);
+            if ($workAutolink !== null && $workAutolink['linked'] && function_exists('logActivity')) {
+                logActivity('song.work_autolink', 'song', $songId, [
+                    'workId'   => $workAutolink['workId'],
+                    'created'  => $workAutolink['created'],
+                    'rehomed'  => $workAutolink['rehomed'],
+                    'conflict' => $workAutolink['conflict'],
+                    'source'   => 'save_song',
+                ]);
             }
 
             /* ------------------------------------------------------------------
@@ -1589,6 +1661,34 @@ function editorSaveSongCore(): array
                un-migrated (no-mirror) branch has no mirror to sync. */
 
             $db->commit();
+
+            /* #1862 — the credits loop above just replaced the whole
+               contributor set (and the identity block above may have changed
+               FirstPublishedYear too); recompute the PD-suggestion denorm
+               post-commit, own failure boundary (pdRecomputeForSong() never
+               throws — see pd_suggest.php's header) so a denorm hiccup can
+               never cost the curator this save. */
+            pdRecomputeForSong($db, $songId);
+
+            /* #1909 — partner webhook, fired AFTER $db->commit() (like the
+               soft-delete twin and pdRecomputeForSong above), NOT inside the
+               transaction. Rationale (design §5.1, and the #1909 adversarial
+               review): webhookEmitSongEvent is best-effort and swallows every
+               \Throwable — including a transaction-fatal deadlock/lock-timeout —
+               so if it ran pre-commit and its (webhooks-active only) SELECT hit
+               such an error, the swallow would let the code fall through to
+               commit() a transaction the engine had already rolled back: a
+               silent false-success that discards the curator's save. Post-commit
+               the save is already durable, so a swallowed webhook hiccup can cost
+               nothing. Dormant no-op until enabled; title + songbook are still in
+               scope so the shared gatherer only resolves public_id. */
+            webhookEmitSongEvent(
+                $db,
+                $action === 'create' ? 'song.created' : 'song.updated',
+                $songId,
+                ['title' => $title, 'songbook_abbr' => $songbookAbbr],
+                ['source' => 'editor_save']
+            );
 
             /* WS-J #1020: no songs.json cache to refresh — all reads are now
                live MySQL (editor sidebar via load_index, songbook export via

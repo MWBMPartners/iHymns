@@ -313,10 +313,18 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
     $actRemove = 'logo_remove';
     $actToggle = 'logo_toggle';
 
-    $existingByKind = [];
+    /* #1840 — per-(kind,variant) lookup so the "Theme versions" strip below
+       can find each kind's light/dark rows alongside the existing
+       default-only $existingByKind fold (kept for the "is this row's kind
+       expanded at all" check, unchanged from #1830). */
+    $existingByKindVariant = [];
     foreach (orgLogoListForOrg($db, $orgId) as $row) {
-        if ($row['Variant'] === 'default') {
-            $existingByKind[$row['Kind']] = $row;
+        $existingByKindVariant[$row['Kind']][$row['Variant']] = $row;
+    }
+    $existingByKind = [];
+    foreach ($existingByKindVariant as $kind => $variants) {
+        if (isset($variants['default'])) {
+            $existingByKind[$kind] = $variants['default'];
         }
     }
 
@@ -359,7 +367,68 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
         $isActive  = ((int)$existing['IsActive'] === 1);
         $toggleTo  = $isActive ? '0' : '1';
         $toggleLabel = $isActive ? 'Hide' : 'Show';
-        $confirmRemove = "Remove the {$labelEsc} logo?";
+        /* #1840 — removing the DEFAULT row cascades to its light/dark theme
+           versions too (orgLogoDeleteKindAll(), so the confirm copy says so
+           up front rather than surprising a curator after the fact. */
+        $confirmRemove = "Remove the {$labelEsc} logo and its theme versions?";
+
+        /* #1840 §3.5 — "Theme versions (optional)" strip, ONE per expanded
+           kind row: a Light-theme and a Dark-theme slot, each independently
+           empty (Add form) or filled (preview + Replace/Remove), gated on
+           the kind already having a 'default' row (variants require the
+           default — an orphan dark-only row would show on dark screens and
+           silently vanish on light ones, the silent-half-feature class this
+           repo documents; enforced here by only ever rendering this strip
+           inside the ALREADY-expanded branch). No per-variant alt-text
+           input — AltText meaning rides the kind's default row (the variant
+           is the same asset re-drawn, one accessible name). */
+        $variantLabels = ['light' => 'Light theme', 'dark' => 'Dark theme'];
+        $variantSlotsHtml = '';
+        foreach ($variantLabels as $variant => $variantLabel) {
+            $variantLabelEsc = htmlspecialchars($variantLabel, ENT_QUOTES);
+            $variantRow = $existingByKindVariant[$kind][$variant] ?? null;
+
+            if ($variantRow === null) {
+                $variantSlotsHtml .= '<form method="POST" enctype="multipart/form-data"'
+                    . ' class="d-flex align-items-center gap-2 org-logo-variant-slot">'
+                    . $hiddenFields
+                    . '<input type="hidden" name="action" value="' . $actUpload . '">'
+                    . '<input type="hidden" name="variant" value="' . $variant . '">'
+                    . '<span class="small text-muted" style="min-width:6.5rem;">' . $variantLabelEsc . '</span>'
+                    . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+                    . ' class="form-control form-control-sm" style="max-width:170px;" required>'
+                    . '<button type="submit" class="btn btn-sm btn-outline-secondary">Add</button>'
+                    . '</form>';
+                continue;
+            }
+
+            $vSha = (string)$variantRow['Sha256'];
+            $vPreview = '/org-logo.php?org=' . $orgId . '&kind=' . rawurlencode($kind)
+                . '&variant=' . rawurlencode($variant) . '&v=' . rawurlencode($vSha);
+            $vPreviewEsc = htmlspecialchars($vPreview, ENT_QUOTES);
+            $variantSlotsHtml .= '<div class="d-flex align-items-center gap-2 org-logo-variant-slot">'
+                . '<img src="' . $vPreviewEsc . '" alt="' . $labelEsc . ' (' . $variantLabelEsc . ') preview"'
+                . ' style="max-height:44px;max-width:80px;object-fit:contain;background:#fff;border-radius:4px;padding:3px;">'
+                . '<span class="small text-muted" style="min-width:6.5rem;">' . $variantLabelEsc . '</span>'
+                . '<form method="POST" enctype="multipart/form-data" class="d-flex gap-1 align-items-center">'
+                . $hiddenFields
+                . '<input type="hidden" name="action" value="' . $actUpload . '">'
+                . '<input type="hidden" name="variant" value="' . $variant . '">'
+                . '<input type="file" name="logo_file" accept=".svg,.png,image/svg+xml,image/png"'
+                . ' class="form-control form-control-sm" style="max-width:130px;" required>'
+                . '<button type="submit" class="btn btn-sm btn-outline-secondary">Replace</button>'
+                . '</form>'
+                . '<form method="POST" class="d-inline">' . $hiddenFields
+                . '<input type="hidden" name="action" value="' . $actRemove . '">'
+                . '<input type="hidden" name="variant" value="' . $variant . '">'
+                . '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>'
+                . '</div>';
+        }
+        $variantStripHtml = '<div class="org-logo-variant-strip mt-2 ps-2 border-start">'
+            . '<div class="text-muted small mb-1">Theme versions <span class="fw-normal">(optional)</span> '
+            . '— add a version drawn for light or dark screens and iHymns will pick the right one automatically.</div>'
+            . '<div class="d-flex flex-wrap gap-3">' . $variantSlotsHtml . '</div>'
+            . '</div>';
 
         $rowsHtml .= '<div class="org-logo-row border rounded p-2 mb-2">'
             . '<div class="d-flex align-items-start gap-3 flex-wrap">'
@@ -385,18 +454,146 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
             . '<form method="POST" class="d-inline" onsubmit="return confirm(' . json_encode($confirmRemove) . ');">' . $hiddenFields
             . '<input type="hidden" name="action" value="' . $actRemove . '">'
             . '<button type="submit" class="btn btn-sm btn-outline-danger">Remove</button></form>'
-            . '</div></div></div></div>';
+            . '</div>'
+            . $variantStripHtml
+            . '</div></div></div>';
     }
 
     return '<div class="card-admin p-3 mb-3 org-logo-card">'
         . '<h3 class="h6 mb-2"><i class="bi bi-image me-2"></i>Organisation logos</h3>'
-        . '<p class="text-muted small mb-2">Upload your organisation\'s logo so printed song sheets '
-        . 'can carry your branding. You can add several shapes — a main logo, wide and stacked layouts, '
-        . 'a symbol on its own, single-colour and light-on-dark versions — and printouts will use the '
-        . 'best one available.</p>'
-        . '<p class="text-muted small mb-3">SVG files look sharpest in print; PNG also works. For your '
+        . '<p class="text-muted small mb-2">Upload your organisation\'s logo so printed song sheets, '
+        . "the app's header (for signed-in members), your projector screen and shared set-list "
+        . 'pictures can carry your branding. You can add several shapes — a main logo, wide and '
+        . 'stacked layouts, a symbol on its own, single-colour and light-on-dark versions — and each '
+        . 'place will use the best one available.</p>'
+        . '<p class="text-muted small mb-2">SVG files look sharpest in print; PNG also works. For your '
         . 'safety we tidy SVG files on upload, so decorative effects like animation or embedded pictures '
         . "won't be kept.</p>"
+        /* #1840 §B.6 — the og-card share-preview picture is drawn by a
+           library that cannot read SVG at all; PNG rows are the only ones
+           it can composite. A one-sentence nudge here (never a hard
+           requirement — SVG still works everywhere else) is the whole fix;
+           trivially changeable if the wording ever needs to move. */
+        . '<p class="text-muted small mb-3">For share-preview images (like a shared set-list picture), '
+        . "add a PNG version of your light-on-dark logo too — that picture can't use an SVG file.</p>"
         . $rowsHtml
         . '</div>';
+}
+
+/* =============================================================================
+ * #1840 — SCREEN-SURFACE BRANDING: the ONE themed-surface registry + resolver
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Three new places on screen (the app's top header, the projector, and the
+ * shared "share this on social media" picture) want to show a church's logo
+ * too — but each of those places sits on a DIFFERENT background (a normal
+ * page, an always-dark projector screen, a coloured banner), so each one has
+ * its own short "wish list" of which logo SHAPE it would like, and whether
+ * light or dark artwork fits its background best. This is that ONE wish-list
+ * table, plus the ONE function that turns "here's what the org actually
+ * uploaded" into "here's the one picture to show" for a given place and a
+ * given light/dark theme.
+ *
+ * DETAILED
+ * --------
+ * `IHYMNS_ORG_LOGO_SURFACE_PREFS` names every consumer surface once — never a
+ * second copy per file (rule #35). Key order within a surface's `kinds` list
+ * IS that surface's resolution order (the SAME "key-order-is-the-ladder"
+ * doctrine `IHYMNS_ORG_LOGO_KINDS` already uses). `darkCapableOnly` marks a
+ * surface whose ground is permanently dark/coloured (never the plain white a
+ * `'default'`-variant rendition assumes) — for those surfaces the
+ * `'default'`-variant fallback step is skipped for every kind EXCEPT
+ * `'reversed'` (whose `'default'` rendition IS, by the registry's own
+ * definition, already light-on-dark — see `IHYMNS_ORG_LOGO_KINDS['reversed']`
+ * above).
+ *
+ * `ihymnsOrgLogoResolveThemedAsset()` is pure and DB-free (list-in,
+ * choice-out) — the same "unit-testable like `ihymnsOrgLogoResolveKind()`"
+ * shape that function already has. Algorithm, per kind K in the surface's
+ * `kinds` list, IN ORDER:
+ *   1. `(K, $theme)` — the exact theme-paired rendition.
+ *   2. `(K, 'default')` — skipped when the surface is `darkCapableOnly` AND
+ *      `K !== 'reversed'`.
+ * The first hit (in that per-kind, then-per-step order) wins; nothing found
+ * across every kind returns `null` — the caller renders NOTHING, never a
+ * broken image and never a kind the ladder doesn't document (rule #42's
+ * "never substitute a different kind" carried over from the print `'auto'`
+ * ladder to this new themed axis).
+ *
+ * @link .claude/org-logo-surfaces-1840-plan.md §3.2  the full design this implements
+ * @link appWeb/public_html/js/modules/org-logo.js     the exact client-side mirror (rule #35 lockstep)
+ * @see #1840
+ */
+
+/**
+ * Per-surface kind preference lists (§3.2 of the plan). Key order within
+ * each `kinds` array is that surface's resolution ladder.
+ *
+ * `'header'`    — the app's top nav-bar co-brand (small, ~28px slot).
+ * `'projector'` — the Service-Projection corner bug (always on a dark ground).
+ * `'og-card'`   — the social share-preview band (always on the org's own
+ *                 brand-colour ground, i.e. "dark-ish" by construction).
+ */
+const IHYMNS_ORG_LOGO_SURFACE_PREFS = [
+    'header'    => ['kinds' => ['emblem', 'favicon'],             'darkCapableOnly' => false],
+    'projector' => ['kinds' => ['emblem', 'reversed', 'favicon'], 'darkCapableOnly' => false],
+    'og-card'   => ['kinds' => ['reversed', 'emblem'],            'darkCapableOnly' => true],
+];
+
+/**
+ * Resolve WHICH (kind, variant) a themed screen surface should render, given
+ * the org's ACTIVE (kind, variant) rows and the viewer's current theme.
+ * Pure + DB-free — see this section's doc-block for the full algorithm.
+ *
+ * @param  list<array{kind:string,variant:string}> $available  ACTIVE rows
+ *         only (callers filter `IsActive`; the `og-card` surface additionally
+ *         pre-filters to PNG rows before calling this — that FILTER is the
+ *         caller's constraint, this ladder is shared regardless of it).
+ * @param  string $surface  One of `IHYMNS_ORG_LOGO_SURFACE_PREFS`'s keys.
+ *                           An unknown surface returns `null` (never throws —
+ *                           a typo'd surface name degrades to "show nothing",
+ *                           the same fail-safe posture as an unresolved kind).
+ * @param  string $theme    `'light'` or `'dark'`; anything else is treated
+ *                           as `'light'` (defensive default — a themed
+ *                           surface always resolves ONE of the two).
+ * @return array{kind:string,variant:string}|null  `null` => render NOTHING.
+ */
+function ihymnsOrgLogoResolveThemedAsset(array $available, string $surface, string $theme): ?array
+{
+    if (!isset(IHYMNS_ORG_LOGO_SURFACE_PREFS[$surface])) {
+        return null;
+    }
+    $prefs = IHYMNS_ORG_LOGO_SURFACE_PREFS[$surface];
+    $theme = ($theme === 'dark') ? 'dark' : 'light';
+
+    /* A fast (kind|variant) => true lookup set, built once, so the per-kind
+       ladder below is a cheap isset() rather than an O(n) scan per step. */
+    $have = [];
+    foreach ($available as $row) {
+        $kind    = (string)($row['kind'] ?? '');
+        $variant = (string)($row['variant'] ?? '');
+        if ($kind === '' || $variant === '') {
+            continue;
+        }
+        $have[$kind . '|' . $variant] = true;
+    }
+
+    foreach ($prefs['kinds'] as $kind) {
+        /* Step 1 — the exact theme-paired rendition. */
+        if (isset($have[$kind . '|' . $theme])) {
+            return ['kind' => $kind, 'variant' => $theme];
+        }
+        /* Step 2 — the 'default' rendition, skipped on a darkCapableOnly
+           surface for every kind except 'reversed' (whose 'default' IS
+           already light-on-dark by the kind registry's own definition). */
+        if ($prefs['darkCapableOnly'] && $kind !== 'reversed') {
+            continue;
+        }
+        if (isset($have[$kind . '|default'])) {
+            return ['kind' => $kind, 'variant' => 'default'];
+        }
+    }
+    return null;
 }

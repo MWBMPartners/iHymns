@@ -79,6 +79,15 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    as anything in the /manage/ stack runs. Best-effort, never throws. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'activity_log.php';
+
+/* Shared rate-limit helpers (#1027) — attemptLogin() below shares the
+   per-account login bucket with api.php's auth_login via authLoginAcctKey()
+   + checkRateLimit()/recordRateLimitHit(). require_once dedupes (api.php
+   already pulls this file into API requests; a /manage page load is a
+   separate request that needs it loaded here). Pure function defs + a
+   direct-access guard, so loading it in the bootstrap is side-effect-free. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'rate_limit.php';
 /* Mirror every uncaught \Throwable + PHP fatal across the entire
    /manage/* admin surface into tblActivityLog. Every admin page
    requires this auth bootstrap first, so installing the global
@@ -86,6 +95,29 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    musicians, songbooks, setup-database, etc. — without each
    page having to remember to register its own. */
 installGlobalActivityLogHandlers('manage');
+
+/* Content-Security-Policy for the /manage/* admin area (#1906). The enforcing
+   nonce CSP lives only in index.php, which never serves /manage/* — so admin
+   pages shipped ZERO CSP. This emits a GENUINE, ZERO-BREAKAGE policy from the
+   one shared admin bootstrap every page requires before output (incl. the
+   bespoke-head editor pages).
+
+   Deliberately only the directives that constrain NOTHING the browser loads by
+   default — no `default-src`, `script-src` or `style-src` — because the admin
+   surface is inline-heavy (86 inline <script>, 61 inline handlers, 241 inline
+   style= attrs) and has NO client error monitor (rule #1587), so a mis-scoped
+   fetch directive would break a page SILENTLY. These four have no inline or
+   asset-load dependency and cannot break any admin resource:
+     - object-src 'none'      blocks legacy plugin (<object>/<embed>) XSS
+     - base-uri 'self'        blocks a <base> tag redirecting relative URLs
+     - form-action 'self'     blocks form-hijack POSTing admin creds off-site
+     - frame-ancestors 'self' blocks click-jacking the admin UI in an iframe
+   Tightening script-src/style-src needs the nonce refactor (rewrite the 61
+   inline handlers + nonce the 86 scripts) — tracked separately on #1906.
+   Guarded on !headers_sent() so an unusual early-output caller can't fatal. */
+if (!headers_sent()) {
+    header("Content-Security-Policy: object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
+}
 
 /* =========================================================================
  * SESSION CONFIGURATION
@@ -219,6 +251,19 @@ function adoptApiTokenSession(): bool
 
     if (!$row) {
         return false;
+    }
+
+    /* SECURITY (#1906) — session-fixation defence on the cross-surface promotion.
+       An anonymous /manage PHP session is about to become an AUTHENTICATED one
+       purely on the strength of the cross-subdomain ihymns_auth cookie, so rotate
+       the session id BEFORE seeding the identity — a PHPSESSID fixed on the victim
+       before promotion must not survive into the now-authenticated session. Every
+       OTHER identity-seeding path in this file already does this (the login POST
+       handler + the idle-refresh paths); adoptApiTokenSession() was the one that
+       didn't. Fires once per promotion (isAuthenticated() short-circuits after),
+       not per request. Guarded on an active session. */
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_regenerate_id(true);
     }
 
     /* Promote the token into $_SESSION exactly as /manage/login.php's
@@ -550,6 +595,28 @@ function attemptLogin(string $username, string $password): ?array
         }
     }
 
+    /* SECURITY (#1027 — the /manage half) — per-ACCOUNT lockout, sharing the
+       SAME action name + SAME key derivation as api.php's auth_login. The
+       per-IP block above only stops ONE address; this bucket counts bad
+       guesses aimed at one account from ANY address, so a botnet giving each
+       node fewer than 10 tries can no longer grind an admin password forever
+       through /manage — the surface #1386's own comment calls "the
+       highest-value accounts: admin / global_admin". Because it is the SAME
+       'auth_login_acct' bucket the public API fills, an attacker splitting
+       guesses across /api and /manage draws down ONE 20/15-min allowance, not
+       two. Checked BEFORE the user fetch + password_verify() so a hammered
+       account is refused without spending a bcrypt. FAIL-OPEN via the shared
+       limiter (a counter-table blip degrades to today's behaviour, never a
+       Sunday-morning lockout). Uses $username (the raw submission) not
+       $normalised: the fold lives inside authLoginAcctKey() so both surfaces
+       bucket identically (see includes/rate_limit.php). */
+    $acctKey = authLoginAcctKey($username);
+    if (!checkRateLimit(IHYMNS_AUTH_ACCT_ACTION, $acctKey, IHYMNS_AUTH_ACCT_MAX, IHYMNS_AUTH_ACCT_WINDOW, false)) {
+        logActivity('auth.login', 'user', $normalised,
+            ['reason' => 'rate_limited_account'], 'failure');
+        return null;   /* caller shows the same generic invalid-credentials error */
+    }
+
     $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
     $stmt->bind_param('s', $normalised);
     $stmt->execute();
@@ -565,6 +632,14 @@ function attemptLogin(string $username, string $password): ?array
             $fa->execute();
             $fa->close();
         }
+        /* #1027 — the SAME failure also fills the per-account bucket checked at
+           the top of this function, written through the shared helper so the
+           read and the write stay one pair (includes/rate_limit.php). This
+           line sits INSIDE the shared "unknown user OR wrong password" branch,
+           so the counter advances identically for a real and an imaginary
+           account — keeping the lockout from becoming a username-existence
+           oracle, exactly as api.php's auth_login does. */
+        recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION, $acctKey, false);
         /* Failed login (#535) — record reason without leaking whether
            the username existed (the `reason` distinguishes "no such
            user" from "wrong password" only at the row level, never

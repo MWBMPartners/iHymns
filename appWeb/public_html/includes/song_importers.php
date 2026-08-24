@@ -5,6 +5,7 @@ declare(strict_types=1);
 /* #1694 — songVisibleSql() for the SongCount recomputes below (degrades to
    '1=1' on an un-migrated install, so every funnel stays byte-identical). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the song + songbook create funnels below */
 
 /**
  * iHymns - Shared song importers (#1200 Phase 4b)
@@ -257,7 +258,9 @@ function _bulkImport_componentTypeFor(string $marker): string
  * body is too malformed to import (caller logs the reason in
  * errors[]).
  *
- * @param string $body       File contents (UTF-8)
+ * @param string $body       File contents (UTF-8, UTF-16, or UTF-32 — see
+ *                           ihymnsTextToUtf8() below; any other encoding is
+ *                           rejected with a clear error rather than mangled)
  * @param string $abbrev     Songbook abbreviation parsed from the filename
  * @param string $songbook   Songbook display name parsed from the folder
  * @param int    $number     Song number parsed from the filename
@@ -265,6 +268,19 @@ function _bulkImport_componentTypeFor(string $marker): string
  */
 function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, int $number): array
 {
+    /* #1908 Commit 6 — ELI5: a Windows "Save As... Unicode" .txt file is
+       secretly UTF-16, not UTF-8; read it as UTF-8 and every character
+       comes out mangled with no error at all (the READ succeeds — it just
+       decodes to garbage). Detect + convert BEFORE anything else touches
+       the bytes. See includes/text_encoding.php for the full detection
+       ladder this delegates to (rule #22 — the ONE shared sniffer). */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
+
     /* Normalise line endings so a CRLF source from Windows reads the
        same as an LF source from macOS/Linux. */
     $body  = str_replace(["\r\n", "\r"], "\n", $body);
@@ -367,8 +383,59 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
         'arrangers'          => [],
         'adaptors'           => [],
         'translators'        => [],
+        'altTitles'          => [],
         'components'         => $components,
     ], null];
+}
+
+/**
+ * Extract the licensing / identifier / public-domain fields from a parsed song
+ * dict, with the pre-#1673 hardcoded defaults as fallbacks (#1673 / #1896).
+ *
+ * ELI5: the parsers already read a song's copyright, CCLI number, ISWC and
+ * public-domain flags — but the shared saver used to throw them all away and
+ * write blanks. This reads them back out so an imported catalogue keeps its
+ * rights metadata.
+ *
+ * THE BUG (#1673 / #1896): `_bulkImport_saveSong()` — the ONE saver every
+ * importer (TXT / OpenSong / VideoPsalm / ChordPro / FreeShow / OpenLyrics /
+ * CSV / iHymns-JSON) funnels through — hardcoded `$copyright=''`, `$ccli=''`,
+ * `$iswc=null`, `$verified=0`, `$lyricsPD=0`, `$musicPD=0`, discarding the
+ * values the parsers had already collected into the dict. Two layers each doing
+ * their job, the data falling through the gap between them. It matters because
+ * Copyright + CCLI are the LICENSING metadata: the CCLI usage report (#317)
+ * joins on `tblSongs.Ccli` and so undercounts imported songs; content gating
+ * (#1590) reads the PD flags; and post-#1860 the bulk path's Work auto-link is a
+ * near-permanent no-op with no CCLI/ISWC to link on (#1896).
+ *
+ * Extracted as a PURE helper (not inlined) so the field mapping is behaviourally
+ * testable without a database — the saver itself does multi-statement DB work.
+ * Every read keeps its fallback so a parser that omits a key (OpenLyrics builds
+ * its own dict, not the template above) still saves, never throws on a missing
+ * key (the #1673 ⚠️). CREDITS (writers/composers) are deliberately OUT of scope
+ * here — they resolve into the separate musicians/credits tables (#832 territory)
+ * with their own rules, and #1673 says split them once the columns are done.
+ *
+ * @param array $song A parsed song dict (any importer's output shape).
+ * @return array{copyright:string, ccli:string, iswc:?string, verified:int,
+ *               lyricsPublicDomain:int, musicPublicDomain:int}
+ * @see https://www.php.net/manual/en/language.types.array.php
+ */
+function _bulkImportRightsFromSong(array $song): array
+{
+    $iswcRaw = trim((string)($song['iswc'] ?? ''));
+    return [
+        'copyright'          => trim((string)($song['copyright'] ?? '')),
+        'ccli'               => trim((string)($song['ccli'] ?? '')),
+        /* '' means "no ISWC": the column is nullable and the #1860 identifier /
+           auto-link read path expects NULL, not an empty string. */
+        'iswc'               => ($iswcRaw !== '') ? $iswcRaw : null,
+        /* Truthy source value → 1, anything else (absent / '' / 0 / false) → 0,
+           so a parser that never sets the flag keeps the safe default. */
+        'verified'           => !empty($song['verified']) ? 1 : 0,
+        'lyricsPublicDomain' => !empty($song['lyricsPublicDomain']) ? 1 : 0,
+        'musicPublicDomain'  => !empty($song['musicPublicDomain']) ? 1 : 0,
+    ];
 }
 
 /**
@@ -377,6 +444,31 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
  * call returns 'skipped'. This is the explicit user requirement for
  * bulk import (#664): never overwrite curator-edited data with
  * scraped source data.
+ *
+ * DRY RUN (#1674): when _bulkImport_dryRun() is on, this function still runs
+ * BOTH real pre-flight decisions below (the existence check and, if opted
+ * in, the title-dedupe check) and returns exactly what a real run would
+ * return ('create'|'skipped') — but early-returns immediately before
+ * $db->begin_transaction(), so nothing after that point (the INSERT, the
+ * lyric-line write, the credit tables + musicianPromote(), ilidStampNewRow,
+ * the revision row, pdRecomputeForSong, logActivity) ever executes. This
+ * function opens its OWN per-song transaction and MySQL has no nested
+ * transactions, so "wrap the whole import and roll back" cannot work here —
+ * suppressing every write BY POSITION from one early-return, placed after
+ * both decisions and before the transaction, is the seam that keeps a
+ * single code path for both real and preview runs. The exact placement is
+ * load-bearing; see the comment at the early-return itself. In-file
+ * duplicates within one dry-run request are tracked via
+ * _bulkImport_dryRunSeen() so a second occurrence of the same SongId
+ * reports 'skipped' — mirroring how a real run's second INSERT of that
+ * SongId would be skipped by the existence check above, against the FIRST
+ * insert's now-committed row.
+ *
+ * HONEST LIMITATION: dry-run's `songs_failed` count (aggregated by the
+ * caller) reflects only parse/mapping failures caught before this function
+ * is even invoked — DB-level failures (a duplicate-key race, an FK
+ * surprise) are unreproducible without actually writing, so a dry run can
+ * under-report failures a real import would hit.
  *
  * @return array{0: string, 1: ?string}  ['create'|'skipped'|'fail', errorMessage|null]
  */
@@ -405,13 +497,18 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
        on one bad row. */
     $validLang    = _ietfBcp47Validate((string)$song['language']);
     $language     = $validLang ?? 'en';
-    $copyright    = '';
+    /* #1673 / #1896 — read the licensing / identifier / public-domain fields the
+       parsers already collected, instead of the blanks this used to hardcode. */
+    $rights       = _bulkImportRightsFromSong($song);
+    $copyright    = $rights['copyright'];
     $tuneName     = null;
-    $ccli         = '';
-    $iswc         = null;
-    $verified     = 0;
-    $lyricsPD     = 0;
-    $musicPD      = 0;
+    $ccli         = $rights['ccli'];
+    $iswc         = $rights['iswc'];
+    $verified     = $rights['verified'];
+    $lyricsPD     = $rights['lyricsPublicDomain'];
+    $musicPD      = $rights['musicPublicDomain'];
+    /* HasAudio / HasSheetMusic stay 0 at import — they are DERIVED from attached
+       tblSongMedia rows (rule #44), never a hand-set flag on the song row. */
     $hasAudio     = 0;
     $hasSheet     = 0;
 
@@ -457,6 +554,26 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
                     return ['skipped', null];
                 }
             }
+        }
+
+        /* #1674 — dry-run early return, WEDGED EXACTLY HERE by design (the
+           single highest-risk line of this feature — see the doc-block
+           above and the wave plan's adversarial-review section):
+           - AFTER both pre-flight decisions above (the existence check and
+             the title-dedupe check), so a dry-run preview makes the
+             IDENTICAL created/skipped call a real run would make — one
+             line earlier and a preview would lie about what would happen;
+           - BEFORE $db->begin_transaction() below, so a dry run never opens
+             a transaction — one line later and every dry-run song would
+             leak an open, uncommitted transaction.
+           _bulkImport_dryRunSeen() stands in for the existence check across
+           an in-file duplicate: a real run's second INSERT of the same
+           SongId is skipped by that check against the FIRST insert's
+           now-committed row, but a dry run never commits, so this per-run
+           static set is what makes the second occurrence report 'skipped'
+           too instead of a phantom second 'create'. */
+        if (_bulkImport_dryRun()) {
+            return _bulkImport_dryRunSeen($songId) ? ['skipped', null] : ['create', null];
         }
 
         $db->begin_transaction();
@@ -532,6 +649,8 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         $insert->bind_param($types, ...$vals);
         $insert->execute();
         $insert->close();
+        /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
+        ilidStampNewRow($db, 'song', $songId, 'SongId');
 
         /* #1741 P5c — TuneName<->TuneId lockstep, the bulk-import-side mirror
          * of manage/works.php's :307-313 Work-side block and
@@ -565,6 +684,26 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $tuneStmt->execute();
             $tuneStmt->close();
         }
+
+        /* #1039 Part A — maintain the diacritic-folded search mirror
+           (LyricsTextFolded) + repair NormalizedTitle for the just-imported
+           song, in this import's own transaction. The INSERT above wrote
+           $lyricsText and $title; the shared helper folds both with the exact
+           fold the query side uses. Dormant + fail-open no-op on an
+           un-migrated install. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'search_fold.php';
+        searchFoldSyncSong($db, $songId, $title, $lyricsText);
+
+        /* #1860 go-live — Works auto-link, same shared core the editor save
+           path uses (rule #22). Inside this import's own transaction
+           (ownTransaction=false); fail-safe — a link failure never aborts
+           the import (transaction-fatal rethrows so the surrounding catch
+           rolls back honestly; everything else is logged and swallowed).
+           This function is INSERT-ONLY (an existing SongId returns
+           'skipped' above, before the transaction even opens), so this
+           only ever fires for a brand-new song. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+        workAutolinkSafe($db, $songId, (string)$ccli, (string)$iswc, false);
 
         /* #1235 P4/C5 — write inversion. When the tblLyricLines mirror exists, the
            shared write path makes the normalised lines authoritative and shadow-writes
@@ -658,6 +797,40 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             musicianPromote($db, $regName, $p);
         }
 
+        /* #1669 — alternative titles (e.g. an OpenLyrics file with several
+           <title> elements). Written through the ONE shared song_alt_titles
+           core, INSIDE this song's transaction so they are atomic with the
+           INSERT. Gated on the table existing (an un-migrated install imports
+           byte-identically) and on the parser actually supplying any (an
+           absent key folds to [] — every other importer imports unchanged).
+           A per-entry InvalidArgumentException (an over-long / malformed alt
+           title) is caught and skipped so one bad alt never aborts an
+           otherwise-good song; a genuine mysqli error is NOT caught here and
+           still rolls the whole song back. Entries equal to the main title
+           are dropped (songAltTitleIsRedundant), and INSERT IGNORE +
+           uq_song_title absorb any remaining dupe.
+           #1912 — `note` is now threaded through too (songAltTitleAdd()'s 5th
+           param): only the iHymns-interchange parser supplies one today (the
+           OpenLyrics <title> parser above never sets 'note', so this stays a
+           no-op — still null — for every other importer, byte-identical to
+           before #1912). */
+        $altTitles = $song['altTitles'] ?? [];
+        if (is_array($altTitles) && $altTitles !== []) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_alt_titles.php';
+            if (songAltTitlesTableExists($db)) {
+                foreach ($altTitles as $alt) {
+                    if (!is_array($alt)) { continue; }
+                    $altTitle = trim((string)($alt['title'] ?? ''));
+                    if ($altTitle === '' || songAltTitleIsRedundant($altTitle, $title)) { continue; }
+                    $altLang = ($alt['language'] ?? '') !== '' ? (string)$alt['language'] : null;
+                    $altNote = ($alt['note'] ?? '') !== '' ? (string)$alt['note'] : null;
+                    try {
+                        songAltTitleAdd($db, $songId, $altTitle, $altLang, $altNote);
+                    } catch (\InvalidArgumentException $_e) { /* skip a malformed alt, keep the import */ }
+                }
+            }
+        }
+
         /* Revision audit row (#400). Same shape as save_song writes. */
         try {
             $editor = function_exists('getCurrentUser') ? getCurrentUser() : null;
@@ -675,6 +848,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         } catch (\Throwable $_e) { /* revisions are best-effort */ }
 
         $db->commit();
+
+        /* #1862 — the credit inserts above just established this song's
+           contributor set; recompute the PD-suggestion denorm post-commit,
+           own failure boundary (pdRecomputeForSong() never throws — see
+           pd_suggest.php's header). Tree-derived wiring guard:
+           tests/php/test-editor2-metadata-1862.php scans every
+           `INSERT INTO tblSongWriters` (etc.) and asserts this reference. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+        pdRecomputeForSong($db, $songId);
 
         if (function_exists('logActivity')) {
             logActivity(
@@ -699,8 +881,11 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
  * under a different numbering scheme slips past it and creates a true
  * duplicate. These two PURE helpers add matching on songbook + NORMALISED
  * title so importers can detect existing songs before insert and offer
- * skip / merge / replace. No DB writes; reused by the preview endpoint and
- * (next) the processZip main flow.
+ * skip / merge / replace. No DB writes; called from the title-dedupe
+ * pre-flight inside _bulkImport_saveSong() above, which — since #1674 —
+ * also runs UNMODIFIED under dry-run mode (_bulkImport_dryRun()): a preview
+ * consults this exact matcher, so it reports the identical skip decision a
+ * real import would make.
  */
 
 /**
@@ -795,6 +980,113 @@ function _bulkImport_dedupeMode(?string $set = null): string
 }
 
 /**
+ * Dry-run mode flag for the current import request (#1674) — same
+ * request-scoped static-flag shape as _bulkImport_dedupeMode() above. When
+ * ON, _bulkImport_saveSong() and _bulkImport_upsertSongbook() report the
+ * exact created/skipped/existing decision a real run would make WITHOUT
+ * writing anything; see _bulkImport_saveSong()'s doc-block for the full
+ * contract and its one documented limitation (DB-level failures are
+ * unreproducible without writing).
+ *
+ * Setting the flag — in EITHER direction, `true` or `false` — also resets
+ * the per-run "already seen this SongId" set that _bulkImport_saveSong()
+ * consults for in-file-duplicate fidelity (via _bulkImport_dryRunSeen()
+ * below), so a fresh call to _bulkImport_dryRun($x) always starts a fresh
+ * run: a stray earlier dry run in the SAME PHP process/request could never
+ * leak its seen-set into this one.
+ *
+ * ELI5: one on/off switch, set once per import request before the
+ * parse/save loop runs, that every song in that request checks.
+ */
+function _bulkImport_dryRun(?bool $set = null): bool
+{
+    static $dryRun = false;
+    if ($set !== null) {
+        $dryRun = $set;
+        _bulkImport_dryRunSeen(null, true);
+    }
+    return $dryRun;
+}
+
+/**
+ * Per-run "already seen this SongId in this dry run" set (#1674) — the
+ * dry-run stand-in for the existence check a real run's SECOND insert of
+ * the same SongId would hit against the FIRST insert's committed row. A
+ * dry run never commits, so nothing is there for that check to see; this
+ * static set plays the same role within one request.
+ *
+ *   _bulkImport_dryRunSeen($songId)     → true if $songId was already
+ *                                          recorded this run (record it on
+ *                                          the FIRST call for a given id,
+ *                                          which returns false); false on
+ *                                          a genuinely new id.
+ *   _bulkImport_dryRunSeen(null, true)  → reset the set. Called only from
+ *                                          _bulkImport_dryRun() whenever the
+ *                                          flag is (re)set — the ONE
+ *                                          mechanism this file uses to keep
+ *                                          the flag and its seen-set in
+ *                                          lockstep (rule #35).
+ */
+function _bulkImport_dryRunSeen(?string $songId, bool $reset = false): bool
+{
+    static $seen = [];
+    if ($reset) {
+        $seen = [];
+        return false;
+    }
+    if ($songId === null) {
+        return false;
+    }
+    if (isset($seen[$songId])) {
+        return true;
+    }
+    $seen[$songId] = true;
+    return false;
+}
+
+/**
+ * Read the persisted DryRun flag off a bulk-import job row (#1911).
+ *
+ * ELI5: look up whether THIS import job was started as a preview, by
+ * reading the flag off its own database row rather than trusting whatever
+ * happens to be sitting in the in-process static flag.
+ *
+ * Detail: called ONLY by _bulkImport_processZip() when it was handed a
+ * $jobDb/$jobId pair — the async worker path (api2.php's import_zip case,
+ * after fastcgi_finish_request() has already released the HTTP connection
+ * the request-scoped $dryRun local variable was read from). The single-file
+ * import path (#1674) never needs this: it stays fully synchronous, so its
+ * caller's own _bulkImport_dryRun($dryRun) call is still authoritative for
+ * the whole request.
+ *
+ * Column-existence-gated via try/catch rather than a separate probe query:
+ * on an un-migrated install (no DryRun column) the SELECT throws under
+ * MYSQLI_REPORT_STRICT and this returns false — which is always the correct
+ * answer there, since import_zip's own column-existence gate
+ * (ed2_bulkJobsDryRunColumnExists() in api2.php) already refuses dryRun=1
+ * with a 422 before any job row can be created on such a deployment
+ * (CLAUDE.md rule #33 — the honest refusal, never a silently-ignored flag).
+ *
+ * @see _bulkImport_dryRun()  the static flag this value feeds
+ * @see appWeb/public_html/manage/editor/api2.php  import_zip case, ed2_bulkJobsDryRunColumnExists()
+ * @link https://www.php.net/manual/en/mysqli-stmt.get-result.php  mysqli_stmt::get_result()
+ */
+function _bulkImport_jobDryRunFlag(\mysqli $db, int $jobId): bool
+{
+    try {
+        $stmt = $db->prepare('SELECT DryRun FROM tblBulkImportJobs WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $jobId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null && (int)($row['DryRun'] ?? 0) === 1;
+    } catch (\Throwable $_e) {
+        /* Un-migrated install (no DryRun column) — never a dry run. */
+        return false;
+    }
+}
+
+/**
  * INSERT-ONLY songbook helper. If a songbook with this Abbreviation
  * already exists, the row is left fully untouched — no rename, no
  * Name refresh — per the bulk-import contract: never overwrite
@@ -803,7 +1095,9 @@ function _bulkImport_dedupeMode(?string $set = null): string
  * pass over the songs that successfully landed.
  *
  * Returns 'created' for a brand-new abbreviation, 'existing' if the
- * abbreviation was already in tblSongbooks.
+ * abbreviation was already in tblSongbooks. Under _bulkImport_dryRun()
+ * (#1674) a brand-new abbreviation still reports 'created' but the row is
+ * never inserted — see the early-return below.
  */
 function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?string $language = null): string
 {
@@ -817,6 +1111,19 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
 
     if ($exists) {
         return 'existing';
+    }
+
+    /* #1674 — dry-run early return: report the same 'created' signal a real
+       run would return, WITHOUT the INSERT / ilidStampNewRow below. No
+       change needed to the wrappers' per-created-book SongCount refresh
+       (`UPDATE tblSongbooks SET SongCount = … WHERE Abbreviation = ?`) —
+       under dry-run this abbreviation was never actually inserted, so that
+       UPDATE matches ZERO rows for it, a harmless no-op (an abbreviation
+       that already existed is never in the created-list by construction,
+       so this reasoning covers every abbreviation dry-run reports
+       'created' for). */
+    if (_bulkImport_dryRun()) {
+        return 'created';
     }
 
     /* Auto-colour the new songbook so its badge is visually distinct
@@ -859,7 +1166,10 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
         $ins->bind_param('sss', $abbr, $name, $colour);
     }
     $ins->execute();
+    $newSongbookId = (int)$db->insert_id;
     $ins->close();
+    /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+    ilidStampNewRow($db, 'songbook', $newSongbookId);
     return 'created';
 }
 
@@ -1024,6 +1334,20 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
     }
 
     $db = getDbMysqli();
+
+    /* #1911 — resolve THIS job's DryRun flag from its own persisted row
+       (not from whatever the caller may already have set) so the flag every
+       per-file write below obeys is the durable source of truth, not
+       in-process state a genuinely separate execution of this worker step
+       could never see. Set BEFORE the per-file loop starts, mirroring
+       #1674's placement in import_file. Synchronous callers — both $jobDb
+       and $jobId null, the "no bulk-import table" / "move_uploaded_file
+       failed" fallbacks in api2.php's import_zip case, neither of which
+       ever gets a job row — rely on the caller having already primed the
+       flag via its own _bulkImport_dryRun() call before reaching here. */
+    if ($jobDb !== null && $jobId !== null) {
+        _bulkImport_dryRun(_bulkImport_jobDryRunFlag($jobDb, $jobId));
+    }
 
     /* Tally counters. Bulk import is INSERT-ONLY (#664) — existing
        songbook + song rows are skipped untouched, never overwritten,
@@ -2007,8 +2331,16 @@ function _bulkImport_videopsalmAbbrevFromHint(?string $abbrevHint, string $songb
  */
 function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint = null): array
 {
-    /* Strip a UTF-8 BOM so json_decode doesn't trip. */
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — detect + convert UTF-16/UTF-32 (with or without a
+       BOM) to UTF-8 before json_decode() ever sees the bytes; a raw UTF-8
+       BOM strip alone (the old behaviour here) left a UTF-16 export a
+       generic, unhelpful "invalid JSON" failure. See text_encoding.php. */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
     $data = json_decode($body, true);
     if ($data === null) {
         return [null, null, 'invalid JSON: ' . json_last_error_msg()];
@@ -2714,7 +3046,29 @@ function _bulkImport_parseOpenLyrics(string $body): array
     }
 
     $props = $xml->properties ?? null;
-    $title = $props ? trim((string)($props->titles->title ?? '')) : '';
+    /* OpenLyrics permits multiple <title> elements (#1052 / #1669): the first
+       non-empty is the MAIN title; each remaining distinct non-empty one is an
+       ALTERNATIVE title (its optional lang attribute carried through). The
+       shared song_alt_titles core writes them in _bulkImport_saveSong() when
+       that table is migrated, skipping any equal to the main title. */
+    $title     = '';
+    $altTitles = [];
+    $seenAlt   = [];
+    if ($props && isset($props->titles->title)) {
+        $fold = static fn(string $s): string => function_exists('mb_strtolower') ? mb_strtolower($s) : strtolower($s);
+        foreach ($props->titles->title as $tNode) {
+            $tText = trim((string)$tNode);
+            if ($tText === '') { continue; }
+            if ($title === '') { $title = $tText; continue; }
+            $foldAlt = $fold($tText);
+            if ($foldAlt === $fold($title) || isset($seenAlt[$foldAlt])) { continue; }
+            $seenAlt[$foldAlt] = true;
+            $altTitles[] = [
+                'title'    => $tText,
+                'language' => isset($tNode['lang']) ? trim((string)$tNode['lang']) : '',
+            ];
+        }
+    }
     if ($title === '') {
         return [null, 'no <title> element'];
     }
@@ -2790,6 +3144,7 @@ function _bulkImport_parseOpenLyrics(string $body): array
         'ccli'         => $ccli,
         'copyright'    => $copyright,
         'writers'      => $writers,
+        'altTitles'    => $altTitles,
         'components'   => $components,
     ], null];
 }
@@ -2824,6 +3179,7 @@ function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookN
         'arrangers'          => [],
         'adaptors'           => [],
         'translators'        => [],
+        'altTitles'          => (array)($parsed['altTitles'] ?? []),
         'components'         => (array)($parsed['components'] ?? []),
     ];
 }
@@ -4070,7 +4426,15 @@ function _bulkImport_freeShowSlideLines(array $slide): array
  */
 function _bulkImport_parseFreeShow(string $body): array
 {
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — see the VideoPsalm parser above for why a raw UTF-8
+       BOM strip alone isn't enough (a UTF-16 .show export needs a real
+       conversion, not just a BOM strip). See text_encoding.php. */
+    require_once __DIR__ . '/text_encoding.php';
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return [null, 'file is not UTF-8 (or UTF-16) text — re-save it as UTF-8'];
+    }
+    $body = $converted;
     $data = json_decode($body, true);
     if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
         return [null, 'invalid JSON: ' . json_last_error_msg()];
@@ -4458,10 +4822,15 @@ function _bulkImport_looksLikeIHymnsJson(string $body): bool
  */
 function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null): array
 {
+    require_once __DIR__ . '/text_encoding.php';   // #1908 Commit 6 — ihymnsTextToUtf8() below
     $fail = static fn(string $msg): array => [null, null, $msg];
 
     /* (0) SIZE GATE — must precede json_decode(), which is the allocation.
-           See _BULK_IMPORT_IHYMNS_MAX_BYTES for the measurement behind 8 MiB. */
+           See _BULK_IMPORT_IHYMNS_MAX_BYTES for the measurement behind 8 MiB.
+           #1908: this MUST stay ahead of the UTF-8 conversion below too — it
+           is a memory bound on the RAW upload bytes, and converting a wider
+           encoding (UTF-16/UTF-32) down to UTF-8 can only ever GROW or hold
+           steady the byte count, never shrink past this cap unnoticed. */
     $bytes = strlen($body);
     if ($bytes > _BULK_IMPORT_IHYMNS_MAX_BYTES) {
         return $fail(sprintf(
@@ -4474,9 +4843,15 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
         ));
     }
 
-    /* Strip a UTF-8 BOM — Windows editors add one and json_decode() rejects it.
-       Same guard as the VideoPsalm parser. */
-    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    /* #1908 Commit 6 — detect + convert UTF-16/UTF-32 (with or without a
+       BOM) to UTF-8; a raw UTF-8 BOM strip alone (the old behaviour here)
+       left a UTF-16 export a generic "invalid JSON" failure instead of a
+       clear, actionable message. Same guard as the VideoPsalm parser. */
+    $converted = ihymnsTextToUtf8($body);
+    if ($converted === null) {
+        return $fail('file is not UTF-8 (or UTF-16) text — re-save it as UTF-8');
+    }
+    $body = $converted;
 
     $data = json_decode($body, true);
     if (!is_array($data)) {
@@ -4661,16 +5036,44 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
             $components[] = $mapped;
         }
 
+        /* #1912 — alternative titles round-trip. The interchange calls the key
+           "alternativeTitles" (matching what getSongs()/getSongById() now both
+           emit, SongData.php); the shared saveSong write loop below (:812-826,
+           #1669 C9) reads $song['altTitles'] as [{title, language, note}] and
+           feeds it straight to the ONE song_alt_titles.php core — this block
+           only maps the interchange spelling to the internal one, it does not
+           re-implement the write. Optional on the wire: an export made before
+           #1912 (or any hand-written fixture) simply has no "alternativeTitles"
+           key, `(array)(... ?? [])` folds that to [], and the song imports
+           byte-identically to before this change (rule #33 — never make an
+           optional wire key required). Malformed entries (not an object, or an
+           empty/whitespace-only title) are skipped here rather than failing the
+           whole song — the write loop re-validates the same fields anyway, so
+           this mirrors ITS tolerance instead of imposing a stricter one. */
+        $altTitles = [];
+        foreach ((array)($raw['alternativeTitles'] ?? []) as $altRaw) {
+            if (!is_array($altRaw)) { continue; }
+            $altTitleText = trim((string)($altRaw['title'] ?? ''));
+            if ($altTitleText === '') { continue; }
+            $altLangText = trim((string)($altRaw['language'] ?? ''));
+            $altNoteText = trim((string)($altRaw['note'] ?? ''));
+            $altTitles[] = [
+                'title'    => $altTitleText,
+                'language' => $altLangText !== '' ? $altLangText : null,
+                'note'     => $altNoteText !== '' ? $altNoteText : null,
+            ];
+        }
+
         /* Song dict in the exact shape _bulkImport_saveSong() consumes — the same
            key set _bulkImport_assembleSong() produces for OpenLyrics/PP6, so this
            format needs no special case anywhere downstream.
            Credits (writers/composers/…) ARE now persisted by saveSong (#1736) —
            the shared saver writes the credit tables + promotes the registry, so
-           every importer inherits it. ⚠️ REMAINING LIMITATION (not introduced
-           here): saveSong still hardcodes copyright / ccli / verified / the
-           public-domain + media flags to empty on INSERT, so those carried below
-           are still dropped. Fixing THAT belongs in saveSong too (one change, all
-           formats), not in a fork here. */
+           every importer inherits it. The licensing / public-domain fields carried
+           below (copyright / ccli / iswc / verified / lyrics- & music-public-domain)
+           ARE now persisted too: saveSong reads them via _bulkImportRightsFromSong()
+           and writes them on INSERT (#1673 / #1896, 8807152d), so every importer
+           inherits that as well — no per-format fork is needed here. */
         $songDict = [
             'id'                 => $songId,
             'title'              => $title,
@@ -4689,6 +5092,7 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
             'musicPublicDomain'  => !empty($raw['musicPublicDomain']) ? 1 : 0,
             'hasAudio'           => !empty($raw['hasAudio']) ? 1 : 0,
             'hasSheetMusic'      => !empty($raw['hasSheetMusic']) ? 1 : 0,
+            'altTitles'          => $altTitles,
             'writers'            => array_values(array_filter(
                                         array_map('strval', (array)$raw['writers']),
                                         static fn(string $w): bool => trim($w) !== ''

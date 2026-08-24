@@ -137,6 +137,36 @@ if (str_starts_with($uri, '/manage/')) {
     }
 }
 
+/* ==========================================================================
+ * DIRECTORY-LISTING KILL (#1906) — mirrors .htaccess's / manage/.htaccess's
+ *   RewriteCond %{REQUEST_FILENAME} -d
+ *   RewriteCond %{REQUEST_FILENAME}/index.php !-f
+ *   RewriteRule ^.+ - [R=404,L]
+ * ELI5: a directory with no index.php of its own (e.g. /manage/includes/,
+ * /css/) has no legitimate response. Production kills it via mod_rewrite
+ * BEFORE the -d passthrough would hand it to mod_autoindex; this dev router
+ * mirrors that by running the same is_dir()+!is_file(index.php) check
+ * BEFORE the static-asset passthrough below, which would otherwise hand a
+ * bare directory straight to the built-in server (PHP's `php -S` serves an
+ * index.php/index.html it finds inside a directory, or a raw listing if it
+ * finds neither — masking exactly the exposure this rule closes).
+ * `/` itself is excluded (mirrors `^.+`, not `^`, in the .htaccess rule) so
+ * it always falls through to the SPA catch-all below.
+ * @see appWeb/public_html/.htaccess (DIRECTORY-LISTING KILL block)
+ * @see appWeb/public_html/manage/.htaccess (DIRECTORY-LISTING KILL block)
+ * ========================================================================== */
+if ($uri !== '/') {
+    $dirCandidate = realpath($docroot . $uri);
+    if ($dirCandidate !== false
+        && str_starts_with($dirCandidate, $docroot . DIRECTORY_SEPARATOR)
+        && is_dir($dirCandidate)
+        && !is_file($dirCandidate . '/index.php')
+    ) {
+        http_response_code(404);
+        return true;
+    }
+}
+
 /* Static-asset / real-file passthrough — mirrors .htaccess's
  *   RewriteCond %{REQUEST_FILENAME} -f [OR]
  *   RewriteCond %{REQUEST_FILENAME} -d
@@ -197,8 +227,24 @@ if (preg_match('#^/(vendor|css|js|fonts)/#', $uri) === 1) {
     return true;
 }
 
+/* Bad-bot / scanner probe deny-list (#1905) — mirrors .htaccess's
+ *   RewriteRule ^(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin) - [R=404,L,NC]
+ * Extensionless directory-style probes that no earlier rule catches must 404
+ * here too, not fall to the SPA catch-all and get the shell. Keep the family
+ * alternation BYTE-IDENTICAL to the .htaccess one (rule #35; the CI guard
+ * tests/php/test-route-allowlist-coverage.php asserts the two match). `#i`
+ * mirrors [NC]. */
+if (preg_match('#^/(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin)#i', $uri) === 1) {
+    http_response_code(404);
+    return true;
+}
+
 /* SPA catch-all — everything else that isn't a real file falls to
- * index.php, mirroring .htaccess's final `RewriteRule ^ index.php`. */
+ * index.php, mirroring .htaccess's final `RewriteRule ^ index.php`.
+ * NOTE (#1905): index.php now owns the UNKNOWN-ROUTE status — its derived
+ * allow-list (includes/spa_routes.php) calls http_response_code(404) for an
+ * unknown first segment before any output, so this dev router inherits the
+ * hard-404 for unknown routes automatically, exactly as production does. */
 chdir($docroot);
 require $docroot . '/index.php';
 return true;

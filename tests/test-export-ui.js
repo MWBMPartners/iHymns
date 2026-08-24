@@ -89,12 +89,21 @@ function resetRecorders() {
  * (never imported), so Node resolves them against `globalThis` on every
  * access. Swapping them between tests re-targets the NEXT call without
  * needing to re-import the module.
+ *
+ * @param {object}   opts
+ * @param {object}   opts.document
+ * @param {object}   [opts.formatExport]
+ * @param {Function} [opts.confirmImpl] #1571 — stand-in for `window.confirm`.
+ *   Defaults to a function that THROWS if ever called, so a test that
+ *   doesn't expect a confirm dialog fails loudly instead of silently
+ *   passing a real browser's `confirm()` (which doesn't exist under Node).
  */
-function installGlobals({ document, formatExport }) {
+function installGlobals({ document, formatExport, confirmImpl }) {
     globalThis.document = document;
     globalThis.window = {
         iHymnsFormatExport: formatExport,
-        iHymnsApp: { showToast: (msg, type) => toasts.push({ msg, type }) }
+        iHymnsApp: { showToast: (msg, type) => toasts.push({ msg, type }) },
+        confirm: confirmImpl || (() => { throw new Error('window.confirm() was not expected to be called in this test'); })
     };
     globalThis.fetch = async (url) => {
         fetchLog.push(url);
@@ -227,7 +236,10 @@ async function test(name, fn) {
         assert.deepEqual(fetchLog, ['/api?action=songbook_export&abbr=CP']);
         assert.equal(exportSongbookCalls.length, 1, 'expected exportSongbook to be called exactly once');
         assert.deepEqual(exportSongbookCalls[0].songs, SONGBOOK_FIXTURE.songs);
-        assert.deepEqual(exportSongbookCalls[0].meta, { name: 'Carol Praise', abbreviation: 'CP' });
+        /* #1918: the meta now also carries the exporter's lines-per-slide
+           option (0 = all-on-one-slide default) — format-export reads it as
+           `maxLinesPerSlide`. */
+        assert.deepEqual(exportSongbookCalls[0].meta, { name: 'Carol Praise', abbreviation: 'CP', maxLinesPerSlide: 0 });
     });
 
     await test('rejects (toasts, does not call the format spy) when songbook_export returns no songs', async () => {
@@ -269,6 +281,178 @@ async function test(name, fn) {
         initSongbookExport('CP');
 
         assert.equal(item._handlers.length, 1, 'a second init() call must not bind a second listener');
+    });
+
+    /* ---------------------------------------------------------------- */
+    console.log('\nLarge-export confirm + progress (#1571):');
+
+    await test('a large DOM count (>= threshold) shows a confirm; declining is a QUIET no-op', async () => {
+        resetRecorders();
+        let confirmCalls = 0;
+        const item = makeItem('openSong');
+        const menu = makeMenu([item]);
+        const page = { dataset: { songbookSongCount: '3517' } };
+        installGlobals({
+            document: {
+                querySelector: (sel) => {
+                    if (sel === '.songbook-export-menu') return menu;
+                    if (sel === '.page-songbook') return page;
+                    return null;
+                }
+            },
+            formatExport: { openSong: { exportSongbook: () => {} } },
+            confirmImpl: () => { confirmCalls++; return false; }
+        });
+
+        initSongbookExport('MP');
+        await item.click();
+
+        assert.equal(confirmCalls, 1, 'expected exactly one confirm() call');
+        assert.deepEqual(fetchLog, [], 'a declined confirm must never fetch — the server work must not even start');
+        assert.equal(toasts.length, 0, 'a declined confirm must be QUIET — no error toast, same as a normal export');
+    });
+
+    await test('a large DOM count, confirming proceeds — and the post-fetch belt does NOT double-prompt', async () => {
+        resetRecorders();
+        let confirmCalls = 0;
+        fetchFixture = () => ({
+            songbook: { id: 'MP', name: 'Mission Praise' },
+            songs: Array.from({ length: 3517 }, (_v, i) => ({ id: 'MP-' + i }))
+        });
+        const exportSongbookCalls = [];
+        const formatExport = { openSong: { exportSongbook: (songs, meta) => exportSongbookCalls.push({ songs, meta }) } };
+        const item = makeItem('openSong');
+        const menu = makeMenu([item]);
+        const page = { dataset: { songbookSongCount: '3517' } };
+        installGlobals({
+            document: {
+                querySelector: (sel) => {
+                    if (sel === '.songbook-export-menu') return menu;
+                    if (sel === '.page-songbook') return page;
+                    return null;
+                }
+            },
+            formatExport,
+            confirmImpl: () => { confirmCalls++; return true; }
+        });
+
+        initSongbookExport('MP');
+        await item.click();
+
+        assert.equal(confirmCalls, 1,
+            'the post-fetch belt must NOT re-confirm when the caller\'s DOM-first count was already known — that would double-prompt the common case');
+        assert.equal(exportSongbookCalls.length, 1);
+    });
+
+    await test('no DOM count available (older cached fragment): the pre-fetch check is silent, the post-fetch belt uses the REAL count', async () => {
+        resetRecorders();
+        let confirmCalls = 0;
+        fetchFixture = () => ({
+            songbook: { id: 'MP' },
+            songs: Array.from({ length: 600 }, (_v, i) => ({ id: 'MP-' + i }))
+        });
+        const exportSongbookCalls = [];
+        const formatExport = { openSong: { exportSongbook: (songs, meta) => exportSongbookCalls.push({ songs, meta }) } };
+        const item = makeItem('openSong');
+        const menu = makeMenu([item]);
+        installGlobals({
+            /* '.page-songbook' -> null: simulates an older cached fragment
+               that predates the data-songbook-song-count attribute. */
+            document: { querySelector: (sel) => (sel === '.songbook-export-menu' ? menu : null) },
+            formatExport,
+            confirmImpl: () => { confirmCalls++; return false; }
+        });
+
+        initSongbookExport('MP');
+        await item.click();
+
+        assert.equal(confirmCalls, 1, 'the belt must confirm exactly once, using the count from the fetched response');
+        assert.equal(exportSongbookCalls.length, 0, 'a declined belt confirm must never reach the exporter');
+        /* Unlike the PRE-fetch decline (test above), the "Preparing songbook
+           export…" info toast has ALREADY fired by the time the belt runs
+           (it fires before the fetch, and the belt only runs after) — so a
+           declined belt confirm is quiet in the sense that matters: no
+           FAILURE toast, nothing implying an error occurred. */
+        assert.ok(toasts.every((t) => t.type !== 'danger'),
+            'a declined belt confirm must never surface an error/failure toast');
+    });
+
+    await test('a small DOM count never triggers a confirm dialog at all', async () => {
+        resetRecorders();
+        fetchFixture = () => ({ songbook: { id: 'CP' }, songs: [{ id: 'CP-0001' }] });
+        const formatExport = { openSong: { exportSongbook: () => {} } };
+        const item = makeItem('openSong');
+        const menu = makeMenu([item]);
+        const page = { dataset: { songbookSongCount: '3' } };
+        installGlobals({
+            document: {
+                querySelector: (sel) => {
+                    if (sel === '.songbook-export-menu') return menu;
+                    if (sel === '.page-songbook') return page;
+                    return null;
+                }
+            },
+            formatExport
+            /* no confirmImpl — installGlobals()'s default THROWS if ever
+               called, so this test fails loudly if a small book ever nags. */
+        });
+
+        initSongbookExport('CP');
+        await item.click(); // must not throw
+    });
+
+    /* --- structural: the shared confirm core + the DOM-attribute pairing -- */
+    await test('confirmLargeExport is defined exactly once', () => {
+        const defs = (moduleSource.match(/function confirmLargeExport\s*\(/g) || []).length;
+        assert.equal(defs, 1);
+    });
+
+    await test('confirmLargeExport is CALLED from both the pre-fetch (wireSongbookExportMenu) and post-fetch belt (exportSongbookAs) sites', () => {
+        /* Comment-stripped first (several doc-comments in this file legitimately
+           MENTION `confirmLargeExport()` in prose to explain the two call
+           sites — the exact false-positive shape test-qr-cuercode.js's own
+           stripComments() guards against) — THEN exclude the definition
+           itself (`function confirmLargeExport(`) via a negative lookbehind,
+           so this counts REAL call sites only. */
+        const stripped = moduleSource.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
+        const callSites = (stripped.match(/(?<!function\s)confirmLargeExport\(/g) || []).length;
+        assert.equal(callSites, 2,
+            'expected exactly 2 call sites: the pre-fetch check in wireSongbookExportMenu() and the post-fetch belt in exportSongbookAs()');
+    });
+
+    await test('the DOM-first count is read via BOTH .dataset.songbookSongCount and .dataset.songbookSongs', () => {
+        assert.match(moduleSource, /\.dataset\.songbookSongCount\b/,
+            'expected export-ui.js to read .dataset.songbookSongCount (data-songbook-song-count, the /songbook page)');
+        assert.match(moduleSource, /\.dataset\.songbookSongs\b/,
+            'expected export-ui.js to read .dataset.songbookSongs (data-songbook-songs, the pre-existing #1607 /songbooks list attribute)');
+    });
+
+    await test('includes/pages/songbook.php emits the data-songbook-song-count attribute export-ui.js reads (rule #33 pairing)', () => {
+        const SONGBOOK_PAGE_PATH = path.join(PROJECT_ROOT, 'appWeb', 'public_html', 'includes', 'pages', 'songbook.php');
+        const src = fs.readFileSync(SONGBOOK_PAGE_PATH, 'utf8');
+        assert.match(src, /data-songbook-song-count="/);
+    });
+
+    await test('includes/pages/songbooks.php still emits the pre-existing data-songbook-songs attribute (rule #33 pairing)', () => {
+        const SONGBOOKS_LIST_PATH = path.join(PROJECT_ROOT, 'appWeb', 'public_html', 'includes', 'pages', 'songbooks.php');
+        const src = fs.readFileSync(SONGBOOKS_LIST_PATH, 'utf8');
+        assert.match(src, /data-songbook-songs="/);
+    });
+
+    await test('the two LARGE_EXPORT_SONG_THRESHOLD literals (export-ui.js + the editor\'s separate inline script world) agree', () => {
+        /* #1571 §3.3b — the editor's PP7 export wiring is a plain inline
+           <script>, not an ES module, so it cannot import this constant; the
+           one-number duplication is deliberate (a cross-reference comment
+           beats loading a module into that script world for one constant).
+           This is the lockstep mechanism that keeps the two from silently
+           drifting apart (rule #35). */
+        const EDITOR_INDEX_PATH = path.join(PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'index.php');
+        const editorSrc = fs.readFileSync(EDITOR_INDEX_PATH, 'utf8');
+        const modMatch = moduleSource.match(/LARGE_EXPORT_SONG_THRESHOLD\s*=\s*(\d+)/);
+        const editorMatch = editorSrc.match(/LARGE_EXPORT_SONG_THRESHOLD\s*=\s*(\d+)/);
+        assert.ok(modMatch, 'export-ui.js must define LARGE_EXPORT_SONG_THRESHOLD');
+        assert.ok(editorMatch, "manage/editor/index.php must define its own LARGE_EXPORT_SONG_THRESHOLD (the deliberate #1571 duplication)");
+        assert.equal(modMatch[1], editorMatch[1], 'the two thresholds have drifted apart — keep them in lockstep');
     });
 
     /* ---------------------------------------------------------------- */

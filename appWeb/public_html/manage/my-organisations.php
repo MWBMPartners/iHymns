@@ -96,6 +96,8 @@ $success = '';
 $orgIdleColsExist = serviceMode_orgIdleColumnsExist($db);
 /* #1791 G4-org — same posture, the set-list edit-audience org columns. */
 $setlistAudienceColsExist = setlistOrgAudienceColumnsExist($db);
+/* #1840 — same column-existence-tolerant posture, the brand-colour column. */
+$orgBrandColsExist = orgBrandColumnsExist($db);
 /* #1798 — declared here (not just before its query block below) because the
    $orgs-query branch can `goto render;` on an early empty-org exit (see
    below), which would otherwise skip straight past the declaration and
@@ -415,6 +417,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'logo_upload': {
                 $kind = (string)($_POST['kind'] ?? '');
                 if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
+                /* #1840 — the variant slot this upload targets. Defaults to
+                   'default' so the ORIGINAL (pre-#1840) upload form, which
+                   never sent a `variant` field at all, keeps working
+                   byte-identically. Re-validated here even though
+                   orgLogoUpsert() validates again (rule #5 belt-and-braces —
+                   never trust a hidden form field alone). */
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) { $error = 'Invalid request.'; break; }
                 $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
                 $file    = $_FILES['logo_file'] ?? null;
                 $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
@@ -426,11 +436,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 try {
                     $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
-                    orgLogoUpsert($db, $orgId, $kind, 'default', $staged, $altText, $userId);
+                    orgLogoUpsert($db, $orgId, $kind, $variant, $staged, $altText, $userId);
                     logActivity('org_admin.logo_upload', 'organisation', (string)$orgId, [
-                        'kind' => $kind, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                        'kind' => $kind, 'variant' => $variant, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
                     ]);
-                    $success = 'Logo uploaded.';
+                    $success = $variant === 'default' ? 'Logo uploaded.' : 'Theme version uploaded.';
                 } catch (\RuntimeException $e) {
                     $error = $e->getMessage(); // plain-English, safe to show verbatim (§4.4)
                 }
@@ -440,9 +450,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'logo_remove': {
                 $kind = (string)($_POST['kind'] ?? '');
                 if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
-                orgLogoDelete($db, $orgId, $kind, 'default');
-                logActivity('org_admin.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind]);
-                $success = 'Logo removed.';
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) { $error = 'Invalid request.'; break; }
+                /* #1840 — removing the DEFAULT row cascades to its light/dark
+                   theme versions too (they'd otherwise become invisible
+                   orphans the card can no longer manage); removing an
+                   explicit light/dark row alone removes just that one. */
+                if ($variant === 'default') {
+                    orgLogoDeleteKindAll($db, $orgId, $kind);
+                } else {
+                    orgLogoDelete($db, $orgId, $kind, $variant);
+                }
+                logActivity('org_admin.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind, 'variant' => $variant]);
+                $success = $variant === 'default' ? 'Logo removed.' : 'Theme version removed.';
                 break;
             }
 
@@ -450,9 +470,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $kind = (string)($_POST['kind'] ?? '');
                 if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) { $error = 'Invalid request.'; break; }
                 $active = !empty($_POST['active']);
-                orgLogoSetActive($db, $orgId, $kind, 'default', $active);
+                /* #1840 — kind-level toggle: one visibility switch per ASSET
+                   (every variant of this kind together), not per rendition —
+                   a kind half-hidden on only one theme is the same silent-
+                   half state the removal cascade above also refuses to mint. */
+                orgLogoSetActiveKind($db, $orgId, $kind, $active);
                 logActivity('org_admin.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
                 $success = $active ? 'Logo shown again.' : 'Logo hidden.';
+                break;
+            }
+
+            case 'brand_save': {
+                /* #1840 §4.3 — org brand colour, editable by the org's OWN
+                   admin. Column-existence-gated (rule #19, same posture as
+                   idle_timeout_update/setlist_edit_audience_update above). */
+                if (!$orgBrandColsExist) { $error = 'Not available on this environment yet.'; break; }
+                $rawColour  = (string)($_POST['brand_colour'] ?? '');
+                $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+                if ($normalised === false) {
+                    /* Plain-English rejection (§4.3 quote) — the ONE
+                       allowlist (ihymnsOrgBrandColourNormalise()) is the
+                       gate; nothing malformed is ever stored or echoed. */
+                    $error = "That doesn't look like a colour code — use the picker or a value like #6a1b9a.";
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+                logActivity('org_admin.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+                $success = $normalised === null ? 'Brand colour cleared.' : 'Brand colour saved.';
                 break;
             }
 
@@ -476,10 +520,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $orgIdleSelectCols = $orgIdleColsExist ? ', LiveIdleTimeoutMins, EnforceIdleTimeout' : '';
 /* #1791 G4-org — same posture, the set-list edit-audience org columns. */
 $setlistAudienceSelectCols = $setlistAudienceColsExist ? ', SetlistEditAudience, EnforceSetlistEditAudience' : '';
+/* #1840 — same posture, the brand-colour column. */
+$orgBrandSelectCols = $orgBrandColsExist ? ', BrandColor' : '';
 try {
     if ($systemAdmin) {
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}{$orgBrandSelectCols}
                FROM tblOrganisations
               ORDER BY Name ASC"
         );
@@ -491,7 +537,7 @@ try {
         }
         $placeholders = implode(',', array_fill(0, count($ownedOrgIds), '?'));
         $stmt = $db->prepare(
-            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}
+            "SELECT Id, Name, Slug, Description, LicenceType, LicenceNumber, IsActive{$orgIdleSelectCols}{$setlistAudienceSelectCols}{$orgBrandSelectCols}
                FROM tblOrganisations
               WHERE Id IN ({$placeholders})
               ORDER BY Name ASC"
@@ -1014,6 +1060,53 @@ $csrf = csrfToken();
                 </form>
                 <?php endif; ?>
 
+                <!-- #1840 §4.3 — org brand colour (Share Card Option B). Column-
+                     existence-gated (rule #19), same posture as the two blocks
+                     above. Reuses the shared colour-picker partial (rule: reuse a
+                     swatch widget, don't fork one, #1791/#715 precedent) rather
+                     than a bespoke <input type="color">. -->
+                <?php if ($orgBrandColsExist):
+                    $orgBrandColourVal = (string)($o['BrandColor'] ?? '');
+                ?>
+                <h3 class="h6 mt-3 mb-2">Brand colour</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <div class="col-md-6">
+                        <?php
+                            /* Local vars consumed by the partial (its own
+                               documented contract) — never a hand-rolled
+                               <input type="color"> here. */
+                            $name        = 'brand_colour';
+                            $value       = $orgBrandColourVal;
+                            $idPrefix    = 'brand-colour-' . $orgId;
+                            $label       = 'Brand colour';
+                            $placeholder = '#6a1b9a';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'colour-picker.php';
+                        ?>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                </form>
+                <?php if ($orgBrandColourVal !== ''): ?>
+                <form method="POST" class="d-inline mt-1">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= $orgId ?>">
+                    <input type="hidden" name="brand_colour" value="">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Clear brand colour</button>
+                </form>
+                <?php endif; ?>
+                <p class="text-muted small mb-0">
+                    Used where iHymns shows your church's branding — for example the coloured band
+                    on shared set-list preview images.
+                </p>
+                <?php endif; ?>
+
                 <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
                       echo orgLogoRenderAdminCard($db, $orgId, $csrf); ?>
             </div>
@@ -1026,6 +1119,16 @@ $csrf = csrfToken();
     import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
     bootSortableTables();
 </script>
+
+<?php if ($orgBrandColsExist): ?>
+<!-- #1840 — swatch<->hex two-way binding for every .colour-picker on the
+     page (the Brand colour field above), shared with songbooks.php rather
+     than a bespoke handler here. -->
+<script type="module">
+    import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+    bootColourPickers();
+</script>
+<?php endif; ?>
 
 <?php if ($liveSessionColsExist && !empty($liveSessions)): ?>
 <!-- #1798 — "Members' live sessions" Extend wiring. Cookie-authed

@@ -98,6 +98,49 @@ function _sharedSetlistTokenColumns(): bool
 }
 
 /**
+ * Is a UTC expiry instant in the past? — the ONE expiry clock for shared setlists.
+ *
+ * ELI5: "has this expiry time already passed?" — answered the same way for the
+ * share LINK's own expiry (#1791 `tblSharedSetlists.ExpiresAt`) and the owner's
+ * per-SETLIST expiry (#1661 `tblUserSetlists.ExpiresAt`), so the two can never
+ * drift apart.
+ *
+ * Detail (#1699): `sharedSetlistResolveWire()` had two DIFFERENT expiry stories —
+ * the share-link expiry was honoured inline, but the LIVE read of the owner's
+ * `tblUserSetlists` row ignored that row's own `ExpiresAt` entirely, so a live
+ * share of a setlist the owner had set to expire kept serving content (and later
+ * edits) on the anonymous path — which, being anonymous, could never trigger the
+ * owner's lazy `userSyncExpireSetlists()` either. Folding BOTH checks through this
+ * one helper is what makes "expired" mean the same thing on both clocks.
+ *
+ * Server-time anchored (`$now` defaults to `time()`, the server clock — never a
+ * client's), mirroring the pre-existing inline check it replaces. A NULL / empty
+ * / unparseable instant means "never expires" (fail-open — an unreadable stamp
+ * must not silently hide a live share), matching #1661's `userSyncExpireSetlists`
+ * contract. Stored instants are UTC, so ` UTC` is appended before parsing.
+ *
+ * Pure + `$now`-injectable so it is behaviourally testable without a database
+ * (the resolver itself is DB-coupled through two connections) —
+ * tests/php/test-shared-setlist-expiry.php.
+ *
+ * @param string|null $expiresAtUtc An `Y-m-d H:i:s` UTC instant, or null.
+ * @param int|null    $now          Unix seconds to compare against; default time().
+ * @return bool True IFF the instant is set, parseable, and at//before $now.
+ * @see https://www.php.net/manual/en/function.strtotime.php
+ */
+function sharedSetlistTimestampExpired(?string $expiresAtUtc, ?int $now = null): bool
+{
+    if ($expiresAtUtc === null || $expiresAtUtc === '') {
+        return false;                                   // never expires
+    }
+    $ts = strtotime($expiresAtUtc . ' UTC');
+    if ($ts === false) {
+        return false;                                   // unparseable → never (fail-open)
+    }
+    return $ts <= ($now ?? time());
+}
+
+/**
  * XSS-/enumeration-safe share-id allow-list (#1791).
  *
  * The share-id grammar is `^[A-Za-z0-9_-]{6,64}$` — a SUPERSET of the legacy
@@ -431,8 +474,7 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
         $result['reason']      = 'revoked';
         return $result;
     }
-    if ($expiresAt !== null && strtotime($expiresAt . ' UTC') !== false
-        && strtotime($expiresAt . ' UTC') <= time()) {
+    if (sharedSetlistTimestampExpired($expiresAt)) {
         $result['unavailable'] = true;
         $result['reason']      = 'expired';
         return $result;
@@ -447,8 +489,22 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
        their later edits reach link-holders. A missing row = revoked (unavailable);
        any other failure degrades to the snapshot above (fail-safe). */
     try {
+        /* #1699 — the owner's per-setlist expiry (#1661 tblUserSetlists.ExpiresAt)
+           must gate this LIVE read. Without it, a live share of a setlist the
+           owner set to expire keeps serving content — and later edits — on the
+           anonymous path, which (being anonymous) can never trigger the owner's
+           lazy userSyncExpireSetlists() either. Column-existence-gated (rule #19:
+           the three docroots share ONE MySQL and the #1661 migration is web-run,
+           so the column may be absent — SELECTing it unconditionally would THROW
+           under STRICT and break sharing entirely). userSyncExpiryReady() is the
+           ONE canonical gate for this column (rule #22); user_sync.php is a
+           guarded function-def library, safe to require from any of the
+           resolver's three callers (api.php / og-image.php / index.php). */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_sync.php';
+        $expiryCol = userSyncExpiryReady($db) ? ', ExpiresAt' : '';
         $liveStmt = $db->prepare(
-            'SELECT Name, SongsJson FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1'
+            'SELECT Name, SongsJson' . $expiryCol
+            . ' FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1'
         );
         $ownerUserIdInt    = (int)$ownerUserId;
         $sourceSetlistIdSt = (string)$sourceSetlistId;
@@ -462,6 +518,17 @@ function sharedSetlistResolveWire(\mysqli $db, string $shareId): ?array
                row that no longer exists. Honest "no longer shared". */
             $result['unavailable'] = true;
             $result['reason']      = 'revoked';
+            return $result;
+        }
+
+        /* #1699 — the owner set this setlist to expire and that instant has
+           passed. Distinct reason ('expired' vs a deletion's 'revoked'), same
+           public outcome (unavailable → 410 / empty OG card). ExpiresAt is
+           null/absent unless the #1661 column exists AND an expiry was set, in
+           which case the shared clock (sharedSetlistTimestampExpired) reads it. */
+        if (sharedSetlistTimestampExpired($liveRow['ExpiresAt'] ?? null)) {
+            $result['unavailable'] = true;
+            $result['reason']      = 'expired';
             return $result;
         }
 

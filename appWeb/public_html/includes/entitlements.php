@@ -153,6 +153,7 @@ const ENTITLEMENTS = [
        external services write to the public API is the most sensitive admin
        surface, so global_admin only. */
     'manage_api_keys'      => ['global_admin'],
+    'manage_webhooks'      => ['global_admin'],   // outbound partner-event webhooks (#1909)
     'request_api_keys'     => ['admin', 'global_admin'],   // self-serve key requests (Phase D); global admins still approve via manage_api_keys
 
     /* Duplicate-songs review + merge (#1064) — destructive merge, so admin+. */
@@ -282,6 +283,14 @@ const ENTITLEMENTS = [
        against tblSongs.Ccli, exportable as CSV for the annual CCLI
        usage return. */
     'view_ccli_report'     => ['admin', 'global_admin'],
+
+    /* Org-facing CCLI report (#1861). Deliberately open to every signed-in
+       role: the REAL restriction is data-driven — /manage/my-ccli-report
+       additionally requires an admin/owner row in tblOrganisationMembers
+       (userIsOrgAdminOf()), the manage_own_organisation pattern (#707).
+       The role layer exists so an operator can still switch the whole
+       surface off per-role at /manage/entitlements. */
+    'view_org_ccli_report' => ['user', 'editor', 'admin', 'global_admin'],
 
     /* Activity log viewer (#535). Reads tblActivityLog — every
        meaningful auth, CRUD, user-action, API, and system event.

@@ -46,6 +46,7 @@ A not-found or removed entity (`song`, `songbook`, `person`, `work`, `tag`) answ
 | `?page=work&slug=slug` | Work (composition grouping) page |
 | `?page=publisher&slug=slug` | Publisher page (#93) — songbooks published + registry metadata. Resolves exact-slug → name-fold → alias-fold (rule #33) |
 | `?page=tune&slug=slug` | Tune page — songs sharing the tune + registry metadata (metre, credits, external links) |
+| — | **ILID dual addressing (#1860)** — `musician`/`publisher`/`tune`'s `slug` param, plus `?action=song_detail`/`song_data`'s `id` param, all additionally accept the entity's permanent internal id (`IL<letter><digits>` — no separator, grammar-disjoint from every public id form) as a drop-in replacement for the slug/id, resolved via `includes/ilyrics_id.php` and gated on the migrated `IlId` column. See [[Architecture]]. |
 | `?page=iswc&code=code` | Songs / work sharing an ISWC code |
 | `?page=ipi` · `isni` · `ccli` · `bowi` · `isrc` (each `&code=…`) | #1741 P3 alias routes — the five siblings of `iswc`. All resolve through **one** normaliser + resolver (`includes/identifier_normalize.php` `IHYMNS_ID_SCHEMES` + `identifier_resolve.php`) into the shared `includes/pages/identifier.php`; separator-insensitive (`T-034.524.680-C` ≡ `T034524680C`). An identifier that maps to several songs renders a **song-list** view rather than picking one. |
 | `?page=help` | Help page |
@@ -58,7 +59,7 @@ A not-found or removed entity (`song`, `songbook`, `person`, `work`, `tag`) answ
 
 ## Action families
 
-`api.php` exposes roughly **270** `?action=...` endpoints (275 documented OpenAPI paths across the four dispatchers). Hand-maintaining an itemised list of all of them here duplicates the project's own OpenAPI spec and drifts out of sync with it (the modularity rule this wiki otherwise enforces everywhere else). Instead:
+`api.php` exposes **218** public `?action=...` endpoints (306 documented OpenAPI paths total across all four dispatchers, including the editor APIs and the page routes above — verified via `tests/php/lib/dispatch_parser.php`, the same tokenising parser `test-openapi-actions-exist.php` uses). Hand-maintaining an itemised list of all of them here duplicates the project's own OpenAPI spec and drifts out of sync with it (the modularity rule this wiki otherwise enforces everywhere else). Instead:
 
 > **The complete, always-current reference is `appWeb/public_html/api-docs.yaml`** (OpenAPI 3.0), rendered with interactive Try-it-out at **`/manage/api-docs`** (Swagger UI, requires the `view_api_docs` entitlement).
 
@@ -86,8 +87,11 @@ A few notes on this batch's additions:
 - **`search`** accepts a multi-level `sort` param (#1786 — up to three "then by…" levels).
 - **`user_settings`** gained a `list_sorts` namespace for syncing a signed-in user's per-surface sort choices (returns 403 for anonymous callers).
 - The **IA-reconcile** tool exposes **no public API** — it is deliberately admin-page-local (actions on `/manage/ia-reconcile` only), never an `api.php` action.
-- **QR generation** is `/qr.php` (CueRCode-backed), not an `api.php` action — see [[Architecture]].
+- **QR generation** is `/qr.php` (CueRCode-backed), not an `api.php` action — see [[Architecture]]. It reads through a server-side cache (`tblQrCache`, #1920) before ever calling CueRCode.
 - **Organisation logo bytes** are `/org-logo.php` (#1830 — mirrors `/qr.php`'s standalone-image-endpoint shape), not an `api.php` action. `my_organisations` gains an additive, migration-gated `logos` field (meta only — kind/variant/Sha256/alt/dimensions, never blob bytes) that the print `logo` block resolves through the endpoint.
+- **`/manage/my-ccli-report`** (#1861) is a `/manage` page, not an `api.php` action — the org-scoped self-serve sibling of the system-wide CCLI Usage Report, backed by the shared `includes/ccli_report.php` query core.
+- **`songs_index` supports conditional revalidation (#1921).** A matching `If-None-Match` gets a **304 with no body** — the server skips its whole slim-index query. The `ETag` is an **opaque version-signal token** (`"si<contractVersion>-<hash>"`); echo it back verbatim, never parse it. The PWA's own service worker already does this; other clients get the benefit only if they implement the round-trip themselves — omitting `If-None-Match` simply degrades to today's full-200-every-time behaviour.
+- **`songbook_export` has its own `export` read-rate-limit bucket (#1571)**, split from the `bulk` budget `bulk_songs`/`bulk_audio` still share — a curator's export and a native app's background offline sync can no longer contend for the same counter. Same 60/min limit either way; see `api-docs.yaml`'s Rate Limiting section for the full table.
 
 ---
 

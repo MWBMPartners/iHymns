@@ -50,3 +50,42 @@ export function toTitleCase(str) {
         })
         .join(' ');
 }
+
+/* Special letters that iconv ASCII//TRANSLIT folds but Unicode NFD does NOT
+   decompose (they are distinct letters, not base+combining-mark) — the server
+   fold reaches them via iconv, so the client mirror needs them explicitly to
+   fold the headline "Miłość → milosc" class offline. */
+const FOLD_SPECIAL = {
+    'ł': 'l', 'ø': 'o', 'đ': 'd', 'æ': 'ae', 'œ': 'oe',
+    'ħ': 'h', 'ß': 'ss', 'ð': 'd', 'þ': 'th', 'ı': 'i',
+};
+
+/**
+ * foldSearchText — the CLIENT mirror of the server ihymns_search_fold() (#1039
+ * Part A), for the OFFLINE slim-index search fallback. Diacritic- and
+ * apostrophe-insensitive: "Miłość" / "Noël" / "aren’t" all fold to "milosc" /
+ * "noel" / "arent", so a reader typing plain ASCII still matches offline.
+ *
+ * It need NOT be byte-identical to the PHP fold — the offline path folds BOTH
+ * the query and the candidate at compare time, so there is no stored-value
+ * contract to honour; it only has to fold the two sides the SAME way. Steps
+ * mirror the server's (#1908 — 'NFD'→'NFKD' so the two are step-identical,
+ * incl. full-width Latin/ideographic-space folding): lowercase, strip
+ * combining marks (NFKD), map the non-decomposing special letters, then drop
+ * everything that is not a letter, number or space (which also removes
+ * apostrophes / smart quotes / dashes — any script, non-Latin included), and
+ * collapse whitespace — the same shape as PHP's `[^\p{L}\p{N}\s]` strip.
+ *
+ * @param {string} s
+ * @returns {string} the folded, lowercased, punctuation-stripped text
+ * @see includes/title_normalize.php  ihymns_search_fold() — the server fold
+ * @link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize
+ */
+export function foldSearchText(s) {
+    if (!s) return '';
+    let out = String(s).toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '');
+    out = out.replace(/[łøđæœħßðþı]/g, ch => FOLD_SPECIAL[ch] || ch);
+    out = out.replace(/[^\p{L}\p{N}\s]+/gu, '');
+    out = out.replace(/\s+/g, ' ').trim();
+    return out;
+}

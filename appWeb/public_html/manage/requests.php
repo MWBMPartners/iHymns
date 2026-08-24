@@ -16,6 +16,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1867 (epic #1863, rule #43) — songVisibleSql() backs both the new
+   ?action=song_search typeahead and the server-side existence check on
+   the "Resolved SongId" picker below; matches the require catalogues.php /
+   works.php already carry for the same helper (rule #22 — reuse, not
+   re-fork). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -30,6 +36,55 @@ if (!$currentUser || !userHasEntitlement('review_song_requests', $currentUser['r
 
 $activePage = 'requests';
 
+/* ---- GET ?action=song_search&q= — typeahead for the "Resolved SongId"
+ * picker (#1867, epic #1863, rule #43). Mirrors the shape already proven
+ * on manage/works.php:379-425 / manage/catalogues.php:80-135 (rule #22 —
+ * reuse, don't re-fork): search-select only, no create arm — a curator
+ * links an EXISTING song, never mints one from this page. Extensionless
+ * per #1855; the page's own `review_song_requests` gate above is this
+ * action's gate too (a same-page action, not a separate endpoint —
+ * no #1587 entitlement-mismatch risk). Read-only GET ⇒ no CSRF, matching
+ * every other *_search action in the app.
+ */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && ($_GET['action'] ?? '') === 'song_search') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    try {
+        $db   = getDbMysqli();
+        $like = '%' . $q . '%';
+        if ($q === '') {
+            echo json_encode(['rows' => []]);
+            exit;
+        }
+        /* #1694 — hidden/soft-deleted songs are not offered as a resolution
+           target either (songVisibleSql() below).
+           @disabled-visible: admin surface (#1765) — disabled songbooks stay
+           fully visible/editable in /manage (owner decision, same as
+           works.php's/catalogues.php's own song_search handlers); a curator
+           can still resolve a request to a song in a disabled book. */
+        $sql = "SELECT s.SongId AS id, s.Title AS title, s.Number AS number,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName
+                  FROM tblSongs s
+                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                 WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
+                   AND " . songVisibleSql($db, 's') . "
+                 ORDER BY s.Title ASC
+                 LIMIT ?";
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('ssi', $like, $like, $limit);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        echo json_encode(['rows' => $rows]);
+    } catch (\Throwable $e) {
+        error_log('[requests song_search] ' . $e->getMessage());
+        echo json_encode(['rows' => [], 'error' => 'search failed']);
+    }
+    exit;
+}
+
 $statuses = ['pending', 'reviewed', 'added', 'declined'];
 $filter   = (string)($_GET['status'] ?? 'pending');
 if (!in_array($filter, $statuses, true) && $filter !== 'all') $filter = 'pending';
@@ -39,7 +94,12 @@ $err   = '';
 
 /* --- POST: update status / notes --- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1867 rule #29 — validateCsrfRequest() is a strict superset of the
+       validateCsrf()-only check this replaced: arm (a) still accepts the
+       form's own baked token (unchanged behaviour for this classic POST
+       form), arm (b) additionally covers a same-origin AJAX submit if this
+       page ever grows one later. Matches manage/works.php:412's precedent. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -54,16 +114,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         try {
             $db = getDbMysqli();
+
+            /* #1867 (epic #1863, rule #43) — SEARCH-SELECT ONLY: the picker
+               below resolves to a SongId, but it arrives over POST like any
+               other client-supplied value, so it is untrusted until checked
+               here — mirrors manage/catalogues.php's add_member verification
+               (#1866) and manage/groups.php's add-user verification (#1868).
+               tblSongRequests.ResolvedSongId already carries an FK to
+               tblSongs(SongId) (schema.sql fk_Requests_ResolvedSong), so a
+               bad id would previously surface as an uncaught FK-constraint
+               mysqli_sql_exception at UPDATE time (caught by the generic
+               try/catch below, but as an opaque "Database error"); checking
+               first turns that into the same friendly, actionable message
+               every other picker on this page's pattern gives, and — same
+               as the FK — a soft-deleted/hidden song is not a valid
+               resolution target either (songVisibleSql()). No create arm:
+               curators link an EXISTING song, never mint one here. */
+            $resolved = null;
+            if ($resolvedSong !== '') {
+                $stmt = $db->prepare(
+                    'SELECT SongId FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '')
+                );
+                $stmt->bind_param('s', $resolvedSong);
+                $stmt->execute();
+                $foundSong = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$foundSong) {
+                    throw new \RuntimeException('song_not_found');
+                }
+                $resolved = $resolvedSong;
+            }
+
             $stmt = $db->prepare(
                 'UPDATE tblSongRequests
                     SET Status = ?, AdminNotes = ?, ResolvedSongId = ?
                   WHERE Id = ?'
             );
-            $resolved = $resolvedSong !== '' ? $resolvedSong : null;
             $stmt->bind_param('sssi', $newStatus, $adminNotes, $resolved, $id);
             $stmt->execute();
             $stmt->close();
             $flash = 'Request #' . $id . ' updated.';
+        } catch (\RuntimeException $e) {
+            /* Sentinel from the existence check above — not a DB failure,
+               so it skips the error_log/Activity-Log noise the generic
+               \Throwable branch below produces for genuine failures. */
+            $err = 'That song could not be found — pick one from the search results.';
         } catch (\Throwable $e) {
             error_log('[manage/requests.php] ' . $e->getMessage());
             /* Mirror the failure into the in-app Activity Log so a
@@ -240,7 +335,7 @@ try {
                     </tr>
                     <tr class="collapse" id="row-<?= (int)$r['Id'] ?>">
                         <td colspan="7" class="bg-body-secondary p-3">
-                            <form method="post" class="row g-2">
+                            <form method="post" class="row g-2 req-update-form">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="id" value="<?= (int)$r['Id'] ?>">
                                 <div class="col-md-3">
@@ -255,9 +350,21 @@ try {
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label small">Resolved SongId (optional)</label>
-                                    <input type="text" name="resolved_song_id" class="form-control form-control-sm"
+                                    <!-- #1867 (epic #1863, rule #43) — search-select ONLY: this box is
+                                         a live search over tblSongs (reusing the ?action=song_search
+                                         handler above), wired via the shared window.iHymnsPlaceSearch
+                                         typeahead (see the script block near the end of this page).
+                                         Picking a candidate fills the hidden req-resolved-song-id
+                                         below with the REAL tblSongs.SongId; the POST handler above
+                                         re-verifies it server-side before writing — a free-typed value
+                                         that doesn't match a real, visible song is rejected there, not
+                                         trusted here. No create arm: curators link an existing song,
+                                         never mint one from the requests queue. -->
+                                    <input type="text" class="form-control form-control-sm req-resolved-song-name"
                                            value="<?= htmlspecialchars((string)($r['ResolvedSongId'] ?? '')) ?>"
-                                           placeholder="e.g. MP-1234">
+                                           placeholder="Search by title or song id…" autocomplete="off">
+                                    <input type="hidden" name="resolved_song_id" class="req-resolved-song-id"
+                                           value="<?= htmlspecialchars((string)($r['ResolvedSongId'] ?? '')) ?>">
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label small">Admin notes</label>
@@ -287,6 +394,70 @@ try {
     import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
     bootSortableTables();
 </script>
+
+<?php if (!empty($rows)): ?>
+<!-- Live song search for the "Resolved SongId" picker (#1867, epic #1863, rule #43). -->
+<script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/place-search.js') ?>"></script>
+<script>
+    (function () {
+        if (!window.iHymnsPlaceSearch) return;
+        /* #1867 — one attach() per row's collapsible edit form; every row's
+           form is in the DOM at load (Bootstrap .collapse only hides the
+           inactive ones via CSS), so this loops over all of them rather than
+           hardcoding one row's ids. pickMode:'value': the pick fills the
+           input + hidden id with NO network call of its own — the form's own
+           POST is the ONE commit, and the server-side check added to the
+           POST handler above VERIFIES the id names a real, visible tblSongs
+           row before writing it. Reuses the EXISTING ?action=song_search
+           handler on THIS page (rule #22) — no new search endpoint was
+           written for this picker; mirrors manage/catalogues.php's #1866
+           "Add a song" wiring almost verbatim. */
+        document.querySelectorAll('form.req-update-form').forEach((form) => {
+            const nameInput = form.querySelector('.req-resolved-song-name');
+            const hiddenId  = form.querySelector('.req-resolved-song-id');
+            if (!nameInput || !hiddenId) return;
+
+            window.iHymnsPlaceSearch.attach(nameInput, {
+                hiddenIdInput: hiddenId,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'song', plural: 'songs' },
+                searchUrl: (q) => '/manage/requests?action=song_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.rows || []).map((r) => ({
+                    id: r.id,
+                    display_name: r.title,
+                    hint: [r.songbook || '', r.number ? '#' + r.number : ''].filter(Boolean).join(' '),
+                })),
+            });
+
+            /* Optional field — an EMPTY box is a legitimate "not resolved
+               yet" and must submit cleanly (resolved_song_id='' → NULL,
+               unchanged from before this picker existed). What must NOT
+               happen is a NON-empty box silently submitting an empty hidden
+               id: place-search.js's onInput() clears the hidden id on every
+               keystroke (free-typing invalidates a stale pick), so an admin
+               who types a SongId by hand and submits WITHOUT clicking a
+               suggestion would otherwise have their edit silently discarded
+               — the exact "looks alive, does nothing" failure class CLAUDE.md
+               rule #30 warns about, here in a different mechanism (a cleared
+               hidden field, not a CSP block). This guard only fires when
+               there IS typed text but NO confirmed pick, mirroring
+               catalogues.php's #1866 guard but conditional rather than
+               required (this field, unlike that one, may be intentionally
+               empty). The server-side existence check remains the real
+               guarantee either way — this is a UX guard only. */
+            form.addEventListener('submit', (ev) => {
+                if (nameInput.value.trim() !== '' && !hiddenId.value) {
+                    ev.preventDefault();
+                    nameInput.setCustomValidity('Pick a song from the search results, or clear this box to leave it unresolved.');
+                    nameInput.reportValidity();
+                }
+            });
+            nameInput.addEventListener('input', () => nameInput.setCustomValidity(''));
+        });
+    })();
+</script>
+<?php endif; ?>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

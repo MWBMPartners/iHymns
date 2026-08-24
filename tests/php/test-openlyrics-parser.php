@@ -57,6 +57,7 @@ aEq($err, null, 'parses without error');
 aEq($song['title'] ?? null, 'Amazing Grace', 'title');
 aEq($song['ccli'] ?? null, '22025', 'ccliNo');
 aEq(count($song['components'] ?? []), 2, 'two components (en + de verse)');
+aEq($song['altTitles'] ?? null, [], 'single-<title> song carries no alternative titles (#1669)');
 
 $c0 = $song['components'][0] ?? [];
 aEq($c0['lines'] ?? null, ['Amazing grace', 'how sweet the sound'], 'verse 1 clean lyrics');
@@ -81,6 +82,30 @@ $pc = $ps['components'][0] ?? [];
 aEq($pc['lines'] ?? null, ['Line one', 'Line two'], 'plain song lyrics');
 aTrue(!array_key_exists('chords', $pc) && !array_key_exists('notes', $pc) && !array_key_exists('language', $pc),
     'plain verse carries no enrichment keys');
+
+/* #1669 — an OpenLyrics song with several <title> elements: the first
+   non-empty is the main title; each remaining DISTINCT non-empty one becomes
+   an alternative title, carrying its optional lang attribute. An empty
+   <title> is ignored, and a repeat of the main title (any case) is dropped. */
+$multi = <<<XML
+<?xml version="1.0"?>
+<song><properties><titles>
+  <title>Amazing Grace</title>
+  <title lang="es">Sublime Gracia</title>
+  <title>Faith's Review and Expectation</title>
+  <title></title>
+  <title>amazing grace</title>
+  <title>Sublime Gracia</title>
+</titles></properties>
+<lyrics><verse name="v1"><lines>Line one</lines></verse></lyrics></song>
+XML;
+[$ms, $mErr] = _bulkImport_parseOpenLyrics($multi);
+aEq($mErr, null, 'multi-title song parses without error');
+aEq($ms['title'] ?? null, 'Amazing Grace', 'first non-empty <title> is the MAIN title');
+aEq($ms['altTitles'] ?? null, [
+    ['title' => 'Sublime Gracia', 'language' => 'es'],
+    ['title' => "Faith's Review and Expectation", 'language' => ''],
+], 'remaining distinct non-empty <title>s become alt titles (empty skipped, main-dup dropped, case-insensitive alt-dup dropped, lang carried)');
 
 if ($failed === 0) { echo "\nAll OpenLyrics enrichment assertions passed ($passed).\n"; exit(0); }
 fwrite(STDERR, "\n$failed assertion(s) failed.\n");

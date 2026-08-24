@@ -64,6 +64,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken song-media stream (storage backend down, missing
@@ -106,7 +107,46 @@ function _songMedia_resolveUserId(): ?int
 
 /* -------------------------------------------------------------------- */
 
-$id = (int)($_GET['id'] ?? 0);
+/* #1860 Phase 4 — dual-addressing pre-step: an IL internal id ('ILD…')
+   resolves to the tblSongMedia row's numeric Id BEFORE the (int) cast
+   below, so everything downstream (incl. contentGatingMediaAllowed(),
+   rule #28) runs on the SAME resolved numeric row regardless of which
+   address form the caller used — the gate sees the same row either way.
+   A miss (not an IL id, the column doesn't exist yet, or no row carries
+   it) falls through to `$id = (int)$rawId`, byte-identical to today's
+   behaviour (a non-numeric id casts to 0, which the guard below rejects
+   exactly as before). try/catch-swallowed + column-probe-gated so this
+   endpoint can never white-screen on an un-migrated install (the #1228
+   lesson). */
+$rawId = (string)($_GET['id'] ?? '');
+$id    = null;
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    $ilParsed = ilidParse($rawId);
+    if ($ilParsed !== null && $ilParsed['entityType'] === 'document') {
+        $ilColProbe = getDbMysqli()->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongMedia' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $ilColExists = $ilColProbe && $ilColProbe->fetch_row() !== null;
+        if ($ilColProbe) { $ilColProbe->free(); }
+        if ($ilColExists) {
+            $ilStmt = getDbMysqli()->prepare('SELECT Id FROM tblSongMedia WHERE IlId = ? LIMIT 1');
+            $ilStmt->bind_param('s', $ilParsed['canonical']);
+            $ilStmt->execute();
+            $ilRow = $ilStmt->get_result()->fetch_assoc();
+            $ilStmt->close();
+            if ($ilRow !== null) {
+                $id = (int)$ilRow['Id'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through to the numeric cast unchanged
+}
+if ($id === null) {
+    $id = (int)$rawId;
+}
 if ($id <= 0) {
     http_response_code(400);
     header('Content-Type: text/plain; charset=UTF-8');
@@ -219,6 +259,15 @@ if (!contentGatingMediaAllowed((string)$row['Kind'], $userId, $presence)) {
     echo 'Access restricted: gated content.';
     exit;
 }
+
+/* #1906 — media BYTES are access-gated but were never volume-capped, so an
+   allowed caller could exhaust bandwidth by pulling large files (up to ~50MB) in
+   a loop. Runs HERE — after both access gates (a denied caller is never counted
+   and never reaches this line) and BEFORE any streaming header/body, so a 429 is
+   a clean JSON reply, not a truncated media stream. Shared 'media' scope +
+   240/min: an <audio>/<img> element issues several Range requests per file, so
+   240/min is generous for playback, tight for a scrape. Fail-open (rule #26). */
+enforceReadRateLimitKeyed('media', 240);
 
 $totalSize = (int)$row['SizeBytes'];
 $mime      = (string)$row['MimeType'];

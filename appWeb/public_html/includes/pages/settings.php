@@ -405,18 +405,20 @@ declare(strict_types=1);
            a switch for a notification they can never receive is a promise the
            app cannot keep.
 
-           ⚠️ THE FILTER IS APPLIED CLIENT-SIDE, DELIBERATELY. This fragment
-           CANNOT resolve the viewer: `api.php` never sets `$currentUser`, so
-           every `$currentUser` reference in this file is undefined — which is
-           also why the language-sync paragraph below still says "Sign in to
-           sync" to users who are already signed in (a pre-existing bug, tracked
-           separately; not fixed here because it is unrelated and this is not
-           the commit to change auth plumbing in).
-           Filtering here on a variable that is always null would have hidden
-           the switch from EVERYONE, admins included — shipping a control nobody
-           can ever see, which is the silent-no-op class rule #30 exists about.
-           So the server states the REQUIREMENT and the client, which does know
-           the auth state, applies it (push-notifications.js). */
+           THE FILTER IS APPLIED CLIENT-SIDE, DELIBERATELY — but NOT because the
+           viewer is unresolvable. `$currentUser` IS now resolved by api.php for
+           non-cacheable fragments (settings is one — #1710), so the language-sync
+           copy below correctly distinguishes signed-in from signed-out. When
+           #1695 first shipped this, api.php set no `$currentUser` at all, so
+           every reference here was undefined; filtering on that always-null value
+           would have hidden the switch from EVERYONE, admins included — the
+           silent-no-op class rule #30 exists about. The push-kind filter stays
+           client-side even now: push-notifications.js knows the LIVE
+           entitlement/subscription state (not just the coarse `Role` on
+           `$currentUser`), and re-architecting a working client-side control onto
+           the server is out of scope for #1710. So the server states the
+           REQUIREMENT and the client, which knows the full auth state, applies
+           it (push-notifications.js). */
         $pushKindsJson   = (string)json_encode(
             array_map(
                 static fn(array $k): array => [

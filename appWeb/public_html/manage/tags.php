@@ -601,7 +601,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
 <!-- Add / Edit modal -->
 <div class="modal fade" id="tagModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered"><div class="modal-content bg-dark text-light">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="tagForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="action" id="tm-action" value="create">
@@ -631,7 +631,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
 <!-- Merge modal -->
 <div class="modal fade" id="mergeModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered"><div class="modal-content bg-dark text-light">
+    <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="mergeForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="action" value="merge">

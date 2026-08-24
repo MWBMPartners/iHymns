@@ -19,7 +19,14 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-08-11 (#91 final docs sweep) — added three topics
+ * Last updated: 2026-08-21 (docs-sync sweep) — noted under Searching that
+ * song / writer / composer / tune / place search now ignores accents and
+ * curly apostrophes (searching "cafe" finds "Café", "dont" finds "don't"),
+ * online and in the offline cache (#1039); and under Setlists &amp; Sharing
+ * that a shared link follows the set list's own expiry — once that passes
+ * the link stops serving and shows "no longer shared", with nothing
+ * deleted (#1699).
+ * Previous update 2026-08-11 (#91 final docs sweep) — added three topics
  * that had shipped without any in-app help: "Printing &amp; Saving as
  * PDF" (print templates, signed-in Download PDF, whole-set-list single
  * PDF, CCLI copies prompt — #1767 remainder) after Sharing &amp;
@@ -229,6 +236,7 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <h3 class="h6">Text Search</h3>
                     <p>Type in the search bar to find songs by title, lyrics, writer, or composer. Results appear as you type.</p>
+                    <p>Accents and curly apostrophes don't matter &mdash; searching <em>cafe</em> finds &ldquo;Caf&eacute;&rdquo;, and <em>dont</em> finds &ldquo;don&rsquo;t&rdquo;. The same holds for songwriter, tune and place searches, whether you're online or using downloaded songs offline.</p>
                     <p>You can filter results by songbook using the dropdown menu.</p>
 
                     <h3 class="h6">Number Search</h3>
@@ -539,6 +547,13 @@ declare(strict_types=1);
                             needs the recipient to already have an iHymns account.
                         </li>
                     </ul>
+                    <p class="small text-muted mb-0">
+                        A shared link stays <strong>live</strong> &mdash; it always shows your current
+                        set list &mdash; so it also follows the set list's own <strong>expiry date</strong>:
+                        once that date passes the link stops working and shows &ldquo;no longer shared&rdquo;.
+                        Nothing is deleted, and you can switch a link off yourself at any time from
+                        <strong>Active links</strong>.
+                    </p>
                     <h3 class="h6">Playing through a setlist</h3>
                     <p>
                         Tap any song in a setlist — your own, or one someone has shared with you — to

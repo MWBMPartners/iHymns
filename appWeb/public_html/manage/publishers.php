@@ -31,6 +31,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 /* The shared validate/persist/merge/delete cores. Both this page's POST
@@ -113,21 +114,10 @@ if ($hasSchema
     $limit   = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     $exclude = (int)($_GET['exclude'] ?? 0);
     try {
-        $sql = 'SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1';
-        $params = [];
-        $types  = '';
-        if ($q !== '') { $sql .= ' AND Name LIKE ?'; $params[] = '%' . $q . '%'; $types .= 's'; }
-        if ($exclude > 0) { $sql .= ' AND Id <> ?'; $params[] = $exclude; $types .= 'i'; }
-        $sql .= ' ORDER BY Name ASC LIMIT ?'; $params[] = $limit; $types .= 'i';
-        $stmt = $db->prepare($sql);
-        $stmt->bind_param($types, ...$params);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $out = [];
-        while ($row = $res->fetch_assoc()) {
-            $out[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'slug' => (string)$row['Slug'], 'kind' => (string)$row['Kind']];
-        }
-        $stmt->close();
+        /* #1864 — delegates to the ONE shared query core (rule #22); this
+           page's own inline SQL (the superset the core was extracted from)
+           is gone. */
+        $out = publisherSearchRows($db, $q, $limit, $exclude > 0 ? $exclude : null);
         echo json_encode(['suggestions' => $out], JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[publishers publisher_search] ' . $e->getMessage());
@@ -481,8 +471,13 @@ if ($hasSchema) {
                     <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Slug <small class="text-muted">(auto)</small></label>
-                    <input type="text" name="slug" class="form-control form-control-sm" maxlength="120" pattern="[a-z0-9-]+" placeholder="praise-trust">
+                    <?= ihymns_slug_advanced_field([
+                        'value'       => '',
+                        'maxlength'   => 120,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'praise-trust',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">Kind</label>
@@ -552,9 +547,14 @@ if ($hasSchema) {
                                     <input type="text" name="name" id="edit-publisher-name" class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-publisher-slug" class="form-control" maxlength="120" pattern="[a-z0-9-]+">
-                                    <div class="form-text small">Changing this changes <code>/publisher/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.</div>
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-publisher-slug',
+                                        'value'     => '',
+                                        'maxlength' => 120,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                        'help'      => 'Changing this changes <code>/publisher/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.',
+                                    ]) ?>
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label">Kind</label>
@@ -700,21 +700,32 @@ if ($hasSchema) {
                             </p>
                             <div class="mb-3">
                                 <label class="form-label small">Source (merged away)</label>
-                                <select name="source_id" class="form-select form-select-sm" required>
+                                <select name="source_id" id="merge-source-id" class="form-select form-select-sm" required>
                                     <option value="">— choose —</option>
                                     <?php foreach ($rows as $r): ?>
                                         <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Name']) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                             </div>
+                            <!-- #1868 (rule #43) — the target used to be a second
+                                 `<select>` rendering EVERY publisher (doesn't scale, and
+                                 nothing stopped picking the same row as source until
+                                 submit). Now a live-search picker over the shared
+                                 publisherSearchRows() core (rule #22), with its
+                                 `excludeId` arm bound to whichever publisher is
+                                 currently chosen as Source — the source can never
+                                 appear as a target candidate, so "merge a publisher
+                                 into itself" is unreachable through this UI, not just
+                                 server-rejected. Search-select ONLY: no create arm,
+                                 the merge continues through the EXISTING
+                                 publisherAdminMerge() unchanged (below). -->
                             <div class="mb-3">
                                 <label class="form-label small">Target (survives)</label>
-                                <select name="target_id" class="form-select form-select-sm" required>
-                                    <option value="">— choose —</option>
-                                    <?php foreach ($rows as $r): ?>
-                                        <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Name']) ?></option>
-                                    <?php endforeach; ?>
-                                </select>
+                                <input type="hidden" name="target_id" id="merge-target-id" value="">
+                                <input type="text" id="merge-target-name" class="form-control form-control-sm"
+                                       placeholder="Search publishers by name…" autocomplete="off" required
+                                       aria-label="Search for the target publisher this merge keeps">
+                                <div class="form-text small">Excludes the source publisher chosen above.</div>
                             </div>
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
@@ -785,6 +796,49 @@ if ($hasSchema) {
         wireTypeahead('edit-publisher-musician-name', 'edit-publisher-musician-id', 'edit-publisher-musician-datalist', '?action=musician_search');
         <?php endif; ?>
         wireTypeahead('edit-publisher-parent-name', 'edit-publisher-parent-id', 'edit-publisher-parent-datalist', '?action=publisher_search');
+
+        /* #1868 (rule #43) — Merge-target picker: search-select ONLY, no
+           create arm. Reuses THIS page's own ?action=publisher_search
+           (which delegates to publisherSearchRows(), rule #22) with its
+           `exclude` arm bound to the Source select's LIVE value — read
+           inside the searchUrl callback on every keystroke (not snapshotted
+           at attach() time), so changing Source mid-search still excludes
+           correctly. pickMode:'value': the pick fills the input + hidden id
+           with no network call of its own; the merge form's own POST is the
+           ONE commit, and publisherAdminMerge() (unchanged, server-side)
+           re-verifies both ids exist before doing anything destructive. */
+        if (window.iHymnsPlaceSearch) {
+            const mergeSourceSel  = document.getElementById('merge-source-id');
+            const mergeTargetName = document.getElementById('merge-target-name');
+            const mergeTargetId   = document.getElementById('merge-target-id');
+            if (mergeSourceSel && mergeTargetName && mergeTargetId) {
+                window.iHymnsPlaceSearch.attach(mergeTargetName, {
+                    hiddenIdInput: mergeTargetId,
+                    minChars: 2,
+                    pickMode: 'value',
+                    noun: { singular: 'publisher', plural: 'publishers' },
+                    searchUrl: (q) => '?action=publisher_search&q=' + encodeURIComponent(q)
+                        + '&limit=10'
+                        + (mergeSourceSel.value ? '&exclude=' + encodeURIComponent(mergeSourceSel.value) : ''),
+                    parseResults: (d) => (d.suggestions || []).map((s) => ({
+                        id: s.id,
+                        display_name: s.name,
+                        hint: s.kind || '',
+                    })),
+                });
+                /* Changing Source after a Target was already picked could
+                   leave a stale pick now equal to the new Source — the
+                   server still rejects sourceId === targetId, but clear the
+                   target proactively so the UI never shows a doomed pick. */
+                mergeSourceSel.addEventListener('change', () => {
+                    if (mergeTargetId.value && mergeTargetId.value === mergeSourceSel.value) {
+                        mergeTargetName.value = '';
+                        mergeTargetId.value = '';
+                        mergeTargetId.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                });
+            }
+        }
 
         <?php if ($gates['hasPlaces']): ?>
         if (window.iHymnsPlaceSearch) {

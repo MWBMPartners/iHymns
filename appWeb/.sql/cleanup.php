@@ -193,6 +193,75 @@ try {
     echo "tblActivityLog:        ERROR — " . $e->getMessage() . "\n";
 }
 
+/* 6. QR image cache TTL prune (#1920).
+   ELI5: a QR code for a fixed link/text never changes, so we keep a copy of
+   it once CueRCode draws it — but a copy nobody's asked for in 90 days is
+   just disk space. This deletes those.
+   DETAIL: existence-gated (mirrors every other block in this file — a
+   missing table is caught by the surrounding try/catch and printed as an
+   informational line, never a fatal) so an un-migrated install is a clean
+   no-op. Time is SQL-side (DATE_SUB(UTC_TIMESTAMP(), …)) to match the UTC
+   frame CreatedAt was written in, exactly like block 4b above.
+   Deliberately INLINE rather than requiring includes/qr_cache.php's
+   qrCachePrune() (the "real" implementation, reused by any FUTURE in-process
+   caller that lives inside a docroot): this script runs from the un-renamed
+   appWeb/.sql/ sibling directory and — uniquely in this file — requires
+   NOTHING from appWeb/public_html/includes/ today. Reaching in from here
+   would be the exact cross-channel docroot-naming trap rule #41 exists to
+   prevent (alpha/beta deploy public_html_dev/public_html_beta, not
+   public_html, and this CLI cron has no IHYMNS_INCLUDES_DIR to resolve the
+   renamed sibling correctly). The 90-day figure is the SAME number as
+   QR_CACHE_TTL_DAYS in includes/qr_cache.php — that file's doc-block notes
+   this duplication and why it exists. */
+try {
+    $qrTtlDays = 90;
+    $stmt = $db->prepare('DELETE FROM tblQrCache WHERE CreatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)');
+    $stmt->bind_param('i', $qrTtlDays);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
+    echo "tblQrCache:            $count expired QR image(s) deleted\n";
+    $totalDeleted += $count;
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
+    echo "tblQrCache:            ERROR — " . $e->getMessage() . "\n";
+}
+
+/* 7. Outbound-webhooks retention prune (#1909).
+   The event ledger + delivery queue each stamp ExpiresAt at insert (enqueue + 30
+   days). This nightly sweep is the same work the /webhook-drain.php endpoint does
+   per pass, here for installs that already run cleanup.php on cron. Table-existence
+   guarded so an un-migrated install (the 3 docroots share ONE MySQL; migrations are
+   web-run) is a clean no-op rather than a fatal. Self-contained SQL — this CLI cron
+   deliberately reaches into NOTHING from includes/ (rule #41), so it does NOT call
+   includes/webhooks.php::webhookPruneExpired(); the DELETEs are inlined. Deliveries
+   are CASCADE-linked to events, but we prune both explicitly so a bounded sweep
+   makes steady progress on each. */
+try {
+    $probe = $db->query(
+        "SELECT COUNT(*) AS n FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME IN ('tblWebhookEvents','tblWebhookDeliveries')"
+    );
+    $haveWebhookTables = $probe && (int)($probe->fetch_assoc()['n'] ?? 0) === 2;
+    if ($probe) { $probe->close(); }
+
+    if ($haveWebhookTables) {
+        $stmt = $db->query('DELETE FROM tblWebhookDeliveries WHERE ExpiresAt < UTC_TIMESTAMP()');
+        $count = $db->affected_rows;
+        echo "tblWebhookDeliveries: $count expired delivery row(s) deleted\n";
+        $totalDeleted += $count;
+
+        $stmt = $db->query('DELETE FROM tblWebhookEvents WHERE ExpiresAt < UTC_TIMESTAMP()');
+        $count = $db->affected_rows;
+        echo "tblWebhookEvents:      $count expired event row(s) deleted\n";
+        $totalDeleted += $count;
+    } else {
+        echo "tblWebhook*:           un-migrated — skipped (no-op)\n";
+    }
+} catch (\mysqli_sql_exception $e) {
+    echo "tblWebhook*:           ERROR — " . $e->getMessage() . "\n";
+}
+
 echo str_repeat('-', 50) . "\n";
 echo "Total deleted: $totalDeleted row(s)\n";
 echo "Cleanup complete.\n";

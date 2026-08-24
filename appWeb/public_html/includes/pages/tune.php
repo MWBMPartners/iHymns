@@ -130,6 +130,43 @@ if (!function_exists('_tuneTableExists')) {
 $tuneSlug = isset($tuneSlug) ? (string)$tuneSlug : '';
 $tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9\-]+/', '-', $tuneSlug), '-'));
 
+/* #1860 Phase 4 — dual-addressing pre-step, ahead of rung (a) exact-slug
+   below: an IL internal id ('ILT…') resolves to the registry's real Slug
+   and $tuneSlug is replaced with it, so every rung after this one sees a
+   canonical value exactly as if the curator had typed the real slug. A
+   miss (not an IL id, the column doesn't exist yet, or no row carries it)
+   leaves $tuneSlug UNCHANGED — the heuristic ladder below still gets its
+   turn. try/catch-swallowed + column-probe-gated so this page can never
+   white-screen on an un-migrated install (the #1228 lesson). ilidParse()
+   is case-insensitive so the lowercase fold two lines up does not matter. */
+try {
+    if (!function_exists('ilidParse')) {
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    }
+    $_ilParsed = ilidParse($tuneSlug);
+    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'tune') {
+        $_ilDb = getDbMysqli();
+        $_ilColProbe = $_ilDb->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTunes' AND COLUMN_NAME = 'IlId' LIMIT 1"
+        );
+        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+        if ($_ilColProbe) { $_ilColProbe->free(); }
+        if ($_ilColExists) {
+            $_ilStmt = $_ilDb->prepare('SELECT Slug FROM tblTunes WHERE IlId = ? LIMIT 1');
+            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+            $_ilStmt->execute();
+            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+            $_ilStmt->close();
+            if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
+                $tuneSlug = (string)$_ilRow['Slug'];
+            }
+        }
+    }
+} catch (\Throwable $_ilE) {
+    // dormant-by-design — fall through to the heuristic ladder unchanged
+}
+
 $tune           = null;   /* tblTunes row (registry path) — stays null on the heuristic path */
 $canonicalTune  = '';     /* display name, either registry Name or the heuristic TuneName */
 $tuneRows       = [];

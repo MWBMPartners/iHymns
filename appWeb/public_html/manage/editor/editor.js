@@ -1658,6 +1658,11 @@ function buildEnrichmentPanel(song, comp) {
 }
 
 function componentHeaderLabel(comp) {
+    /* #1860 Phase 5 Commit 8 (SD5) — custom-first: a curator-set comp.label
+       replaces the derived heading here too, same as every other display
+       site (rule #33). */
+    var custom = (comp && comp.label != null) ? String(comp.label).trim() : '';
+    if (custom !== '') { return custom; }
     var type = (comp && comp.type) ? String(comp.type) : 'verse';
     var cap = type.charAt(0).toUpperCase() + type.slice(1);
     var n = comp && comp.number;
@@ -2432,8 +2437,8 @@ function refreshArrangementPresetAvailability(song) {
 /* Writers + Composers collapsed onto the shared chip-list helper
    that also drives Arrangers/Adaptors/Translators (#497). All five
    credit collections now get the #495 cross-collection autocomplete
-   for free — createDynamicInputRow() attaches a live-search popover
-   whenever a `creditKind` is passed through. */
+   for free — attachStructuredCreditAutocomplete() attaches a live-search
+   popover whenever a `creditKind` is passed through. */
 function renderWriters(song) {
     renderCreditChipList(song, 'writers',   'writers-container',   'Add Writer');
 }
@@ -3089,9 +3094,6 @@ function initTranslationControls() {
  *      until the second song was also saved.
  * ============================================================================ */
 
-/* Latest fetch result kept in-memory so render-only re-runs don't refetch. */
-var songLinksCache = { songId: null, links: [] };
-
 /* ==========================================================================
  *  SECTION — External website links per song (#833)
  *
@@ -3284,7 +3286,6 @@ function renderSongLinks(song) {
            switched songs while the network call was in flight. */
         if (currentSongId !== song.id) return;
 
-        songLinksCache = { songId: song.id, links: data.links };
         container.innerHTML = '';
 
         if (!data.links.length) {
@@ -3659,10 +3660,8 @@ function creditEntryAsString(entry) {
  * People page); selecting a suggestion overwrites all three inputs
  * from the matched registry row.
  *
- * The legacy `createDynamicInputRow` single-input factory remains
- * for any non-credit dynamic-list use; this helper is the shape
- * Writers / Composers / Arrangers / Adaptors / Translators /
- * Artists all use post-#960.
+ * This helper is the shape Writers / Composers / Arrangers /
+ * Adaptors / Translators / Artists all use post-#960.
  * ------------------------------------------------------------------ */
 function createCreditNameRow(parts, onChange, onRemove, creditKind) {
     var row = document.createElement('div');
@@ -3716,16 +3715,15 @@ function createCreditNameRow(parts, onChange, onRemove, creditKind) {
     return row;
 }
 
-/* #1594 part 2 — module-scoped counter shared by BOTH credit-popover
-   flavours below (attachStructuredCreditAutocomplete and the legacy
-   attachCreditAutocomplete) so every popover instance on the page — a
-   song can show several Writer/Composer/Arranger rows at once, each
-   with its own popover — gets a globally-unique ARIA id prefix.
-   Mirrors place-search.js's own `instanceSeq`. */
+/* #1594 part 2 — module-scoped counter used by the structured credit
+   popover below (attachStructuredCreditAutocomplete) so every popover
+   instance on the page — a song can show several Writer/Composer/Arranger
+   rows at once, each with its own popover — gets a globally-unique ARIA id
+   prefix. Mirrors place-search.js's own `instanceSeq`. (The legacy
+   single-input flavour that also shared this counter was removed in #1874.) */
 var creditAutocompleteInstanceSeq = 0;
 
-/* Live-search popover for the structured Credit row. Mirrors
-   attachCreditAutocomplete (the legacy single-input one) but:
+/* Live-search popover for the structured Credit row:
      - Listens on TWO inputs (first + surname).
      - Sends q=<focused input value> to /api?action=credit_search.
      - Updates all three parts inputs from the chosen suggestion.
@@ -3898,216 +3896,6 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
     wire(firstEl);
     wire(surnameEl);
 
-    document.addEventListener('click', function (e) {
-        if (!row.contains(e.target)) close();
-    });
-}
-
-/**
- * createDynamicInputRow(value, onChange, onRemove)
- * ------------------------------------------------
- * Factory function that builds a single input-group row used for both
- * writers and composers lists.
- *
- * @param {string}   value    - The current text value.
- * @param {Function} onChange - Called with the new value on every keystroke.
- * @param {Function} onRemove - Called when the remove button is clicked.
- * @returns {HTMLElement} The assembled input-group div.
- */
-function createDynamicInputRow(value, onChange, onRemove, creditKind) {
-    /* Wrapper div styled as a Bootstrap input group. */
-    var row = document.createElement('div');
-    row.className = 'input-group input-group-sm mb-1 position-relative credit-chip-row';
-
-    /* Text input. */
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.className = 'form-control';
-    input.value = value;
-    input.autocomplete = 'off';
-    /* Live-bind every keystroke back to the data. */
-    input.addEventListener('input', function () {
-        onChange(input.value);
-    });
-
-    /* Remove button. */
-    var removeBtn = document.createElement('button');
-    removeBtn.type = 'button';
-    removeBtn.className = 'btn btn-outline-danger';
-    removeBtn.innerHTML = '&times;';
-    removeBtn.title = 'Remove';
-    removeBtn.addEventListener('click', function () {
-        onRemove();
-    });
-
-    /* Assemble the row. */
-    row.appendChild(input);
-    row.appendChild(removeBtn);
-
-    /* Attach the live-search popover (#495) when a credit kind is
-       passed. The popover queries /api?action=credit_search which
-       unions across all five credit tables so a "Fanny Crosby"
-       already used as a Writer surfaces when typing in Composers,
-       avoiding the dedupe drift problem described in the issue.
-
-       No-op when called without a kind (e.g. for non-credit dynamic
-       list uses), so the helper stays general. */
-    if (creditKind) {
-        attachCreditAutocomplete(input, row, creditKind, onChange);
-    }
-
-    return row;
-}
-
-/**
- * attachCreditAutocomplete(input, row, kind, onChange)
- * ----------------------------------------------------
- * Wire a chip input to the /api?action=credit_search endpoint so
- * typing surfaces a popover of matching stored-canonical spellings.
- * Clicking one rewrites the input to the exact stored form and fires
- * onChange so the song object picks it up. Escape / click-outside
- * dismiss; popover is constrained within the input-group row via
- * absolute positioning so long credit lists stay readable.
- */
-function attachCreditAutocomplete(input, row, kind, onChange) {
-    var popover = document.createElement('div');
-    popover.className = 'list-group position-absolute w-100 shadow d-none credit-suggestions-popover';
-    popover.style.zIndex = '1050';
-    popover.style.top = '100%';
-    popover.style.left = '0';
-    popover.style.maxHeight = '220px';
-    popover.style.overflowY = 'auto';
-    row.appendChild(popover);
-
-    var debounceTimer = null;
-    var currentSuggestions = [];
-    var activeIndex = -1;
-    /* Unique id prefix — see attachStructuredCreditAutocomplete's own
-       comment above for why (several credit chip rows can be on screen
-       at once, each with its own popover). Shares the same counter as
-       that function's popovers so ids never collide between the two
-       flavours either. */
-    var idPrefix = 'credit-legacy-' + (++creditAutocompleteInstanceSeq);
-
-    function isOpen() { return !popover.classList.contains('d-none'); }
-    function optionEls() { return Array.prototype.slice.call(popover.querySelectorAll('.list-group-item-action')); }
-
-    function close() {
-        popover.classList.add('d-none');
-        popover.innerHTML = '';
-        currentSuggestions = [];
-        activeIndex = -1;
-        if (window.iHymnsComboboxA11y) {
-            window.iHymnsComboboxA11y.applyComboboxAria({ input: input, panel: popover, items: [], activeIndex: -1, idPrefix: idPrefix, expanded: false });
-        }
-    }
-
-    /* Re-paint `currentSuggestions` at the CURRENT `activeIndex` — see
-       attachStructuredCreditAutocomplete's renderPanel() above for why
-       this must not reset the highlight (it's the `render` callback
-       handleComboboxKeydown calls on every arrow/Home/End press). */
-    function renderPanel() {
-        popover.innerHTML = '';
-        var suggestions = currentSuggestions;
-        if (!suggestions.length) { close(); return; }
-        suggestions.forEach(function (s, i) {
-            var item = document.createElement('button');
-            item.type = 'button';
-            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
-            item.classList.toggle('active', i === activeIndex);
-            var kindsBadge = (s.kinds && s.kinds.length)
-                ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
-                : '';
-            /* #958 — same coerce-to-integer pattern as the tag-search
-               sink above. `s.usage` from the credit_search API is a
-               count, but defence-in-depth: coerce before interpolation
-               so a stored-XSS via a string `usage` is impossible. */
-            var creditUsageNum = parseInt(s.usage, 10);
-            if (!Number.isFinite(creditUsageNum) || creditUsageNum < 0) creditUsageNum = 0;
-            item.innerHTML =
-                '<span><strong>' + escapeHtmlSafe(s.name) + '</strong> ' + kindsBadge + '</span>' +
-                '<span class="badge bg-secondary">' + creditUsageNum + '</span>';
-            item.addEventListener('click', function (e) {
-                e.preventDefault();
-                input.value = s.name;
-                onChange(s.name);
-                close();
-                input.focus();
-            });
-            popover.appendChild(item);
-        });
-        popover.classList.remove('d-none');
-        if (window.iHymnsComboboxA11y) {
-            window.iHymnsComboboxA11y.applyComboboxAria({
-                input: input, panel: popover, items: optionEls(),
-                activeIndex: activeIndex, idPrefix: idPrefix,
-            });
-        }
-    }
-
-    /* NEW result set — reset the highlight to the first row. */
-    function setSuggestions(suggestions) {
-        currentSuggestions = suggestions;
-        activeIndex = suggestions.length ? 0 : -1;
-        renderPanel();
-    }
-
-    function fetchSuggestions(q) {
-        /* `kind=any` unions all five tables so the same spelling
-           surfaces no matter which chip list the admin is editing. */
-        var url = EDITOR_API_URL + '?action=credit_search' +
-                  '&q='    + encodeURIComponent(q) +
-                  '&kind=any&limit=12';
-        fetch(url, { credentials: 'same-origin' })
-            .then(function (r) {
-                /* Surface non-2xx so a 401/404 doesn't silently look
-                   identical to an empty result set. (#593) */
-                if (!r.ok) {
-                    return r.text().then(function (body) {
-                        throw new Error('credit_search ' + r.status + ': ' + body.slice(0, 200));
-                    });
-                }
-                return r.json();
-            })
-            .then(function (data) {
-                setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
-            })
-            .catch(function (err) {
-                console.warn('[editor] credit_search failed:', err && err.message);
-                close();
-            });
-    }
-
-    input.addEventListener('input', function () {
-        clearTimeout(debounceTimer);
-        var q = input.value.trim();
-        if (q.length < 1) { close(); return; }
-        debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
-    });
-
-    /* #1594 part 2 — was Escape-only. */
-    input.addEventListener('keydown', function (e) {
-        if (!window.iHymnsComboboxA11y) {
-            if (e.key === 'Escape') close();
-            return;
-        }
-        window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
-            isOpen: isOpen,
-            getItems: optionEls,
-            getActiveIndex: function () { return activeIndex; },
-            setActiveIndex: function (i) { activeIndex = i; },
-            render: renderPanel,
-            /* Reuse the row's own click listener rather than a second
-               copy of the pick logic — see combobox-a11y.js's
-               doc-comment for why every migrated call site does this. */
-            onCommit: function (i, el) { el.click(); },
-            onClose: close,
-        });
-    });
-
-    /* Dismiss on click outside this specific row. We register a
-       delegated handler only once per row — listener is cleaned up
-       implicitly when the row is removed from the DOM. */
     document.addEventListener('click', function (e) {
         if (!row.contains(e.target)) close();
     });
@@ -5293,16 +5081,6 @@ function setChecked(elementId, checked) {
 }
 
 /**
- * getVal(elementId)
- * -----------------
- * Returns the value of a form element by ID, or empty string if not found.
- */
-function getVal(elementId) {
-    var el = document.getElementById(elementId);
-    return el ? el.value : '';
-}
-
-/**
  * updateCopyrightFieldState({ song, fromCheckboxClick })
  * ------------------------------------------------------
  * Mirror the "fully Public Domain → no copyright" rule on the
@@ -6051,7 +5829,7 @@ function reflowRender() {
 
         var body = document.createElement('div');
         body.className = 'card-body py-2';
-        bodyTextarea.className = 'form-control form-control-sm bg-dark text-light border-secondary reflow-text';
+        bodyTextarea.className = 'form-control form-control-sm border-secondary reflow-text';
         bodyTextarea.rows = Math.min(Math.max(block.lines.length, 2), 12);
         bodyTextarea.value = block.lines.join('\n');
         bodyTextarea.setAttribute('aria-label', 'Section lyrics');
@@ -6686,8 +6464,6 @@ function bindHistoryListener() {
  */
 function updateHistoryButtonState() {
     var hasSong  = !!currentSongId;
-    var hasSongs = (typeof songData !== 'undefined' && songData
-        && Array.isArray(songData.songs) && songData.songs.length > 0);
 
     var saveBtn = document.getElementById('btn-save');
     if (saveBtn) {
@@ -6750,7 +6526,7 @@ function renderHistoryList(revisions, listEl, detailEl) {
     revisions.forEach(function (rev) {
         var item = document.createElement('button');
         item.type = 'button';
-        item.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary d-flex justify-content-between align-items-center';
+        item.className = 'list-group-item list-group-item-action border-secondary d-flex justify-content-between align-items-center';
         var badgeClass = rev.action === 'create' ? 'bg-success'
             : rev.action === 'restore' ? 'bg-info'
             : 'bg-secondary';

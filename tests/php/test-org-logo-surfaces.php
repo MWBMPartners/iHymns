@@ -3,13 +3,15 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Organisation-logo surfaces wiring guard (#1830)
+ * iHymns — Organisation-logo surfaces wiring guard (#1830, extended #1840)
  *
  * ELI5: derives EVERY file in the tree that talks about organisation logos
  * and checks the load-bearing safety rules from
- * `.claude/org-logos-1830-plan.md` §9.2 hold across every one of them —
- * never a typed list of "the files to check" (rule #34), so a NEW file that
- * starts touching logos is covered for free.
+ * `.claude/org-logos-1830-plan.md` §9.2 (base feature) and
+ * `.claude/org-logo-surfaces-1840-plan.md` §8.1 (the header/projector/
+ * og-image/brand-colour screen surfaces this file was extended for) hold
+ * across every one of them — never a typed list of "the files to check"
+ * (rule #34), so a NEW file that starts touching logos is covered for free.
  *
  * DERIVATION FINGERPRINT — CAUGHT ITS OWN UNDER-REPORT BEFORE COMMITTING
  * (rule #34's "a scanner that under-reports is worse than no scanner"): the
@@ -89,6 +91,89 @@ declare(strict_types=1);
  *     than being redundant with the equality check: a floor breach is
  *     reported with its OWN message even though the equality check would
  *     already have failed on the same input.)
+ * *   Each restored -> green.
+ *
+ * ----------------------------------------------------------------------------
+ * #1840 EXTENSION — checks (g)-(k), landed across commits 2/5/6/7/8, this
+ * commit (9) the plan's designated "finish the guard" pass for THIS
+ * feature (mirrors the #1830 commit-7 pass above): re-verify (g)-(k)
+ * end-to-end as one consolidated run and record every mutation here.
+ *
+ *   - (g) IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) <->
+ *     ORG_LOGO_SURFACE_PREFS (org-logo.js) lockstep — landed commit 2,
+ *     live immediately (both files existed in the SAME commit, unlike (c)/
+ *     (e)/(f)'s self-activating shape). (j) print's fold stays
+ *     variant-filtered — also commit 2.
+ *   - (i) brand colour goes through the ONE normaliser — WRITE half landed
+ *     commit 5 (live immediately, both admin pages' `brand_save` cases
+ *     shipped in that same commit); READ half (og-image.php) self-activated
+ *     commit 8.
+ *   - (k) header/projector emit a real `<img src="/org-logo.php?...">` —
+ *     half 1 (header-branding.js) landed commit 6, live immediately; half 2
+ *     (service-projection.php) landed commit 7.
+ *   - (h) og-image never self-requests — landed commit 8, live immediately.
+ *
+ * MUTATION-PROVEN (#1840 checks) — each broken on purpose in a scratch
+ * copy, confirmed red, restored to a byte-identical diff:
+ *   - (g) Swapped `emblem`/`favicon` order in org-logo.js's `header` kind
+ *     list -> RED ("Surface-prefs drift: 'header' kind list/order
+ *     differs"). Deleted the `'projector'` entry from PHP's
+ *     IHYMNS_ORG_LOGO_SURFACE_PREFS -> RED, TWO assertions at once (the
+ *     >=3-surface floor AND the key-order equality check — same
+ *     independent-coverage shape as the base guard's (f) floor proof).
+ *   - (j) Removed the `.variant` filter from print.js's
+ *     `fetchPrintOrgLogos()` fold -> RED ("no longer references .variant").
+ *   - (i) Replaced the normalise+persist calls in organisations.php's
+ *     `brand_save` case with a raw UPDATE bypassing
+ *     `ihymnsOrgBrandColourNormalise()` -> RED. (An EARLIER, weaker
+ *     mutation — swapping the persisted ARGUMENT from `$normalised` to
+ *     `$rawColour` while leaving the `orgSetBrandColour(` CALL text intact
+ *     — stayed GREEN, correctly: this check is a textual call-presence
+ *     assertion, not a data-flow analysis, so a call that's present but
+ *     fed the wrong variable is genuinely outside its stated scope, not a
+ *     missed catch.) Renamed my-organisations.php's `brand_save` case
+ *     label -> RED (floor breach, "only 1 site"). Once commit 8 activated
+ *     the READ half: replaced `ihymnsOrgBrandColourRgb(` with an inline
+ *     `sscanf()` in og-image.php -> RED ("a second, inline hex-parse
+ *     fork").
+ *   - (h) Replaced og-image.php's direct `orgLogoFetchServeRow()` read with
+ *     a `file_get_contents('https://.../org-logo.php...')` HTTP
+ *     self-request -> RED, TWO assertions at once (missing direct-read
+ *     call AND the banned self-request shape).
+ *   - (k) — THIS CHECK CAUGHT ITS OWN UNDER-REPORT (rule #34's "a scanner
+ *     that under-reports is worse than no scanner", the SAME lesson this
+ *     file's own header section already documents for the base #1830
+ *     fingerprint). The FIRST draft was a single file-wide test: "does
+ *     ANY `<img>` exist in the file AND does `/org-logo.php?` (or
+ *     `orgLogoUrl(`) appear ANYWHERE in the file?". A scripted trial that
+ *     deleted service-projection.php's `<img id="svc-proj-logo">` outright
+ *     stayed GREEN, because that page ALSO creates an unrelated `<img>`
+ *     for its QR code (#1339), and the server-side `/org-logo.php?`
+ *     resolution string was still present elsewhere in the file —
+ *     each independently satisfied the loose file-wide test even though
+ *     the ACTUAL corner-bug element was gone. Fixed by anchoring each half
+ *     on the feature's own distinguishing marker instead of a generic tag
+ *     search: header-branding.js's single `createElement('img')` call
+ *     windowed forward for `orgLogoUrl(`; service-projection.php's literal
+ *     `<img id="svc-proj-logo">` existence PLUS a symmetric (order-
+ *     independent) proximity check between the `OrgLogoUrl` property name
+ *     and the literal `/org-logo.php?` string (the PHP resolution code and
+ *     the JSON property it feeds appear in DIFFERENT relative orders
+ *     depending on how the surrounding code reads — a forward-only regex
+ *     window missed this on the first attempt too, fixed by measuring the
+ *     REAL byte offsets in the actual file rather than assuming an order).
+ *     Re-run after the fix: deleting `<img id="svc-proj-logo">` -> RED;
+ *     replacing the `/org-logo.php?` endpoint string -> RED; deleting
+ *     header-branding.js's `<img>` creation -> RED; bypassing
+ *     `orgLogoUrl()` with a hand-built URL -> RED. Every mutation restored
+ *     -> byte-identical (diffed to confirm, not just re-run to green).
+ *   - (commit 9, consolidation) A COMBINED mutation — breaking check (g) in
+ *     org-logo.js AND check (k) in service-projection.php in the SAME run
+ *     — reported BOTH failures together (the guard accumulates into
+ *     `$failures` rather than stopping at the first hit), confirming the
+ *     checks are independent and none masks another. Both restored ->
+ *     byte-identical.
+ *
  *   Each restored -> green.
  *
  *   php tests/php/test-org-logo-surfaces.php
@@ -377,6 +462,276 @@ foreach ($mentioning as $path => $raw) {
     }
 }
 
+/* =============================================================================
+ * (g) #1840 — surface-prefs PHP<->JS lockstep: IHYMNS_ORG_LOGO_SURFACE_PREFS
+ * (org_logo_helpers.php) must agree EXACTLY — same surface keys, in the same
+ * order, same per-surface kind list in the same order, same darkCapableOnly
+ * flag — with ORG_LOGO_SURFACE_PREFS (js/modules/org-logo.js). Order is the
+ * per-surface resolution ladder (mirrors check (f)'s kind-ladder discipline,
+ * rule #35: a mechanism, not a comment).
+ * ============================================================================= */
+
+/** Parse IHYMNS_ORG_LOGO_SURFACE_PREFS from org_logo_helpers.php, in source
+ *  order, WITHOUT requiring the file (pure text parse, mirrors
+ *  ihymnsOrgLogoKindKeysForGuard() above).
+ *  @return array<string, array{kinds: list<string>, darkCapableOnly: bool}> */
+function orgLogoSurfacePrefsFromPhp(string $helpersPhpPath): array
+{
+    $src = (string)file_get_contents($helpersPhpPath);
+    if (!preg_match('/const\s+IHYMNS_ORG_LOGO_SURFACE_PREFS\s*=\s*\[(.*?)\n\];/s', $src, $m)) {
+        return [];
+    }
+    $out = [];
+    preg_match_all(
+        "/'([\\w-]+)'\\s*=>\\s*\\['kinds'\\s*=>\\s*\\[([^\\]]*)\\]\\s*,\\s*'darkCapableOnly'\\s*=>\\s*(true|false)\\]/",
+        $m[1],
+        $entries,
+        PREG_SET_ORDER
+    );
+    foreach ($entries as $e) {
+        preg_match_all("/'(\\w+)'/", $e[2], $km);
+        $out[$e[1]] = ['kinds' => $km[1], 'darkCapableOnly' => $e[3] === 'true'];
+    }
+    return $out;
+}
+
+/** Parse ORG_LOGO_SURFACE_PREFS from js/modules/org-logo.js, in source order.
+ *  JS object keys may be bare identifiers (`header:`) or quoted (`'og-card':`).
+ *  @return array<string, array{kinds: list<string>, darkCapableOnly: bool}> */
+function orgLogoSurfacePrefsFromJs(string $jsPath): array
+{
+    $src = (string)file_get_contents($jsPath);
+    if (!preg_match('/const\s+ORG_LOGO_SURFACE_PREFS\s*=\s*\{(.*?)\n\};/s', $src, $m)) {
+        return [];
+    }
+    $out = [];
+    preg_match_all(
+        "/(?:'([\\w-]+)'|(\\w+))\\s*:\\s*\\{\\s*kinds:\\s*\\[([^\\]]*)\\]\\s*,\\s*darkCapableOnly:\\s*(true|false)\\s*\\}/",
+        $m[1],
+        $entries,
+        PREG_SET_ORDER
+    );
+    foreach ($entries as $e) {
+        $key = $e[1] !== '' ? $e[1] : $e[2];
+        preg_match_all("/'(\\w+)'/", $e[3], $km);
+        $out[$key] = ['kinds' => $km[1], 'darkCapableOnly' => $e[4] === 'true'];
+    }
+    return $out;
+}
+
+$orgLogoJsPath = $pub . '/js/modules/org-logo.js';
+if (is_file($orgLogoJsPath)) {
+    $surfacePrefsPhp = orgLogoSurfacePrefsFromPhp($helpersPhp);
+    $surfacePrefsJs  = orgLogoSurfacePrefsFromJs($orgLogoJsPath);
+
+    /* Anti-under-report floor (rule #34): the real registry is 3 surfaces,
+       >= 2 kinds each — a parser that silently matched a truncated subset on
+       BOTH sides could otherwise agree-by-coincidence. */
+    $surfaceMinCount = 3;
+    if (count($surfacePrefsPhp) > 0 && count($surfacePrefsPhp) < $surfaceMinCount) {
+        orgLogoFail($failures, sprintf('IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) parsed only %d surface(s) (< %d) — parser anchor moved or the map was emptied.', count($surfacePrefsPhp), $surfaceMinCount));
+    }
+    if (count($surfacePrefsJs) > 0 && count($surfacePrefsJs) < $surfaceMinCount) {
+        orgLogoFail($failures, sprintf('ORG_LOGO_SURFACE_PREFS (org-logo.js) parsed only %d surface(s) (< %d) — parser anchor moved or the map was emptied.', count($surfacePrefsJs), $surfaceMinCount));
+    }
+
+    if ($surfacePrefsPhp === [] || $surfacePrefsJs === []) {
+        orgLogoFail($failures, 'Could not parse IHYMNS_ORG_LOGO_SURFACE_PREFS (org_logo_helpers.php) and/or ORG_LOGO_SURFACE_PREFS (org-logo.js) — parser anchor moved.');
+    } elseif (array_keys($surfacePrefsPhp) !== array_keys($surfacePrefsJs)) {
+        orgLogoFail($failures, 'Surface-prefs drift: surface KEYS/ORDER differ — PHP has ' . json_encode(array_keys($surfacePrefsPhp))
+            . ', JS has ' . json_encode(array_keys($surfacePrefsJs)) . ' (#1840).');
+    } else {
+        foreach ($surfacePrefsPhp as $surface => $phpDef) {
+            $jsDef = $surfacePrefsJs[$surface];
+            $kindMinCount = 2;
+            if (count($phpDef['kinds']) < $kindMinCount) {
+                orgLogoFail($failures, "Surface '$surface' (org_logo_helpers.php) parsed only " . count($phpDef['kinds']) . " kind(s) (< $kindMinCount).");
+            }
+            if ($phpDef['kinds'] !== $jsDef['kinds']) {
+                orgLogoFail($failures, "Surface-prefs drift: '$surface' kind list/order differs — PHP has " . json_encode($phpDef['kinds'])
+                    . ', JS has ' . json_encode($jsDef['kinds']) . ' — kind ORDER is the resolution ladder (rule #35); order drift is ladder drift (#1840).');
+            }
+            if ($phpDef['darkCapableOnly'] !== $jsDef['darkCapableOnly']) {
+                orgLogoFail($failures, "Surface-prefs drift: '$surface' darkCapableOnly is " . json_encode($phpDef['darkCapableOnly']) . ' in PHP but ' . json_encode($jsDef['darkCapableOnly']) . ' in JS (#1840).');
+            }
+        }
+    }
+}
+
+/* =============================================================================
+ * (j) #1840 — print's fold stays variant-filtered. Narrow by design (rule
+ * #34's "don't fail on correct code") — asserts the FILTER exists inside
+ * fetchPrintOrgLogos()'s fold, not its exact spelling, so a legitimate
+ * rewrite of the condition still passes as long as `.variant` is still
+ * examined somewhere in the fold.
+ * ============================================================================= */
+
+if (is_file($printJsPath)) {
+    $printJsSrcRaw = (string)file_get_contents($printJsPath);
+    if (preg_match('/function\s+fetchPrintOrgLogos\s*\([^)]*\)\s*\{/', $printJsSrcRaw, $fm, PREG_OFFSET_CAPTURE)) {
+        $window = substr($printJsSrcRaw, $fm[0][1], 2000);
+        if (!str_contains($window, '.variant')) {
+            orgLogoFail($failures, "print.js's fetchPrintOrgLogos() fold no longer references .variant — the byKind fold must stay pinned to the 'default' variant (#1840 §3.4), or the first light/dark logo upload will silently re-brand every print template (last-row-wins on an alphabetically-later variant).");
+        }
+    }
+}
+
+/* =============================================================================
+ * (i) #1840 — brand colour goes through the ONE normaliser/write-path.
+ * WRITE half is live from commit 5 (both admin pages' 'brand_save' actions);
+ * the READ half (og-image.php) is SELF-ACTIVATING — vacuous until commit 8
+ * makes og-image.php actually reference BrandColor, mirrors checks (e)/(f)'s
+ * established self-activation shape from the base #1830 guard.
+ * ============================================================================= */
+
+$brandSaveSites = 0;
+foreach ($allFiles as $path) {
+    $raw  = (string)file_get_contents($path);
+    $code = orgLogoStripComments($raw);
+    if (preg_match("/case\\s+'brand_save'\\s*:/", $code, $bm, PREG_OFFSET_CAPTURE)) {
+        $offset = $bm[0][1];
+        /* Generous window (rule #34's "test-editor-api2-contract.php needed
+           widening from 120 to 300 chars" lesson) — mirrors check (c)'s
+           4000-char window. */
+        $window = substr($code, $offset, 3000);
+        $brandSaveSites++;
+        if (!str_contains($window, 'ihymnsOrgBrandColourNormalise(') && !str_contains($window, 'orgSetBrandColour(')) {
+            $rel = 'appWeb/public_html/' . substr($path, strlen($pub) + 1);
+            orgLogoFail($failures, "$rel has a 'brand_save' action that doesn't call ihymnsOrgBrandColourNormalise()/orgSetBrandColour() within a reasonable window — a write that could bypass the ONE hex allowlist (#1840).");
+        }
+    }
+}
+/* Anti-under-report floor (rule #34), mirrors check (c)'s floor: once ANY
+   'brand_save' site exists at all, there must be AT LEAST the two known
+   admin pages (manage/organisations.php + manage/my-organisations.php). */
+if ($brandSaveSites > 0 && $brandSaveSites < 2) {
+    orgLogoFail($failures, "Found only {$brandSaveSites} 'brand_save' handler site(s) — the plan wires TWO (manage/organisations.php AND manage/my-organisations.php); one of them may have silently lost its case label or its own scan may be failing.");
+}
+
+/* =============================================================================
+ * (h) #1840 — og-image never self-requests. Logo bytes must be read
+ * DIRECTLY via orgLogoFetchServeRow() (the ONE read path) — mirrors
+ * _pdfInlineOrgLogo()'s (pdf_renderer.php) identical "never mPDF/GD
+ * self-request over HTTP" doctrine. Self-activating once og-image.php
+ * exists AND mentions the org-logo feature at all (commit 8).
+ * ============================================================================= */
+
+$ogImagePhpPath = $pub . '/og-image.php';
+if (is_file($ogImagePhpPath)) {
+    $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
+    if (str_contains($ogImageSrcRaw, 'orgLogo') || str_contains($ogImageSrcRaw, 'OrgLogo') || str_contains($ogImageSrcRaw, 'BrandColor')) {
+        if (!str_contains($ogImageSrcRaw, 'orgLogoFetchServeRow(')) {
+            orgLogoFail($failures, 'og-image.php references org branding but never calls orgLogoFetchServeRow() — logo bytes must be read directly, never via an HTTP self-request to org-logo.php (#1840).');
+        }
+        /* Ban an HTTP-fetch shape (curl_init(...) or file_get_contents('http...'))
+           whose target string contains org-logo.php — the string 'org-logo.php'
+           is legitimately present elsewhere in this file (e.g. inside a doc
+           comment describing the doctrine, already stripped above), so this
+           bans the SELF-REQUEST SHAPE specifically, not the bare substring. */
+        if (preg_match('/(curl_init\s*\(|file_get_contents\s*\(\s*[\'"]https?:)[^;]{0,400}org-logo\.php/s', $ogImageSrcRaw) === 1) {
+            orgLogoFail($failures, 'og-image.php appears to fetch org-logo.php over HTTP (curl/file_get_contents) instead of reading bytes directly via orgLogoFetchServeRow() (#1840).');
+        }
+    }
+}
+
+/* og-image's READ side for BrandColor specifically — self-activating once
+   it exists AND mentions BrandColor (commit 8). Never an inline hex-parse
+   fork (e.g. a raw sscanf('#%02x...') or substr/hexdec chain bypassing the
+   shared parser). */
+if (is_file($ogImagePhpPath)) {
+    $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
+    if (str_contains($ogImageSrcRaw, 'BrandColor') && !str_contains($ogImageSrcRaw, 'ihymnsOrgBrandColourRgb(')) {
+        orgLogoFail($failures, 'og-image.php references BrandColor but never calls ihymnsOrgBrandColourRgb() — a second, inline hex-parse fork (#1840).');
+    }
+}
+
+/* =============================================================================
+ * (k) #1840 — the two NEW screen-surface consumers (header, projector) emit
+ * a real <img> whose src TRACES to /org-logo.php? — the never-inline rule's
+ * POSITIVE half (check (a) above already bans the negative: no inlined
+ * <svg>, no data-URI). PROXIMITY-anchored (not "does an <img> exist
+ * anywhere in the file" — service-projection.php ALSO creates an unrelated
+ * <img> for its QR code, so a file-wide "both exist somewhere" check would
+ * under-report: it stayed GREEN in a scripted trial that deleted the
+ * corner-bug <img> outright, because the QR's own <img> and the file's
+ * unrelated /org-logo.php? server-resolution string each independently
+ * satisfied a loose file-wide check. Fixed by anchoring EACH half on the
+ * feature's own distinguishing marker instead of a generic tag search).
+ * Half 1 (header-branding.js) is live from commit 6; half 2
+ * (service-projection.php) is live from commit 7.
+ * ============================================================================= */
+
+/* -- Half 1: header-branding.js — createElement('img') immediately followed
+   (within a window) by a .src assignment that calls orgLogoUrl(). The file
+   has exactly ONE <img>-creation site (the emblem), so this is safe to
+   anchor on that call directly rather than a proximity window. */
+$headerBrandingPath = $pub . '/js/modules/header-branding.js';
+if (is_file($headerBrandingPath)) {
+    $headerCode = orgLogoStripComments((string)file_get_contents($headerBrandingPath));
+    $headerRel  = 'appWeb/public_html/' . substr($headerBrandingPath, strlen($pub) + 1);
+    if (preg_match('/createElement\(\s*[\'"]img[\'"]\s*\)/', $headerCode, $hm, PREG_OFFSET_CAPTURE)) {
+        $window = substr($headerCode, $hm[0][1], 600);
+        if (!str_contains($window, 'orgLogoUrl(')) {
+            orgLogoFail($failures, "$headerRel creates an <img> but its .src isn't built via the shared orgLogoUrl() (or a literal /org-logo.php?) within a reasonable window — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+        }
+    } elseif (str_contains($headerCode, 'orgLogo') || str_contains($headerCode, 'OrgLogo')) {
+        orgLogoFail($failures, "$headerRel mentions the org-logo feature but never creates an <img> element (#1840, rule #42).");
+    }
+}
+
+/* -- Half 2: service-projection.php — a mixed PHP/JS page where the URL is
+   resolved SERVER-side (baked into the VENUES JSON as `OrgLogoUrl`) and
+   consumed CLIENT-side by a literal <img id="svc-proj-logo"> — the two
+   halves are naturally far apart in the file, so this checks EACH half's
+   own distinguishing marker: (A) the literal corner-bug <img> element
+   exists; (B) an `OrgLogoUrl` assignment/reference co-occurs with the
+   literal `/org-logo.php?` endpoint string within a generous window
+   (proximity, not "both exist somewhere in the whole file" — see this
+   check's own doc-block above for why a file-wide test under-reports here). */
+/** True when ANY occurrence of $needle1 sits within $maxDist characters of
+ *  ANY occurrence of $needle2, in either direction — a symmetric proximity
+ *  check (order-independent, unlike a single forward-only regex window),
+ *  needed here because the server-side URL-building code and the
+ *  `OrgLogoUrl` property NAME it feeds can appear in either order depending
+ *  on how the surrounding code is written. */
+function orgLogoProximity(string $code, string $needle1, string $needle2, int $maxDist): bool
+{
+    $pos1 = [];
+    $off = 0;
+    while (($p = strpos($code, $needle1, $off)) !== false) {
+        $pos1[] = $p;
+        $off = $p + 1;
+    }
+    $pos2 = [];
+    $off = 0;
+    while (($p = strpos($code, $needle2, $off)) !== false) {
+        $pos2[] = $p;
+        $off = $p + 1;
+    }
+    foreach ($pos1 as $a) {
+        foreach ($pos2 as $b) {
+            if (abs($a - $b) <= $maxDist) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+$svcProjPath = $pub . '/manage/service-projection.php';
+if (is_file($svcProjPath)) {
+    $svcProjCode = orgLogoStripComments((string)file_get_contents($svcProjPath));
+    $svcProjRel  = 'appWeb/public_html/' . substr($svcProjPath, strlen($pub) + 1);
+    if (str_contains($svcProjCode, 'OrgLogoUrl')) {
+        if (preg_match('/<img\b[^>]*\bid\s*=\s*["\']svc-proj-logo["\'][^>]*>/', $svcProjCode) !== 1) {
+            orgLogoFail($failures, "$svcProjRel resolves OrgLogoUrl but no <img id=\"svc-proj-logo\"> element exists — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+        }
+        if (!orgLogoProximity($svcProjCode, 'OrgLogoUrl', '/org-logo.php?', 700)) {
+            orgLogoFail($failures, "$svcProjRel references OrgLogoUrl but it isn't resolved from a literal /org-logo.php? URL within a reasonable window (#1840).");
+        }
+    }
+}
+
 if ($failures) {
     fwrite(STDERR, 'FAIL: ' . count($failures) . " organisation-logo surface wiring smell(s):\n");
     foreach ($failures as $f) {
@@ -384,5 +739,5 @@ if ($failures) {
     }
     exit(1);
 }
-printf("OK: organisation-logo surfaces wired correctly — %d file(s) mentioning org-logo.php/tblOrganisationLogos scanned, no inline-SVG/ContentOriginal/raw-SQL/second-sanitiser/second-kind-list smell.\n", count($mentioning));
+printf("OK: organisation-logo surfaces wired correctly — %d file(s) mentioning org-logo.php/tblOrganisationLogos scanned, no inline-SVG/ContentOriginal/raw-SQL/second-sanitiser/second-kind-list/surface-prefs-drift/unfiltered-print-fold smell.\n", count($mentioning));
 exit(0);

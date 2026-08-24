@@ -37,6 +37,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
@@ -569,11 +570,13 @@ if ($hasSchema) {
                            placeholder="e.g. HYFRYDOL">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Slug <small class="text-muted">(auto)</small></label>
-                    <input type="text" name="slug"
-                           class="form-control form-control-sm"
-                           maxlength="140" pattern="[a-z0-9-]+"
-                           placeholder="hyfrydol">
+                    <?= ihymns_slug_advanced_field([
+                        'value'       => '',
+                        'maxlength'   => 140,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'hyfrydol',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">Meter <small class="text-muted">(optional)</small></label>
@@ -656,10 +659,14 @@ if ($hasSchema) {
                                            class="form-control" maxlength="120" required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-tune-slug"
-                                           class="form-control" maxlength="140" pattern="[a-z0-9-]+">
-                                    <div class="form-text small">Changing this changes <code>/tune/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.</div>
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-tune-slug',
+                                        'value'     => '',
+                                        'maxlength' => 140,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                        'help'      => 'Changing this changes <code>/tune/&lt;slug&gt;</code> — old links still resolve via the name/alias fallback.',
+                                    ]) ?>
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label">Meter</label>

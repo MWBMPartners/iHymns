@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.5250.0"
+  version: "1.0.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -34,7 +34,13 @@ info:
       `/manage/` PHP session. `/manage/editor/` no longer routes here by
       default (see the v2 entry below); this API is still live and NOT
       retired, reachable directly or via the v2 shell's `?legacy=1` escape
-      hatch, while the #1601 v1→v2 migration completes.
+      hatch, while the #1601 v1→v2 migration completes. 14 of its ~37 actions
+      have individual path items below (the **Editor API** tag); the
+      remaining ~23 (`load_index`/`load_song`/`load_songs`,
+      `bulk_import_*` ×8, `song_media_*` ×5, the v1 song-link family, and
+      `easyworship_export`) are internal-only and deliberately NOT written up
+      as individual paths — see the note at the top of the **Editor API**
+      section below.
     - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
       purpose-built, per-edit atomic editor backend that replaces the
       whole-song `save_song` race (#1178), and, as of **#1601 scope item 2**,
@@ -89,7 +95,11 @@ info:
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
     One non-action route exists: the gated media stream `GET /song-media/<id>`
-    (#853, `<id>` = `tblSongMedia.Id`). Access is evaluated via **two gates**,
+    (#853, `<id>` = `tblSongMedia.Id`). As of **#1860** `<id>` also accepts
+    the media row's permanent internal id (`ILD` + up to 10 digits, no
+    separator) — resolved to the numeric `Id` before either gate below runs,
+    gated on `tblSongMedia.IlId` existing; a non-IL / un-migrated `<id>` falls
+    through to the plain `(int)` cast unchanged. Access is evaluated via **two gates**,
     both `403` on denial: (1) the entity gate, `checkContentAccess('song',
     <parent SongId>, …)` — an anonymous request degrades gracefully (gating
     applies as anonymous, never a hard `401`); and (2) as of **#1388**, a
@@ -175,7 +185,8 @@ info:
     | `songs_index` | 120 / minute |
     | `song_detail` / `song_data` | 240 / minute |
     | `related_songs` | 240 / minute |
-    | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
+    | `songbook_export` (own `export` bucket, #1571) | 60 / minute |
+    | `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
     | `work` / `musician` | 120 / minute (or a per-key budget with a `catalogue:read` API key) |
 
     On exceed, the endpoint returns **429** with `Retry-After`,
@@ -407,7 +418,8 @@ tags:
       `song_link_remove` / `song_link_suggestion_dismiss` → `edit_songs`;
       `bulk_verify` / `bulk_tag_attach` / `bulk_tag_detach` →
       `bulk_edit_songs`. Every other action — including
-      `song_external_id_add`/`song_external_id_delete` — rides the
+      `song_external_id_add`/`song_external_id_delete` and
+      `song_alt_title_add`/`song_alt_title_delete` — rides the
       file-level editor-role gate only (curation, not a destructive class).
 
       **CSRF**: every POST requires the `X-Requested-With: XMLHttpRequest`
@@ -766,7 +778,16 @@ paths:
         - name: id
           in: query
           required: true
-          description: "Song ID in BOOK-NUMBER format (e.g., CP-0001)"
+          description: |
+            Song ID in BOOK-NUMBER format (e.g., CP-0001). As of **#1860**
+            also accepts the song's permanent internal id (`ILS` + up to 10
+            digits, no separator — e.g. `ILS0000012345`; the leading zeros are
+            optional on input) — `SongData::getSongById()` tries this form
+            first for any hyphen-less token, resolving it to the current
+            `SongId` via `tblSongs.IlId`. Gated on that column existing
+            (`_hasIlIdColumn()`); on an un-migrated install a hyphen-less
+            token simply falls through to the existing PublicId/legacy
+            lookups, unchanged.
           schema:
             type: string
             example: CP-0001
@@ -1038,9 +1059,15 @@ paths:
         `/manage/editor/api.php?action=songbook_export`. Backs the
         end-user "export my songbook" UI (`js/modules/export-ui.js`).
         Deliberately scoped to a single songbook, never the whole corpus
-        (rule #17). Shares the `bulk` read-rate-limit budget with
-        `bulk_songs` / `bulk_audio` (60 requests/minute combined,
-        fail-open — see the Rate Limiting section above).
+        (rule #17). **Own `export` read-rate-limit budget (#1571), 60
+        requests/minute, fail-open** — split out of the shared `bulk`
+        bucket so a curator exporting a songbook is never contended with
+        a native app's background offline sync (`bulk_songs`/`bulk_audio`
+        keep sharing `bulk`; see the Rate Limiting section above). Client
+        surfaces confirm before requesting a book of 500+ songs and show
+        coarse progress while building the ProPresenter bundle — a
+        client-side affordance only, with no effect on this endpoint's
+        response.
 
         **Export gating (#1120/#1141), dormant by default.** When
         `content_gating_enabled` is on, songs the caller may not EXPORT
@@ -1424,6 +1451,7 @@ paths:
                 setlist_id:
                   type: string
                   nullable: true
+                  description: The set-list this print was made FOR, if any (#1897 W3 — the batch set-list PDF path sends it; a single-song print correctly omits it). Sanitised + clamped to 100 chars server-side; stored on the usage row for report drill-down.
       responses:
         "200":
           description: |
@@ -1605,6 +1633,25 @@ paths:
         + run a basic title/number search and fall back to cached song
         pages. Online, every read is still the live API; this index is the
         offline-only fallback. No pagination, no lyrics.
+
+        **Conditional revalidation (#1921).** The response carries an
+        `ETag` — a version-signal fingerprint (`"si<contractVersion>-<hash>"`,
+        e.g. `"si1-1a2b3c4d5e6f7890"`), NOT a hash of the payload itself.
+        Treat it as an **opaque token**: echo it back verbatim via
+        `If-None-Match` on the next request, never parse or construct one.
+        A match answers **304 with no body** — the server skips the
+        underlying ~14.5k-row query entirely on a hit, so a conditional
+        request is far cheaper than a full one for both sides. The PWA's
+        own service worker already does this (`networkFirstRevalidated()`
+        in `service-worker.js.php`) using the ETag from its last cached
+        200; other clients (native apps, direct API callers) get the
+        header for free but must implement the `If-None-Match` round-trip
+        themselves to benefit — omitting it simply degrades to today's
+        full-200-every-time behaviour, never an error. The signal changes
+        whenever the corpus, the negotiated `X-API-Version`, or the
+        deployed build changes; an un-migrated/errored signal computation
+        fails OPEN (no `ETag` header at all, full 200) rather than ever
+        risking a stale 304.
       parameters:
         - name: action
           in: query
@@ -1612,9 +1659,22 @@ paths:
           schema:
             type: string
             enum: [songs_index]
+        - name: If-None-Match
+          in: header
+          required: false
+          description: >-
+            An ETag previously returned by this SAME endpoint, echoed back
+            verbatim (#1921). A match short-circuits to 304 with no body.
+          schema: { type: string, example: '"si1-1a2b3c4d5e6f7890"' }
       responses:
         "200":
           description: Slim song index
+          headers:
+            ETag:
+              description: >-
+                Opaque version-signal token (#1921) — echo via
+                `If-None-Match`, never parse.
+              schema: { type: string, example: '"si1-1a2b3c4d5e6f7890"' }
           content:
             application/json:
               schema:
@@ -1633,6 +1693,11 @@ paths:
                         language:     { type: string, example: en }
                         hasAudio:     { type: boolean }
                         hasSheetMusic: { type: boolean }
+        "304":
+          description: >-
+            Not Modified (#1921) — the caller's `If-None-Match` matched the
+            current version signal. No body; the client should keep using
+            its previously-cached `songs` array.
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -1730,7 +1795,11 @@ paths:
         - name: id
           in: query
           required: true
-          description: "Song ID in BOOK-NUMBER format (e.g. CP-0001)"
+          description: |
+            Song ID in BOOK-NUMBER format (e.g. CP-0001), OR — as of **#1860**
+            — the song's permanent internal id (`ILS` + up to 10 digits, no
+            separator, e.g. `ILS0000012345`). Same handler as `song_data`;
+            see that entry's `id` parameter for the full resolution note.
           schema: { type: string, example: CP-0001 }
         - name: include
           in: query
@@ -2803,6 +2872,31 @@ paths:
                             user | expired | admin. App-validated VARCHAR
                             vocabulary, not an ENUM — new reasons need no
                             schema change.
+                  conflicts:
+                    type: array
+                    description: >
+                      #1675 — per-row overwrite REFUSALS. ALWAYS present ([]
+                      when none). A client that sent a `since` watermark is
+                      told which of its pushed rows were newer on the server
+                      (edited on another device since the client last
+                      absorbed): those rows were KEPT, not overwritten, and the
+                      authoritative copy is already in `setlists`. The client
+                      must take the server copy for these ids (drop them from
+                      its local-wins side of the union) and re-apply its edit.
+                      Additive key — a native decoder that ignores it is
+                      unaffected (the `cap: null` precedent). A client that sent
+                      no watermark never gets a non-empty array.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        reason:
+                          type: string
+                          description: "newer_on_server"
+                        serverUpdatedAt:
+                          type: string
+                          description: The kept server row's UpdatedAt (19-char).
         "400":
           description: Invalid request body
           content:
@@ -2823,8 +2917,15 @@ paths:
                 $ref: "#/components/schemas/Error"
         "413":
           description: >
-            #1661 — request body exceeds the 4 MiB ceiling. NOTHING was
-            changed; this replaces the old silent truncation, which lost data.
+            NOTHING was changed (this replaces the old silent truncation, which
+            lost data). The JSON body carries a machine-readable `reason`
+            (clients branch on it, never on the prose — rule #35):
+            `body_too_large` (#1661 — over the 4 MiB ceiling; `maxBytes`),
+            `too_many_slots` (#1671 — plan over the slot cap; `maxSlots`), or
+            `too_many_songs` (#1662 — a set list over the 200-song cap;
+            `maxSongs` + the offending `setlistId`). The songs cap is enforced
+            only for protocol-2 clients (those sending `deleted`); a legacy
+            native still silently truncates the tail until it adopts protocol 2.
           content:
             application/json:
               schema:
@@ -3333,6 +3434,16 @@ paths:
                 password:
                   type: string
                   format: password
+                captcha_token:
+                  type: string
+                  description: >-
+                    CAPTCHA challenge answer (#947/#340). Required ONLY when an
+                    admin has enabled the challenge for the `login` form (see
+                    `app_status.captcha.forms`); ignored otherwise. The SAME
+                    `captcha_token` body key applies identically to every gated
+                    endpoint (auth_register, auth_forgot_password,
+                    auth_email_login_request, song_request_submit); a missing or
+                    invalid token there returns the same 403 documented below.
       responses:
         "200":
           description: Login successful
@@ -3355,13 +3466,25 @@ paths:
               example:
                 error: Invalid username or password.
         "403":
-          description: Account disabled
+          description: >-
+            Account disabled, OR the CAPTCHA challenge is enabled for this form
+            and the supplied `captcha_token` was missing/invalid. The two are
+            distinguished by the machine-readable `reason`: a CAPTCHA refusal
+            carries `reason: "captcha_required"` (clients branch on the status +
+            reason, never the prose — rule #35; re-render/reset the widget and
+            retry). This 403 shape is identical across every gated endpoint.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                error: Account is disabled.
+              examples:
+                accountDisabled:
+                  value:
+                    error: Account is disabled.
+                captchaRequired:
+                  value:
+                    error: Please complete the verification challenge and try again.
+                    reason: captcha_required
 
   /api.php?action=auth_apple:
     post:
@@ -4681,7 +4804,12 @@ paths:
                     example: true
                   captchaProvider:
                     type: string
-                    description: Active CAPTCHA provider key ('none' when disabled).
+                    description: >-
+                      Legacy flat CAPTCHA-provider key ('none' when disabled).
+                      Kept for the native-app contract (#1685). Web clients use
+                      the richer `captcha` object below instead, which is present
+                      only when the challenge is actually configured AND at least
+                      one form is gated (#947/#340).
                     example: none
                   adsEnabled:
                     type: boolean
@@ -4751,6 +4879,46 @@ paths:
                       web.sotd_card:
                         enabled: true
                         metadata: null
+                  captcha:
+                    type: object
+                    description: >-
+                      CAPTCHA challenge configuration for web clients (#947/#340).
+                      **Emitted ONLY when a provider + both keys are configured
+                      AND at least one form is gated** — the key is ABSENT (not
+                      an empty object) when dormant, which is the shipped default
+                      on every environment (so a dormant install's app_status is
+                      byte-identical to before this feature). Carries the PUBLIC
+                      facts a browser needs to draw + read the widget; the secret
+                      key is NEVER emitted. `js/modules/captcha-widget.js` reads
+                      this to decide which forms to challenge and how to render.
+                    properties:
+                      provider:
+                        type: string
+                        description: The active provider key.
+                        example: turnstile
+                      siteKey:
+                        type: string
+                        description: Public site key (safe for browsers; draws the widget).
+                      scriptUrl:
+                        type: string
+                        description: The provider's widget script URL (its origin is added to the page CSP).
+                        example: https://challenges.cloudflare.com/turnstile/v0/api.js
+                      renderGlobal:
+                        type: string
+                        description: The window global exposing render/getResponse/reset.
+                        example: turnstile
+                      field:
+                        type: string
+                        description: The POST field a plain (non-SPA) form submits the token under.
+                        example: cf-turnstile-response
+                      forms:
+                        type: array
+                        items: { type: string }
+                        description: >-
+                          The form keys the challenge is enforced on. One of
+                          registration, login, password_reset, email_login,
+                          song_request, manage_login.
+                        example: [song_request]
 
   /api.php?action=ccli_validate:
     post:
@@ -5950,7 +6118,12 @@ paths:
     get:
       operationId: listTags
       tags: [Discovery]
-      summary: List every curated song tag
+      summary: List every curated song tag (flat, unranked)
+      description: >
+        The full tag list, ordered by name — id/name/slug/description only, NO
+        counts. Web clients use ?action=popular_tags (the home strip) and the
+        /themes A–Z index page instead; this endpoint is kept as a documented
+        public API (published contracts outlive their first caller, rule #33).
       parameters:
         - name: action
           in: query
@@ -5958,7 +6131,7 @@ paths:
           schema: { type: string, enum: [tags] }
       responses:
         "200":
-          description: Tag list with song counts
+          description: The flat tag list (id, name, slug, description).
           content:
             application/json:
               schema:
@@ -5969,10 +6142,10 @@ paths:
                     items:
                       type: object
                       properties:
-                        id:       { type: integer }
-                        name:     { type: string, example: Easter }
-                        slug:     { type: string, example: easter }
-                        songCount: { type: integer }
+                        id:          { type: integer }
+                        name:        { type: string, example: Easter }
+                        slug:        { type: string, example: easter }
+                        description: { type: string, nullable: true }
 
   /api.php?action=popular_tags:
     get:
@@ -5981,9 +6154,11 @@ paths:
       summary: Top themes ranked by usage, with song counts
       description: >
         Powers the compact "Popular themes" home strip (#1148). Returns
-        only tags that are actually in use, ordered by song count
-        (descending) then name. Scoped/DB-direct — never a whole-corpus
-        load.
+        only tags actually in use, ordered by song count (descending) then
+        name. The counts are the VISIBLE-song counts — soft-deleted songs and
+        disabled songbooks excluded — so a chip's number matches the /tag/<slug>
+        page it links to (the shared includes/theme_index.php count core).
+        Scoped/DB-direct — never a whole-corpus load.
       parameters:
         - name: action
           in: query
@@ -6049,10 +6224,12 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
-  # /api.php?action=suggest — REMOVED in #307 (header-search autocomplete was
-  # dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
+  # /api.php?action=suggest — REMOVED in #307 (the old header-search autocomplete
+  # was dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
   # endpoint had no in-repo, native or documented-external consumer). The live
-  # search is `action=search`. Re-add if a real typeahead is ever built.
+  # /search typeahead rebuilt in #1936 deliberately REUSES `action=search` with a
+  # low `limit` (documented above) rather than reviving a `suggest` endpoint —
+  # there is intentionally no separate suggest action.
 
   /api.php?action=related_songs:
     get:
@@ -6520,7 +6697,12 @@ paths:
         "403": { description: View-only link, cross-origin, or owner locked }
         "409": { description: Edit links not migrated on this server }
         "410": { description: Link revoked or expired }
-        "413": { description: Request body too large }
+        "413":
+          description: >
+            Nothing was changed. The body's `reason` is `too_many_songs`
+            (#1662 — the set list exceeds the 200-song cap; `maxSongs`) when the
+            payload is over-cap, or a plain body-too-large refusal otherwise.
+            Clients branch on the status + `reason`, never the prose (rule #35).
         "429": { description: Per-token rate limit exceeded }
 
   /api.php?action=setlist_share_list:
@@ -6802,7 +6984,9 @@ paths:
                 name:      { type: string, description: Optional rename; omit or send '' to leave the title alone }
                 songs:
                   type: array
-                  description: Full replacement song list, max 200 entries
+                  description: >
+                    Full replacement song list. Over the 200-song cap is a 413
+                    REJECTION (#1662 — nothing stored), never a silent slice.
                   items:
                     type: object
                     required: [id]
@@ -6831,6 +7015,11 @@ paths:
           description: Not authenticated
         "403":
           description: Caller has view-only access, or none at all
+        "413":
+          description: >
+            #1662 — the song list exceeds the 200-song cap. Nothing was
+            changed; `reason` is `too_many_songs` with `maxSongs` (clients
+            branch on the status + reason, never the prose — rule #35).
 
   # ===========================================================================
   # SYSTEM
@@ -7178,6 +7367,27 @@ paths:
 
   # ===========================================================================
   # EDITOR API  (separate entry point — /manage/editor/api.php)
+  #
+  # v1 is live-but-legacy (#1601): the DEFAULT editor is now v2
+  # (/manage/editor/api2.php), and v1 is reached only via the v2 shell's
+  # `?legacy=1` escape hatch. 14 of v1's ~37 dispatched actions get an
+  # individual path item below. The remaining 23 are internal-only surfaces
+  # (the legacy editor's own page + its own bulk-import/media/song-link UI
+  # calling itself) that are NOT part of the published contract and are
+  # deliberately not written up as individual paths — writing 23 more paths
+  # for a surface being retired with #1601 is not a good use of the effort
+  # (see api-docs-swagger-plan §3.3-2). If the owner wants full completeness
+  # anyway, each has a near-identical v2 twin already documented to crib
+  # from. The 23: `load_index`, `load_song`, `load_songs`,
+  # `easyworship_export`, `song_media_list`/`_upload`/`_update`/`_delete`/
+  # `_reorder`, `bulk_import_chordpro`/`_easyworship`/`_freeshow`/`_openlp`/
+  # `_pptx`/`_pro6`/`_proclaim`/`_skipped_csv`/`_videopsalm`,
+  # `get_song_links`, `add_song_link`, `remove_song_link`,
+  # `suggest_song_links`, `dismiss_song_link_suggestion`. Verified against
+  # the dispatcher via the same tokenising parser
+  # `tests/php/lib/dispatch_parser.php` uses — re-run its
+  # `dispatchParserCasesForSwitch()` against `manage/editor/api.php`'s
+  # `$action` switch to reproduce this list if it drifts.
   # ===========================================================================
 
   /manage/editor/api.php?action=songbook_export:
@@ -8714,6 +8924,13 @@ paths:
         Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
         client calls this today (orphan inventory §2.5, remediation X7). The
         endpoint is live and correct; it simply has no first-party caller yet.
+
+        As of **#1830 §6.3**, each org additionally carries `logos` — an
+        array of the org's ACTIVE logo rows (meta only, no image bytes: the
+        print `logo` block resolves the actual bytes through
+        `/org-logo.php` using `kind` + `v`). Gated dormant on
+        `orgLogoTableExists()` (rule #19): the field is simply ABSENT on an
+        un-migrated install, never an empty array — never null.
       security:
         - bearerAuth: []
       parameters:
@@ -8734,9 +8951,26 @@ paths:
                     items:
                       type: object
                       properties:
-                        id:   { type: integer }
-                        name: { type: string }
-                        role: { type: string, enum: [owner, admin, member] }
+                        id:          { type: integer }
+                        name:        { type: string }
+                        slug:        { type: string }
+                        parentOrgId: { type: integer, nullable: true }
+                        description: { type: string, nullable: true }
+                        licenceType: { type: string, nullable: true }
+                        isActive:    { type: boolean }
+                        memberRole:  { type: string, enum: [owner, admin, member], description: "The caller's own role in this org." }
+                        logos:
+                          type: array
+                          description: Present only when the org-logo table exists (#1830). Absent, not empty/null, on an un-migrated install.
+                          items:
+                            type: object
+                            properties:
+                              kind:   { type: string, description: "One of IHYMNS_ORG_LOGO_KINDS (org_logo_helpers.php), e.g. primary/full/monochrome/favicon." }
+                              variant: { type: string, nullable: true }
+                              v:      { type: string, description: "Sha256 of the sanitised bytes — the /org-logo.php cache-busting version key." }
+                              alt:    { type: string, nullable: true }
+                              width:  { type: integer, nullable: true }
+                              height: { type: integer, nullable: true }
 
   # ===========================================================================
   # CONTENT ACCESS
@@ -10975,17 +11209,23 @@ paths:
     get:
       operationId: pagePerson
       tags: [Pages]
-      summary: Credit-person public page HTML fragment (#588)
+      deprecated: true
+      summary: (DEPRECATED — use page=musician) Credit-person public page HTML fragment (#588)
       description: |
-        Renders the `/people/<slug>` page's bio + discography-by-role for
-        SPA hydration. `slug` is the canonical `tblMusicians.Slug`
-        lookup; the renderer falls back to a name-based search when the
-        slug migration hasn't been applied yet. Cacheable fragment (ETag).
+        **Deprecated by #1741 P2-B — use `page=musician` instead.** Kept
+        indefinitely: `page=person`/`page=people` are normalised to
+        `page=musician` right after `$page` is read (`api.php`, before the
+        cache-key logic), so there is only ever ONE case label
+        (`case 'musician':`) and this alias renders the byte-identical
+        fragment as the canonical entry below — years of external links and
+        the shipped Apple client's `CanonicalURL.person(slug:)` still emit
+        this spelling (rule #33). See `page=musician` for the full
+        description, including the slug/IL-id resolution ladder.
       parameters:
         - name: page
           in: query
           required: true
-          schema: { type: string, enum: [person] }
+          schema: { type: string, enum: [person, people] }
         - name: slug
           in: query
           required: true
@@ -10996,6 +11236,43 @@ paths:
           content: { text/html: { schema: { type: string } } }
         "400":
           description: Missing person slug
+
+  /api.php?page=musician:
+    get:
+      operationId: pageMusician
+      tags: [Pages]
+      summary: Musician public page HTML fragment (#588, canonical)
+      description: |
+        Renders the `/musician/<slug>` page's bio + discography-by-role for
+        SPA hydration — the canonical case label (`case 'musician':` in
+        `api.php`'s page-router switch); `page=person`/`page=people` (see
+        above) and the `writer` route (`page=writer&id=<slug>` — a shipped,
+        forever-kept alias, #1741 P4a-3) all resolve to this SAME fragment.
+        `slug` is the canonical `tblMusicians.Slug` lookup, falling back to
+        a name-based search when the slug migration hasn't been applied yet.
+
+        As of **#1860**, `slug` also accepts the musician's permanent
+        internal id (`ILM` + up to 10 digits, no separator) — resolved to
+        the real `Slug` BEFORE the legacy-slug ladder / name-based fallback
+        run, so every rung after it sees a canonical slug exactly as if the
+        curator had typed it. Gated on `tblMusicians.IlId` existing; a miss
+        (not an IL id, or the column doesn't exist yet) leaves `slug`
+        unchanged. Cacheable fragment (ETag).
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [musician] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: john-newton }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing musician slug
 
   /api.php?page=work:
     get:
@@ -11037,6 +11314,13 @@ paths:
         over `tblPublisherAliases` (a renamed publisher's old name becomes an
         alias, so old links keep resolving). A friendly empty/404 state when
         the registry isn't migrated or the slug is unknown.
+
+        As of **#1860**, `slug` also accepts the publisher's permanent
+        internal id (`ILP` + up to 10 digits, no separator) — resolved to
+        the real `Slug` BEFORE the three-rung ladder runs (rung 0), gated on
+        `tblPublishers.IlId` existing. A miss (not an IL id, the column
+        doesn't exist yet, or no row carries it) leaves `slug` unchanged and
+        the ladder proceeds exactly as before.
       parameters:
         - name: page
           in: query
@@ -11063,6 +11347,12 @@ paths:
         tune. An empty/missing slug renders a friendly empty state rather
         than a 400. Cacheable fragment (ETag) — `tune` is NOT in the
         cacheable-pages allow-list, so this always renders fresh per request.
+
+        As of **#1860**, `slug` also accepts the tune's permanent internal
+        id (`ILT` + up to 10 digits, no separator) — resolved to the real
+        `Slug` before the exact-slug lookup runs, gated on `tblTunes.IlId`
+        existing. A miss (not an IL id, the column doesn't exist yet, or no
+        row carries it) leaves `slug` unchanged.
       parameters:
         - name: page
           in: query
@@ -11101,6 +11391,162 @@ paths:
         "200":
           description: HTML fragment (empty-state markup when code is absent/unmatched)
           content: { text/html: { schema: { type: string } } }
+
+  # ---------------------------------------------------------------------------
+  # #1741 P3 — iswc's five siblings. All six schemes (iswc + these five) are
+  # ONE file (includes/pages/identifier.php) driven by the shared
+  # IHYMNS_ID_SCHEMES registry (includes/identifier_normalize.php) — the
+  # entity/multiSong shape per scheme is documented once here rather than six
+  # times. Each is deliberately NOT in $_cacheablePages (matches the iswc/tune
+  # precedent — a cheap, indexed, anonymous read; rule #6, an explicit choice).
+  # ---------------------------------------------------------------------------
+
+  /api.php?page=ccli:
+    get:
+      operationId: pageCcli
+      tags: [Pages]
+      summary: CCLI (SongSelect) number public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/ccli/<code>` — same shape as `page=iswc` (entity `work`,
+        `multiSong: true`): an optional "Linked Work" header when a
+        `tblWorks` row carries this exact code, plus the full song list
+        grouped by songbook. The code is canonicalised by stripping every
+        non-digit character (`ihymns_canonical_ccli()`). An empty/missing/
+        unmatched code renders a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [ccli] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "7028268" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=bowi:
+    get:
+      operationId: pageBowi
+      tags: [Pages]
+      summary: BOWI (Bank of Work Identifiers) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/bowi/<code>` — entity `work`, `multiSong: false`: the Work
+        header only (Luminate's BOWI has no song-list concept in this
+        catalogue, unlike ISWC/CCLI). The code is canonicalised by
+        uppercasing and stripping spaces/hyphens/dots
+        (`ihymns_canonical_bowi()`) — BOWI has no publicly documented fixed
+        shape, so this cleans without rejecting. An empty/missing/unmatched
+        code renders a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [bowi] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "B0001234567" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=isrc:
+    get:
+      operationId: pageIsrc
+      tags: [Pages]
+      summary: ISRC (recording) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/isrc/<code>` — entity `song`, `multiSong: true`: the song
+        list only (ISRC identifies a specific RECORDING, which has no Work
+        concept here). The code is canonicalised to the bare 12-character
+        `CCXXXYYNNNNN` form with separators stripped, uppercased
+        (`ihymns_canonical_isrc()`). An empty/missing/unmatched code renders
+        a friendly empty state rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [isrc] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: USABC1234567 }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=ipi:
+    get:
+      operationId: pageIpi
+      tags: [Pages]
+      summary: IPI (Interested Party Information) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/ipi/<code>` — entity `musician`, `multiSong: false`: a
+        list of matching `tblMusicians` entries (via `tblMusicianIdentifiers`
+        — the same query shape as the dormant `person_by_identifier`/
+        `musician_by_identifier` JSON action). The code is canonicalised by
+        stripping every non-digit character (`ihymns_canonical_ipi()`). An
+        empty/missing/unmatched code renders a friendly empty state rather
+        than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [ipi] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "123456789" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=isni:
+    get:
+      operationId: pageIsni
+      tags: [Pages]
+      summary: ISNI (International Standard Name Identifier) public page HTML fragment (#1741 P3)
+      description: |
+        Renders `/isni/<code>` — entity `musician`, `multiSong: false`: a
+        list of matching `tblMusicians` entries, same shape as `page=ipi`.
+        The code is canonicalised via the shared `canonicaliseIsni()`
+        (`musician_helpers.php` — the same fold `/manage/musicians`'s "Other
+        Identifiers" save path uses) into grouped `NNNN NNNN NNNN NNNX`
+        form. An empty/missing/unmatched code renders a friendly empty state
+        rather than a 400.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [isni] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "0000 0001 2103 2683" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  # ===========================================================================
+  # The remaining `?page=` case labels (`song`, `songbook`, `songbooks`,
+  # `search`, `favorites`, `setlist`, `setlist-shared`, `stats`, `link`,
+  # `writer`, `tag`) render SPA-internal HTML fragments consumed only by
+  # router.js's own fetch — never a JSON contract and never linked to from
+  # outside the SPA shell. They are deliberately NOT written up as individual
+  # paths here (would be presence-only noise with no parameter contract worth
+  # publishing); each is covered by the reasoned exemption map in
+  # `tests/php/test-openapi-actions-exist.php`'s `?page=` direction check
+  # (§6.2 of the docs-swagger plan), which fails the build the moment a
+  # page's exemption reason stops being true — so this paragraph cannot go
+  # stale silently the way a hand-written list can.
+  # ===========================================================================
 
   /api.php?page=request:
     get:
@@ -13620,7 +14066,9 @@ paths:
         defaults to `"New Song"` (clamped to 500 chars). Mints the id via
         the shared `<ABBR>-<NNNNNN>` allocator (never a client-supplied id),
         recomputes the songbook's cached `SongCount` best-effort, and writes
-        the create revision.
+        the create revision. As of **#1860** also mints the song's permanent
+        internal id (`ILS…`, `ilidStampNewRow()`) — internal bookkeeping
+        only; NOT echoed in the response below.
       requestBody:
         required: true
         content:
@@ -13661,7 +14109,10 @@ paths:
         fields empty**; assigning a real songbook (the #1679 re-key) turns it
         into a brand-new catalogue song. Reset on the copy: `Number`,
         `Verified`, recording-level `Isrc`, media flags (media is not copied);
-        a fresh `PublicId`; a `'duplicate'` revision. (#1783)
+        a fresh `PublicId`; a `'duplicate'` revision. (#1783) As of **#1860**
+        the copy also mints its OWN permanent internal id (`ILS…`) — never
+        copied from the source (a duplicate is a distinct row); not echoed
+        in the response below.
       requestBody:
         required: true
         content:
@@ -13812,6 +14263,19 @@ paths:
         `languages` on an update preserves the stored arrays. A new
         component (no `component.id`) is always appended last; reorder via
         `component_reorder`.
+
+        #1860 Phase 5 — `label` is an optional custom DISPLAY name for the
+        section (e.g. "Kyrie", "isiZulu"), overriding the derived "Verse 1"
+        heading everywhere the sweep in Commit 8 covers; omitting the key
+        preserves the stored value (same read-modify-write posture as
+        `chords`/`languages`). A label equal to the derived name is folded
+        to `null` server-side (rule #27 hide-when-equal) — the response
+        `label` is the authoritative post-fold value, so the client should
+        read it back rather than assume its own input round-tripped.
+        `sourceWorkId` links this ONE section to a `tblWorks` row (medley
+        provenance, #1860 §3.6b); an id that doesn't resolve to an existing
+        work is silently coerced to `null` (never a 422) and reported back
+        via `sourceWorkIdIgnored: true`.
       requestBody:
         required: true
         content:
@@ -13832,6 +14296,24 @@ paths:
                     chords: { type: array, items: {}, nullable: true }
                     language: { type: string, nullable: true }
                     languages: { type: array, items: {}, nullable: true }
+                    label:
+                      type: string
+                      nullable: true
+                      maxLength: 100
+                      description: |
+                        Optional custom display name overriding the derived
+                        "Verse 1"/"Chorus" heading. Omit the key to preserve
+                        the stored value; send `null` (or the derived name)
+                        to clear it. #1860 Phase 5.
+                      example: Kyrie
+                    sourceWorkId:
+                      type: integer
+                      nullable: true
+                      description: |
+                        Links this section to a `tblWorks` row (medley
+                        constituent provenance). Omit to preserve; an
+                        unresolvable id is coerced to `null` rather than
+                        rejected. #1860 §3.6b.
       responses:
         "200":
           description: Component saved
@@ -13842,6 +14324,14 @@ paths:
                 properties:
                   ok: { type: boolean, example: true }
                   componentId: { type: integer }
+                  label:
+                    type: string
+                    nullable: true
+                    description: The stored value after the hide-when-equal fold — read this back rather than assuming the request's `label` round-tripped verbatim.
+                  sourceWorkId: { type: integer, nullable: true }
+                  sourceWorkIdIgnored:
+                    type: boolean
+                    description: True when the request's `sourceWorkId` did not resolve to an existing work and was coerced to null instead of failing the save.
         "400":
           description: Missing songId/component
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -14774,6 +15264,155 @@ paths:
           description: The song external IDs (#1741 D5) migration card has not been applied
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=song_alt_titles:
+    get:
+      operationId: editorSongAltTitles
+      tags: [Editor API v2]
+      summary: A song's alternative ("also known as") titles (#1669, epic #832)
+      description: |
+        GET, editor role only. `tblSongAlternativeTitles`' first UI write
+        path (the read half — the public song page, the OG image, and the
+        #832 search boost — has been live for a while). Row shape
+        `{id, title, language, note, sortOrder}`, ordered
+        `SortOrder ASC, Title ASC` — the same ordering the public read path
+        uses. `tableMissing:true` (empty list, not a 500) on an un-migrated
+        install. Alt titles are per-song FREE TEXT, not a reference to a
+        registry entity (CLAUDE.md rule #43 does not apply).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_alt_titles] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: MP-0001 }
+      responses:
+        "200":
+          description: Alternative titles for the song
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  altTitles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        title: { type: string }
+                        language: { type: string }
+                        note: { type: string }
+                        sortOrder: { type: integer }
+                  tableMissing: { type: boolean }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_alt_title_add:
+    post:
+      operationId: editorSongAltTitleAdd
+      tags: [Editor API v2]
+      summary: Add one alternative title (#1669, epic #832)
+      description: |
+        POST, editor role only (curation, not a destructive class like
+        `delete_song`). `title` is trimmed, non-empty, <=255 code points;
+        `language`, if given, must match a soft BCP-47 grammar (else 422)
+        and is capped to 35 code points; `note`, if given, is trimmed and
+        <=255 code points. `INSERT IGNORE` on the `(SongId,Title)`
+        `uq_song_title` unique key (case-insensitive collation) — a
+        duplicate re-selects the existing row, so the echo is always the
+        canonical stored row; `created` tells the client whether a NEW row
+        actually landed. An alt title identical to the song's own current
+        main title (case-insensitive) is refused with 422. Alt titles are
+        per-song free text, NOT a registry reference (rule #43 does not
+        apply — no find-or-create picker here).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, title]
+              properties:
+                songId: { type: string }
+                title: { type: string, example: "Faith's Review and Expectation" }
+                language: { type: string, example: es }
+                note: { type: string }
+      responses:
+        "200":
+          description: Added (or re-selected an existing matching row)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  altTitle:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      title: { type: string }
+                      language: { type: string }
+                      note: { type: string }
+                      sortOrder: { type: integer }
+                  created: { type: boolean }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The alternative titles (#832) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Empty/over-length title, an unrecognised language tag, or the title is just the song's own main title again
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_alt_title_delete:
+    post:
+      operationId: editorSongAltTitleDelete
+      tags: [Editor API v2]
+      summary: Remove one alternative title row (#1669, epic #832)
+      description: |
+        POST, editor role only (same posture as `song_alt_title_add`).
+        `songId` is part of the WHERE (cross-song defence-in-depth, not
+        just `id`). Already-gone is a successful no-op
+        (`{ok:true,deleted:0}`), matching `song_external_id_delete`'s
+        idempotent-double-click posture.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Removed (or already gone)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The alternative titles (#832) migration card has not been applied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=tune_search:
     get:
       operationId: editorTuneSearch
@@ -14824,6 +15463,207 @@ paths:
                         matchedAlias: { type: string, nullable: true }
                   tableMissing: { type: boolean }
 
+  /manage/editor/api2.php?action=publisher_search:
+    get:
+      operationId: editorPublisherSearch
+      tags: [Editor API v2]
+      summary: Typeahead for the Copyright Holder picker (#1862)
+      description: |
+        GET, editor role only. Delegates entirely to the ONE shared
+        publisher typeahead core (`publisherSearchRows()`, #1864) — no
+        local SQL of its own, the same core `/manage/publishers`,
+        `/manage/songbooks` and `/manage/works` already share. `[]`
+        (never a 500) on an install without `tblPublishers`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [publisher_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string }
+                        kind: { type: string, example: company }
+
+  /manage/editor/api2.php?action=work_search:
+    get:
+      operationId: editorWorkSearch
+      tags: [Editor API v2]
+      summary: Typeahead over the Works registry (#1860 Phase 3)
+      description: |
+        GET, editor role only. Mirrors `tune_search`'s shape.
+        `tableMissing:true` (empty list, not a 500) on an install without
+        `tblWorks`. `ccli` is included only when `tblWorks.Ccli` exists — a
+        pre-works-identity install still returns ISWC-based rows rather than
+        degrading to `tableMissing`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [work_search] }
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 10, minimum: 1, maximum: 20 }
+      responses:
+        "200":
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        title: { type: string }
+                        slug: { type: string }
+                        disambiguation: { type: string }
+                        iswc: { type: string, nullable: true }
+                        ccli: { type: string, nullable: true }
+                        parentWorkId: { type: integer, nullable: true }
+                        usage: { type: integer }
+                  tableMissing: { type: boolean }
+
+  /manage/editor/api2.php?action=song_work_autolink:
+    post:
+      operationId: editorSongWorkAutolink
+      tags: [Editor API v2]
+      summary: Auto find-or-link a song's Work by its stored CCLI/ISWC (#1860 Phase 3)
+      description: |
+        POST, editor role only. The commit-time hook Editor2 fires after a
+        CCLI/ISWC field save lands (design §3.7 — the client wiring itself
+        is a tracked follow-up build). Server-authoritative: reads the
+        song's STORED `Ccli`/`Iswc` from `tblSongs`, never a client-sent
+        identifier value. A work-link CONFLICT is a field on the 200 body,
+        never an HTTP failure — a work-link ambiguity must never fail the
+        song save.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+      responses:
+        "200":
+          description: Work-link plan applied (or a no-op)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  linked: { type: boolean }
+                  workId: { type: integer, nullable: true }
+                  workTitle: { type: string, nullable: true }
+                  workSlug: { type: string, nullable: true }
+                  songCount: { type: integer }
+                  created: { type: boolean }
+                  createdParent: { type: boolean }
+                  rehomed: { type: boolean }
+                  refined: { type: boolean }
+                  conflict: { type: string, nullable: true }
+                  iswcInvalid: { type: boolean }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The work-identity migration cards have not all been applied yet (run them at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_work_set:
+    post:
+      operationId: editorSongWorkSet
+      tags: [Editor API v2]
+      summary: Manual "Part of work" picker — link, create-by-title, or unlink (#1860 Phase 3)
+      description: |
+        POST, editor role only. Exactly one mode per request: `{songId,
+        workId}` links to an existing Work (404 if it doesn't exist);
+        `{songId, title}` is the manual picker's find-or-create for
+        identifier-less hymns (design §3.7.2), 400 on an empty/whitespace
+        title; `{songId, workId, unlink:true}` drops that one membership —
+        the ONLY manual-unlink surface (design §3.3.1 reserves unlink to
+        humans). An already-gone unlink returns `{ok:true, unlinked:true,
+        deleted:0}`, not an error (idempotent double-click).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId: { type: string }
+                workId: { type: integer, description: "Link/unlink mode." }
+                title: { type: string, description: "Find-or-create mode." }
+                unlink: { type: boolean, description: "With workId, deletes that one membership." }
+      responses:
+        "200":
+          description: Link / create-by-title applied, or unlinked
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      ok: { type: boolean, example: true }
+                      linked: { type: boolean, example: true }
+                      workId: { type: integer }
+                      workTitle: { type: string, nullable: true }
+                      workSlug: { type: string, nullable: true }
+                      songCount: { type: integer }
+                      created: { type: boolean }
+                      createdParent: { type: boolean, example: false }
+                      rehomed: { type: boolean, example: false }
+                      refined: { type: boolean, example: false }
+                      conflict: { type: string, nullable: true, example: null }
+                      iswcInvalid: { type: boolean, example: false }
+                  - type: object
+                    properties:
+                      ok: { type: boolean, example: true }
+                      unlinked: { type: boolean, example: true }
+                      deleted: { type: integer }
+        "400":
+          description: Missing songId, an empty/whitespace title, or neither/both of workId and title supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song or Work not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The work-identity migration cards have not all been applied yet (run them at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=song_tune_set:
     post:
       operationId: editorSongTuneSet
@@ -14865,6 +15705,185 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "404":
           description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_copyright_holder_set:
+    post:
+      operationId: editorSongCopyrightHolderSet
+      tags: [Editor API v2]
+      summary: The ONE copyright-holder write — CopyrightHolder + CopyrightHolderId in lockstep (#1862)
+      description: |
+        POST, editor role only. Activates the dormant #1864
+        `tblSongs.CopyrightHolderId` FK. Mirrors `song_tune_set`'s shape
+        exactly: `name` MAY be an empty string — a legal clear (both
+        `CopyrightHolder` and `CopyrightHolderId` → cleared), distinct
+        from the key being absent (a caller mistake, 400). `publisherId`
+        is the picker's CLAIMED `tblPublishers.Id` — trusted only after
+        server-side verification against `name`
+        (`publisherResolvePickedOrCreate()`), never written unverified; a
+        stale/forged id degrades to the name find-or-create funnel. Shares
+        the exact write core `metadata_field_update`'s `CopyrightHolder`
+        alias branch delegates to, so a song's copyright holder has
+        exactly one write path regardless of which action a (current or
+        stale-cached) client uses. 409 on an install that hasn't run the
+        song-identity-fields migration card yet (the column this shares
+        with Subtitle/Disambiguation/FirstPublishedYear/CopyrightYears).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, name]
+              properties:
+                songId: { type: string }
+                name: { type: string, description: "Empty string clears the holder." }
+                publisherId: { type: integer, nullable: true, description: "The picker's claimed tblPublishers.Id; verified server-side, never trusted blindly." }
+      responses:
+        "200":
+          description: Copyright holder saved (or cleared)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string, example: copyrightHolder }
+                  holderName: { type: string }
+                  publisherId: { type: integer, nullable: true }
+        "400":
+          description: Missing songId, or the name key is absent
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The song-identity-fields migration card has not been applied yet (run it at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_copyright_holders:
+    get:
+      operationId: editorSongCopyrightHoldersList
+      tags: [Editor API v2]
+      summary: The ordered multi-holder copyright list for one song (#1900 Wave 4 C8)
+      description: |
+        GET, editor role only. Read counterpart of
+        `song_copyright_holders_set` below. Delegates entirely to the ONE
+        `tblSongCopyrightHolders` core (`songCopyrightHoldersList()`,
+        `includes/song_copyright_holders.php`) — no local SQL. This is a
+        DIFFERENT table from `song_copyright_holder_set`'s
+        song-identity-fields gate, so it 409s on its OWN un-migrated check
+        rather than reusing that one; `manage/editor/v2/metadata-tab.js`
+        feature-detects this via the response status and falls back to the
+        single-pick control on a 409, never by matching the error text.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_copyright_holders] }
+        - name: id
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: The song's copyright holders, in display order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  holders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publisherId: { type: integer }
+                        name: { type: string }
+                        role: { type: string, example: holder }
+                        sortOrder: { type: integer }
+        "400":
+          description: Missing id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The multi-holder-copyright migration card has not been applied yet (run it at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=song_copyright_holders_set:
+    post:
+      operationId: editorSongCopyrightHoldersSet
+      tags: [Editor API v2]
+      summary: Replace the FULL ordered multi-holder copyright list (#1900 Wave 4 C8)
+      description: |
+        POST, editor role only. The multi-pick sibling of
+        `song_copyright_holder_set` above: that endpoint (and
+        `metadata_field_update`'s `CopyrightHolder` alias branch) write ONE
+        holder through `ed2_songCopyrightHolderApply()`, which — on a
+        migrated install — now itself delegates to the SAME core this
+        endpoint calls directly (`songCopyrightHoldersReplace()`), so there
+        is exactly one write path into `tblSongCopyrightHolders` + the
+        `tblSongs.CopyrightHolder`/`CopyrightHolderId` denorm mirror
+        regardless of which UI surface a curator used. The denorm mirror is
+        always re-synced to the FIRST-listed holder in the request (or
+        cleared when the list is empty). Every mutation (add/remove/
+        reorder) in the client is expected to POST the FULL ordered list and
+        re-render only from this response's `holders` — never from the
+        request it just sent. 422 on an unknown `role` (checked against
+        `IHYMNS_COPYRIGHT_HOLDER_ROLES`) — a curator/client mistake, not a
+        server fault; nothing is written when this happens. 409 on an
+        install that hasn't run the #1900 migration card yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, holders]
+              properties:
+                songId: { type: string }
+                holders:
+                  type: array
+                  description: The FULL desired ordered list — this REPLACES whatever the song had before, it does not append.
+                  items:
+                    type: object
+                    properties:
+                      publisherId: { type: integer, nullable: true, description: "A picker's claimed tblPublishers.Id; verified server-side, never trusted blindly." }
+                      name: { type: string, description: "Typed or picked display text; required when publisherId is absent." }
+                      role: { type: string, example: holder, description: "Defaults to 'holder' when omitted. Must be a key in IHYMNS_COPYRIGHT_HOLDER_ROLES." }
+      responses:
+        "200":
+          description: Copyright holders replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  field: { type: string, example: copyrightHolders }
+                  holders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publisherId: { type: integer }
+                        name: { type: string }
+                        role: { type: string, example: holder }
+                        sortOrder: { type: integer }
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The multi-holder-copyright migration card has not been applied yet (run it at /manage/setup-database)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: An unknown role was supplied — nothing was written
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /manage/editor/api2.php?action=media_list:
@@ -15098,6 +16117,16 @@ paths:
         (#882), which sniffs OpenLyrics vs OpenSong and retries the other
         parser once on a primary parse failure — the response's `format`
         echoes back whichever actually parsed. Max 25 MB.
+
+        `dryRun="1"` (#1674) previews the import: every real pre-flight
+        decision (existence check +, when `dedupeMode=skip-title`, the
+        title-dedupe check) still runs, so `songs_created` /
+        `songs_skipped_existing` reflect exactly what a real import would
+        do — but nothing is written (no song row, no songbook row, no
+        credits, no revision). The response echoes `dry_run: true`.
+        `songs_failed` under dry-run reflects parse/mapping failures only;
+        DB-level failures (a duplicate-key race, an FK surprise) cannot be
+        reproduced without actually writing.
       requestBody:
         required: true
         content:
@@ -15112,6 +16141,13 @@ paths:
                   default: auto
                   enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, proclaim, freeshow, chordpro, pptx, easyworship]
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+                dryRun:
+                  type: string
+                  enum: ["0", "1"]
+                  default: "0"
+                  description: |
+                    "1" previews the import (every pre-flight decision runs,
+                    nothing is written); see the endpoint description. (#1674)
       responses:
         "200":
           description: Import parsed and processed successfully
@@ -15125,6 +16161,7 @@ paths:
                   songs_created: { type: integer }
                   songs_skipped_existing: { type: integer }
                   songs_failed: { type: integer }
+                  dry_run: { type: boolean, description: Echoes back whether this was a dry-run preview (#1674). }
         "400":
           description: No file / upload error, file too large, unknown/undetected format, or the file failed to parse (a genuine client error — wrong/bad file)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -15151,6 +16188,21 @@ paths:
         job tracking, or if persisting the upload fails, falls back to a
         SYNCHRONOUS import that returns the full summary in the same
         response.
+
+        `dryRun="1"` (#1911) previews the import — nothing is written for
+        real, and `songs_created` / `songs_skipped_existing` describe what
+        WOULD happen. Unlike `import_file` (#1674), whose preview flag only
+        needs to survive one synchronous request, `import_zip`'s flag has to
+        survive the async job boundary: it is persisted onto the queued
+        `tblBulkImportJobs` row's `DryRun` column, read back by the
+        background worker (after `fastcgi_finish_request`) and echoed back
+        by `import_zip_status` as `dry_run` on every poll, so the client
+        never has to re-derive it from what it originally sent (a status/data
+        key is the contract, not client-side state). This gate is
+        column-existence-gated: on a deployment that hasn't yet run the
+        `migrate-bulk-import-dryrun.php` migration, `dryRun="1"` is still
+        REFUSED with 422 (see below) rather than silently importing for
+        real.
       requestBody:
         required: true
         content:
@@ -15161,6 +16213,15 @@ paths:
               properties:
                 file: { type: string, format: binary, description: A .zip archive. }
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
+                dryRun:
+                  type: string
+                  enum: ["0", "1"]
+                  default: "0"
+                  description: |
+                    "1" previews the import (nothing is written); see the
+                    endpoint description. (#1911) Refused with 422 on a
+                    deployment where `tblBulkImportJobs.DryRun` doesn't exist
+                    yet.
       responses:
         "200":
           description: Either an async job handle, or a completed synchronous summary
@@ -15177,11 +16238,15 @@ paths:
                   songs_created: { type: integer, description: Present on a synchronous (non-async) response. }
                   songs_skipped_existing: { type: integer }
                   songs_failed: { type: integer }
+                  dry_run: { type: boolean, description: Present on a synchronous (non-async) response — echoes back whether this was a dry-run preview (#1911). }
         "400":
           description: No file / upload error, or an EasyWorship/synchronous import that failed to parse
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "413":
           description: Uploaded zip exceeds the 100 MB import limit
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: dryRun="1" was posted but this deployment hasn't run the ZIP dry-run migration yet (#1911); import a single file to preview instead, or ask an admin to apply it
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "500":
           description: Server missing the PHP zip extension, or the import/job creation failed
@@ -15231,6 +16296,7 @@ paths:
                       errors: { type: array, items: {} }
                       per_songbook: { type: object, nullable: true }
                       skip_reason: { type: string, example: existing-in-db }
+                      dry_run: { type: boolean, description: Echoes tblBulkImportJobs.DryRun for this job (#1911) — false on an un-migrated deployment, where such a job could never have been created with the flag set in the first place. }
                       skipped_csv_url: { type: string }
                       phase_label: { type: string, nullable: true }
                       started_at: { type: string, nullable: true }
@@ -15317,6 +16383,123 @@ paths:
                         username: { type: string, nullable: true }
         "400":
           description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=revision_snapshots:
+    get:
+      operationId: editorRevisionSnapshots
+      tags: [Editor API v2]
+      summary: Every revision's raw snapshot for a song (per-field blame source, #1122)
+      description: |
+        GET, editor role only. Returns the raw decoded `NewData` of EVERY
+        revision for a song in one response (newest first), plus the window
+        `base` (the oldest row's own `PreviousData` — no before-ladder; blame's
+        pre-state chain is the consecutive `NewData` rows), the
+        `ED2_META_FIELDS`-derived `fieldMap` (field key → tblSongs column) and
+        the `noRollback` field-key list. The client's per-field blame walk
+        (`blameFromSnapshots()`) consumes this with the one shipped shape
+        normaliser. A NULL/undecodable `NewData` is a row-level `null`, never a
+        409.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [revision_snapshots] }
+        - name: songId
+          in: query
+          required: true
+          schema: { type: string, example: CP-0202 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Raw revision snapshots + blame context
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revisions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        action: { type: string }
+                        createdAt: { type: string }
+                        userId: { type: integer, nullable: true }
+                        username: { type: string, nullable: true }
+                        newData: { type: object, nullable: true, description: "Decoded NewData snapshot (one of three shapes); null when NULL/undecodable" }
+                  base: { type: object, nullable: true, description: "The oldest row's PreviousData (window pre-state)" }
+                  baseSource: { type: string, enum: [previousData, none] }
+                  truncated: { type: boolean, description: "Older revisions exist beyond this window" }
+                  fieldMap: { type: object, description: "field key → tblSongs column, derived from ED2_META_FIELDS" }
+                  noRollback:
+                    type: array
+                    items: { type: string }
+                    description: "Field keys with no per-field Revert (songbook re-keys; hasAudio/hasSheetMusic are derived)"
+        "400":
+          description: Missing songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=revision_get:
+    get:
+      operationId: editorRevisionGet
+      tags: [Editor API v2]
+      summary: One revision's before/after snapshots for a field-level diff (#1628)
+      description: |
+        GET, editor role only. Returns the revision's `after` (its decoded
+        `NewData`) and `before` snapshot for a changed-fields diff view. The
+        server resolves `before` ONCE, in a fixed ladder, and reports which
+        rung answered in `beforeSource` (the client never re-derives it):
+        `previousData` (the chained `PreviousData`, populated for all
+        revisions since #1743) → `priorRevision` (the immediately-older
+        revision's `NewData`, same ordering as `revision_list`) → `none`
+        (the song's first revision — render "No earlier state recorded",
+        not an error). A revision whose own `NewData` is NULL/undecodable
+        answers 409. Legacy bare-`tblSongs`-row snapshots are returned as-is;
+        shape normalisation is the client's rendering concern.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [revision_get] }
+        - name: revisionId
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: songId
+          in: query
+          required: false
+          description: Optional defence-in-depth — the revision must belong to this song.
+          schema: { type: string, example: CP-0202 }
+      responses:
+        "200":
+          description: The revision's before/after snapshots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revision:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      action: { type: string }
+                      createdAt: { type: string }
+                      userId: { type: integer, nullable: true }
+                      username: { type: string, nullable: true }
+                  after: { type: object, description: Decoded NewData snapshot. }
+                  before: { type: object, nullable: true, description: Resolved prior snapshot, or null. }
+                  beforeSource: { type: string, enum: [previousData, priorRevision, none] }
+        "400":
+          description: Missing or invalid revisionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The revision has no restorable/decodable snapshot, or songId does not match
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /manage/editor/api2.php?action=revision_restore:
@@ -15726,6 +16909,114 @@ paths:
           description: songIds/name missing, or the name has no usable characters
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=bulk_move:
+    post:
+      operationId: editorBulkMove
+      tags: [Editor API v2]
+      summary: Move many songs to a different songbook, per-song verdicts (#1628 item 3)
+      description: |
+        POST, entitlement `bulk_edit_songs`. Each song is re-keyed through the
+        SAME songRelocate() core the single-song
+        `metadata_field_update` (field=songbook) action uses (#1679 — option
+        B: a move always mints a new canonical SongId, clears Number, and
+        leaves a permalink redirect). `targetAbbr` is validated ONCE, before
+        any song is touched — an unknown songbook answers 422 for the whole
+        request. Every song after that gets its OWN transaction and its own
+        verdict: one row that refuses (a stale FK, a concurrent edit) never
+        aborts the rest of the batch. `moved` carries the NEW ids — every
+        selected id is stale the instant this responds; a client MUST re-key
+        its own selection from this list rather than assume the old ids
+        still resolve directly (they only resolve via the redirect layer).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds, targetAbbr]
+              properties:
+                songIds: { type: array, items: { type: string }, maxItems: 300 }
+                targetAbbr: { type: string, example: CP }
+      responses:
+        "200":
+          description: Per-song verdicts (may include failures alongside successes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  moved:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        oldId: { type: string }
+                        newId: { type: string }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        error: { type: string }
+                        status: { type: integer, description: "422 (per-song refusal) or 500 (unexpected write failure)." }
+        "400":
+          description: songIds missing/empty, more than 300 songIds, or targetAbbr missing
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "422":
+          description: Unknown target songbook (checked once, before any song is touched)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=bulk_delete:
+    post:
+      operationId: editorBulkDelete
+      tags: [Editor API v2]
+      summary: Soft-delete many songs, per-song verdicts (#1628 item 3)
+      description: |
+        POST, entitlement `delete_songs` (the SAME single-song gate
+        `delete_song` uses — a bulk delete is that same destructive act
+        repeated, so the single-delete entitlement governs). Each song goes
+        through the SAME songSoftDelete() core `delete_song` uses (#1694):
+        the row is hidden (`IsDeleted=1`) and restorable from
+        `/manage/deleted-songs` — nothing is permanently removed, and no
+        redirect is written (that happens only at purge). `deleted` lists
+        the SongIds that succeeded; `failed` carries a verdict per row that
+        didn't (already deleted, absent, an unknown `reason`, or this
+        install hasn't applied the soft-delete migration).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songIds]
+              properties:
+                songIds: { type: array, items: { type: string }, maxItems: 300 }
+                reason: { type: string, description: "Optional — one of the app's songDeleteReasons() keys." }
+                note: { type: string }
+      responses:
+        "200":
+          description: Per-song verdicts (may include failures alongside successes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: array, items: { type: string }, description: SongIds successfully soft-deleted. }
+                  failed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        error: { type: string }
+                        status: { type: integer, description: "404 absent / 409 already deleted or un-migrated / 422 unknown reason." }
+        "400":
+          description: songIds missing/empty, or more than 300 songIds
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================
@@ -15830,6 +17121,67 @@ components:
                 example: 60
 
   schemas:
+    # -------------------------------------------------------------------------
+    # Outbound webhooks (#1909) — the body iHymns POSTs to a partner's endpoint
+    # -------------------------------------------------------------------------
+
+    WebhookEventEnvelope:
+      type: object
+      description: >-
+        The JSON body of every outbound webhook delivery (#1909). iHymns is the
+        CLIENT here — it POSTs this to a partner-registered `https://` endpoint.
+        The body is BYTE-IDENTICAL across retries (only the signature timestamp
+        moves), so a receiver can de-duplicate on `id`.
+
+        Signature: each request carries `X-iHymns-Signature: t=<unix>,v1=<hex>`
+        (Stripe-compatible). Verify with
+        `HMAC-SHA256("<t>.<raw request body>", <subscription secret>)` and reject
+        if `|now - t| > 300s`. During a secret rotation the header carries two
+        `v1=` values (current + previous) — accept if either matches. Other
+        headers: `X-iHymns-Event-Id`, `X-iHymns-Event-Type`,
+        `X-iHymns-Delivery-Id`, `X-iHymns-Attempt`.
+
+        THE ONE PAYLOAD RULE: `data` is identity + metadata ONLY — never lyric
+        content, media bytes/URLs, share tokens or service join codes. Fetch
+        content through the gated read API. Delivery is at-least-once; respond
+        2xx quickly, then process asynchronously.
+      required: [id, type, api_version, channel, occurred_at, data]
+      properties:
+        id:
+          type: string
+          example: "evt_9f2c1a4b7e0d8c6f5a2b3c4d5e6f7a8b"
+          description: "Globally-unique event id (evt_ + 32 hex). The receiver's de-dupe key."
+        type:
+          type: string
+          example: "song.updated"
+          description: >-
+            Dotted event type. v1 vocabulary: song.created / song.updated /
+            song.deleted / song.restored / songbook.created / songbook.updated /
+            songbook.deleted / songbook.import_completed / setlist.shared /
+            service.started / service.ended / webhook.verify / webhook.test.
+        api_version:
+          type: string
+          example: "1"
+          description: "Payload contract version. Additive changes do NOT bump it; a breaking reshape mints \"2\"."
+        channel:
+          type: string
+          enum: [alpha, beta, production]
+          description: "The docroot environment that emitted the event (assert it if your receiver is env-specific)."
+        occurred_at:
+          type: string
+          format: date-time
+          example: "2026-08-23T12:34:56Z"
+          description: "UTC instant the event occurred, frozen at emit."
+        data:
+          type: object
+          description: >-
+            Type-specific identity/metadata. e.g. song.*:
+            {song_id, public_id, songbook_abbr, title, changed_fields (names
+            only, updated), url}. songbook.*: {abbr, title, is_official, url}.
+            setlist.shared: {setlist_title, scope, owner_org_id} (NEVER the
+            token/URL). service.*: {session_kind, org_id, venue_id,
+            occurrence_date, ended_reason} (NEVER the join code).
+
     # -------------------------------------------------------------------------
     # Core domain models
     # -------------------------------------------------------------------------
@@ -15973,6 +17325,18 @@ components:
             - That saved a wretch like me
             - I once was lost but now am found
             - Was blind but now I see
+        label:
+          type: string
+          description: |
+            Optional custom display name for this section (e.g. "Kyrie",
+            "isiZulu"), overriding the derived "Verse 1"/"Chorus" heading
+            everywhere the song is rendered. #1860 Phase 5. SPARSE: this key
+            is present ONLY when the curator has set a label — omitted
+            entirely for every unlabelled component (the pre-existing
+            byte-identical response for the whole un-labelled corpus is
+            unaffected), so a client must treat an absent key the same as
+            deriving the heading from `type`+`number` itself.
+          example: Kyrie
 
     SongSummary:
       type: object

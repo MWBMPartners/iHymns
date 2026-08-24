@@ -21,6 +21,13 @@ import {
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
 import { apiFetch } from '../utils/api-client.js';
+/* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
+   (registration / login / password_reset / email_login) below. No-op unless
+   a provider is configured server-side AND the specific form is ticked —
+   see captcha-widget.js's doc-block for the full contract. */
+import {
+    initCaptcha, captchaRequired, mountCaptcha, isCaptchaRefusal, CAPTCHA_BODY_KEY,
+} from './captcha-widget.js';
 
 export class UserAuth {
     /**
@@ -49,7 +56,19 @@ export class UserAuth {
      * @returns {Promise<object>}
      */
     async _ensureAppStatus() {
-        if (this._appStatus) return this._appStatus;
+        if (this._appStatus) {
+            /* Cached path — (re)wire the CAPTCHA module too (#947/#340). A
+               caller may only reach _ensureAppStatus() well after the very
+               first fetch already resolved and populated `_config` over
+               there, but calling initCaptcha() again is harmless (it just
+               reassigns a module-local variable), and keeping this call at
+               EVERY return point is what "whenever a status object is
+               available" means in practice — no code path can observe a
+               status without also giving the CAPTCHA module a chance to
+               learn it. Best-effort: never let a captcha hiccup block auth. */
+            try { initCaptcha(this._appStatus); } catch { /* best-effort */ }
+            return this._appStatus;
+        }
         if (this._appStatusPromise) return this._appStatusPromise;
         this._appStatusPromise = (async () => {
             try {
@@ -68,6 +87,12 @@ export class UserAuth {
                    posture for this brand-new, admin-opt-in feature. */
                 this._appStatus = { emailLoginEnabled: true, appleWebLoginEnabled: false, appleSiwaServicesId: null };
             }
+            /* #947/#340 — wire the CAPTCHA module now that a status object
+               exists, whether it came from a real fetch or the permissive
+               fallback above. A fallback object carries no `captcha` key, so
+               initCaptcha() reads that as "unconfigured" and the module stays
+               dormant — matching its own fail-safe default (rule #28C). */
+            try { initCaptcha(this._appStatus); } catch { /* best-effort */ }
             return this._appStatus;
         })();
         return this._appStatusPromise;
@@ -216,7 +241,7 @@ export class UserAuth {
      * @param {string} url
      * @param {object} body
      * @param {string} defaultMsg
-     * @returns {Promise<{ ok: true, data: any } | { ok: false, error: string }>}
+     * @returns {Promise<{ ok: true, data: any, status: number } | { ok: false, error: string, status: number, data: any }>}
      */
     async _postJson(url, body, defaultMsg) {
         let res;
@@ -231,8 +256,13 @@ export class UserAuth {
             });
         } catch (err) {
             /* Case 1 — fetch itself rejected. This is the only true
-               "couldn't reach the server" path. */
-            return { ok: false, error: 'Network error. Please check your connection and try again.' };
+               "couldn't reach the server" path.
+               `status: 0` (#947/#340) — no HTTP response ever arrived, so
+               there is no real status code to report. 0 is a safe sentinel
+               for isCaptchaRefusal()/any future status-branching caller:
+               it never collides with a genuine HTTP status. `data: null`
+               for the same reason — nothing was parsed. */
+            return { ok: false, error: 'Network error. Please check your connection and try again.', status: 0, data: null };
         }
 
         /* Try to parse the body as JSON. On parse failure (case 2) we
@@ -252,9 +282,11 @@ export class UserAuth {
             try { snippet = (await res.text()).slice(0, 200).trim(); } catch { /* ignore */ }
             const detail = snippet ? ` Server said: "${snippet.replace(/\s+/g, ' ')}"` : '';
             return {
-                ok:    false,
-                error: `Server returned an unreadable response (HTTP ${res.status} ${res.statusText}).${detail} `
-                     + 'This is a server bug — please report it.',
+                ok:     false,
+                error:  `Server returned an unreadable response (HTTP ${res.status} ${res.statusText}).${detail} `
+                      + 'This is a server bug — please report it.',
+                status: res.status,
+                data:   null,
             };
         }
 
@@ -262,13 +294,16 @@ export class UserAuth {
             /* Case 3 — server replied with a JSON body but a non-2xx
                status. data.error is the friendly message; data.request_id
                (added by the global handler in api.php for 500s, #803)
-               is included verbatim so support can correlate the log. */
+               is included verbatim so support can correlate the log.
+               `status` + `data` (#947/#340) let a caller branch on
+               isCaptchaRefusal(status, data) — status + the machine
+               `reason` field, NEVER this `friendly` prose (rule #35). */
             const friendly = (data && data.error) ? data.error : (defaultMsg + ` (HTTP ${res.status})`);
             const rid      = data && data.request_id ? ` [ref ${data.request_id}]` : '';
-            return { ok: false, error: friendly + rid };
+            return { ok: false, error: friendly + rid, status: res.status, data };
         }
 
-        return { ok: true, data };
+        return { ok: true, data, status: res.status };
     }
 
     /**
@@ -286,12 +321,26 @@ export class UserAuth {
     async register(username, password, displayName, email = '') {
         const payload = { username, password, display_name: displayName };
         if (email) payload.email = email;
+        /* #947/#340 — attach the solved CAPTCHA token when the registration
+           form is gated. this._captchaWidgets.registration is only truthy
+           when captchaRequired('registration') was true at mount time (see
+           _mountAuthFormCaptcha()), so on an unconfigured install this whole
+           branch is skipped and the payload is byte-identical to before. */
+        if (this._captchaWidgets?.registration) {
+            payload[CAPTCHA_BODY_KEY] = this._captchaWidgets.registration.getToken();
+        }
         const r = await this._postJson(
             `${this.app.config.apiUrl}?action=auth_register`,
             payload,
             'Registration failed.'
         );
-        if (!r.ok) return { success: false, error: r.error };
+        if (!r.ok) {
+            /* Branch on STATUS + the machine `reason` (rule #35), never the
+               server's prose. A refusal means "wrong/missing/expired token"
+               — reset the widget so the user can retry without reloading. */
+            if (isCaptchaRefusal(r.status, r.data)) this._captchaWidgets.registration.reset();
+            return { success: false, error: r.error };
+        }
         this.saveCredentials(r.data.token, r.data.user);
         return {
             success: true,
@@ -307,12 +356,20 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async login(username, password) {
+        const payload = { username, password };
+        /* #947/#340 — see register() above. */
+        if (this._captchaWidgets?.login) {
+            payload[CAPTCHA_BODY_KEY] = this._captchaWidgets.login.getToken();
+        }
         const r = await this._postJson(
             `${this.app.config.apiUrl}?action=auth_login`,
-            { username, password },
+            payload,
             'Login failed.'
         );
-        if (!r.ok) return { success: false, error: r.error };
+        if (!r.ok) {
+            if (isCaptchaRefusal(r.status, r.data)) this._captchaWidgets.login.reset();
+            return { success: false, error: r.error };
+        }
         this.saveCredentials(r.data.token, r.data.user);
         return { success: true };
     }
@@ -598,9 +655,46 @@ export class UserAuth {
             this.app.setList.getAll(),
             res.tombstones
         );
-        const final = this._unionSetlists(pruned, res.setlists);
+        /* #1675 — SERVER WINS FOR CONFLICTED IDS. The union below puts the local
+           copy on top (correct for an in-flight edit) — but a row the server
+           REFUSED to overwrite (edited on another device since our watermark)
+           would then be resurrected locally from our stale copy and re-pushed
+           into a permanent conflict loop. So drop those ids from the local side
+           first; the union then takes the authoritative server row. BELT (§A.7):
+           only drop a local row when the server response actually carries a
+           replacement for that id — a conflict entry with no matching row would
+           otherwise delete the local copy leaving nothing. */
+        const serverIds = new Set(res.setlists.map((s) => s && s.id).filter(Boolean));
+        const conflictIds = new Set(
+            (Array.isArray(res.conflicts) ? res.conflicts : [])
+                .map((c) => c && c.id)
+                .filter((id) => id && serverIds.has(id))
+        );
+        const localSide = conflictIds.size
+            ? pruned.filter((l) => l && !conflictIds.has(l.id))
+            : pruned;
+        const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
+
+        /* One toast per absorb (not per row). The refused edit is replaced by
+           the newer server copy; the user re-applies it and the next push finds
+           the row content-identical (watermark advanced past the conflict) and
+           settles via the no-op skip — self-healing, no auto-retry (which would
+           be last-writer-wins with extra steps) and no auto-merge (no base). */
+        if (conflictIds.size) {
+            const names = res.setlists
+                .filter((s) => s && conflictIds.has(s.id) && s.name)
+                .map((s) => s.name);
+            const one = names.length === 1;
+            const label = one ? `“${names[0]}”` : `${conflictIds.size} set lists`;
+            this.app.showToast?.(
+                `${label} ${one ? 'was' : 'were'} updated on another device — showing the newer version. `
+                + `Your last change ${one ? 'to it' : 'to them'} was not applied.`,
+                'warning',
+                8000
+            );
+        }
         return true;
     }
 
@@ -687,18 +781,47 @@ export class UserAuth {
 
             if (!res.ok) {
                 if (res.status === 401) this.clearCredentials();
-                /* #1661 — 413: the payload is too large to accept. Nothing on
-                   the server changed, so the local cache is intact and the
-                   user must be told, because unlike the truncation this
-                   replaced there is no partial success to mistake for one. */
+                /* #1661/#1662 — 413: the payload was refused whole; nothing on
+                   the server changed, so the local cache is intact and the user
+                   must be told (unlike the silent truncation this replaced,
+                   there is no partial success to mistake for one). Branch on the
+                   machine-readable `reason`, NEVER the prose (rule #35): a
+                   too_many_songs refusal names the offending list and its cap;
+                   anything else (body_too_large / too_many_slots / a non-JSON
+                   body) keeps the generic "too large" message. Latched once per
+                   session either way, so a wedged auto-sync can't storm toasts. */
                 if (res.status === 413 && !this._setlistTooLargeWarned) {
                     this._setlistTooLargeWarned = true;
-                    this.app.showToast?.(
-                        'Your set lists are too large to sync in one request. Nothing was changed — '
-                        + 'try removing a very large set list.',
-                        'danger',
-                        8000
-                    );
+                    let body = null;
+                    try { body = await res.json(); } catch (_e) { /* non-JSON 413 → generic below */ }
+                    if (body && body.reason === 'too_many_songs') {
+                        const max = Number(body.maxSongs) || null;
+                        /* Resolve the list's name from the local cache by the
+                           id the server echoed — the response carries no name
+                           (it changed nothing), and naming the list is what
+                           makes the message actionable. */
+                        const local = this.app.setList?.getAll?.() || [];
+                        const match = Array.isArray(local)
+                            ? local.find((l) => l && l.id === body.setlistId)
+                            : null;
+                        const named = match && match.name;
+                        this.app.showToast?.(
+                            (named
+                                ? `The set list “${named}” has too many songs`
+                                : 'One of your set lists has too many songs')
+                            + (max ? ` (limit ${max}).` : '.')
+                            + ' Nothing was changed — remove some songs and sync again.',
+                            'danger',
+                            8000
+                        );
+                    } else {
+                        this.app.showToast?.(
+                            'Your set lists are too large to sync in one request. Nothing was changed — '
+                            + 'try removing a very large set list.',
+                            'danger',
+                            8000
+                        );
+                    }
                 }
                 return null;
             }
@@ -726,6 +849,9 @@ export class UserAuth {
                 /* #1661 — deletions from other devices (and lazily-converted
                    expiries) for _absorbSetlistSync() to prune locally. */
                 tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
+                /* #1675 — per-row overwrite refusals for _absorbSetlistSync() to
+                   take the server copy of (and toast). [] when none. */
+                conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs
@@ -1481,17 +1607,26 @@ export class UserAuth {
      */
     async forgotPassword(usernameOrEmail) {
         try {
+            const body = { username: usernameOrEmail };
+            /* #947/#340 — see register() above; 'password_reset' is this
+               form's key (see the mapping in captchaFormKeys() server-side). */
+            if (this._captchaWidgets?.password_reset) {
+                body[CAPTCHA_BODY_KEY] = this._captchaWidgets.password_reset.getToken();
+            }
             const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_forgot_password`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
                 },
-                body: JSON.stringify({ username: usernameOrEmail }),
+                body: JSON.stringify(body),
             });
 
             const data = await res.json();
-            if (!res.ok) return { success: false, error: data.error || 'Request failed.' };
+            if (!res.ok) {
+                if (isCaptchaRefusal(res.status, data)) this._captchaWidgets.password_reset.reset();
+                return { success: false, error: data.error || 'Request failed.' };
+            }
 
             return { success: true, message: data.message, token: data._dev_token };
         } catch {
@@ -1523,6 +1658,62 @@ export class UserAuth {
         } catch {
             return { success: false, error: 'Network error. Please try again.' };
         }
+    }
+
+    /* =====================================================================
+     * CAPTCHA MOUNTING (#947/#340)
+     * ===================================================================== */
+
+    /**
+     * Mount (or re-mount) the CAPTCHA widget for the login/register form.
+     *
+     * ELI5: draws the "prove you're human" box above the Sign In / Create
+     * Account button — but only for whichever of the two modes is currently
+     * showing, since both modes share the SAME form and host div.
+     *
+     * DETAIL: register and sign-in render into one `#auth-captcha-host`
+     * (one `<form>`, toggled by `currentMode` — see the template above), so
+     * switching modes must tear down whichever widget was mounted before
+     * mounting the other. Without that, `this._captchaWidgets.login` could
+     * keep pointing at a widget the register-mode mount already cleared out
+     * of the DOM (mountCaptcha() unconditionally does `hostEl.innerHTML=''`
+     * before rendering — see captcha-widget.js), leaving a stale, harmless
+     * but confusing handle sitting on the instance. Called once right after
+     * the modal is built, and again from the `#auth-toggle` click handler.
+     * A form that isn't gated (captchaRequired() false) leaves the host
+     * untouched and its widget slot null — the byte-identical no-op case.
+     *
+     * @param {HTMLElement} modal The modal root (so this can run before
+     *        `document.body.appendChild(modal)` returns anything useful).
+     * @param {string} mode 'login' | 'register'
+     */
+    async _mountAuthFormCaptcha(modal, mode) {
+        const hostEl = modal.querySelector('#auth-captcha-host');
+        const formKey = mode === 'register' ? 'registration' : 'login';
+        this._captchaWidgets = this._captchaWidgets || {};
+        this._captchaWidgets.registration?.remove();
+        this._captchaWidgets.login?.remove();
+        this._captchaWidgets.registration = null;
+        this._captchaWidgets.login = null;
+        if (!hostEl || !captchaRequired(formKey)) return;
+        this._captchaWidgets[formKey] = await mountCaptcha(hostEl, formKey);
+    }
+
+    /**
+     * Mount (or re-mount) a standalone CAPTCHA widget — password-reset and
+     * email-login each own an exclusive host div (no sibling to tear down),
+     * so this just guards against double-mounting the SAME widget when its
+     * view is shown, hidden, and shown again without the modal reopening.
+     *
+     * @param {HTMLElement|null} hostEl
+     * @param {string} formKey 'password_reset' | 'email_login'
+     */
+    async _mountStandaloneCaptcha(hostEl, formKey) {
+        this._captchaWidgets = this._captchaWidgets || {};
+        this._captchaWidgets[formKey]?.remove();
+        this._captchaWidgets[formKey] = null;
+        if (!hostEl || !captchaRequired(formKey)) return;
+        this._captchaWidgets[formKey] = await mountCaptcha(hostEl, formKey);
     }
 
     /* =====================================================================
@@ -1601,6 +1792,11 @@ export class UserAuth {
                                        placeholder="Password (min 8 characters)"
                                        autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" required>
                             </div>
+                            <!-- #947/#340 — CAPTCHA host (markup only). Register and
+                                 sign-in SHARE this one host div/form; _mountAuthFormCaptcha()
+                                 mounts whichever of 'registration'/'login' is gated for the
+                                 CURRENT mode and re-mounts on the register↔sign-in toggle. -->
+                            <div id="auth-captcha-host" class="mb-3"></div>
                             <button type="submit" class="btn btn-primary w-100" id="auth-submit-btn">
                                 <span id="auth-submit-text">${mode === 'register' ? 'Create Account' : 'Sign In'}</span>
                                 <span id="auth-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
@@ -1639,6 +1835,10 @@ export class UserAuth {
                                     <label for="auth-email-input" class="form-label small">Email Address</label>
                                     <input type="email" class="form-control form-control-sm" id="auth-email-input"
                                            placeholder="Enter your email address" autocomplete="email" required>
+                                    <!-- #947/#340 — CAPTCHA host (markup only). Mounted
+                                         when the "Sign in with Email" view is shown, only
+                                         if 'email_login' is gated. -->
+                                    <div id="auth-email-captcha-host" class="mb-2"></div>
                                     <button type="submit" class="btn btn-sm btn-primary w-100 mt-2" id="auth-email-submit">
                                         <span id="auth-email-submit-text">Send Login Code</span>
                                         <span id="auth-email-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
@@ -1677,6 +1877,10 @@ export class UserAuth {
                                     <label for="auth-forgot-username" class="form-label small">Username or Email</label>
                                     <input type="text" class="form-control form-control-sm" id="auth-forgot-username"
                                            placeholder="Enter your username or email" required>
+                                    <!-- #947/#340 — CAPTCHA host (markup only). Mounted
+                                         when the "Forgot password?" view is shown, only
+                                         if 'password_reset' is gated. -->
+                                    <div id="auth-forgot-captcha-host" class="mb-2"></div>
                                     <button type="submit" class="btn btn-sm btn-outline-primary w-100 mt-2" id="auth-forgot-submit">
                                         Send Reset Token
                                     </button>
@@ -1712,6 +1916,11 @@ export class UserAuth {
 
         let currentMode = mode;
 
+        /* #947/#340 — mount the CAPTCHA widget for whichever mode the modal
+           opened in; the #auth-toggle handler below re-mounts on swap.
+           No-op when the corresponding form isn't gated (dormant install). */
+        this._mountAuthFormCaptcha(modal, currentMode);
+
         /* Promote magic-link email as the primary sign-in path (#395).
            For the login flow we hide the password form and reveal the
            email section on open. Users can click "Sign in with a password
@@ -1736,6 +1945,11 @@ export class UserAuth {
                     modal.querySelector('#auth-email-section')?.classList.remove('d-none');
                     modal.querySelector('#auth-toggle').style.display = 'none';
                     modal.querySelector('#auth-forgot-link-wrapper').style.display = 'none';
+                    /* #947/#340 — this promotion reveals the email view WITHOUT
+                       going through the #auth-email-toggle click handler below,
+                       so mount the widget here too (guarded against double-mount
+                       the same as everywhere else). */
+                    this._mountStandaloneCaptcha(modal.querySelector('#auth-email-captcha-host'), 'email_login');
                 } else {
                     /* Email service unconfigured — strip every entry
                        point that would lead the user there. */
@@ -1824,6 +2038,9 @@ export class UserAuth {
             modal.querySelector('#auth-error')?.classList.add('d-none');
             modal.querySelector('#auth-forgot-section')?.classList.add('d-none');
             modal.querySelector('#auth-email-section')?.classList.add('d-none');
+            /* #947/#340 — the two modes share one host div; re-mount for
+               whichever form is now current (no-op if it isn't gated). */
+            this._mountAuthFormCaptcha(modal, currentMode);
         });
 
         /* Forgot password link */
@@ -1834,6 +2051,9 @@ export class UserAuth {
             modal.querySelector('#auth-email-toggle-wrapper').style.display = 'none';
             modal.querySelector('#auth-forgot-section')?.classList.remove('d-none');
             modal.querySelector('#auth-modal-title').textContent = 'Reset Password';
+            /* #947/#340 — mount when this view is shown; no-op if
+               'password_reset' isn't gated. */
+            this._mountStandaloneCaptcha(modal.querySelector('#auth-forgot-captcha-host'), 'password_reset');
         });
 
         /* Back to Sign In from forgot password */
@@ -1859,6 +2079,9 @@ export class UserAuth {
             modal.querySelector('#auth-email-toggle-wrapper').style.display = 'none';
             modal.querySelector('#auth-email-section')?.classList.remove('d-none');
             modal.querySelector('#auth-modal-title').textContent = 'Sign in with Email';
+            /* #947/#340 — mount when this view is shown; no-op if
+               'email_login' isn't gated. */
+            this._mountStandaloneCaptcha(modal.querySelector('#auth-email-captcha-host'), 'email_login');
         });
 
         /* Back to password sign-in from email login */
@@ -1900,18 +2123,30 @@ export class UserAuth {
             submitBtn.disabled = true;
 
             try {
+                const body = { email };
+                /* #947/#340 — attach the solved token when 'email_login' is
+                   gated; the handle is only set when captchaRequired() was
+                   true at mount time, so an unconfigured install sends
+                   nothing extra (byte-identical no-op). */
+                if (this._captchaWidgets?.email_login) {
+                    body[CAPTCHA_BODY_KEY] = this._captchaWidgets.email_login.getToken();
+                }
                 const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_request`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
-                    body: JSON.stringify({ email }),
+                    body: JSON.stringify(body),
                 });
 
                 const data = await res.json();
 
                 if (!res.ok) {
+                    /* Branch on STATUS + the machine `reason` (rule #35),
+                       never the prose. Reset the widget so the user can
+                       retry without reopening the modal. */
+                    if (isCaptchaRefusal(res.status, data)) this._captchaWidgets.email_login.reset();
                     errorEl.textContent = data.error || 'Failed to send login code.';
                     errorEl.classList.remove('d-none');
                 } else {

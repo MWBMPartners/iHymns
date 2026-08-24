@@ -40,10 +40,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the legacy PublicationCity display string only when the
    places-adoption migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the create + quick-create (MARCXML) actions below */
 /* Licence vocabulary (#1769 P4 Commit C) — the ONE registry the songbook
    default rights-key pickers draw from + validate against (rule #35, no second
    list). Falls back to the byte-exact P1 seeds on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongbookEvent(), fired beside the songbook.create/edit/delete logActivity (dormant no-op) */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -625,34 +627,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
     try {
-        $probe = $db->query(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPublishers' LIMIT 1"
-        );
-        if (!$probe || $probe->fetch_row() === null) {
+        /* #1864 — pre-check kept (rather than folded into the shared core's
+           own silent [] degradation) so this page's distinct "run
+           /manage/setup-database" CTA note survives the refactor; the row
+           SELECT itself now delegates to the ONE shared query core
+           (rule #22) instead of a second inline copy. */
+        if (!publisherTableExists($db)) {
             echo json_encode(['suggestions' => [], 'note' => 'tblPublishers not yet created — run /manage/setup-database']);
             exit;
         }
-        if ($q === '') {
-            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 ORDER BY Name ASC LIMIT ?');
-            $stmt->bind_param('i', $limit);
-        } else {
-            $like = '%' . $q . '%';
-            $stmt = $db->prepare('SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1 AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
-            $stmt->bind_param('si', $like, $limit);
-        }
-        $stmt->execute();
-        $res  = $stmt->get_result();
-        $sugg = [];
-        while ($row = $res->fetch_assoc()) {
-            $sugg[] = [
-                'id'   => (int)$row['Id'],
-                'name' => (string)$row['Name'],
-                'slug' => (string)($row['Slug'] ?? ''),
-                'kind' => (string)($row['Kind'] ?? ''),
-            ];
-        }
-        $stmt->close();
+        $sugg = publisherSearchRows($db, $q, $limit);
         echo json_encode(['suggestions' => $sugg], JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[publisher_search] ' . $e->getMessage());
@@ -1042,6 +1026,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    semantics work as expected. */
                 $isOfficial = !empty($_POST['is_official']) ? 1 : 0;
                 $publisher  = trim((string)($_POST['publisher']        ?? '')) ?: null;
+                /* #1865 (rule #37/#43) — the create-form Publisher field's
+                   picker-claimed tblPublishers.Id (place-search.js
+                   pickMode:'value', wired below in this page's own <script>).
+                   0/absent means "nothing was picked" — same cast-or-null
+                   idiom as origin_city_id/publication_city_id elsewhere on
+                   this page. Verified server-side by
+                   publisherResolvePickedOrCreate() below before being
+                   trusted — never persisted unverified. */
+                $publisherIdClaimed = (int)($_POST['publisher_id'] ?? 0) ?: null;
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
@@ -1188,6 +1181,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newId);
                 /* Place columns — schema-tolerant separate UPDATE
                    so the carefully-tuned 23-bind INSERT above stays
                    untouched. Skipped on pre-adoption-migration
@@ -1232,6 +1227,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute();
                     $stmt->close();
                 }
+                /* #1865 (rule #37/#43) — a brand-new songbook has no Edit
+                   modal yet, so the create form's quick Publisher field is
+                   the ONLY publisher-linking surface at create time. Resolve
+                   it through the ONE shared funnel — publisherResolvePickedOrCreate()
+                   (includes/publisher_helpers.php) — trusting a verified
+                   picker claim over a name-only resolve (tblPublishers has no
+                   uq_Name; rule #37), then seed the M:N link exactly the way
+                   the Edit arm's own richer multi-publisher reconciliation
+                   does further down this file (INSERT tblSongbookPublishers +
+                   re-sync the Publisher denorm to the resolved registry
+                   Name) — same tables, same shape, no second sync path. An
+                   empty field, or a pre-migration install without
+                   tblSongbookPublishers, leaves the songbook exactly as
+                   before this feature: display-string-only. */
+                $createPublisherId = null;
+                if ($hasPublishersSchema) {
+                    $createPublisherId = publisherResolvePickedOrCreate($db, (string)$publisher, $publisherIdClaimed);
+                    if ($createPublisherId !== null) {
+                        $pubRole = 'publisher';
+                        $stmt = $db->prepare(
+                            'INSERT INTO tblSongbookPublishers (SongbookId, PublisherId, Role, SortOrder) VALUES (?, ?, ?, 0)'
+                        );
+                        $stmt->bind_param('iis', $newId, $createPublisherId, $pubRole);
+                        $stmt->execute();
+                        $stmt->close();
+
+                        /* Denorm sync — the free-text Publisher mirror
+                           follows the registry Name exactly (rule #37),
+                           same shape as the Edit arm's primary-publisher
+                           resync (see the #93 comment on the reconciliation
+                           block below). */
+                        $nameStmt = $db->prepare('SELECT Name FROM tblPublishers WHERE Id = ?');
+                        $nameStmt->bind_param('i', $createPublisherId);
+                        $nameStmt->execute();
+                        $resolvedName = $nameStmt->get_result()->fetch_assoc()['Name'] ?? null;
+                        $nameStmt->close();
+                        if ($resolvedName !== null) {
+                            $upd = $db->prepare('UPDATE tblSongbooks SET Publisher = ? WHERE Id = ?');
+                            $upd->bind_param('si', $resolvedName, $newId);
+                            $upd->execute();
+                            $upd->close();
+                        }
+                    }
+                }
+                /* #1909 — partner webhook (dormant no-op until enabled). */
+                webhookEmitSongbookEvent($db, 'songbook.created', $abbr,
+                    ['title' => $name, 'is_official' => (bool)$isOfficial], ['source' => 'admin']);
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -1239,6 +1281,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'colour'          => $colour,
                     'is_official'     => (bool)$isOfficial,
                     'publisher'       => $publisher,
+                    /* #1865 — only logged when tblSongbookPublishers exists,
+                       matching the schema-tolerant write above. */
+                    'publisher_id'    => $hasPublishersSchema ? $createPublisherId : null,
                     'publication_year'=> $pubYear,
                     'copyright'       => $copyright,
                     'affiliation'     => $affiliation,
@@ -1321,7 +1366,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour) VALUES (?, ?, 0, ?)');
                 $ins->bind_param('sss', $abbr, $name, $colour);
                 $ins->execute();
+                $newSongbookId = (int)$db->insert_id;
                 $ins->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newSongbookId);
 
                 /* Bibliographic columns (all pre-#1765, present wherever the
                    create form's own binds are — same assumption as 'create'). */
@@ -2108,6 +2156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $auditExtras['rights_applied_music']  = $rightsAppliedMusic ?? 0;
                         }
                     }
+                    /* #1909 — partner webhook (dormant no-op; helper resolves
+                       name + official flag from the just-updated row). */
+                    webhookEmitSongbookEvent($db, 'songbook.updated', (string)($afterRow['Abbreviation'] ?? ''),
+                        [], ['source' => 'admin']);
                     logActivity('songbook.edit', 'songbook', (string)$id, array_merge([
                         'fields'             => $changed,
                         'before'             => array_intersect_key($beforeRow, array_flip($changed)),
@@ -2282,6 +2334,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* Audit (#535) — capturing abbreviation in Details
                    means the row remains useful even after the FK
                    nulls out / the songbook is gone. */
+                /* #1909 — partner webhook (dormant no-op; the row is gone so the
+                   payload carries the abbr only). */
+                webhookEmitSongbookEvent($db, 'songbook.deleted', $abbr, [], ['source' => 'admin']);
                 logActivity('songbook.delete', 'songbook', (string)$id, [
                     'abbreviation' => $abbr,
                 ]);
@@ -2364,6 +2419,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $db->commit();
 
+                    /* #1909 — partner webhook (dormant no-op; row gone → abbr only).
+                       Per-song song.deleted events are deliberately NOT emitted for
+                       a cascade — one songbook.deleted summarises it (design §A.9). */
+                    webhookEmitSongbookEvent($db, 'songbook.deleted', $abbr, [], ['source' => 'admin']);
                     logActivity('songbook.delete_cascade', 'songbook', (string)$id, [
                         'abbreviation' => $abbr,
                         'song_count'   => $songCount,
@@ -5166,7 +5225,7 @@ $csrf = csrfToken();
            IIFE's closure-free namespace by attaching to window. */
         window._iHymnsBuildCompilerRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const pid = Number(data.personId) || 0;
             const nm  = String(data.personName || '');
             const sl  = String(data.personSlug || '');
@@ -5286,7 +5345,7 @@ $csrf = csrfToken();
 
         window._iHymnsBuildPublisherRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const pid  = Number(data.publisherId) || 0;
             const nm   = String(data.publisherName || '');
             const sl   = String(data.publisherSlug || '');
@@ -5377,7 +5436,7 @@ $csrf = csrfToken();
            rebuild the list on modal-open. */
         window._iHymnsBuildAltNameRow = function (data) {
             const card = document.createElement('div');
-            card.className = 'card bg-dark border-secondary';
+            card.className = 'card bg-body-tertiary border-secondary';
             const t  = String(data.title || '');
             const nt = String(data.note  || '');
             card.innerHTML =
@@ -5545,10 +5604,45 @@ $csrf = csrfToken();
         })();
     </script>
 
+    <!-- #1865 (rule #37/#43) — Publisher picker, CREATE form only. Mirrors
+         the Works Tune Name / Copyright Holder pickers (#1864): pickMode:
+         'value' makes NO network call on pick — it just fills the input +
+         the sibling hidden publisher_id, and free-typing over a pick clears
+         that hidden id again (place-search.js's own contract). Persistence
+         is the form POST itself, which the 'create' handler resolves through
+         publisherResolvePickedOrCreate() (rule #37 — a verified pick wins
+         over a name-only resolve, since tblPublishers has no uq_Name). The
+         Edit modal's richer multi-publisher picker (with roles) is the
+         structured-link surface there and is unchanged by this block. -->
+    <script>
+    (function () {
+        if (!window.iHymnsPlaceSearch) return;
+        const input  = document.getElementById('create-publisher');
+        const hidden = document.getElementById('create-publisher-id');
+        if (input && hidden) {
+            window.iHymnsPlaceSearch.attach(input, {
+                hiddenIdInput: hidden,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'publisher', plural: 'publishers' },
+                /* This page's own ?action=publisher_search, which delegates
+                   to the shared publisherSearchRows() core (rule #22). */
+                searchUrl: (q) => '/manage/songbooks?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: s.kind || '',
+                })),
+            });
+        }
+    })();
+    </script>
+
     <!-- #93 — registry-backed datalist typeahead on the free-text Publisher
-         field (create + edit). Debounced fetch of ?action=publisher_search
-         fills each field's own datalist. Pre-migration returns [] so the
-         field stays a plain text box. -->
+         field (Edit modal only — #1865 moved the create form's instance to
+         the iHymnsPlaceSearch picker above). Debounced fetch of
+         ?action=publisher_search fills the field's own datalist.
+         Pre-migration returns [] so the field stays a plain text box. -->
     <script>
     (function () {
         document.querySelectorAll('input.js-publisher-search').forEach(function (input) {

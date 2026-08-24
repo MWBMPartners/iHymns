@@ -155,6 +155,38 @@ $recordingIdTypesForJs = array_map(
    seeds (licence_registry.php), so the pickers still populate. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
+
+/* #1869 (epic #1863, rule #43's LAST item — registry SOURCING, not a
+   typeahead) — the song-part type vocabulary for the Structure tab's section
+   <select> (structure-tab.js), shipped the SAME "server-derive the vocab"
+   convention as the three registries above. songPartTypesForPicker() is
+   existence-gated (rule #19/#20) and returns [] — never throws — on an
+   un-migrated install, in which case structure-tab.js falls back to its own
+   small built-in list rather than this file carrying a second copy of it
+   (see includes/song_part_type_helpers.php's header for why the fallback
+   lives client-side only). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_part_type_helpers.php';
+$songPartTypesForJs = songPartTypesForPicker(getDbMysqli());
+
+/* #1862 (epic #1863) — server-derived config for the Metadata tab's
+   public-domain suggestion hint, shipped the SAME "server-derive the vocab/
+   config, no second list" convention as the three registries above
+   (rule #35): the life-plus term is the ONE code constant
+   (includes/pd_suggest.php's IHYMNS_PD_LIFE_PLUS_YEARS, decision D4) and the
+   publication-year fallback threshold is the plain app setting
+   'pd_publication_year_threshold' (configurable at /manage/configuration,
+   default 1900, decision D3) — metadata-tab.js reads both from here rather
+   than hardcoding either, so the hint text and the server's own fold
+   (includes/pd_suggest.php's pdSuggestFold()) can never silently disagree. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+$pdSuggestForJs = [
+    'lifePlusYears'        => IHYMNS_PD_LIFE_PLUS_YEARS,
+    'publicationThreshold' => (int)getAppSetting(
+        IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY,
+        (string)IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT
+    ),
+];
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -290,6 +322,13 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                 <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
                 <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
                 <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag-fill me-1"></i>Remove tag…</button>
+                <!-- #1628 item 3 — the two remaining v1 bulk actions v2 was
+                     missing (move to a different songbook, delete) + a bulk
+                     Export so a curator can pull a format bundle for exactly
+                     the songs they've selected. -->
+                <button id="v2-bulk-move" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left-right me-1"></i>Move…</button>
+                <button id="v2-bulk-export" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-download me-1"></i>Export…</button>
+                <button id="v2-bulk-delete" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete…</button>
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
@@ -347,6 +386,80 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
         </div>
     </div>
 
+    <!-- Bulk move modal (#1628 item 3) -->
+    <div class="modal fade" id="v2-bulk-move-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h6"><i class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="v2-bulk-move-count" class="small mb-2"></p>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="v2-bulk-move-songbook">Move to songbook</label>
+                        <select class="form-select form-select-sm" id="v2-bulk-move-songbook"></select>
+                    </div>
+                    <div class="alert alert-warning small py-2 mb-0">
+                        <i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>
+                        Numbers will be cleared — renumber afterwards. Song ids change; old links redirect.
+                    </div>
+                    <div id="v2-bulk-move-err" class="text-danger small mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-primary" id="v2-bulk-move-go">Move</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk export modal (#1628 item 3) -->
+    <div class="modal fade" id="v2-bulk-export-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h6"><i class="bi bi-download me-1"></i>Export selected songs</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="v2-bulk-export-count" class="small mb-2"></p>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="v2-bulk-export-format">Format</label>
+                        <select class="form-select form-select-sm" id="v2-bulk-export-format"></select>
+                    </div>
+                    <div id="v2-bulk-export-progress" class="text-muted small"></div>
+                    <div id="v2-bulk-export-err" class="text-danger small mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-sm btn-primary" id="v2-bulk-export-go">Export</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk result modal — shared per-song failure list for Move / Delete /
+         Export (#1628 item 3). One modal rather than three near-identical
+         ones: the failure SHAPE ({id,error,status}) is the same across all
+         three actions. -->
+    <div class="modal fade" id="v2-bulk-result-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h6" id="v2-bulk-result-title"></h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <ul id="v2-bulk-result-list" class="small mb-0 ps-3"></ul>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-primary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <?php /* Bootstrap JS is emitted ONCE, by admin-footer.php below (#1676's
              shared emitter) — re-emitting here would double-load the bundle
              and double-register its delegated data-API listeners (#1856). */ ?>
@@ -367,6 +480,19 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
          rights-panel.js pickers. Same emit shape + flags + "classic global registry map"
          convention as the two above. -->
     <script>window._iHymnsLicenceTypes = <?= json_encode($licenceTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
+    <!-- #1869 — song-part type vocabulary (list of {slug,name}, SortOrder-ordered) for
+         the Structure tab's section-type <select> (structure-tab.js). Same emit shape +
+         flags + "classic global registry map" convention as the three above. Emitted
+         BEFORE the `<script type="module">` block below (structure-tab.js reads this at
+         module-evaluation time, top-level) — [] on an un-migrated install, which
+         structure-tab.js treats as "use my own built-in fallback list", never an error. -->
+    <script>window._iHymnsSongPartTypes = <?= json_encode($songPartTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
+    <!-- #1862 — public-domain suggestion config (life-plus term + publication-year
+         fallback threshold) for the Metadata tab's PD hint. Same emit shape + flags
+         + "classic global registry map" convention as the three registries above. -->
+    <script>window._iHymnsPdSuggest = <?= json_encode($pdSuggestForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
@@ -689,6 +815,253 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
                     n === 0 ? 'info' : 'success');
                 sidebar.clearSelection();
             } catch (e) { toast('Bulk untag failed: ' + e.message, 'danger'); }
+        });
+
+        /* ---- bulk move / delete / export (#1628 item 3) ----
+           The two remaining bulk actions v1 had that v2 shipped without,
+           plus a bulk Export the old editor never had at all. Both bulkMove
+           and bulkDelete answer PER-SONG verdicts (never all-or-nothing —
+           see api2.php's doc-block), so a partial failure on a 300-song
+           batch is visible rather than a single opaque error. */
+
+        const bulkResultModalEl = byId('v2-bulk-result-modal');
+        const bulkResultModal = (window.bootstrap && window.bootstrap.Modal) ? new window.bootstrap.Modal(bulkResultModalEl) : null;
+
+        /**
+         * Word one `failed[]` entry ({id,error,status}) for the shared result
+         * modal. Branches on `status` — the CONTRACT (rule #35) — never on
+         * the server's exact sentence, so a reworded error message can never
+         * silently degrade this to a blank/confusing line.
+         */
+        function bulkFailureWording(f) {
+            if (f.status === 404) { return 'not found (may already be gone)'; }
+            if (f.status === 409) { return 'not available on this install yet (needs a migration)'; }
+            return f.error || ('failed (HTTP ' + (f.status || '?') + ')');
+        }
+        function showBulkFailures(title, failed) {
+            byId('v2-bulk-result-title').textContent = title;
+            const list = byId('v2-bulk-result-list');
+            list.innerHTML = '';
+            (failed || []).forEach((f) => {
+                const li = document.createElement('li');
+                li.textContent = f.id + ' — ' + bulkFailureWording(f);
+                list.appendChild(li);
+            });
+            if (bulkResultModal) { bulkResultModal.show(); }
+        }
+
+        /* ---- bulk move ---- */
+        const bulkMoveModalEl = byId('v2-bulk-move-modal');
+        const bulkMoveModal = (window.bootstrap && window.bootstrap.Modal) ? new window.bootstrap.Modal(bulkMoveModalEl) : null;
+        byId('v2-bulk-move').addEventListener('click', () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            byId('v2-bulk-move-count').textContent = ids.length + ' song' + (ids.length === 1 ? '' : 's') + ' selected.';
+            const sel = byId('v2-bulk-move-songbook');
+            sel.innerHTML = '';
+            sidebar.getSongbooks().forEach((b) => {
+                const o = document.createElement('option');
+                o.value = b.abbr;
+                o.textContent = b.name + ' (' + b.abbr + ')';
+                sel.appendChild(o);
+            });
+            byId('v2-bulk-move-err').textContent = '';
+            if (bulkMoveModal) { bulkMoveModal.show(); }
+        });
+        byId('v2-bulk-move-go').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            const target = byId('v2-bulk-move-songbook').value;
+            const errEl = byId('v2-bulk-move-err');
+            errEl.textContent = '';
+            if (!ids.length) { return; }
+            if (!target) { errEl.textContent = 'Pick a songbook.'; return; }
+            try {
+                const r = await editorApi.bulkMove(ids, target);
+                if (bulkMoveModal) { bulkMoveModal.hide(); }
+                const movedN = (r.moved || []).length;
+                const failedN = (r.failed || []).length;
+                toast(
+                    'Moved ' + movedN + ' of ' + ids.length + ' song(s) to ' + target + '.'
+                        + (failedN ? ' ' + failedN + ' failed.' : ''),
+                    failedN ? 'danger' : 'success'
+                );
+                /* #1628/A2 — option B RE-KEYS every moved SongId, so every id
+                   still in the selection is now stale. Clear it AND refresh
+                   the slim index UNCONDITIONALLY (not only on full success):
+                   a stale sidebar showing dead ids after a re-key is a
+                   silent data hazard, not a cosmetic one. */
+                sidebar.clearSelection();
+                try { await sidebar.refresh(); } catch (_e) {}
+                if (failedN) { showBulkFailures('Some songs could not be moved', r.failed); }
+            } catch (e) {
+                errEl.textContent = e.message;
+            }
+        });
+
+        /* ---- bulk delete ---- */
+        byId('v2-bulk-delete').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            if (!window.confirm(
+                'Delete ' + ids.length + ' selected song(s)?\n\n'
+                + 'They move to Deleted songs — restorable from /manage/deleted-songs; nothing is permanently removed.'
+            )) { return; }
+            try {
+                const r = await editorApi.bulkDelete(ids);
+                const deletedN = (r.deleted || []).length;
+                const failedN = (r.failed || []).length;
+                toast(
+                    'Deleted ' + deletedN + ' of ' + ids.length + ' song(s).'
+                        + (failedN ? ' ' + failedN + ' failed.' : ''),
+                    failedN ? 'danger' : 'success'
+                );
+                sidebar.clearSelection();
+                try { await sidebar.refresh(); } catch (_e) {}
+                if (failedN) { showBulkFailures('Some songs could not be deleted', r.failed); }
+            } catch (e) {
+                toast('Bulk delete failed: ' + e.message, 'danger');
+            }
+        });
+
+        /* ---- bulk export ----
+           Bounded by construction: the selection can never exceed the
+           sidebar's own RENDER_CAP (300, sidebar.js), and every song is
+           fetched by its OWN single-record load_song call, sequentially in
+           chunks of 5 — never a corpus/whole-songbook read (rule #17's
+           named anti-pattern is v1's _loadSongsFull()). */
+        const bulkExportModalEl = byId('v2-bulk-export-modal');
+        const bulkExportModal = (window.bootstrap && window.bootstrap.Modal) ? new window.bootstrap.Modal(bulkExportModalEl) : null;
+
+        /* "openSong" -> "Open Song" — a GENERIC camelCase -> Title Case
+           transform, not a typed format list: the picker's options come
+           from window.iHymnsFormatExport's OWN keys, never a name list this
+           file invents (mirrors format-export.js's own key set — never a
+           second copy of it). */
+        function prettyFormatKey(key) {
+            return String(key).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
+        }
+
+        /* Convert one load_song response into the flat {title, number,
+           songbook, writers[], components[…]} shape format-export.js's
+           exportSongbook() consumes — the SAME transform v2/export.js's
+           buildExportSong(store) does for the currently-open song, but
+           reading a PLAIN load_song response instead of the reactive store
+           (bulk export fetches songs that are not necessarily the one open
+           right now). Kept local rather than imported: export.js's version
+           reads the STORE and isn't exported as a standalone function, and
+           this commit's file scope is api-client.js / editor2.php /
+           api-docs.yaml only — extracting a shared pure adapter is a fine
+           follow-up next time export.js itself is touched. */
+        function flattenLoadedSongForExport(data) {
+            const s = data.song || {};
+            const credits = data.credits || {};
+            const names = (role) => (Array.isArray(credits[role]) ? credits[role] : [])
+                .map((c) => c.name).filter(Boolean);
+            const components = (data.components || []).slice()
+                .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+                .map((c) => ({
+                    type:   c.type,
+                    number: c.number,
+                    lines:  Array.isArray(c.lines)  ? c.lines  : [],
+                    chords: Array.isArray(c.chords) ? c.chords : null,
+                }));
+            return {
+                id:           s.SongId || s.id || '',
+                title:        s.Title || '',
+                number:       (s.Number != null && s.Number !== '') ? s.Number : '',
+                songbook:     s.SongbookAbbr || '',
+                songbookName: s.SongbookName || s.SongbookAbbr || '',
+                language:     s.Language || '',
+                copyright:    s.Copyright || '',
+                ccli:         s.Ccli || '',
+                tuneName:     s.TuneName || '',
+                writers:      names('writers'),
+                composers:    names('composers'),
+                arrangers:    names('arrangers'),
+                artists:      names('artists'),
+                components:   components,
+            };
+        }
+
+        byId('v2-bulk-export').addEventListener('click', () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            byId('v2-bulk-export-count').textContent = ids.length + ' song' + (ids.length === 1 ? '' : 's') + ' selected.';
+            const sel = byId('v2-bulk-export-format');
+            sel.innerHTML = '';
+            const fmt = (window.iHymnsFormatExport && typeof window.iHymnsFormatExport === 'object') ? window.iHymnsFormatExport : {};
+            Object.keys(fmt)
+                .filter((k) => k !== '_internal' && fmt[k] && typeof fmt[k].exportSongbook === 'function')
+                .forEach((k) => {
+                    const o = document.createElement('option');
+                    o.value = k;
+                    o.textContent = prettyFormatKey(k);
+                    sel.appendChild(o);
+                });
+            byId('v2-bulk-export-progress').textContent = '';
+            const errEl = byId('v2-bulk-export-err');
+            errEl.textContent = sel.options.length ? '' : 'No bulk-capable export format is loaded.';
+            if (bulkExportModal) { bulkExportModal.show(); }
+        });
+
+        byId('v2-bulk-export-go').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            const key = byId('v2-bulk-export-format').value;
+            const progressEl = byId('v2-bulk-export-progress');
+            const errEl = byId('v2-bulk-export-err');
+            errEl.textContent = '';
+            if (!ids.length || !key) { return; }
+            const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[key];
+            if (!fmt || typeof fmt.exportSongbook !== 'function') { errEl.textContent = 'That format is not available.'; return; }
+
+            const goBtn = byId('v2-bulk-export-go');
+            goBtn.disabled = true;
+            const songs  = [];
+            const failed = [];
+            /* SEQUENTIAL chunks of 5 — each chunk's fetches run concurrently,
+               but the NEXT chunk waits for this one to finish, so at most 5
+               single-record load_song reads are ever in flight at once. */
+            for (let i = 0; i < ids.length; i += 5) {
+                const chunk = ids.slice(i, i + 5);
+                progressEl.textContent = 'Loading ' + Math.min(i + chunk.length, ids.length) + ' of ' + ids.length + '…';
+                const results = await Promise.all(chunk.map((id) =>
+                    editorApi.loadSong(id)
+                        .then((data) => ({ id: id, ok: true, song: flattenLoadedSongForExport(data) }))
+                        .catch((e) => ({ id: id, ok: false, error: e.message, status: e.status }))
+                ));
+                results.forEach((r) => { if (r.ok) { songs.push(r.song); } else { failed.push(r); } });
+            }
+            goBtn.disabled = false;
+
+            if (!songs.length) {
+                progressEl.textContent = '';
+                errEl.textContent = 'None of the selected songs could be loaded.';
+                return;
+            }
+            try {
+                /* Same persisted "lines per slide" preference the single-song
+                   Export menu offers (export.js) — read directly rather than
+                   duplicating its whole control, since this modal's job is
+                   the format picker, not a second copy of that setting. */
+                const maxLinesPerSlide = (() => {
+                    try {
+                        const v = parseInt(window.localStorage.getItem('ihymns_export_lines_per_slide'), 10);
+                        return (!isNaN(v) && v > 0) ? Math.min(v, 20) : 0;
+                    } catch (_e) { return 0; }
+                })();
+                const r = fmt.exportSongbook(songs, { maxLinesPerSlide: maxLinesPerSlide });
+                progressEl.textContent = '';
+                if (bulkExportModal) { bulkExportModal.hide(); }
+                toast(
+                    'Exported ' + r.filename + ' (' + songs.length + ' song(s))'
+                        + (failed.length ? ', ' + failed.length + ' skipped' : '') + '.',
+                    failed.length ? 'danger' : 'success'
+                );
+                if (failed.length) { showBulkFailures('Some songs could not be loaded for export', failed); }
+            } catch (e) {
+                progressEl.textContent = '';
+                errEl.textContent = 'Export failed: ' + e.message;
+            }
         });
 
         /* ---- resizable sidebar (#1193) — drag the grip; width persists ----

@@ -467,6 +467,409 @@ if (!is_file($v1DispatchFile)) {
        not a gap to fail on. */
 }
 
+/* =============================================================================
+ * 4. revision_get — the before-snapshot resolution LADDER (#1628 item 4)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * revision_get answers "what did the song look like right before this edit,
+ * and right after it". The "right before" half isn't always stored directly —
+ * the server has to try a couple of things, in a specific order, before it
+ * gives up and says "nothing recorded". This section checks that the order
+ * really is what the doc-block claims.
+ *
+ * WHY A SOURCE-TEXT CHECK, AND WHY A GENEROUS WINDOW (not the whole file)
+ * ------------------------------------------------------------------------
+ * There is no live DB in this test run to exercise the three rungs
+ * behaviourally (PreviousData present / PreviousData absent with an older
+ * row / no older row at all), so this — like section 1's X-Requested-With
+ * check — verifies the SHAPE of the handler source instead: the three
+ * `beforeSource` vocabulary strings ('previousData' | 'priorRevision' |
+ * 'none') must all appear inside the `revision_get` case, in that source
+ * order. Isolating the case body (rather than grepping the whole file) stops
+ * an unrelated case elsewhere from making this pass vacuously; requiring
+ * >= 300 chars is this test's own recorded lesson (line ~199 above) that a
+ * narrow window silently misses real source.
+ *
+ * WHY 'none' MUST BE THE STRING'S *LAST* OCCURRENCE, NOT ITS FIRST
+ * -------------------------------------------------------------------
+ * A naive implementation could default `$beforeSource` to the literal
+ * 'none' up front and only overwrite it on success — which would put the
+ * word 'none' EARLIEST in the source, ahead of 'previousData', even though
+ * it is logically the LAST rung. That shape would fail this ordering
+ * assertion on otherwise-correct code (the exact rule #34 trap: "a guard
+ * that fails on correct code gets weakened or deleted rather than fixed").
+ * The shipped handler avoids this by keeping `$beforeSource` as PHP `null`
+ * through both rungs and only writing the literal 'none' once, via
+ * `?? 'none'`, at the point the response is built — so 'none' is both
+ * textually and logically last. This assertion is written to match THAT
+ * shape; if a future edit needs an early 'none' default, this assertion (not
+ * the code) should be revisited.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   invert the ladder (assign 'priorRevision' before 'previousData' in
+ *   source order) -> the ordering assertion below goes RED. Reverted -> GREEN.
+ * ============================================================================= */
+
+echo "\n#1628 item 4 — revision_get before-snapshot resolution ladder\n\n";
+
+/* Isolate the `case 'revision_get': { ... }` block, comments stripped first
+   so the literal vocabulary words appearing in this case's own doc-block
+   prose (which lists all three, in order, as documentation) cannot satisfy
+   the assertion in place of the actual resolution code. */
+$apiNoComments = preg_replace('#/\*[\s\S]*?\*/#', '', $apiSrc) ?? $apiSrc;
+$caseStart = strpos($apiNoComments, "case 'revision_get':");
+$revisionGetBody = '';
+if ($caseStart !== false) {
+    if (preg_match('/\n    case \'/', $apiNoComments, $mEnd, PREG_OFFSET_CAPTURE, $caseStart + 1)) {
+        $revisionGetBody = substr($apiNoComments, $caseStart, $mEnd[0][1] - $caseStart);
+    } else {
+        $revisionGetBody = substr($apiNoComments, $caseStart);
+    }
+}
+
+check("api2.php has a 'revision_get' case", $revisionGetBody !== '');
+check(
+    "revision_get's isolated case body is a real handler, not a stub (>= 300 chars — "
+        . 'this test\'s own recorded lesson about generous regex windows)',
+    strlen($revisionGetBody) >= 300
+);
+
+$posPreviousData  = strpos($revisionGetBody, "'previousData'");
+$posPriorRevision = strpos($revisionGetBody, "'priorRevision'");
+$posNone          = strrpos($revisionGetBody, "'none'");   // LAST occurrence — see doc-block above
+check(
+    "revision_get's handler names all three beforeSource rungs: 'previousData', 'priorRevision', 'none'",
+    $posPreviousData !== false && $posPriorRevision !== false && $posNone !== false
+);
+check(
+    'revision_get resolves the before-snapshot ladder in source order: '
+        . "previousData -> priorRevision -> none (rule #20 vocabulary discipline; rule #35 — "
+        . 'the server resolves this chain ONCE, the client never re-implements it)',
+    $posPreviousData !== false && $posPriorRevision !== false && $posNone !== false
+        && $posPreviousData < $posPriorRevision && $posPriorRevision < $posNone
+);
+
+/* The client side of the same pair: getRevision() exists beside listRevisions
+   and asks for the 'revision_get' action (already proven to be a real
+   api2.php case by section 2's client<->server action check above — this
+   just pins the method's existence and its action-name literal, the same
+   shape section 1 uses for the write helpers). */
+check(
+    "v2 api-client exposes getRevision() calling the 'revision_get' action",
+    (bool)preg_match(
+        "/getRevision\s*:\s*\([^)]*\)\s*=>\s*getJson\(\s*'revision_get'/",
+        $client
+    )
+);
+
+/* =============================================================================
+ * 4b. revision_snapshots — the per-field BLAME bulk read (#1122)
+ * =============================================================================
+ *
+ * ELI5: blame ("who last changed this field") walks the WHOLE revision history
+ * client-side with the ONE shipped shape normaliser. This endpoint is the bulk
+ * raw read it walks. Two things must hold or blame silently drifts: the served
+ * fieldMap must be DERIVED from ED2_META_FIELDS (never a second typed list —
+ * rule #35, there is deliberately NO JS copy of the map), and its ORDER BY must
+ * be byte-equal to revision_list's (one ordering, not two).
+ */
+echo "\n#1122 — revision_snapshots per-field blame bulk read\n\n";
+
+/* Isolate the case body (comments stripped, same machinery as revision_get). */
+$snapStart = strpos($apiNoComments, "case 'revision_snapshots':");
+$snapBody = '';
+if ($snapStart !== false) {
+    if (preg_match('/\n    case \'/', $apiNoComments, $mEndS, PREG_OFFSET_CAPTURE, $snapStart + 1)) {
+        $snapBody = substr($apiNoComments, $snapStart, $mEndS[0][1] - $snapStart);
+    } else {
+        $snapBody = substr($apiNoComments, $snapStart);
+    }
+}
+check("api2.php has a 'revision_snapshots' case", $snapBody !== '');
+check(
+    "revision_snapshots' isolated case body is a real handler, not a stub (>= 300 chars)",
+    strlen($snapBody) >= 300
+);
+
+/* (a) fieldMap DERIVED from ED2_META_FIELDS — never a re-typed list (rule #35). */
+check(
+    "revision_snapshots derives its fieldMap from ED2_META_FIELDS (not a second typed map)",
+    strpos($snapBody, 'ED2_META_FIELDS') !== false
+);
+
+/* (b) ORDER BY byte-equal to revision_list's — both parsed from source, neither
+   typed into this test (rule #35: one ordering, not two). */
+$listStart = strpos($apiNoComments, "case 'revision_list':");
+$listBody = '';
+if ($listStart !== false && preg_match('/\n    case \'/', $apiNoComments, $mEndL, PREG_OFFSET_CAPTURE, $listStart + 1)) {
+    $listBody = substr($apiNoComments, $listStart, $mEndL[0][1] - $listStart);
+}
+$orderOf = static function (string $body): ?string {
+    return preg_match('/ORDER BY\s+(.+?)\s+LIMIT/s', $body, $m)
+        ? preg_replace('/\s+/', ' ', trim($m[1]))
+        : null;
+};
+$listOrder = $orderOf($listBody);
+$snapOrder = $orderOf($snapBody);
+check(
+    "revision_snapshots' ORDER BY is byte-equal to revision_list's (parsed from source): '"
+        . ($snapOrder ?? 'MISSING') . "'",
+    $listOrder !== null && $snapOrder !== null && $listOrder === $snapOrder
+);
+
+/* (c) the client method exists and asks for the action (the derived action<->case
+   check in section 2 already proves the case is real). */
+check(
+    "v2 api-client exposes listRevisionSnapshots() calling the 'revision_snapshots' action",
+    (bool)preg_match(
+        "/listRevisionSnapshots\s*:\s*\([^)]*\)\s*=>\s*getJson\(\s*'revision_snapshots'/",
+        $client
+    )
+);
+
+/* =============================================================================
+ * 5. bulk_move / bulk_delete — the per-song funnel discipline (Wave 4 C4, #1628 item 3)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Moving or deleting many songs at once must go through the SAME per-song
+ * machinery the single-song actions already use — a bulk action that grew its
+ * own copy of "how to move/delete a song" would drift the moment either copy
+ * changed underneath it. This pins that the two bulk handlers CALL the shared
+ * cores, and never reach for the raw SQL those cores exist to replace.
+ *
+ * WHY A SOURCE-TEXT CHECK (no live DB in this container, same reasoning as
+ * section 4). Each case body is isolated the SAME way section 4 isolates
+ * revision_get — from `case '<name>':` to the next top-level `case '` — so an
+ * unrelated case elsewhere in the file cannot satisfy this vacuously.
+ *
+ * `tests/php/test-song-relocate-funnels.php` already asserts, TREE-WIDE, that
+ * no per-song `SongbookAbbr` write anywhere skips `songRelocate()`. That guard
+ * was verified LIVE, during this commit's own implementation, against a
+ * deliberately-wrong `bulk_move` draft that wrote `SongbookAbbr` directly —
+ * CHECK 1 named the bad site and failed the build (transcript in the commit
+ * body). This section is a narrower, faster pin on the same two facts, scoped
+ * to just these two actions, so a regression here fails fast and by name
+ * without needing the full tree walk.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   rename the `songRelocate(` call inside `case 'bulk_move'` to
+ *   `songRelocateXXX(`                                             -> RED
+ *   rename the `songSoftDelete(` call inside `case 'bulk_delete'` to
+ *   `songSoftDeleteXXX(`                                            -> RED
+ *   both reverted afterward                                         -> GREEN.
+ * ============================================================================= */
+
+echo "\nWave 4 C4 — bulk_move / bulk_delete funnel discipline (#1628 item 3)\n\n";
+
+/** Isolate `case '$caseName':` from a comment-stripped switch-dispatch source,
+ *  up to the next top-level `case '`. Generalises section 4's own inline
+ *  isolation (there specific to revision_get) so this section can reuse it
+ *  for two more case names without a third copy of the same four lines. */
+$isolateCase = static function (string $noCommentsSrc, string $caseName): string {
+    $start = strpos($noCommentsSrc, "case '{$caseName}':");
+    if ($start === false) { return ''; }
+    if (preg_match('/\n    case \'/', $noCommentsSrc, $mEnd, PREG_OFFSET_CAPTURE, $start + 1)) {
+        return substr($noCommentsSrc, $start, $mEnd[0][1] - $start);
+    }
+    return substr($noCommentsSrc, $start);
+};
+
+$bulkMoveBody = $isolateCase($apiNoComments, 'bulk_move');
+check("api2.php has a 'bulk_move' case", $bulkMoveBody !== '');
+check(
+    'bulk_move delegates to songRelocate() — never a direct SongbookAbbr write (rule #27; '
+        . 'test-song-relocate-funnels.php CHECK 1 is the tree-wide version of this same fact)',
+    $bulkMoveBody !== '' && (bool)preg_match('/\bsongRelocate\s*\(/', $bulkMoveBody)
+);
+check(
+    'bulk_move contains no direct `UPDATE tblSongs … SongbookAbbr` write',
+    $bulkMoveBody !== '' && !preg_match('/UPDATE\s+`?tblSongs`?[^;]{0,200}SongbookAbbr/is', $bulkMoveBody)
+);
+
+$bulkDeleteBody = $isolateCase($apiNoComments, 'bulk_delete');
+check("api2.php has a 'bulk_delete' case", $bulkDeleteBody !== '');
+check(
+    'bulk_delete delegates to songSoftDelete() — never a raw hard DELETE (#1694)',
+    $bulkDeleteBody !== '' && (bool)preg_match('/\bsongSoftDelete\s*\(/', $bulkDeleteBody)
+);
+check(
+    'bulk_delete contains no `DELETE FROM tblSongs`',
+    $bulkDeleteBody !== '' && !preg_match('/DELETE\s+FROM\s+`?tblSongs`?/i', $bulkDeleteBody)
+);
+
+/* =============================================================================
+ * 6. bulk move/delete/export UI plumbing (Wave 4 C5, #1628 item 3)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * The bulk buttons in the editor toolbar have to call the RIGHT client
+ * methods, and the export button has to reuse the SAME format serializers the
+ * single-song Export menu uses rather than re-inventing a bulk fetch. This
+ * checks both, plus the one thing that would be silently dangerous to skip:
+ * after a bulk MOVE, the sidebar's selection and its cached song list are
+ * both stale (every moved SongId was just re-keyed, #1679 option B) — a
+ * handler that forgot to refresh would leave the curator staring at dead ids.
+ *
+ * WHY THE HANDLERS ARE ISOLATED BY DOM ID, NOT `case '...'`
+ * ----------------------------------------------------------
+ * editor2.php's inline module is not a PHP switch — its handlers are wired in
+ * a fixed, known source ORDER (this file's own), so each is isolated from its
+ * `byId('<id>').addEventListener(` start to the NEXT handler's identical
+ * marker (the export handler's end is the resizable-sidebar IIFE that follows
+ * it in source). Comments are stripped FIRST (the same $stripJs section 1
+ * already defines) so a doc-comment merely NAMING `sidebar.refresh()` cannot
+ * satisfy an assertion about the CODE calling it — the exact prose-satisfies-
+ * a-code-check trap CLAUDE.md rule #34 / this file's section 1 already guards
+ * against for the X-Requested-With header.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   delete the `sidebar.refresh()` line from the bulk-move handler -> RED
+ *   reverted afterward                                              -> GREEN.
+ * ============================================================================= */
+
+echo "\nWave 4 C5 — bulk move/delete/export UI plumbing (#1628 item 3)\n\n";
+
+check(
+    "v2 api-client exposes bulkMove() calling the 'bulk_move' action",
+    (bool)preg_match("/bulkMove\s*:\s*\([^)]*\)\s*=>\s*postJson\(\s*'bulk_move'/", $client)
+);
+check(
+    "v2 api-client exposes bulkDelete() calling the 'bulk_delete' action",
+    (bool)preg_match("/bulkDelete\s*:\s*\([^)]*\)\s*=>\s*postJson\(\s*'bulk_delete'/", $client)
+);
+
+$editor2Src         = (string)file_get_contents($editor . '/editor2.php');
+$editor2NoComments  = $stripJs($editor2Src);
+
+/** Isolate one inline-module click handler by its DOM id, from
+ *  `byId('$startId').addEventListener(` to $endNeedle (a literal that must
+ *  survive comment-stripping — i.e. real code, not prose naming the next
+ *  handler). Mirrors $isolateCase above, applied to a fixed source order
+ *  instead of a switch. */
+$isolateHandler = static function (string $src, string $startId, string $endNeedle): string {
+    $start = strpos($src, "byId('{$startId}').addEventListener(");
+    if ($start === false) { return ''; }
+    $end = $endNeedle === '' ? false : strpos($src, $endNeedle, $start + 10);
+    return substr($src, $start, ($end === false ? strlen($src) : $end) - $start);
+};
+
+$bulkMoveGoBlock   = $isolateHandler($editor2NoComments, 'v2-bulk-move-go', "byId('v2-bulk-delete').addEventListener(");
+$bulkDeleteBlock   = $isolateHandler($editor2NoComments, 'v2-bulk-delete', "byId('v2-bulk-export').addEventListener(");
+$bulkExportGoBlock = $isolateHandler($editor2NoComments, 'v2-bulk-export-go', '(function () {');
+
+check(
+    "editor2.php wires a 'v2-bulk-move-go' handler calling editorApi.bulkMove()",
+    $bulkMoveGoBlock !== '' && str_contains($bulkMoveGoBlock, 'editorApi.bulkMove(')
+);
+check(
+    "editor2.php's bulk-move handler clears the selection AND refreshes the sidebar's slim index "
+        . 'UNCONDITIONALLY — option B re-keys every SongId, so a stale sidebar after a move is a '
+        . 'silent data hazard, not a cosmetic one (A2)',
+    $bulkMoveGoBlock !== '' && str_contains($bulkMoveGoBlock, 'sidebar.clearSelection()')
+        && str_contains($bulkMoveGoBlock, 'sidebar.refresh(')
+);
+
+check(
+    "editor2.php wires a 'v2-bulk-delete' handler calling editorApi.bulkDelete()",
+    $bulkDeleteBlock !== '' && str_contains($bulkDeleteBlock, 'editorApi.bulkDelete(')
+);
+check(
+    "editor2.php's bulk-delete handler also clears the selection and refreshes the sidebar's slim index",
+    $bulkDeleteBlock !== '' && str_contains($bulkDeleteBlock, 'sidebar.clearSelection()')
+        && str_contains($bulkDeleteBlock, 'sidebar.refresh(')
+);
+
+check(
+    "editor2.php's bulk-export handler reuses window.iHymnsFormatExport's exportSongbook() — never a second serializer",
+    $bulkExportGoBlock !== '' && str_contains($bulkExportGoBlock, 'exportSongbook')
+);
+check(
+    "editor2.php's bulk-export handler contains no whole-corpus/bulk-fetch action "
+        . "('load_songs' — v1's retired _loadSongsFull() anti-pattern, rule #17)",
+    $bulkExportGoBlock !== '' && !str_contains($bulkExportGoBlock, 'load_songs')
+);
+
+/* =============================================================================
+ * 7. song_copyright_holders / song_copyright_holders_set — single-writer
+ *    unification (#1900 Wave 4 C8)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * #1900 adds a multi-holder copyright chip list alongside the pre-existing
+ * single-pick field. This section checks that BOTH write surfaces — the new
+ * `song_copyright_holders_set` case AND the pre-existing
+ * `ed2_songCopyrightHolderApply()` (itself called by `song_copyright_holder_set`
+ * and `metadata_field_update`'s `CopyrightHolder` alias) — funnel through the
+ * SAME server-side core (`songCopyrightHoldersReplace()`), never a second,
+ * forked resolve-and-write path for either surface.
+ *
+ * WHY A SOURCE-TEXT CHECK (no live DB in this container, same reasoning as
+ * sections 4/5). Case bodies are isolated via `$isolateCase`, the SAME
+ * helper section 5 already defines above — never a second copy of the same
+ * isolation logic (this file's own modularity rule, applied to itself).
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   rename the `songCopyrightHoldersReplace(` call inside
+ *   `case 'song_copyright_holders_set'` to `songCopyrightHoldersReplaceX(`  -> RED
+ *   reverted afterward                                                      -> GREEN
+ * ============================================================================= */
+
+echo "\n#1900 Wave 4 C8 — multi-holder copyright single-writer unification\n\n";
+
+check(
+    "api2.php has a 'song_copyright_holders' (GET, list) case",
+    (bool)preg_match("/case\s+'song_copyright_holders'\s*:/", $apiNoComments)
+);
+check(
+    "api2.php has a 'song_copyright_holders_set' (POST, replace) case",
+    (bool)preg_match("/case\s+'song_copyright_holders_set'\s*:/", $apiNoComments)
+);
+
+$holdersSetBody = $isolateCase($apiNoComments, 'song_copyright_holders_set');
+check("isolated the 'song_copyright_holders_set' case body", $holdersSetBody !== '');
+check(
+    'song_copyright_holders_set delegates to songCopyrightHoldersReplace() — the ONE #1900 write core',
+    $holdersSetBody !== '' && (bool)preg_match('/\bsongCopyrightHoldersReplace\s*\(/', $holdersSetBody)
+);
+check(
+    'song_copyright_holders_set does not resolve a publisher itself (no direct '
+        . 'publisherFindOrCreateByName()/publisherResolvePickedOrCreate() call) — that resolution '
+        . 'belongs ONLY to the core it delegates to, never a second inlined copy',
+    $holdersSetBody !== ''
+        && !preg_match('/\bpublisherFindOrCreateByName\s*\(|\bpublisherResolvePickedOrCreate\s*\(/', $holdersSetBody)
+);
+
+/* The single-writer unification's OTHER half: the pre-#1900 single-pick
+   write (ed2_songCopyrightHolderApply(), consumed by BOTH
+   song_copyright_holder_set and metadata_field_update's CopyrightHolder
+   alias) must ALSO delegate to the SAME core on a migrated install — proving
+   there is exactly one writer of tblSongCopyrightHolders + the
+   CopyrightHolder/CopyrightHolderId denorm regardless of which UI surface a
+   curator used (A.7). Isolated by function body (`function NAME(` to the
+   next top-level `function `) — the same "isolate, don't grep the whole
+   file" principle $isolateCase applies to a `case`, applied here to a PHP
+   function instead. */
+$phpFunctionBody = static function (string $src, string $name): string {
+    $start = strpos($src, 'function ' . $name . '(');
+    if ($start === false) { return ''; }
+    $next = strpos($src, "\nfunction ", $start + 10);
+    return substr($src, $start, $next === false ? strlen($src) : $next - $start);
+};
+$applyBody = $phpFunctionBody($apiNoComments, 'ed2_songCopyrightHolderApply');
+check('isolated the ed2_songCopyrightHolderApply() function body', $applyBody !== '');
+check(
+    'ed2_songCopyrightHolderApply() delegates to songCopyrightHoldersReplace() on a migrated install '
+        . '— the single-writer unification A.7 requires (no second CopyrightHolder/CopyrightHolderId '
+        . 'UPDATE path competing with the #1900 core)',
+    $applyBody !== '' && (bool)preg_match('/\bsongCopyrightHoldersReplace\s*\(/', $applyBody)
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";

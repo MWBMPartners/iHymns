@@ -111,6 +111,12 @@
 - Same frontend UI, different data source
 - API endpoint integration via REST
 
+The **#1860 permanent internal-id (ILID) model** — every song/songbook/Work/musician/tune/publisher/
+Collection/media row minting a grammar-disjoint permanent id and every relevant read path resolving
+either address form — is the live groundwork for this merge: ids are minted now, resolvers are already
+dual-addressed, and any cross-database (iLyricsDB-keyed) object stays gated behind the DB-merge decision
+this phase represents (CLAUDE.md rule #20).
+
 ---
 
 ## 🛠 Technology Stack
@@ -173,10 +179,10 @@ iHymns/
 ├── .github/                    # GitHub Actions CI/CD workflows
 │   └── workflows/
 │       ├── deploy.yml          # SFTP deployment (beta → live)
-│       ├── version-bump.yml    # Auto semver bump on commit
+│       ├── promotion-deploy-bridge.yml # RELEASE bump at beta→main promotion (#1899)
 │       ├── changelog.yml       # Auto-generate changelog
 │       ├── release.yml         # GitHub Releases from tags
-│       └── test.yml            # Lint & validation checks
+│       └── test.yml            # Lint & validation checks (14 workflows total)
 ├── .SourceSongData/            # Raw song text files (source of truth)
 │   ├── Carol Praise [CP]/
 │   ├── Junior Praise [JP]/
@@ -268,20 +274,15 @@ iHymns/
 7. Credentials via GitHub Secrets (`SFTP_HOST`, `SFTP_KEY`, etc.)
 6. `vars.SFTP_ENABLED` kill switch for deployment
 
-### Version Numbering (Automated Semver)
+### Version Numbering (Tag-Derived, #1899)
 
-| Version Range | Phase | Description |
-| --- | --- | --- |
-| `v1.x.x` | Phase 1 | Local song data (JSON from .SourceSongData) |
-| `v2.x.x` | Phase 2 | iLyrics dB backend integration |
-
-- Version stored in `appWeb/public_html/includes/infoAppVer.php`
-- Auto-bumped via GitHub Actions on every push to `beta`:
-  - `BREAKING CHANGE` or `!:` in commit → **major** bump
-  - `feat(...):` prefix → **minor** bump
-  - Everything else → **patch** bump
+- Version stored in `appWeb/public_html/includes/infoAppVer.php`; tag-derived `MAJOR.RELEASE.BUILD` scheme, baseline **`v1.0.0`**:
+  - **MAJOR** — hand-edited in `infoAppVer.php` (rare; a deliberate product-identity bump). *Note:* the major digit **no longer encodes a data-source phase** — the old "`v1.x` = local-JSON phase, `v2.x` = iLyrics dB phase" scheme is dead, because reads went DB-direct with epic #1010 (there is no local-JSON phase to be in).
+  - **RELEASE** — automated at the beta→main promotion by `promotion-deploy-bridge.yml`
+  - **BUILD** — the monotonic per-commit git commit count (`git rev-list --count HEAD`), `NULL` on an undeployed checkout
 - Build metadata (commit SHA, date, URL) injected at deploy time
-- Git tags (`v1.0.0`, `v1.0.0-beta`) trigger GitHub Releases
+- Git tags (`v1.0.0`) trigger GitHub Releases via `release.yml`
+- *(historical)* the old `feat/`-driven minor auto-bump on push to `beta` (`version-bump.yml`) is retired
 
 ### Modular Architecture Principles
 
@@ -449,7 +450,9 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ## 🗓 Milestones & Roadmap
 
-### Milestone 1: Project Setup & Data Pipeline ⬅️ CURRENT
+> **Live completion status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).** The Phase-ONE checklists below are the *original* scoping plan; in reality Milestones 1–3 and 6 (Web PWA core + enhanced, Song Editor) are complete and shipped, Apple (4–5) is Phase 1 + Phase 2 code-complete but unreleased, and Android (7) is a scaffold in progress. The app is at **v1.0.0** (tag-derived scheme, #1899).
+
+### Milestone 1: Project Setup & Data Pipeline ✅
 - [x] Analyse existing repo and song data
 - [ ] Clean up old implementation files
 - [ ] Set up new project structure
@@ -536,5 +539,5 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ---
 
-*Last updated: 2026-06-21*
-*Version: 0.1.0-planning*
+*Last updated: 2026-08-24*
+*Version: 0.1.0-planning (this planning document's own version; the app is at v1.0.0 — see PROJECT_STATUS.md)*

@@ -10,6 +10,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 /* Shared org-validation include (#719 PR 2c) — exports the
    ORG_MEMBER_ROLES const + slugifyOrganisationName(). Same helpers
@@ -439,6 +440,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Invalid request.';
                     break;
                 }
+                /* #1840 — the variant slot this upload targets; defaults to
+                   'default' so the pre-#1840 upload form (no `variant`
+                   field) keeps working byte-identically. Re-validated here
+                   even though orgLogoUpsert() validates again (rule #5). */
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
                 $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
                 $file    = $_FILES['logo_file'] ?? null;
                 $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
@@ -450,11 +460,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 try {
                     $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
-                    orgLogoUpsert($db, $orgId, $kind, 'default', $staged, $altText, (int)($currentUser['id'] ?? 0));
+                    orgLogoUpsert($db, $orgId, $kind, $variant, $staged, $altText, (int)($currentUser['id'] ?? 0));
                     logActivity('org.logo_upload', 'organisation', (string)$orgId, [
-                        'kind' => $kind, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                        'kind' => $kind, 'variant' => $variant, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
                     ]);
-                    $success = 'Logo uploaded.';
+                    $success = $variant === 'default' ? 'Logo uploaded.' : 'Theme version uploaded.';
                 } catch (\RuntimeException $e) {
                     $error = $e->getMessage(); // plain-English, safe to show verbatim (§4.4)
                 }
@@ -468,9 +478,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Invalid request.';
                     break;
                 }
-                orgLogoDelete($db, $orgId, $kind, 'default');
-                logActivity('org.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind]);
-                $success = 'Logo removed.';
+                $variant = (string)($_POST['variant'] ?? 'default');
+                if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                /* #1840 — removing the DEFAULT row cascades to its light/dark
+                   theme versions too; an explicit light/dark row removes
+                   just that one. */
+                if ($variant === 'default') {
+                    orgLogoDeleteKindAll($db, $orgId, $kind);
+                } else {
+                    orgLogoDelete($db, $orgId, $kind, $variant);
+                }
+                logActivity('org.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind, 'variant' => $variant]);
+                $success = $variant === 'default' ? 'Logo removed.' : 'Theme version removed.';
                 break;
             }
 
@@ -482,9 +504,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     break;
                 }
                 $active = !empty($_POST['active']);
-                orgLogoSetActive($db, $orgId, $kind, 'default', $active);
+                /* #1840 — kind-level toggle: one visibility switch per ASSET
+                   (every variant together), never a half-hidden kind. */
+                orgLogoSetActiveKind($db, $orgId, $kind, $active);
                 logActivity('org.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
                 $success = $active ? 'Logo shown again.' : 'Logo hidden.';
+                break;
+            }
+
+            case 'brand_save': {
+                /* #1840 §4.3 — org brand colour, system-admin surface.
+                   Column-existence-gated (rule #19). Same field-name shape
+                   as the logo_* cases above. */
+                $orgId = (int)($_POST['org_id'] ?? 0);
+                if ($orgId <= 0) {
+                    $error = 'Invalid request.';
+                    break;
+                }
+                if (!orgBrandColumnsExist($db)) {
+                    $error = 'Not available on this environment yet.';
+                    break;
+                }
+                $rawColour  = (string)($_POST['brand_colour'] ?? '');
+                $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+                if ($normalised === false) {
+                    $error = "That doesn't look like a colour code — use the picker or a value like #6a1b9a.";
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+                logActivity('org.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+                $success = $normalised === null ? 'Brand colour cleared.' : 'Brand colour saved.';
                 break;
             }
 
@@ -694,8 +743,12 @@ $csrf = csrfToken();
                         <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required>
                     </div>
                     <div class="col-sm-3">
-                        <label class="form-label small">Slug (optional, auto-derived)</label>
-                        <input type="text" name="slug" class="form-control form-control-sm" maxlength="100" placeholder="auto">
+                        <?= ihymns_slug_advanced_field([
+                            'value'       => '',
+                            'maxlength'   => 100,
+                            'placeholder' => 'auto',
+                            'small'       => true,
+                        ]) ?>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small">Parent organisation</label>
@@ -775,9 +828,19 @@ $csrf = csrfToken();
                                value="<?= htmlspecialchars($editOrg['Name']) ?>">
                     </div>
                     <div class="col-sm-3">
-                        <label class="form-label small">Slug</label>
-                        <input type="text" name="slug" class="form-control form-control-sm" maxlength="100" required
-                               value="<?= htmlspecialchars($editOrg['Slug']) ?>">
+                        <?php /* #1870 — the client `required` attribute is deliberately
+                                 DROPPED here: a `required` control inside a *closed*
+                                 <details> blocks form submit with browser focus aimed at
+                                 an invisible field. The server's own 'Slug is required.'
+                                 check (organisations.php's update handler) already
+                                 answers the empty case — status/server-truth over a
+                                 client-side claim, rule #35's spirit. No other slug
+                                 input in this partial's callers carries `required`. */ ?>
+                        <?= ihymns_slug_advanced_field([
+                            'value'     => $editOrg['Slug'],
+                            'maxlength' => 100,
+                            'small'     => true,
+                        ]) ?>
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small">Parent organisation</label>
@@ -908,6 +971,54 @@ $csrf = csrfToken();
                 </button>
             </form>
 
+            <!-- #1840 §4.3 — org brand colour (Share Card Option B). A SEPARATE
+                 form/action (brand_save) rather than folded into the "Save
+                 settings" form above — mirrors the logo_* cases' own
+                 standalone-form shape. Column-existence-gated (rule #19). -->
+            <?php if (orgBrandColumnsExist($db)):
+                $orgBrandColourVal = (string)($editOrg['BrandColor'] ?? '');
+            ?>
+            <div class="card-admin p-3 mb-3">
+                <h3 class="h6 mb-2"><i class="bi bi-palette me-2"></i>Brand colour</h3>
+                <form method="POST" class="row g-2 align-items-end small">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= (int)$editOrg['Id'] ?>">
+                    <div class="col-md-6">
+                        <?php
+                            /* Local vars consumed by the shared partial's
+                               documented contract — never a hand-rolled
+                               <input type="color"> here. */
+                            $name        = 'brand_colour';
+                            $value       = $orgBrandColourVal;
+                            $idPrefix    = 'edit-brand-colour';
+                            $label       = 'Brand colour';
+                            $placeholder = '#6a1b9a';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'colour-picker.php';
+                        ?>
+                    </div>
+                    <div class="col-md-auto">
+                        <button type="submit" class="btn btn-sm btn-amber-solid">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                    </div>
+                </form>
+                <?php if ($orgBrandColourVal !== ''): ?>
+                <form method="POST" class="d-inline mt-1">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="brand_save">
+                    <input type="hidden" name="org_id" value="<?= (int)$editOrg['Id'] ?>">
+                    <input type="hidden" name="brand_colour" value="">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Clear brand colour</button>
+                </form>
+                <?php endif; ?>
+                <p class="text-muted small mb-0">
+                    Used where iHymns shows this organisation's branding — for example the
+                    coloured band on shared set-list preview images.
+                </p>
+            </div>
+            <?php endif; ?>
+
             <?php /* #1830 — renders '' (nothing) on an un-migrated install (rule #19). */
                   echo orgLogoRenderAdminCard($db, (int)$editOrg['Id'], $csrf); ?>
 
@@ -1008,6 +1119,15 @@ $csrf = csrfToken();
         import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
         bootSortableTables();
     </script>
+
+    <?php if ($editOrg && orgBrandColumnsExist($db)): ?>
+    <!-- #1840 — swatch<->hex two-way binding for the Brand colour field
+         above, shared with songbooks.php rather than a bespoke handler. -->
+    <script type="module">
+        import { bootColourPickers } from '/js/modules/colour-picker.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/colour-picker.js') ?>';
+        bootColourPickers();
+    </script>
+    <?php endif; ?>
 
     <!-- Live location autocomplete on the Physical city inputs
          (both create form + edit form). Powered by /manage/places-api.php

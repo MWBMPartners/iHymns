@@ -516,6 +516,75 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
   `_share_revoke` all funnel through these. The edit audience resolves per-write; the mint response is
   the truth, not the request (CLAUDE.md rule #40).
 
+### ILID identity model (#1860) — the shared modules you MUST reuse, not re-fork
+
+`includes/ilyrics_id.php` is the ONE allocator. `IHYMNS_ILID_TYPES` is the ONE prefix → table registry
+(song `ILS`, work `ILW`, musician `ILM`, tune `ILT`, publisher `ILP`, catalogue `ILC`, songbook `ILB`,
+document/media `ILD`) — every function in the file derives its behaviour from this map; there is no
+second hardcoded prefix list anywhere. `ilidAllocate()` mints inside the CALLER's own transaction (no
+BEGIN/COMMIT of its own), reading `tblIlyricsIdSequence` with `SELECT … FOR UPDATE` plus a claim-check
+against `uq_IlId` so two concurrent creates can never collide. `ilidParse()` gives the tolerant human
+form (`'ILS12345'` → canonical `'ILS0000012345'`) and is what every dual-addressing resolver calls.
+**Dual-addressing branches on grammar, never on a guess**: a hyphen present means the public
+`<letters>-<digits>` SongId form; a hyphen-less token is tried against `ilidParse()` first. The pattern
+repeats identically in every resolver that accepts an IL id today (`SongData::getSongById()`,
+`includes/pages/{musician,publisher,tune}.php`, `song-media.php`): try/catch-swallowed, gated on an
+`INFORMATION_SCHEMA` probe of the entity's `IlId` column, falling through UNCHANGED on any miss (not an
+IL id, the column doesn't exist yet, or no row carries it) — so every one of these call sites is a
+verified no-op on an un-migrated install (the #1228 lesson). Never re-implement the parse/format fold,
+never hardcode a second prefix map, never skip the column-existence gate.
+
+### Report + Editor2 metadata cores (#1861 / #1862) — the shared modules you MUST reuse, not re-fork
+
+- **`includes/ccli_report.php`** — the ONE CCLI-report query core. `ccliReportWindow()` (shared date-range
+  parse), `ccliReportSystemRows()` (the system-wide query, with an org/Unattributed narrowing selector),
+  `ccliReportOrgRows()` (org-scoped, structurally incapable of an unscoped query — refuses to run without
+  a non-empty, membership-derived org-id list). `/manage/ccli-report` and `/manage/my-ccli-report` are
+  both thin page consumers.
+- **`includes/copyright_display.php`** — `ihymns_copyright_statement()`, the ONE copyright-line
+  precedence fold (structured years+holder wins over the legacy free-text `Copyright` column whenever
+  either half is non-empty). Shared, via a fixture-driven lockstep test, with the JS twin in
+  `manage/editor/v2/metadata-tab.js`'s `ihymnsCopyrightPreview()` — never re-type the fold in JS.
+- **`includes/pd_suggest.php`** — the public-domain suggestion fold: a credited contributor's death date
+  (life + a fixed 70-year constant) first, falling back to `tblAppSettings.pd_publication_year_threshold`
+  (admin-configurable on `/manage/configuration`, default 1900) when no death date is on record. Suggests
+  only — never auto-ticks a Public Domain checkbox.
+- **`includes/song_media_flags.php`** — `HasAudio`/`HasSheetMusic` auto-maintained from `tblSongMedia`;
+  the editor's old manual checkboxes are gone (rule #44 — don't collect what can be derived).
+
+### Medley composition + component labels (#1907, #1860 Phase 5) — the shared modules you MUST reuse, not re-fork
+
+Wired the dormant #1860 work-identity schema and added one column, on commits `417a9160`→`734b6f29`
+(branch `claude/ilyrics-identity-work-model`). Full design: `.claude/medley-component-work-1860-phase5-plan.md`;
+contract in CLAUDE.md rule #45. Before touching medley/component-metadata code, reach for these:
+
+- **`workMedley*()`** in `includes/work_admin.php` — the ONE medley core
+  (`…Ready`/`…Constituents`/`…ConstituentsMap`/`…WouldCycle`[bounded-depth BFS, self-link + cycle guards]/
+  `…Attach`[idempotent `ON DUPLICATE KEY UPDATE MedleyWorkId=MedleyWorkId` — keep-existing, NEVER
+  overwrites a curator row]/`…Replace`) over `tblWorkComponents(MedleyWorkId, ComponentWorkId, SortOrder)`
+  (M:N "contains", deliberately NOT `ParentWorkId` = "is-a-variant-of", rule #14). Both consumers — the
+  `/manage/works` "Constituent works (medley)" editor (gate `manage_works`) and the `component_upsert`
+  §3.6b.2 additive-only, non-blocking lockstep from `tblSongComponents.SourceWorkId` — delegate to it.
+- **The thin-row component metadata** — the NEW `tblSongComponents.Label VARCHAR(100)` (custom section
+  name, e.g. "Kyrie"/"isiZulu") and `tblSongComponents.SourceWorkId` (per-section Work provenance) are
+  siblings of `Language` (#858), carried on the SAME `component_upsert`/`lyricLinesWriteComponents()`
+  funnel — **never the `tblLyricLines` line path** (rule #25 untouched — no line content). `Label` is
+  **DISPLAY-ONLY**: `Type` stays authoritative for CSS/chorus-highlight, arrangement resolution, and every
+  machine-export keyword, so `format-export.js`/`propresenter-export.js` carry **ZERO `.label`** (a
+  free-text label in an exporter breaks re-import). D1 hide-when-equal is server-side in `component_upsert`
+  (a label equal to the derived "Type Number" stores NULL, rule #27).
+- **The read/write seams** — `includes/lyric_lines_read.php` emits `label` **SPARSELY** in the public
+  shape (key present only when set, so the strict-`===` `test-lyric-lines-read.php` contract + 16k-song
+  byte-parity hold) and always-present `label`/`sourceWorkId` in the editor shape. The write path is
+  **silent-wipe-proof in THREE layers** (handler target-preserve + read-modify-write carry + writer
+  provided-flag preserve via `array_key_exists`) because `components_replace` (FIFO carry) and
+  `save_song_core` (PF1 carry) each rebuild a fixed shape and would otherwise NULL every label — an
+  omitted key means "preserve", explicit `null` means "clear". ONE shared column probe
+  (`lyricLinesComponentExtrasPresent()`, rule #35) gates every SELECT so nothing throws under STRICT on
+  an un-migrated install. The tree-derived, mutation-proven `tests/test-component-label-sites.js`
+  enumerates every deriver render site and asserts each reads `.label` (it already caught a `preview-tab.js`
+  gap the typed sweep missed, rule #33).
+
 ---
 
 ## 🚀 Deployment Architecture
@@ -544,18 +613,26 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
 | --- | --- |
 | `[deploy all]` | Force full SFTP upload even if no files changed |
 | `[skip sync]` | (Deprecated — no longer used) |
-| `[skip ci]` | Skip changelog, version-bump, and deploy workflows |
+| `[skip ci]` | Skip changelog and deploy workflows |
 
 ### Version Numbering
 
-- **Semver**: `v1.x.x` (Phase 1 — local JSON) / `v2.x.x` (Phase 2 — iLyrics dB)
-- Auto-bumped via conventional commits on `beta`:
-  - `BREAKING CHANGE` or `!:` → major bump
-  - `feat(...):` → minor bump
-  - Everything else → patch bump
-- Version stored in `appWeb/public_html/includes/infoAppVer.php`
-- Build metadata (SHA, date) injected at deploy time
-- Git tags `v*` trigger GitHub Releases
+**Tag-derived scheme (#1899).** The DEPLOYED version is `MAJOR.RELEASE.BUILD`:
+- **MAJOR** — hand-edited in `appWeb/public_html/includes/infoAppVer.php` (rare — a product-identity decision; also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z`). Baseline reset to `1.0.0`.
+- **RELEASE** (minor) — the minor of the latest production `v*` tag; a `vMAJOR.RELEASE.0` tag is cut automatically at each **beta→main promotion** by `promotion-deploy-bridge.yml` (RELEASE = the previous tag's minor + 1).
+- **BUILD** (patch) — the git commit count (`git rev-list --count HEAD`), a monotonic per-commit id.
+- `deploy.yml` injects RELEASE + BUILD at deploy time (the same no-commit-back sed as the SHA/date); an untagged checkout deploys the committed `infoAppVer.php` value unchanged.
+- The old conventional-commit auto-bumper (`version-bump.yml`) that ballooned the minor to 5250 is **RETIRED**; `api-docs.yaml`'s `info.version` stays in lockstep with the committed semver via a CI guard (`test-openapi-actions-exist.php`). Pushed `v*` tags trigger `release.yml` (GitHub Release + notes).
+
+**Build Number.** Alongside the human-facing semver, `infoAppVer.php`'s
+`Application.Version.Build.Number` carries a **monotonic per-commit build id** —
+`git rev-list --count HEAD`, injected by `deploy.yml`'s "Inject build info into infoAppVer.php" step
+using the same sed-injection mechanism as the SHA/date. It is `NULL` on any checkout that hasn't been
+through a deploy (local dev, CI). Where semver answers "which release is this" (and can repeat across
+many commits between bumps), the build number answers "which commit, precisely" — monotonically
+increasing, one per commit, never reset. `api-docs.yaml`'s `info.version` is kept in lockstep with the
+semver number by the same workflow (a dedicated step + a CI guard, `test-openapi-actions-exist.php`) —
+the build number is NOT part of that lockstep, since it has no equivalent field in the OpenAPI spec.
 
 ### Application IDs (per-platform)
 
@@ -572,7 +649,6 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
 | Workflow | Purpose |
 | --- | --- |
 | `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583) and media excludes (#1584) |
-| `version-bump.yml` | Auto-bumps `infoAppVer.php` from conventional commits on push to `alpha` **or** `beta` (#1595/#1596 — previously beta-only); on `alpha` it also closes the `CHANGELOG.md` `## [unreleased] — alpha` section into the new version heading (#1589). The commit message it bumps from is passed to the bump script as an **environment variable**, never interpolated into a `run:` shell body (#1622 — a commit message is attacker-controllable text, and `${{ }}`-into-`run:` pastes it into the script before the shell parses anything) |
 | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
 | `release.yml` | Creates a GitHub Release + extracts notes when a `v*` tag is pushed |
 | `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |
@@ -584,7 +660,7 @@ segmenter/scorer. Read-only for song content; CI-enforced by `tests/php/test-ia-
 | `build-android.yml` | Builds/distributes the Android app (Play Store, Amazon Appstore/Fire OS, direct APK) |
 | `maintenance-ha-integrity-audit.yml` | Monthly cross-source integrity audit (#699 Phase C) against the Spanish "Himnario Adventista" (HA) songbook |
 | `maintenance-issues-sweep.yml` | Monthly sweep that closes GitHub issues referenced by `closes #N` in commits merged to `alpha` but never auto-closed (GitHub only auto-closes on the default branch) |
-| `promotion-deploy-bridge.yml` | Fires the SFTP deploy when a promotion PR *merges* into `beta`/`main` (works around the `GITHUB_TOKEN` anti-recursion rule suppressing `deploy.yml`'s push trigger) |
+| `promotion-deploy-bridge.yml` | On a merged beta→main promotion PR, cuts the `vMAJOR.RELEASE.0` release tag, then dispatches deploy + `release.yml` + the CHANGELOG rollover (`scripts/roll-changelog.py`) (#1899) |
 
 ---
 
@@ -1213,9 +1289,17 @@ limits need **no further migration** (rule #20).
 | search | `search` | 120/min |
 | `songs_index` | `songs_index` | 120/min |
 | `related_songs` | `related_songs` | 240/min |
-| bulk (`bulk_songs` / `bulk_audio` / …) | `bulk` | 60/min |
+| `songbook_export` | `export` | 60/min |
+| bulk (`bulk_songs` / `bulk_audio`) | `bulk` | 60/min |
 
 Limits are deliberately **generous** — real clients never trip them; abusive volume does.
+
+`songbook_export` moved to its own `export` bucket (#1571) — it used to share
+`bulk` with `bulk_songs`/`bulk_audio`, so a curator's export click could
+contend with a device's background offline sync for the same counter even
+though the two are unrelated actors. Same 60/min limit either way; the split
+is purely about independence, and `$scope` being a free string (rule #20)
+made it a one-word change with no schema impact.
 
 ### Keyed per token-or-IP
 
@@ -1740,6 +1824,72 @@ delta + stress test + commit-by-commit plan:
 
 ---
 
+## 🛡 Routing & security hardening (#1905 / #1906)
+
+### Real 404s for unknown routes (#1905)
+
+The `.htaccess` catch-all used to answer **every** unmatched path with `200` + the SPA
+shell — so a `/wp-admin/` scanner probe or any typo'd URL returned a soft `200` that read
+as "page exists" to crawlers and log analysis. #1905 splits the decision by locality:
+**scanner-probe paths 404 at the web-server edge** (cheap, before PHP boots), **every other
+unknown path 404s at the front controller** while genuine app routes still receive the
+shell. The valid-route list is **derived from the app's own pages** (a new page is
+recognised automatically, never a hand-maintained allow-list — rule #34), and a CI guard
+keeps it in lockstep with the client router so the two can't drift. This does **not** change
+the #1566 static-asset-fetch trap (an unmatched *asset* path can still resolve to the shell
+for a browser `fetch()`; keep using root-absolute URLs + `apiFetchJson()`).
+
+### Defensive hardening pass (#1906)
+
+Entirely defensive; **no user-visible behaviour change**. Registration + email-code
+brute-force protections now actually engage (the registration throttle was **dead code**;
+the email-code check was per-IP only → a **per-email** bucket was added). A
+session-fixation gap on cross-surface admin sign-in is closed
+(`session_regenerate_id`). The `/manage` admin area and the social-card `og-image.php`
+endpoint gained security headers / CSP, and copyrighted lyrics no longer leak via the
+share-image endpoint when content-locking is on. Several heavy public endpoints
+(`og-image`, `random`, `song_of_the_day`, media) gained rate limits (the #1354 pattern), and
+error responses now carry the security headers (`Header always set`). **`X-Powered-By` now
+advertises our own `iHymns/<version>` identity while the PHP runtime version is suppressed at
+source (`expose_php=Off`).** Owner/host-gated remainder (`Options -Indexes`,
+`ServerSignature Off`) still pending an alpha check.
+
+---
+
+## 🩹 Behavioural fixes (#1667 · #1673/#1896 · #1699 · #1710)
+
+- **Org-admin Service Mode nav parity (#1667).** Organisation admins were always *allowed*
+  to use the Service Mode tools (Projector Screen, Lead a Service) but the **menu links**
+  were gated too broadly, so they never saw them. The nav visibility now matches the page
+  gate — the #1587 nav↔gate-parity discipline applied to Service Mode.
+- **Bulk-import rights passthrough (#1673 / #1896).** Bulk imports were silently **blanking**
+  the copyright line, CCLI number, ISWC and public-domain flags the source file provided, for
+  **every** format. They are now carried through — fixing the CCLI-report undercount of
+  imported songs and letting an imported song auto-link to its Work by identifier (#1860).
+  Writers/composers credits remain a follow-up (#1904).
+- **Shared live set-list expiry (#1699).** A shared **live** set-list link now stops serving
+  once the **owner's** per-set-list expiry passes; previously it honoured only the link's own
+  expiry, so an expired set-list kept serving on the anonymous share/social surfaces. Expired
+  → "no longer shared" (410 / empty), **no data deleted** — the resolver reads the set-list's
+  own `ExpiresAt`, not just the share token's.
+- **Signed-in sync notice (#1710).** A signed-in user was wrongly told to "Sign in to sync…"
+  on Settings. `api.php` now resolves `$currentUser` for **non-cacheable** fragments so a
+  personalised fragment sees the viewer; **cacheable** fragments stay un-personalised for
+  shared-cache safety (rule #6), and a mutation-proven guard keeps that split honest.
+
+---
+
+## 🧩 Conventions & gotchas from the 2026-08-24 batch (`claude/ilyrics-identity-work-model`)
+
+Full feature detail is in `CHANGELOG.md`'s `[unreleased]` section — the notes below are only the *developer* conventions/gotchas this batch introduced or reinforced.
+
+- **Theme-aware admin surfaces (#1713).** Never hardcode Bootstrap `bg-dark` (or other fixed-dark utilities) on a `/manage/*` page — they leave stray dark boxes for anyone on Light / high-contrast / System-light. Use the theme-following tokens (`bg-body-tertiary`, `text-bg-secondary`, `border-secondary`, …). The batch removed 94 such utilities across 19 admin files; the only surfaces that stay deliberately dark are the projector overlay and the share-card canvas. This is the `admin-theme-init.php` discipline (#955) applied to background utilities.
+- **Outbound webhooks (#1909) are entirely dormant + channel-walled.** Three additive tables, one migration; nothing emits or delivers until `webhooks_enabled_channels` names a channel (verified byte-identical no-op while off). A subscription is walled to the **channel** it was created on (alpha / beta / prod share one MySQL but never each other's webhook traffic — same trap as Service Mode's `Channel`). Payloads are **identity + metadata only, never content** (no lyrics/media/tokens/join codes). The dialer is SSRF-hardened for an attacker-controlled target (https-only, DNS pre-resolution + private/reserved-range truth table incl. IPv4-mapped/NAT64/6to4/IPv4-compatible IPv6, IP-pin, no redirects); the editor-save emit runs **post-commit**, never inside the save transaction. Retries drain via the key-authed `/webhook-drain.php` (cron / uptime monitor) with a traffic-driven piggyback fallback.
+- **`/search` typeahead (#1936) adds no endpoint.** It reuses `?action=search` at a low limit — do **not** reintroduce a `?action=suggest` endpoint or a schema. Its reachability chain (`router → initSearchPage → _initSuggest → panel`) is asserted by `tests/test-search-typeahead.js` — the exact wiring #307 lacked when it shipped "built, reachable from nowhere".
+- **Field-level blame (#1122) tolerates three snapshot shapes.** The pure `blameFromSnapshots()` walk over `tblSongRevisions` must fold the historical shapes (a 2022 lowercase `title`, a 2024 `Title`, and the current v2 shape) into one field, and must never confuse a field *absent* in an older shape with one that was *cleared*. Branch on the snapshot shape; never assume the current key casing.
+
+---
+
 > **Platform status:** Web/PWA is the active production app. Apple is
 > **Phase 1 + Phase 2 code-complete** (iHymnsKit SwiftPM package; watch relay,
 > tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled
@@ -1748,4 +1898,4 @@ delta + stress test + commit-by-commit plan:
 > deployment-secrets and store-submission sections above describe the intended
 > CI/CD pipeline for when it ships.
 
-Last updated: 2026-07-28
+Last updated: 2026-08-24

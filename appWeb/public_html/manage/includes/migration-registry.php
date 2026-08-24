@@ -2359,16 +2359,66 @@ return [
     'search-synonyms' => [
         'script' => 'migrate-search-synonyms.php',
         'card' => [
-            'title'  => 'Search synonyms + diacritic folding (#1142)',
-            'body'   => 'Creates <code>tblSearchSynonyms</code> and adds a'
+            'title'  => 'Search synonyms + diacritic folding (#1142 / #1039)',
+            'body'   => 'Creates <code>tblSearchSynonyms</code>, adds the'
                       . ' diacritic-folded <code>tblSongs.LyricsTextFolded</code> +'
-                      . ' FULLTEXT index for accent-insensitive search'
-                      . ' (Noël↔Noel, Saviour↔Savior). Additive + idempotent.',
+                      . ' the three folded FULLTEXT indexes'
+                      . ' (<code>ft_LyricsTextFolded</code>, <code>ft_NormalizedTitle</code>,'
+                      . ' <code>ft_NormTitleLyricsFolded</code>) and backfills the folded'
+                      . ' columns for accent/apostrophe-insensitive search'
+                      . ' (Miłość↔milosc, aren’t↔arent, Noël↔Noel). Additive + idempotent.',
             'button' => 'Run Search Synonyms Migration',
         ],
+        /* #1039 Part A — OR-in the two NEW FULLTEXT indexes AND a backfill-
+           completeness data check, so an install that ran the #1142 v1 (column +
+           ft_LyricsTextFolded only) correctly RE-PENDS until the read-path
+           indexes exist and every lyrics-bearing row has been folded. Gate on
+           the INDEXES (not just the column) — a half-migrated install would
+           throw on the dual-arm MATCH(). */
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblSearchSynonyms')
-            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded'),
+            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded')
+            || !_migProbe_indexExists($db, 'tblSongs', 'ft_NormalizedTitle')
+            || !_migProbe_indexExists($db, 'tblSongs', 'ft_NormTitleLyricsFolded')
+            || _migProbe_hasUnfoldedLyrics($db),
+    ],
+
+    'refold-search-columns' => [
+        'script' => 'migrate-refold-search-columns.php',
+        'card' => [
+            'title'  => 'Refold search columns (fold v2, #1908)',
+            'body'   => 'Recomputes <code>tblSongs.NormalizedTitle</code> and'
+                      . ' <code>tblSongs.LyricsTextFolded</code> with the fixed,'
+                      . ' Unicode-preserving fold (#1908 Commit 1) — the old fold'
+                      . ' folded every non-Latin title/lyrics (CJK, Cyrillic, Greek,'
+                      . ' Thai, …) to an empty string, making those songs invisible to'
+                      . ' the folded FULLTEXT/LIKE search arms. Pure data recompute, no'
+                      . ' schema change. <strong>Run only after Commit 1 is deployed to'
+                      . ' all three docroots</strong> (main/beta/alpha share one DB) —'
+                      . ' an older docroot still saving with the old fold would re-stale'
+                      . ' rows it writes. Afterwards, re-run'
+                      . ' <code>includes/tools/build-song-link-suggestions.php</code> so'
+                      . ' fuzzy-duplicate suggestion scores refresh (harmless to defer).'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run Refold Search Columns Migration',
+        ],
+        /* Sentinel idiom (rule #19), modelled on email-login-token-hashing
+           above: pending until the migration's terminal write lands
+           tblAppSettings.search_fold_version = '2'. The migration itself
+           gates on tblSongs.NormalizedTitle existing and exits WITHOUT
+           writing the sentinel when it doesn't (§2 of the #1908 plan) — so
+           on a column-less install this probe correctly stays PENDING rather
+           than reporting a false "applied". NOT 'manual': safe for
+           "Apply all" — a fresh/empty install just walks zero rows. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'search_fold_version' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            return !($row && (string)$row[0] === '2');
+        })($db),
     ],
 
     'source-documents' => [
@@ -3066,44 +3116,46 @@ return [
     ],
 
     /* ----------------------------------------------------------------------
-     * X6 / #1685 — reword the captcha_* / ads_* seed descriptions as RESERVED.
-     * Six tblAppSettings rows described providers/toggles that no code in
-     * this repo has ever read (orphan inventory §6.2) — the same species of
-     * doc-vs-code lie #1668 fixed for ccli_validation_enabled, except these
-     * six describe plausible FUTURE features rather than an actively
-     * misleading security switch, so the remediation plan's default is
-     * REWORD, not delete. schema.sql's INSERT IGNORE seed already carries
-     * the corrected text for fresh installs; only a migration reaches the
-     * Description column on an existing row. Never touches SettingValue —
-     * no operator-set value changes, nothing here can alter behaviour (the
-     * six keys have no reader either way). Not `manual`: safe inside
-     * "Apply all pending".
+     * X6 / #1685 — reword the ads_* seed descriptions as RESERVED.
+     * These tblAppSettings rows described toggles that no code in this repo
+     * has ever read (orphan inventory §6.2) — the same species of doc-vs-code
+     * lie #1668 fixed for ccli_validation_enabled, except these describe a
+     * plausible FUTURE feature rather than an actively misleading security
+     * switch, so the remediation plan's default is REWORD, not delete.
+     * schema.sql's INSERT IGNORE seed already carries the corrected text for
+     * fresh installs; only a migration reaches the Description column on an
+     * existing row. Never touches SettingValue — nothing here can alter
+     * behaviour. Not `manual`: safe inside "Apply all pending".
+     *
+     * NARROWED (#947/#340): this card ORIGINALLY covered six rows, including
+     * the three captcha_* rows. Those are now a REAL, server-verified control
+     * (includes/captcha.php) and are un-reserved by the separate
+     * 'wire-captcha-settings' card below — so this one keeps only the three
+     * ads_* rows. The two never touch the same rows.
      * -------------------------------------------------------------------- */
     'fix-captcha-ads-descriptions' => [
         'script' => 'migrate-fix-captcha-ads-descriptions.php',
         'card' => [
-            'title'  => 'Reword captcha/ads seed descriptions (#1685)',
-            'body'   => 'Rewords the <code>Description</code> of six'
-                      . ' <code>tblAppSettings</code> rows — <code>captcha_provider</code>,'
-                      . ' <code>captcha_site_key</code>, <code>captcha_secret_key</code>,'
-                      . ' <code>ads_enabled</code>, <code>ads_provider</code>,'
-                      . ' <code>ads_publisher_id</code> — to say plainly that nothing reads'
-                      . ' them yet, instead of describing bot-protection / advertisement'
-                      . ' features that do not exist in this codebase. Only the description'
-                      . ' text changes; operator-set values are untouched. Idempotent.',
-            'button' => 'Reword Captcha/Ads Descriptions',
+            'title'  => 'Reword ads seed descriptions (#1685)',
+            'body'   => 'Rewords the <code>Description</code> of three'
+                      . ' <code>tblAppSettings</code> rows — <code>ads_enabled</code>,'
+                      . ' <code>ads_provider</code>, <code>ads_publisher_id</code> — to say'
+                      . ' plainly that nothing reads them yet, instead of describing an'
+                      . ' advertisement feature that does not exist in this codebase. Only'
+                      . ' the description text changes; operator-set values are untouched.'
+                      . ' Idempotent. (The captcha_* rows this card once also covered are'
+                      . ' now wired — see "Wire CAPTCHA settings" below.)',
+            'button' => 'Reword Ads Descriptions',
         ],
         /* Multi-row probe (rule #19 discipline applied to a data migration —
-           not just DDL): pending while ANY of the six rows still carries text
-           that is not the reworded RESERVED text, so a partial run (e.g. the
-           connection dropped after row 3 of 6) never shows the card green. A
-           fresh install passes trivially because schema.sql already seeds the
-           corrected text; a very old install missing one of the six rows
-           entirely also can't block "applied" — a missing row has nothing
-           misleading to reword. */
+           not just DDL): pending while ANY of the three rows still carries
+           text that is not the reworded RESERVED text, so a partial run never
+           shows the card green. A fresh install passes trivially because
+           schema.sql already seeds the corrected text; a very old install
+           missing one of the rows entirely also can't block "applied" — a
+           missing row has nothing misleading to reword. */
         'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
-            $keys = ['captcha_provider', 'captcha_site_key', 'captcha_secret_key',
-                     'ads_enabled', 'ads_provider', 'ads_publisher_id'];
+            $keys = ['ads_enabled', 'ads_provider', 'ads_publisher_id'];
             $placeholders = implode(',', array_fill(0, count($keys), '?'));
             $stmt = $db->prepare(
                 "SELECT COUNT(*) AS c FROM tblAppSettings"
@@ -3115,6 +3167,66 @@ return [
             $row = $stmt->get_result()->fetch_assoc();
             $stmt->close();
             return ((int)($row['c'] ?? 0)) > 0;   /* any non-reworded row → still pending */
+        })($db),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #947/#340 — wire the CAPTCHA settings. The three captcha_* rows became a
+     * REAL, server-verified control (includes/captcha.php, the account-security
+     * pack), so this migration:
+     *   (a) INSERT IGNOREs the new captcha_enabled_forms CSV row (seed '' =
+     *       nothing gated — a growable vocabulary as a CSV, no ENUM/SET, no DDL
+     *       — rule #20), and
+     *   (b) un-reserves the three captcha_* descriptions (from the old
+     *       "RESERVED — not wired yet (#1685)" text to describe the real
+     *       wiring). The sibling 'fix-captcha-ads-descriptions' above was
+     *       narrowed to ads_* in the same change, so the two never fight.
+     * Purely additive + a description reword — dormant end to end (no form is
+     * gated until an admin configures a provider AND ticks a form). Never
+     * touches an operator-set SettingValue. Not `manual`: safe inside "Apply
+     * all pending".
+     * -------------------------------------------------------------------- */
+    'wire-captcha-settings' => [
+        'script' => 'migrate-wire-captcha-settings.php',
+        'card' => [
+            'title'  => 'Wire CAPTCHA settings (#947/#340)',
+            'body'   => 'Adds the <code>captcha_enabled_forms</code> setting (CSV of forms'
+                      . ' the human-check guards; empty = none) and un-reserves the'
+                      . ' <code>captcha_provider</code> / <code>captcha_site_key</code> /'
+                      . ' <code>captcha_secret_key</code> descriptions now that the CAPTCHA'
+                      . ' control is real (includes/captcha.php — Turnstile / hCaptcha /'
+                      . ' reCAPTCHA v2). Additive + a description reword; the feature stays'
+                      . ' fully dormant until a provider + both keys are configured and a'
+                      . ' form is ticked on /manage/configuration. Idempotent.',
+            'button' => 'Wire CAPTCHA Settings',
+        ],
+        /* Multi-object OR-probe (rule #19): pending while EITHER the new row is
+           absent OR captcha_provider still carries the old RESERVED text — so a
+           partial apply (row inserted but the reword failed, or vice versa)
+           never shows the card green. A fresh install passes trivially
+           (schema.sql seeds both the row and the wired text). */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $rowMissing = (function (\mysqli $db): bool {
+                $stmt = $db->prepare(
+                    "SELECT COUNT(*) AS c FROM tblAppSettings WHERE SettingKey = 'captcha_enabled_forms'"
+                );
+                $stmt->execute();
+                $r = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                return ((int)($r['c'] ?? 0)) === 0;
+            })($db);
+            $stillReserved = (function (\mysqli $db): bool {
+                $stmt = $db->prepare(
+                    "SELECT COUNT(*) AS c FROM tblAppSettings"
+                    . " WHERE SettingKey = 'captcha_provider'"
+                    . " AND Description LIKE 'RESERVED —%'"
+                );
+                $stmt->execute();
+                $r = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                return ((int)($r['c'] ?? 0)) > 0;
+            })($db);
+            return $rowMissing || $stillReserved;   /* either half incomplete → still pending */
         })($db),
     ],
 
@@ -3931,6 +4043,39 @@ return [
             || !_migProbe_tableExists($db, 'tblPublisherExternalLinks'),
     ],
 
+    'copyright-holder-registry' => [
+        'script' => 'migrate-copyright-holder-registry.php',
+        'card' => [
+            'title'  => 'Copyright Holder registry link (#1864)',
+            'body'   => 'Adds <code>tblWorks.CopyrightHolderId</code> (+ <code>idx_CopyrightHolderId</code>'
+                      . ' and the trailing <code>fk_Works_CopyrightHolder</code> FK) so the Works Copyright'
+                      . ' Holder picker can link to a real <code>tblPublishers</code> row, plus the DORMANT'
+                      . ' <code>tblSongs.CopyrightHolderId</code> sibling (+ index + FK) for the future'
+                      . ' Editor2 song-level field (#1862) — one-pass batch, rule #20. Both'
+                      . ' <code>CopyrightHolder</code> free-text columns are UNCHANGED and stay the'
+                      . ' JOIN-free denorm display mirror. The FKs need <code>tblPublishers</code> to exist'
+                      . ' first (run &ldquo;Publishers registry&rdquo; above if this card warns about it);'
+                      . ' both columns apply regardless. No backfill — existing free-text holders resolve'
+                      . ' lazily on next save. Additive, idempotent, dormant on tblSongs — safe to re-run.',
+            'button' => 'Run Copyright Holder Registry Migration',
+        ],
+        /* Multi-object OR-probe (rule #19 — a partial apply never shows
+           green). The FK clauses are conditioned on tblPublishers existing
+           (the 'publication-metadata' idiom) so this card doesn't stay
+           permanently pending on an install that deliberately hasn't run
+           'publishers-entity' yet — the registry ORDER (this entry right
+           after 'publishers-entity') is what resolves that for "Apply all
+           pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'CopyrightHolderId')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightHolderId')
+            || !_migProbe_indexExists($db, 'tblWorks', 'idx_CopyrightHolderId')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_CopyrightHolderId')
+            || (_migProbe_tableExists($db, 'tblPublishers')
+                && (!_migProbe_constraintExists($db, 'tblWorks', 'fk_Works_CopyrightHolder')
+                 || !_migProbe_constraintExists($db, 'tblSongs', 'fk_Songs_CopyrightHolder'))),
+    ],
+
     'consolidate-org-licences' => [
         'script' => 'migrate-consolidate-org-licences.php',
         'card' => [
@@ -4176,5 +4321,253 @@ return [
         ],
         /* Single-object existence probe (real, never `=> true`) — rule #19. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLogos'),
+    ],
+
+    'ilyrics-internal-ids' => [
+        'script' => 'migrate-ilyrics-internal-ids.php',
+        'card' => [
+            'title'  => 'iLyrics Internal IDs (#1860)',
+            'body'   => 'Creates <code>tblIlyricsIdSequence</code> (the per-entity-type'
+                      . ' allocator for the sequential <code>IL*</code> internal ids,'
+                      . ' seeded one row per entity family) and adds the'
+                      . ' <code>IlId VARCHAR(16) NULL</code> column +'
+                      . ' <code>uq_IlId</code> UNIQUE key to <code>tblSongs</code>,'
+                      . ' <code>tblWorks</code>, <code>tblMusicians</code>,'
+                      . ' <code>tblTunes</code>, <code>tblPublishers</code>,'
+                      . ' <code>tblCatalogues</code>, <code>tblSongbooks</code> and'
+                      . ' <code>tblSongMedia</code> (format <code>ILS0000012345</code> —'
+                      . ' no separator, provably disjoint from the public'
+                      . ' <code>MP-1008</code> SongId grammar). Additive, idempotent,'
+                      . ' DORMANT — nothing reads or mints any of it until the Phase-2'
+                      . ' backfill/mint lands. Safe to re-run.',
+            'button' => 'Run iLyrics Internal IDs Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. PENDING until the
+           allocator table AND every one of the eight IlId columns exist; the
+           migration creates+seeds the table BEFORE the ALTERs, so any partial
+           apply (including a failed seed) leaves at least one column absent and
+           the card correctly stays pending. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblIlyricsIdSequence')
+            || !_migProbe_columnExists($db, 'tblSongs', 'IlId')
+            || !_migProbe_columnExists($db, 'tblWorks', 'IlId')
+            || !_migProbe_columnExists($db, 'tblMusicians', 'IlId')
+            || !_migProbe_columnExists($db, 'tblTunes', 'IlId')
+            || !_migProbe_columnExists($db, 'tblPublishers', 'IlId')
+            || !_migProbe_columnExists($db, 'tblCatalogues', 'IlId')
+            || !_migProbe_columnExists($db, 'tblSongbooks', 'IlId')
+            || !_migProbe_columnExists($db, 'tblSongMedia', 'IlId'),
+    ],
+
+    'work-identity-model' => [
+        'script' => 'migrate-work-identity-model.php',
+        'card' => [
+            'title'  => 'Work identity model (#1860 Phase 3)',
+            'body'   => 'Creates <code>tblWorkExternalIds</code> (extensible work-grain'
+                      . ' external-ID overflow, table-wide <code>(IdType, IdValue)</code>'
+                      . ' UNIQUE) and <code>tblWorkComponents</code> (medley composition'
+                      . ' — a Work with its own CCLI CONTAINS independent constituent'
+                      . ' Works, M:N, distinct from the <code>ParentWorkId</code> variant'
+                      . ' hierarchy), and adds <code>tblSongComponents.SourceWorkId</code>'
+                      . ' (nullable FK — per-section medley source provenance,'
+                      . ' <code>ON DELETE SET NULL</code>). Requires <code>tblWorks</code>'
+                      . ' — run &ldquo;Works&rdquo; above first if this card warns about'
+                      . ' it. Additive, idempotent, DORMANT — nothing reads or writes any'
+                      . ' of it until the work-link write core and Phase-5 editors land.'
+                      . ' Safe to re-run.',
+            'button' => 'Run Work Identity Model Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — never `=> true`. Every object this
+           script creates must exist before the card shows green; a partial apply
+           (e.g. tables created but the SourceWorkId FK step failed) correctly
+           stays pending. All FKs need tblWorks, so — like 'works-identity' — this
+           stays pending on an install that hasn't run 'works' yet; registry ORDER
+           resolves that for "Apply all pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblWorkExternalIds')
+            || !_migProbe_tableExists($db, 'tblWorkComponents')
+            || !_migProbe_columnExists($db, 'tblSongComponents', 'SourceWorkId')
+            || !_migProbe_indexExists($db, 'tblSongComponents', 'idx_SourceWork')
+            || !_migProbe_constraintExists($db, 'tblSongComponents', 'fk_Component_SourceWork'),
+    ],
+
+    'song-pd-from-year' => [
+        'script' => 'migrate-song-pd-from-year.php',
+        'card' => [
+            'title'  => 'Public-domain suggestion (#1862)',
+            'body'   => 'Adds <code>tblSongs.LyricsPdFromYear</code> / <code>MusicPdFromYear</code>'
+                      . ' (the &ldquo;first year this part is suggested public domain under life+70&rdquo;'
+                      . ' denorm the Editor2 metadata tab hints from) and backfills every existing song'
+                      . ' via the shared <code>pdRecomputeForSong()</code> fold. NEVER auto-sets the'
+                      . ' <code>LyricsPublicDomain</code> / <code>MusicPublicDomain</code> checkboxes — a'
+                      . ' suggestion only, always adopted by an explicit curator click. Additive,'
+                      . ' idempotent (the backfill is write-if-changed) — safe to re-run.',
+            'button' => 'Run PD-From-Year Migration',
+        ],
+        /* Schema-completion probe (rule #19) — never `=> true`. The backfill itself
+           is idempotent-by-recompute (the 'publication-metadata' idiom) and has no
+           schema signal of its own, so this measures column presence only. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'LyricsPdFromYear')
+            || !_migProbe_columnExists($db, 'tblSongs', 'MusicPdFromYear'),
+    ],
+
+    /* ---- #1862 — the RECONCILE (data-only, manual + docroot-sensitive) --------
+       The static-file half of the HasAudio/HasSheetMusic union (includes/
+       song_media_flags.php) depends on the EXECUTING docroot's filesystem, and
+       alpha/beta/production share ONE database — so this is a single in-place
+       reconcile run ONCE BY HAND, from the production docroot (the only one with
+       the full /data/audio + /data/music corpus), never per-env and never via
+       "Apply all". Defaults to a dry-run report; ?confirm=1 applies. */
+    'reconcile-media-flags' => [
+        'script' => 'migrate-reconcile-media-flags.php',
+        /* #1862 — DATA-ONLY reconcile, docroot-sensitive: EXCLUDED from "Apply
+           all" (both the JS bulk runner and the no-JS apply-all loop) and the
+           pending counter — the same posture as 'backfill-canonical-songids'.
+           A web run WITHOUT &confirm=1 only REPORTS a dry-run diff. */
+        'manual' => true,
+        /* #1862 — real dry-run report mode (mirrors 'backfill-canonical-songids'):
+           renders a distinct "Dry-run (report only)" link alongside the confirm
+           button rather than the drop-only single button the JSON-column DROP
+           card uses. */
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => 'Reconcile HasAudio/HasSheetMusic (#1862)',
+            'body'   => 'DATA REWRITE — recomputes <code>tblSongs.HasAudio</code> /'
+                      . ' <code>HasSheetMusic</code> as the UNION of a hosted'
+                      . ' <code>tblSongMedia</code> row and the legacy static'
+                      . ' <code>/data/audio/*.mid|.mp3</code> / <code>/data/music/*.pdf</code> files —'
+                      . ' run ONLY from the production docroot (the only one with the full media'
+                      . ' corpus on disk); alpha/beta share the same database, so running this from'
+                      . ' a docroot missing the static files would wrongly clear flags for songs whose'
+                      . ' audio/sheet-music is genuinely only a static file elsewhere. Do NOT run via'
+                      . ' &ldquo;Apply all&rdquo;. Defaults to <strong>dry-run</strong> (reports counts'
+                      . ' + a sample of songs whose flags would flip, each direction); pass'
+                      . ' <code>&amp;confirm=1</code> to apply. Data-only — no schema change. Writes a'
+                      . ' <code>media_flags_reconciled_at</code> sentinel in <code>tblAppSettings</code>'
+                      . ' on apply. Idempotent — safe to re-run.',
+            'button' => 'Reconcile Media Flags (dry-run unless confirmed)',
+        ],
+        /* Sentinel-row probe (rule #19) — a data-only pass has no schema signal of
+           its own (the 'publishers-entity' backfill idiom), so completion is a
+           tblAppSettings row the migration writes only on a confirmed apply. */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'media_flags_reconciled_at' LIMIT 1"
+                );
+                $applied = $r && $r->fetch_row() !== null;
+                if ($r) { $r->close(); }
+                return !$applied;
+            } catch (\Throwable $_e) {
+                return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
+            }
+        },
+    ],
+
+    'component-label' => [
+        'script' => 'migrate-add-component-label.php',
+        'card' => [
+            'title'  => 'Custom component labels (#1860 Phase 5)',
+            'body'   => 'Adds <code>tblSongComponents.Label</code> — an optional custom DISPLAY'
+                      . ' name for one section ("Kyrie", "isiZulu"), overriding the derived'
+                      . ' "Verse 1" heading. Display-only: <code>Type</code> stays authoritative'
+                      . ' for styling, arrangement and machine exports. Additive, idempotent,'
+                      . ' dormant until a curator sets a label. Safe to re-run.',
+            'button' => 'Run Component Label Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongComponents', 'Label'),
+    ],
+
+    'bulk-import-dryrun' => [
+        'script' => 'migrate-bulk-import-dryrun.php',
+        'card' => [
+            'title'  => 'ZIP bulk-import dry-run (#1911)',
+            'body'   => 'Adds <code>tblBulkImportJobs.DryRun</code> — lets the async ZIP import'
+                      . ' worker (and its status-poll endpoint) know a job was started as a'
+                      . ' preview, since the static per-request flag single-file import uses'
+                      . ' cannot survive past <code>fastcgi_finish_request()</code>. Additive,'
+                      . ' idempotent, dormant until a curator ticks "Dry run" on a ZIP import.'
+                      . ' Safe to re-run.',
+            'button' => 'Run ZIP Dry-Run Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblBulkImportJobs', 'DryRun'),
+    ],
+
+    'song-copyright-holders' => [
+        'script' => 'migrate-song-copyright-holders.php',
+        'card' => [
+            'title'  => 'Multi-holder song copyright (#1900)',
+            'body'   => 'Adds <code>tblSongCopyrightHolders</code> — a song&lt;-&gt;publisher'
+                      . ' many-to-many (mirrors <code>tblSongbookPublishers</code>, #93) so a song'
+                      . ' can carry an ORDERED LIST of copyright holders instead of just one.'
+                      . ' Requires the Publishers registry migration to have run first (its'
+                      . ' <code>PublisherId</code> foreign key references <code>tblPublishers</code>).'
+                      . ' Additive, idempotent, dormant until Wave 4 Commit C8 wires the picker'
+                      . ' + API. Safe to re-run.',
+            'button' => 'Run Multi-Holder Copyright Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. Placed at the END of
+           the registry (array-key order IS apply order) because this table's
+           PublisherId FK depends on 'publishers-entity' having already run. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongCopyrightHolders'),
+    ],
+
+    'qr-cache' => [
+        'script' => 'migrate-add-qr-cache.php',
+        'card' => [
+            'title'  => 'QR image cache (#1920)',
+            'body'   => 'Creates <code>tblQrCache</code> — a server-side cache of CueRCode-generated'
+                      . ' QR images keyed by a payload+options hash, so <code>/qr.php</code> and the'
+                      . ' server PDF renderer stop round-tripping the CueRCode service for a picture'
+                      . ' that never changes. Fail-open: absent table = today\'s behaviour.'
+                      . ' Additive, idempotent, dormant. Safe to re-run.',
+            'button' => 'Run QR Cache Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblQrCache'),
+    ],
+
+    'org-brand-colour' => [
+        'script' => 'migrate-org-brand-colour.php',
+        'card' => [
+            'title'  => 'Organisation brand colour (#1840)',
+            'body'   => 'Adds <code>tblOrganisations.BrandColor</code> (+ a dormant'
+                      . ' <code>BrandJson</code> token bag) so a church can set its brand'
+                      . ' colour for branded share-preview cards. Additive, idempotent,'
+                      . ' dormant until an org sets a colour. Safe to re-run.',
+            'button' => 'Run Brand Colour Migration',
+        ],
+        /* Multi-object OR-probe (rule #19) — a partial apply never shows the
+           card green. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblOrganisations', 'BrandColor')
+                                           || !_migProbe_columnExists($db, 'tblOrganisations', 'BrandJson'),
+    ],
+
+    'webhooks' => [
+        'script' => 'migrate-add-webhooks.php',
+        'card' => [
+            'title'  => 'Partner webhooks platform (#1909)',
+            'body'   => 'Creates the three dormant tables that back outbound partner'
+                      . ' webhooks: <code>tblWebhookSubscriptions</code> (partner endpoints +'
+                      . ' signing secret + event selectors), <code>tblWebhookEvents</code> (the'
+                      . ' durable event ledger / outbox — ONE frozen payload per event) and'
+                      . ' <code>tblWebhookDeliveries</code> (per-subscription delivery queue,'
+                      . ' retry state and dead-letter surface). External systems subscribe to'
+                      . ' events (song/songbook changed, set-list shared, service live) and'
+                      . ' receive signed HTTP POST callbacks with retry + dead-lettering.'
+                      . ' <strong>Entirely dormant</strong> until'
+                      . ' <code>webhooks_enabled_channels</code> names a channel — until then a'
+                      . ' clean no-op. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Partner Webhooks Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until ALL THREE tables exist,
+           so a partial apply never shows the card green. Detects real completion. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblWebhookSubscriptions')
+            || !_migProbe_tableExists($db, 'tblWebhookEvents')
+            || !_migProbe_tableExists($db, 'tblWebhookDeliveries'),
     ],
 ];

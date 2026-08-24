@@ -48,6 +48,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'audio_signing.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror any uncaught \Throwable / fatal into tblActivityLog so a broken audio
    stream (missing file, range-parse fail) surfaces in /manage/activity-log —
@@ -158,6 +159,15 @@ if (audioSigningEnabled()) {
         exit;
     }
 }
+
+/* #1906 — cap media BYTE volume BEFORE streaming (bandwidth exhaustion). Runs
+   after the shape/traversal validation and the (signing-gated) access check, so
+   a bad id / denied caller is never counted, and before any 200/206 header or
+   byte so a 429 is a clean JSON reply, not a truncated MP3. Shares the 'media'
+   scope + 240/min ceiling with song-media.php (an <audio> element issues several
+   Range requests per track; generous for playback, tight for a scraper).
+   Fail-open + per-token (rule #26). */
+enforceReadRateLimitKeyed('media', 240);
 
 /* -------------------------------------------------------------------- */
 /* Stream the file with Range support (200 full / 206 partial), mirroring

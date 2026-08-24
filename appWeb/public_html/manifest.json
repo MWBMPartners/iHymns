@@ -5,7 +5,7 @@
     "name": "iHymns — Christian Hymns & Worship Songs",
     "short_name": "iHymns",
     "description": "A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship. Features 5 songbooks with over 3,600 songs, full-text search, favourites, dark mode, high-contrast mode, and offline support.",
-    "version": "0.5250.0",
+    "version": "1.0.0",
 
     "start_url": "/",
     "scope": "/",

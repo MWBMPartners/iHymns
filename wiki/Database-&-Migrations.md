@@ -69,7 +69,12 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | `tblSongs` | Core song metadata + `LyricsText` for full-text search. Carries the soft-delete columns `IsDeleted` / `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` (#1694 — see below) |
 | `tblSongWriters` | Song lyricist credits (many-to-one) |
 | `tblSongComposers` | Song composer credits (many-to-one) |
-| `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
+| `tblSongComponents` | Thin per-section rows (Type / Number / SortOrder / Language / **`SourceWorkId`** / **`Label`**). Lyric lines live in the normalised `tblLyricLines` (rule #25); these columns are per-section METADATA. |
+| `tblWorkComponents` | **Ordered medley composition** (#1907 / #1860 Phase 5): a Work "contains" constituent Works, M:N with `SortOrder` — distinct from `tblWorks.ParentWorkId` ("is-a-variant-of"). |
+
+**Medley composition + custom component labels (#1907, #1860 Phase 5).** The dormant #1860 work-identity schema is now wired, plus one additive column. `tblSongComponents.Label VARCHAR(100)` is an optional custom **display** name for one section ("Kyrie", "isiZulu") overriding the derived "Verse 1 / Chorus" — DISPLAY-ONLY, so `Type` stays authoritative for CSS/chorus-highlight, arrangement resolution and every machine-export keyword (a label never reaches an exporter — CI-guarded). `tblSongComponents.SourceWorkId` links a section to the Work it excerpts (medley stitching); setting it additively records the medley composition into `tblWorkComponents` via the §3.6b.2 lockstep. Both are thin-row metadata carried on the `component_upsert` / `lyricLinesWriteComponents()` funnel — **never** the `tblLyricLines` line path (rule #25 untouched). The ONE shared write core is `workMedley*()` in `includes/work_admin.php` (M:N, idempotent keep-existing attach, bounded-depth cycle guard); consumed by the `/manage/works` "Constituent works (medley)" editor and the lockstep alike. The public song page + `/work/<slug>` show a read-only "Medley of: A, B, C" line. Per-section language was already live (#858/#1206).
+
+**Accent/apostrophe-folded search (#1039).** Full-text search is backed by folded mirror columns so a query ignores diacritics and smart apostrophes — `tblSongs.NormalizedTitle` (app-maintained fold of `Title`) and `tblSongs.LyricsTextFolded` (diacritic-folded mirror of `LyricsText`) each carry their own `FULLTEXT` index (`ft_NormalizedTitle`, `ft_LyricsTextFolded`, plus the combined `ft_NormTitleLyricsFolded`). #1039 extends the same fold across the song/**songwriter/tune/place** search paths, so "Café" matches "cafe" and "don't" matches "dont" — online and in the offline cache alike.
 
 ### Song Deletion — Recoverable (#1694 / #1695, epic #1692)
 
@@ -108,6 +113,8 @@ The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as 
 
 `tblSongs` also gained identity/publication columns in the same pass: `Isrc`, `Subtitle`, `Disambiguation`, `FirstPublishedYear`, `CopyrightYears`, `CopyrightHolder` (the last three split the single old `Copyright` field). Alias URLs `/isrc /iswc /ccli /ipi /isni /bowi` resolve an industry identifier to its entity via one shared normaliser + resolver (see [[Architecture]] and [[API Reference]]). All of the above is additive and byte-mirrored into `schema.sql`; each migration has a real completion probe.
 
+**Bulk-import rights passthrough (#1673 / #1896).** Bulk song imports now persist the copyright line, CCLI number, ISWC and public-domain flags the source file provides, instead of writing blanks for every format. This un-breaks two downstream reads that depend on those columns: the CCLI usage report no longer undercounts imported songs, and imported songs auto-link to their Work by identifier (#1860). Writers/composers credits on import remain a follow-up (#1904).
+
 ### Publishers, Gating, Sharing & Print (branch `claude/issue-sweep-fixes-89`, epics #1765 / #1769 / #1767)
 
 This batch landed several feature families as additive, dormant, forward-looking schema in one pass each (rule #20 — every growable vocabulary is `VARCHAR`, app-validated, never `ENUM`). All tables below are byte-mirrored into `schema.sql`, and each migration carries a real completion probe.
@@ -132,6 +139,16 @@ This batch landed several feature families as additive, dormant, forward-looking
 - **Publication metadata (#1765):** `tblSongbooks.IsDisabled` / `IsPublicDomain` / `OpenLibraryWorkId` / `OpenLibraryEditionId`; `tblSongbookSeries` + `tblSongbooks`-mirroring identifier columns (`Isbn` / `Issn` / `ArkId` / `OpenLibrary*`); `tblCatalogues.ArkId` / `OpenLibrary*`.
 
 **Migration cards (all in `migration-registry.php` with real probes; operator-run via `/manage/setup-database`, not auto-applied on deploy):** `migrate-publication-metadata`, `migrate-publishers-entity` (idempotent by Name existence, not slug), `migrate-reconcile-credit-name-bytes`, `migrate-musician-duplicates-dismissed`, `migrate-add-gating-facts-and-licence-types`, `migrate-derive-rights-facts`, `migrate-consolidate-org-licences`, `migrate-live-follow-quick-capable`, `migrate-setlist-share-scope`, `migrate-print-template-layouts`, `migrate-ia-reconcile`, `migrate-organisation-logos` (#1830).
+
+### Permanent internal ids + Editor2 metadata derivation (#1860 / #1862, branch `claude/ilyrics-identity-work-model`)
+
+| Table / column | Purpose |
+|---|---|
+| `tblIlyricsIdSequence` | Per-entity-type allocator for the permanent `IL*` internal ids (#1860 §2.3) — one row per entity family (`song`/`work`/`musician`/`tune`/`publisher`/`catalogue`/`songbook`/`document`), `NextValue` is a SEED (`ilidAllocate()` claim-checks the entity table's `uq_IlId` before returning, so a restored/rolled-back counter can't mint a collision). Read/written only by `ilidAllocate()` in `includes/ilyrics_id.php`. |
+| `IlId` (8 tables) | `tblSongs` / `tblWorks` / `tblMusicians` / `tblTunes` / `tblPublishers` / `tblCatalogues` / `tblSongbooks` / `tblSongMedia` each gain a nullable `VARCHAR(16)` `IlId` + `UNIQUE KEY uq_IlId` — the permanent, grammar-disjoint id (`IL<letter>` + 10 zero-padded digits, e.g. `ILS0000012345`; move/rename-stable, never re-keyed). NULL until minted; every dual-addressing read path (see [[API Reference]]) is column-existence-gated, so an un-migrated install is a verified no-op. |
+| `tblSongs.LyricsPdFromYear` / `MusicPdFromYear` | (#1862 B1) `SMALLINT UNSIGNED NULL` — a denorm "public domain from this year" per part, derived from the oldest ratified contributor's death year + life-plus-70, recomputed live by `includes/pd_suggest.php`'s fold rather than a batch job. Suggestion-only; never auto-sets the `PublicDomain` checkboxes. |
+
+**Migration cards:** `migrate-ilyrics-internal-ids` (creates + seeds `tblIlyricsIdSequence`, adds the 8 `IlId` columns — additive, dormant until Phase 2 mint-on-create + the go-live A/B/C commits wired every write funnel), `migrate-song-pd-from-year` (adds the two `PdFromYear` columns + a chunked backfill using the same live fold the write path uses), `migrate-reconcile-media-flags` (`'manual'` + `dryRunnable` — a one-time, docroot-sensitive `HasAudio`/`HasSheetMusic` reconcile; no new columns, those predate this batch).
 
 ### User & Access Control Tables
 
@@ -181,6 +198,7 @@ This batch landed several feature families as additive, dormant, forward-looking
 | `tblAppSettings` | Key-value runtime configuration store |
 | `tblMigrations` | Schema migration version tracking |
 | `tblIntAppsSync` | MWBM-IntAppsAPI gateway local snapshot + refresh bookkeeping (Epic #1725) — one dormant table, keyed `(Scope, Channel, AppSlug)`; empty/unread until an admin enables the integration on `/manage/configuration`. See [[Architecture]] § External integrations. |
+| `tblQrCache` | Server-side cache of CueRCode-generated QR images (#1920), keyed by a sha256 of the canonical payload+options JSON. Additive, dormant until the CueRCode key is configured; a 90-day TTL + 20,000-row belt bound growth (`appWeb/.sql/cleanup.php`). Read/written only via `includes/qr_cache.php`, composed behind `cuercodeGenerateCached()` in the ONE CueRCode client. See [[Architecture]] § QR. |
 
 ---
 

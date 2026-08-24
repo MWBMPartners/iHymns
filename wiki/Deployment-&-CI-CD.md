@@ -28,12 +28,12 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 
 ## GitHub Actions Workflows
 
-14 workflow files live in `.github/workflows/`:
+15 workflow files live in `.github/workflows/`:
 
 | Workflow | File | Purpose |
 |---|---|---|
 | Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch (see pipeline below) |
-| Version Bump | `version-bump.yml` | Auto-bumps `infoAppVer.php` via conventional commits on push to `beta` |
+| Version Bump | `version-bump.yml` | Auto-bumps `infoAppVer.php`'s semver `Version.Number` via conventional commits on push to `alpha`/`beta`, keeps `api-docs.yaml`'s `info.version` in lockstep (a dedicated step + a CI guard), and rolls the CHANGELOG's `## [unreleased] — alpha` section into the new version heading |
 | Changelog | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commit messages on push to `beta` |
 | Release | `release.yml` | Creates a GitHub Release with a tagged version |
 | CI Lint & Validation | `test.yml` | Runs linting + the PHP/JS unit test suites |
@@ -46,6 +46,7 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 | Promotion Deploy Bridge | `promotion-deploy-bridge.yml` | Fires follow-up automation when a PR merges into a promotion branch |
 | Maintenance — HA Integrity Audit | `maintenance-ha-integrity-audit.yml` | Scheduled monthly (14th) integrity audit |
 | Maintenance — Issues Sweep | `maintenance-issues-sweep.yml` | Scheduled monthly (28th) GitHub Issues hygiene sweep |
+| Dependabot Security Backport | `dependabot-security-backport.yml` | Cherry-picks a Dependabot/GitHub security fix merged to `main` (which is where GitHub restricts security PRs to) onto each release branch (`alpha`/`beta`/`release-candidate`) as its own PR — `dependabot.yml` already handles routine version updates per-branch directly; this closes the gap for security-only fixes |
 
 There is also a `.github/workflows/scripts/` subdirectory of helper scripts — not a workflow itself.
 
@@ -61,6 +62,7 @@ Triggered on push to `alpha`, `beta`, or `main`; SFTP mirroring via `lftp`. The 
 
 Other deploy behaviour:
 - `.env-channel` file injected by CI for server-side environment detection
+- **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy.
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
 

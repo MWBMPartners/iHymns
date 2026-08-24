@@ -95,6 +95,9 @@ $COLUMN_EXCEPTIONS = [
     'songbooks.php' => [
         'Order' => 'holds a live numeric <input> feeding the drag-to-reorder mechanism (rule #6 card-layout reorder) — the cell has no sortable text content, and click-to-sort would fight the manual reorder UI',
     ],
+    'webhooks.php' => [
+        'Details' => 'holds an expandable <details> element wrapping the pretty-printed per-attempt AttemptLogJson blob (#1909) — it has no single sortable value, and it is not the trailing column (Actions is), so it needs an explicit exception',
+    ],
 ];
 
 /** Strip PHP tags (both `<?php ... ?>` and `<?= ... ?>`) so a `?>` or stray

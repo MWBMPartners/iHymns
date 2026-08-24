@@ -232,6 +232,7 @@ $saveSetting = function (mysqli $db, string $key, string $value): void {
 $saveSuccess = '';
 $saveError   = '';
 $saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved SMTP host) */
+$webhookNewDrainKey = null;   /* #1909 — one-shot: a freshly regenerated drain key, shown ONCE */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
 
 /* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
@@ -910,6 +911,106 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_cuercode] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_captcha') {
+            /* CAPTCHA provider (#947/#340). Provider must be a SELECTABLE
+               registry key (or 'none' = off); the public site key is stored
+               plain; the secret key follows the blank-=-keep idiom every secret
+               field here uses (encrypted at rest via $saveSetting because
+               captcha_secret_key is in secretSettingKeys()); the enabled forms
+               are the ticked subset of captchaFormKeys(), stored as CSV (rule
+               #20 — a growable vocabulary as a CSV, never an ENUM/SET column, so
+               NO DDL). Requires captcha.php for the constants + the registry
+               (rule #35 — one source of truth for the provider/form vocab). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+            try {
+                $provIn    = trim((string)($_POST[CAPTCHA_SETTING_PROVIDER] ?? 'none'));
+                $providers = captchaProviders();
+                if ($provIn !== 'none' && (!isset($providers[$provIn]) || empty($providers[$provIn]['selectable']))) {
+                    throw new \RuntimeException('Unknown or non-selectable CAPTCHA provider.');
+                }
+                $siteIn   = trim((string)($_POST[CAPTCHA_SETTING_SITE_KEY] ?? ''));
+                $secretIn = trim((string)($_POST[CAPTCHA_SETTING_SECRET_KEY] ?? ''));
+
+                /* Checkbox array → validated CSV (⊆ captchaFormKeys()). An
+                   unknown key is dropped, never fatal — fail closed-to-disabled. */
+                $postedForms = (array)($_POST['captcha_forms'] ?? []);
+                $validForms  = captchaFormKeys();
+                $formsOut    = [];
+                foreach ($postedForms as $f) {
+                    $f = trim((string)$f);
+                    if (in_array($f, $validForms, true) && !in_array($f, $formsOut, true)) {
+                        $formsOut[] = $f;
+                    }
+                }
+                $formsCsv = implode(',', $formsOut);
+
+                $changedKeys = [CAPTCHA_SETTING_PROVIDER, CAPTCHA_SETTING_SITE_KEY, CAPTCHA_SETTING_FORMS];
+                $saveSetting($db, CAPTCHA_SETTING_PROVIDER, $provIn);
+                $saveSetting($db, CAPTCHA_SETTING_SITE_KEY, $siteIn);
+                $saveSetting($db, CAPTCHA_SETTING_FORMS, $formsCsv);
+                if ($secretIn !== '') {
+                    $changedKeys[] = CAPTCHA_SETTING_SECRET_KEY;
+                    $saveSetting($db, CAPTCHA_SETTING_SECRET_KEY, $secretIn);
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', CAPTCHA_SETTING_PROVIDER,
+                        ['keys' => $changedKeys, 'forms' => $formsCsv], 'success'); /* key NAMES + form list only — never the secret VALUE */
+                }
+                $saveSuccess = 'CAPTCHA settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_captcha] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
+        } elseif ($action === 'save_webhooks') {
+            /* Outbound partner-webhooks platform (#1909). Three settings + an
+               optional drain-key regeneration:
+                 - webhooks_enabled_channels: the ticked subset of {alpha,beta,
+                   production}, stored as CSV (rule #20 — a growable vocabulary as
+                   a CSV, never an ENUM; a channel allow-list, not a boolean, so
+                   the shared tblAppSettings can drive an alpha-only soak).
+                 - webhook_allow_loopback: a '1'/'0' test knob (http://127.0.0.1
+                   receivers in local testing only).
+                 - webhook_drain_key: a tblAppSettings SECRET (encrypted at rest via
+                   $saveSetting — it is in secretSettingKeys()). Regenerated on
+                   demand and shown ONCE; never echoed again.
+               Requires webhooks.php for the setting-key constants (rule #35). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';
+            try {
+                /* Channels → validated CSV (⊆ {alpha,beta,production}); unknown
+                   dropped, never fatal — fail closed-to-dormant. */
+                $postedChans = (array)($_POST['webhooks_channels'] ?? []);
+                $validChans  = ['alpha', 'beta', 'production'];
+                $chansOut    = [];
+                foreach ($postedChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validChans, true) && !in_array($c, $chansOut, true)) {
+                        $chansOut[] = $c;
+                    }
+                }
+                $chansCsv = implode(',', $chansOut);
+
+                $loopbackOut = !empty($_POST['webhook_allow_loopback']) ? '1' : '0';
+
+                $changedKeys = [WEBHOOK_SETTING_ENABLED_CHANNELS, WEBHOOK_SETTING_ALLOW_LOOPBACK];
+                $saveSetting($db, WEBHOOK_SETTING_ENABLED_CHANNELS, $chansCsv);
+                $saveSetting($db, WEBHOOK_SETTING_ALLOW_LOOPBACK, $loopbackOut);
+
+                /* Regenerate the drain key on demand (192-bit). Shown ONCE below. */
+                if (!empty($_POST['webhook_regenerate_drain_key'])) {
+                    $newDrainKey = bin2hex(random_bytes(24));
+                    $saveSetting($db, WEBHOOK_SETTING_DRAIN_KEY, $newDrainKey);
+                    $changedKeys[] = WEBHOOK_SETTING_DRAIN_KEY;
+                    $webhookNewDrainKey = $newDrainKey; /* one-shot render var — never persisted */
+                }
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', WEBHOOK_SETTING_ENABLED_CHANNELS,
+                        ['keys' => $changedKeys, 'channels' => $chansCsv], 'success'); /* key NAMES only — the drain-key VALUE is never logged */
+                }
+                $saveSuccess = 'Webhook settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_webhooks] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         } elseif ($action === 'save_live_follow_idle') {
             /* #1770 §4.7 — the APP layer of the leader-idle precedence chain
                (includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
@@ -933,6 +1034,33 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveSuccess = 'Live Follow idle-timeout default saved (' . $idleVal . ' minutes).';
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_live_follow_idle] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
+        } elseif ($action === 'save_pd_publication_threshold') {
+            /* #1862 (epic #1863) — decision D3: the publication-year fallback
+               threshold the public-domain suggestion falls back to when a
+               part's death-basis year can't be concluded. A plain
+               tblAppSettings key (no migration needed), mirroring the
+               live_follow_idle pattern immediately above. Clamped to the SAME
+               [500, 2100] band FirstPublishedYear itself validates against
+               (api2.php's metadata_field_update — SMALLINT UNSIGNED, not
+               MySQL YEAR, since hymns predate 1901) so a hand-edited or
+               out-of-range POST can never store a threshold FirstPublishedYear
+               itself could never carry. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+            try {
+                $pdThresholdIn  = filter_var((string)($_POST['pd_publication_year_threshold'] ?? ''), FILTER_VALIDATE_INT);
+                $pdThresholdVal = $pdThresholdIn === false
+                    ? IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT
+                    : max(500, min(2100, (int)$pdThresholdIn));
+                $saveSetting($db, IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY, (string)$pdThresholdVal);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY,
+                        ['keys' => [IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY], 'value' => $pdThresholdVal], 'success');
+                }
+                $saveSuccess = 'Public-domain publication-year threshold saved (' . $pdThresholdVal . ').';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_pd_publication_threshold] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
         }
@@ -1033,6 +1161,45 @@ $cuercodeBaseUrlVal = (string)(getAppSetting(CUERCODE_SETTING_BASE_URL, CUERCODE
 $cuercodeApiKeySet  = ((string)(getAppSetting(CUERCODE_SETTING_API_KEY, '') ?? '')) !== '';
 $cuercodeConfigured = cuercodeConfigured();
 
+/* CAPTCHA provider (#947/#340) — dormant until a provider + BOTH keys are set
+   AND a form is ticked. Same secret convention: the site key echoes as-typed;
+   the secret VALUE is never read into a form var, only whether it is SET. The
+   provider list + form list come from the registry (rule #35 — one source). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+$captchaProviderVal   = (string)(getAppSetting(CAPTCHA_SETTING_PROVIDER, 'none') ?? 'none');
+$captchaSiteKeyVal    = (string)(getAppSetting(CAPTCHA_SETTING_SITE_KEY, '') ?? '');
+$captchaSecretSet     = ((string)(getAppSetting(CAPTCHA_SETTING_SECRET_KEY, '') ?? '')) !== '';
+$captchaEnabledFormsV = captchaEnabledFormsList();
+$captchaConfiguredNow = captchaConfigured();
+$captchaProvidersReg  = captchaProviders();
+
+/* #1909 — outbound-webhooks card render prep. webhook_admin.php pulls in the
+   engine (constants + gates + webhookDrainHealth()). All reads are gate/schema
+   tolerant, so an un-migrated env renders "dormant" rather than throwing. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+$webhookChannelsV   = webhookEnabledChannels();                    /* subset of {alpha,beta,production} */
+$webhookLoopbackV   = ((string)(getAppSetting(WEBHOOK_SETTING_ALLOW_LOOPBACK, '0') ?? '0')) === '1';
+$webhookDrainKeySet = ((string)(getAppSetting(WEBHOOK_SETTING_DRAIN_KEY, '') ?? '')) !== '';
+$webhookEnabledHere = webhooksEnabled();
+$webhookThisChannel = ihymns_environment();
+try {
+    $webhookHealthV = webhookDrainHealth($db);
+} catch (\Throwable $_e) {
+    $webhookHealthV = ['due_now' => 0, 'oldest_due_age_secs' => null, 'last_drain_at' => null, 'active_subs' => 0];
+}
+
+/* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
+   captchaFormKeys() value; a key without an entry falls back to a generic
+   caption, so the card can never silently drop a newly-added form. */
+$captchaFormMeta = [
+    'registration'   => ['label' => 'Registration',        'caption' => 'Breaks native app sign-up until the apps add widget support.'],
+    'login'          => ['label' => 'Login',               'caption' => 'Breaks native sign-in. Login already carries the strongest rate limits — enable last, if at all.'],
+    'password_reset' => ['label' => 'Password reset',      'caption' => 'Breaks native password reset until the apps add widget support.'],
+    'email_login'    => ['label' => 'Email login (code)',  'caption' => 'Breaks native magic-link login until the apps add widget support.'],
+    'song_request'   => ['label' => 'Song requests',       'caption' => 'Guards the web /request form only — no native impact. The native-app request endpoint and any direct API submission carry no widget, so they stay bounded by the per-IP daily cap instead. Ends the no-JS form fallback while enabled.'],
+    'manage_login'   => ['label' => 'Admin login (/manage)','caption' => 'Admin login page — no native impact.'],
+];
+
 /* #1770 §4.7 — the APP-DEFAULT layer of the leader-idle precedence chain;
    read via the SAME resolver-adjacent constants service_mode.php declares
    (rule #35 — one source of truth for the key name + the min/max/default
@@ -1041,6 +1208,15 @@ $cuercodeConfigured = cuercodeConfigured();
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
 $liveFollowIdleTimeoutVal = (int)(getAppSetting(LIVE_FOLLOW_IDLE_TIMEOUT_APP_SETTING_KEY, (string)LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES) ?? LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES);
 if ($liveFollowIdleTimeoutVal <= 0) { $liveFollowIdleTimeoutVal = LIVE_FOLLOW_IDLE_TIMEOUT_DEFAULT_MINUTES; }
+
+/* #1862 (epic #1863) — decision D3's publication-year fallback threshold,
+   read via the SAME constants (rule #35 — one source of truth for the key
+   name + default) editor2.php's window._iHymnsPdSuggest emit uses, so this
+   admin field can never disagree with what the PD-suggestion hint actually
+   falls back to. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+$pdPublicationThresholdVal = (int)(getAppSetting(IHYMNS_PD_PUBLICATION_THRESHOLD_SETTING_KEY, (string)IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT) ?? IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT);
+if ($pdPublicationThresholdVal <= 0) { $pdPublicationThresholdVal = IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT; }
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -1094,7 +1270,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          SYSTEM MAINTENANCE SECTION (WS-K #1021)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-cone-striped me-2"></i>System maintenance
@@ -1170,7 +1346,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          FEATURE GATING SECTION (#1481 — two-flag nested topology)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4" id="feature-gating">
+    <div class="card bg-body-tertiary border-secondary mb-4" id="feature-gating">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-shield-lock me-2"></i>Feature gating
@@ -1232,7 +1408,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          SONG EDITOR SECTION (#1601 — the v2 cutover switch)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-pencil-square me-2"></i>Song Editor
@@ -1275,7 +1451,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          INTAPPSAPI GATEWAY SECTION (#1725/#1732) — dormant by design
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
@@ -1363,7 +1539,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          CUERCODE QR SECTION (owner directive 2026-08-05) — dormant until keyed
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-qr-code me-2"></i>CueRCode QR Generator
@@ -1416,9 +1592,200 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </div>
 
     <!-- ===========================
+         CAPTCHA SECTION (#947/#340) — dormant until a provider + both keys + a form
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
+            </h2>
+            <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                A "prove you're human" challenge on the forms you tick below. Verified server-side; the
+                secret key never reaches a browser. <strong>Dormant until keyed</strong>: with no provider
+                and both keys saved — and at least one form ticked — nothing changes. The per-IP,
+                per-account and per-identifier rate limits stay in force underneath regardless.
+            </p>
+            <?php if (!$captchaConfiguredNow): ?>
+                <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
+                    Pick a provider, paste its site key + secret key (create an account with the provider
+                    first), then tick the forms to guard. The challenge goes live the moment all three are set.
+                </p>
+            <?php endif; ?>
+            <form method="post" class="row g-3 align-items-end mb-2">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_captcha">
+                <div class="col-md-4">
+                    <label for="captcha_provider" class="form-label">Provider</label>
+                    <select name="captcha_provider" id="captcha_provider" class="form-select">
+                        <option value="none"<?= $captchaProviderVal === 'none' ? ' selected' : '' ?>>None (off)</option>
+                        <?php foreach ($captchaProvidersReg as $pKey => $pEntry): ?>
+                            <?php if (empty($pEntry['selectable'])) { continue; } ?>
+                            <option value="<?= htmlspecialchars((string)$pKey, ENT_QUOTES, 'UTF-8') ?>"<?= $captchaProviderVal === $pKey ? ' selected' : '' ?>>
+                                <?= htmlspecialchars((string)($pEntry['label'] ?? $pKey), ENT_QUOTES, 'UTF-8') ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Turnstile, hCaptcha and reCAPTCHA v2 are supported.</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="captcha_site_key" class="form-label">Site key</label>
+                    <input type="text" name="captcha_site_key" id="captcha_site_key"
+                           class="form-control" autocomplete="off"
+                           value="<?= htmlspecialchars($captchaSiteKeyVal, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Public — sent to browsers to draw the widget.</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="captcha_secret_key" class="form-label">
+                        Secret key <?= $captchaSecretSet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <input type="password" name="captcha_secret_key" id="captcha_secret_key"
+                           class="form-control" autocomplete="off"
+                           placeholder="<?= $captchaSecretSet ? '(unchanged — leave blank to keep)' : 'provider secret key' ?>">
+                    <div class="form-text">Server-side only. Encrypted at rest; never sent to a browser.</div>
+                </div>
+                <div class="col-12">
+                    <label class="form-label mb-1">Guard these forms</label>
+                    <div class="row g-2">
+                        <?php foreach (captchaFormKeys() as $fKey): ?>
+                            <?php
+                            $fMeta   = $captchaFormMeta[$fKey] ?? ['label' => $fKey, 'caption' => ''];
+                            $fId     = 'captcha_form_' . preg_replace('/[^a-z0-9_]/', '', (string)$fKey);
+                            $fOn     = in_array($fKey, $captchaEnabledFormsV, true);
+                            ?>
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="captcha_forms[]"
+                                           value="<?= htmlspecialchars((string)$fKey, ENT_QUOTES, 'UTF-8') ?>"
+                                           id="<?= htmlspecialchars($fId, ENT_QUOTES, 'UTF-8') ?>"<?= $fOn ? ' checked' : '' ?>>
+                                    <label class="form-check-label" for="<?= htmlspecialchars($fId, ENT_QUOTES, 'UTF-8') ?>">
+                                        <?= htmlspecialchars((string)$fMeta['label'], ENT_QUOTES, 'UTF-8') ?>
+                                    </label>
+                                    <?php if (($fMeta['caption'] ?? '') !== ''): ?>
+                                        <div class="form-text small"><?= htmlspecialchars((string)$fMeta['caption'], ENT_QUOTES, 'UTF-8') ?></div>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save CAPTCHA settings
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         OUTBOUND WEBHOOKS SECTION (#1909)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-broadcast me-2"></i>Partner webhooks
+            </h2>
+            <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
+                <i class="bi bi-list-ul me-1"></i>Manage subscriptions
+            </a>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                Outbound event delivery (#1909): external systems subscribe on
+                <a href="/manage/webhooks" class="link-light">Webhooks</a> and receive signed HTTP callbacks
+                when songs / songbooks change, a set-list is shared, or a service goes live. This card is the
+                <strong>master switch</strong> and the drain-key custody — the tables do nothing until a channel
+                is ticked below.
+            </p>
+            <?php if ($webhookNewDrainKey !== null): ?>
+                <div class="alert alert-warning" role="alert">
+                    <strong>New drain key — copy it now, it is shown only once:</strong>
+                    <code class="user-select-all d-block mt-1"><?= htmlspecialchars($webhookNewDrainKey, ENT_QUOTES, 'UTF-8') ?></code>
+                    <span class="small">Use it as <code>?key=…</code> on the drain endpoint (below).</span>
+                </div>
+            <?php endif; ?>
+            <form method="post" class="mb-3">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_webhooks">
+                <div class="mb-3">
+                    <label class="form-label mb-1">Enabled channels</label>
+                    <div class="d-flex flex-wrap gap-3">
+                        <?php foreach (['alpha', 'beta', 'production'] as $chOpt): ?>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="webhooks_channels[]"
+                                       value="<?= $chOpt ?>" id="wh_ch_<?= $chOpt ?>"<?= in_array($chOpt, $webhookChannelsV, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="wh_ch_<?= $chOpt ?>">
+                                    <?= ucfirst($chOpt) ?>
+                                    <?php if ($chOpt === $webhookThisChannel): ?><span class="badge bg-info text-dark ms-1">this env</span><?php endif; ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text">
+                        Empty = fully dormant (no delivery on any channel). Ticking a channel activates delivery
+                        there — the three docroots share one database, so this is per-environment.
+                    </div>
+                </div>
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" name="webhook_allow_loopback"
+                           value="1" id="wh_loopback"<?= $webhookLoopbackV ? ' checked' : '' ?>>
+                    <label class="form-check-label" for="wh_loopback">
+                        Allow <code>http://127.0.0.1</code> targets (local testing only)
+                    </label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label mb-1">
+                        Drain key
+                        <?= $webhookDrainKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="webhook_regenerate_drain_key"
+                               value="1" id="wh_regen">
+                        <label class="form-check-label" for="wh_regen">
+                            Regenerate the drain key on save (shown once)
+                        </label>
+                    </div>
+                    <div class="form-text">
+                        Authorises the drain endpoint a cron / uptime monitor pokes to progress retries:<br>
+                        <code>curl -fsS "https://<?= htmlspecialchars($webhookThisChannel === 'production' ? 'ihymns.app' : ($webhookThisChannel === 'beta' ? 'beta.ihymns.app' : 'dev.ihymns.app'), ENT_QUOTES, 'UTF-8') ?>/webhook-drain.php?key=&lt;drain key&gt;"</code>
+                        every minute. Server-side secret, encrypted at rest.
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save webhook settings
+                </button>
+            </form>
+            <hr class="border-secondary">
+            <div class="small">
+                <div class="mb-1">
+                    <strong>Status on this environment (<?= htmlspecialchars($webhookThisChannel, ENT_QUOTES, 'UTF-8') ?>):</strong>
+                    <?php if ($webhookEnabledHere): ?>
+                        <span class="badge bg-success">enabled</span>
+                    <?php else: ?>
+                        <span class="badge bg-secondary">dormant</span>
+                    <?php endif; ?>
+                </div>
+                <div>Active subscriptions: <strong><?= (int)$webhookHealthV['active_subs'] ?></strong></div>
+                <div>Deliveries due now: <strong><?= (int)$webhookHealthV['due_now'] ?></strong>
+                    <?php if ($webhookHealthV['oldest_due_age_secs'] !== null): ?>
+                        (oldest waiting <?= (int)round($webhookHealthV['oldest_due_age_secs'] / 60) ?> min)
+                    <?php endif; ?>
+                </div>
+                <div>Last drain: <strong><?= $webhookHealthV['last_drain_at'] !== null ? htmlspecialchars((string)$webhookHealthV['last_drain_at'], ENT_QUOTES, 'UTF-8') . ' UTC' : 'never — cron not wired' ?></strong></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===========================
          LIVE FOLLOW SECTION (#1770 §4.7 — app-default idle timeout)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-broadcast-pin me-2"></i>Live Follow
@@ -1460,9 +1827,50 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </div>
 
     <!-- ===========================
+         PUBLIC-DOMAIN SUGGESTION SECTION (#1862, epic #1863)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-shield-check me-2"></i>Public-domain suggestion
+            </h2>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                The Editor2 metadata tab hints "this looks public domain" from a credited
+                contributor's death date (life + 70 years — a code constant, not configurable
+                here). When no death date is on record, it falls back to assuming a song
+                published before this year is public domain. This is a SUGGESTION only —
+                curators still tick the Public Domain box themselves; nothing here auto-sets it.
+            </p>
+            <form method="post" class="row g-3 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_pd_publication_threshold">
+                <div class="col-auto">
+                    <label for="pd_publication_year_threshold" class="form-label">Publication-year fallback threshold</label>
+                    <input type="number" name="pd_publication_year_threshold" id="pd_publication_year_threshold"
+                           class="form-control" style="max-width: 10rem;"
+                           min="500" max="2100" step="1"
+                           value="<?= (int)$pdPublicationThresholdVal ?>">
+                    <div class="form-text">
+                        500&ndash;2100; default <?= IHYMNS_PD_PUBLICATION_THRESHOLD_DEFAULT ?>. A song
+                        first published before this year is suggested public domain when no
+                        death-date basis is available.
+                    </div>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
          APPLE NATIVE APP SECTION (#1401 Team ID + #1402 Sign in with Apple)
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-apple me-2"></i>Apple native app
@@ -1672,7 +2080,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          NATIVE APP STORES SECTION (#1403/#1462)
          =========================== -->
     <?php $nativeAppsAnySet = ($nativeAppIos !== '' || $nativeAppAndroid !== '' || $nativeAppAmazon !== ''); ?>
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-phone me-2"></i>Native app stores
@@ -1745,7 +2153,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          EMAIL SERVICE SECTION
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-envelope-at me-2"></i>Email service
@@ -2115,7 +2523,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <!-- ===========================
          STEP-BY-STEP INSTRUCTIONS
          =========================== -->
-    <div class="card bg-dark border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header">
             <h2 class="h5 mb-0">
                 <i class="bi bi-book me-2"></i>Step-by-step provider setup
@@ -2124,9 +2532,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <div class="accordion" id="email-instructions">
                 <!-- #1311 — Microsoft Graph (OAuth2, recommended for M365) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-graph">
                             <i class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
                         </button>
@@ -2147,9 +2555,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- #1311 — Gmail API (OAuth2, recommended for Google Workspace) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gmail-api">
                             <i class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
                         </button>
@@ -2170,9 +2578,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Microsoft 365 (priority) -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-m365">
                             <i class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
                         </button>
@@ -2207,9 +2615,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Google Workspace -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gws">
                             <i class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
                         </button>
@@ -2245,9 +2653,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Custom SMTP + future-direction note -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-smtp">
                             <i class="bi bi-server me-2"></i>SMTP — any other provider (custom)
                         </button>
@@ -2276,9 +2684,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- SendGrid -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-sendgrid">
                             <i class="bi bi-cloud me-2"></i>SendGrid — API key
                         </button>
@@ -2298,9 +2706,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Mailgun -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-mailgun">
                             <i class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
                         </button>
@@ -2320,9 +2728,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- SES -->
-                <div class="accordion-item bg-dark">
+                <div class="accordion-item">
                     <h3 class="accordion-header">
-                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                        <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-ses">
                             <i class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
                         </button>

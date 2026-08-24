@@ -18,6 +18,13 @@
 # + an App Store Connect API key), which is fastlane's documented
 # alternative to `match` for teams that don't want a certs repo:
 # https://docs.fastlane.tools/codesigning/xcode-project/#automatic-provisioning
+# `app_store_connect_api_key` alone only populates fastlane's OWN lane
+# context (what `pilot`/`deliver` read for the upload step) — `build_app`
+# (gym) does not forward it into the `xcodebuild` invocation on its own, so
+# the key is ALSO handed to xcodebuild explicitly, via `xcargs`'
+# `-authenticationKeyPath/-authenticationKeyID/-authenticationKeyIssuerID`
+# trio (`signing_xcargs` below) — the documented xcodebuild-level pairing
+# for `-allowProvisioningUpdates` (#1579 fix 2).
 #
 # Every lane is fastlane's own vocabulary — actions used here (`build_app`
 # aka `gym`, `upload_to_testflight` aka `pilot`, `upload_to_app_store` aka
@@ -79,13 +86,24 @@ CI_KEYCHAIN_PATH     = File.expand_path("~/Library/Keychains/#{CI_KEYCHAIN_NAME}
 # scheme is a MULTIPLATFORM target (`supportedDestinations: [iOS, macOS,
 # visionOS]`, strategy §1.1) — archiving it needs an explicit
 # `-destination 'generic/platform=iOS'` or xcodebuild can't tell which of
-# the three platforms to archive; `iHymnsTV` has only one platform (tvOS) so
-# no destination flag is needed there. `iHymnsWatch`/`iHymnsWidgets` are
-# NEVER archived directly — they embed into the `iHymns` iOS archive
-# automatically (project.yml's `embed: true` dependencies), matching the
-# task brief's "(+ tvOS + embedded watch)".
-def archive_scheme(scheme:, extra_xcargs: nil)
-  xcargs = ["-allowProvisioningUpdates", extra_xcargs].compact.join(" ")
+# the three platforms to archive. `iHymnsTV` only ever targets tvOS, but
+# EVERY call site now passes `destination:` explicitly too — #1579's failure
+# logs showed gym silently defaulting an unspecified destination on the
+# multiplatform scheme to `generic/platform=visionOS`, and there is no
+# "single-platform, no destination flag needed" case left in this file that
+# is worth the risk of a repeat surprise. `destination:` is a first-class
+# `build_app` (gym) option, passed here rather than smuggled through
+# `xcargs` as it was before: gym ALSO derives its own default destination
+# from the scheme, and the old xcargs-smuggled flag plus gym's own default
+# both landed on the same `xcodebuild` command line as two conflicting
+# `-destination` flags — that was #1579's root cause 1. `iHymnsWatch`/
+# `iHymnsWidgets` are NEVER archived directly — they embed into the
+# `iHymns` iOS archive automatically (project.yml's `embed: true`
+# dependencies), matching the task brief's "(+ tvOS + embedded watch)".
+#
+# ELI5: tells Xcode exactly ONE target device to build for, in exactly ONE
+# place, instead of two different places that used to disagree.
+def archive_scheme(scheme:, destination:)
   build_app(
     project: XCODEPROJ_PATH,
     scheme: scheme,
@@ -94,9 +112,61 @@ def archive_scheme(scheme:, extra_xcargs: nil)
     output_directory: BUILDS_DIR,
     output_name: "#{scheme}.ipa",
     clean: true,
-    xcargs: xcargs
+    destination: destination,     # gym now emits exactly ONE -destination (#1579 fix 1)
+    xcargs: signing_xcargs        # -allowProvisioningUpdates + the ASC auth-key trio (#1579 fix 2)
   )
   # `build_app` (gym) returns the absolute path to the produced .ipa.
+end
+
+# Fault-2 fix (#1579): writes the App Store Connect API key's raw `.p8`
+# contents (the `ASC_API_KEY` secret — same source `asc_api_key` below
+# reads; see its own doc-block for the base64-vs-raw-content note) to a
+# throwaway temp file and returns its path, memoized per-run (`@asc_key_file
+# ||=`) so BOTH `archive_scheme` calls in `prepare_signed_archives` share
+# the SAME file instead of writing — and leaking — two copies. Mirrors
+# `import_distribution_certificate`'s .p12 temp-file discipline (`Dir.tmpdir`
+# + a `SecureRandom.hex` suffix) with one deliberate difference: the .p12 is
+# deleted immediately after `import_certificate` uses it (an `ensure` block,
+# one narrow step), but this file must SURVIVE past its own write — every
+# `archive_scheme` call for the rest of the lane needs to hand xcodebuild
+# this same path — so its cleanup is deferred to the `after_all`/`error`
+# hooks below instead. `@asc_key_file` is an instance variable on the
+# running Fastfile instance, the same object those hooks execute against,
+# so it stays visible there with no extra plumbing.
+#
+# ELI5: makes one secret little file holding the App-Store password-key,
+# remembers exactly where it put it, and never makes a second copy.
+def asc_key_file_path
+  @asc_key_file ||= File.join(Dir.tmpdir, "ihymns-asc-#{SecureRandom.hex(4)}.p8").tap do |path|
+    File.write(path, ENV.fetch("ASC_API_KEY"))
+  end
+end
+
+# Fault-2 fix (#1579): `-allowProvisioningUpdates` alone makes xcodebuild
+# itself talk to App Store Connect for automatic signing, but nothing hands
+# it a CREDENTIAL to talk with — `app_store_connect_api_key` (`asc_api_key`
+# below) only populates fastlane's own lane context, which `pilot`/`deliver`
+# read for the upload step; `build_app` (gym) does NOT forward it into the
+# `xcodebuild` invocation. On a headless runner with no Xcode account
+# signed in, automatic provisioning then has no credential at all — exactly
+# the logged `No Accounts`/`No profiles for 'app.ihymns'` errors. This is
+# fastlane's documented pairing for that gap:
+# https://docs.fastlane.tools/codesigning/xcode-project/#automatic-provisioning
+# (search "authenticationKeyPath") — the same three flags `xcodebuild -help`
+# itself documents alongside `-allowProvisioningUpdates`. Every value is
+# shell-escaped (`Shellwords`, already required at the top of this file)
+# because `xcargs` is one flat string gym hands to a shell, not an argv
+# array.
+#
+# ELI5: tells the App Store Connect doorman WHICH secret key-card to swipe,
+# not just to knock and ask for one.
+def signing_xcargs
+  [
+    "-allowProvisioningUpdates",
+    "-authenticationKeyPath #{asc_key_file_path.shellescape}",
+    "-authenticationKeyID #{ENV.fetch('ASC_KEY_ID').shellescape}",
+    "-authenticationKeyIssuerID #{ENV.fetch('ASC_ISSUER_ID').shellescape}"
+  ].join(" ")
 end
 
 # Uploads one already-built .ipa to TestFlight, internal or external. Kept
@@ -147,8 +217,12 @@ end
 # secret) is NOT passed to any action here: it names the identity for a
 # human running `security find-identity` locally, but fastlane's
 # `import_certificate` + `-allowProvisioningUpdates` resolve the identity
-# themselves from the imported cert + the ASC API key, so there is nothing
-# for this lane to do with the identity string directly.
+# themselves from the imported cert + the ASC API key — the LATTER is
+# handed to xcodebuild explicitly via `signing_xcargs`'s
+# `-authenticationKey*` trio (#1579 fix 2: `build_app`/gym does not forward
+# `app_store_connect_api_key`'s lane context into the xcodebuild invocation
+# on its own — see `asc_key_file_path`/`signing_xcargs` above), so there is
+# nothing for THIS lane to do with the identity string directly.
 private_lane :import_distribution_certificate do
   create_keychain(
     name: CI_KEYCHAIN_NAME,
@@ -216,8 +290,8 @@ private_lane :prepare_signed_archives do
   import_distribution_certificate
   api_key = asc_api_key
 
-  ios_ipa = archive_scheme(scheme: "iHymns", extra_xcargs: "-destination 'generic/platform=iOS'")
-  tv_ipa  = archive_scheme(scheme: "iHymnsTV")
+  ios_ipa = archive_scheme(scheme: "iHymns",   destination: "generic/platform=iOS")
+  tv_ipa  = archive_scheme(scheme: "iHymnsTV", destination: "generic/platform=tvOS")
 
   { ios_ipa: ios_ipa, tv_ipa: tv_ipa, api_key: api_key }
 end
@@ -280,16 +354,23 @@ lane :release do
 end
 
 # ---------------------------------------------------------------------------
-# Keychain cleanup — runs after ANY lane finishes (success or failure) so the
-# ephemeral CI keychain never lingers. GitHub-hosted macOS runners are
-# themselves ephemeral per job, so this is belt-and-braces rather than
-# load-bearing, but it matters on a future self-hosted runner and is the
-# behaviour fastlane's own `create_keychain` docs recommend pairing with.
+# Keychain + secret-file cleanup — runs after ANY lane finishes (success or
+# failure) so neither the ephemeral CI keychain nor the ASC `.p8` key file
+# ever lingers. GitHub-hosted macOS runners are themselves ephemeral per
+# job, so this is belt-and-braces rather than load-bearing, but it matters
+# on a future self-hosted runner and is the behaviour fastlane's own
+# `create_keychain` docs recommend pairing with. `@asc_key_file` (#1579 fix
+# 2, see `asc_key_file_path` above) is only set once `signing_xcargs` has
+# actually been read by an `archive_scheme` call — `if @asc_key_file` makes
+# both hooks a no-op on `fastlane test` (never signs) or any lane that
+# fails before archiving starts.
 # ---------------------------------------------------------------------------
 after_all do |_lane|
   delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+  FileUtils.rm_f(@asc_key_file) if @asc_key_file
 end
 
 error do |_lane, _exception|
   delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+  FileUtils.rm_f(@asc_key_file) if @asc_key_file
 end

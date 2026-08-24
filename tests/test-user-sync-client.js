@@ -191,6 +191,28 @@ for (const [label, body] of [['_absorbSetlistSync', absorbSetlistBody], ['_absor
         body.indexOf('saveAll(') < body.indexOf('_setSyncedAt('));
 }
 
+/* #1675 — the conflict signal round-trips: syncSetlists() surfaces `conflicts`
+   and _absorbSetlistSync() takes the SERVER copy for those ids (drops them from
+   the local-wins side of the union), else the refused edit is resurrected
+   locally and re-pushed into a permanent loop. */
+check('syncSetlists() surfaces `conflicts` on its result object',
+    !!syncSetlistsBody && /conflicts:/.test(syncSetlistsBody));
+check('_absorbSetlistSync() filters conflicted ids OUT of the local side before the union',
+    !!absorbSetlistBody
+    && /conflictIds/.test(stripComments(absorbSetlistBody))
+    && /filter\(\s*\(?l\)?\s*=>\s*l\s*&&\s*!conflictIds\.has\(l\.id\)/.test(stripComments(absorbSetlistBody)),
+    'server-wins for a refused overwrite — local-current-wins would resurrect it (§3.5)');
+check('...and the filtered ids must be PRESENT in res.setlists (the §A.7 belt)',
+    !!absorbSetlistBody
+    && /serverIds\.has\(id\)/.test(stripComments(absorbSetlistBody)),
+    'a conflict id with no replacement row must NOT delete the local copy, leaving nothing');
+/* The conflict filter must run BEFORE the union it feeds. */
+if (absorbSetlistBody) {
+    const b = stripComments(absorbSetlistBody);
+    check('_absorbSetlistSync() computes conflictIds BEFORE _unionSetlists()',
+        b.indexOf('conflictIds') !== -1 && b.indexOf('conflictIds') < b.indexOf('_unionSetlists('));
+}
+
 /* ---------------------------------------------------------------------- */
 /* 4. Watermarks are dropped on any auth transition                        */
 /* ---------------------------------------------------------------------- */
@@ -366,11 +388,15 @@ check('_absorbSetlistSync() applies tombstones',
    which the prune WRAPPED the union: `applyTombstones(_unionSetlists(…))`
    still puts applyTombstones at the lower index while doing the wrong thing.
    The property that actually matters is that the union CONSUMES the pruned
-   list, so that is what is asserted. */
-check('_absorbSetlistSync() prunes BEFORE the union (the union consumes the pruned list)',
+   list, so that is what is asserted.
+   #1675 — the union now consumes `localSide` (the pruned list minus any
+   conflicted ids), so the flow is applyTombstones → pruned → localSide →
+   union. Asserted as that chain, not the old literal `_unionSetlists(pruned,`. */
+check('_absorbSetlistSync() prunes BEFORE the union (the union consumes the pruned-derived list)',
     !!absorbSetlistBody
-    && /const\s+pruned\s*=\s*this\.app\.setList\.applyTombstones\(/.test(absorbSetlistBody)
-    && /_unionSetlists\(\s*pruned\s*,/.test(absorbSetlistBody));
+    && /const\s+pruned\s*=\s*this\.app\.setList\.applyTombstones\(/.test(stripComments(absorbSetlistBody))
+    && /const\s+localSide\s*=\s*conflictIds\.size[\s\S]{0,120}?pruned/.test(stripComments(absorbSetlistBody))
+    && /_unionSetlists\(\s*localSide\s*,/.test(stripComments(absorbSetlistBody)));
 check('_absorbSetlistSync() does NOT wrap the union in the prune (local-wins would resurrect)',
     !!absorbSetlistBody
     && !/applyTombstones\(\s*(this\.)?_unionSetlists\(/.test(stripComments(absorbSetlistBody)));
@@ -381,8 +407,15 @@ check('syncSetlists() surfaces the tombstones on its result object',
    there is no partial success here to mistake for one. */
 check('syncSetlists() handles a 413 (over-size body) distinctly',
     !!syncSetlistsBody && /res\.status\s*===\s*413/.test(syncSetlistsBody));
+/* #1662 — window widened 400 → 1200. The 413 branch grew a reason-switch
+   (too_many_songs names the offending list from the response body, vs the
+   generic body_too_large message), so the first showToast now sits further
+   from the `413` token. Still a LOCAL window — it proves the 413 branch reaches
+   a toast, not silence — just sized to the real (correct) code rather than to
+   the old single-message branch (rule #34: widen a guard that fails on correct
+   code, don't delete it). */
 check('the 413 branch tells the user rather than failing silently',
-    !!syncSetlistsBody && /413[\s\S]{0,400}?showToast/.test(stripComments(syncSetlistsBody)));
+    !!syncSetlistsBody && /413[\s\S]{0,1200}?showToast/.test(stripComments(syncSetlistsBody)));
 
 /* Failure KINDS are distinguished by STATUS, never by matching the server's
    prose (rule #35 — reword a server sentence and the UI degrades silently).

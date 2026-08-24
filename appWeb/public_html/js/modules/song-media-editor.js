@@ -233,7 +233,7 @@ export function bootSongMediaEditor(root) {
     function rowMarkup(row) {
         const meta = KIND_META[row.kind] || { icon: 'bi-file-earmark', label: row.kind };
         return `
-            <div class="card bg-dark border-secondary mb-2 song-media-row"
+            <div class="card bg-body-tertiary border-secondary mb-2 song-media-row"
                  data-media-id="${row.id}"
                  draggable="true">
                 <div class="card-body py-2">

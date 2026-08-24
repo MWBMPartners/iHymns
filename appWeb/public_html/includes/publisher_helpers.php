@@ -65,6 +65,20 @@ const IHYMNS_PUBLISHER_ROLES = [
 ];
 
 /**
+ * Song copyright-holder roles (tblSongCopyrightHolders.Role, #1900). A DISTINCT
+ * vocabulary from IHYMNS_PUBLISHER_ROLES (which is about a publisher's role on a
+ * SONGBOOK — distributor/imprint/printer): a copyright HOLDER is about ownership
+ * and administration of the work's rights. App-validated VARCHAR, never ENUM
+ * (rule #20) — add a role here, never an ALTER.
+ */
+const IHYMNS_COPYRIGHT_HOLDER_ROLES = [
+    'holder'        => 'Copyright holder',
+    'co-holder'     => 'Co-holder',
+    'administrator' => 'Administrator',
+    'publisher'     => 'Publisher',
+];
+
+/**
  * Publisher name -> URL handle. RE-HOMED byte-for-byte from
  * ihymns_tune_slugify() (same iconv fall-through: a name that cannot
  * transliterate falls back to the raw name, the [^a-z0-9]+ strip removes what
@@ -148,6 +162,7 @@ function publisherSlugEnsureUnique(\mysqli $db, string $base, ?int $excludeId = 
  */
 function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
 {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
     $name = mb_substr(trim($name), 0, 255);
     if ($name === '') { return null; }
     try {
@@ -167,9 +182,160 @@ function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
         $ins->execute();
         $newId = (int)$db->insert_id;
         $ins->close();
+        /* #1860 go-live — mint this publisher's permanent IL-id (ILP…). */
+        ilidStampNewRow($db, 'publisher', $newId);
         return $newId;
     } catch (\Throwable $e) {
         error_log('[publisherFindOrCreateByName] ' . $e->getMessage());
         return null;
     }
+}
+
+/**
+ * The ONE publisher typeahead query core (#1864, rule #22).
+ *
+ * ELI5
+ * ----
+ * Every page with a "search for a publisher" box (Publishers admin, the
+ * Songbooks editor, and now the Works Copyright Holder picker) used to run
+ * its own near-identical copy of this SQL. This is the one copy; every page
+ * calls it instead of writing its own.
+ *
+ * DETAILED
+ * --------
+ * Extracted verbatim from the pre-existing superset fork on
+ * `manage/publishers.php` (`Name LIKE` + optional `Id <> ?` exclude, both
+ * bound, `ORDER BY Name ASC LIMIT ?`) — `manage/songbooks.php`'s fork had the
+ * same shape minus the exclude arm. All three pages' `?action=publisher_search`
+ * handlers now delegate here (rule #22 — one core, not a third copy).
+ *
+ * Pre-migration safe: an absent `tblPublishers` degrades to `[]`, never a
+ * thrown exception — a caller with no schema-existence gate of its own (the
+ * new works.php handler, §1.3 of the #1864 spec) can call this directly. A
+ * genuine SQL failure once the table DOES exist still throws under STRICT
+ * mysqli (rule #9), so each caller's own `try/catch` -> HTTP 500 is
+ * unchanged.
+ *
+ * @param int      $limit     clamped to 1..50 inside this function — a
+ *                             caller doesn't need to re-clamp.
+ * @param int|null $excludeId when set (and > 0), excludes that Id — used by
+ *                             the parent-picker / merge-target searches so a
+ *                             publisher can't pick itself.
+ * @return array<int, array{id:int, name:string, slug:string, kind:string}>
+ *
+ * @link appWeb/public_html/manage/publishers.php the pre-existing superset fork this replaces
+ * @link appWeb/public_html/manage/songbooks.php   the pre-existing fork this replaces
+ * @see #1864
+ */
+function publisherSearchRows(\mysqli $db, string $q, int $limit, ?int $excludeId = null): array
+{
+    if (!publisherTableExists($db)) { return []; }
+
+    $limit = max(1, min(50, $limit));
+    $q     = trim($q);
+
+    $sql    = 'SELECT Id, Name, Slug, Kind FROM tblPublishers WHERE IsActive = 1';
+    $types  = '';
+    $params = [];
+    if ($q !== '') {
+        $sql      .= ' AND Name LIKE ?';
+        $types    .= 's';
+        $params[]  = '%' . $q . '%';
+    }
+    if ($excludeId !== null && $excludeId > 0) {
+        $sql      .= ' AND Id <> ?';
+        $types    .= 'i';
+        $params[]  = $excludeId;
+    }
+    $sql      .= ' ORDER BY Name ASC LIMIT ?';
+    $types    .= 'i';
+    $params[]  = $limit;
+
+    $stmt = $db->prepare($sql);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $out = [];
+    while ($row = $res->fetch_assoc()) {
+        $out[] = [
+            'id'   => (int)$row['Id'],
+            'name' => (string)$row['Name'],
+            'slug' => (string)$row['Slug'],
+            'kind' => (string)$row['Kind'],
+        ];
+    }
+    $stmt->close();
+    return $out;
+}
+
+/**
+ * Resolve a curator-typed copyright-holder name (+ an optional
+ * picker-claimed `tblPublishers.Id`) to a registry Id (#1864, rule #43/#37).
+ *
+ * ELI5
+ * ----
+ * The Copyright Holder box on a Work is really "point at a publisher, or
+ * make one if it doesn't exist yet". If the curator picked a suggestion
+ * from the dropdown we already know exactly which registry row they meant
+ * — this trusts that pick (after a quick double-check). If they only typed
+ * free text, this falls back to the same find-or-create funnel every other
+ * publisher-writing field in the app uses.
+ *
+ * DETAILED — TRUST-BUT-VERIFY
+ * ----------------------------
+ * Why the claimed id matters: `tblPublishers` deliberately has NO `uq_Name`
+ * (rule #37 — same-named publishers coexist under different
+ * Disambiguation), so a name-only resolve would `LIMIT 1` an arbitrary row
+ * whenever two publishers share a name. An explicit picker choice must win
+ * over that ambiguity.
+ *
+ * The claimed id is honoured ONLY when the row exists AND its Name equals
+ * the typed string (collation-CI, one bound
+ * `WHERE Id = ? AND Name = ?` SELECT) — a stale or forged id degrades to
+ * the name funnel, never to a silently-wrong link. In practice a mismatch
+ * is the exception, not the rule: `place-search.js`'s `pickMode:'value'`
+ * clears the hidden id the moment the curator free-types over a picked
+ * suggestion (`onInput()`), so the id and the name only travel together
+ * when nothing was edited after the pick.
+ *
+ *   '' name             => null (no holder set — CopyrightHolderId cleared)
+ *   verified claimed id => that id (NO create — the row already exists)
+ *   otherwise            => publisherFindOrCreateByName($db, $name), which
+ *                            is itself null-safe pre-migration
+ *
+ * @param int|null $claimedId the hidden `copyright_holder_id` POST value, or
+ *                             null/`<= 0` for "nothing was picked".
+ * @return int|null the resolved tblPublishers.Id, or null when there is no
+ *                    holder to set (empty name) or tblPublishers is absent.
+ *
+ * @see publisherFindOrCreateByName() the shared create funnel this delegates to
+ * @see #1864
+ */
+function publisherResolvePickedOrCreate(\mysqli $db, string $name, ?int $claimedId): ?int
+{
+    $name = mb_substr(trim($name), 0, 255);
+    if ($name === '') { return null; }
+
+    $claimedId = ($claimedId !== null && $claimedId > 0) ? $claimedId : null;
+
+    if ($claimedId !== null) {
+        try {
+            if (publisherTableExists($db)) {
+                $stmt = $db->prepare('SELECT Id FROM tblPublishers WHERE Id = ? AND Name = ? LIMIT 1');
+                $stmt->bind_param('is', $claimedId, $name);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($row) {
+                    return (int)$row['Id'];
+                }
+            }
+        } catch (\Throwable $e) {
+            error_log('[publisherResolvePickedOrCreate] verify failed: ' . $e->getMessage());
+            /* Fall through to the name funnel below — a verify failure must
+               never block the save, only fall back to the safe path. */
+        }
+    }
+
+    return publisherFindOrCreateByName($db, $name);
 }

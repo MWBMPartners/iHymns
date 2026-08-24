@@ -212,6 +212,9 @@ class SongData
     /** #1343-B — single-flight probe for tblSongs.PublicId (permalink id). */
     private bool $_publicIdColumn = false;
     private bool $_publicIdColumnChecked = false;
+    /** #1860 Phase 4 — single-flight probe for tblSongs.IlId (dual-addressing). */
+    private bool $_ilIdColumn = false;
+    private bool $_ilIdColumnChecked = false;
     /* Places adoption — single-flight probe for tblSongs.OriginCityId.
        Mirrors the ArrangementJson pattern so a pre-adoption install
        keeps the legacy SELECT shape (no extra columns) without a
@@ -2353,6 +2356,30 @@ class SongData
     }
 
     /**
+     * ELI5: a short fingerprint of "which SCHEMA STATE was
+     * getSongsSlimIndex() running under" — did it have the PublicId column
+     * to select, and which visibility predicate was it filtering by. Two
+     * installs on different migration states can emit a genuinely
+     * DIFFERENT-SHAPED slim index for the identical corpus content, so the
+     * #1921 ETag must change when either gate flips even if not one row
+     * changed.
+     * WHY a method here, not a second probe: `_hasPublicIdColumn()` and
+     * `_visible()` are this class's OWN memoized gates — the exact ones
+     * getSongsSlimIndex()'s SQL branches on (#1921 §1.2 axis 2). Reading
+     * them again here (rather than re-probing INFORMATION_SCHEMA a second
+     * way) is rule #35's "one mechanism" applied to a fingerprint: the ETag
+     * and the payload change together BY CONSTRUCTION, because both read
+     * the same two gates.
+     *
+     * @return string A stable xxh64 hex fingerprint of the current schema
+     *                 state this instance's slim-index query depends on.
+     */
+    public function slimIndexShapeToken(): string
+    {
+        return hash('xxh64', ((int)$this->_hasPublicIdColumn()) . '|' . $this->_visible());
+    }
+
+    /**
      * Get all songs, optionally filtered by songbook.
      *
      * When the hidden 'public_domain_only' feature flag is enabled,
@@ -2541,17 +2568,28 @@ class SongData
                exportAsJson → getSongs) surfaces existing links on load.
                Pre-migration safe via the schema probe in the helper. */
             $songLinksMap = $this->_externalLinksMap('song', $songIds);
+            /* #1912 — alternative titles bulked in too, same shape/keying as
+               getSongById()'s single-song attach below (:4451-4452). Needed
+               so the interchange bundle (manage/editor/api.php's
+               songbook_export -> getSongs()) round-trips alt titles: without
+               this, an export always emitted alternativeTitles=[] for every
+               song no matter what tblSongAlternativeTitles held, and the
+               importer (song_importers.php) had nothing to read back.
+               _songAltTitlesMap() is already bulk-capable and schema-probe
+               gated — [] on a pre-migration install, STRICT-safe. */
+            $altTitlesMap = $this->_songAltTitlesMap($songIds);
             foreach ($songs as &$song) {
                 $sid = $song['id'];
-                $song['writers']     = $writersMap[$sid]     ?? [];
-                $song['composers']   = $composersMap[$sid]   ?? [];
-                $song['arrangers']   = $arrangersMap[$sid]   ?? [];
-                $song['adaptors']    = $adaptorsMap[$sid]    ?? [];
-                $song['translators'] = $translatorsMap[$sid] ?? [];
-                $song['artists']     = $artistsMap[$sid]     ?? [];   /* #587 */
-                $song['components']  = $componentsMap[$sid]  ?? [];
-                $song['tags']        = $tagsMap[$sid]        ?? [];
-                $song['links']       = $songLinksMap[$sid]   ?? [];
+                $song['writers']           = $writersMap[$sid]     ?? [];
+                $song['composers']         = $composersMap[$sid]   ?? [];
+                $song['arrangers']         = $arrangersMap[$sid]   ?? [];
+                $song['adaptors']          = $adaptorsMap[$sid]    ?? [];
+                $song['translators']       = $translatorsMap[$sid] ?? [];
+                $song['artists']           = $artistsMap[$sid]     ?? [];   /* #587 */
+                $song['components']        = $componentsMap[$sid]  ?? [];
+                $song['tags']              = $tagsMap[$sid]        ?? [];
+                $song['links']             = $songLinksMap[$sid]   ?? [];
+                $song['alternativeTitles'] = $altTitlesMap[$sid]   ?? [];
             }
             unset($song);
         }
@@ -2708,6 +2746,30 @@ class SongData
         /* Try exact match first (fast path) — SongId is the PK; this runs FIRST so
            legacy /song/<SongId> resolves even if every PublicId path below failed. */
         $song = $this->_fetchSongRow($id);
+
+        /* #1860 Phase 4 — IL internal id (strategy 1.5). MUST run BEFORE the
+           PublicId branch below: an ILS id matches that branch's
+           ^[0-9A-Z]{6,32}$ shape too, and ordering the SPECIFIC grammar
+           first is correct BY CONSTRUCTION (an IL id parses to a known
+           entity type) rather than by the Crockford-excludes-I/L charset
+           accident that happens to keep the two forms from colliding today
+           (design doc §2.5). ilidParse() gives the tolerant human form for
+           free ('ILS12345' -> canonical 'ILS0000012345',
+           includes/ilyrics_id.php :184-216); a non-song IL id ('ILW…')
+           parses but fails the entityType check and falls through to the
+           PublicId branch unchanged. This ONE branch lights up
+           `/song/ILS…`, `song_detail`, `song_data` and every other
+           getSongById() consumer at once. */
+        if ($song === null && strpos($id, '-') === false && $this->_hasIlIdColumn()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+            $ilParsed = ilidParse($id);
+            if ($ilParsed !== null && $ilParsed['entityType'] === 'song') {
+                $resolvedSongId = $this->_songIdForIlId($ilParsed['canonical']);
+                if ($resolvedSongId !== null) {
+                    $song = $this->_fetchSongRow($resolvedSongId);
+                }
+            }
+        }
 
         /* #1343-B — opaque PublicId (IHUID) permalink: uppercase, hyphen-less, not a
            SongId. Gated on the column existing (un-migrated env skips it cleanly). */
@@ -3129,6 +3191,16 @@ class SongData
            a dedicated FULLTEXT index (idx_TitleFt / idx_TitleLyricsFt). */
         $matchCols = $includeLyrics ? 's.Title, s.LyricsText' : 's.Title';
 
+        /* #1039 Part A — diacritic/apostrophe-folded search arm. When the
+           mode's folded FULLTEXT index is live, we compute a SECOND boolean
+           expression from the SAME query folded through ihymns_search_fold()
+           (the exact fold the stored NormalizedTitle / LyricsTextFolded columns
+           carry) and OR it into each FULLTEXT pass below. $foldReady false ⇒
+           $foldedPrimary/$foldedLoose stay '' ⇒ byte-identical single-arm SQL. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+        $foldReady  = $this->_searchFoldReady($includeLyrics);
+        $foldedCols = $includeLyrics ? 's.NormalizedTitle, s.LyricsTextFolded' : 's.NormalizedTitle';
+
         $results = [];
         $tokens  = self::_tokenizeSearch($query);
 
@@ -3137,27 +3209,67 @@ class SongData
         if (mb_strlen($query) < 3 || empty($tokens)) {
             $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags, $sortSpec);
         } else {
-            /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
-               term prefix-matched AND required (+term*). Catches partial
-               words ("amaz grac" → "Amazing Grace") the way the old Fuse
-               index did, while staying a live, indexed MySQL query.
-               A scripture reference ORs in its canonical expansion so
-               "Ps 23" still reaches "Psalm 23" (#397). */
-            $primary = self::_booleanPrefixExpr($tokens, true);
-            if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
-                $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
-                if ($expExpr !== '') {
-                    $primary = '(' . $primary . ') (' . $expExpr . ')';
-                }
+            /* #1908 Commit 5 — space-less-script arm. MySQL's built-in
+               FULLTEXT parser segments words on whitespace/punctuation, so a
+               3+-char CJK/Thai/Lao/Khmer/Burmese query (normally written
+               with NO gaps between "words") tokenizes as one giant unmatched
+               blob and the boolean-prefix passes below return nothing — even
+               though the substring is right there in the title. The plain
+               substring scan (_searchByLike(), already the <3-char route
+               above) doesn't care about word boundaries at all, so it just
+               works for these scripts; try it FIRST and only fall through to
+               the untouched FULLTEXT ladder if it comes up empty. A Latin/
+               Cyrillic/Greek/Hangul/Arabic/Hebrew/Devanagari query never
+               matches the predicate, so this arm is a no-op for them and the
+               FULLTEXT path below stays byte-identical to before (see D7 in
+               the #1908 plan for why the heavier WITH PARSER ngram index
+               upgrade is a deferred follow-up, not built here). */
+            if (ihymns_contains_spaceless_script($query)) {
+                $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags, $sortSpec);
             }
-            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
-
-            /* D2 hybrid — step 2: if requiring every term found nothing,
-               broaden to ANY term (drop the +) so a single mistyped
-               token doesn't sink the whole query. */
             if (empty($results)) {
-                $loose   = self::_booleanPrefixExpr($tokens, false);
-                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec);
+                /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
+                   term prefix-matched AND required (+term*). Catches partial
+                   words ("amaz grac" → "Amazing Grace") the way the old Fuse
+                   index did, while staying a live, indexed MySQL query.
+                   A scripture reference ORs in its canonical expansion so
+                   "Ps 23" still reaches "Psalm 23" (#397). */
+                $primary = self::_booleanPrefixExpr($tokens, true);
+                if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                    $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
+                    if ($expExpr !== '') {
+                        $primary = '(' . $primary . ') (' . $expExpr . ')';
+                    }
+                }
+
+                /* Folded twin of $primary — built from the folded query the SAME
+                   way (scripture expansion folded and OR-ed in too), so the folded
+                   arm mirrors the raw arm term-for-term. */
+                $foldedPrimary = '';
+                $foldedLoose   = '';
+                if ($foldReady) {
+                    $foldedTokens = self::_tokenizeSearch(ihymns_search_fold($query));
+                    if (!empty($foldedTokens)) {
+                        $foldedPrimary = self::_booleanPrefixExpr($foldedTokens, true);
+                        if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
+                            $foldedExp = self::_booleanPrefixExpr(self::_tokenizeSearch(ihymns_search_fold($scriptureExpansion)), true);
+                            if ($foldedExp !== '') {
+                                $foldedPrimary = '(' . $foldedPrimary . ') (' . $foldedExp . ')';
+                            }
+                        }
+                        $foldedLoose = self::_booleanPrefixExpr($foldedTokens, false);
+                    }
+                }
+
+                $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedPrimary, $foldedCols);
+
+                /* D2 hybrid — step 2: if requiring every term found nothing,
+                   broaden to ANY term (drop the +) so a single mistyped
+                   token doesn't sink the whole query. */
+                if (empty($results)) {
+                    $loose   = self::_booleanPrefixExpr($tokens, false);
+                    $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags, $sortSpec, $foldedLoose, $foldedCols);
+                }
             }
         }
 
@@ -3169,7 +3281,7 @@ class SongData
            snippet) — only when lyrics search is on and the hit is in the
            body rather than the title. */
         if ($includeLyrics) {
-            $this->_attachLyricsSnippets($results, $tokens);
+            $this->_attachLyricsSnippets($results, $tokens, $foldReady);
         }
 
         /* D2 hybrid — step 3: writer/composer LIKE fallback when the
@@ -3302,21 +3414,84 @@ class SongData
         return implode(', ', $fragments);
     }
 
+    /** @var array<string,bool> $_searchFoldFtCache probe cache: FT index name => present */
+    private array $_searchFoldFtCache = [];
+
+    /**
+     * Is the diacritic-folded search arm (#1039 Part A) usable for this mode?
+     *
+     * ELI5: only turn on the "match accents/apostrophes loosely" arm once the
+     * migration that built its FULLTEXT index has actually run on this install.
+     *
+     * Gates on the specific FULLTEXT INDEX the mode's MATCH() will name —
+     * `ft_NormalizedTitle` for title-only search, `ft_NormTitleLyricsFolded`
+     * for title+lyrics — NOT merely the LyricsTextFolded column. A half-migrated
+     * install (column added, indexes not) would throw on `MATCH(NormalizedTitle,
+     * LyricsTextFolded)` because MySQL requires an FT index over exactly that
+     * column set; probing the index is what makes the read path fail-CLOSED to
+     * today's byte-identical single-arm SQL instead (rule #28-C). Memoised per
+     * index (one INFORMATION_SCHEMA round-trip), fail-open to false on error.
+     *
+     * @link https://dev.mysql.com/doc/refman/8.0/en/fulltext-search.html
+     */
+    private function _searchFoldReady(bool $withLyrics): bool
+    {
+        $index = $withLyrics ? 'ft_NormTitleLyricsFolded' : 'ft_NormalizedTitle';
+        if (array_key_exists($index, $this->_searchFoldFtCache)) {
+            return $this->_searchFoldFtCache[$index];
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND INDEX_NAME   = ? LIMIT 1"
+            );
+            $probe->bind_param('s', $index);
+            $probe->execute();
+            $has = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure ⇒ single-arm (byte-identical) */ }
+        return $this->_searchFoldFtCache[$index] = $has;
+    }
+
     /**
      * Run a single FULLTEXT BOOLEAN-mode pass and return lightweight,
      * relevance-ordered rows (credits are bulk-attached by the caller).
      * songbookName comes from the LIVE tblSongbooks JOIN, not the
      * denormalised tblSongs.SongbookName (WS-E #1013).
+     *
+     * #1039 Part A — when $foldedExpr is non-empty (the caller only passes it
+     * once _searchFoldReady() confirmed the index), a SECOND folded MATCH() arm
+     * is OR-ed into the WHERE and SUMMED into the relevance score:
+     *   WHERE  (MATCH(raw) OR MATCH(folded))
+     *   score  (MATCH(raw) + MATCH(folded))
+     * A raw hit usually matches both arms and so keeps its standing above a
+     * folded-only hit; the `s.SongbookAbbr, s.Number` tie-break is untouched.
+     * An empty $foldedExpr ⇒ byte-identical single-arm SQL (un-migrated install).
      */
-    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = [], array $sortSpec = []): array
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = [], array $sortSpec = [], string $foldedExpr = '', string $foldedCols = ''): array
     {
         if (trim($ftQuery) === '') {
             return [];
         }
 
-        $where  = ["MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)"];
-        $params = [$ftQuery];
-        $types  = 's';
+        $useFolded = ($foldedExpr !== '' && $foldedCols !== '');
+        $relevanceExpr = $useFolded
+            ? "(MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) + MATCH({$foldedCols}) AGAINST(? IN BOOLEAN MODE))"
+            : "MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)";
+        $whereMatch = $useFolded
+            ? "(MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) OR MATCH({$foldedCols}) AGAINST(? IN BOOLEAN MODE))"
+            : "MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)";
+
+        /* WHERE-side match bind(s) come FIRST in $params; the SELECT-side
+           relevance bind(s) are array_unshift-ed onto the front afterwards, so
+           the final order is [relevance…, whereMatch…, songbook?, lang…, limit,
+           offset] — exactly the placeholder order in the SQL below. */
+        $where  = [$whereMatch];
+        $params = $useFolded ? [$ftQuery, $foldedExpr] : [$ftQuery];
+        $types  = $useFolded ? 'ss' : 's';
 
         $where[] = $this->_visible();   /* #1694 — hidden songs never match */
 
@@ -3352,16 +3527,22 @@ class SongData
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
-                       MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) AS relevance
+                       {$relevanceExpr} AS relevance
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
                 ORDER BY {$orderBy}
                 {$limitClause}";
 
-        /* MATCH appears in SELECT (relevance) and WHERE — bind twice. */
-        array_unshift($params, $ftQuery);
-        $types = 's' . $types;
+        /* MATCH appears in SELECT (relevance) and WHERE — bind the relevance
+           side onto the FRONT. Folded mode doubles both (raw + folded). */
+        if ($useFolded) {
+            array_unshift($params, $ftQuery, $foldedExpr);
+            $types = 'ss' . $types;
+        } else {
+            array_unshift($params, $ftQuery);
+            $types = 's' . $types;
+        }
         if ($limit > 0) {
             $params[] = $limit;  $types .= 'i';
             $params[] = $offset; $types .= 'i';
@@ -3384,14 +3565,34 @@ class SongData
     {
         $like = '%' . $query . '%';
 
+        /* #1039 Part A — cheap folded symmetry for the sub-3-char / LIKE path:
+           OR in `s.NormalizedTitle LIKE <foldedQuery>` when the feature is live,
+           so this path picks up the special-letter / apostrophe classes (é/ñ
+           already work here via the utf8mb4 collation). $foldedLike null (un-
+           migrated OR the query folds to nothing) ⇒ byte-identical to today. */
+        $foldedLike = null;
+        if ($this->_searchFoldReady(false)) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            $fq = ihymns_search_fold($query);
+            if ($fq !== '') { $foldedLike = '%' . $fq . '%'; }
+        }
+
         if ($includeLyrics) {
-            $where  = ['(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
+            $where  = [$foldedLike !== null
+                ? '(s.Title LIKE ? OR s.LyricsText LIKE ? OR s.NormalizedTitle LIKE ?)'
+                : '(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
             $params = [$like, $like];
             $types  = 'ss';
         } else {
-            $where  = ['s.Title LIKE ?'];
+            $where  = [$foldedLike !== null
+                ? '(s.Title LIKE ? OR s.NormalizedTitle LIKE ?)'
+                : 's.Title LIKE ?'];
             $params = [$like];
             $types  = 's';
+        }
+        if ($foldedLike !== null) {
+            $params[] = $foldedLike;
+            $types   .= 's';
         }
 
         $where[] = $this->_visible();   /* #1694 — hidden songs never match */
@@ -3528,9 +3729,17 @@ class SongData
      * the server-side replacement for the old Fuse match-snippet.
      * Requires components to have been attached already.
      *
+     * #1039 Part A — when $foldReady, a raw `mb_stripos` miss retries with the
+     * FOLDED needle against `ihymns_search_fold($line)`, using the RAW line as
+     * the snippet. `mb_stripos` is accent-sensitive, so a row the folded
+     * FULLTEXT arm matched by an accent/apostrophe class ("Miłość", "aren’t")
+     * would otherwise match-with-no-snippet — a silent degradation this fixes.
+     * $foldReady false ⇒ byte-identical to the pre-#1039 raw-only scan.
+     *
      * @param string[] $tokens
+     * @param bool     $foldReady whether the folded fallback should run
      */
-    private function _attachLyricsSnippets(array &$rows, array $tokens): void
+    private function _attachLyricsSnippets(array &$rows, array $tokens, bool $foldReady = false): void
     {
         if (empty($rows) || empty($tokens)) {
             return;
@@ -3544,23 +3753,59 @@ class SongData
             return;
         }
 
+        /* Folded needles are computed once (only when the feature is live). */
+        $foldedNeedles = [];
+        if ($foldReady) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            foreach ($needles as $n) {
+                $fn = ihymns_search_fold($n);
+                if ($fn !== '') { $foldedNeedles[] = $fn; }
+            }
+        }
+
         foreach ($rows as &$row) {
             /* Snippet is only useful when the hit is NOT already in the
-               title — a title match is its own context. */
+               title — a title match is its own context. Fold the title too so
+               an accent-matched title doesn't get a stray lyrics snippet. */
             $title = mb_strtolower($row['title'] ?? '');
             $inTitle = false;
             foreach ($needles as $n) {
                 if (mb_stripos($title, $n) !== false) { $inTitle = true; break; }
             }
+            if (!$inTitle && !empty($foldedNeedles)) {
+                $ftitle = ihymns_search_fold($title);
+                foreach ($foldedNeedles as $fn) {
+                    if (mb_stripos($ftitle, $fn) !== false) { $inTitle = true; break; }
+                }
+            }
             if ($inTitle) continue;
 
+            $found = false;
             foreach (($row['components'] ?? []) as $comp) {
                 foreach (($comp['lines'] ?? []) as $line) {
                     $ll = mb_strtolower($line);
                     foreach ($needles as $n) {
                         if (mb_stripos($ll, $n) !== false) {
                             $row['lyricsSnippet'] = $line;
+                            $found = true;
                             break 3;
+                        }
+                    }
+                }
+            }
+
+            /* Folded retry — only reached when the raw scan found nothing AND
+               the feature is live. Uses the RAW line as the snippet (whole-line
+               snippet, so no offset mapping is needed). */
+            if (!$found && !empty($foldedNeedles)) {
+                foreach (($row['components'] ?? []) as $comp) {
+                    foreach (($comp['lines'] ?? []) as $line) {
+                        $fl = ihymns_search_fold($line);
+                        foreach ($foldedNeedles as $fn) {
+                            if (mb_stripos($fl, $fn) !== false) {
+                                $row['lyricsSnippet'] = $line;
+                                break 3;
+                            }
                         }
                     }
                 }
@@ -4514,6 +4759,52 @@ class SongData
         return $row !== null ? (string)$row['SongId'] : null;
     }
 
+    /** #1860 Phase 4 — single-flight probe for tblSongs.IlId (gated reads/STRICT),
+     *  byte-pattern clone of _hasPublicIdColumn() immediately above. */
+    private function _hasIlIdColumn(): bool
+    {
+        if ($this->_ilIdColumnChecked) {
+            return $this->_ilIdColumn;
+        }
+        $this->_ilIdColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'IlId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_ilIdColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_ilIdColumn = false;
+        }
+        return $this->_ilIdColumn;
+    }
+
+    /** #1860 Phase 4 — resolve a canonical IL internal id (ILS…) to its
+     *  SongId (PK), or null. Bound; caller has already gated on
+     *  _hasIlIdColumn(). Clone of _songIdForPublicId() immediately above. */
+    private function _songIdForIlId(string $ilId): ?string
+    {
+        /* @deleted-visible: pure id RESOLVER (#1860, mirrors #1694's
+           _songIdForPublicId() reasoning) — the follow-up _fetchSongRow()
+           applies the visibility filter, and a deleted song's IL id must
+           still resolve here or songSoftDeletedHolds() could never
+           recognise it (and the 410 answer would decay to a 404).
+           @disabled-visible: same reasoning, one predicate over (#1765) —
+           an IL id belonging to a song in a disabled songbook must still
+           resolve to a SongId here; _fetchSongRow()'s `_visible()` call is
+           what actually hides it from the public response. */
+        $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE IlId = ? LIMIT 1');
+        $stmt->bind_param('s', $ilId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null ? (string)$row['SongId'] : null;
+    }
+
     /**
      * Places adoption — single-flight probe for tblSongs.OriginCityId.
      * Mirrors _hasArrangementColumn() so the SELECT path can gate the
@@ -4595,17 +4886,30 @@ class SongData
      * no stable line identity without the mirror). Once the P1 mirror exists this is
      * never reached; the column-existence guard means the same deployed code keeps
      * working before and after the P4d JSON-column drop.
+     *
+     * #1860 Phase 5 §2.4 (SD4): also gated-reads `Label` and sparse-emits it exactly
+     * like the mirror path (`lyricLinesAssembleFromRows()`'s SD3 rule), via the ONE
+     * shared probe `lyricLinesComponentExtrasPresent()` (rule #35 — never a second
+     * INFORMATION_SCHEMA copy here) — so an install that has run the Label migration
+     * but not yet the lyric-lines-mirror one still renders a stored label instead of
+     * silently dropping it.
      */
     private function _getComponentsFromJson(string $songId): array
     {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras = lyricLinesComponentExtrasPresent($this->db);
+
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
         $chordsSelect = $this->_hasComponentChordsColumn()
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
+        $labelSelect = $extras['Label']
+            ? ', Label AS label'
+            : ', NULL AS label';
         $stmt = $this->db->prepare(
-            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}{$labelSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
@@ -4617,13 +4921,18 @@ class SongData
 
         $components = [];
         foreach ($rows as $row) {
-            $components[] = [
+            $comp = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            /* Sparse — present only when set, matching the mirror path's SD3 rule. */
+            if (isset($row['label']) && $row['label'] !== null && $row['label'] !== '') {
+                $comp['label'] = (string)$row['label'];
+            }
+            $components[] = $comp;
         }
         return $components;
     }
@@ -4716,10 +5025,16 @@ class SongData
         return $this->_getComponentsMapFromJson($songIds);
     }
 
-    /** Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson(). */
+    /**
+     * Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson()
+     * — same #1860 Phase 5 §2.4 (SD4) gated-Label + sparse-emit treatment, batched.
+     */
     private function _getComponentsMapFromJson(array $songIds): array
     {
         if (empty($songIds)) return [];
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $extras = lyricLinesComponentExtrasPresent($this->db);
+
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
         $langSelect = $this->_hasComponentLanguageColumn()
@@ -4728,8 +5043,11 @@ class SongData
         $chordsSelect = $this->_hasComponentChordsColumn()
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
+        $labelSelect = $extras['Label']
+            ? ', Label AS label'
+            : ', NULL AS label';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}{$labelSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
@@ -4742,13 +5060,17 @@ class SongData
         $map = [];
         foreach ($rows as $row) {
             $sid = $row['SongId'];
-            $map[$sid][] = [
+            $comp = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            if (isset($row['label']) && $row['label'] !== null && $row['label'] !== '') {
+                $comp['label'] = (string)$row['label'];
+            }
+            $map[$sid][] = $comp;
         }
         return $map;
     }
@@ -5159,6 +5481,30 @@ class SongData
     /** @var bool|null cached probe result */
     private ?bool $_hasWorksSchemaCache = null;
 
+    /** #1860 Phase 4 — single-flight probe for tblWorks.IlId (dual-addressing
+     *  pre-step in getWork() above). Phase 1 and Phase 3's migration cards
+     *  are independent and can land in EITHER order, so this can never be
+     *  assumed from _hasWorksSchema() passing alone. */
+    private ?bool $_hasWorkIlIdColumnCache = null;
+    private function _hasWorkIlIdColumn(): bool
+    {
+        if (isset($this->_hasWorkIlIdColumnCache)) {
+            return $this->_hasWorkIlIdColumnCache;
+        }
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks' AND COLUMN_NAME = 'IlId' LIMIT 1"
+            );
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $this->_hasWorkIlIdColumnCache = $exists;
+        } catch (\Throwable $_e) {
+            return $this->_hasWorkIlIdColumnCache = false;
+        }
+    }
+
     /**
      * Cached per-column presence probe over the 9 #1741 P1/D5 tblWorks
      * "extra" columns (Ccli/Bowi/Subtitle/Disambiguation/TuneName/TuneId/
@@ -5343,11 +5689,15 @@ class SongData
      *
      * Each Work entry: { id, parentId, title, slug, iswc, isCanonical,
      *                    members:[{songId, songbook, number, title, songbookName}],
-     *                    links:[…] }
+     *                    links:[…],
+     *                    constituents:[{workId, title, slug, sortOrder, note}] }
      *
      * Members + links are attached for the Works that appear, so
      * downstream code can render the "Other versions of this work"
-     * sub-list without another round-trip.
+     * sub-list without another round-trip. `constituents` (#1860 Phase 5
+     * Commit 7) is the medley's own contents — `[]` on a non-medley Work
+     * or an un-migrated tblWorkComponents — feeding song.php's "Medley
+     * of: A, B, C" line via `includes/work_admin.php::workMedleyConstituentsMap()`.
      *
      * @param array<int,string> $songIds
      * @return array<string,array<int,array<string,mixed>>> keyed by songId
@@ -5395,9 +5745,11 @@ class SongData
                     'iswc'        => (string)($row['iswc'] ?? ''),
                     'isCanonical' => (bool)$row['isCanonical'],
                     'memberNote'  => (string)($row['memberNote'] ?? ''),
-                    /* members + links attached in step 2/3 below */
+                    /* members + links attached in step 2/3 below;
+                       constituents (#1860 Phase 5 Commit 7) in step 4 */
                     'members'     => [],
                     'links'       => [],
+                    'constituents' => [],
                 ];
             }
             $stmt->close();
@@ -5492,11 +5844,38 @@ class SongData
                 $stmt3->close();
             }
 
+            /* Step 4 — medley constituents ("Medley of: A, B, C"), #1860
+               Phase 5 Commit 7. Gated on workMedleyReady() — the
+               tblWorkComponents table is a SEPARATE migration card from the
+               tblWorks/tblWorkSongs core this method already requires
+               (work_admin.php's workMedleyReady() doc-block), so an install
+               can have _hasWorksSchema()===true while the medley table
+               still doesn't exist. Reuses the ONE shared medley-read core
+               in work_admin.php (rule #22 — never a second inline query)
+               and its BULK variant (rule #22's N+1 avoidance — the same
+               $widList already built for step 2/3, one query for every
+               work surfaced across $songIds, not one per work). Local
+               try/catch (matching this method's own external-links-probe
+               style at step 3) so an unexpected error here degrades every
+               work's constituents to [] rather than blanking the whole
+               song page (rule #9-class — no white-screen on an
+               un-migrated/partial install). */
+            $constituentsByWork = [];
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+                if (workMedleyReady($this->db)) {
+                    $constituentsByWork = workMedleyConstituentsMap($this->db, $widList);
+                }
+            } catch (\Throwable $_e) {
+                // dormant-by-design — un-migrated install keeps every work's constituents empty
+            }
+
             /* Stitch it together. */
             foreach ($bySong as $sid => &$worksList) {
                 foreach ($worksList as &$w) {
-                    $w['members'] = $membersByWork[$w['id']] ?? [];
-                    $w['links']   = $linksByWork[$w['id']]   ?? [];
+                    $w['members']      = $membersByWork[$w['id']]      ?? [];
+                    $w['links']        = $linksByWork[$w['id']]        ?? [];
+                    $w['constituents'] = $constituentsByWork[$w['id']] ?? [];
                 }
                 unset($w);
             }
@@ -5511,13 +5890,44 @@ class SongData
 
     /**
      * Public read: full Work row by slug or numeric id, including
-     * members, parent / children references and external links.
-     * Returns null when the schema isn't there or the work doesn't
-     * exist. Used by the public /work/<slug> page and the api.
+     * members, parent / children references, external links, and (#1860
+     * Phase 5 Commit 7) `constituents` — this Work's own medley contents
+     * when it IS a medley, `[]` otherwise or on an un-migrated
+     * tblWorkComponents (see `workMedleyReady()`/`workMedleyConstituents()`
+     * in `includes/work_admin.php`). Returns null when the schema isn't
+     * there or the work doesn't exist. Used by the public /work/<slug>
+     * page and the api.
      */
     public function getWork(string|int $slugOrId): ?array
     {
         if (!$this->_hasWorksSchema()) return null;
+
+        /* #1860 Phase 4 — dual-addressing pre-step: an IL internal id
+           ('ILW…') resolves to its numeric tblWorks.Id and continues down
+           the SAME integer-Id path below — never a second resolver. A
+           REAL slug that happens to look like 'ilw123' still resolves
+           unchanged on a miss (design §2.5) — this pre-step only ever
+           REPLACES $slugOrId with a resolved Id, it never rejects the
+           input. try/catch-swallowed + column-probe-gated so a fragment
+           never white-screens on an un-migrated install (the #1228
+           lesson) — a column that doesn't exist yet degrades to "keep
+           trying the slug ladder", never an error. */
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+            $ilParsed = ilidParse((string)$slugOrId);
+            if ($ilParsed !== null && $ilParsed['entityType'] === 'work' && $this->_hasWorkIlIdColumn()) {
+                $ilStmt = $this->db->prepare('SELECT Id FROM tblWorks WHERE IlId = ? LIMIT 1');
+                $ilStmt->bind_param('s', $ilParsed['canonical']);
+                $ilStmt->execute();
+                $ilRow = $ilStmt->get_result()->fetch_assoc();
+                $ilStmt->close();
+                if ($ilRow !== null) {
+                    $slugOrId = (int)$ilRow['Id'];
+                }
+            }
+        } catch (\Throwable $_e) {
+            // dormant-by-design — fall through to the slug/Id ladder unchanged
+        }
 
         /* One parameter, two lookup columns — an all-digit string is treated as
            an Id, not a Slug.
@@ -5587,6 +5997,7 @@ class SongData
                 'children'  => [],
                 'members'   => [],
                 'links'     => [],
+                'constituents' => [],
                 /* #1741 P4b (§2.2.2) — absent-column defaults so work.php
                    can render shape-blind: every key below is always
                    present in the returned array, whether or not the
@@ -5642,6 +6053,31 @@ class SongData
                 ];
             }
             $stmt->close();
+
+            /* Medley constituents ("Contains (medley)"), #1860 Phase 5
+               Commit 7. Gated on workMedleyReady() — tblWorkComponents is
+               a SEPARATE migration card from the tblWorks core this
+               method already requires (work_admin.php's workMedleyReady()
+               doc-block), so a work can resolve here while the medley
+               table still doesn't exist. Reuses the ONE shared medley-read
+               core (rule #22 — never a second inline query); this is a
+               SINGLE work, so the singular (non-bulk) reader is the right
+               tool, mirroring `workMedleyConstituentsMap()`'s bulk sibling
+               used by `_worksMap()` for the multi-song song-page case.
+               Local try/catch (matching this method's own
+               probe-then-query blocks, e.g. the Tune/external-links
+               lookups below) so an unexpected error here degrades to an
+               empty constituents list rather than the whole work page
+               404ing via the method's outer catch (rule #9-class — no
+               white-screen on an un-migrated/partial install). */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'work_admin.php';
+                if (workMedleyReady($this->db)) {
+                    $work['constituents'] = workMedleyConstituents($this->db, $wid);
+                }
+            } catch (\Throwable $_e) {
+                // dormant-by-design — un-migrated install keeps an empty constituents list
+            }
 
             /* Members */
             $stmt = $this->db->prepare(

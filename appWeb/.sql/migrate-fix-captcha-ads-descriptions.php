@@ -3,26 +3,33 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Reword the captcha_* / ads_* seed descriptions as RESERVED (X6, #1685)
+ * iHymns — Reword the ads_* seed descriptions as RESERVED (X6, #1685; captcha_* split out #947/#340)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * UPDATEs the `Description` column of six `tblAppSettings` rows —
- * `captcha_provider`, `captcha_site_key`, `captcha_secret_key`, `ads_enabled`,
- * `ads_provider`, `ads_publisher_id` — to say plainly that nothing reads them
- * yet, instead of describing a feature that does not exist.
+ * UPDATEs the `Description` column of the three `ads_*` `tblAppSettings` rows —
+ * `ads_enabled`, `ads_provider`, `ads_publisher_id` — to say plainly that
+ * nothing reads them yet, instead of describing a feature that does not exist.
  *
- * ELI5: six settings on the admin configuration page describe things this
- * app can do (block bots, show ads) that it actually cannot do at all — there
- * is no code anywhere that looks at these values. An operator who set
- * `captcha_provider` to `recaptcha_v2` would believe bot protection was live.
- * This migration relabels the six switches "reserved — not wired yet" so the
- * description matches reality, the same fix `ccli_validation_enabled` got in
- * #1668 (that key was deleted outright because its old text actively claimed
- * to be a security control; these six describe genuinely plausible future
- * features, so the remediation plan's default here is REWORD, not delete —
- * see remediation-plan-2026-07-30.md work item X6).
+ * NARROWED (#947/#340): this migration ORIGINALLY covered six rows, including
+ * the three `captcha_*` rows. Those are now a REAL, server-verified control
+ * (includes/captcha.php) and are owned by `migrate-wire-captcha-settings.php`,
+ * which un-reserves them — so this migration keeps only the three `ads_*` rows
+ * (still genuinely reserved, #1685). The two never touch the same rows.
+ *
+ * ELI5: three ad settings on the admin configuration page describe something
+ * this app can do (show ads) that it actually cannot do at all — there is no
+ * code anywhere that looks at these values. An operator who set `ads_enabled`
+ * to 1 would believe adverts were live. This migration relabels the three
+ * switches "reserved — not wired yet" so the description matches reality, the
+ * same fix `ccli_validation_enabled` got in #1668 (that key was deleted
+ * outright because its old text actively claimed to be a security control;
+ * these three describe a genuinely plausible future feature, so the
+ * remediation plan's default here is REWORD, not delete — see
+ * remediation-plan-2026-07-30.md work item X6). (The captcha_* rows this
+ * migration once also covered are now a REAL control — see the NARROWED note
+ * above.)
  *
  * WHY A MIGRATION, NOT JUST A schema.sql EDIT:
  * `INSERT IGNORE` (used by schema.sql's seed block) is a no-op against a row
@@ -38,8 +45,7 @@ declare(strict_types=1);
  * text and reports it via `affected_rows` still being 0 (MySQL does not
  * count a row as affected when the UPDATE would not change any column).
  *
- * @migration-modifies tblAppSettings (rewords captcha_provider, captcha_site_key,
- *                      captcha_secret_key, ads_enabled, ads_provider, ads_publisher_id)
+ * @migration-modifies tblAppSettings (rewords ads_enabled, ads_provider, ads_publisher_id)
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-fix-captcha-ads-descriptions.php
@@ -89,13 +95,15 @@ if (!$mysqli) {
     throw new \RuntimeException('Could not connect to database.');
 }
 
-/* Byte-identical to the schema.sql copy of the same six rows — this map IS
-   the migration's single source of truth for the new text, and schema.sql's
-   INSERT IGNORE block must read the same six strings verbatim (rule #19). */
+/* Byte-identical to the schema.sql copy of these rows — this map IS the
+   migration's single source of truth for the new text, and schema.sql's
+   INSERT IGNORE block must read the same strings verbatim (rule #19).
+   NARROWED (#947/#340): the three captcha_* rows are now a REAL control
+   (includes/captcha.php) and are owned by migrate-wire-captcha-settings.php,
+   which un-reserves them. This migration keeps ONLY the three ads_* rows,
+   which remain genuinely reserved (#1685 — nothing reads them yet). The two
+   migrations therefore never fight over the same rows. */
 $descriptions = [
-    'captcha_provider'   => 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.',
-    'captcha_site_key'   => 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built',
-    'captcha_secret_key' => 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built',
     'ads_enabled'        => 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)',
     'ads_provider'       => 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom',
     'ads_publisher_id'   => 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built',

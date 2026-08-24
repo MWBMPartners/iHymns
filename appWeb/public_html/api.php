@@ -57,6 +57,9 @@ enableDebugModeIfRequested();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+/* #1906 — brand X-Powered-By as "iHymns/<version>" (our identity, never the PHP
+   runtime version) on the API surface too, before any response is sent. */
+ihymns_emit_powered_by_header($app);
 /* #1201/#1761 — public/PWA API response-envelope helpers (apiContractVersion /
    apiEnvelopeWrap / apiEnvelopeError). Loaded early so sendJson() can wrap the
    v2 envelope; extracted from this file so the contract is unit-testable
@@ -189,6 +192,16 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    "Go Live" never started (latent since #1335; surfaced on first live use).
    Load it top-level so it is always defined for every endpoint. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+/* #947/#340 — the dormant, provider-agnostic CAPTCHA core. Side-effect-free to
+   require (declares functions/constants only; opens no connection). Loaded
+   top-level so every gated endpoint below can call captchaGate() and the
+   app_status emit can call captchaClientConfig(). A no-op until an admin
+   configures a provider + both keys AND ticks a form on /manage/configuration. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+/* #1148 — the ONE visible-song theme-count core (themeIndexCounts()), shared by
+   popular_tags, the /themes index page and the sitemap so a theme's count can
+   never disagree with the page it links to. Side-effect-free to require. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'theme_index.php';
 /* #1448 — validation helpers for the first-party analytics ingestion
    endpoint (analyticsIngestValidateEvent()/analyticsIngestValidatePlatform()).
    Loaded top-level like its rate-limiting neighbours above. */
@@ -285,6 +298,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1860 go-live — ilidStampNewRow() for admin_musician_add / admin_songbook_create below. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
 /* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
@@ -312,6 +327,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
  * handled by the JSON error handler above as a 503).
  * ========================================================================= */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for the setlist_share / service_session_* funnels (dormant no-op) */
 enforceMaintenanceForApi();
 
 /* Themed error-card renderer for the ?page= partials (song/songbook/work/…
@@ -437,6 +453,15 @@ $action = isset($_GET['action']) ? trim($_GET['action']) : null;
    so normalise before anything cache-key-shaped touches $page). */
 if ($page === 'person' || $page === 'people') {
     $page = 'musician';
+}
+/* #1148 — `page=themes` is canonical; `page=tags` is a forgiving alias
+   (the people/person, work/works convention). Normalised HERE, before the
+   $_cacheablePages membership check and the ETag cache key below, so the alias
+   shares the SAME cached fragment as the canonical value (two page values
+   hashing to two cache entries for identical content is the silent
+   cache-fragmentation bug the person/people fold above avoids). */
+if ($page === 'tags') {
+    $page = 'themes';
 }
 
 /* =========================================================================
@@ -613,6 +638,12 @@ if ($page !== null) {
            The query string carries the slug so /api?page=tag&slug=grace and
            &slug=worship hash to distinct ETags below. */
         'tag',
+        /* #1148 — the /themes A–Z index: same-for-everyone by construction (it
+           reads only tblSongTags ⋈ tblSongTagMap ⋈ tblSongs, no per-user data),
+           so it caches on the same terms as `tag`. The `tags` alias was folded
+           to `themes` above (before this membership check), so both spellings
+           share one cached fragment. */
+        'themes',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     /* #1769 P3 — when content gating is ON, the page=song fragment is
@@ -635,6 +666,28 @@ if ($page !== null) {
         $_shouldCachePage = false;
         header('Cache-Control: private, no-store');
     }
+    /* #1710 — resolve the viewer ONCE so a fragment can render signed-in vs
+       signed-out copy server-side. Before this, `$currentUser` was simply
+       undefined in every fragment's scope (api.php never set it), so
+       settings.php's `!empty($currentUser)` was permanently false and a
+       signed-in user was told to "Sign in to sync across devices" on a page
+       they reached BY being signed in. The fix is deliberately general
+       (option 1 in #1710): any non-cacheable fragment that wants the viewer
+       can now read `$currentUser`, so the next reader doesn't re-hit the trap.
+
+       GATED ON `!$_shouldCachePage` (rule #6): a $_cacheablePages fragment is a
+       shared-cache response keyed by URL alone — personalising it would serve
+       one viewer's signed-in copy to everyone from the ETag/service-worker
+       cache. Cacheable pages therefore get `null` and NEVER a per-viewer render.
+       For the resolved (non-cacheable) path, getAuthenticatedUser() reads the
+       Bearer token OR the same-origin `ihymns_auth` cookie and returns null when
+       signed out — and returns null with ZERO DB cost for an anonymous visitor
+       (getAuthBearerToken() short-circuits on no token), so public non-cacheable
+       reads (publisher/tune/iswc) pay nothing unless a real token is present.
+       Shape is getAuthenticatedUser()'s (Id/Username/DisplayName/Role/Email);
+       consumers today use it only as a boolean (settings.php). Guarded by
+       tests/php/test-fragment-viewer-contract.php. */
+    $currentUser = $_shouldCachePage ? null : getAuthenticatedUser();
     if ($_shouldCachePage) {
         ob_start();
     }
@@ -770,6 +823,16 @@ if ($page !== null) {
                which only the page template has enough context to word). */
             $tagSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tag.php';
+            break;
+
+        case 'themes':
+            /* #1148 — the searchable /themes A–Z index (the follow-on to the
+               home Top-8 "Popular themes" strip; the `tags` alias was folded to
+               `themes` before the cache-key logic above). Shared-cache fragment
+               (in $_cacheablePages) — reads only the theme registry, no
+               per-user data. Renders its own empty-state when no themes exist
+               (an index with nothing in it is a 200, not a 404). */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'themes.php';
             break;
 
         case 'tune':
@@ -1031,6 +1094,13 @@ if ($action !== null) {
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'random':
+            /* #1906 — `random` emits the SAME full song payload (lyric body +
+               media) as song_detail, so it gets the SAME 240/min corpus-walk
+               cap or it is a trivial bypass of it (a scraper loops
+               /api?action=random to harvest the corpus unbounded). Fail-open,
+               per-token/IP — matches the song_detail sibling below. */
+            enforceReadRateLimitKeyed('random', 240);
+
             $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
             if ($bookId === '') {
                 $bookId = null;
@@ -1083,6 +1153,12 @@ if ($action !== null) {
          *                     malformed.
          * ----------------------------------------------------------------- */
         case 'song_of_the_day':
+            /* #1906 — the daily pick runs a per-request DB selection and is
+               cache-bustable (?date/?hemisphere/?country), so throttle it like
+               the other heavy public reads. 120/min ≈ 2 req/s is generous for a
+               real client (one pick per app open) while stopping a date-walking
+               scraper. Fail-open + per-token (rule #26 NAT lesson). */
+            enforceReadRateLimitKeyed('song_of_the_day', 120);
             $sotdLangs = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
 
             $sotdDate = new DateTimeImmutable('now');
@@ -1327,10 +1403,26 @@ if ($action !== null) {
          * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
-            /* #1354 — whole-songbook payload (heavy). Shares the 'bulk' budget
-               with bulk_songs/bulk_audio at 60/min: a full offline sync touches
-               each songbook a handful of times, well under the cap. Fail-open. */
-            enforceReadRateLimitKeyed('bulk', 60);
+            /* #1571 — OWN 'export' budget, split out of the shared 'bulk'
+               bucket (#1354). ELI5: a curator clicking "Export this songbook"
+               must never have to wait behind a native app's background
+               offline sync — they're different people doing different
+               things, so they get different budgets.
+               DETAIL: 'songbook_export' used to share the 60/min 'bulk'
+               bucket with bulk_songs/bulk_audio; a PWA's offline sync
+               (bulk_songs/bulk_audio) running at the same moment a curator
+               exports a songbook could push the SAME counter over the cap
+               and 429 one or the other for no reason connected to abuse —
+               they were never competing for the same resource, just sharing
+               a label. `Scope` is a free VARCHAR bucket label (rule #20 —
+               "reserves room for new endpoint limits with NO further
+               migration", read_rate_limit.php:133), so the split is a
+               one-word change with zero schema impact. Limit stays 60/min —
+               this is about INDEPENDENCE, not tightening; nobody who passes
+               today can newly 429 (a caller who was under 60/min shared now
+               gets 60/min all to themselves). Fail-open (an un-migrated
+               tblReadRateLimit degrades to unlimited, unchanged). */
+            enforceReadRateLimitKeyed('export', 60);
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
             if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
                 sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
@@ -1772,6 +1864,41 @@ if ($action !== null) {
                The SW precaches it once and rarely refetches, so 120/min is far
                above any real client yet caps a scraper polling it. Fail-open. */
             enforceReadRateLimitKeyed('songs_index', 120);
+            /* #1921 — version-signal conditional revalidation. ELI5: before
+               re-sending the whole catalogue index, ask "has ANYTHING
+               changed since the client's copy?" with two cheap COUNT/MAX
+               queries; if not, say so in four bytes (304) instead of the
+               whole payload. FAIL-OPEN: any miss, throw, or absent signal
+               serves today's full 200 (no ETag header at all) — this
+               conditional block can never make the endpoint WORSE than it
+               was before this feature existed. A 304 runs NO slim-index
+               query and sends NO body (rule #17: the cheapest read is the
+               one that never materialises). */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songs_index_etag.php';
+                $siSignal = songsIndexVersionSignal(getDbMysqli());
+                if ($siSignal !== null) {
+                    $siEtag = songsIndexEtag(
+                        $siSignal,
+                        apiContractVersion(),
+                        (string)($app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"] ?? ''),
+                        $songData->slimIndexShapeToken()
+                    );
+                    header('ETag: ' . $siEtag);
+                    /* Mirrors sendJson()'s OWN Cache-Control on the 200 path
+                       below (":no-cache, must-revalidate") — RFC 7232 §4.1
+                       says a 304 SHOULD carry the headers that would have
+                       gone on the 200, so this is the SAME policy on both
+                       responses, not a new one. */
+                    header('Cache-Control: no-cache, must-revalidate');
+                    if (songsIndexEtagMatches(trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')), $siEtag)) {
+                        http_response_code(304);
+                        exit;
+                    }
+                }
+            } catch (\Throwable $_e) {
+                /* fail-open — full payload below, exactly as before #1921 */
+            }
             sendJson(['songs' => $songData->getSongsSlimIndex()]);
             break;
 
@@ -2542,6 +2669,18 @@ if ($action !== null) {
                 ]
             );
 
+            /* #1909 — partner webhook, only on the INITIAL mint (not an update of
+               an existing share). NEVER the token or the URL — the share token IS
+               the capability (rule #40); partners are told a share happened, not
+               handed the key. Dormant no-op until enabled. */
+            if (!$isUpdate) {
+                webhookEmit('setlist.shared', [
+                    'setlist_title' => $setlistName,
+                    'scope'         => $shareScope,
+                    'owner_org_id'  => null,
+                ], ['source' => 'api', 'entity_id' => $shareId]);
+            }
+
             /* #1791 G3/G4 — echo back what was actually STORED (not merely
                requested): editAudience may have been silently clamped to an
                org's enforced mandate, so the caller must be told the real
@@ -2799,10 +2938,19 @@ if ($action !== null) {
                registration POST 500'd with `Unknown column 'UserId' in
                'field list'`. The fallback below was already doing the
                rate-limit work correctly. */
+            /* #1906 — this 20/hour IP cap was DEAD: the read counted
+               tblLoginAttempts rows but the handler NEVER wrote one under this
+               action, so a registration flood (fresh random usernames, no email)
+               never tripped it — cost-12 bcrypt + row creation, unbounded. Fix:
+               (a) action-scope the read to Username='auth_register' (so a busy
+               login/reset IP no longer accidentally blocks signup), and (b)
+               record every registration attempt below so the counter grows and
+               the cap actually engages. Bound params (rule #5). */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $stmt = $db->prepare(
-                'SELECT COUNT(*) FROM tblLoginAttempts
-                 WHERE IpAddress = ? AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)'
+                "SELECT COUNT(*) FROM tblLoginAttempts
+                 WHERE IpAddress = ? AND Username = 'auth_register'
+                   AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)"
             );
             $stmt->bind_param('s', $clientIp);
             $stmt->execute();
@@ -2813,9 +2961,29 @@ if ($action !== null) {
                 sendJson(['error' => 'Too many requests from this IP. Please try again later.'], 429);
                 break;
             }
+            /* Record THIS attempt so the cap above counts it for the next hour
+               (the write half that was missing). Every registration POST leaves
+               one row; outcome-independent (a flood is a flood). */
+            if ($clientIp !== '') {
+                $regAtt = $db->prepare(
+                    "INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_register', 0)"
+                );
+                $regAtt->bind_param('s', $clientIp);
+                $regAtt->execute();
+                $regAtt->close();
+            }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
+
+            /* CAPTCHA gate (#947/#340) — AFTER the per-IP registration cap +
+               record (so a flooding IP is bounded before any outbound verify
+               call) and BEFORE input validation / the uniqueness lookups /
+               password_hash() (so the 403 precedes every account-shaped
+               response AND the cost-12 bcrypt). Dormant no-op unless the
+               'registration' form is ticked + a provider configured. */
+            $cg = captchaGate('registration', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
 
             $username    = mb_strtolower(trim($body['username'] ?? ''));
             $password    = $body['password'] ?? '';
@@ -3157,8 +3325,16 @@ if ($action !== null) {
              * that self-heals with no admin action, which is the standard
              * accepted balance against unbounded distributed guessing.
              * ============================================================= */
-            $loginAcctKey = 'acct:' . substr(hash('sha256', $username), 0, 40);
-            if (!checkRateLimit('auth_login_acct', $loginAcctKey, 20, 900, false)) {
+            /* #1027 — derive the per-account bucket key via the ONE shared
+               helper (includes/rate_limit.php), NOT a second inline copy. The
+               /manage login surface derives its key from the SAME function, so
+               an attacker cannot get two independent allowances by splitting
+               guesses across /api and /manage. $username is already
+               mb_strtolower(trim())'d above, so this is behaviour-identical to
+               the previous inline `'acct:' . substr(hash('sha256', $username), 0, 40)`
+               — proven by string equality in tests/php/test-auth-rate-limit.php. */
+            $loginAcctKey = authLoginAcctKey($username);
+            if (!checkRateLimit(IHYMNS_AUTH_ACCT_ACTION, $loginAcctKey, IHYMNS_AUTH_ACCT_MAX, IHYMNS_AUTH_ACCT_WINDOW, false)) {
                 logActivity(
                     'auth.login',
                     'user',
@@ -3171,6 +3347,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
                 break;
             }
+
+            /* CAPTCHA gate (#947/#340) — AFTER both rate-limit buckets (so a
+               hammering IP/account is 429'd without ever spending a verify
+               call) and BEFORE the user fetch + password_verify(). Dormant
+               no-op unless an admin has ticked the 'login' form AND configured
+               a provider. 403 { reason:'captcha_required' } — clients branch
+               on the status + reason, never the prose (rule #35). */
+            $cg = captchaGate('login', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
 
             /* AvatarService (#616) only included when the column exists
                so a partly-migrated install can still log users in. */
@@ -3217,7 +3402,7 @@ if ($action !== null) {
                    advances identically for a real and an imaginary account —
                    that is what keeps the lockout from becoming a
                    username-existence oracle. */
-                recordRateLimitHit('auth_login_acct', $loginAcctKey, false);
+                recordRateLimitHit(IHYMNS_AUTH_ACCT_ACTION, $loginAcctKey, false);
 
                 logActivity(
                     'auth.login',
@@ -3476,10 +3661,22 @@ if ($action !== null) {
          * Sync setlists: merge local setlists with server-side storage.
          * Accepts the full array of local setlists and reconciles:
          *   - New setlists (by ID) are inserted
-         *   - Existing setlists are OVERWRITTEN by the payload (the upsert's
-         *     ON DUPLICATE KEY UPDATE is unconditional — there is no
-         *     "local version is newer" comparison; the previous wording of
-         *     this comment claimed one and was simply false, #1649)
+         *   - Existing setlists are upserted CONDITIONALLY (#1675/#1660). For a
+         *     client that sent a `since` watermark, each row runs a three-way
+         *     branch before the write:
+         *       (a) byte-identical content → SKIP (no write, no UpdatedAt bump)
+         *           so a routine push does not make every row read "newer" to
+         *           every other device (userSyncSetlistRowUnchanged);
+         *       (b) the stored row is newer than the client's watermark →
+         *           REFUSE the overwrite, keep the server row, and report it in
+         *           `conflicts` (userSyncRowNewerThanWatermark) — the row was
+         *           edited on another device since this client last absorbed;
+         *       (c) otherwise the existing ON DUPLICATE KEY UPDATE runs.
+         *     A client that sent NO watermark (the native apps) skips the whole
+         *     branch and keeps today's unconditional last-writer-wins, byte for
+         *     byte. This is the half #1660 asked for: the code now MATCHES this
+         *     comment (the earlier wording confessed an unconditional overwrite
+         *     — that confession is now history).
          *   - Server-only setlists are preserved in 'merge' mode, and in
          *     'replace' mode are deleted ONLY when userSyncDeletableIds()
          *     says it is safe (see includes/user_sync.php)
@@ -3513,7 +3710,10 @@ if ($action !== null) {
          *
          * Returns: { "setlists": [...], "syncedAt": "...",
          *            "truncated": false, "cap": null,
-         *            "tombstones": [{ id, deletedAt, reason }, …] }
+         *            "tombstones": [{ id, deletedAt, reason }, …],
+         *            "conflicts": [{ id, reason:"newer_on_server",
+         *                            serverUpdatedAt }, …]   // [] when none (#1675)
+         *          }
          * Requires: Authorization: Bearer <token>
          * ----------------------------------------------------------------- */
         case 'user_setlists_sync':
@@ -3540,6 +3740,12 @@ if ($action !== null) {
             if (userSyncBodyExceeds((string)$rawBody)) {
                 sendJson([
                     'error'    => 'Request too large. Your set lists were NOT changed.',
+                    /* #1662 — one branchable `reason` on every 413 in this
+                       family (rule #35: clients switch on status + reason, never
+                       on the human prose). Additive: a native decoder that reads
+                       only `error`/`maxBytes` ignores it (the `cap: null`
+                       precedent below). */
+                    'reason'   => 'body_too_large',
                     'maxBytes' => userSyncMaxBodyBytes(),
                 ], 413);
                 break;
@@ -3570,6 +3776,7 @@ if ($action !== null) {
                 if (is_array($planCheck) && setlistTemplatePlanExceedsCap($planCheck['plan'] ?? null)) {
                     sendJson([
                         'error'    => 'A set list plan has too many slots. Nothing was changed.',
+                        'reason'   => 'too_many_slots',   /* #1662 — see body_too_large above */
                         'maxSlots' => setlistTemplateMaxSlots(),
                     ], 413);
                     break 2;
@@ -3581,6 +3788,37 @@ if ($action !== null) {
                supports, not yet what this install can honour. */
             $clientProtocol2 = userSyncExplicitProtocol($body);
             $deletedIds      = userSyncSanitiseDeletedIds($body['deleted'] ?? null);
+
+            /* #1662 — THE SONGS CAP IS A REJECTION, NEVER A TRUNCATION (protocol 2).
+               ELI5: if any one set list in the payload holds more songs than the
+               limit, we refuse the WHOLE sync with a 413 and change nothing —
+               instead of the old behaviour of quietly keeping the first 200 and
+               dropping the rest where the user never sees it.
+
+               Raw count, BEFORE sanitising, mirroring the whole-body ceiling
+               above: the work is bounded before it is done, and the cap is on
+               what you SENT (a payload whose 201st entry is malformed is still
+               over-cap — the user has 201 songs on screen). The gate is the
+               client's protocol CLAIM (`$clientProtocol2`), unqualified by the
+               tombstone schema gate — a 413 rejection needs no table. Protocol-1
+               clients (the native apps — no `deleted` key) keep the historical
+               silent slice in the upsert loop below, byte-identical, until they
+               adopt protocol 2. `break 2` leaves the foreach AND the switch case,
+               exactly like the slot-cap guard above. */
+            if ($clientProtocol2) {
+                foreach ($localLists as $songsCheck) {
+                    if (is_array($songsCheck) && is_array($songsCheck['songs'] ?? null)
+                        && count($songsCheck['songs']) > setlistCollabMaxSongs()) {
+                        sendJson([
+                            'error'     => 'A set list has too many songs. Nothing was changed.',
+                            'reason'    => 'too_many_songs',
+                            'maxSongs'  => setlistCollabMaxSongs(),
+                            'setlistId' => userSyncSanitiseId($songsCheck['id'] ?? ''),
+                        ], 413);
+                        break 2;
+                    }
+                }
+            }
 
             /* Sync mode (WS-F #1018):
              *   'merge'   — union local + server, never delete (the safe
@@ -3680,7 +3918,19 @@ if ($action !== null) {
                itself is gone — $serverRows is read directly below. */
             $payloadIds = [];
 
-            $now = gmdate('Y-m-d H:i:s');
+            /* #1675 — the upsert's UpdatedAt is stamped from the DB's OWN clock
+               (userSyncNow = SELECT NOW()), NOT PHP UTC (gmdate), so a stored
+               row's timestamp shares a frame of reference with the `since`
+               watermark (also userSyncNow, :~3990) that the conflict guard (C3,
+               §3.4) will compare it against. Before this the two were minted by
+               different clocks — PHP UTC here vs the DB session's NOW() for the
+               watermark — so on a DB session behind UTC every row would read
+               NEWER than a watermark taken the same instant and the guard would
+               refuse every push. This is the exact change user_sync.php's
+               userSyncNow() doc-block reserved "for its own change". CreatedAt
+               inherits the same $now default it always did — no contract change,
+               just a same-frame clock. */
+            $now = userSyncNow($db);
 
             /* Upsert each local setlist. The (UserId, SetlistId) pair
                has a UNIQUE constraint on tblUserSetlists, so
@@ -3769,6 +4019,16 @@ if ($action !== null) {
 
             $resurrectionsRefused = 0;
 
+            /* #1675 — index the snapshot taken above (zero extra queries) so the
+               per-row conflict branch can read each stored row by id, and start
+               the conflict report. The clamp's "now" is $now (userSyncNow from
+               C2), the SAME value + read the watermark is minted from below. */
+            $serverMap = [];
+            foreach ($serverRows as $r) {
+                $serverMap[(string)$r['SetlistId']] = $r;
+            }
+            $conflicts = [];
+
             foreach ($localLists as $list) {
                 if (empty($list['id'])) continue;
 
@@ -3796,8 +4056,23 @@ if ($action !== null) {
                    inline) logic into includes/setlist_collab.php so the
                    collaborative write path writes the identical shape into the
                    identical column — behaviour unchanged, one implementation
-                   instead of two that could drift. */
-                $cleanSongs = setlistCollabSanitiseSongs($list['songs'] ?? null);
+                   instead of two that could drift.
+
+                   legacy-protocol1-slice (#1662) — the sanitiser no longer
+                   slices (it "deliberately owns no array_slice()"), so the
+                   ONLY songs-array slice left anywhere in the app is this one.
+                   Protocol-1 clients (the native apps — no `deleted` key) keep
+                   today's silent truncation BYTE-FOR-BYTE; protocol-2 clients
+                   were already 413'd above, so for them an over-cap payload
+                   never reaches here (this branch is structurally unreachable
+                   over-cap). Slice BEFORE sanitise deliberately — sanitise-
+                   then-slice would store different bytes than today whenever a
+                   malformed entry precedes index 200. */
+                $songsIn = $list['songs'] ?? null;
+                if (!$clientProtocol2 && is_array($songsIn)) {
+                    $songsIn = array_slice($songsIn, 0, setlistCollabMaxSongs());
+                }
+                $cleanSongs = setlistCollabSanitiseSongs($songsIn);
 
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
@@ -3815,8 +4090,54 @@ if ($action !== null) {
                    client that knows nothing about plans and must not clear
                    anything. */
                 $planStatement = ($upsertPlan !== null && array_key_exists('plan', $list));
+                /* #1675 — computed unconditionally (null when the client stated
+                   no plan) so the conflict no-op compare below can consult it
+                   BEFORE the execute. */
+                $planJson = $planStatement
+                    ? setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']))
+                    : null;
+
+                /* #1675 — PER-ROW CONFLICT-SAFE UPSERT (three-way). The gate is
+                   $since !== null (any client that sent a watermark), in BOTH
+                   'merge' and 'replace' modes — the merge-mode first-login
+                   reconcile is the worst stale-overwrite window. A native (no
+                   `since`) skips the whole branch → today's unconditional
+                   last-writer-wins, byte-identical. */
+                $srv = $serverMap[$setlistId] ?? null;
+                if ($since !== null && $srv !== null) {
+                    /* (a) NO-OP SKIP — identical content writes nothing and
+                       bumps nothing. Load-bearing twice over: it stops a routine
+                       push refreshing every row's UpdatedAt (which would make
+                       ALL rows read "newer" to every other device and turn the
+                       guard below into a conflict factory), and it makes a
+                       post-conflict converged push settle silently (§3.5). */
+                    if (userSyncSetlistRowUnchanged(
+                            $srv, $name, $songsJson, $expiryReady, $expiresAt,
+                            $planStatement, $planJson)) {
+                        $payloadIds[] = $setlistId;
+                        continue;
+                    }
+                    /* (b) CONFLICT — the row changed server-side after this
+                       client's last absorb, so this push would overwrite work
+                       the client has never seen. Keep the server row (#1649
+                       err-toward-keeping) and REPORT the refusal. The response's
+                       merged read already carries the authoritative row, so the
+                       entry is a status, not a data carrier. A refused row is
+                       refused WHOLE — name, songs, expiry and plan withheld
+                       together (single continue), never a partial write. */
+                    if (userSyncRowNewerThanWatermark($since, (string)$srv['UpdatedAt'], $now)) {
+                        $conflicts[] = [
+                            'id'              => $setlistId,
+                            'reason'          => 'newer_on_server',
+                            'serverUpdatedAt' => substr((string)$srv['UpdatedAt'], 0, 19),
+                        ];
+                        $payloadIds[] = $setlistId;
+                        continue;
+                    }
+                    /* (c) otherwise fall through to the EXISTING upsert below. */
+                }
+
                 if ($planStatement) {
-                    $planJson = setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']));
                     /* Type strings counted against the value list, not eyeballed:
                        8 values = 'i' + 7×'s'; 7 values = 'i' + 6×'s'. A
                        mismatch here is an ArgumentCountError at runtime, which
@@ -3939,7 +4260,8 @@ if ($action !== null) {
                thing to look at if a user says "it keeps coming back" (or, more
                likely, "it won't come back"). */
             if ($deleted > 0 || $truncated || $tombstonedNow > 0
-                || $expiredIds !== [] || $resurrectionsRefused > 0) {
+                || $expiredIds !== [] || $resurrectionsRefused > 0
+                || count($conflicts) > 0) {
                 logActivity('setlists.sync', 'user', (string)$userId, [
                     'mode'                 => $syncMode,
                     /* Logged as the EFFECTIVE protocol, not the client's
@@ -3952,6 +4274,9 @@ if ($action !== null) {
                     'explicitDeleted'      => $tombstonedNow,
                     'expired'              => count($expiredIds),
                     'resurrectionsRefused' => $resurrectionsRefused,
+                    /* #1675 — a refused overwrite is precisely what a curator
+                       investigating "my edit vanished / won't save" needs. */
+                    'conflicts'            => count($conflicts),
                     'total'                => count($mergedSetlists),
                 ]);
             }
@@ -3973,6 +4298,14 @@ if ($action !== null) {
                 'cap'       => null,
                 /* #1661 — ids this client must drop from its local cache. */
                 'tombstones' => $tombstones,
+                /* #1675 — per-row overwrite refusals ({id, reason:'newer_on_server',
+                   serverUpdatedAt}), ALWAYS present, [] when none. Additive key —
+                   a native decoder that never reads it is unaffected (the cap:null
+                   precedent). The authoritative rows are already in `setlists`
+                   above; the client drops these ids from its local-wins side of
+                   the union so the refused edit is not resurrected and re-pushed
+                   (§3.5). */
+                'conflicts' => $conflicts,
             ]);
             break;
 
@@ -4284,6 +4617,15 @@ if ($action !== null) {
                 }
             }
 
+            /* CAPTCHA gate (#947/#340) — AFTER the #1028 budgets (budget-first)
+               and BEFORE apiForgotPasswordDecision() / generatePasswordResetToken().
+               The 403 depends ONLY on the caller's own token — it is account-
+               INDEPENDENT — so the #898/#1028 anti-enumeration contract (the
+               byte-identical 200 for real vs imaginary accounts) is untouched.
+               Dormant no-op unless the 'password_reset' form is ticked. */
+            $cg = captchaGate('password_reset', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
+
             $forgotDecision = apiForgotPasswordDecision($forgotIpOk, $forgotIdOk);
             if (!$forgotDecision['send']) {
                 /* Both non-send outcomes exit here. The identifier-throttled
@@ -4489,6 +4831,38 @@ if ($action !== null) {
                 break;
             }
 
+            /* PER-IP FLOOD CONTROL (residual gap closed with #340/#947's
+               account-security pack). Before this, the ONLY throttle on this
+               endpoint was the per-EMAIL 5/hr cap inside
+               generateEmailLoginToken() — so ONE address could trigger real
+               SMTP sends to an unbounded number of DISTINCT victims (5 per
+               victim per hour x any number of victims): inbox-spray abuse,
+               paid-sender cost, and sender-reputation damage. This mirrors
+               #1028's per-IP arm on auth_forgot_password: 15/hr per IP,
+               spend-only-when-allowed (the house pattern), FAIL-OPEN via the
+               shared limiter (a counter-table blip degrades to today's
+               behaviour). Unlike the per-identifier cap — which MUST stay a
+               silent generic 200 to avoid an account-existence oracle — this
+               bucket is keyed purely on the CALLER'S OWN address, so a visible
+               429 leaks nothing about any account. The per-email cap stays
+               exactly where it is, inside generateEmailLoginToken(). */
+            $reqIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            if ($reqIp !== '' && !checkRateLimit('auth_email_login_request_ip', $reqIp, 15, 3600, false)) {
+                logActivity('auth.login_email_request', '', '', ['reason' => 'rate_limited_ip'], 'failure');
+                sendJson(['error' => 'Too many requests. Please try again later.'], 429);
+                break;
+            }
+            if ($reqIp !== '') { recordRateLimitHit('auth_email_login_request_ip', $reqIp); }
+
+            /* CAPTCHA gate (#947/#340) — AFTER the per-IP budget above and
+               BEFORE generateEmailLoginToken() (so a refused request never mints
+               a token or pays for an SMTP send). Account-independent, like the
+               forgot-password gate, so the #1635 anti-enumeration 200 contract
+               is untouched. Dormant no-op unless the 'email_login' form is
+               ticked. */
+            $cg = captchaGate('email_login', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+            if ($cg !== null) { sendJson($cg, 403); break; }
+
             /* THE ONE 200 BODY (#1635). Every non-error outcome of this
                endpoint answers with this exact array: address unknown,
                address registered-but-unverified, address ambiguous (a
@@ -4636,6 +5010,28 @@ if ($action !== null) {
                 }
             }
 
+            /* SECURITY (#1906) — the per-IP cap above is bypassable by a botnet
+               rotating source IPs, because the 6-digit code (~1M space, 10-min
+               life) is bound to the EMAIL, not the IP: <10 guesses/IP keeps the
+               per-IP window clear while thousands of IPs grind the code. Add a
+               PER-EMAIL failure bucket via the shared limiter (rule #22) that
+               counts across ALL IPs — 10 misses / 15 min per address caps total
+               guesses-per-code at ~10 of 1M (negligible). Fail-open (the shared
+               limiter degrades to allow on any error / un-migrated install). */
+            /* Hashed identifier key (44 chars) — the raw email would overflow the
+               VARCHAR(45) IpAddress bucket column and throw under STRICT; mirrors
+               apiForgotPasswordIdentifierKey()'s 'pwr:'+sha256[0..40] convention. */
+            $verifyEmailKey = ($isCodeMode && $verifyEmail !== '')
+                ? 'evc:' . substr(hash('sha256', mb_strtolower(trim($verifyEmail))), 0, 40)
+                : '';
+            if ($verifyEmailKey !== ''
+                && !checkRateLimit('email_verify_id', $verifyEmailKey, 10, 900, false)) {
+                logActivity('auth.login_email_verify', '', '',
+                    ['mode' => 'code', 'email' => $verifyEmail, 'reason' => 'rate_limited_email'], 'failure');
+                sendJson(['error' => 'Too many attempts. Please request a new code and try again later.'], 429);
+                break;
+            }
+
             $verified = null;
 
             if ($verifyToken !== '') {
@@ -4658,6 +5054,11 @@ if ($action !== null) {
                     $fa->bind_param('s', $verifyIp);
                     $fa->execute();
                     $fa->close();
+                }
+                /* SECURITY (#1906): and spend the PER-EMAIL failure budget so the
+                   distributed-across-IPs cap above fills regardless of source IP. */
+                if ($isCodeMode && $verifyEmailKey !== '') {
+                    recordRateLimitHit('email_verify_id', $verifyEmailKey, false);
                 }
                 logActivity(
                     'auth.login_email_verify',
@@ -6810,6 +7211,17 @@ if ($action !== null) {
                 $intAppsStatusPayload['remoteFeatures'] = $intAppsFeatures;
             }
 
+            /* #947/#340 — the dormant CAPTCHA client config (provider, public
+               site key, widget script URL, JS global, POST field, gated forms).
+               ABSENT key when unconfigured, exactly like remoteFeatures above,
+               so a dormant install's app_status is byte-identical (P1). NEVER
+               the secret — captchaClientConfig() cannot carry it. */
+            $captchaStatusPayload = [];
+            $captchaClient = captchaClientConfig();
+            if ($captchaClient !== null) {
+                $captchaStatusPayload['captcha'] = $captchaClient;
+            }
+
             sendJson([
                 'maintenance'         => $inMaintenance,
                 'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
@@ -6841,7 +7253,7 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
-            ] + $intAppsStatusPayload);
+            ] + $intAppsStatusPayload + $captchaStatusPayload);
 
             /* #1725/#1730 — the gateway refresh happens AFTER the response is
                already on the wire, never on this endpoint's critical path.
@@ -9686,10 +10098,13 @@ if ($action !== null) {
          * Popular tags — the top-N themes ranked by usage, with song
          * counts (#1148). Powers the compact "Popular themes" home strip
          * that replaced the unbounded chip wall: the home page advertises
-         * the handful that matter; the full searchable index scales the
-         * long tail. Reuses the same COUNT(m.TagId) JOIN as manage/tags.php
-         * (INNER JOIN → only tags actually in use appear). DB-direct/scoped
-         * per CLAUDE.md rule #17 — never a whole-corpus load.
+         * the handful that matter; the full searchable /themes index scales
+         * the long tail. Sources its rows from the ONE visible-song count
+         * core (themeIndexCounts(), includes/theme_index.php), so the counts
+         * on this strip match what /tag/<slug> lists — soft-deleted songs and
+         * disabled songbooks excluded (#1694/#1765). INNER JOIN → only tags
+         * actually in use appear. DB-direct/scoped per CLAUDE.md rule #17 —
+         * never a whole-corpus load.
          * Parameters: limit (optional, default 8, clamped 1..50).
          * ----------------------------------------------------------------- */
         case 'popular_tags':
@@ -9697,26 +10112,22 @@ if ($action !== null) {
             $popularLimit = max(1, min(50, $popularLimit));
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
-                            COUNT(m.TagId) AS useCount
-                     FROM tblSongTags t
-                     JOIN tblSongTagMap m ON m.TagId = t.Id
-                     GROUP BY t.Id, t.Name, t.Slug
-                     ORDER BY useCount DESC, t.Name ASC
-                     LIMIT ?'
-                );
-                $stmt->bind_param('i', $popularLimit);
-                $stmt->execute();
-                $popular = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-
-                foreach ($popular as &$pt) {
-                    $pt['id']       = (int)$pt['id'];
-                    $pt['useCount'] = (int)$pt['useCount'];
+                /* #1148 — source from the ONE visible-song count core so this
+                   strip's counts match what /tag/<slug> lists (soft-deleted
+                   songs + disabled songbooks excluded, #1694/#1765). The
+                   native/API response SHAPE is unchanged —
+                   {tags:[{id,name,slug,useCount}]}; the parentId/parentName the
+                   core also returns are deliberately NOT emitted here (additive
+                   contract). */
+                $popular = [];
+                foreach (themeIndexCounts($db, $popularLimit, 'popular') as $row) {
+                    $popular[] = [
+                        'id'       => (int)$row['id'],
+                        'name'     => (string)$row['name'],
+                        'slug'     => (string)$row['slug'],
+                        'useCount' => (int)$row['useCount'],
+                    ];
                 }
-                unset($pt);
-
                 sendJson(['tags' => $popular]);
             } catch (\Throwable $e) {
                 error_log('[api/popular_tags] ' . $e->getMessage());
@@ -10329,9 +10740,20 @@ if ($action !== null) {
                     break;
 
                 case 'csv':
+                    /* #1908 Commit 4 — api.php doesn't otherwise include
+                       csv_safe.php (unlike the other five CSV exporters, which
+                       already require_once it for ihymns_fputcsv()); the local
+                       require here is function_exists()-guarded inside
+                       csv_safe.php itself, so a double-require is harmless. */
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php';
                     header('Content-Type: text/csv; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.csv"');
-                    $out = fopen('php://output', 'w');
+                    /* Shared emitter: opens the stream + writes the UTF-8 BOM
+                       so a downloaded .csv opens un-mojibaked in Excel. The
+                       raw fputcsv() calls below (not ihymns_fputcsv()) are
+                       untouched — that formula-escape posture is a separate,
+                       deliberate question per the #1908 plan §4 note. */
+                    $out = ihymns_csv_output_begin();
                     /* D4 (#1694): the is_deleted column exists only once the
                        migration has run — header and rows stay in lockstep so
                        an un-migrated export is byte-identical to before. */
@@ -11679,6 +12101,19 @@ if ($action !== null) {
                 sendJson(['error' => 'songs (array) required.'], 400);
                 break;
             }
+            /* #1662 — songs cap is a 413 rejection, never a slice. This is a
+               web-only collaborator surface (no native caller), so it is
+               UNCONDITIONAL — no protocol gate. Refused BEFORE any write, so a
+               staged over-cap array leaves the stored row untouched; the client
+               reverts to its last server-confirmed copy and toasts `maxSongs`. */
+            if (count($body['songs']) > setlistCollabMaxSongs()) {
+                sendJson([
+                    'error'    => 'This set list has too many songs. Nothing was changed.',
+                    'reason'   => 'too_many_songs',
+                    'maxSongs' => setlistCollabMaxSongs(),
+                ], 413);
+                break;
+            }
             try {
                 $db = getDbMysqli();
                 $authUserId = (int)$authUser['Id'];
@@ -11780,6 +12215,18 @@ if ($action !== null) {
             $tokShareId = sharedSetlistSafeShareId((string)($tokBody['shareId'] ?? ''));
             if ($tokShareId === '') { sendJson(['error' => 'Invalid or missing share id.'], 400); break; }
             if (!is_array($tokBody['songs'] ?? null)) { sendJson(['error' => 'songs (array) required.'], 400); break; }
+            /* #1662 — songs cap is a 413 rejection, never a slice. Web-only
+               edit-link surface (no native caller) → unconditional, refused
+               before any write; the client reverts its staged copy + toasts
+               maxSongs from the response body (rule #35). */
+            if (count($tokBody['songs']) > setlistCollabMaxSongs()) {
+                sendJson([
+                    'error'    => 'This set list has too many songs. Nothing was changed.',
+                    'reason'   => 'too_many_songs',
+                    'maxSongs' => setlistCollabMaxSongs(),
+                ], 413);
+                break;
+            }
 
             /* (2) per-TOKEN rate limit — a NAT-shared congregation is one IP, so
                keying on the IP would throttle a whole room; the token is the
@@ -12235,6 +12682,21 @@ if ($action !== null) {
                 $stmt->close();
                 if ((int)($row[0] ?? 0) >= $dailyCap) {
                     $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
+                    break;
+                }
+
+                /* CAPTCHA gate (#947/#340) — AFTER the honeypot (which must keep
+                   returning silent fake success to a bot — a 403 would tip it
+                   off AND spend a verify call) and AFTER the daily cap (so verify
+                   volume is bounded), BEFORE the INSERT. The no-JS form fallback
+                   (#711) carries no token, so with 'song_request' enabled it
+                   takes the $respondErr redirect branch (an error banner on
+                   /request); the JS path gets the JSON body WITH the reason so
+                   the widget can reset (rule #35). Dormant no-op otherwise. */
+                $cg = captchaGate('song_request', $body[IHYMNS_CAPTCHA_BODY_KEY] ?? null);
+                if ($cg !== null) {
+                    if ($isFormPost) { $respondErr($cg['error'], 403); }   /* exits (302) */
+                    sendJson($cg, 403);                                    /* JS path — carries reason */
                     break;
                 }
 
@@ -12828,6 +13290,8 @@ if ($action !== null) {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newId);
 
                 logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
@@ -15870,6 +16334,9 @@ if ($action !== null) {
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+                    /* #1860 go-live — mint this person's permanent IL-id
+                       (ILM…). One stamp covers both INSERT shapes above. */
+                    ilidStampNewRow($db, 'musician', $newId);
 
                     /* #1741 P4a — THE ONE flags/Type write funnel (rule
                        guard: tests/php/test-musician-profile-fields.php's
@@ -18141,6 +18608,14 @@ if ($action !== null) {
                 'occurrence_date'  => $occDate,
                 'superseded'       => $superseded,
             ]);
+            /* #1909 — partner webhook (dormant no-op). NEVER the join code — the
+               venue rotating code IS proof-of-presence (rule #26). */
+            webhookEmit('service.started', [
+                'session_kind'    => 'service',
+                'org_id'          => $orgId,
+                'venue_id'        => $venueId,
+                'occurrence_date' => $occDate,
+            ], ['source' => 'api', 'entity_id' => (string)$newSessionId]);
             sendJson(['ok' => true, 'sessionId' => $newSessionId, 'code' => $code, 'occurrenceEnd' => $endUtc]);
             break;
         }
@@ -18230,6 +18705,12 @@ if ($action !== null) {
                     $db->commit();
                 } catch (\Throwable $e) { $db->rollback(); throw $e; }
                 logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                /* #1909 — partner webhook (dormant no-op). Operator-initiated end. */
+                webhookEmit('service.ended', [
+                    'session_kind' => 'service',
+                    'org_id'       => $orgId,
+                    'ended_reason' => 'operator',
+                ], ['source' => 'api', 'entity_id' => (string)$sessionId]);
                 liveActivitySessionPush($db, $sessionId, 'end');
                 sendJson(['ok' => true]);
                 break;
@@ -18411,7 +18892,14 @@ if ($action !== null) {
                through the exact same path rather than a second copy (rule
                #26 I4 / plan guard G4). Fixture-diffed byte-identical: same
                SQL text, same statement order, same LastHeartbeatAt touch. */
-            $revision = serviceMode_applyBroadcast($db, $sessionId, $songId, $componentIndex, $stateJson);
+            /* #1897 W2 — usage context for the projected-usage log inside the
+               core. $userId is nullable (the #1408 control-token path); 'via'
+               is the same fixed 'bearer'|'control_token' vocabulary the
+               breadcrumb below uses. */
+            $revision = serviceMode_applyBroadcast($db, $sessionId, $songId, $componentIndex, $stateJson, [
+                'userId' => $userId,
+                'via'    => $viaControlToken ? 'control_token' : 'bearer',
+            ]);
 
             /* §3.2 — song-change only, never on a component-index-only nudge.
                'via' (#1408) is a fixed 'bearer'|'control_token' string —
@@ -19017,7 +19505,12 @@ if ($action !== null) {
 
             /* 6. Write — the ONE core, the SAME one the operator console
                writes through (rule #26 I4 / guard G4). */
-            $driveRevision = serviceMode_applyBroadcast($db, $driveSessionId, $effectiveSongId, $driveComponentIndex, $driveStateJson);
+            /* #1897 W2 — driver-key funnel has no user at all; 'via' extends
+               the existing 'bearer'|'control_token' vocabulary with 'driver_key'. */
+            $driveRevision = serviceMode_applyBroadcast($db, $driveSessionId, $effectiveSongId, $driveComponentIndex, $driveStateJson, [
+                'userId' => null,
+                'via'    => 'driver_key',
+            ]);
 
             /* 7. Breadcrumb — mirrors service_broadcast's own "song-change
                only" condition, extending the existing 'via' vocabulary

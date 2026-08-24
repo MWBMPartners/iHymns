@@ -1,0 +1,16 @@
+{
+  "_comment": "iHymns #1862 — shared PHP<->JS truth table for the ONE copyright-statement fold (ihymns_copyright_statement() / ihymnsCopyrightPreview()). Consumed by tests/php/test-editor2-metadata-1862.php AND tests/test-copyright-preview-lockstep.js so the two implementations can never silently disagree (rule #35). Precedence: the structured split (years + holder) wins whenever either half is non-empty (after trim); the legacy free-text field is the fallback used only when BOTH structured fields are empty.",
+  "cases": [
+    { "label": "years alone",                    "years": "1978",          "holder": "",                     "legacy": "",                       "expected": "1978" },
+    { "label": "holder alone",                   "years": "",              "holder": "Hope Publishing Co.",  "legacy": "",                       "expected": "Hope Publishing Co." },
+    { "label": "legacy alone (no split)",        "years": "",              "holder": "",                     "legacy": "© 1965 Somebody",   "expected": "© 1965 Somebody" },
+    { "label": "years + holder pair",            "years": "1978, 1987",    "holder": "Hope Publishing Co.",  "legacy": "",                       "expected": "1978, 1987 Hope Publishing Co." },
+    { "label": "all empty",                      "years": "",              "holder": "",                     "legacy": "",                       "expected": "" },
+    { "label": "whitespace-only years falls to legacy", "years": "   ",    "holder": "",                     "legacy": "Fallback Text",          "expected": "Fallback Text" },
+    { "label": "both present — legacy ignored",  "years": "1978",          "holder": "Hope",                 "legacy": "Some Old Legacy Text",   "expected": "1978 Hope" },
+    { "label": "unicode holder",                 "years": "",              "holder": "Éditions Café Ltd.", "legacy": "",                "expected": "Éditions Café Ltd." },
+    { "label": "whitespace-only holder, years wins alone", "years": "1978", "holder": "   ",                 "legacy": "",                       "expected": "1978" },
+    { "label": "whitespace-only legacy, split empty -> empty", "years": "", "holder": "",                    "legacy": "   ",                    "expected": "" },
+    { "label": "outer whitespace trimmed on both structured fields", "years": " 1978, 1987 ", "holder": " Hope Publishing Co. ", "legacy": "",  "expected": "1978, 1987 Hope Publishing Co." }
+  ]
+}

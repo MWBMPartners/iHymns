@@ -69,6 +69,43 @@ const SYNC_PREF_KEYS = Object.freeze([
 /** localStorage key for the user's opt-in toggle. Default = on. */
 const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
 
+/**
+ * #1806 — the namespace this client's synced settings live under, in the
+ * shared `tblUsers.Settings` blob (#1671 F5's write contract, api.php
+ * `case 'user_settings'` / includes/user_settings.php).
+ *
+ * ELI5: the server keeps one small settings "box" per signed-in user, and
+ * more than one product can now share it (this web client, list-sort.js's
+ * `list_sorts` shelf, push-notifications.js's `ihymns.push` shelf, and any
+ * future feature). Writing under a namespace makes each write a pure
+ * SUBTREE replace server-side (`userSettingsMergeNamespace()`) — sibling
+ * shelves are untouched no matter what. Before this, this module POSTed
+ * the WHOLE box with no namespace, which is a whole-blob replace and would
+ * silently wipe every other feature's shelf on the next save.
+ *
+ * WHY THIS EXACT STRING: `includes/user_settings.php`'s own file header
+ * names `namespace='ihymns.web'` as "the remaining step" for this client —
+ * so this is not a new invention, it is finishing a contract the server
+ * side already documents and has been ready for since #1671 F5.
+ */
+const USER_SETTINGS_NAMESPACE = 'ihymns.web';
+
+/**
+ * #1806 — one-time legacy read-through sentinel (localStorage, device-local;
+ * deliberately NOT in SYNC_PREF_KEYS, so it never itself gets synced).
+ *
+ * ELI5: before this migration, a signed-in user's prefs were written
+ * straight onto the ROOT of the settings box (no shelf at all). Once this
+ * client starts writing/reading only its own `ihymns.web` shelf, those old
+ * root-level values would simply become invisible — nothing would ever look
+ * at the root again. So on the FIRST pull after upgrading, this client reads
+ * the legacy root once, folds any of ITS OWN keys (SYNC_PREF_KEYS) into the
+ * new namespace, and never repeats the read again. Left unset after a
+ * failed attempt (network error) so a later sign-in retries rather than
+ * losing the one-time read permanently.
+ */
+const NS_MIGRATION_DONE_KEY = 'ihymns_settings_ns_migrated';
+
 export class Settings {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -177,6 +214,18 @@ export class Settings {
         return localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
     }
 
+    /**
+     * Has the #1806 one-time legacy root-settings read-through already run
+     * on this device? `true` in private-browsing / storage-blocked contexts
+     * too — there is nothing to persist the sentinel in, and repeating an
+     * extra GET on every single pull is worse than skipping a migration that
+     * can't be remembered anyway.
+     */
+    _legacySettingsMigrated() {
+        try { return localStorage.getItem(NS_MIGRATION_DONE_KEY) === '1'; }
+        catch { return true; }
+    }
+
     /** Snapshot of the syncable prefs currently in localStorage. */
     _collectSyncableSettings() {
         const out = {};
@@ -202,15 +251,80 @@ export class Settings {
     async _pushSyncedSettings() {
         if (!this._isSyncEnabled()) return;
         try {
+            /* #1806 — namespaced write: the server replaces ONLY the
+               'ihymns.web' subtree (userSettingsMergeNamespace()), so a
+               push here can never again clobber list-sort.js's `list_sorts`
+               shelf, push-notifications.js's `ihymns.push` shelf, or any
+               future feature's namespace — structurally, not by convention. */
             await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     ...this.app.userAuth.authHeaders(),
                 },
-                body: JSON.stringify({ settings: this._collectSyncableSettings() }),
+                body: JSON.stringify({
+                    namespace: USER_SETTINGS_NAMESPACE,
+                    settings: this._collectSyncableSettings(),
+                }),
             });
         } catch { /* offline / network error — non-fatal */ }
+    }
+
+    /**
+     * One-time legacy read-through (#1806). Before this client namespaced
+     * its writes, its whole-blob POSTs landed these same SYNC_PREF_KEYS at
+     * the ROOT of `tblUsers.Settings`. Folds any of them NOT already present
+     * in the namespaced subtree into it, so a returning user's pre-migration
+     * prefs are not silently orphaned the first time they sign in under the
+     * new code. Runs at most once per device — see NS_MIGRATION_DONE_KEY.
+     *
+     * @param {object} nsSettings The 'ihymns.web' subtree just read (may be `{}`)
+     * @returns {Promise<object>} `nsSettings`, or the migrated superset of it
+     */
+    async _migrateLegacyRootSettings(nsSettings) {
+        try {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                headers: { ...this.app.userAuth.authHeaders() },
+            });
+            /* A failed/offline read is retried on the NEXT sign-in — the
+               sentinel below is only written once this branch has actually
+               had a chance to look. */
+            if (!res.ok) return nsSettings;
+
+            const payload = await res.json();
+            const legacyRoot = payload?.settings;
+            if (legacyRoot && typeof legacyRoot === 'object') {
+                const legacyOnly = {};
+                SYNC_PREF_KEYS.forEach((k) => {
+                    if (Object.prototype.hasOwnProperty.call(legacyRoot, k)
+                        && !Object.prototype.hasOwnProperty.call(nsSettings, k)) {
+                        legacyOnly[k] = legacyRoot[k];
+                    }
+                });
+                if (Object.keys(legacyOnly).length) {
+                    /* Namespace values win on conflict (there shouldn't be
+                       any the first time this runs, but this keeps the merge
+                       safe to re-run). Write once, immediately, so the
+                       backfill survives even if the user never changes a
+                       setting again this session. */
+                    const merged = { ...legacyOnly, ...nsSettings };
+                    await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...this.app.userAuth.authHeaders(),
+                        },
+                        body: JSON.stringify({ namespace: USER_SETTINGS_NAMESPACE, settings: merged }),
+                    });
+                    nsSettings = merged;
+                }
+            }
+
+            try { localStorage.setItem(NS_MIGRATION_DONE_KEY, '1'); } catch { /* private mode — retried next sign-in */ }
+        } catch {
+            /* Network/parse failure — sentinel stays unset, retried next sign-in. */
+        }
+        return nsSettings;
     }
 
     /**
@@ -219,18 +333,23 @@ export class Settings {
      */
     async _pullSyncedSettings() {
         if (!this.app.userAuth?.isLoggedIn?.()) return;
-        let payload;
+        let remote;
         try {
-            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
-                headers: {
-                    ...this.app.userAuth.authHeaders(),
-                },
-            });
+            /* #1806 — read only this client's own 'ihymns.web' subtree
+               (api.php's `?namespace=` GET branch), never the whole blob. */
+            const res = await apiFetch(
+                `${this.app.config.apiUrl}?action=user_settings&namespace=${USER_SETTINGS_NAMESPACE}`,
+                { headers: { ...this.app.userAuth.authHeaders() } }
+            );
             if (!res.ok) return;
-            payload = await res.json();
+            const payload = await res.json();
+            remote = (payload?.settings && typeof payload.settings === 'object') ? payload.settings : {};
         } catch { return; }
 
-        const remote = payload?.settings;
+        if (!this._legacySettingsMigrated()) {
+            remote = await this._migrateLegacyRootSettings(remote);
+        }
+
         if (!remote || typeof remote !== 'object') return;
 
         let appliedTheme = false;

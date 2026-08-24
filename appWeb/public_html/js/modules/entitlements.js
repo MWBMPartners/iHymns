@@ -111,6 +111,10 @@ export const ENTITLEMENTS = {
      * usage return. */
     view_ccli_report:     ['admin', 'global_admin'],
 
+    /* Org-facing CCLI report (#1861). Open to every signed-in role — the
+     * real restriction is data-driven (userIsOrgAdminOf() server-side). */
+    view_org_ccli_report: ['user', 'editor', 'admin', 'global_admin'],
+
     /* Catalogue + curation surfaces (#1641 item 3).
      *
      * These thirteen existed only in the PHP map. Nothing in JS asked for them
@@ -146,6 +150,7 @@ export const ENTITLEMENTS = {
     view_api_docs:              ['editor', 'admin', 'global_admin'],
     request_api_keys:           ['admin', 'global_admin'],
     manage_api_keys:            ['global_admin'],
+    manage_webhooks:            ['global_admin'],
 
     /* Org self-service — deliberately open to plain users: someone must be able
        to administer their OWN organisation without holding a site-wide role. */

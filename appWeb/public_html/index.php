@@ -106,6 +106,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* #1676 — ihymns_bootstrap_icons_css_link(), the shared emitter for the bi-* font. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+/* #1906 — brand X-Powered-By as "iHymns/<version>" (our identity, never the PHP
+   runtime version). Called here, at the top of the primary scanner-facing
+   surface (the SPA catch-all answers every unmatched path), before any output. */
+ihymns_emit_powered_by_header($app);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
@@ -131,6 +135,13 @@ enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? nu
    experience; the app shows a maintenance banner from ?action=app_status. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 enforceMaintenanceForPublicSite();
+
+/* #947/#340 — the dormant CAPTCHA core, loaded before the CSP block below so
+   captchaCspOrigins() can conditionally widen script-src/frame-src for the
+   active provider ONLY when configured (byte-identical CSP when dormant). The
+   origins come from the provider registry alone — no hostname literal appears
+   in index.php (guard-enforced). Side-effect-free to require. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
 
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
@@ -208,18 +219,41 @@ if (!empty(APP_CONFIG['analytics']['matomo_url'])) {
     $cspMatomoUrl = ' ' . rtrim(APP_CONFIG['analytics']['matomo_url'], '/');
 }
 
+/* #947/#340 — widen script-src/frame-src for the ACTIVE CAPTCHA provider only
+   when configured (the same conditional-append shape as $cspMatomoUrl above).
+   Both strings are '' when dormant, so the CSP header is byte-identical to
+   today on every unconfigured install. Origins come from the provider registry
+   (captchaCspOrigins()) — index.php never names a captcha hostname (guard §6.2). */
+$cspCaptchaScript = '';
+$cspCaptchaFrame  = '';
+$captchaCsp = captchaCspOrigins();
+if (!empty($captchaCsp['script'])) {
+    $cspCaptchaScript = ' ' . implode(' ', $captchaCsp['script']);
+}
+if (!empty($captchaCsp['frame'])) {
+    $cspCaptchaFrame = ' ' . implode(' ', $captchaCsp['frame']);
+}
+
 $cspDirectives = [
     "default-src 'self'",
     /* appleid.cdn-apple.com serves the "Sign in with Apple JS" SDK for web SIWA (#1470 W2,
        #1484). The popup is a window.open to appleid.apple.com (not an iframe → no frame-src),
        and the token exchange is server-side (no connect-src needed). Harmless while web SIWA
        is dormant; required the moment an admin enables it. */
-    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}",
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}{$cspCaptchaScript}",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
+    /* #1906 — no plugin content exists anywhere in the app (grep: zero real
+       <object>/<embed>/<applet>). default-src 'self' already implied this; the
+       explicit 'none' is the strict, self-documenting form that blocks the
+       legacy plugin XSS vector. (base-uri/form-action/frame-ancestors are
+       already set below; style-src 'unsafe-inline' is retained deliberately —
+       inline styles are pervasive across fragments + JS + Bootstrap runtime, and
+       CSP nonces/hashes don't cover the style ATTRIBUTE.) */
+    "object-src 'none'",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
-    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app",
+    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app{$cspCaptchaFrame}",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
     "base-uri 'self'",
@@ -746,6 +780,41 @@ try {
             ['name' => 'Shared',   'url' => $canonicalUrl],
         ];
     }
+    /* #1148 — the /themes A–Z index. Static OG (no DB read). */
+    elseif ($requestPath === '/themes') {
+        $pageType = 'other';
+        $ogTitle = 'Browse songs by theme — ' . $app["Application"]["Name"];
+        $ogDescription = 'Browse the full catalogue of worship songs and hymns by theme on '
+                       . $app["Application"]["Name"] . '.';
+        $breadcrumbItems = [
+            ['name' => 'Home',   'url' => getCanonicalUrl('/')],
+            ['name' => 'Themes', 'url' => $canonicalUrl],
+        ];
+    }
+    /* #1148 — a per-theme page: the OG description carries the ALIGNED
+       visible-song count (themeIndexOne — the SAME number the page lists), so
+       the crawler card can never disagree with the page. Unknown slug falls
+       through to the generic block (the writer matcher's posture). */
+    elseif (preg_match('#^/tag/([a-z0-9\-]{1,50})$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        $ogTag = null;
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'theme_index.php';
+            $ogTag = themeIndexOne(getDbMysqli(), $matches[1]);
+        } catch (\Throwable $_e) { /* pre-#1152 / outage — generic OG */ }
+        if ($ogTag) {
+            $ogTitle = htmlspecialchars($ogTag['name']) . ' — songs by theme — ' . $app["Application"]["Name"];
+            $ogDescription = number_format($ogTag['useCount']) . ' '
+                           . ($ogTag['useCount'] === 1 ? 'song' : 'songs')
+                           . ' tagged "' . htmlspecialchars($ogTag['name']) . '" on '
+                           . $app["Application"]["Name"] . '.';
+            $breadcrumbItems = [
+                ['name' => 'Home',            'url' => getCanonicalUrl('/')],
+                ['name' => 'Themes',          'url' => getCanonicalUrl('/themes')],
+                ['name' => $ogTag['name'],    'url' => $canonicalUrl],
+            ];
+        }
+    }
     /* Songbooks listing page */
     elseif ($requestPath === '/songbooks') {
         $pageType = 'other';
@@ -768,6 +837,29 @@ try {
        run still renders the page; the metadata block falls back to
        the static defaults rather than blanking the site. */
     error_log('[index.php] OG/route detection failed: ' . $e->getMessage());
+}
+
+/* #1905 — HARD 404 for an unknown top-level route. The .htaccess SPA catch-all
+   rewrites EVERY non-file path here, and this file used to render the shell with
+   HTTP 200 no matter what — a soft-404 that told scanners /wp-admin/ was "valid",
+   logged probe hits as request.success, and looked to search engines like a real
+   page. The shell STILL renders below (the client router shows the themed
+   "not found" card for an unknown route); only the STATUS becomes honest.
+
+   The valid-segment set is DERIVED (includes/spa_routes.php: page fragments +
+   identifier schemes + router aliases), so a new page never needs an edit here —
+   CI (tests/php/test-route-allowlist-coverage.php) keeps it in lockstep with
+   router.js. Case-sensitive, mirroring router.js's literal switch (/Song already
+   renders not-found client-side, so the server agrees). $pageType is deliberately
+   NOT used as the discriminator — known non-OG routes (/search, /settings, …) all
+   set pageType='other', identical to a genuinely unknown path.
+
+   Placed here — after the OG try/catch, before the first byte of body output
+   (the `?>` at the end of this PHP block) so headers are not yet sent — and after
+   the channel_gate/maintenance early-exits above, so their 503/403 are untouched. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'spa_routes.php';
+if (!spaIsKnownRoute($requestPath)) {
+    http_response_code(404);
 }
 
 /* JSON-LD: WebSite schema with SearchAction (home page only) */
@@ -1212,6 +1304,9 @@ if (!empty($breadcrumbItems)) {
                         </a></li>
                         <li><a class="dropdown-item" href="/songbooks" data-navigate="songbooks">
                             <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i> Songbooks
+                        </a></li>
+                        <li><a class="dropdown-item" href="/themes" data-navigate="themes">
+                            <i class="fa-solid fa-tags me-2" aria-hidden="true"></i> Themes
                         </a></li>
                         <li><a class="dropdown-item" href="/favorites" data-navigate="favorites">
                             <i class="fa-solid fa-heart me-2" aria-hidden="true"></i> Favourites

@@ -122,6 +122,20 @@ $sections = [
         'title' => 'Musicians',
         'group' => 'Content',
     ],
+    /* #1748 Tunes registry. Icon + placement mirror the admin-links.php nav
+       entry ('bi-music-note-beamed', manage_tunes), sitting next to
+       Musicians/Publishers — the other named-entity registries a song's
+       metadata references. */
+    [
+        'id'    => 'tunes',
+        'icon'  => 'bi-music-note-beamed',
+        'title' => 'Tunes',
+        'group' => 'Content',
+    ],
+    /* #1748 Tunes registry. Icon + placement mirror the admin-links.php nav
+       entry ('bi-music-note-beamed', manage_tunes), sitting next to
+       Musicians/Publishers — the other named-entity registries a song's
+       metadata references. */
     /* #93 Publishers registry (part of epic #1765). Icon + Catalogue placement
        mirror the admin-links.php nav entry ('bi-building', manage_publishers). */
     [
@@ -226,6 +240,15 @@ $sections = [
         'title' => 'Role Permissions',
         'group' => 'People',
     ],
+    /* #1325 Venues & service times — the where/when foundation Service Mode
+       (immediately below) builds on. Icon mirrors the admin-links.php nav
+       entry ('bi-geo-alt', manage_organisations). */
+    [
+        'id'    => 'venues',
+        'icon'  => 'bi-geo-alt',
+        'title' => 'Venues & Service Times',
+        'group' => 'People',
+    ],
     [
         'id'    => 'service-mode',
         'icon'  => 'bi-broadcast-pin',
@@ -242,6 +265,16 @@ $sections = [
         'id'    => 'ccli-report',
         'icon'  => 'bi-receipt',
         'title' => 'CCLI Usage Report',
+        'group' => 'Operations',
+    ],
+    /* #1861 My CCLI Report — the org-scoped self-serve sibling. Kept right
+       next to the system-wide report above (same page family) even though
+       admin-links.php nav-groups it under People; the plain-English
+       relabel (#1822) put ccli-report's own sibling here too. */
+    [
+        'id'    => 'my-ccli-report',
+        'icon'  => 'bi-receipt-cutoff',
+        'title' => 'My CCLI Report',
         'group' => 'Operations',
     ],
     [
@@ -305,6 +338,12 @@ $sections = [
         'id'    => 'api-keys',
         'icon'  => 'bi-key-fill',
         'title' => 'API Keys',
+        'group' => 'Operations',
+    ],
+    [
+        'id'    => 'webhooks',
+        'icon'  => 'bi-broadcast',
+        'title' => 'Webhooks',
         'group' => 'Operations',
     ],
     [
@@ -622,7 +661,10 @@ foreach ($sections as $s) {
                             right (Metadata, Structure, Credits, Links, Tags, Media,
                             Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
-                            (verify, tag, move to another songbook, export, delete).
+                            (verify, tag, move to another songbook, export, delete) &mdash;
+                            each action reports a per-song result, so a batch that partly
+                            fails (e.g. moving ten songs when one is already at the target
+                            songbook) still tells you exactly which songs succeeded.
                             <br><strong>Deleting is recoverable.</strong> A deleted song
                             disappears from the app, from search and from this sidebar, but it is not
                             destroyed &mdash; it moves to <a href="#deleted-songs">Deleted Songs</a>,
@@ -633,12 +675,28 @@ foreach ($sections as $s) {
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
-                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.
+                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em> — a find-or-create picker into the <a href="#tunes">Tunes</a> registry, so typing a new tune name creates its registry row automatically), ISWC, language, region.
                             <p class="mt-2 mb-0"><strong>Musical key</strong> — the original key,
                             tempo in BPM and time signature. These show as a badge on the public song
                             page and give Transpose its starting point, so a musician can see what a
                             song is actually in before they play it. Tempo accepts 20–400 BPM; the key
-                            and time-signature lists are fixed, so a typo cannot be saved.</p></dd>
+                            and time-signature lists are fixed, so a typo cannot be saved.</p>
+                            <p class="mt-2 mb-0"><strong>Copyright &amp; public domain (fills itself in)</strong> — type
+                            <em>Copyright year(s)</em> and add <em>Copyright Holders</em> as an ordered list — a
+                            find-or-create picker into the publisher registry (same as a songbook's Publisher
+                            field) lets you add, remove and reorder as many holders as the song genuinely has;
+                            the first-listed holder is the one the displayed copyright line uses. A live
+                            <em>&ldquo;Displayed as: &hellip;&rdquo;</em> line shows exactly what will print on the
+                            public page — no separate step, no free-text line to keep in sync by hand. Only if
+                            you need a genuinely custom statement does a <em>&ldquo;Custom statement
+                            (override)&rdquo;</em> disclosure let you type one directly; leaving it uses the
+                            derived line. Two <strong>Public Domain</strong> checkboxes (lyrics / music) are never
+                            auto-ticked, but when a credited writer's/composer's death date on file makes the
+                            work look public domain (or, lacking that, when the publication year is old enough
+                            — the threshold is an admin setting, see <a href="#configuration">Settings</a>) a
+                            one-click <strong>Use</strong> hint appears next to the checkbox; you still decide.
+                            Ticking both replaces the copyright line with &ldquo;Public domain&rdquo; and disables
+                            the year/holder fields.</p></dd>
                         <dt>Structure</dt>
                         <dd>
                             The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
@@ -652,7 +710,16 @@ foreach ($sections as $s) {
                                 <strong>Per-line language, translations &amp; annotations</strong> — expand the per-line panel under the section to attach, line by line, a <em>translation</em> or <em>transliteration</em> (romanization) of a lyric line and Genius-style <em>annotations</em> (explanation / reference / scripture / history / trivia). These attach to the individual lyric line, not the section as a whole, and are saved as you add them (save the song first so each line is ready to attach to).
                             </p>
                             <p class="mb-2">
+                                <strong>Custom section name</strong> — each section has a per-section <em>language</em> box and, beside it, a <em>Label</em> box. Type a Label to show a custom heading ("Kyrie", or a language name for a multilingual song) instead of the automatic "Verse 1 / Chorus"; the <em>Use language name</em> button fills it from the section's language in one click. It's display-only &mdash; the app still treats the section as its underlying type (verse, chorus…) for highlighting and for every export format, so nothing downstream breaks. Leave the Label empty to keep the automatic heading.
+                            </p>
+                            <p class="mb-2">
+                                <strong>Source work (medleys)</strong> — for a medley, each section can point at the <a href="#works">Work</a> it excerpts, using the per-section "Source work" search-picker. This records which part of the medley came from which work; it only links to works that already exist (manage the works themselves on the <a href="#works">Works</a> page).
+                            </p>
+                            <p class="mb-2">
                                 <strong>Arrangement</strong> — below the section list, the Arrangement panel sets the song's actual running order for playback and export: which sections play, in what sequence, and how many times each repeats (e.g. Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus). Add sections from the pool and reorder them with the move-left/move-right buttons, or start from a quick-action preset ("Verses only", "Chorus after each verse", …) and adjust from there. Leaving it empty plays the sections in the order they're listed above.
+                            </p>
+                            <p class="mb-2 small text-muted">
+                                Each section's <strong>Type</strong> dropdown (verse / chorus / bridge / &hellip;) is sourced from a live registry rather than a fixed list, so a new section kind a curator needs (e.g. <em>Vamp</em>, <em>Ad-Lib</em>) doesn't require a code change to add.
                             </p>
                             <details class="mt-2">
                                 <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
@@ -667,18 +734,19 @@ foreach ($sections as $s) {
                             </details>
                         </dd>
                         <dt>Credits</dt>
-                        <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#musicians">Musicians</a> registry so you don't get duplicate spellings.</dd>
+                        <dd>Writer, composer, arranger, adaptor, translator. Names autocomplete from the <a href="#musicians">Musicians</a> registry so you don't get duplicate spellings. (Copyright Holder lives on the <strong>Metadata</strong> tab, next to Copyright year(s) — see above.)</dd>
                         <dt>Links</dt>
                         <dd>External-website links for this song (Hymnary.org, Internet Archive scans, Wikipedia, YouTube performances, Spotify, etc.). Paste a URL and the provider auto-detects; see <a href="#external-links">External Links</a> for how the shared editor works.</dd>
                         <dt>Tags</dt>
                         <dd>Categorical tags (e.g. <em>Easter</em>, <em>Communion</em>) that drive Browse-by-Theme in the main app and can be used as targets for <a href="#restrictions">Content Restrictions</a>.</dd>
                         <dt>Media</dt>
-                        <dd>Accompanying files for the song — audio recordings, sheet-music PDFs, MIDI sequences and MusicXML notation. Files inherit the song's content-access rules, so a gated song gates its media automatically, and each audio file has its own protected link so it can't be reached by guessing a web address.</dd>
+                        <dd>Accompanying files for the song — audio recordings, sheet-music PDFs, MIDI sequences and MusicXML notation. Files inherit the song's content-access rules, so a gated song gates its media automatically, and each audio file has its own protected link so it can't be reached by guessing a web address.
+                            <p class="mt-2 mb-0 small text-muted">The Metadata tab's &ldquo;Audio: yes/no &middot; Sheet music: yes/no&rdquo; line is <strong>read-only</strong> and fills itself in from whatever's actually attached here — there's no separate checkbox to remember to tick or untick; attach or remove a file on this tab and the line updates itself.</p></dd>
                         <dt>Preview</dt>
                         <dd>Read-only render of the finished song as users will see it.</dd>
                         <dt>Revisions</dt>
                         <dd>
-                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. There is no side-by-side comparison here yet, so if you are unsure which row you want, restore the most likely one and check the song: Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
+                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. <strong>Click a row to see what changed</strong> &mdash; a field-by-field summary of exactly what that edit added, removed or altered (lyrics sections, credits, metadata and more), so you know what you're restoring before you commit to it. Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
                         </dd>
                     </dl>
                     <h3 class="h6">Saving, importing, exporting</h3>
@@ -701,6 +769,7 @@ foreach ($sections as $s) {
                         Both file kinds may be mixed in the same archive — the importer dispatches per entry by extension. The summary shows how many of each format landed.
                     </p>
                     <ul>
+                        <li><strong>Preview only (dry run):</strong> tick <em>"Preview only"</em> before uploading to see what the import would create or skip — songbooks, songs, matches — without saving anything, so you can sanity-check an unfamiliar bundle before committing to it.</li>
                         <li><strong>INSERT-only contract:</strong> if a songbook or song already exists, it's left untouched — never overwritten. The summary reports created vs. existing counts so you can see what landed.</li>
                         <li><strong>Live progress widget:</strong> the upload completes almost immediately; the actual import runs in the background. A small fixed-position card pinned bottom-right polls the job status, shows a progress bar, and survives navigation between admin pages and the public app. Hard-reload the page mid-import and the widget reattaches.</li>
                         <li><strong>Notification on completion:</strong> a row is written to <a href="#notifications">Notifications</a> when the worker finishes, and (if you've granted permission) a native browser notification fires.</li>
@@ -728,6 +797,9 @@ foreach ($sections as $s) {
                     </ul>
                     <p>
                         <strong>Dedupe on import</strong>: tick <em>"Skip existing (by title)"</em> next to the Import button to skip any incoming song whose title already exists in the same songbook (matched ignoring case, punctuation and accents) — catches duplicates that carry a different number. Imports are always INSERT-only; existing rows are never overwritten.
+                    </p>
+                    <p>
+                        <strong>Rights &amp; identifiers carry over</strong>: whatever copyright line, CCLI number, ISWC and public-domain markings a source file supplies are now kept on import &mdash; for every format &mdash; instead of being silently dropped. Imported songs therefore show up correctly in the <a href="#ccli-report">CCLI Usage Report</a> and can match themselves to an existing <a href="#works">Work</a> by their identifier.
                     </p>
                     <p>
                         <strong>Lines per slide</strong>: the <em>"Lines/slide"</em> box next to the export dropdowns caps how many lyric lines land on each slide when exporting to the presentation formats (ProPresenter 6 / FreeShow / OpenLP / OpenSong / VideoPsalm) — useful for lower-third layouts. <code>0</code> keeps each verse whole. Your value is remembered as your default for next time.
@@ -774,7 +846,7 @@ foreach ($sections as $s) {
                         <li><strong>Filter</strong> by status: Pending, Reviewed, Added, Declined, or All.</li>
                         <li>Change a request's status inline.</li>
                         <li>Add an admin <strong>note</strong> (e.g. "merged with #1234", "no copyright clearance").</li>
-                        <li>If the request was fulfilled by an existing song, paste its ID into <strong>Resolved Song ID</strong>.</li>
+                        <li>If the request was fulfilled by an existing song, use <strong>Resolved Song ID</strong> &mdash; a live search-select picker (type a title, pick the song) rather than a free-text box to paste an ID into, so you can't typo a SongId that doesn't exist.</li>
                         <li>Click <strong>Start editing</strong> to open the editor pre-loaded with a draft song matching the request, with a back-link to the request.</li>
                     </ul>
                     <div class="gotcha small">
@@ -795,6 +867,7 @@ foreach ($sections as $s) {
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
                         <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, listing every previous edit with a Restore button on each.</li>
+                        <li>Inside the editor's Revisions tab, a <strong>Field history</strong> view sits alongside the time-ordered list: one row <em>per field</em> showing who last changed it and when, so &ldquo;who edited this copyright line?&rdquo; no longer means reading through unrelated edits. Each changed field also gets a per-field <strong>Revert</strong> that undoes just that one field &mdash; written as a normal new edit, never rewriting history &mdash; without discarding the other changes made since.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
@@ -1050,6 +1123,34 @@ foreach ($sections as $s) {
                     </p>
                 </section>
 
+                <section id="tunes" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-music-note-beamed me-2"></i>Tunes</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        A registry of hymn <strong>tunes</strong> as first-class entities &mdash; <em>HYFRYDOL</em>, <em>OLD HUNDREDTH</em> &mdash; separate from any one song's lyrics. The same tune is often set to several different texts across hymnals, so this fixes the &ldquo;same melody, five spellings&rdquo; problem the same way the Musicians and Publishers registries do for their own kinds of entity.
+                    </p>
+                    <h3 class="h6">Per-tune fields</h3>
+                    <dl class="actions">
+                        <dt>Name, Subtitle, Disambiguation</dt><dd>The tune's canonical name, an optional subtitle, and a short disambiguator for two different tunes that happen to share a name.</dd>
+                        <dt>Meter Code</dt><dd>The hymn-metre pattern (e.g. <code>8.7.8.7 D</code>) that tells you which texts can be sung to this tune.</dd>
+                        <dt>Aliases</dt><dd>Alternate names the same tune is known by; any of them resolves to this registry row.</dd>
+                        <dt>Credits</dt><dd>Composer, arranger, harmoniser, source &mdash; each optionally linked to a <a href="#musicians">Musicians</a> registry row instead of a bare typed name.</dd>
+                        <dt>External links &amp; identifiers</dt><dd>Hymnary.org / MusicBrainz Work / other reference links, auto-detected from a pasted URL the same way every other registry's link picker works.</dd>
+                    </dl>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Create / Edit</dt><dd>The song and songbook editors' Tune field is itself a find-or-create picker into this same registry &mdash; typing a new tune name there and saving creates the registry row automatically, same as typing a new Musician name does.</dd>
+                        <dt>Merge</dt><dd>Collapse two tune rows into one; every song and Work pointing at the old row re-points to the survivor.</dd>
+                        <dt>Delete</dt><dd>Refuses by default while any song or Work still cites the tune.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Public page:</strong> every tune has a page at <code>/tune/&lt;slug&gt;</code> listing every song that uses it &mdash; handy for finding every hymn set to a familiar melody.
+                    </div>
+                </section>
+
                 <section id="publishers" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-building me-2"></i>Publishers</h2>
                     <p class="role-badges">
@@ -1118,6 +1219,7 @@ foreach ($sections as $s) {
                     <dl class="actions">
                         <dt>Create</dt><dd>Title + slug (auto from title) + optional ISWC + optional parent Work + optional notes. Members are added via the Edit modal once the row exists.</dd>
                         <dt>Edit</dt><dd>Add / remove member songs (typeahead over the whole catalogue), mark one as <em>canonical</em>, set sort order, attach external links (the provider dropdown auto-detects from the URL).</dd>
+                        <dt>Constituent works (medley)</dt><dd>Define a Work as an ordered list of other Works &mdash; a medley. In the Edit modal, the <strong>Constituent works (medley)</strong> section takes a work-search typeahead; add each constituent and set its order. This is a &ldquo;contains&rdquo; relationship (distinct from the parent/variant Nesting below): the song page and public work page then show a read-only &ldquo;Medley of: A, B, C&rdquo; line, and a song's individual sections can point at the constituent they excerpt (the <a href="#editor">Song Editor</a> Structure tab's per-section &ldquo;Source work&rdquo; picker).</dd>
                         <dt>Delete</dt><dd>Memberships and external links are removed along with the Work. Child Works (if any) become independent rather than being deleted too.</dd>
                     </dl>
                     <h3 class="h6">Nesting</h3>
@@ -1314,11 +1416,24 @@ foreach ($sections as $s) {
                         <strong>Dormant by default.</strong> The whole content-locking program ships switched <em>off</em> and does nothing until you deliberately turn it on. Until then, the app sends full song data and each app self-limits what it shows.
                     </div>
                     <p>
-                        One page that answers &ldquo;what is locked, for whom, and is it safe to turn on?&rdquo; without visiting every separate content-access page. It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Membership Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Access, <a href="#entitlements">Role Permissions</a> — behind a <strong>readiness checklist</strong> and shows whether the master switch is on or off. Available to global admins.
+                        One page that answers &ldquo;what is locked, for whom, and is it safe to turn on?&rdquo; without visiting every separate content-access page. It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Membership Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Access (below), <a href="#entitlements">Role Permissions</a> — behind a <strong>readiness checklist</strong> and shows whether the master switch is on or off. Available to global admins.
                     </p>
                     <div class="gotcha small">
                         <strong>Read-only by design:</strong> this hub does <em>not</em> own the master switch. Turning enforcement on is the one action in the program that changes anything — it changes what every reader sends at once — so it stays a deliberate human act on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a>, with exactly one place to make the change. The hub reads the state, runs the checklist, and links you to the switch.
                     </div>
+
+                    <h3 class="h6 mt-3">Feature Access <span class="text-muted small fw-normal">(<code>/manage/feature-gating</code>)</span></h3>
+                    <p class="small">
+                        Where the seven built-in capabilities (view lyrics, view copyrighted lyrics, play audio, download MIDI/PDF, save offline, requires-CCLI) are fixed in code, this page lets a Global Admin define <strong>additional</strong> gateable capabilities with no code change — each one automatically grows a column on the <a href="#tiers">Membership Tiers</a> matrix the moment it's defined. A second panel, <strong>Enforcement rules</strong>, maps a defined capability to a built-in behaviour (strip certain payload fields, or drop certain media kinds) so it actually does something once a tier's matrix says no.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> a rule can only target a capability <em>you</em> defined here — the seven built-ins are protected from being re-targeted, so this page can add gating, never quietly change how the built-in seven already behave.
+                    </div>
+
+                    <h3 class="h6 mt-3">Content-Gating No-Op Verifier <span class="text-muted small fw-normal">(<code>/manage/gating-noop-verify</code>, Global Admin only)</span></h3>
+                    <p class="small">
+                        A pre-flight safety check for the master switch above. While gating is <strong>off</strong> (the live state everywhere today), this page renders a fixed sample of songs both ways — as a public page and as the API payload — hashes each result, and lets you prove nothing changed by re-running the hash later and diffing. A green &ldquo;byte-identical&rdquo; result across every sample song is what makes it safe to say the whole program is a true no-op until someone deliberately flips the switch. Refuses to run at all once gating is switched on, since the baseline is only meaningful as the OFF reference.
+                    </p>
                 </section>
 
                 <!-- ====================================================================
@@ -1477,6 +1592,32 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="venues" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-secondary">org admin</span>
+                        <span class="badge bg-secondary">org owner</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        Lets an organisation record the <strong>where and when</strong> of its meetings: physical venues (name, address, map pin, timezone) and each venue's recurring service times (day of week, start time, duration) or one-off occurrences. This is metadata in its own right, and it's also the foundation the <a href="#service-mode">Service Mode</a> feature below builds on &mdash; a live session anchors to a venue and an occurrence so its join code can expire when the service actually ends.
+                    </p>
+                    <h3 class="h6">Per-venue fields</h3>
+                    <dl class="actions">
+                        <dt>Name &amp; address</dt><dd>What the congregation calls the place, and its street address.</dd>
+                        <dt>Map pin &amp; radius</dt><dd>A convenience geofence for display purposes only &mdash; it is <em>not</em> how Service Mode proves someone is present. Presence proof is the venue-displayed rotating code, deliberately, because location can be spoofed or simply inaccurate indoors.</dd>
+                        <dt>Timezone</dt><dd>Used to resolve a recurring schedule's local start time into the correct UTC moment, including across daylight-saving changes.</dd>
+                    </dl>
+                    <h3 class="h6">Service times</h3>
+                    <p>
+                        Each venue can have several recurring service times (e.g. Sunday 10:00am, Wednesday 7:00pm), each with a title, day of week, start time and duration &mdash; or a one-off occurrence for a special service that doesn't repeat.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Venues + service times are useful org metadata on their own, even if you never turn on Service Mode. Setting them up doesn't switch anything else on.
+                    </div>
+                </section>
+
                 <section id="service-mode" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-broadcast-pin me-2"></i>Service Mode (congregation Live-Follow)</h2>
                     <p class="role-badges">
@@ -1494,10 +1635,13 @@ foreach ($sections as $s) {
                     </p>
                     <h3 class="h6">Setting up (org admin / owner)</h3>
                     <dl class="actions">
-                        <dt>Venues</dt><dd>Define your organisation's physical venues (name, address, timezone) and their recurring service schedules (day, start time, duration). These anchor a live session to a place and an occurrence so a join code can expire when the service ends.</dd>
+                        <dt><a href="#venues">Venues</a></dt><dd>Define your organisation's physical venues (name, address, timezone) and their recurring service schedules (day, start time, duration) &mdash; see the <a href="#venues">Venues &amp; Service Times</a> section above. These anchor a live session to a place and an occurrence so a join code can expire when the service ends.</dd>
                         <dt>Projector Screen</dt><dd>The big-screen / projector view. Displays the current song and the rotating join code (plus QR) for the congregation to scan or type. One of the two broadcaster front-ends &mdash; song-nav here sets the current song for everyone.</dd>
                         <dt>Lead a Service</dt><dd>The leader's own device: connect to a session and drive it from your phone or tablet, without needing to stand at the projector.</dd>
                     </dl>
+                    <p class="small">
+                        <strong>Finding these in the menu:</strong> organisation admins and owners now see the <strong>Projector Screen</strong> and <strong>Lead a Service</strong> links in the admin menu directly. They were always allowed to open these pages &mdash; only the menu had been hiding the links, so previously you had to reach them by their web address.
+                    </p>
                     <h3 class="h6">How a congregant follows</h3>
                     <p class="small">
                         A congregant opens the join link / scans the QR / types the code shown at the venue. The app mints an anonymous presence pass on their device, checks in for the current song, and follows along. That check-in is limited <em>per device</em>, not per network connection, so a whole congregation on one venue Wi-Fi isn't throttled as if it were a single visitor.
@@ -1546,14 +1690,40 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
                     <p>
-                        Compliance report for CCLI licensees. Pick a date range and get a sortable table of every CCLI-numbered song with its view count and copyright info, ready to upload to your CCLI reporting portal.
+                        Compliance report for CCLI licensees, covering the <strong>whole site</strong>. Pick a date range and get a sortable table of every CCLI-numbered song with its view count and copyright info, ready to upload to your CCLI reporting portal.
                     </p>
                     <h3 class="h6">Tips</h3>
                     <ul>
                         <li>The CSV export is the column shape your CCLI portal expects (title, CCLI number, copyright, count).</li>
                         <li>Tick &ldquo;Show all&rdquo; to also include songs without a CCLI number assigned &mdash; useful for spotting gaps in the metadata.</li>
                         <li>The view-count is per occurrence: a user opening the same song twice counts as two views.</li>
+                        <li>Songs shown to a congregation during a live service (see <a href="#service-mode">Service Mode</a>) now count as uses too &mdash; including whole set-lists driven through the projector &mdash; so projected worship isn't undercounted.</li>
                     </ul>
+                    <h3 class="h6 mt-3">Filtering by organisation (#1861)</h3>
+                    <p>
+                        The <strong>Organisation</strong> dropdown narrows the report to one organisation's usage &mdash; or to <em>&ldquo;Unattributed&rdquo;</em>, the views that carry no organisation at all (a signed-in user with no org membership, or an anonymous view). Leave it on &ldquo;All organisations&rdquo; for the whole-site figure. If you're looking for one organisation's <em>own</em> admin-facing report rather than this system-wide view, see <a href="#my-ccli-report">My CCLI Report</a> below.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha (attribution):</strong> when a view could be credited to either a personal CCLI number or an organisation's licence, iHymns now prefers the <strong>organisation's</strong> licence &mdash; a signed-in user who also belongs to a licensed organisation has their usage counted under the org, not left as a personal/unattributed view. This fixed real under-counting for organisations whose members hold their own personal CCLI numbers too.
+                    </div>
+                </section>
+
+                <section id="my-ccli-report" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-receipt-cutoff me-2"></i>My CCLI Report</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-secondary">org admin</span>
+                        <span class="badge bg-secondary">org owner</span>
+                    </p>
+                    <p>
+                        The <strong>self-serve</strong> sibling of <a href="#ccli-report">CCLI Usage Report</a> above. Where that page is a system-wide view for site admins, this one shows an organisation admin exactly <strong>their own</strong> organisation's printed-copy usage for their annual CCLI return &mdash; and nothing else. If you administer more than one organisation, a selector lets you switch between the ones you actually hold an admin/owner role on.
+                    </p>
+                    <h3 class="h6">Who sees it</h3>
+                    <p>
+                        Open to every signed-in role by default, but the report itself is empty unless you hold an <strong>admin or owner</strong> role on at least one organisation (the same membership check <a href="#my-organisations">My Organisations</a> uses). A user with no such role sees a friendly &ldquo;not an organisation admin&rdquo; message instead of an empty report &mdash; with a pointer to the system-wide report if they also happen to hold that separate permission.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> this is deliberately narrower than <a href="#my-organisations">My Organisations</a> &mdash; there is no &ldquo;see every organisation&rdquo; shortcut here even for a system admin. A system admin who wants every organisation's figures uses <a href="#ccli-report">CCLI Usage Report</a> instead; this page always scopes strictly to organisations you personally administer.
+                    </div>
                 </section>
 
                 <section id="data-health" class="help-section card-admin mb-4">
@@ -1771,6 +1941,16 @@ foreach ($sections as $s) {
                         and dormant until filled in &mdash; each has its own inline guidance and a
                         set/not-set badge.
                     </p>
+                    <h3 class="h6">Public-domain suggestion threshold (#1862)</h3>
+                    <p>
+                        One number: <strong>Publication-year fallback threshold</strong> (default <strong>1900</strong>,
+                        range 500&ndash;2100). This is the ONE knob behind the Song Editor's
+                        &ldquo;looks public domain&rdquo; hint (see <a href="#editor">Song Editor</a> above) for the
+                        case where no credited writer/composer has a death date on file: a song first published
+                        before this year is <em>suggested</em> public domain. The life-plus-70-years basis used
+                        when a death date IS on file is a fixed code constant, not configurable here. Either way
+                        it's only ever a suggestion &mdash; nothing auto-ticks the Public Domain checkbox.
+                    </p>
                 </section>
 
                 <section id="native-api" class="help-section card-admin mb-4">
@@ -1806,6 +1986,11 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Status codes follow REST: 400 (validation), 401, 403 (role gate or row-level refusal), 404, 405 (wrong method), 409 (duplicate key), 422 (cannot delete because dependents exist). Native UIs can render the right toast without parsing the error string.
                     </div>
+
+                    <h3 class="h6 mt-3">Connected Apps <span class="text-muted small fw-normal">(<code>/manage/intapps-status</code>)</span></h3>
+                    <p class="small">
+                        A read-only status dashboard for the (dormant by default) IntAppsAPI gateway integration &mdash; a separate MWBM platform iHymns can optionally connect to. Shows whether it's on, what it last heard from the gateway, and whether that went well, plus two buttons: <strong>test the connection now</strong> (rings the gateway and shows exactly what came back) and <strong>force a refresh</strong> of the cached feature-flag snapshot. Credentials themselves are set on <a href="#configuration">Settings</a>, not here &mdash; this page only reads status and makes on-demand calls.
+                    </p>
                 </section>
 
                 <section id="api-keys" class="help-section card-admin mb-4">
@@ -1840,6 +2025,37 @@ foreach ($sections as $s) {
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Treat a minted key like a password &mdash; it grants its scope to anyone holding it, with no user behind it. If a key leaks, revoke it immediately and re-issue; never paste a raw key into a ticket, chat or log.
+                    </div>
+                </section>
+
+                <section id="webhooks" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        Let an external system be <strong>told</strong> when something changes in iHymns &mdash; a song is created, updated or deleted, a songbook changes, a set list is shared, or a live service starts or ends. Unlike an <a href="#api-keys">API key</a> (which lets a partner <em>ask</em> us for data), a webhook lets us <em>push</em> a small signed notification to a URL the partner controls, the moment the event happens.
+                    </p>
+                    <h3 class="h6">The one rule about what a webhook contains</h3>
+                    <p>
+                        A webhook payload carries <strong>identity and metadata only &mdash; never content</strong>: an id, a title, which fields changed (by name, never their values), a link. It never contains lyrics, media, a share token or a service join code. A partner that needs the actual content fetches it through the read API, where licensing and access rules still apply. This is deliberate: a webhook is a doorbell, not a delivery van.
+                    </p>
+                    <h3 class="h6">Registering an endpoint</h3>
+                    <ul>
+                        <li><strong>Add a subscription</strong> &mdash; give it a label, the partner's <code>https://</code> URL, and tick which events it wants (a single event, a whole family like <em>every song event</em>, or everything).</li>
+                        <li><strong>Verify it.</strong> A new or URL-changed subscription starts <em>pending</em> and receives nothing until it passes a one-off <strong>verification</strong>: we send a signed challenge, and the endpoint must echo it back. This proves the partner really controls that URL &mdash; so a subscription can't be pointed at some unsuspecting third party and then used to spray it with traffic.</li>
+                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once on create; you can <em>Reveal</em> it (logged) or <em>Rotate</em> it &mdash; rotation keeps the old secret valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
+                    </ul>
+                    <h3 class="h6">Delivery, retries and dead-letters</h3>
+                    <p>
+                        The first attempt is near-instant. A failed delivery is retried on a widening schedule for about <strong>2.2 days</strong> (1&nbsp;min &rarr; 5&nbsp;min &rarr; &hellip; &rarr; 24&nbsp;hours); after that it is marked <em>dead</em> and shown in the delivery log, where you can <strong>re-drive</strong> it once the partner is healthy again. A subscription that keeps failing for days is auto-disabled with a red badge (re-enable is one click). Delivery is <em>at-least-once</em> &mdash; a receiver that occasionally sees the same event twice should de-duplicate on the event id in the header.
+                    </p>
+                    <h3 class="h6">Turning it on (and the drain job)</h3>
+                    <p>
+                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain.php?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> a subscription is walled to the environment (alpha / beta / production) it was created on &mdash; the three share one database but never each other's webhook traffic. Test on alpha first; a production partner should be registered on production.
                     </div>
                 </section>
 

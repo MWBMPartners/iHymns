@@ -70,7 +70,12 @@ const sandbox = {
     Blob: globalThis.Blob,
     URL: undefined,
     document: undefined,
-    fetch: undefined
+    fetch: undefined,
+    /* #1571 — buildBulkFiles()'s cooperative macrotask yield calls
+       setTimeout(fn, 0) every 25 songs; a bulk test large enough to cross
+       that boundary needs the REAL Node timer (not a no-op stub), so the
+       yield actually resolves and the encode completes. */
+    setTimeout: setTimeout
 };
 vm.createContext(sandbox);
 vm.runInContext(scriptSource, sandbox, { filename: SCRIPT_PATH });
@@ -466,6 +471,52 @@ function createFreshExporter(overrides) {
         assert.ok(rtf.includes('Line two'));
     });
 
+    /* ---------------------------------------------------------------- */
+    /* #1918 — the blank/blue-slide regression guard. rule #34 in
+       .claude/CLAUDE.md: the OLD test suite already round-tripped and
+       decoded the slide element above without ever noticing it had a
+       0x0 frame — a guard that only checks the element EXISTS is not a
+       guard against it being invisible. These assertions check the
+       actual rendering-relevant shape: a non-zero `bounds.size`, a set
+       `text.attributes.font`, and that the RTF body a real ProPresenter
+       user would see actually contains the song's own words. Mutation
+       tested: temporarily removing `bounds:` from makeLyricCue() in
+       propresenter-export.js turns the first assertion below RED (see
+       the session's mutation transcript in the handoff/PR description). */
+    await test('every lyric slide element has a non-zero bounds.size (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        assert.ok(decoded.cues.length > 0, 'expected at least one cue to check');
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.ok(element.bounds, 'element.bounds is unset — this is the #1918 invisible-element regression');
+                assert.ok(element.bounds.size, 'element.bounds.size is unset');
+                assert.ok(element.bounds.size.width > 0, 'element.bounds.size.width must be > 0, got ' + element.bounds.size.width);
+                assert.ok(element.bounds.size.height > 0, 'element.bounds.size.height must be > 0, got ' + element.bounds.size.height);
+            }
+        }
+    });
+    await test('every lyric slide element sets text.attributes.font (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.ok(element.text && element.text.attributes, 'element.text.attributes is unset');
+                assert.ok(element.text.attributes.font, 'element.text.attributes.font is unset');
+                assert.ok(element.text.attributes.font.name, 'font.name is unset');
+                assert.ok(element.text.attributes.font.size > 0, 'font.size must be > 0');
+            }
+        }
+    });
+    await test('decoded rtf_data (TextDecoder) contains the expected verse text (#1918)', () => {
+        const decoded = Presentation.decode(encoded);
+        const element = decoded.cues[0].actions[0].slide.presentation.base_slide.elements[0].element;
+        /* Use TextDecoder (not Buffer) per the #1918 spec, to exercise the
+           same decode path a browser (not just Node/Buffer) would use. */
+        const rtf = new TextDecoder().decode(element.text.rtf_data);
+        assert.ok(rtf.includes('Line one'), 'expected decoded RTF to contain the verse text "Line one"');
+    });
+
     await test('decoded CCLI block contains author, title and #587 artist', () => {
         const decoded = Presentation.decode(encoded);
         assert.equal(decoded.ccli.author, 'Ivor Golby / Noël Tredinnick');
@@ -598,6 +649,74 @@ function createFreshExporter(overrides) {
             '0003 (MP) - MP small.pro',
             '3500 (MP) - MP big.pro'
         ]);
+    });
+
+    /* ---------------------------------------------------------------- */
+    console.log('\nProgress + macrotask yield (#1571):');
+
+    function stubSongs(n) {
+        return Array.from({ length: n }, (_v, i) => ({
+            songbook: 'CP', number: i + 1, title: 'Song ' + (i + 1),
+            components: [{ type: 'verse', number: 1, lines: ['x'] }]
+        }));
+    }
+
+    await test('buildBulkFiles() invokes onProgress once per song, with (done, total)', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const N = 30;
+        const calls = [];
+        const files = await exporter._internal.buildBulkFiles(stubSongs(N), {
+            onProgress: (done, total) => { calls.push([done, total]); }
+        });
+        assert.equal(files.length, N);
+        assert.equal(calls.length, N);
+        assert.deepEqual(calls[0], [1, N]);
+        assert.deepEqual(calls[N - 1], [N, N]);
+    });
+
+    await test('a throwing onProgress callback does not reject the build', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        /* Mutation target: removing buildBulkFiles()'s per-call try/catch
+           around onProgress would make THIS throw instead of resolving. */
+        const files = await exporter._internal.buildBulkFiles(stubSongs(5), {
+            onProgress: () => { throw new Error('onProgress boom'); }
+        });
+        assert.equal(files.length, 5);
+    });
+
+    await test('an absent onProgress is fine (the option is optional)', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const files = await exporter._internal.buildBulkFiles(stubSongs(3), {});
+        assert.equal(files.length, 3);
+    });
+
+    await test('buildBulkFiles() source contains a setTimeout(...) macrotask yield gated on a %25 boundary', () => {
+        /* Source-level check (mirrors tests/php/test-qr-cache.php's PHP-side
+           function-body extractor): brace-depth-bound the REAL function text
+           so a mutation that deletes the yield — which changes ONLY timing,
+           never the encoded output the functional tests above assert on —
+           still has something concrete to turn red against. None of this
+           function's string literals contain a brace character, so simple
+           depth counting is safe without a separate comment-strip pass. */
+        const idx = scriptSource.indexOf('async function buildBulkFiles');
+        assert.ok(idx !== -1, 'buildBulkFiles() not found in propresenter-export.js');
+        const openIdx = scriptSource.indexOf('{', idx);
+        let depth = 0;
+        let endIdx = -1;
+        for (let i = openIdx; i < scriptSource.length; i++) {
+            if (scriptSource[i] === '{') { depth++; }
+            else if (scriptSource[i] === '}') {
+                depth--;
+                if (depth === 0) { endIdx = i; break; }
+            }
+        }
+        assert.ok(endIdx !== -1, 'could not bound buildBulkFiles() by brace depth');
+        const body = scriptSource.slice(openIdx, endIdx + 1);
+        assert.ok(/setTimeout\s*\(/.test(body), 'expected a setTimeout(...) call inside buildBulkFiles()');
+        assert.ok(/%\s*25\s*===\s*0/.test(body), 'expected the yield gated on a "every 25 songs" boundary');
     });
 
     /* ---------------------------------------------------------------- */

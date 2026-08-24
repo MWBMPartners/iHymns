@@ -54,6 +54,17 @@ RewriteRule ^ - [R=404,L]
 # Block access to the includes directory entirely
 RewriteRule ^includes/ - [F,L]
 
+# Block direct HTTP access to internal Markdown docs (#1906).
+# MUST be an access-phase deny, not a RewriteRule: the /manage/ passthrough
+# (`RewriteRule ^manage/ - [L]` below) L-stops rewriting under /manage/, so a
+# rewrite-based block would MISS the at-risk files (manage/editor/*.md served as
+# static text/plain to anyone). A <FilesMatch>+Require runs in the authz phase,
+# which the rewrite [L] does not bypass, so it covers the whole docroot. No
+# client fetches a .md over HTTP (verified), so this breaks nothing.
+<FilesMatch "\.md$">
+    Require all denied
+</FilesMatch>
+
 # Block access to hidden files (e.g., .gitkeep, .env)
 RewriteRule (^|/)\.(?!well-known) - [F,L]
 
@@ -148,6 +159,29 @@ RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
 RewriteRule ^\.well-known/apple-app-site-association$ .well-known/apple-app-site-association.php [L]
 
 # ==========================================================================
+# DIRECTORY-LISTING KILL (#1906)
+# A request that maps to a real DIRECTORY with no index.php of its own has
+# no legitimate response — without this it would fall through the -d
+# passthrough below into mod_autoindex, and whether that lists the
+# directory's contents is a HOST default (+Indexes) we don't control.
+# Deliberately mod_rewrite, NOT `Options -Indexes`: the Options directive
+# 500s the ENTIRE site if the host's AllowOverride excludes `Options`
+# (an <IfModule> wrapper does NOT prevent that — the directive is still
+# parsed whenever the module is present), while mod_rewrite is already
+# load-bearing in this file. Directories WITH an index.php (/, /manage/…)
+# are excluded and keep working via DirectoryIndex.
+# `^.+` (not `^`) exempts the docroot itself. ErrorDocument 404 below
+# serves the themed SPA 404 body, matching #1905's contract.
+# NOTE (#1906 also asked about ServerSignature Off): NOT set here —
+# Apache's default is already Off, ServerTokens can't be set from
+# .htaccess at all, and with listings dead the signature has nowhere
+# user-visible left to render. Host check: `curl -sI /<nonexistent>`.
+# ==========================================================================
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteCond %{REQUEST_FILENAME}/index.php !-f
+RewriteRule ^.+ - [R=404,L]
+
+# ==========================================================================
 # STATIC ASSET PASSTHROUGH
 #
 # Allow direct access to static files (CSS, JS, images, fonts, data).
@@ -187,6 +221,32 @@ RewriteRule ^ - [L]
 # ==========================================================================
 
 RewriteRule ^(vendor|css|js|fonts)/ - [R=404,L]
+
+# ==========================================================================
+# BAD-BOT / SCANNER PROBE DENY-LIST (#1905)
+#
+# Extensionless, directory-style scanner probes — /wp-admin/, /wp-content/,
+# /wp-includes/…, /wordpress/, /phpmyadmin/, /administrator/, /adminer/,
+# /autodiscover/autodiscover.xml, /cgi-bin/… — have NO .php extension (so the
+# request-line ".php" 404 above misses them) and match no real asset prefix, so
+# without this they fall through to the SPA catch-all below and get index.php's
+# shell at HTTP 200 — telling a scanner the path is "valid" and logging as
+# request.success. This returns a real 404 before PHP even runs. [NC] is
+# load-bearing: scanners randomise case (WP-, PhpMyAdmin, ADMINISTRATOR).
+#
+# The eleven leading tokens are RESERVED probe prefixes — never begin a real SPA
+# route with one. CI (tests/php/test-route-allowlist-coverage.php) enforces that
+# no valid route segment starts with any of them, and that this alternation stays
+# byte-identical to its mirror in tests/browser/router.php (rule #35).
+#
+# Placement: AFTER the real-file/-dir passthrough above (so a genuine asset always
+# wins) and the vendor 404, BEFORE the SPA catch-all. index.php's own derived
+# allow-list (#1905, includes/spa_routes.php) is the UNIVERSAL backstop that 404s
+# every OTHER unknown path; this rule just short-circuits the highest-volume
+# families cheaply, before PHP runs.
+# ==========================================================================
+
+RewriteRule ^(wp-|wordpress|xmlrpc|phpmyadmin|adminer|dbadmin|mysqladmin|administrator|autodiscover|autoconfig|cgi-bin) - [R=404,L,NC]
 
 # ==========================================================================
 # SPA CATCH-ALL — Rewrite all other requests to index.php
@@ -330,27 +390,48 @@ RewriteRule ^ index.php [QSA,L]
 # ==========================================================================
 
 <IfModule mod_headers.c>
-    # Prevent MIME type sniffing
-    Header set X-Content-Type-Options "nosniff"
+    # `always` (not bare `set`) so every directive attaches to ERROR responses
+    # too — a 403 channel-gate/maintenance page, a 503 DB-down page, and the
+    # #1905/#1906 404s are served via ErrorDocument, and a bare `Header set`
+    # writes only the onsuccess table (2xx/3xx), silently dropping these on 4xx/5xx.
+    # HSTS in particular MUST survive an error hit or a first-visit MITM isn't
+    # pinned to HTTPS. Cache directives (below) stay `set` — errors shouldn't cache.
 
-    # XSS Protection (legacy browsers)
-    Header set X-XSS-Protection "1; mode=block"
+    # X-Powered-By (#1906): brand it "iHymns/<version>" instead of leaking the PHP
+    # runtime version. The version is a deploy-injected PHP value, so PHP sets the
+    # branded header (index.php / api.php -> ihymns_emit_powered_by_header()); the
+    # PHP runtime version is suppressed at source by expose_php=Off (sibling
+    # .user.ini). This `edit` is the belt-and-braces for a mod_php host that
+    # ignores .user.ini: it rewrites ONLY a leaked "PHP/x.y" value to our bare
+    # name, and — because it matches on value, not blanket-unset — it leaves the
+    # PHP-set "iHymns/<version>" brand untouched (it doesn't match ^PHP/). On the
+    # normal FastCGI/FPM host expose_php=Off means there's nothing to rewrite.
+    Header always edit X-Powered-By "^PHP/.*$" "iHymns"
+
+    # Prevent MIME type sniffing
+    Header always set X-Content-Type-Options "nosniff"
+
+    # X-XSS-Protection: OWASP now advises "0" (#1906). The legacy "1; mode=block"
+    # auditor is removed from all modern browsers and has itself caused XSS /
+    # info-leak side channels; the enforcing nonce CSP (index.php, rule #30) is
+    # the real defence. "0" explicitly disables the legacy filter where honoured.
+    Header always set X-XSS-Protection "0"
 
     # Prevent clickjacking
-    Header set X-Frame-Options "SAMEORIGIN"
+    Header always set X-Frame-Options "SAMEORIGIN"
 
     # Referrer policy
-    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
 
     # Permissions policy — disable unnecessary APIs
-    Header set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()"
 
     # HSTS — Enforce HTTPS (1 year, include subdomains)
-    Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
     # Cross-Origin policies
-    Header set Cross-Origin-Opener-Policy "same-origin"
-    Header set Cross-Origin-Resource-Policy "same-origin"
+    Header always set Cross-Origin-Opener-Policy "same-origin"
+    Header always set Cross-Origin-Resource-Policy "same-origin"
 </IfModule>
 
 # ==========================================================================

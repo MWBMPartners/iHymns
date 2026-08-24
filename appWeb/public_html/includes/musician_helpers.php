@@ -52,6 +52,15 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
    in here doesn't change this file's own dormant-safety story. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_similarity.php';
 
+/* #1862 (epic #1863) — pdRecomputeForMusicianName(), consumed by
+   musicianMergeExecute() below: a merge can fill the target's previously-
+   empty DeathDate from the source (the COALESCE-fill a few hundred lines
+   down) and always re-points every song-credit row from source name to
+   target name, so any song crediting either spelling may need its
+   public-domain suggestion refreshed. require_once is idempotent — safe
+   even though /manage/musicians.php also requires this file explicitly. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'pd_suggest.php';
+
 /**
  * iHymns — shared "read a form/JSON field as a trimmed string" helper (#trim).
  *
@@ -1362,6 +1371,7 @@ function registerMusicianByName(
     string  $name,
     ?array  $parts = null
 ): int {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() below */
     $name = musTrimmed($name); // #trim
     if ($name === '') return 0;
 
@@ -1407,6 +1417,9 @@ function registerMusicianByName(
     $stmt->execute();
     $newId = (int)$db->insert_id;
     $stmt->close();
+    /* #1860 go-live — mint this person's permanent IL-id (ILM…). No open
+       transaction assumed here — ilidStampNewRow() tolerates autocommit. */
+    ilidStampNewRow($db, 'musician', $newId);
     return $newId;
 }
 
@@ -2631,6 +2644,14 @@ function musicianMergeExecute(\mysqli $db, int $sourceId, int $targetId, array $
         $db->rollback();
         throw $e;
     }
+
+    /* #1862 — the merge just re-pointed every song-credit row from the
+       source name to the target name AND may have filled the target's
+       DeathDate from the source (the fillSet COALESCE above); recompute the
+       PD-suggestion denorm for every song either name could touch, post-
+       commit, own failure boundary (pdRecomputeForMusicianName() never
+       throws — see pd_suggest.php's header). */
+    pdRecomputeForMusicianName($db, $targetName);
 
     return [
         'sourceName'        => $sourceName,

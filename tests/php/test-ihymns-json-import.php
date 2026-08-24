@@ -205,6 +205,40 @@ $doc['songs'][0]['arrangement'] = [0, 1, 0];
 assertEq($e4, null,                                     'arrangement document parses');
 assertEq($sg4[0]['arrangement'] ?? null, [0, 1, 0],     'arrangement passed through verbatim');
 
+/* #1912 — alternativeTitles maps to the "altTitles" shape the shared
+   saveSong write loop (:812-826, #1669 C9) consumes. ELI5: a song that
+   lists other titles it's known by should come out ready for the
+   alt-titles writer; a song that lists none should come out with an
+   empty array, not a missing key (saveSong's own `?? []` would tolerate
+   either, but the write loop's doc-block promises a present-and-empty
+   array, so that's the contract pinned here).
+   Detail — also proves the parser's own tolerance: a whitespace-only
+   title, an entry with no "title" key, and a non-array entry are each
+   silently dropped rather than failing the whole song, mirroring the
+   write loop's own per-entry tolerance instead of imposing a stricter
+   one (matching the plan's "skip malformed entries" instruction). */
+$doc = baselineDoc();
+$doc['songs'][0]['alternativeTitles'] = [
+    ['title' => 'A Beautiful Morning', 'language' => 'en-GB', 'note' => 'first line'],
+    ['title' => '  Padded Title  '],                    // language/note absent → trimmed, nulled
+    ['title' => '   '],                                 // whitespace-only title → dropped
+    ['not-title-key' => 'x'],                            // array without a "title" key → dropped
+    'not even an array entry',                           // scalar entry → dropped
+];
+[$b5, $sg5, $e5] = parseDoc($doc);
+assertEq($e5, null,                                     'alternativeTitles document parses');
+assertEq($sg5[0]['altTitles'] ?? null, [
+    ['title' => 'A Beautiful Morning', 'language' => 'en-GB', 'note' => 'first line'],
+    ['title' => 'Padded Title', 'language' => null, 'note' => null],
+],                                                       'alternativeTitles → altTitles, malformed/blank entries skipped');
+assertTrue(!array_key_exists('alternativeTitles', $sg5[0]),
+                                                        'the interchange spelling is not left behind');
+
+$doc = baselineDoc();          // no "alternativeTitles" key at all — an export predating #1912
+[$b6, $sg6, $e6] = parseDoc($doc);
+assertEq($e6, null,                                     'document without alternativeTitles parses (old export)');
+assertEq($sg6[0]['altTitles'] ?? null, [],              'missing alternativeTitles key → altTitles === [] (never absent)');
+
 /* ==================================================================== */
 echo "\n3. Missing required fields produce a clear error, not a partial parse\n";
 /* ==================================================================== */

@@ -41,6 +41,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';    /* getAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';  /* transparent decrypt of cuercode_api_key inside getAppSetting() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'qr_cache.php';       /* #1920 C3 — qrCacheFetch()/qrCacheStore(), side-effect-free to require */
 
 /* -------------------------------------------------------------------------
  * SETTINGS KEYS — defined ONCE here so /manage/configuration.php and any
@@ -140,6 +141,90 @@ function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback)
 }
 
 /**
+ * ELI5: turn "whatever drawing options were passed in" into ONE tidy,
+ * complete, predictably-ordered list of the values CueRCode will actually
+ * draw with — so two requests that LOOK different (different key order, or
+ * one omitting a default) but mean the SAME picture always normalise to the
+ * exact same map.
+ * WHY EXTRACTED (#1920 C3): this was inlined at the top of
+ * cuercodeGenerate() until the QR cache needed a SECOND consumer of the
+ * identical fold — the cache-key deriver (cuercodeCacheKey()). Rule #22
+ * ("one core per concern") says that fold lives in exactly one place;
+ * cuercodeGenerate() below now calls this function too, so its own
+ * behaviour is byte-identical to before (same values, same clamps, same
+ * order of use) and the key can never drift from the request it describes
+ * (#1920 §A.3 — the ONLY way two spellings of one request could ever
+ * disagree is if this fold itself had a bug, never a second copy of it).
+ * `ksort()` makes the returned map's later `json_encode()` (in
+ * cuercodeCacheKey()) canonical regardless of what order `$opts` arrived in.
+ *
+ * @param array $opts { format?:'svg'|'png', size?:int, ecc?:'L'|'M'|'Q'|'H',
+ *                      type?:string, fg_color?:'#rrggbb', bg_color?:'#rrggbb' }
+ * @return array{ecc:string,format:string,size:int,type:string,fg_color?:string,bg_color?:string}
+ *         Fully-defaulted, clamped, ksorted. Absent colour keys STAY absent
+ *         (never defaulted to an empty string) so the cache key doesn't
+ *         grow an extra axis nobody asked about.
+ */
+function cuercodeNormaliseOptions(array $opts): array
+{
+    /* NOTE (found during #1920 C3 extraction): the ORIGINAL inline code read
+       `$opts['format']` a SECOND time in each ternary's true-branch instead
+       of reusing the already-coalesced local — harmless for every CURRENT
+       caller (qr.php / pdf_renderer.php always pass every key explicitly),
+       but it emits an "undefined array key" warning AND silently resolves
+       to null (not the intended default) the moment any caller omits a key
+       — exactly the "defaults-filled vs explicit-equal -> SAME key"
+       invariant this function exists to guarantee, and exactly what
+       test-qr-cache.php calls this function WITH (an empty $opts, to prove
+       the defaults path). Fixed here by resolving each coalesced value into
+       a local ONCE and reusing it on both branches — same result for every
+       defined-key input (byte-identical to today's real callers), correct
+       for an omitted one. */
+    $formatIn = $opts['format'] ?? 'svg';
+    $format   = in_array($formatIn, CUERCODE_FORMATS, true) ? $formatIn : 'svg';
+    $size     = (int)($opts['size'] ?? 512);
+    $size     = max(CUERCODE_MIN_SIZE, min(CUERCODE_MAX_SIZE, $size));
+    $eccIn    = $opts['ecc'] ?? 'M';
+    $ecc      = in_array($eccIn, CUERCODE_ECC_LEVELS, true) ? $eccIn : 'M';
+    $typeIn   = (string)($opts['type'] ?? 'url');
+    $type     = preg_match('/^[a-z][a-z0-9_]{0,20}$/', $typeIn) ? $typeIn : 'url';
+
+    $norm = ['format' => $format, 'size' => $size, 'ecc' => $ecc, 'type' => $type];
+    foreach (['fg_color', 'bg_color'] as $ck) {
+        if (isset($opts[$ck]) && preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', (string)$opts[$ck])) {
+            $norm[$ck] = (string)$opts[$ck];
+        }
+    }
+    ksort($norm);
+    return $norm;
+}
+
+/**
+ * ELI5: turn a request (the text to encode + its drawing options) into ONE
+ * short, unique fingerprint — the primary key `tblQrCache` looks answers up
+ * by.
+ * WHY sha256-of-JSON: `cuercodeNormaliseOptions()` already guarantees the
+ * SAME logical request always produces the SAME normalised (ksorted) map, so
+ * hashing `{payload, opts}` together (payload riding INSIDE the JSON, so no
+ * delimiter could ever let two different payload/options pairs collide onto
+ * one string) turns that into a fixed-length, collision-resistant cache key.
+ * Any future drawing option is automatically part of the key the moment
+ * `cuercodeNormaliseOptions()` starts returning it — no second place to
+ * remember to update (rule #20).
+ *
+ * @param string $payloadUrl The (already trimmed) text/URL being encoded.
+ * @param array  $normOpts   The output of cuercodeNormaliseOptions() — NOT raw $opts.
+ * @return string 64-char sha256 hex.
+ */
+function cuercodeCacheKey(string $payloadUrl, array $normOpts): string
+{
+    return hash('sha256', json_encode(
+        ['payload' => $payloadUrl, 'opts' => $normOpts],
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+    ));
+}
+
+/**
  * ELI5: ask CueRCode to draw a QR for a link, and give back the picture bytes —
  * or null if anything at all goes wrong (never throw).
  * WHY: the ONE HTTP round trip. Every failure mode (no key, refused URL, no
@@ -169,17 +254,19 @@ function cuercodeGenerate(string $payloadUrl, array $opts = []): ?array
     }
     [$url] = $resolved;
 
-    /* Normalise + clamp the customisation (defence in depth; qr.php also validates). */
-    $format = in_array(($opts['format'] ?? 'svg'), CUERCODE_FORMATS, true) ? $opts['format'] : 'svg';
-    $size   = (int)($opts['size'] ?? 512);
-    $size   = max(CUERCODE_MIN_SIZE, min(CUERCODE_MAX_SIZE, $size));
-    $ecc    = in_array(($opts['ecc'] ?? 'M'), CUERCODE_ECC_LEVELS, true) ? $opts['ecc'] : 'M';
-    $type   = preg_match('/^[a-z][a-z0-9_]{0,20}$/', (string)($opts['type'] ?? 'url')) ? (string)$opts['type'] : 'url';
+    /* Normalise + clamp the customisation (defence in depth; qr.php also
+       validates) — via the ONE shared fold (#1920 C3) so cuercodeCacheKey()
+       can never disagree with what this request actually sends. */
+    $norm   = cuercodeNormaliseOptions($opts);
+    $format = $norm['format'];
+    $size   = $norm['size'];
+    $ecc    = $norm['ecc'];
+    $type   = $norm['type'];
 
     $customization = ['format' => $format, 'size' => $size, 'ecc' => $ecc];
     foreach (['fg_color', 'bg_color'] as $ck) {
-        if (isset($opts[$ck]) && preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', (string)$opts[$ck])) {
-            $customization[$ck] = (string)$opts[$ck];
+        if (isset($norm[$ck])) {
+            $customization[$ck] = $norm[$ck];
         }
     }
     /* CueRCode's 'url' type takes input.url; other types take input.text. */
@@ -248,4 +335,58 @@ function cuercodeGenerate(string $payloadUrl, array $opts = []): ?array
         'mime'   => $mime,
         'format' => (string)($decoded['data']['format'] ?? $format),
     ];
+}
+
+/**
+ * ELI5: the "smart" version of cuercodeGenerate() — check our own saved
+ * copy FIRST, and only bother CueRCode if we don't have one yet.
+ * WHY THIS IS THE ONE COMPOSITION POINT (#1920 C3, rule #22): BOTH QR
+ * surfaces (qr.php AND pdf_renderer.php's _pdfInlineQrImage()) call cached
+ * generation, so the read-through logic lives here exactly once rather than
+ * being duplicated at each call site.
+ *
+ * ORDER IS LOAD-BEARING (#1920 §3.1d / §4's dormancy proofs):
+ *   1. Dormancy gate FIRST — `cuercodeConfigured()` is checked BEFORE the
+ *      cache is ever consulted, so "dormant until keyed" (rule #38) stays a
+ *      property of the INSTALL (unkeyed = null, always, regardless of what
+ *      the cache table holds), not of what happens to be cached.
+ *   2. Cache read — a hit returns immediately, WITHOUT ever touching the
+ *      network (the entire point: no CueRCode round trip for a picture that
+ *      never changes).
+ *   3. On a miss, the UNTOUCHED cuercodeGenerate() HTTP path runs exactly as
+ *      before this feature existed — byte-identical request, byte-identical
+ *      response.
+ *   4. Only a REAL success (`$qr !== null`) is ever stored — a failure is
+ *      NEVER cached, so a CueRCode outage can never freeze into a permanent
+ *      cached 503 (#1920 §A.1).
+ *
+ * @param string $payloadUrl The URL/text to encode.
+ * @param array  $opts       Same shape as cuercodeGenerate()'s $opts.
+ * @return array{bytes:string,mime:string,format:string}|null
+ */
+function cuercodeGenerateCached(string $payloadUrl, array $opts = []): ?array
+{
+    $payloadUrl = trim($payloadUrl);
+    if ($payloadUrl === '' || strlen($payloadUrl) > CUERCODE_MAX_PAYLOAD_LEN) {
+        return null;
+    }
+    /* DORMANCY FIRST (see doc-block point 1) — this call MUST textually
+       precede the cache read below; a CI guard (test-qr-cache.php)
+       mutation-tests this ordering. */
+    if (!cuercodeConfigured()) {
+        return null;
+    }
+    $norm = cuercodeNormaliseOptions($opts);
+    $key  = cuercodeCacheKey($payloadUrl, $norm);
+
+    $hit = qrCacheFetch($key);
+    if ($hit !== null) {
+        return $hit;
+    }
+
+    $qr = cuercodeGenerate($payloadUrl, $opts); /* the untouched HTTP path */
+    if ($qr !== null) {
+        qrCacheStore($key, $payloadUrl, $norm, $qr); /* never caches a failure */
+    }
+    return $qr;
 }

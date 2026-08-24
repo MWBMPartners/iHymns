@@ -7,7 +7,8 @@
 // DETAILED: Implements strategy §1.8's versioning scheme:
 // `MARKETING_VERSION = <sharedMajor>.<appleMinor>.<patch>` — the MAJOR
 // component is shared with the web/PWA's own version (parsed from
-// `infoAppVer.php`, currently major `0`); the MINOR increments
+// `infoAppVer.php`, currently major `1` — the #1899 tag-derived baseline);
+// the MINOR increments
 // independently per Apple release, unsynchronised with web's own minor.
 // `CURRENT_PROJECT_VERSION` is a UTC timestamp `YYYYMMDDHHmm` — monotonic
 // and collision-free by construction (no separate build-counter file to
@@ -20,9 +21,10 @@
 // this file's committed values are the Phase-0 starting point until that
 // script exists.
 
-// MAJOR.MINOR.PATCH — major mirrors web's current major (`0`); Apple's own
-// minor starts at `1` for this from-scratch native build; patch `0`.
-MARKETING_VERSION = 0.1.0
+// MAJOR.MINOR.PATCH — major mirrors web's current major (`1`, #1899); Apple's
+// own minor starts at `0` at this baseline; patch `0`. sync-version.sh enforces
+// the major matches infoAppVer.php's Version.Number major.
+MARKETING_VERSION = 1.0.0
 
 // UTC timestamp YYYYMMDDHHmm at the time this Phase-0 skeleton was cut.
 CURRENT_PROJECT_VERSION = 202607070001

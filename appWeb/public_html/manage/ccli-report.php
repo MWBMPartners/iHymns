@@ -3,17 +3,40 @@
 declare(strict_types=1);
 
 /**
- * iHymns — CCLI Song Usage Report (#317)
+ * iHymns — CCLI Song Usage Report (#317, org selector #1861)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
- * Admin page for generating CCLI licence-compliance reports. Shows
- * every song with a non-empty CCLI number, its view count within the
- * selected date range, and the count of setlist appearances by any
- * user in the same window.
+ * ELI5
+ * ----
+ * The site-wide "how much did everybody use this song" report. A system
+ * admin sees every organisation's usage at once, or can narrow it down to
+ * one organisation (or to "Unattributed" — printed copies nobody's licence
+ * could be tied to an org for).
  *
- * Export the same result set as CSV with `?export=csv`, suitable for
- * upload to the CCLI reporting portal.
+ * DETAILED
+ * --------
+ * System-wide, admin/global_admin-gated (`view_ccli_report`, unchanged since
+ * #317). Shows every song with a non-empty CCLI number, its view count
+ * within the selected date range, and its printed-copy count. Export the
+ * same result set as CSV with `?export=csv`, suitable for upload to the
+ * CCLI reporting portal.
+ *
+ * #1861 moved the query core into `includes/ccli_report.php` (shared with
+ * the new org-facing sibling `manage/my-ccli-report.php`) and added the
+ * `?org=` selector. This page is DELIBERATELY the only caller allowed to
+ * pass `$orgFilter`/`$unattributed` into `ccliReportSystemRows()` — it is
+ * already behind the site-wide entitlement wall, so narrowing its own view
+ * to one org is safe. `manage/my-ccli-report.php` never calls that
+ * function at all; it calls the membership-scoped `ccliReportOrgRows()`
+ * instead (see `includes/ccli_report.php`'s doc-block for the full
+ * isolation invariant).
+ *
+ * The "Unattributed" filter (`?org=none`) doubles as the diagnostic
+ * instrument for the #1861 W1 fix: before that fix, a user holding BOTH a
+ * personal CCLI number and an org CCLI licence always logged `OrgId = NULL`
+ * (their personal licence shadowed the org one) — this view is where an
+ * admin would have SEEN that under-attribution.
  *
  * Entitlement: `view_ccli_report` (admin + global_admin by default).
  */
@@ -21,6 +44,10 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+/* #1861 — the shared query core (window parse, system + org row queries,
+   the org-scope resolver, CSV emit). Reused by manage/my-ccli-report.php;
+   this file MUST NOT re-implement any of it (rule #22). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli_report.php';
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -31,132 +58,80 @@ if (!userHasEntitlement('view_ccli_report', $currentUser['role'] ?? null)) {
 
 $activePage = 'ccli-report';
 
-$activePage = 'ccli-report';
+$db = getDbMysqli();
 
 /* ========================================================================
- * Query params — date range + filter
+ * Query params — date range + filter + org selector (#1861)
  * ======================================================================== */
-$today     = new DateTimeImmutable('today');
-$defaultTo = $today->format('Y-m-d');
-$defaultFrom = $today->modify('-30 days')->format('Y-m-d');
+$window   = ccliReportWindow($_GET);
+$fromDate = $window['from'];
+$toDate   = $window['to'];
+$showAll  = $window['showAll'];
 
-$fromDate = $_GET['from'] ?? $defaultFrom;
-$toDate   = $_GET['to']   ?? $defaultTo;
-$showAll  = !empty($_GET['show_all']); /* include songs without CCLI */
+/* $orgParam is the RAW request value, kept around only to re-render the
+   <select>'s selected option and to round-trip through the CSV link — the
+   actual query narrowing uses $orgFilter/$unattributed below, parsed from
+   it with the same allow-list-of-shapes discipline as ccliReportWindow(). */
+$orgParam     = (string)($_GET['org'] ?? '');
+$orgFilter    = null;
+$unattributed = false;
+if ($orgParam === 'none') {
+    $unattributed = true;
+} elseif ($orgParam !== '') {
+    $parsedOrg = (int)$orgParam;
+    if ($parsedOrg > 0) {
+        $orgFilter = $parsedOrg;
+    }
+    /* A non-numeric or <=0 value is simply ignored (falls back to "All
+       organisations") rather than 403ing — this page is already
+       system-admin-gated, so a malformed selector is a UI mistake, not a
+       security concern (contrast with my-ccli-report.php's ?org=, which
+       DOES 403 on a mismatch because it's membership-gated, not entitlement-only). */
+}
 
-/* Validate & clamp — a malformed date falls back to the default.
-   This is a reporting page, not a search surface, so we're strict. */
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)) $fromDate = $defaultFrom;
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $toDate))   $toDate   = $defaultTo;
+/* Every org, for the selector — this page's gate already means "may see
+   every organisation", so listing them all here is not a leak surface. */
+$orgOptions = [];
+try {
+    $orgRes = $db->query('SELECT Id, Name FROM tblOrganisations ORDER BY Name ASC');
+    $orgOptions = $orgRes ? $orgRes->fetch_all(MYSQLI_ASSOC) : [];
+} catch (\Throwable $_e) {
+    $orgOptions = []; // fall back to "All organisations" only — never fatal the page over the selector list
+}
+$orgFilterName = '';
+if ($orgFilter !== null) {
+    foreach ($orgOptions as $_o) {
+        if ((int)$_o['Id'] === $orgFilter) {
+            $orgFilterName = (string)$_o['Name'];
+            break;
+        }
+    }
+    if ($orgFilterName === '') {
+        $orgFilterName = 'organisation #' . $orgFilter; // deleted/renamed org id still round-trips through the URL
+    }
+}
+
+$hasUsageEvents = _printUsageTableExists($db);
 
 /* ========================================================================
  * Pull the report rows
  * ======================================================================== */
-$db = getDbMysqli();
-
-/* $ccliFilter is built from a server-side bool ($showAll) and only
-   ever takes one of two literal values — never user input. Safe to
-   interpolate. */
-$ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
-
-/* #1767 remainder P5 — "Printed copies" column, sourced from
-   tblSongUsageEvents (UsageContext='printed'), the table
-   includes/print_usage.php::printUsageLog() writes. Existence-gated
-   (INFORMATION_SCHEMA probe, not a bare query() — CLAUDE.md red-flag
-   "treats query() as returning false on error": mysqli STRICT mode THROWS
-   on a missing table, so an un-migrated install must be detected BEFORE
-   the main query references it, not discovered by catching the throw) so
-   a checkout that hasn't run migrate-usage-events.php still renders the
-   report — just without this column, exactly like the table's own
-   dormant-until-a-writer-lands history (#1090 P5). */
-$hasUsageEvents = false;
+$rows       = [];
+$queryError = '';
 try {
-    $ueProbe = $db->query(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongUsageEvents' LIMIT 1"
-    );
-    $hasUsageEvents = $ueProbe && $ueProbe->fetch_row() !== null;
-    if ($ueProbe) { $ueProbe->close(); }
-} catch (\Throwable $e) {
-    error_log('[ccli-report] usage-events probe failed: ' . $e->getMessage());
-}
-$printedJoin   = '';
-$printedSelect = '0 AS printed_copies';
-if ($hasUsageEvents) {
-    $printedJoin = "LEFT JOIN (
-               SELECT SongId, SUM(Quantity) AS printed_copies
-                 FROM tblSongUsageEvents
-                WHERE UsageContext = 'printed'
-                  AND UsedAt >= ?
-                  AND UsedAt <  DATE_ADD(?, INTERVAL 1 DAY)
-                GROUP BY SongId
-           ) p ON p.SongId = s.SongId";
-    $printedSelect = 'COALESCE(p.printed_copies, 0) AS printed_copies';
-}
-
-try {
-    /* SongbookAbbr is the actual column name on tblSongs (the
-       schema has used Abbreviation as the natural FK key since
-       the v0.10 PascalCase rename in #407). The earlier query
-       referenced s.SongbookId, which doesn't exist — every page
-       load 500'd into the catch-all and surfaced the generic
-       "see server logs" banner. (#712)
-
-       @deleted-visible: COMPLIANCE reporting (#1694) — a song's period views
-       were real usage of its CCLI number whether or not the song was later
-       soft-deleted; hiding it here would UNDER-report licensed usage, and
-       under-reporting is the direction that violates the licence. (Diverges
-       from the plan's §2 first guess, deliberately.)
-       @disabled-visible: same reasoning, one predicate over (#1765) — a
-       song's past views were real CCLI usage whether or not its songbook is
-       CURRENTLY disabled; admin reporting must not under-report. */
-    $stmt = $db->prepare(
-        "SELECT s.SongId        AS song_id,
-                s.Title          AS title,
-                s.SongbookAbbr   AS songbook,
-                s.Number         AS number,
-                s.Ccli           AS ccli,
-                s.Copyright      AS copyright,
-                COALESCE(h.view_count, 0) AS view_count,
-                $printedSelect
-           FROM tblSongs s
-           LEFT JOIN (
-               SELECT SongId, COUNT(*) AS view_count
-                 FROM tblSongHistory
-                WHERE ViewedAt >= ?
-                  AND ViewedAt <  DATE_ADD(?, INTERVAL 1 DAY)
-                GROUP BY SongId
-           ) h ON h.SongId = s.SongId
-          $printedJoin
-          WHERE 1 = 1
-          $ccliFilter
-          ORDER BY view_count DESC, s.Title ASC
-          LIMIT 5000"
-    );
-    /* The printed-copies subquery (when present) needs the SAME date-range
-       pair a second time — placeholder count/order follows the query text
-       top-to-bottom (rule #5's "?,?,?" discipline, applied to a variable
-       placeholder COUNT rather than a variable VALUE list). */
-    if ($hasUsageEvents) {
-        $stmt->bind_param('ssss', $fromDate, $toDate, $fromDate, $toDate);
-    } else {
-        $stmt->bind_param('ss', $fromDate, $toDate);
-    }
-    $stmt->execute();
-    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
+    $rows = ccliReportSystemRows($db, $fromDate, $toDate, $showAll, $orgFilter, $unattributed);
 } catch (\Throwable $e) {
     error_log('[ccli-report] query failed: ' . $e->getMessage());
     /* Surface in the in-app Activity Log so admins can self-diagnose
        without server-log access (#695 + #712). */
     logActivityError('admin.ccli_report.load', 'song', '', $e, [
         'from' => $fromDate, 'to' => $toDate, 'show_all' => $showAll,
+        'org' => $orgFilter, 'unattributed' => $unattributed,
     ]);
     $rows = [];
-    /* This page is gated to admin/global_admin so we surface the
-       exception detail inline — same rationale as musicians.php
-       (#635 / #698 commit). Curators get to self-diagnose without
-       SSH access. */
+    /* This page is gated to admin/global_admin so we surface the exception
+       detail inline — same rationale as musicians.php (#635 / #698 commit).
+       Curators get to self-diagnose without SSH access. */
     $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';
     $queryError = 'Database error: ' . $e->getMessage() . $where;
 }
@@ -165,37 +140,14 @@ try {
  * CSV export
  * ======================================================================== */
 if (($_GET['export'] ?? '') === 'csv') {
-    header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="ccli-usage-' . $fromDate . '-to-' . $toDate . '.csv"');
-    header('Cache-Control: no-store');
-
-    $out = fopen('php://output', 'wb');
-    /* #1767 remainder P5 — "Printed copies" appended as the LAST column so
-       an existing CCLI-portal upload template that maps the first 7
-       columns positionally is unaffected by this addition. */
-    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views', 'Printed copies']);
-    foreach ($rows as $r) {
-        ihymns_fputcsv($out, [
-            $r['song_id'],
-            $r['title'],
-            $r['songbook'],
-            $r['number'],
-            $r['ccli'],
-            $r['copyright'],
-            $r['view_count'],
-            $r['printed_copies'],
-        ]);
+    $csvSuffix = '';
+    if ($orgFilter !== null) {
+        $csvSuffix = '-org' . $orgFilter;
+    } elseif ($unattributed) {
+        $csvSuffix = '-unattributed';
     }
-    fclose($out);
+    ccliReportEmitCsv($rows, 'ccli-usage' . $csvSuffix . '-' . $fromDate . '-to-' . $toDate . '.csv');
     exit;
-}
-
-$totalSongs = count($rows);
-$totalViews = 0;
-$totalPrinted = 0;
-foreach ($rows as $r) {
-    $totalViews   += (int)$r['view_count'];
-    $totalPrinted += (int)$r['printed_copies'];
 }
 
 ?>
@@ -217,8 +169,11 @@ foreach ($rows as $r) {
             CCLI Usage Report
         </h1>
         <p class="text-secondary small mb-4">
-            Song usage counts from the in-app view log. Use this as the
-            input for your annual CCLI licence usage return.
+            Song usage counts from the in-app view log, across every organisation. Use this
+            as the input for your annual CCLI licence usage return, or narrow it to a single
+            organisation below.
+            An organisation's own admin can pull just their own copy from
+            <a href="/manage/my-ccli-report">My CCLI Report</a>.
         </p>
 
         <?php if (!empty($queryError)): ?>
@@ -226,20 +181,33 @@ foreach ($rows as $r) {
         <?php endif; ?>
 
         <!-- ============================================================
-             FILTER FORM — date range + "include songs without CCLI"
+             FILTER FORM — date range + org selector + "include songs
+             without CCLI" (#1861 added the org selector)
              ============================================================ -->
         <form method="get" class="row g-3 align-items-end mb-4">
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label for="from" class="form-label small text-uppercase text-muted">From</label>
                 <input type="date" class="form-control form-control-sm" id="from" name="from"
                        value="<?= htmlspecialchars($fromDate) ?>">
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label for="to" class="form-label small text-uppercase text-muted">To</label>
                 <input type="date" class="form-control form-control-sm" id="to" name="to"
                        value="<?= htmlspecialchars($toDate) ?>">
             </div>
             <div class="col-md-3">
+                <label for="org" class="form-label small text-uppercase text-muted">Organisation</label>
+                <select class="form-select form-select-sm" id="org" name="org">
+                    <option value="" <?= $orgParam === '' ? 'selected' : '' ?>>All organisations</option>
+                    <option value="none" <?= $orgParam === 'none' ? 'selected' : '' ?>>Unattributed</option>
+                    <?php foreach ($orgOptions as $o): ?>
+                        <option value="<?= (int)$o['Id'] ?>" <?= $orgFilter === (int)$o['Id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars((string)$o['Name']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-md-2">
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="show_all"
                            name="show_all" value="1" <?= $showAll ? 'checked' : '' ?>>
@@ -253,108 +221,28 @@ foreach ($rows as $r) {
                     <i class="bi bi-funnel me-1" aria-hidden="true"></i>Apply
                 </button>
                 <a class="btn btn-sm btn-outline-secondary"
-                   href="?from=<?= htmlspecialchars($fromDate) ?>&to=<?= htmlspecialchars($toDate) ?><?= $showAll ? '&show_all=1' : '' ?>&export=csv">
+                   href="?from=<?= htmlspecialchars($fromDate) ?>&to=<?= htmlspecialchars($toDate) ?><?= $showAll ? '&show_all=1' : '' ?><?= $orgParam !== '' ? '&org=' . urlencode($orgParam) : '' ?>&export=csv">
                     <i class="bi bi-download me-1" aria-hidden="true"></i>CSV
                 </a>
             </div>
         </form>
 
-        <!-- Summary strip -->
-        <div class="row g-3 mb-3">
-            <div class="col-sm-6 col-md-3">
-                <div class="card-admin">
-                    <div class="text-muted text-uppercase small">Songs in report</div>
-                    <div class="h4 mb-0"><?= number_format($totalSongs) ?></div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-md-3">
-                <div class="card-admin">
-                    <div class="text-muted text-uppercase small">Total views</div>
-                    <div class="h4 mb-0"><?= number_format($totalViews) ?></div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-md-3">
-                <div class="card-admin">
-                    <div class="text-muted text-uppercase small">
-                        Printed copies
-                        <?php if (!$hasUsageEvents): ?>
-                            <i class="bi bi-info-circle ms-1" title="Run the usage-events migration on /manage/setup-database to enable this — currently un-migrated on this install" aria-hidden="true"></i>
-                        <?php endif; ?>
-                    </div>
-                    <div class="h4 mb-0"><?= number_format($totalPrinted) ?></div>
-                </div>
-            </div>
-            <div class="col-sm-6 col-md-3">
-                <div class="card-admin">
-                    <div class="text-muted text-uppercase small">Window</div>
-                    <div class="small mb-0">
-                        <?= htmlspecialchars($fromDate) ?>
-                        → <?= htmlspecialchars($toDate) ?>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ============================================================
-             RESULTS TABLE
-             ============================================================ -->
-        <?php if (empty($rows)): ?>
-            <div class="alert alert-info small mb-0">
-                No matching songs in this window.
-            </div>
-        <?php else: ?>
-            <div class="table-responsive">
-                <table class="table table-sm table-hover align-middle cp-sortable admin-table-responsive">
-                    <thead>
-                        <tr>
-                            <th scope="col" data-sort-key="song"      data-sort-type="text">Song</th>
-                            <th scope="col" class="text-end" data-sort-key="ccli" data-sort-type="text">CCLI #</th>
-                            <th scope="col" class="text-end" data-sort-key="views" data-sort-type="number">Views</th>
-                            <!-- #1767 remainder P5 — printed copies, logged via the "How many
-                                 copies?" prompt (js/modules/print.js) under a CCLI licence. -->
-                            <th scope="col" class="text-end" data-sort-key="printed" data-sort-type="number">Printed copies</th>
-                            <th scope="col" data-sort-key="copyright" data-sort-type="text">Copyright</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($rows as $r): ?>
-                            <tr>
-                                <td>
-                                    <div class="fw-semibold"><?= htmlspecialchars($r['title']) ?></div>
-                                    <div class="text-muted small">
-                                        <?= htmlspecialchars($r['songbook']) ?>
-                                        <?php if (!empty($r['number'])): ?>
-                                            #<?= htmlspecialchars((string)$r['number']) ?>
-                                        <?php endif; ?>
-                                        &middot; <?= htmlspecialchars($r['song_id']) ?>
-                                    </div>
-                                </td>
-                                <td class="text-end small text-nowrap">
-                                    <?= $r['ccli'] !== '' ? htmlspecialchars($r['ccli']) : '<span class="text-muted">—</span>' ?>
-                                </td>
-                                <td class="text-end fw-semibold">
-                                    <?= number_format((int)$r['view_count']) ?>
-                                </td>
-                                <td class="text-end fw-semibold">
-                                    <?= number_format((int)$r['printed_copies']) ?>
-                                </td>
-                                <td class="small text-muted">
-                                    <?= htmlspecialchars($r['copyright']) ?>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+        <?php if ($orgFilter !== null || $unattributed): ?>
+            <!-- #1861 honesty caption — a scoped Views column would silently
+                 mislabel an all-user count as an org count; tblSongHistory
+                 has no OrgId at all (see includes/ccli_report.php doc-block,
+                 decision O3), so this is stated plainly instead. -->
+            <div class="alert alert-secondary small">
+                <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                Views cannot be attributed to an organisation (view history has no organisation
+                column); the Views column below still shows all-user counts. Printed copies are
+                filtered to <strong><?= $orgFilter !== null ? htmlspecialchars($orgFilterName) : 'Unattributed' ?></strong>.
             </div>
         <?php endif; ?>
-    </div>
 
-    <!-- Sortable table headers (#1786 sweep — tagged cp-sortable but never
-         booted; every header click was a silent no-op until now). -->
-    <script type="module">
-        import { bootSortableTables } from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
-        bootSortableTables();
-    </script>
+        <?php $showViewsColumn = true; // system report: view counts are meaningful (no org attribution needed)
+              require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli-report-results.php'; ?>
+    </div>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

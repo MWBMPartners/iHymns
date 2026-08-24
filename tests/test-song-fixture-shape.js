@@ -209,6 +209,56 @@ test('components is an array', () => {
 });
 
 /* =========================================================================
+ * ALTERNATIVE TITLES TESTS (#1912 — tests/fixtures/songs.schema.json's new
+ * OPTIONAL "alternativeTitles" property on a song. Optional means: a song
+ * carrying no key at all must stay valid (an export made before #1912, or
+ * a song genuinely known by only one title); a song that DOES carry the
+ * key must have well-formed entries. TF-0001 in the fixture carries two
+ * entries specifically so this test has something real to check — a test
+ * that only asserted "IF present, THEN well-formed" over a fixture where
+ * the key is never present would pass trivially and catch nothing
+ * (rule #34's "never fail on correct code" cuts both ways: a check that
+ * can never fail is equally worthless).
+ * ========================================================================= */
+
+console.log('');
+console.log('🔤 Alternative Titles Tests');
+
+test('at least one fixture song exercises alternativeTitles', () => {
+    const withAlt = songData.songs.filter(s => Array.isArray(s.alternativeTitles) && s.alternativeTitles.length > 0);
+    assert.ok(withAlt.length > 0,
+        'no fixture song carries alternativeTitles — the checks below would pass vacuously');
+});
+
+test('a song without alternativeTitles stays valid (the key is optional)', () => {
+    const withoutKey = songData.songs.filter(s => !('alternativeTitles' in s));
+    assert.ok(withoutKey.length > 0,
+        'every fixture song carries the key — nothing exercises the "absent" branch');
+    for (const song of withoutKey) {
+        assert.ok(!('alternativeTitles' in song), `Song ${song.id} unexpectedly has alternativeTitles`);
+    }
+});
+
+test('alternativeTitles, when present, is an array of well-formed entries', () => {
+    for (const song of songData.songs) {
+        if (!('alternativeTitles' in song)) { continue; }
+        assert.ok(Array.isArray(song.alternativeTitles),
+            `Song ${song.id} alternativeTitles is not an array`);
+        for (const alt of song.alternativeTitles) {
+            assert.equal(typeof alt, 'object', `Song ${song.id} has a non-object alternativeTitles entry`);
+            assert.equal(typeof alt.title, 'string', `Song ${song.id} alternativeTitles entry missing a string title`);
+            assert.ok(alt.title.length > 0, `Song ${song.id} alternativeTitles entry has an empty title`);
+            if ('language' in alt) {
+                assert.equal(typeof alt.language, 'string', `Song ${song.id} alternativeTitles.language is not a string`);
+            }
+            if ('note' in alt) {
+                assert.equal(typeof alt.note, 'string', `Song ${song.id} alternativeTitles.note is not a string`);
+            }
+        }
+    }
+});
+
+/* =========================================================================
  * COMPONENT TESTS
  * ========================================================================= */
 

@@ -110,6 +110,13 @@ require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRE
    same reasoning as song_importers.php just above: the functions must exist
    before any handler runs, not merely before this file's own text position. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the legacy media-upload case below */
+/* #1862 — songMediaRecomputeFlags() (HasAudio/HasSheetMusic derivation) for
+   the legacy song_media_upload/song_media_delete hooks below; pdRecomputeForSong()
+   for the legacy revision-restore hook. Same pair api2.php requires (rule #22 —
+   never a second copy of either fold). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_flags.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -1289,6 +1296,34 @@ switch ($action) {
                 break;
             }
 
+            /* #1743 — three snapshot shapes coexist in tblSongRevisions.NewData
+               (and, since #1743-C2, chained PreviousData can now legitimately be
+               any of them): (1) editor-payload lowercase-keys {id,title,...}; (2)
+               v2 full-snapshot {song:{<Uppercase tblSongs row>}, components,
+               credits, tags, links} (ed2_buildSongSnapshot()); (3) bare
+               tblSongs-row Uppercase keys. This restore's scalar path below
+               only understands shapes (1)/(3) — Uppercase 'Title' present at the
+               top level. Unwrap shape (2) the same way ed2_applySongSnapshot()
+               does at api2.php ~:1604 ($songRow = $snap['song'] ?? $snap) so a
+               chained v2 full snapshot restores its scalars through the
+               existing isset($restorePayload['Title']) path below unchanged. */
+            if (is_array($restorePayload['song'] ?? null)) {
+                $restorePayload = $restorePayload['song'];
+            }
+
+            /* #1743 — shape guard. Before this guard, an editor-payload-shaped
+               (shape 1, lowercase 'title') PreviousData silently skipped the
+               entire scalar UPDATE below (isset($restorePayload['Title']) is
+               false for lowercase keys) yet the endpoint still answered
+               ok:true — a rule #30/#33 silent-no-op: the caller is told the
+               restore succeeded and nothing was written. Close that hole with
+               an honest 409 instead of a false success. */
+            if (!isset($restorePayload['Title'])) {
+                http_response_code(409);
+                echo json_encode(['error' => "This revision's snapshot is stored in the v2 editor format and cannot be restored here — use the v2 editor's Revisions tab."]);
+                break;
+            }
+
             /* Capture the current state so the new revision row's
                PreviousData matches reality (not the stale PreviousData
                from the chosen row). */
@@ -1355,6 +1390,14 @@ switch ($action) {
                 );
                 $upd->execute();
                 $upd->close();
+
+                /* #1039 Part A — a restore is a LyricsText + Title write funnel:
+                   fold the restored values into the search mirror (and repair
+                   NormalizedTitle, which this v1 restore path never maintained)
+                   in the SAME transaction. Dormant + fail-open no-op when the
+                   fold schema isn't live. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_fold.php';
+                searchFoldSyncSong($db, $songId, $title, $lyrics);
             }
 
             /* Log the restore as its own revision row so the audit
@@ -1377,6 +1420,18 @@ switch ($action) {
             $rev->close();
 
             $db->commit();
+
+            /* #1862 — the restore above keeps writing the SNAPSHOT's own
+               HasAudio/HasSheetMusic scalars (a restore should reproduce the
+               snapshot) — then live media truth immediately re-wins via a
+               post-commit recompute, same "restore keeps the snapshot, then
+               truth wins" contract v2's revision_restore uses. Also
+               recomputes the PD-suggestion denorm, since a restore can
+               reintroduce/remove credits. Both own their failure boundary,
+               neither ever throws. */
+            songMediaRecomputeFlags($db, $songId);
+            pdRecomputeForSong($db, $songId);
+
             echo json_encode([
                 'ok'            => true,
                 'songId'        => $songId,
@@ -2922,17 +2977,19 @@ switch ($action) {
             $look->close();
 
             /* CSV streaming. fputcsv on php://output handles RFC 4180
-               quoting + UTF-8. The BOM prefix gets Excel to treat the
-               file as UTF-8 instead of mojibake-decoding it as
-               Windows-1252. */
+               quoting + UTF-8. ihymns_csv_output_begin() (#1908 Commit 4)
+               opens the stream AND writes the BOM prefix that gets Excel
+               to treat the file as UTF-8 instead of mojibake-decoding it
+               as Windows-1252 — replaces the old inline echo BOM + fopen()
+               pair (never both — see the double-BOM ban in
+               test-csv-bom.php). */
             $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_',
                           'skipped-songids-job-' . $jobId . '-' . pathinfo((string)$row['Filename'], PATHINFO_FILENAME) . '.csv'
                         ) ?? 'skipped-songids.csv';
             header('Content-Type: text/csv; charset=UTF-8');
             header('Content-Disposition: attachment; filename="' . $safeName . '"');
             header('Cache-Control: no-store, no-cache, must-revalidate');
-            echo "\xEF\xBB\xBF"; /* UTF-8 BOM */
-            $out = fopen('php://output', 'w');
+            $out = ihymns_csv_output_begin();
             ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
             foreach ($skipped as $sid) {
                 $sid = (string)$sid;
@@ -3163,6 +3220,8 @@ switch ($action) {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* #1860 go-live — mint this media row's permanent IL-id (ILD…). */
+                ilidStampNewRow($db, 'document', $newId);
             } catch (\Throwable $insertErr) {
                 /* Roll back the staged file so it doesn't orphan. */
                 if ($staged['backend'] === 'filesystem' && $staged['path'] !== null) {
@@ -3173,6 +3232,13 @@ switch ($action) {
                 }
                 throw $insertErr;
             }
+
+            /* #1862 — a new media row can flip HasAudio/HasSheetMusic; recompute
+               the derived UNION (own failure boundary, never throws — see
+               song_media_flags.php's header). Tree-derived wiring guard:
+               tests/php/test-editor2-metadata-1862.php scans every
+               `INSERT INTO tblSongMedia` and asserts this hook is referenced. */
+            songMediaRecomputeFlags($db, $songId);
 
             if (function_exists('logActivity')) {
                 logActivity(
@@ -3334,6 +3400,12 @@ switch ($action) {
             $stmt->bind_param('i', $mediaId);
             $stmt->execute();
             $stmt->close();
+
+            /* #1862 — a removed media row can flip HasAudio/HasSheetMusic;
+               recompute the derived UNION (own failure boundary, never throws).
+               Tree-derived wiring guard: tests/php/test-editor2-metadata-1862.php
+               scans every `DELETE FROM tblSongMedia` and asserts this reference. */
+            songMediaRecomputeFlags($db, (string)$row['SongId']);
 
             if (function_exists('logActivity')) {
                 logActivity(

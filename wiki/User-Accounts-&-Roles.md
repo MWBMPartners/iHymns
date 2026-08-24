@@ -249,8 +249,24 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | Purge songs (permanent, irreversible) | — | — | — | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
 | Activity log | — | — | — | Yes | Yes |
+| CCLI Usage Report (system-wide, `/manage/ccli-report`) | — | — | — | Yes | Yes |
+| My CCLI Report (own org only, `/manage/my-ccli-report`, #1861) | — | Yes¹ | Yes¹ | Yes¹ | Yes¹ |
 | App settings | — | — | — | — | Yes |
 | Assign global_admin | — | — | — | — | Yes |
+
+¹ `My CCLI Report`'s entitlement (`view_org_ccli_report`) is open to every signed-in role by default —
+it's a role-level kill-switch, not the real access control. The REAL scoping is structural: the page's
+only row source refuses to run without a non-empty `tblOrganisationMembers`-derived org-id list, so a
+user with no admin/owner role on any organisation sees a friendly "not an organisation admin" message
+rather than an empty report, regardless of the entitlement. See [[Security]] and [[API Reference]].
+
+### Nav↔gate parity for organisation admins (#1667)
+
+Organisation admins now **see** the Service Mode links (Projector Screen, Lead a Service) in the admin
+menu. They were always allowed to *use* those pages, but the menu only showed the links to holders of
+the broader "manage organisations" permission, so an org admin could reach the pages by URL yet never
+discover them. The menu visibility now matches the pages' own gate — the standing rule that an admin
+page's menu entry and its access check must be the same test (see [[Security]]).
 
 ---
 

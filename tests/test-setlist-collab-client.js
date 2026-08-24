@@ -260,6 +260,40 @@ check('the shared section removes any previous instance before appending',
     /setlist-shared-with-me'\)\?\.remove\(\)/.test(collabBlock),
     'renderSetListOverview can re-run while the fetch is in flight');
 
+/* ------------------------------------------------------------------------
+ * 6. #1662 — the over-cap 413 is handled by STATUS + machine-readable REASON,
+ *    never by matching the server's error prose (rule #35).
+ *
+ * Reads user-auth.js too (the third setlist-family client file the cap touches
+ * — its syncSetlists() 413 branch). Tree-derived in the sense that the two
+ * files are the setlist write clients; the tokens asserted only exist in the
+ * new #1662 branches, so removing any goes red.
+ * ---------------------------------------------------------------------- */
+console.log('\nAssertion 6 — the over-cap 413 branches on status + reason (rule #35):');
+
+const USER_AUTH_JS = path.join(__dirname, '..', 'appWeb', 'public_html', 'js', 'modules', 'user-auth.js');
+const authSrc = stripComments(fs.readFileSync(USER_AUTH_JS, 'utf8'));
+
+/* user-auth.js — the bulk sync 413. */
+check('user-auth.js syncSetlists branches on res.status === 413',
+    /res\.status === 413/.test(authSrc));
+check('...and distinguishes the cap by the machine reason, not prose',
+    /reason === 'too_many_songs'/.test(authSrc),
+    'branching on body.reason (rule #35), never on the error sentence');
+check('...and names the offending list + limit from the response body',
+    /body\.maxSongs/.test(authSrc) && /body\.setlistId/.test(authSrc),
+    'the number reaches the client only via the 413 body — no client-side cap constant');
+
+/* setlist.js — BOTH web edit surfaces (token + collab-detail). */
+check('setlist.js token-edit push reads res.data.reason === \'too_many_songs\' on a 413',
+    /res\.status === 413 && res\.data && res\.data\.reason === 'too_many_songs'/.test(src));
+check('setlist.js surfaces the cap limit from res.data.maxSongs, not a hardcoded number',
+    src.split('res.data.maxSongs').length >= 3,   /* both push paths reference it */
+    'rule #35: the cap value is the response body, never re-typed on the client');
+check('a refused over-cap edit reverts the staged songs to the last server-confirmed copy',
+    /shared\._serverSongs/.test(src),
+    'so the refused state cannot be re-pushed on the next tap (#1662)');
+
 /* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -21,6 +21,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';   /* #1870 — ihymns_slug_advanced_field() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
@@ -41,6 +42,19 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    need. Neither existed before P4b. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+/* #1864 — the shared publisher search core (publisherSearchRows()) and the
+   picked-id-or-name resolver (publisherResolvePickedOrCreate()) the new
+   Copyright Holder picker below needs; neither belongs on this page a
+   second time (rule #22 — one core, reused by manage/publishers.php and
+   manage/songbooks.php too). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+/* #1860 Phase 3 — $slugFor below delegates to workSlugify() (the exact
+   $validateIswc -> ihymns_canonical_iswc() precedent a few lines up, rule
+   #22) so a Work minted by the auto-linker (includes/work_admin.php) and a
+   Work created by hand through this page land on byte-identical slugs for
+   identical titles. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the manual create below */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -65,10 +79,14 @@ $csrf    = csrfToken();
  * URL-safe lowercase slug from a free-text title. ASCII-only —
  * non-ASCII characters drop. Multiple separators collapse to one
  * hyphen; leading/trailing hyphens are stripped.
+ *
+ * #1860 Phase 3 — delegates to the shared workSlugify() (includes/
+ * work_admin.php) rather than owning its own copy (rule #22 — one fold,
+ * not two; the exact $validateIswc -> ihymns_canonical_iswc() precedent
+ * above). Behaviour is byte-identical to the closure this replaces.
  */
 $slugFor = static function (string $name): string {
-    $ascii = (string)preg_replace('/[^A-Za-z0-9]+/u', '-', $name);
-    return trim(strtolower($ascii), '-');
+    return workSlugify($name);
 };
 
 /**
@@ -118,6 +136,7 @@ if ($hasSchema) {
         $extraColNames = [
             'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
             'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
         ];
         $ph    = implode(',', array_fill(0, count($extraColNames), '?'));
         $stmt  = $db->prepare(
@@ -165,6 +184,11 @@ $parseWorkExtraFields = static function (array $post): array {
     $firstPubIn      = trim((string)($post['first_published_year'] ?? ''));
     $copyrightYears  = mb_substr(trim((string)($post['copyright_years'] ?? '')), 0, 100);
     $copyrightHolder = mb_substr(trim((string)($post['copyright_holder'] ?? '')), 0, 255);
+    /* #1864 — the Copyright Holder picker's hidden id, same "cast-or-null"
+       idiom as origin_city_id (:454/:541) — 0/absent means "nothing was
+       picked", not "picked publisher #0". Verified server-side by
+       publisherResolvePickedOrCreate() before being trusted (rule #37). */
+    $copyrightHolderIdIn = (int)($post['copyright_holder_id'] ?? 0) ?: null;
     $mbWorkIn        = trim((string)($post['musicbrainz_work_mbid'] ?? ''));
 
     if ($ccliIn !== '' && !mediaIdentifierWorkValidate('ccli', $ccliIn)) {
@@ -194,6 +218,7 @@ $parseWorkExtraFields = static function (array $post): array {
         'firstPublishedYear'  => $firstPublishedYear,
         'copyrightYears'      => $copyrightYears,
         'copyrightHolder'     => $copyrightHolder,
+        'copyrightHolderId'   => $copyrightHolderIdIn,
         'musicBrainzWorkMbid' => $mbWorkIn,
     ], null];
 };
@@ -299,6 +324,19 @@ $persistWorkExtraFields = static function (\mysqli $db, array $worksExtraCols, i
     if (isset($worksExtraCols['CopyrightHolder'])) {
         $sets[] = 'CopyrightHolder = ?'; $types .= 's';
         $vals[] = $fields['copyrightHolder'];
+        /* #1864 — CopyrightHolder + CopyrightHolderId are ALWAYS written
+           TOGETHER, the exact TuneName/TuneId lockstep shape a few lines
+           below applied to the publisher registry (rule #37/#43):
+           publisherResolvePickedOrCreate() trusts the picker's claimed id
+           only after verifying it against the typed name, else falls back
+           to publisherFindOrCreateByName() — never a raw client-supplied
+           id written unverified. Column-gated: an un-migrated install
+           keeps writing the bare string only, same as TuneName without
+           TuneId above it. */
+        if (isset($worksExtraCols['CopyrightHolderId'])) {
+            $sets[] = 'CopyrightHolderId = ?'; $types .= 'i';
+            $vals[] = publisherResolvePickedOrCreate($db, $fields['copyrightHolder'], $fields['copyrightHolderId'] ?? null);
+        }
     }
     if (isset($worksExtraCols['MusicBrainzWorkMBID'])) {
         $sets[] = 'MusicBrainzWorkMBID = ?'; $types .= 's';
@@ -397,9 +435,93 @@ if ($hasSchema
     exit;
 }
 
+/* ---- GET ?action=publisher_search&q= — typeahead for the Copyright
+   Holder picker (#1864). Delegates to the ONE shared core (rule #22);
+   pre-migration safe — [] when tblPublishers hasn't been created. ---- */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'publisher_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = max(1, min(50, (int)($_GET['limit'] ?? 10)));
+    try {
+        echo json_encode(['suggestions' => publisherSearchRows($db, $q, $limit)], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[works publisher_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
+/* ---- GET ?action=work_search&q=&exclude= — typeahead for the
+   constituent-works (medley) picker (#1860 Phase 5 Commit 6, SD8).
+   Mirrors song_search (:380-435) in posture: read-only GET, no CSRF
+   (rule #29's write gate is for STATE-CHANGING requests only — this
+   never writes). `exclude` is the work currently being edited, so a
+   work is never offered as a constituent of itself (the DB-level
+   self-link guard lives in workMedleyAttach(), includes/work_admin.php
+   — this is only the UI-level "don't even suggest it" courtesy). */
+if ($hasSchema
+    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+    && ($_GET['action'] ?? '') === 'work_search'
+) {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $q       = trim((string)($_GET['q'] ?? ''));
+    $limit   = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+    $exclude = (int)($_GET['exclude'] ?? 0);
+    try {
+        /* `usage` = direct tblWorkSongs membership count, the exact
+           column api2.php's own work_search emits (:3611-3641) — kept
+           for label-building parity even though this local handler's
+           response shape ({results:…}) is otherwise independent of
+           that endpoint (SD8: this is a LOCAL handler, not a reuse of
+           api2's, because works.php has no access to api2.php's
+           private ed2_* probes). */
+        $like = '%' . $q . '%';
+        $sql = 'SELECT w.Id, w.Title, w.Slug, w.Iswc,
+                       COUNT(DISTINCT ws.SongId) AS UsageCount
+                  FROM tblWorks w
+                  LEFT JOIN tblWorkSongs ws ON ws.WorkId = w.Id
+                 WHERE w.Title LIKE ? AND w.Id <> ?
+                 GROUP BY w.Id, w.Title, w.Slug, w.Iswc
+                 ORDER BY UsageCount DESC, w.Title ASC
+                 LIMIT ?';
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param('sii', $like, $exclude, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $out[] = [
+                'id'    => (int)$row['Id'],
+                'title' => (string)$row['Title'],
+                'slug'  => (string)$row['Slug'],
+                'iswc'  => $row['Iswc'] !== null ? (string)$row['Iswc'] : null,
+                'usage' => (int)$row['UsageCount'],
+            ];
+        }
+        $stmt->close();
+        echo json_encode(['results' => $out], JSON_UNESCAPED_UNICODE);
+    } catch (\Throwable $e) {
+        error_log('[works work_search] ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+    }
+    exit;
+}
+
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* #1864 — validateCsrfRequest() (rule #29): a strict superset of the
+       old validateCsrf() check (arm (a) still accepts the form's baked
+       session token; arm (b) same-origin X-Requested-With/Origin check
+       fixes the stale-token class of "CSRF error" on a long-lived page).
+       manage/publishers.php:142 is the precedent. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -488,6 +610,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+
+                /* #1860 go-live — mint this Work's permanent IL-id (ILW…).
+                   No open transaction here (matches the rest of this create
+                   action) — ilidStampNewRow() tolerates autocommit; see its
+                   own doc-block point 6. */
+                ilidStampNewRow($db, 'work', $newId);
 
                 /* Place columns — schema-tolerant separate UPDATE. */
                 if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
@@ -587,6 +715,35 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $postedSongs
                 ))));
 
+                /* Constituent works (medley) reconciliation — #1860 Phase 5
+                   Commit 6. Mirrors the member_* shape immediately above:
+                   sort/note are keyed by the constituent's OWN work id, not
+                   by array index (the exact "member sort/note are keyed by
+                   id" precedent this spec calls out). Built into $rows here;
+                   the actual DELETE-then-reinsert happens via the ONE shared
+                   medley write core (workMedleyReplace(), includes/
+                   work_admin.php — rule #22, never re-forked here). */
+                $postedConstituents = $_POST['constituent_work_ids'] ?? [];
+                $postedConstSort    = $_POST['constituent_sort']     ?? [];
+                $postedConstNote    = $_POST['constituent_note']     ?? [];
+                if (!is_array($postedConstituents)) $postedConstituents = [];
+                if (!is_array($postedConstSort))    $postedConstSort    = [];
+                if (!is_array($postedConstNote))    $postedConstNote    = [];
+                $cleanConstituents = array_values(array_unique(array_filter(array_map(
+                    static fn($w) => (int)$w,
+                    $postedConstituents
+                ), static fn($w) => $w > 0)));
+                $constituentRows = [];
+                foreach ($cleanConstituents as $cwid) {
+                    $constituentRows[] = [
+                        'workId'    => $cwid,
+                        'sortOrder' => isset($postedConstSort[$cwid]) ? max(0, min(65535, (int)$postedConstSort[$cwid])) : 0,
+                        'note'      => isset($postedConstNote[$cwid]) && trim((string)$postedConstNote[$cwid]) !== ''
+                                        ? mb_substr(trim((string)$postedConstNote[$cwid]), 0, 255)
+                                        : null,
+                    ];
+                }
+
                 $db->begin_transaction();
                 try {
                     $stmt = $db->prepare(
@@ -640,6 +797,21 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                             $stmt->execute();
                         }
                         $stmt->close();
+                    }
+
+                    /* Constituent works (medley) — gated on workMedleyReady()
+                       (rule #19: an un-migrated install has no
+                       tblWorkComponents to write to). workMedleyReplace()
+                       itself is a no-op when !workMedleyReady() too, but the
+                       explicit gate here avoids building/passing $rows on an
+                       install that can never use them, and keeps this call
+                       site self-documenting about the dependency. Runs in
+                       the SAME transaction as the rest of this save (§5.2's
+                       write core is caller's-transaction, framework-free —
+                       rule #22) so a mid-way failure rolls the medley
+                       reconcile back together with everything else. */
+                    if (workMedleyReady($db)) {
+                        workMedleyReplace($db, $id, $constituentRows);
                     }
 
                     /* External links — delegated to the shared saver. */
@@ -726,6 +898,7 @@ $parentMap      = [];
 $worksByIdShort = [];
 $workMembersMap = [];
 $workLinksMap   = [];
+$workConstituentsMap = [];   /* #1860 Phase 5 Commit 6 — keyed by MedleyWorkId, see below */
 
 if ($hasSchema) {
     try {
@@ -747,6 +920,7 @@ if ($hasSchema) {
         $extraColNames = [
             'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
             'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
         ];
         $extraSelectParts = [];
         foreach ($extraColNames as $extraCol) {
@@ -826,6 +1000,19 @@ if ($hasSchema) {
                 }
                 $stmt->close();
             }
+
+            /* Constituent works (medley) per work — #1860 Phase 5 Commit 6.
+               ONE bulk read via the shared medley core's bulk variant
+               (workMedleyConstituentsMap(), includes/work_admin.php —
+               rule #22: never a per-row query loop here, the exact N+1
+               that function's own doc-block calls out avoiding). Gated on
+               workMedleyReady() so an un-migrated install (tblWorkComponents
+               absent) never attempts the query — the function itself
+               already no-ops in that case, but the explicit gate keeps this
+               call site self-documenting like the medley reconcile above. */
+            if (workMedleyReady($db)) {
+                $workConstituentsMap = workMedleyConstituentsMap($db, array_column($rows, 'Id'));
+            }
         }
     } catch (\Throwable $e) {
         error_log('[works read] ' . $e->getMessage());
@@ -890,6 +1077,7 @@ if ($hasSchema) {
                         <th data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
                         <th data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
                         <th data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
+                        <th data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
                         <th data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
                         <th data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
@@ -916,12 +1104,27 @@ if ($hasSchema) {
                                 'ccli'                  => (string)($r['Ccli'] ?? ''),
                                 'bowi'                  => (string)($r['Bowi'] ?? ''),
                                 'tune_name'             => (string)($r['TuneName'] ?? ''),
+                                /* #1864 — TuneId was already in the gated
+                                   SELECT (it drives fk_Works_Tune) but never
+                                   reached the edit modal until now; the
+                                   picker's `change`-dispatch pre-fill needs
+                                   it to show the "confirmed" checkmark. */
+                                'tune_id'               => isset($r['TuneId']) && $r['TuneId'] !== null ? (int)$r['TuneId'] : null,
                                 'first_published_year'  => isset($r['FirstPublishedYear']) && $r['FirstPublishedYear'] !== null ? (int)$r['FirstPublishedYear'] : null,
                                 'copyright_years'       => (string)($r['CopyrightYears'] ?? ''),
                                 'copyright_holder'      => (string)($r['CopyrightHolder'] ?? ''),
+                                'copyright_holder_id'   => isset($r['CopyrightHolderId']) && $r['CopyrightHolderId'] !== null ? (int)$r['CopyrightHolderId'] : null,
                                 'musicbrainz_work_mbid' => (string)($r['MusicBrainzWorkMBID'] ?? ''),
                                 'members'    => $workMembersMap[$wid] ?? [],
                                 'links'      => $workLinksMap[$wid]   ?? [],
+                                /* #1860 Phase 5 Commit 6 — this work's OWN
+                                   constituent list (what it is a medley OF),
+                                   read via the shared bulk helper above.
+                                   DISTINCT from 'members' (other songs that
+                                   ARE this work) and from 'parent_id' (the
+                                   variant/arrangement hierarchy) — see the
+                                   help text in the edit-form section below. */
+                                'constituents' => $workConstituentsMap[$wid] ?? [],
                             ];
                             $rowJson = json_encode($rowPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                             $deleteJson = json_encode(['id' => $wid, 'title' => (string)$r['Title']],
@@ -955,6 +1158,17 @@ if ($hasSchema) {
                             <td data-col-priority="tertiary" class="text-center">
                                 <?= (int)$r['ChildCount'] > 0 ? (int)$r['ChildCount'] : '<span class="text-muted">—</span>' ?>
                             </td>
+                            <td data-col-priority="tertiary" class="text-center">
+                                <?php $constituentCount = count($rowPayload['constituents']); ?>
+                                <?php if ($constituentCount > 0): ?>
+                                    <span class="badge bg-info-subtle text-info-emphasis"
+                                          title="Medley of <?= (int)$constituentCount ?> constituent work<?= $constituentCount === 1 ? '' : 's' ?>">
+                                        Medley (<?= (int)$constituentCount ?>)
+                                    </span>
+                                <?php else: ?>
+                                    <span class="text-muted">—</span>
+                                <?php endif; ?>
+                            </td>
                             <td data-col-priority="tertiary">
                                 <?php if ($parentTitle !== ''): ?>
                                     <small class="text-muted"><?= htmlspecialchars($parentTitle) ?></small>
@@ -977,7 +1191,7 @@ if ($hasSchema) {
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="6" class="text-muted text-center py-4">No works yet. Add one below.</td></tr>
+                        <tr><td colspan="7" class="text-muted text-center py-4">No works yet. Add one below.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -997,13 +1211,14 @@ if ($hasSchema) {
                            placeholder="e.g. Amazing Grace">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Slug
-                        <small class="text-muted">(auto)</small>
-                    </label>
-                    <input type="text" name="slug" id="create-slug"
-                           class="form-control form-control-sm"
-                           maxlength="80" pattern="[a-z0-9-]+"
-                           placeholder="amazing-grace">
+                    <?= ihymns_slug_advanced_field([
+                        'id'          => 'create-slug',
+                        'value'       => '',
+                        'maxlength'   => 80,
+                        'pattern'     => '[a-z0-9-]+',
+                        'placeholder' => 'amazing-grace',
+                        'small'       => true,
+                    ]) ?>
                 </div>
                 <div class="col-sm-4">
                     <label class="form-label small">ISWC <small class="text-muted">(optional)</small></label>
@@ -1079,10 +1294,16 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">Tune name <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="tune_name"
+                    <input type="text" name="tune_name" id="create-work-tune-name"
                            class="form-control form-control-sm"
                            maxlength="120"
                            placeholder="e.g. HYFRYDOL">
+                    <!-- #1864 — UI-state only, deliberately no name=: the
+                         pick is never submitted as an id — tblTunes.Name is
+                         UNIQUE, so the server's tuneFindOrCreateByName()
+                         funnel resolves the typed name deterministically on
+                         save (rule #43's "commit is the form POST"). -->
+                    <input type="hidden" id="create-work-tune-id" value="">
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label small">First published <small class="text-muted">(year, optional)</small></label>
@@ -1102,9 +1323,15 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-6">
                     <label class="form-label small">Copyright holder <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="copyright_holder"
+                    <input type="text" name="copyright_holder" id="create-work-copyright-holder"
                            class="form-control form-control-sm"
                            maxlength="255">
+                    <!-- #1864 — submitted alongside the typed name: rule #37,
+                         tblPublishers has no uq_Name, so the server needs
+                         the picker's claimed Id to disambiguate two
+                         same-named publishers. publisherResolvePickedOrCreate()
+                         verifies it server-side before trusting it. -->
+                    <input type="hidden" id="create-work-copyright-holder-id" name="copyright_holder_id" value="">
                 </div>
             </div>
             <div class="row g-2 mt-2">
@@ -1149,10 +1376,13 @@ if ($hasSchema) {
                                            class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Slug</label>
-                                    <input type="text" name="slug" id="edit-work-slug"
-                                           class="form-control" maxlength="80"
-                                           pattern="[a-z0-9-]+">
+                                    <?= ihymns_slug_advanced_field([
+                                        'id'        => 'edit-work-slug',
+                                        'value'     => '',
+                                        'maxlength' => 80,
+                                        'pattern'   => '[a-z0-9-]+',
+                                        'small'     => false,
+                                    ]) ?>
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label">ISWC <small class="text-muted">(opt.)</small></label>
@@ -1218,6 +1448,8 @@ if ($hasSchema) {
                                     <label class="form-label">Tune name <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="tune_name" id="edit-work-tune-name"
                                            class="form-control" maxlength="120" placeholder="e.g. HYFRYDOL">
+                                    <!-- #1864 — UI-state only, no name= (see the create-form twin above). -->
+                                    <input type="hidden" id="edit-work-tune-id" value="">
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label">First published <small class="text-muted">(year, opt.)</small></label>
@@ -1235,6 +1467,8 @@ if ($hasSchema) {
                                     <label class="form-label">Copyright holder <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="copyright_holder" id="edit-work-copyright-holder"
                                            class="form-control" maxlength="255">
+                                    <!-- #1864 — see the create-form twin above for why the id is submitted. -->
+                                    <input type="hidden" id="edit-work-copyright-holder-id" name="copyright_holder_id" value="">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
@@ -1279,6 +1513,58 @@ if ($hasSchema) {
                                            autocomplete="off"
                                            placeholder="Type to search by title, song id, or songbook…">
                                     <div id="edit-work-add-suggestions" class="list-group small mt-1" style="display:none; max-height: 220px; overflow-y: auto;"></div>
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <!-- #1860 Phase 5 Commit 6 — constituent works
+                                 (medley) editor. tblWorkComponents is a plain
+                                 M:N "contains" join, deliberately separate
+                                 from BOTH of the other two work-to-work
+                                 relationships already on this page:
+                                   - Parent work (above) = ParentWorkId, an
+                                     is-a-VARIANT-of hierarchy (arrangement /
+                                     translation of the SAME underlying work);
+                                   - Member songs (above) = tblWorkSongs, the
+                                     tblSongs ROWS that ARE renditions of THIS
+                                     work;
+                                   - Constituent works (here) = tblWorkComponents,
+                                     OTHER WHOLE WORKS this one is stitched
+                                     together FROM (a medley), each keeping its
+                                     own separate identity, members and page. -->
+                            <h6 class="mb-2"><i class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
+                            <p class="form-text small mt-0 mb-2">
+                                Use this when this Work is a <strong>medley</strong> stitched together from other,
+                                separately-identified works (e.g. a "Christmas Medley" containing "Joy to the World"
+                                and "O Come, All Ye Faithful" as two of its constituents). This is different from
+                                <strong>Parent work</strong> above (a variant/arrangement of the <em>same</em> work)
+                                and from <strong>Member songs</strong> above (song rows that <em>are</em> this work) —
+                                a constituent work stays its own separate Work with its own members and page.
+                            </p>
+
+                            <table class="table table-sm align-middle mb-2">
+                                <thead>
+                                    <tr class="text-muted small">
+                                        <th style="width:6rem">Sort</th>
+                                        <th>Work</th>
+                                        <th>Note</th>
+                                        <th class="text-end" style="width:3rem"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="edit-work-constituents-tbody">
+                                    <!-- populated by openWorkEditModal -->
+                                </tbody>
+                            </table>
+
+                            <div class="d-flex gap-2 align-items-end mb-3">
+                                <div class="flex-grow-1">
+                                    <label class="form-label small mb-1">Add a constituent work</label>
+                                    <input type="text" id="edit-work-constituent-add-search"
+                                           class="form-control form-control-sm"
+                                           autocomplete="off"
+                                           placeholder="Type to search by work title…">
+                                    <div id="edit-work-constituent-add-suggestions" class="list-group small mt-1" style="display:none; max-height: 220px; overflow-y: auto;"></div>
                                 </div>
                             </div>
 
@@ -1382,6 +1668,11 @@ if ($hasSchema) {
         const addLinkBtn = document.getElementById('edit-work-ext-link-add-btn');
         const search = document.getElementById('edit-work-add-search');
         const sugBox = document.getElementById('edit-work-add-suggestions');
+        /* #1860 Phase 5 Commit 6 — constituent-works (medley) editor. Same
+           element shape as the member-songs trio immediately above. */
+        const constTbody = document.getElementById('edit-work-constituents-tbody');
+        const constSearch = document.getElementById('edit-work-constituent-add-search');
+        const constSugBox = document.getElementById('edit-work-constituent-add-suggestions');
 
         function escapeHtml(s) {
             return String(s)
@@ -1414,6 +1705,34 @@ if ($hasSchema) {
 
         function rebindRemoveButtons() {
             tbody.querySelectorAll('[data-action="remove-member"]').forEach(btn => {
+                btn.onclick = () => btn.closest('tr')?.remove();
+            });
+        }
+
+        /* #1860 Phase 5 Commit 6 — constituent-works (medley) row builder.
+           Mirrors memberRowHtml()/rebindRemoveButtons() immediately above
+           verbatim in shape (row remove is the same "capture a closure over
+           the row, drop it on click" pattern) — the only differences are the
+           field names (constituent_* vs member_*) and that a constituent row
+           has no canonical checkbox (a medley's constituents aren't ranked
+           "most canonical", only ordered). */
+        function constituentRowHtml(c) {
+            const wid  = String(c.workId || '');
+            const sort = (c.sortOrder !== undefined && c.sortOrder !== null) ? c.sortOrder : 0;
+            const note = String(c.note || '');
+            const workLabel = escapeHtml(c.title || wid);
+            const rowNote = workLabel;
+            return '' +
+              '<tr data-work-id="' + escapeHtml(wid) + '">' +
+                '<td><input type="number" class="form-control form-control-sm" name="constituent_sort[' + escapeHtml(wid) + ']" value="' + Number(sort) + '" min="0" max="65535" style="width:6rem" aria-label="Sort order for ' + rowNote + '"></td>' +
+                '<td><input type="hidden" name="constituent_work_ids[]" value="' + escapeHtml(wid) + '">' + workLabel + '</td>' +
+                '<td><input type="text" class="form-control form-control-sm" name="constituent_note[' + escapeHtml(wid) + ']" maxlength="255" value="' + escapeHtml(note) + '" placeholder="e.g. \'second half\'" aria-label="Note for ' + rowNote + '"></td>' +
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-constituent" title="Remove" aria-label="Remove ' + rowNote + ' from this medley"><i class="bi bi-x-lg" aria-hidden="true"></i></button></td>' +
+              '</tr>';
+        }
+
+        function rebindRemoveButtonsConstituents() {
+            constTbody.querySelectorAll('[data-action="remove-constituent"]').forEach(btn => {
                 btn.onclick = () => btn.closest('tr')?.remove();
             });
         }
@@ -1552,6 +1871,116 @@ if ($hasSchema) {
             });
         }
 
+        /* === Constituent-work typeahead ===
+           #1860 Phase 5 Commit 6 — mirrors the song typeahead immediately
+           above verbatim in shape (same abort-controller debounce, same
+           iHymnsComboboxA11y wiring), hitting the LOCAL ?action=work_search
+           handler (SD8) instead of ?action=song_search. That handler's
+           response shape is {results:[...]}, NOT {suggestions:[...]} — its
+           own contract, documented on the PHP handler above — so this is
+           its own parse, not a call into runSongSearch(). */
+        let constSearchAbortController = null;
+        let constSuggestionItems = []; // last-fetched raw {id,title,slug,iswc,usage}[]
+        let constSuggestActiveIndex = -1;
+        async function runConstituentSearch(q) {
+            try {
+                if (constSearchAbortController) constSearchAbortController.abort();
+                constSearchAbortController = new AbortController();
+                const excludeId = document.getElementById('edit-work-id').value || '0';
+                const res = await fetch('/manage/works?action=work_search&exclude=' + encodeURIComponent(excludeId)
+                        + '&q=' + encodeURIComponent(q),
+                    { signal: constSearchAbortController.signal });
+                if (!res.ok) return;
+                const data = await res.json();
+                const items = (data && data.results) || [];
+                constSuggestionItems = items;
+                constSuggestActiveIndex = items.length ? 0 : -1;
+                renderConstituentSuggestionRows();
+            } catch (e) { /* aborted */ }
+        }
+        function isConstSuggestPanelOpen() { return constSugBox.style.display !== 'none' && constSugBox.style.display !== ''; }
+        function constSuggestOptionEls() { return Array.from(constSugBox.querySelectorAll('a[data-payload]')); }
+        function pickConstituentSuggestion(payload) {
+            /* Skip if already in the list. The server already excludes the
+               current work id from results (?exclude=), so this dedupe is
+               only against a work already added to the medley, not
+               belt-and-braces against self-linking. */
+            if (constTbody.querySelector('tr[data-work-id="' + String(payload.workId || '').replace(/"/g, '\\"') + '"]')) {
+                constSugBox.style.display = 'none';
+                constSearch.value = '';
+                return;
+            }
+            constTbody.insertAdjacentHTML('beforeend', constituentRowHtml({
+                workId: payload.workId, title: payload.title,
+                sortOrder: constTbody.children.length * 10, note: '',
+            }));
+            rebindRemoveButtonsConstituents();
+            constSugBox.style.display = 'none';
+            constSearch.value = '';
+        }
+        function renderConstituentSuggestionRows() {
+            const items = constSuggestionItems;
+            if (!items.length) {
+                constSugBox.style.display = 'none';
+                constSugBox.innerHTML = '';
+                if (window.iHymnsComboboxA11y) {
+                    window.iHymnsComboboxA11y.applyComboboxAria({ input: constSearch, panel: constSugBox, items: [], activeIndex: -1, idPrefix: 'edit-work-constituent-add-suggestions', expanded: false });
+                }
+                return;
+            }
+            constSugBox.style.display = '';
+            constSugBox.innerHTML = items.map(it => {
+                const bits = [it.title || ('Work #' + it.id)];
+                if (it.iswc) bits.push(it.iswc);
+                if (it.usage) bits.push(it.usage + ' song' + (it.usage === 1 ? '' : 's'));
+                const label = bits.join(' — ');
+                const json = JSON.stringify({ workId: it.id, title: it.title });
+                return '<a href="#" class="list-group-item list-group-item-action small" data-payload=\'' + escapeHtml(json) + '\'>' +
+                    escapeHtml(label) + '</a>';
+            }).join('');
+            const optionEls = constSuggestOptionEls();
+            optionEls.forEach((a, i) => {
+                a.classList.toggle('active', i === constSuggestActiveIndex);
+                a.onclick = (ev) => {
+                    ev.preventDefault();
+                    let payload;
+                    try { payload = JSON.parse(a.getAttribute('data-payload')); } catch (_e) { return; }
+                    pickConstituentSuggestion(payload);
+                };
+            });
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input: constSearch, panel: constSugBox, items: optionEls,
+                    activeIndex: constSuggestActiveIndex, idPrefix: 'edit-work-constituent-add-suggestions',
+                });
+            }
+        }
+        if (constSearch) {
+            let ct = null;
+            constSearch.addEventListener('input', () => {
+                clearTimeout(ct);
+                const q = constSearch.value.trim();
+                ct = setTimeout(() => runConstituentSearch(q), 180);
+            });
+            constSearch.addEventListener('keydown', (e) => {
+                if (!window.iHymnsComboboxA11y) return;
+                window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                    isOpen: isConstSuggestPanelOpen,
+                    getItems: constSuggestOptionEls,
+                    getActiveIndex: () => constSuggestActiveIndex,
+                    setActiveIndex: (i) => { constSuggestActiveIndex = i; },
+                    render: renderConstituentSuggestionRows,
+                    onCommit: (i, el) => el.click(),
+                    onClose: () => { constSugBox.style.display = 'none'; },
+                });
+            });
+            document.addEventListener('click', (e) => {
+                if (!constSugBox.contains(e.target) && e.target !== constSearch) {
+                    constSugBox.style.display = 'none';
+                }
+            });
+        }
+
         /* === Public openers === */
         window.openWorkEditModal = function (row) {
             document.getElementById('edit-work-id').value           = row.id;
@@ -1568,9 +1997,19 @@ if ($hasSchema) {
             document.getElementById('edit-work-ccli').value                 = row.ccli || '';
             document.getElementById('edit-work-bowi').value                 = row.bowi || '';
             document.getElementById('edit-work-tune-name').value            = row.tune_name || '';
+            /* #1864 — seed the pickers' hidden ids from the row payload and
+               dispatch 'change' so place-search.js's #1507 confirmed-state
+               checkmark reflects a pre-existing link, exactly as its own
+               doc-block documents for an external pre-fill. */
+            const tuneIdEl = document.getElementById('edit-work-tune-id');
+            tuneIdEl.value = row.tune_id ? String(row.tune_id) : '';
+            tuneIdEl.dispatchEvent(new Event('change', { bubbles: true }));
             document.getElementById('edit-work-first-published-year').value = row.first_published_year ? String(row.first_published_year) : '';
             document.getElementById('edit-work-copyright-years').value      = row.copyright_years || '';
             document.getElementById('edit-work-copyright-holder').value     = row.copyright_holder || '';
+            const chIdEl = document.getElementById('edit-work-copyright-holder-id');
+            chIdEl.value = row.copyright_holder_id ? String(row.copyright_holder_id) : '';
+            chIdEl.dispatchEvent(new Event('change', { bubbles: true }));
             document.getElementById('edit-work-musicbrainz-work-mbid').value = row.musicbrainz_work_mbid || '';
             const psel = document.getElementById('edit-work-parent');
             psel.value = row.parent_id ? String(row.parent_id) : '';
@@ -1583,6 +2022,13 @@ if ($hasSchema) {
             tbody.innerHTML = (row.members || []).map(m => memberRowHtml(m)).join('');
             rebindRemoveButtons();
 
+            /* #1860 Phase 5 Commit 6 — constituent works (medley), hydrated
+               from row.constituents the exact same way as row.members above. */
+            if (constTbody) {
+                constTbody.innerHTML = (row.constituents || []).map(c => constituentRowHtml(c)).join('');
+                rebindRemoveButtonsConstituents();
+            }
+
             if (workLinksEditor) {
                 workLinksEditor.setRows((row.links || []).map(l => ({
                     typeId: l.typeId, url: l.url, note: l.note, verified: l.verified,
@@ -1591,6 +2037,8 @@ if ($hasSchema) {
 
             if (sugBox) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; }
             if (search) search.value = '';
+            if (constSugBox) { constSugBox.style.display = 'none'; constSugBox.innerHTML = ''; }
+            if (constSearch) constSearch.value = '';
 
             const inst = ensureModal(modalEl, 'edit');
             if (inst) inst.show();
@@ -1619,6 +2067,58 @@ if ($hasSchema) {
                 if (visible && hidden) {
                     window.iHymnsPlaceSearch.attach(visible, { hiddenIdInput: hidden });
                 }
+            });
+
+            /* #1864 — Tune + Copyright Holder pickers (rule #43). Both use
+               pickMode:'value': the pick fills the input + hidden id and
+               does NO network call of its own — the form's own POST is the
+               ONE commit, and the server's find-or-create funnels
+               (tuneFindOrCreateByName() / publisherResolvePickedOrCreate())
+               run there, never from the client (the #1679 anti-pattern —
+               a side-effectful mint on a typing pause — is impossible by
+               construction: nothing here writes to the database). */
+            const tuneOpts = (hiddenId) => ({
+                hiddenIdInput: document.getElementById(hiddenId),
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'tune', plural: 'tunes' },
+                /* Reuses the EXISTING api2 tune_search action (rule #22) —
+                   no local `FROM tblTunes` search is ever added here. Mirrors
+                   manage/editor/v2/metadata-tab.js's own attach() call minus
+                   the meter-filter leg (the Works form has no metre context). */
+                searchUrl: (q) => '/manage/editor/api2?action=tune_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: [
+                        s.meterCode ? 'Metre ' + s.meterCode : '',
+                        s.matchedAlias ? 'aka ' + s.matchedAlias : '',
+                        s.usage ? s.usage + ' song' + (s.usage === 1 ? '' : 's') : '',
+                    ].filter(Boolean).join(' · '),
+                })),
+            });
+            const pubOpts = (hiddenId) => ({
+                hiddenIdInput: document.getElementById(hiddenId),
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'publisher', plural: 'publishers' },
+                /* This page's own ?action=publisher_search (delegates to the
+                   shared publisherSearchRows() core, rule #22). */
+                searchUrl: (q) => '/manage/works?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: s.kind || '',
+                })),
+            });
+            [
+                ['create-work-tune-name', 'create-work-tune-id', tuneOpts],
+                ['edit-work-tune-name',   'edit-work-tune-id',   tuneOpts],
+                ['create-work-copyright-holder', 'create-work-copyright-holder-id', pubOpts],
+                ['edit-work-copyright-holder',   'edit-work-copyright-holder-id',   pubOpts],
+            ].forEach(([inputId, hiddenId, mk]) => {
+                const el = document.getElementById(inputId);
+                if (el) window.iHymnsPlaceSearch.attach(el, mk(hiddenId));
             });
         })();
     </script>
