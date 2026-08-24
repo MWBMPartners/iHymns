@@ -48,6 +48,7 @@
  * ========================================================================== */
 
 import { apiFetch } from '../utils/api-client.js';
+import { STORAGE_AUTH_TOKEN } from '../constants.js';
 
 /* #1840 — client mirror of IHYMNS_ORG_LOGO_SURFACE_PREFS
    (includes/org_logo_helpers.php). Key order within each `kinds` array IS
@@ -133,11 +134,31 @@ let _myOrgsPromise = null;
  * Fetch the signed-in user's organisations (id/name/logos meta only — no
  * blobs), via the shared `apiFetch()` (rule #31, never a bare `fetch()`).
  *
+ * ANONYMOUS SHORT-CIRCUIT: `my_organisations` is an authenticated-only
+ * endpoint — a visitor with no bearer token has no orgs to fetch, and firing
+ * it anyway 401s. The app-layer try/catch below turns that 401 into a clean
+ * `null`, but the BROWSER still logs "Failed to load resource: 401" as a
+ * console error at the network level on every anonymous page load (the shell
+ * is one document served to every visitor). That is both a wasted request and
+ * the exact console noise the Browser-smoke boot gate counts (tests/browser/
+ * smoke.spec.js). So when there is no token we resolve to `null` WITHOUT ever
+ * touching the network — and WITHOUT memoising it, so a later in-page sign-in
+ * (EVT_AUTH_CHANGED → header re-resolve; or a print action after login) makes
+ * a fresh, now-authenticated attempt. Mirrors user-auth.js's `isLoggedIn()`
+ * (`!!getToken()`); read directly from localStorage to avoid importing the
+ * UserAuth class here (rule #31's load-order-cycle caution). Rule #42:
+ * "signed-in members only".
+ *
  * @returns {Promise<Array<{id:number,name:string,logos?:Array}>|null>}
- *   null on anonymous (401) / network failure / un-migrated install
- *   (`logos` simply absent per-org in that last case, not a null return).
+ *   null on anonymous (no token — no request made) / a 401 / network failure /
+ *   un-migrated install (`logos` simply absent per-org in that last case, not
+ *   a null return).
  */
 export function fetchMyOrgs() {
+    let token = null;
+    try { token = localStorage.getItem(STORAGE_AUTH_TOKEN); } catch (_e) { token = null; }
+    if (!token) { return Promise.resolve(null); } // anonymous — never fire the auth-only endpoint
+
     if (_myOrgsPromise) { return _myOrgsPromise; }
     _myOrgsPromise = (async () => {
         try {
