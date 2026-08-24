@@ -88,7 +88,27 @@ work itself, and for managing suggestions/enhancements/new‑feature proposals.
 Freely **adjust the order** of queued tasks and **bundle** related ones to process efficiently,
 as long as correctness, the per‑task close‑out (§3), and the autonomy rules (§5) are honoured.
 
+## 10. Ask every clarification UP FRONT (owner‑stated 2026‑08‑24)
+
+When a task needs clarification that only the owner can give, ask **all** the questions you can
+foresee **at the very start, batched together** — before beginning the work — **not** one at a time
+as each becomes relevant mid‑flow.
+
+- **Front‑load the ambiguities.** Read the *whole* task first, identify every decision and unknown
+  it contains, and surface them in a **single** ask (using the asking‑owner shape — `CLAUDE.md` →
+  "Asking the owner for a decision"). The owner's own precedent is *"ask any questions now, not when
+  required, then proceed."*
+- **Do not drip‑feed.** Never pause the work partway through for a question you could have foreseen
+  and asked at the outset — that turns one review into many and stalls the queue repeatedly.
+- **The narrow exception:** for something that genuinely could not have been foreseen until you were
+  deep in the work, still prefer a **defensible default + flag it** (§5) over stalling; only escalate
+  mid‑task when the default is truly not defensible.
+
+This composes with §5 (autonomy): front‑loaded questions let the owner answer everything once, then
+you run autonomously to completion.
+
 ---
 
-*Change log: created 2026-08-18 from the owner's standing‑instructions message. Update this file
-(don't fork it) if the owner amends any directive.*
+*Change log: created 2026-08-18 from the owner's standing‑instructions message. Amended 2026-08-24
+(§10 ask‑clarifications‑up‑front). Update this file (don't fork it) if the owner amends any
+directive.*
