@@ -194,7 +194,10 @@ export function bootHeaderBranding() {
     });
 
     /* Initial boot attempt — fetchMyOrgs() itself resolves to null for an
-       anonymous visitor, so no separate isLoggedIn() pre-check is needed
-       (mirrors print.js's fetchPrintOrgLogos() calling convention). */
+       anonymous visitor (it short-circuits on a missing auth token WITHOUT
+       touching the network, so the auth-only my_organisations endpoint is
+       never fired — and never 401s — on an anonymous page load), so no
+       separate isLoggedIn() pre-check is needed here (mirrors print.js's
+       fetchPrintOrgLogos() calling convention). */
     resolveAndRender();
 }
