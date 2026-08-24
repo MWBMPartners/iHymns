@@ -4,6 +4,41 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-24 (branch merging to `alpha` — session close-out)
+
+`claude/ilyrics-identity-work-model` is being merged to `alpha` (200 commits ahead; merged
+`origin/alpha` in `f9391898`, resolving one modify/delete conflict — `version-bump.yml` kept deleted
+per #1899; branch now 0 behind alpha). Full CI-faithful gate green throughout: **node 73/0, php 200/0**.
+App version **1.0.0** (tag-derived since #1899). This session's landed work, newest first:
+
+- **#1936** — live `/search` typeahead suggestion dropdown (fresh rebuild of the superseded #307): a
+  quick-jump combobox on `#page-search-input` reusing `?action=search` (low limit) + the shared
+  `combobox-a11y` helper, navigate-on-pick via app.js's `[data-navigate]` delegator, coexisting with
+  the #1903 arrow-into-results nav. Reachable from `initSearchPage()` (the exact link #307 lacked);
+  guard `tests/test-search-typeahead.js`.
+- **#1713** — 94 hardcoded `bg-dark` utilities → theme-aware Bootstrap tokens across 19 `/manage/*`
+  files + one public regression (`songbook.php` card); no intentionally-dark surface touched;
+  `border-secondary` (theme-aware) preserved.
+- **#1531** — full songbook NAME in the last two list-row sub-lines (home-page.js → shared
+  `songbookLabel()`; musician discography → new shared PHP helper `ihymns_songbook_name_label()`, the
+  server twin of the JS helper, with a mutation-proven PHP↔JS↔CSS class-name lockstep guard
+  `tests/php/test-songbook-name-label.php`).
+- **#1744** — v1↔v2 editor parity: `PublicId` now minted for songs created through the shared
+  `editorSaveSongCore()` (gated + self-healing). A5/Rev-1 re-verified as already fixed.
+- **#1891/#1892** — Changelog workflow no longer false-reds on a protected-branch push-back; Dependabot
+  version-updates all retargeted `main`/`beta` → `alpha` (they were overwritten by promotion). #1892's
+  AGP-9 Android build-verify stays gated (no Android SDK/`gradlew` in this env + Android-in-alpha scope).
+- **#1122** — Editor2 field-level revision blame + per-field revert (Revisions "Field history" view).
+- **#1909** — outbound webhooks platform (dormant; signed HTTP callbacks, SSRF-hardened, admin surface).
+- **Issue sweep (#1878)** — all 323 open issues reconciled vs code; closed #306/#240/#489 (verified done)
+  + narrowed #1339; backlog majority kept open (conservative, evidence-based). #1874 hardening epic
+  status posted; #1881 (Projects/Wiki/Milestones) stays tooling-limited (iHymns.wiki not attached).
+- **Docs** — CHANGELOG + `api-docs.yaml` refreshed; the root `.md` + in-app help + this Brief refreshed
+  for the merge. Swagger UI is admin-only and already exists (#1901 = option A).
+
+Deferred (tracked, not skipped): the `iHymns.wiki` pages (repo not attached to this workspace); #1892
+Android build-verify (tooling + scope gated); #1872 backfill (post-deploy, run-once destructive).
+
 ## 📌 Continuation note — 2026-08-22 (Org logos on three screen surfaces — #1840)
 
 Implemented the locked `.claude/org-logo-surfaces-1840-plan.md` in full, 10 atomic commits

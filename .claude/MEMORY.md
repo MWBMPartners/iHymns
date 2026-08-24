@@ -6,32 +6,28 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-11 (#91 final docs sweep + version bump)._
+_Last updated: 2026-08-24 (branch `claude/ilyrics-identity-work-model` merging to alpha)._
 
 ## Where things stand
-- **Version:** `0.5100.0` (alpha) — authoritative source is `includes/infoAppVer.php`
+- **Version:** `1.0.0` (tag-derived since #1899) — authoritative source is `includes/infoAppVer.php`
   (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
-  hardcode a version rot within days — point at the file. The old "v1.x = local-JSON phase" comment
-  was retired (DB-direct since epic #1010; the major digit no longer encodes a phase).
-  ⚠️ **`version-bump.yml` never bumps an `alpha` merge in practice — bump BY HAND.** The workflow is
-  *configured* for alpha+beta (#1596), but our alpha PRs are auto-merged by a bot that pushes with
-  `GITHUB_TOKEN`, and GitHub does not re-trigger workflows on a `GITHUB_TOKEN` push — so the bumper
-  simply never runs on alpha (confirmed empirically: 7 merges after the last batch, no
-  `chore: bump version` commit, number stood still). **Three worked hand-bumps now:** the 98-commit
-  consolidation (`bad5ca4f`, PR #1592); the 214-commit `claude/issue-sweep-fixes-89` batch
-  `0.4100.0 → 0.5050.0` (owner-directed significant minor, #91); and its follow-up round
-  `0.5050.0 → 0.5100.0` (migration hotfix #1816 + CI fixes + What's New #1818 + admin plain-English
-  #1822). **Expect to repeat this after any alpha batch.**
-- **Current batch — `claude/issue-sweep-fixes-89` (PUSHED; single PR pending the owner):** 214 commits
-  landing the #89 issue-sweep + several epics. One line per family: **#1765**+**#93** songbook/
-  catalogue enhancements + Publishers registry; **#1769/#1778** content-gating program + `/manage/gating`
-  hub (dormant); **#1767** print-templates / server-PDF remainder; **#94** IA-reconcile Phase 1
-  (read-only); **#1770/#1792/#1798** Live-Follow (host bar, idle auto-close, session length + extend,
-  driver keys); **#1791/#1790/#1789** set-list share-by-link; **#1786** public multi-level list sort;
-  **#1785/#1800** musicians dedup; **#1783** duplicate-song; **#1788** ProPresenter CSP-safe export;
-  **QR → CueRCode** (`/qr.php`). **11 migration cards** pending on each env (operator runs via
-  `/manage/setup-database`); QR dormant until a CueRCode key is pasted on `/manage/configuration`;
-  `content_gating_enabled` stays `'0'`.
+  hardcode a version rot within days — point at the file. **Versioning changed at #1899:** MAJOR is
+  hand-edited (rare), RELEASE (Y) is set at the beta→main promotion by `promotion-deploy-bridge.yml`,
+  BUILD (Z) is the per-commit `git rev-list --count`. The old minute-bumper `version-bump.yml` was
+  **RETIRED** (#1899) — the "bump alpha by hand" ritual below no longer applies; there is no minor
+  auto-bump to miss. (Historical: the bumper never ran on alpha anyway because alpha auto-merges via a
+  `GITHUB_TOKEN` push, which GitHub does not re-trigger workflows on — the same mechanism that still
+  forces the explicit deploy dispatch, see the workflow note below.)
+- **Current branch — `claude/ilyrics-identity-work-model` (MERGING TO ALPHA, 2026-08-24):** ~200 commits
+  ahead of alpha; merged `origin/alpha` in and resolved the one conflict (`version-bump.yml` kept
+  deleted per #1899). The huge iLyrics identity + Work-model epic (#1860, IL-ids + Works + medley
+  #1907), org logos #1830/#1840, print templates #1767, gating #1590/#1769, publishers #93/#1765,
+  duplicate-song #1783, Live-Follow #1770, set-list sharing #1791, browse-by-theme #1148, account
+  security #1027/#947/#340, webhooks #1909, revision blame #1122, the /search typeahead #1936, theme
+  fix #1713, and much more. Full manifest = `CHANGELOG.md` `[unreleased]`. **Migration cards** pending
+  on each env after deploy (operator runs `/manage/setup-database`); QR dormant until a CueRCode key is
+  pasted on `/manage/configuration`; `content_gating_enabled` stays `'0'`; #1872 backfill is a
+  post-deploy run-once destructive step, deferred.
 - **`beta` is frozen at v0.1254.1** (~2026-06-25, PR #1369) and predates the entire Live Follow fix
   train (#1375/#1377/#1386/#1405). The promotion PR #1580 was **closed unmerged** — alpha and beta
   have **unrelated histories**, so it needs a tree-replacement, not a merge. Before any future
