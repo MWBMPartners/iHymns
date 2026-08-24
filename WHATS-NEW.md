@@ -10,6 +10,37 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.0.0 — 24 August 2026
+
+- **Search suggestions as you type** — Start typing in the search box and a short
+  list of matching song titles now drops down; tap one to jump straight to that
+  song. The full results list is still right below it, and you can press the down
+  arrow to step through the results with the keyboard.
+- **Full songbook names everywhere** — The home page's popular and recently-viewed
+  songs, and a musician's list of songs, now show each songbook's full name (like
+  "Seventh-day Adventist Hymnal") instead of just a short code — matching the rest
+  of the app.
+- **Browse every theme** — A new Themes page lists every theme from A to Z with a
+  quick filter box and letter jumps, so you can find a thematic collection without
+  scrolling a wall of tags. Each theme's song count now always matches what you see
+  when you open it.
+- **Add songs to a shared set list** — When someone shares a set list you're allowed
+  to help edit, you can now add songs to it directly, and everyone's changes stay in
+  step more reliably even when a few people edit at once.
+- **Your church's logo in more places** — Beyond printed song sheets, a church's logo
+  can now appear in the app header for signed-in members, as a subtle mark in the
+  corner of the live projection screen, and — with a chosen brand colour — on the
+  preview picture of a shared set list.
+- **Big exports check with you first** — Exporting a very large songbook now asks
+  before it starts and shows progress while it builds, so a huge download never looks
+  frozen.
+- **Imports keep their details** — Bringing songs in from other worship software now
+  keeps the copyright line, song number and public-domain markings the file came
+  with, instead of leaving them blank.
+- **Faster and safer behind the scenes** — The catalogue refreshes more efficiently
+  on repeat visits, and signing in has extra protection against repeated wrong-guess
+  attempts.
+
 ## 0.5300.0 — 18 August 2026
 
 - **See your own church's CCLI report** — Organisation admins can now pull their

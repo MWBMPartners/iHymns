@@ -1879,6 +1879,17 @@ source (`expose_php=Off`).** Owner/host-gated remainder (`Options -Indexes`,
 
 ---
 
+## 🧩 Conventions & gotchas from the 2026-08-24 batch (`claude/ilyrics-identity-work-model`)
+
+Full feature detail is in `CHANGELOG.md`'s `[unreleased]` section — the notes below are only the *developer* conventions/gotchas this batch introduced or reinforced.
+
+- **Theme-aware admin surfaces (#1713).** Never hardcode Bootstrap `bg-dark` (or other fixed-dark utilities) on a `/manage/*` page — they leave stray dark boxes for anyone on Light / high-contrast / System-light. Use the theme-following tokens (`bg-body-tertiary`, `text-bg-secondary`, `border-secondary`, …). The batch removed 94 such utilities across 19 admin files; the only surfaces that stay deliberately dark are the projector overlay and the share-card canvas. This is the `admin-theme-init.php` discipline (#955) applied to background utilities.
+- **Outbound webhooks (#1909) are entirely dormant + channel-walled.** Three additive tables, one migration; nothing emits or delivers until `webhooks_enabled_channels` names a channel (verified byte-identical no-op while off). A subscription is walled to the **channel** it was created on (alpha / beta / prod share one MySQL but never each other's webhook traffic — same trap as Service Mode's `Channel`). Payloads are **identity + metadata only, never content** (no lyrics/media/tokens/join codes). The dialer is SSRF-hardened for an attacker-controlled target (https-only, DNS pre-resolution + private/reserved-range truth table incl. IPv4-mapped/NAT64/6to4/IPv4-compatible IPv6, IP-pin, no redirects); the editor-save emit runs **post-commit**, never inside the save transaction. Retries drain via the key-authed `/webhook-drain.php` (cron / uptime monitor) with a traffic-driven piggyback fallback.
+- **`/search` typeahead (#1936) adds no endpoint.** It reuses `?action=search` at a low limit — do **not** reintroduce a `?action=suggest` endpoint or a schema. Its reachability chain (`router → initSearchPage → _initSuggest → panel`) is asserted by `tests/test-search-typeahead.js` — the exact wiring #307 lacked when it shipped "built, reachable from nowhere".
+- **Field-level blame (#1122) tolerates three snapshot shapes.** The pure `blameFromSnapshots()` walk over `tblSongRevisions` must fold the historical shapes (a 2022 lowercase `title`, a 2024 `Title`, and the current v2 shape) into one field, and must never confuse a field *absent* in an older shape with one that was *cleared*. Branch on the snapshot shape; never assume the current key casing.
+
+---
+
 > **Platform status:** Web/PWA is the active production app. Apple is
 > **Phase 1 + Phase 2 code-complete** (iHymnsKit SwiftPM package; watch relay,
 > tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled
@@ -1887,4 +1898,4 @@ source (`expose_php=Off`).** Owner/host-gated remainder (`Options -Indexes`,
 > deployment-secrets and store-submission sections above describe the intended
 > CI/CD pipeline for when it ships.
 
-Last updated: 2026-08-21
+Last updated: 2026-08-24

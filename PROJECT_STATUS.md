@@ -10,15 +10,17 @@
 | --- | --- | --- |
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
-| 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 47 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1910 — see GitHub for live open/closed counts |
+| 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 48 admin sections) |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1936 — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
-| 🛠 Admin Portal | ✅ Active | 47 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the new org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748) |
+| 🛠 Admin Portal | ✅ Active | 48 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748); Operations gained the outbound Webhooks surface (#1909) |
 | 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge (the minor-auto-bumping `version-bump.yml` was retired at #1899; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline) |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
+
+> **Merging now:** the `claude/ilyrics-identity-work-model` branch is about to merge to `alpha`. Its `[unreleased]` set (see `CHANGELOG.md`) includes the whole iLyrics identity / Work-model epic (#1860), medley composition (#1907), org-logo screen surfaces (#1840), print templates (#1767), the gating model review (#1590 / #1769), plus this session's newest work: the live `/search` quick-jump typeahead (#1936), full songbook names in list rows (#1531), theme-aware admin surfaces (#1713, 94 hardcoded `bg-dark` utilities removed), field-level revision blame + per-field revert (#1122), outbound partner webhooks (#1909), the searchable `/themes` A–Z index (#1148), the account-security pack (#1027 / #947 / #340), the Wave 3 perf pack (#1920 / #1921 / #1571), the set-list sync-correctness cluster (#1662 / #1675 / #1660 / #1802), and PublicId parity + CI hygiene (#1744 / #1891 / #1892).
 
 ---
 
@@ -168,7 +170,7 @@ container doesn't have.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1910 — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1936 — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
 - **Version**: 1.0.0 Alpha (authoritative: `includes/infoAppVer.php`) — tag-derived `MAJOR.RELEASE.BUILD` scheme (#1899): MAJOR hand-edited (rare), RELEASE automated at the beta→main promotion, BUILD = the monotonic per-commit git commit count (`Version.Build.Number`, deploy-injected; `NULL` on an undeployed checkout). The old minor-auto-bumping `version-bump.yml` is retired
 - **CI/CD**: 14 GitHub Actions workflows live
@@ -188,4 +190,4 @@ container doesn't have.
 
 ---
 
-Last updated: 2026-08-21
+Last updated: 2026-08-24

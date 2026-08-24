@@ -867,6 +867,7 @@ foreach ($sections as $s) {
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
                         <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, listing every previous edit with a Restore button on each.</li>
+                        <li>Inside the editor's Revisions tab, a <strong>Field history</strong> view sits alongside the time-ordered list: one row <em>per field</em> showing who last changed it and when, so &ldquo;who edited this copyright line?&rdquo; no longer means reading through unrelated edits. Each changed field also gets a per-field <strong>Revert</strong> that undoes just that one field &mdash; written as a normal new edit, never rewriting history &mdash; without discarding the other changes made since.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.

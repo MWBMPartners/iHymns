@@ -40,6 +40,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Scripture search** — `Ps 23`, `1 Cor 13`, `Rev 21` etc. via abbreviation expansion + curated tags (#397).
 - **Alternative titles** (#832) — songs and songbooks carry "also known as …" entries that surface in search and the public page (search for *Faith's Review and Expectation* finds *Amazing Grace*).
 - **Songbook browser** — alphabetical index, language filter, downloadable per book.
+- **Live search suggestions** (#1936) — the `/search` box shows a quick-jump dropdown of up to 8 matching song titles as you type; pick one to go straight to that song, or arrow down into the full results list below (#1903). Reuses the existing search read at a low limit with a shared ARIA-combobox helper — no new endpoint.
 - **Number search** — numeric keypad with physical keyboard support; configurable live search.
 - **Default songbook** — pre-selects in number search, keyboard quick-jump, and shuffle.
 - **Formatted lyrics** — verse, chorus, refrain, bridge with optional numbering and chorus highlighting.
@@ -87,7 +88,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 ### Discovery
 
 - **Popular songs** — homepage shows trending songs (server-side view counts with client-side fallback).
-- **Browse by theme** — filter songs by thematic tags.
+- **Browse by theme** — filter songs by thematic tags; a searchable **`/themes` A–Z index** (#1148) lists every theme with a type-to-filter box and letter jump bar, each linking to its `/tag/<slug>` page, and the home "Popular themes" counts show the visible-song count via one shared count core.
 - **Related songs** — content-based similarity matching using TF-IDF cosine similarity.
 - **Song of the Day** (#108, language-aware in #855) — daily featured song respecting the user's active "Show languages" filter, with English fallback when the filter excludes English and we have no themed match.
 - **Recently viewed** — quick access to your recent songs.
@@ -142,9 +143,9 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ### Administration
 
-- **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk **verify** and **tag** (add or remove); bulk delete, move and export remain in the legacy editor for now (#1628, #1679). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088, section types sourced from a live `tblSongPartTypes` registry #1869), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
+- **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk actions — **verify**, **tag** (add or remove), **move**, **delete** and **export** — now run directly in the v2 editor's bulk toolbar (#1628). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088, section types sourced from a live `tblSongPartTypes` registry #1869), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
 - **Metadata that fills itself in** (#1862, epic #1863) — the Metadata tab derives the copyright display line live from Copyright Year(s)/Holder (a free-text override remains for a genuinely custom statement), suggests Public Domain from a credited contributor's death date or an admin-configurable publication-year fallback (never auto-ticked), and shows Audio/Sheet-music availability as a read-only line derived from the Media tab — the old manual checkboxes are gone. Across the app, every field that references a registry (Tune Name, Copyright Holder, Publisher, group members, song/songbook pickers, …) is now a find-or-create search-select rather than free text (#1863, #1864–#1869).
-- **Revision history** — every save writes `tblSongRevisions`; a per-song Revisions tab (a History modal in the legacy editor) with per-revision Restore + global audit log at `/manage/revisions` (#400). The legacy editor's modal also shows a before/after JSON diff; the v2 tab does not yet (#1628). Restore semantics differ by editor version too: v2 restores the state a revision *left* the song in; the legacy editor restored the state *before* that edit.
+- **Revision history** — every save writes `tblSongRevisions`; a per-song Revisions tab (a History modal in the legacy editor) with per-revision Restore + global audit log at `/manage/revisions` (#400). The v2 Revisions tab also shows a per-revision **field-level diff** before you restore, and a **Field history** view (#1122) — one row per field showing who last changed it and when, with a per-field **Revert** that undoes just that one field as a new edit (never rewriting history) without discarding other changes. Restore semantics differ by editor version too: v2 restores the state a revision *left* the song in; the legacy editor restored the state *before* that edit.
 - **Database setup** — web-accessible installer with backup restore upload, **pre-flight summary**, pre-restore auto-snapshot, transactional data-load, and live migration cards that auto-hide when fully applied (#820, #824, #405).
 - **Activity logging** — audit trail for significant actions (logins, admin writes, backup restores, song-media uploads).
 - **CCLI Usage Report** (#1861) — the system-wide report at `/manage/ccli-report` now filters by organisation (or "Unattributed"); a self-serve **`/manage/my-ccli-report`** lets an organisation admin pull their own org's usage without the system-wide report's permission. Usage that could be attributed to either a personal or an organisational CCLI licence now prefers the organisation's.
@@ -155,7 +156,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 47 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 48 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
 
 | Group | Surfaces |
 | --- | --- |
@@ -164,7 +165,7 @@ Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate r
 | **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · Tunes (`/manage/tunes`, #1748) · Publishers (`/manage/publishers`) · IA Reconcile (`/manage/ia-reconcile`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
 | **Access** | Content Restrictions · Access Tiers · Licence Types (`/manage/licence-types`) · Feature Gating · Gating Hub (`/manage/gating`) · Entitlements |
 | **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
-| **Operations** | Analytics · CCLI Usage Report · My CCLI Report (`/manage/my-ccli-report`, #1861) · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Connected Apps (`/manage/intapps-status`) · Content-Gating No-Op Verifier · Notifications · API Keys |
+| **Operations** | Analytics · CCLI Usage Report · My CCLI Report (`/manage/my-ccli-report`, #1861) · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Connected Apps (`/manage/intapps-status`) · Content-Gating No-Op Verifier · Notifications · API Keys · Outbound Webhooks (`/manage/webhooks`, #1909) |
 | **Help** | Help / Guides · API Docs (Swagger UI) |
 
 Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
@@ -228,7 +229,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning 152 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 159 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 

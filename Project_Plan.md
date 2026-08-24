@@ -450,7 +450,9 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ## 🗓 Milestones & Roadmap
 
-### Milestone 1: Project Setup & Data Pipeline ⬅️ CURRENT
+> **Live completion status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).** The Phase-ONE checklists below are the *original* scoping plan; in reality Milestones 1–3 and 6 (Web PWA core + enhanced, Song Editor) are complete and shipped, Apple (4–5) is Phase 1 + Phase 2 code-complete but unreleased, and Android (7) is a scaffold in progress. The app is at **v1.0.0** (tag-derived scheme, #1899).
+
+### Milestone 1: Project Setup & Data Pipeline ✅
 - [x] Analyse existing repo and song data
 - [ ] Clean up old implementation files
 - [ ] Set up new project structure
@@ -537,5 +539,5 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ---
 
-*Last updated: 2026-06-21*
-*Version: 0.1.0-planning*
+*Last updated: 2026-08-24*
+*Version: 0.1.0-planning (this planning document's own version; the app is at v1.0.0 — see PROJECT_STATUS.md)*
