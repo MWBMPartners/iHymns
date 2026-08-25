@@ -31,9 +31,18 @@ declare(strict_types=1);
  * rate-limited (fail-open) so a leaked key cannot hammer the DB.
  *
  * WIRING: cPanel cron / UptimeRobot →
- *   curl -fsS "https://…/webhook-drain.php?key=<drain key>"   every minute.
+ *   curl -fsS "https://…/webhook-drain?key=<drain key>"   every minute.
  * (Documented beside .sql/cleanup.php's crontab line; cleanup.php ALSO prunes the
  * expired rows for installs that already run it nightly.)
+ *
+ * ROUTING (routing-bug fix, rules #33/#38/#42): the address above is
+ * `/webhook-drain`, deliberately WITHOUT `.php` — `.htaccess`'s "block
+ * direct PHP access" rule 404s ANY request whose raw text contains ".php"
+ * before this file's own code ever runs, so a literal `/webhook-drain.php`
+ * curl target (this doc-block's own wording, until this fix) has NEVER
+ * actually reached this file. `.htaccess` now carries the matching
+ * extensionless alias (the /qr, /org-logo, /og-image precedent). This file's
+ * OWN disk filename is unchanged — only the address a caller must use is.
  *
  * @see .claude/webhooks-1909-design.md §6.4
  * @see includes/webhooks.php (webhookDrainPass / webhookPruneExpired)

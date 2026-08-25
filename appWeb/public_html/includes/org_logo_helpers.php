@@ -277,7 +277,7 @@ function orgLogoListForOrg(\mysqli $db, int $orgId): array
  * at all, never a broken one.
  *
  * A row WITHOUT an upload renders collapsed (label + description + Add);
- * a row WITH one expands to a preview (through `/org-logo.php…` — the
+ * a row WITH one expands to a preview (through `/org-logo…` — the
  * never-inline rule applies to the ADMIN PREVIEW too, no `<svg>` markup and
  * no data-URI from the DB bytes is ever printed into this admin page) plus
  * Replace / Show-Hide / Remove controls. Copy is the plan's §7.2 quotes
@@ -361,7 +361,13 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
         /* Expanded row — preview (through the ONE serving endpoint — never
            inlined) + alt text + Replace / Show-Hide / Remove. */
         $sha       = (string)$existing['Sha256'];
-        $preview   = '/org-logo.php?org=' . $orgId . '&kind=' . rawurlencode($kind) . '&v=' . rawurlencode($sha);
+        /* "/org-logo", never "/org-logo.php" — this admin preview <img> is
+           requested by the BROWSER as a fresh top-level request, so it is
+           just as subject to .htaccess's "block direct PHP access" rule as
+           any public-facing src; living inside an authenticated /manage/
+           page does not exempt an <img src> that points OUTSIDE /manage/
+           (rules #33/#38/#42; see .htaccess for the extensionless alias). */
+        $preview   = '/org-logo?org=' . $orgId . '&kind=' . rawurlencode($kind) . '&v=' . rawurlencode($sha);
         $previewEsc = htmlspecialchars($preview, ENT_QUOTES);
         $altEsc    = htmlspecialchars((string)($existing['AltText'] ?? ''), ENT_QUOTES);
         $isActive  = ((int)$existing['IsActive'] === 1);
@@ -403,7 +409,9 @@ function orgLogoRenderAdminCard(\mysqli $db, int $orgId, string $csrfToken): str
             }
 
             $vSha = (string)$variantRow['Sha256'];
-            $vPreview = '/org-logo.php?org=' . $orgId . '&kind=' . rawurlencode($kind)
+            /* Same reasoning as the default-row $preview above — extensionless
+               /org-logo, never /org-logo.php. */
+            $vPreview = '/org-logo?org=' . $orgId . '&kind=' . rawurlencode($kind)
                 . '&variant=' . rawurlencode($variant) . '&v=' . rawurlencode($vSha);
             $vPreviewEsc = htmlspecialchars($vPreview, ENT_QUOTES);
             $variantSlotsHtml .= '<div class="d-flex align-items-center gap-2 org-logo-variant-slot">'

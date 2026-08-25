@@ -2052,7 +2052,7 @@ foreach ($sections as $s) {
                     </p>
                     <h3 class="h6">Turning it on (and the drain job)</h3>
                     <p>
-                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain.php?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
+                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> a subscription is walled to the environment (alpha / beta / production) it was created on &mdash; the three share one database but never each other's webhook traffic. Test on alpha first; a production partner should be registered on production.

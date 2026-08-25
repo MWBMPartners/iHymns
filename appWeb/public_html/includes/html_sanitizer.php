@@ -51,7 +51,7 @@ declare(strict_types=1);
  *
  * WHY IT STRUCTURALLY BLOCKS A GATED-MEDIA LEAK (rule M): neither profile's
  * `<img src>` allow-list can ever match a `/song-media/<id>` URL — `print`
- * only accepts `^/qr\.php\?`, `layout` only accepts that OR a same-request
+ * only accepts `^/qr\?`, `layout` only accepts that OR a same-request
  * `data:image/...;base64,` payload — and CSS `url(...)` is banned
  * OUTRIGHT in every declaration value regardless of property or profile.
  * So a PDF/layout render can never smuggle a gated media byte-stream
@@ -87,8 +87,21 @@ declare(strict_types=1);
  * tightened or removed), so existing stored `tblPrintTemplateCustomLayout`
  * rows need no urgent re-sanitise, but the version must still tell the
  * truth about what changed.
+ *
+ * v2 -> v3 (routing-bug fix, rules #33/#38/#42): both profiles'
+ * `img_src.patterns` changed from `/qr\.php\?...` / `/org-logo\.php\?...` to
+ * `/qr\?...` / `/org-logo\?...` (the `.php` extension dropped). This is NOT
+ * a "widen vs. tighten" edit in the usual sense — it tracks a routing fix,
+ * not a security-policy change: `.htaccess` had no extensionless alias for
+ * either endpoint, so a literal `/qr.php?...`/`/org-logo.php?...` `<img src>`
+ * has NEVER been reachable from a real browser (the "block direct PHP
+ * access" rule 404s it before either script's PHP ever runs) — every stored
+ * `tblPrintTemplateCustomLayout` row using the old shape was already
+ * silently broken, so admitting only the new, now-actually-routable shape
+ * loses nothing a curator could have relied on. `qr.php`/`org-logo.php`'s
+ * OWN PHP filenames on disk are unchanged; only the client-facing URL is.
  */
-const IHYMNS_HTML_SANITISER_VERSION = 2;
+const IHYMNS_HTML_SANITISER_VERSION = 3;
 
 /**
  * Tags ALWAYS unwrapped (never allow-listed by either profile), named here
@@ -127,7 +140,7 @@ const IHYMNS_HTML_ALWAYS_BANNED_TAGS = [
  *            skins may use — everything `print` allows plus headings,
  *            inline emphasis, lists and tables, a free class-token charset,
  *            and a same-request `data:image/...` src in addition to
- *            `/qr.php`.
+ *            `/qr`.
  */
 const IHYMNS_SANITIZER_PROFILES = [
     'print' => [
@@ -144,8 +157,12 @@ const IHYMNS_SANITIZER_PROFILES = [
             /* The ONLY two src shapes print.js ever emits — the CueRCode-backed
                QR image (print.js L335) and, since #1830, the org-logo image
                (print.js's `case 'logo'`) — structurally excludes
-               /song-media/<id> (rule M) and any javascript:/data: scheme. */
-            'patterns' => ['#^/qr\.php\?#', '#^/org-logo\.php\?#'],
+               /song-media/<id> (rule M) and any javascript:/data: scheme.
+               No `.php` extension (v3, routing-bug fix rules #33/#38/#42):
+               `/qr`/`/org-logo` are the ONLY addresses either endpoint has
+               ever actually been reachable at through a browser — see the
+               IHYMNS_HTML_SANITISER_VERSION v2->v3 changelog above. */
+            'patterns' => ['#^/qr\?#', '#^/org-logo\?#'],
         ],
     ],
     'layout' => [
@@ -168,8 +185,9 @@ const IHYMNS_SANITIZER_PROFILES = [
         'class_pattern' => '/^[A-Za-z0-9_-]+$/',
         'img_src' => [
             /* A layout may also emit its own QR / org-logo image via the
-               same helpers (#1830). */
-            'patterns' => ['#^/qr\.php\?#', '#^/org-logo\.php\?#'],
+               same helpers (#1830). No `.php` — see the v2->v3 changelog
+               above this file's IHYMNS_HTML_SANITISER_VERSION constant. */
+            'patterns' => ['#^/qr\?#', '#^/org-logo\?#'],
             /* Self-contained only — no network fetch, no SVG (SVG is a
                script vector: <svg><script>…</script></svg> is valid SVG).
                200 KiB decoded cap keeps a curator's logo/background small

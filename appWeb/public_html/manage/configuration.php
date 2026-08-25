@@ -1553,7 +1553,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Credentials for the <a href="https://cuercode.net" class="link-light" target="_blank" rel="noopener">CueRCode</a>
                 service, which generates every QR code in iHymns (the print-template QR block and the
                 Service-Projection join QR) via its API — server-side, so the secret key never reaches a
-                browser. <strong>Dormant until keyed</strong>: with no API key saved, the <code>/qr.php</code>
+                browser. <strong>Dormant until keyed</strong>: with no API key saved, the <code>/qr</code>
                 endpoint answers 503 and each QR surface falls back to the plain URL/code text.
             </p>
             <?php if (!$cuercodeApiKeySet): ?>
@@ -1753,7 +1753,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                     <div class="form-text">
                         Authorises the drain endpoint a cron / uptime monitor pokes to progress retries:<br>
-                        <code>curl -fsS "https://<?= htmlspecialchars($webhookThisChannel === 'production' ? 'ihymns.app' : ($webhookThisChannel === 'beta' ? 'beta.ihymns.app' : 'dev.ihymns.app'), ENT_QUOTES, 'UTF-8') ?>/webhook-drain.php?key=&lt;drain key&gt;"</code>
+                        <?php /* "/webhook-drain", never "/webhook-drain.php" (routing-bug fix, rules
+                                 #33/#38/#42) — this is a real command an admin copy-pastes into a
+                                 crontab, so the URL shown here must be the one .htaccess actually
+                                 routes; see .htaccess and webhook-drain.php's own doc-block. */ ?>
+                        <code>curl -fsS "https://<?= htmlspecialchars($webhookThisChannel === 'production' ? 'ihymns.app' : ($webhookThisChannel === 'beta' ? 'beta.ihymns.app' : 'dev.ihymns.app'), ENT_QUOTES, 'UTF-8') ?>/webhook-drain?key=&lt;drain key&gt;"</code>
                         every minute. Server-side secret, encrypted at rest.
                     </div>
                 </div>
