@@ -244,22 +244,20 @@ struct AppRootViewModelCaptchaTests {
     }
 }
 
-/// A test-only in-memory `TokenStoring` — mirrors every OTHER
-/// `AppRootViewModel*Tests.swift` file's own private copy in this same test
-/// target (`private` is file-scoped in Swift, so each integration-test file
-/// declares its own rather than sharing one across files).
-private actor InMemoryTokenStore: TokenStoring {
-    private var token: String?
 
-    func save(_ token: String) async throws {
-        self.token = token
-    }
+/* NOTE: this file deliberately declares NO `InMemoryTokenStore`.
 
-    func load() async throws -> String? {
-        token
-    }
+   ELI5: there is already one for the whole test target — use that.
 
-    func delete() async throws {
-        token = nil
-    }
-}
+   DETAILED: `AppRootViewModelLiveActivityTestSupport.swift` declares an
+   INTERNAL, top-level `actor InMemoryTokenStore`, visible across the whole
+   IHFeaturesTests module. Declaring another one at TOP LEVEL here — even
+   `private` — is "invalid redeclaration of 'InMemoryTokenStore'": a
+   top-level `private` decl is file-scoped, but the internal one is still in
+   scope in this file, so the two collide.
+
+   The sibling suites that appear to each keep their own copy do NOT declare
+   it at top level — theirs are NESTED inside the suite type, which scopes
+   them to it. An earlier revision of this file misread that as "every file
+   declares its own" and put one at column 0, which is what broke the build.
+   Either nest it or use the shared one; the shared one is why it exists. */
