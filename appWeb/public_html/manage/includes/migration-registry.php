@@ -4570,4 +4570,40 @@ return [
             || !_migProbe_tableExists($db, 'tblWebhookEvents')
             || !_migProbe_tableExists($db, 'tblWebhookDeliveries'),
     ],
+
+    'scribd-link' => [
+        'script' => 'migrate-scribd-link.php',
+        'card' => [
+            'title'  => 'Scribd external-link provider',
+            'body'   => 'Adds Scribd (scribd.com — a document/sheet-music hosting service)'
+                      . ' to <code>tblExternalLinkTypes</code> (#833), filed under the'
+                      . ' <code>sheet-music</code> category alongside IMSLP, with a host'
+                      . ' pattern in <code>tblExternalLinkPatterns</code> (#845) so pasting'
+                      . ' a <code>scribd.com/document/…</code>, <code>/doc/…</code> or'
+                      . ' <code>/presentation/…</code> URL auto-detects to Scribd in the'
+                      . ' songs / songbooks external-links editors. Idempotent — the link'
+                      . ' type upserts by Slug, the pattern guards on'
+                      . ' (LinkTypeId, Host, PathPrefix) before inserting.',
+            'button' => 'Run Scribd Link Migration',
+        ],
+        /* Single-sentinel probe (rule #19), same shape as
+           'musicbrainz-style-links' / 'media-database-providers' /
+           'extra-streaming-platforms' above: pending until the prerequisite
+           registry tables exist AND the 'scribd' slug has been seeded. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')
+                || !_migProbe_tableExists($db, 'tblExternalLinkPatterns')) {
+                return false;
+            }
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $sentinel = 'scribd';
+            $stmt->bind_param('s', $sentinel);
+            $stmt->execute();
+            $present = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$present;
+        },
+    ],
 ];
