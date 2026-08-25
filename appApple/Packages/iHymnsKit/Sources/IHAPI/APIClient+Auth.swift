@@ -32,12 +32,15 @@ extension APIClient {
     ///
     /// ELI5: "Here's my username and password — log me in."
     ///
-    /// DETAILED: Called by `IHAuth.SessionController.signIn(username:password:)`
+    /// DETAILED: Called by `IHAuth.SessionController.signIn(username:password:captchaToken:)`
     /// (#1398), which then persists the returned token to the Keychain and
     /// calls `updateBearerToken(_:)` on this same client so every
-    /// subsequent authenticated call carries it.
-    public func authLogin(username: String, password: String) async throws -> AuthSession {
-        let endpoint = try Endpoint.authLogin(username: username, password: password)
+    /// subsequent authenticated call carries it. `captchaToken`: `nil`
+    /// default (#947/#340 native scaffold) — see
+    /// `Endpoint.authLogin(username:password:captchaToken:)`'s own doc
+    /// comment.
+    public func authLogin(username: String, password: String, captchaToken: String? = nil) async throws -> AuthSession {
+        let endpoint = try Endpoint.authLogin(username: username, password: password, captchaToken: captchaToken)
         let data = try await performOnce(endpoint)
         return try Self.decodeAuthSession(from: data)
     }
@@ -87,8 +90,12 @@ extension APIClient {
     ///   `AuthEndpoints.swift`'s header), so `LoginView` shows the SAME
     ///   reassuring copy either way rather than confirming/denying whether
     ///   an account exists for that address.
-    public func authEmailLoginRequest(email: String) async throws -> String {
-        let endpoint = try Endpoint.authEmailLoginRequest(email: email)
+    ///
+    /// - Parameter captchaToken: `nil` default (#947/#340 native scaffold)
+    ///   — see `Endpoint.authEmailLoginRequest(email:captchaToken:)`'s own
+    ///   doc comment.
+    public func authEmailLoginRequest(email: String, captchaToken: String? = nil) async throws -> String {
+        let endpoint = try Endpoint.authEmailLoginRequest(email: email, captchaToken: captchaToken)
         let data = try await performOnce(endpoint)
         return try Self.decodeEmailLoginRequestMessage(from: data)
     }

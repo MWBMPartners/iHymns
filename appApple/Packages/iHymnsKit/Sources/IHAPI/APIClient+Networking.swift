@@ -167,7 +167,14 @@ extension APIClient {
                 throw APIError.server(status: -1, message: "Non-HTTP response")
             }
 
-            if let apiError = Self.classify(httpStatus: http.statusCode, retryAfterSeconds: Self.retryAfterSeconds(from: http)) {
+            // #947/#340 native scaffold (`.claude/captcha-native-and-outage-plan.md`
+            // §2.3-3): try the body-aware CAPTCHA classifier FIRST — it
+            // returns `nil` for everything except a genuine CAPTCHA-required
+            // 403, in which case the generic, body-blind `classify(...)`
+            // below never even runs (its own `default:` branch would have
+            // folded this into an opaque `.server(status: 403, message: nil)`).
+            if let apiError = Self.classifyMachineRefusal(httpStatus: http.statusCode, body: data)
+                ?? Self.classify(httpStatus: http.statusCode, retryAfterSeconds: Self.retryAfterSeconds(from: http)) {
                 throw apiError
             }
 
@@ -260,14 +267,19 @@ extension APIClient {
     /// real lockout), and `.decoding` (the payload shape is wrong) are NOT —
     /// no amount of retrying changes any of those outcomes, so failing fast
     /// serves the caller better than three attempts' worth of wasted
-    /// latency.
+    /// latency. `.captchaRequired` joins that NOT-retryable group (#947/#340
+    /// native scaffold): the token that was missing/invalid is exactly as
+    /// missing/invalid on attempt 2 as it was on attempt 1 — retrying
+    /// without a FRESH token (which only a human re-solving the challenge
+    /// can produce) can never succeed, so the caller must surface this
+    /// immediately rather than burn `maxAttempts` worth of latency first.
     nonisolated private static func isRetryable(_ error: APIError) -> Bool {
         switch error {
         case .offline, .maintenance, .rateLimited:
             return true
         case .server(let status, _):
             return (500...599).contains(status)
-        case .unauthorized, .accountLocked, .decoding:
+        case .unauthorized, .accountLocked, .decoding, .captchaRequired:
             return false
         }
     }

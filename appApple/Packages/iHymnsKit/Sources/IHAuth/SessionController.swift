@@ -181,15 +181,26 @@ public actor SessionController {
     /// ELI5: "Here's my username and password — check them with the server
     /// and log me in."
     ///
-    /// - Throws: Whatever `APIClient.authLogin(username:password:)` throws
-    ///   (`APIError.unauthorized` for wrong credentials, `.accountLocked`
-    ///   for a locked-out account, `.offline`/`.maintenance` for a
-    ///   transient failure, ...) — this method does NOT swallow or
-    ///   reinterpret any of it; the caller (a future sign-in screen) maps
-    ///   these to user-facing copy the same way `AppRootViewModel` maps
-    ///   catalogue-read failures (#1399).
-    public func signIn(username: String, password: String) async throws {
-        let session = try await apiClient.authLogin(username: username, password: password)
+    /// - Parameter captchaToken: The solved CAPTCHA token, when the `login`
+    ///   form is gated (#947/#340 native scaffold,
+    ///   `.claude/captcha-native-and-outage-plan.md` §2.3-4) — `nil` by
+    ///   default, the caller's (`LoginView`'s) responsibility to supply per
+    ///   PLAN §2.5's "per-submit token acquisition" contract: tokens are
+    ///   single-use (consumed at the provider's first `siteverify` call
+    ///   regardless of whether THIS request goes on to succeed, e.g. a
+    ///   correct token but a wrong password), so a RETRY must never reuse
+    ///   the token from a previous attempt — that is the caller's job, not
+    ///   this method's, which is a thin, stateless pass-through.
+    /// - Throws: Whatever `APIClient.authLogin(username:password:captchaToken:)`
+    ///   throws (`APIError.unauthorized` for wrong credentials,
+    ///   `.accountLocked` for a locked-out account, `.captchaRequired` for a
+    ///   missing/invalid/already-spent token on a gated install,
+    ///   `.offline`/`.maintenance` for a transient failure, ...) — this
+    ///   method does NOT swallow or reinterpret any of it; the caller (a
+    ///   future sign-in screen) maps these to user-facing copy the same way
+    ///   `AppRootViewModel` maps catalogue-read failures (#1399).
+    public func signIn(username: String, password: String, captchaToken: String? = nil) async throws {
+        let session = try await apiClient.authLogin(username: username, password: password, captchaToken: captchaToken)
         // Private `userId:` overload (#1505) — this call site already
         // knows who just signed in, for the `.notice` transition log.
         try await signIn(token: session.token, userId: session.user.id)

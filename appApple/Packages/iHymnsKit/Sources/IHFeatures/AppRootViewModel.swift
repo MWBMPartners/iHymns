@@ -146,6 +146,12 @@ public final class AppRootViewModel {
     /// sets this from `refreshCurrentUser()`/`signOut()`.
     public internal(set) var currentUser: AuthUser?
 
+    /// The dormant CAPTCHA feature's live config, `nil` on every
+    /// unconfigured install — populated once by `loadAppStatus()`
+    /// (`AppRootViewModel+Captcha.swift`, #947/#340 native scaffold, see
+    /// that file for the full design).
+    public internal(set) var captchaConfig: CaptchaConfig?
+
     /// Every favourited song this device knows about, most-recently-added
     /// first — an OFFLINE-FIRST mirror of `IHPersistence.OfflineStore`'s
     /// `favorite` table (#181), NOT a `LoadState`-gated network read: it's
@@ -379,19 +385,15 @@ public final class AppRootViewModel {
 
     // `recordRecentlyViewed(_:)` (#183, the "last opened song" hook called
     // from `SongDetailViewModel`'s successful primary load) lives in
-    // `AppRootViewModel+Activity.swift` — moved out (#1446) to keep THIS
-    // file under the LOC-budget tripwire now that it also carries the new
-    // `usageActivityStore` property above; same reasoning
-    // `AppRootViewModel+Catalog.swift`'s header documents. A pure move —
-    // its ONE #1446 addition (recording the open into `usageActivityStore`)
-    // is unchanged from being called at this exact call site.
+    // `AppRootViewModel+Activity.swift` — moved out (#1446) for the same
+    // LOC-budget reasoning as `AppRootViewModel+Catalog.swift`'s header.
 
-    // `observeSessionState()` (mirrors every `SessionState` change published
-    // by `sessionController` onto `sessionState`, and force-ends hosting on
-    // sign-out) moved to `AppRootViewModel+Auth.swift` (#1429 PR-16
-    // LOC-budget tripwire) — see that file's own copy of this doc comment
-    // for the full "why this is deliberately NOT where sign-in/out syncs
-    // its side effects" rationale. A pure move: `sessionObservationTask`
-    // above is `internal` (not `private`) for exactly this cross-file
-    // mutation, mirroring `liveObservationTask`'s own precedent.
+    // `observeSessionState()` (mirrors `sessionController`'s state onto
+    // `sessionState`, force-ends hosting on sign-out) lives in
+    // `AppRootViewModel+Auth.swift` (#1429 LOC-budget tripwire — see that
+    // file for the full rationale); `sessionObservationTask` above is
+    // `internal` for exactly this cross-file mutation.
+
+    // `loadAppStatus()`/`captchaRequired(for:)` (#947/#340 native scaffold)
+    // live in `AppRootViewModel+Captcha.swift` — same LOC-budget reasoning.
 }

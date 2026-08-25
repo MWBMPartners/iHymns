@@ -45,14 +45,24 @@ extension Endpoint {
     /// `?action=auth_login` — POST username/password, returns a 30-day
     /// bearer token + the signed-in user's public profile (`AuthSession`).
     ///
+    /// - Parameter captchaToken: The solved CAPTCHA token, when the `login`
+    ///   form is gated (#947/#340 native scaffold,
+    ///   `.claude/captcha-native-and-outage-plan.md` §2.3-4) — `nil` on
+    ///   every dormant/ungated install, the default, so every EXISTING call
+    ///   site keeps compiling and (per `Encodable`'s `encodeIfPresent` for
+    ///   `Optional` stored properties, `AuthLoginRequestBody`'s own doc
+    ///   comment below) sends a request body BYTE-IDENTICAL to before this
+    ///   parameter existed.
     /// - Throws: Only if `JSONEncoder` itself somehow fails encoding two
     ///   plain `String` fields (practically unreachable — no dates, no
     ///   non-conforming floats — but `Endpoint`'s factory surfaces `throws`
     ///   rather than force-trying, matching this package's general "no
     ///   silent force-unwraps of anything except developer-authored
     ///   literals" posture).
-    static func authLogin(username: String, password: String) throws -> Endpoint {
-        let body = try JSONEncoder().encode(AuthLoginRequestBody(username: username, password: password))
+    static func authLogin(username: String, password: String, captchaToken: String? = nil) throws -> Endpoint {
+        let body = try JSONEncoder().encode(
+            AuthLoginRequestBody(username: username, password: password, captchaToken: captchaToken)
+        )
         return Endpoint(action: "auth_login", httpMethod: "POST", httpBody: body)
     }
 
@@ -73,9 +83,17 @@ extension Endpoint {
     /// email enumeration — see this file's header). No auth required (the
     /// whole point is signing in without one yet).
     ///
+    /// - Parameter captchaToken: The solved CAPTCHA token, when the
+    ///   `email_login` form is gated — see `authLogin(username:password:captchaToken:)`'s
+    ///   matching doc comment above for the full "nil default, byte-identical
+    ///   body when omitted" contract. NEVER plumbed onto
+    ///   `authEmailLoginVerify` below — that endpoint is not a
+    ///   `captchaFormKeys()` entry (the code was already spent requesting
+    ///   it), so no `captchaToken` parameter exists on either of its two
+    ///   overloads.
     /// - Throws: Only if `JSONEncoder` fails (see `authLogin` above).
-    static func authEmailLoginRequest(email: String) throws -> Endpoint {
-        let body = try JSONEncoder().encode(AuthEmailLoginRequestBody(email: email))
+    static func authEmailLoginRequest(email: String, captchaToken: String? = nil) throws -> Endpoint {
+        let body = try JSONEncoder().encode(AuthEmailLoginRequestBody(email: email, captchaToken: captchaToken))
         return Endpoint(action: "auth_email_login_request", httpMethod: "POST", httpBody: body)
     }
 
@@ -161,17 +179,39 @@ private struct AccountDeleteRequestBody: Encodable {
 }
 
 /// The exact wire shape `auth_login`'s JSON body expects — a private
-/// implementation detail of `Endpoint.authLogin(username:password:)` above,
-/// never constructed anywhere else.
+/// implementation detail of `Endpoint.authLogin(username:password:captchaToken:)`
+/// above, never constructed anywhere else. `captchaToken` maps to
+/// `captcha_token` — `IHYMNS_CAPTCHA_BODY_KEY` (`includes/captcha.php:81`),
+/// the SAME body key `js/modules/captcha-widget.js`'s `CAPTCHA_BODY_KEY`
+/// mirrors client-side. `Optional` + `JSONEncoder`'s default
+/// `encodeIfPresent` behaviour means a `nil` token is OMITTED from the JSON
+/// entirely (never encoded as a literal `null`) — the established
+/// "absent key, never a literal null" convention this file's header
+/// documents for `AuthEmailLoginVerifyRequestBody` below, applied here too.
 private struct AuthLoginRequestBody: Encodable {
     let username: String
     let password: String
+    let captchaToken: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case username
+        case password
+        case captchaToken = "captcha_token"
+    }
 }
 
 /// The exact wire shape `auth_email_login_request`'s JSON body expects
-/// (`{"email": "…"}`).
+/// (`{"email": "…", "captcha_token": "…"}` when gated). `captchaToken`:
+/// same `captcha_token` key + `nil`-omits-the-key contract as
+/// `AuthLoginRequestBody` above.
 private struct AuthEmailLoginRequestBody: Encodable {
     let email: String
+    let captchaToken: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case email
+        case captchaToken = "captcha_token"
+    }
 }
 
 /// The exact wire shape `auth_email_login_verify`'s JSON body expects — one

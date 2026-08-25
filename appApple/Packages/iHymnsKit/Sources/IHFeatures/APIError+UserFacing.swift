@@ -37,6 +37,14 @@ extension APIError {
             "Something went wrong (error \(status)). Please try again."
         case .decoding:
             "iHymns sent something we didn't understand. Please try again later."
+        case .captchaRequired:
+            // The server's own copy (`includes/captcha.php`'s
+            // `captchaGateDecision()` `'error'` string) — chosen HERE as
+            // deliberate native UI copy, never parsed from the response
+            // body (#947/#340 native scaffold, rule #35: branch on the
+            // machine code/reason, but the human WORDING is always this
+            // app's own, matching every other case in this switch).
+            "Please complete the verification challenge and try again."
         }
     }
 
