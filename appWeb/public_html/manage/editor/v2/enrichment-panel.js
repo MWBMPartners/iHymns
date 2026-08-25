@@ -77,6 +77,32 @@
  *  manage its own local re-render (`renderBody()`) without fighting the
  *  card's lifecycle, and it is why the panel's open/closed state and any
  *  in-progress add-form survive a lyric or language edit on the SAME card.
+ *
+ *  #1907 (2026-08-25) — TWO fixes, UI-only, no payload/contract change:
+ *   (1) `buildIetfPicker()` used to boot the shared IETF picker module on a
+ *       still-DETACHED wrapper `<div>` (booted before `form.appendChild(
+ *       picker.el)` / `host.appendChild(form)` ran) — `document.getElementById`
+ *       cannot see into a detached subtree, so every subtag suggestion list
+ *       came back permanently empty (the owner's "no auto/live-search"
+ *       report). Fixed at the MODULE level in ietf-language-picker.js
+ *       (bootIetfLanguagePicker() now re-resolves each `<datalist>` lazily,
+ *       at USE time, rather than capturing it once at boot) rather than
+ *       reordering this file's call site, so every caller — this one, v1's
+ *       equivalent in editor.js, and any future one — is covered without a
+ *       boot-order contract to remember. See that module's own doc-comment
+ *       above `bootIetfLanguagePicker()` for the full mechanism, and
+ *       metadata-tab.js:1563-1578 for the #1849 precedent this generalises.
+ *   (2) The owner separately reported not knowing WHERE to type a
+ *       translation after clicking "Set language" (which only tags the
+ *       ORIGINAL line's language). `showLineLangForm()` and
+ *       `showTranslationForm()` now each carry a short cross-reference note
+ *       pointing at the other control, `showTranslationForm()` puts its
+ *       text field FIRST with a real `<label for>` (not a placeholder-only
+ *       hint), and both add/annotation buttons were renamed from the bare
+ *       "+ Translation" / "+ Annotation" to say what they add and to what.
+ *       `showAnnotationForm()` got the same real-label treatment for
+ *       consistency, though it was not the reported confusion. No server
+ *       payload shape changed — this is presentation only.
  * ========================================================================== */
 
 import { bootIetfLanguagePicker } from '/js/modules/ietf-language-picker.js';
@@ -92,6 +118,20 @@ import { bootIetfLanguagePicker } from '/js/modules/ietf-language-picker.js';
 export const LINE_TRANSLATION_KINDS = ['translation', 'transliteration'];
 export const LINE_ANNOTATION_TYPES = ['explanation', 'reference', 'scripture', 'history', 'translation', 'trivia'];
 
+/* #1907 FIX 2 — the "+ Translation" button's label, promoted to a constant
+ * so the "Set language" form's cross-reference note (showLineLangForm()
+ * below) can quote the EXACT button text a curator needs to click next,
+ * rather than a hand-typed paraphrase that could drift out of sync with
+ * the real label (rule #35 — cross-file, or even same-file, agreement
+ * needs a mechanism, not a comment saying "keep these in sync"; a single
+ * shared constant is that mechanism here). ELI5: one word for one button,
+ * used everywhere that button gets mentioned, so renaming the button can
+ * never leave a stale reference to its old name lying around. Previously
+ * this read the terser "+ Translation", which named WHAT the button adds
+ * but not WHERE the translated text goes — the owner's exact report. */
+const TRANSLATION_BTN_LABEL = '+ Add translation of this line';
+const ANNOTATION_BTN_LABEL = '+ Add annotation to this line';
+
 /* Unique id source for the IETF picker markup below — the picker module
    resolves its <datalist>s via getElementById(input.list), so two pickers
    open at once (two different lines' "Set language" forms, or a language
@@ -99,6 +139,23 @@ export const LINE_ANNOTATION_TYPES = ['explanation', 'reference', 'scripture', '
    suggestion lists. Module-scoped counter, not per-panel, so it stays unique
    across every panel instance on the page. */
 let ietfPickerSeq = 0;
+
+/* Unique id source for THIS file's own inline-form <label for>/id pairs
+   (translation text/kind, annotation type/body — #1907 FIX 2 below). Same
+   reasoning as ietfPickerSeq immediately above: module-scoped, not
+   per-panel, so two forms open at once on different lines never collide on
+   the same id. ELI5: every text box in these forms now has a real,
+   clickable label — this counter is just how we make sure two boxes on
+   the page never accidentally share one label's "for=". Detail: WCAG 3.3.2
+   ("Labels or Instructions") wants every field associated with a
+   *persistent* label, not a placeholder that vanishes the moment text is
+   typed — https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions.html —
+   and an `id`/`for` pair collision would silently point BOTH labels at
+   whichever element happens to keep that id last, which is exactly the
+   kind of DOM-identity bug this project keeps a rule about (#1907, rule
+   #34: prove a fix by exercising the real failure, not a proxy for it —
+   applies to authoring, not just testing, here). */
+let enrichFormSeq = 0;
 
 /**
  * buildIetfPicker(initialTag) — build the picker markup
@@ -242,11 +299,28 @@ export function buildEnrichmentPanel(comp, ctx) {
         saveComponent(comp);
     }
 
-    /* Inline structured-picker form for one line's language override. */
+    /* Inline structured-picker form for one line's language override.
+     *
+     * #1907 FIX 2 (owner: "not clear where the translation text should be
+     * entered"). ELI5: this form only TAGS what language the line is
+     * ALREADY written in — there is nowhere to type a translation here on
+     * purpose, and the note below says so, pointing at the button that
+     * actually does that.
+     * Detail: the owner's exact reported path was clicking this control
+     * ("Set language") and expecting a place to type translated text. That
+     * expectation is reasonable — "language" is in both controls' names —
+     * so rather than relying on the curator to infer the distinction from
+     * two similarly-worded buttons, the distinction is now spelled out
+     * in-form, right where the confusion happens. See showTranslationForm()
+     * below for the other half of this same fix. */
     function showLineLangForm(host, i) {
         const cur = (Array.isArray(comp.languages) && comp.languages[i] != null) ? String(comp.languages[i]).trim() : '';
         const form = document.createElement('div');
         form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+        const help = document.createElement('div');
+        help.className = 'small text-muted mb-1';
+        help.textContent = 'Tags what language THIS line is already written in — it does not add a translation. To add a translated or romanized copy of the line, use "' + TRANSLATION_BTN_LABEL + '" instead.';
+        form.appendChild(help);
         const picker = buildIetfPicker(cur);
         form.appendChild(picker.el);
         const btnRow = document.createElement('div');
@@ -267,25 +341,65 @@ export function buildEnrichmentPanel(comp, ctx) {
         host.appendChild(form);
     }
 
+    /* #1907 FIX 2, other half. ELI5: this is the form the owner was
+     * actually looking for — put the box to TYPE the translation first,
+     * label it in plain words, and put "which language is this translation
+     * IN" below it, since that is a follow-up question, not the first
+     * thing a curator needs to answer.
+     * Detail: pre-fix, this form's fields ran Kind ‑> target-language
+     * picker -> a bare, placeholder-only text `<input>` — so the ONE field
+     * that must be filled in for a translation to mean anything (the
+     * translated text) was both LAST and never got a persistent label, only
+     * a placeholder ("Translated / romanized line text") that disappears
+     * the instant the curator starts typing (not an accessible label per
+     * WCAG 3.3.2 — https://www.w3.org/WAI/WCAG21/Understanding/labels-or-instructions.html).
+     * Reordering + labelling costs nothing functionally (the payload shape
+     * to api.upsertLineTranslation() is unchanged) but puts the important
+     * field first and names it, both of which the picker's own three
+     * subtag inputs already do (they carry `placeholder="Language"` etc.
+     * AND are inside a structured control, not a single free-text box, so
+     * they were never the confusing part). */
     function showTranslationForm(host, lineId) {
+        const seq = ++enrichFormSeq;
+        const textId = 'enrich-trans-text-' + seq;
+        const kindId = 'enrich-trans-kind-' + seq;
+
         const form = document.createElement('div');
         form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+
+        const help = document.createElement('div');
+        help.className = 'small text-muted mb-1';
+        help.textContent = 'Adds a translated or romanized version of this line — different from "Set language" above, which only tags what language the line is already in.';
+
+        const textLbl = document.createElement('label');
+        textLbl.className = 'form-label small mb-0';
+        textLbl.htmlFor = textId;
+        textLbl.textContent = 'Translated text';
+        const text = document.createElement('input');
+        text.type = 'text';
+        text.id = textId;
+        text.className = 'form-control form-control-sm';
+        text.placeholder = 'e.g. Cantad al Señor un cántico nuevo';
+
+        const langLbl = document.createElement('div');
+        langLbl.className = 'form-label small mb-0 mt-2';
+        langLbl.textContent = 'Into which language?';
+        const picker = buildIetfPicker('');
+
         const kindRow = document.createElement('div');
-        kindRow.className = 'd-flex gap-1 align-items-center mb-1';
-        const kindLbl = document.createElement('span');
-        kindLbl.className = 'small text-muted';
+        kindRow.className = 'd-flex gap-1 align-items-center mt-2 mb-1';
+        const kindLbl = document.createElement('label');
+        kindLbl.className = 'small text-muted mb-0';
+        kindLbl.htmlFor = kindId;
         kindLbl.textContent = 'Kind:';
         const kind = document.createElement('select');
+        kind.id = kindId;
         kind.className = 'form-select form-select-sm w-auto';
         LINE_TRANSLATION_KINDS.forEach((k) => {
             const o = document.createElement('option'); o.value = k; o.textContent = k; kind.appendChild(o);
         });
         kindRow.append(kindLbl, kind);
-        const picker = buildIetfPicker('');
-        const text = document.createElement('input');
-        text.type = 'text';
-        text.className = 'form-control form-control-sm mt-1';
-        text.placeholder = 'Translated / romanized line text';
+
         const save = smallBtn('Save', () => {
             const payload = { lineId: lineId, kind: kind.value, targetLanguage: picker.getTag(), text: text.value.trim() };
             if (!payload.targetLanguage || !payload.text) { toast('Language and text are required.', 'warning'); return; }
@@ -300,25 +414,59 @@ export function buildEnrichmentPanel(comp, ctx) {
         save.className = 'btn btn-sm btn-primary py-0 px-2';
         const cancel = smallBtn('Cancel', () => renderBody());
         const btnRow = document.createElement('div');
-        btnRow.className = 'mt-1';
+        btnRow.className = 'mt-2';
         btnRow.append(save, cancel);
-        form.append(kindRow, picker.el, text, btnRow);
+
+        /* Order matches the visual/tab order the fix is about: help text,
+           THE TEXT FIELD (the thing a curator opened this form to fill in),
+           then the target-language picker, then the less-central "Kind"
+           selector, then the actions. */
+        form.append(help, textLbl, text, langLbl, picker.el, kindRow, btnRow);
         host.appendChild(form);
+        text.focus();
     }
 
+    /* #1907 — same real-label pass as the two forms above (annotations
+     * were not the owner's reported confusion, but shared the same
+     * placeholder-only accessibility gap, so this closes it here too
+     * rather than leaving one of the panel's three forms behind). */
     function showAnnotationForm(host, lineId) {
+        const seq = ++enrichFormSeq;
+        const typeId = 'enrich-annot-type-' + seq;
+        const bodyId = 'enrich-annot-body-' + seq;
+
         const form = document.createElement('div');
-        form.className = 'd-flex flex-wrap gap-1 align-items-start mt-1';
+        form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+
+        const help = document.createElement('div');
+        help.className = 'small text-muted mb-1';
+        help.textContent = 'Adds an explanatory note attached to this line (context, a scripture reference, history, …) — not a translation.';
+
+        const typeLbl = document.createElement('label');
+        typeLbl.className = 'small text-muted mb-0 me-1';
+        typeLbl.htmlFor = typeId;
+        typeLbl.textContent = 'Type:';
         const type = document.createElement('select');
-        type.className = 'form-select form-select-sm w-auto';
+        type.id = typeId;
+        type.className = 'form-select form-select-sm w-auto d-inline-block';
         LINE_ANNOTATION_TYPES.forEach((t) => {
             const o = document.createElement('option'); o.value = t; o.textContent = t; type.appendChild(o);
         });
+        const typeRow = document.createElement('div');
+        typeRow.className = 'd-flex align-items-center gap-1 mb-1';
+        typeRow.append(typeLbl, type);
+
+        const bodyLbl = document.createElement('label');
+        bodyLbl.className = 'form-label small mb-0';
+        bodyLbl.htmlFor = bodyId;
+        bodyLbl.textContent = 'Annotation text';
         const body = document.createElement('textarea');
+        body.id = bodyId;
         body.className = 'form-control form-control-sm';
         body.rows = 2;
-        body.placeholder = 'Annotation (markdown)';
+        body.placeholder = 'Markdown supported';
         body.style.minWidth = '220px';
+
         const save = smallBtn('Save', () => {
             const payload = { startLineId: lineId, annotationType: type.value, body: body.value.trim() };
             if (!payload.body) { toast('Annotation body is required.', 'warning'); return; }
@@ -332,7 +480,11 @@ export function buildEnrichmentPanel(comp, ctx) {
         });
         save.className = 'btn btn-sm btn-primary py-0 px-2';
         const cancel = smallBtn('Cancel', () => renderBody());
-        form.append(type, body, save, cancel);
+        const btnRow = document.createElement('div');
+        btnRow.className = 'mt-1';
+        btnRow.append(save, cancel);
+
+        form.append(help, typeRow, bodyLbl, body, btnRow);
         host.appendChild(form);
         body.focus();
     }
@@ -359,6 +511,24 @@ export function buildEnrichmentPanel(comp, ctx) {
             box.innerHTML = '<div class="text-muted small fst-italic">No lines yet.</div>';
             return;
         }
+
+        /* #1907 FIX 2 — one-time caption at the top of the (already
+         * collapsible, opt-in) panel, rather than repeating it on every
+         * line. ELI5: one sentence up top saying which button does which
+         * job, so a curator sees it BEFORE picking a control, not only
+         * after opening the wrong one.
+         * Detail: the panel offers two controls whose names both contain
+         * the word "language" — 🔤 Set language (tags what the line IS)
+         * and 🌐 Add translation (adds a NEW translated line) — which is
+         * exactly the pair the owner reported confusing. showLineLangForm()
+         * and showTranslationForm() each ALSO carry their own shorter
+         * cross-reference note at the point of use, so this caption is
+         * reinforcement, not the only place the distinction is made. */
+        const help = document.createElement('div');
+        help.className = 'small text-muted fst-italic mb-2';
+        help.textContent = '🔤 Set language tags what language a line is already written in. 🌐 Add translation adds a new translated or romanized copy of a line.';
+        box.appendChild(help);
+
         lines.forEach((lineText, i) => {
             const lineId = lineIdAt(i);
             const row = document.createElement('div');
@@ -405,8 +575,15 @@ export function buildEnrichmentPanel(comp, ctx) {
 
             const btns = document.createElement('div');
             btns.className = 'mt-1';
-            btns.appendChild(smallBtn('+ Translation', () => showTranslationForm(row, lineId)));
-            btns.appendChild(smallBtn('+ Annotation', () => showAnnotationForm(row, lineId)));
+            /* #1907 FIX 2 — renamed from the bare "+ Translation" /
+               "+ Annotation" so the button itself says WHAT it adds and TO
+               WHAT, instead of a curator having to infer that from a
+               one-or-two-word label (the owner's report was exactly this
+               gap). TRANSLATION_BTN_LABEL is the SAME constant
+               showLineLangForm()'s cross-reference note quotes, so the two
+               can never drift apart (rule #35). */
+            btns.appendChild(smallBtn(TRANSLATION_BTN_LABEL, () => showTranslationForm(row, lineId)));
+            btns.appendChild(smallBtn(ANNOTATION_BTN_LABEL, () => showAnnotationForm(row, lineId)));
             row.appendChild(btns);
             box.appendChild(row);
         });
