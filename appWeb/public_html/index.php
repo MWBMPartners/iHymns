@@ -219,19 +219,42 @@ if (!empty(APP_CONFIG['analytics']['matomo_url'])) {
     $cspMatomoUrl = ' ' . rtrim(APP_CONFIG['analytics']['matomo_url'], '/');
 }
 
-/* #947/#340 — widen script-src/frame-src for the ACTIVE CAPTCHA provider only
-   when configured (the same conditional-append shape as $cspMatomoUrl above).
-   Both strings are '' when dormant, so the CSP header is byte-identical to
-   today on every unconfigured install. Origins come from the provider registry
-   (captchaCspOrigins()) — index.php never names a captcha hostname (guard §6.2). */
-$cspCaptchaScript = '';
-$cspCaptchaFrame  = '';
+/* #947/#340 — widen script-src/frame-src/connect-src for the ACTIVE CAPTCHA
+   provider only when configured (the same conditional-append shape as
+   $cspMatomoUrl above). All THREE strings are '' when dormant, so the CSP
+   header is byte-identical to today on every unconfigured install. Origins come
+   from the provider registry (captchaCspOrigins()) — index.php never names a
+   captcha hostname (guard §6.2).
+
+   THE THIRD (connect-src) IS A MECHANISM, NOT A BELIEF. The original design
+   appended only two directives, on the reading that a widget's own network
+   traffic happens inside the provider's iframe and is therefore governed by
+   that frame's CSP rather than ours. That reading was never verified against a
+   live widget, and it is contradicted outright by hCaptcha's published CSP
+   guidance. The failure it risks is the nastiest shape available here: a
+   blocked XHR means the widget never mints a token, so every gated form refuses
+   every real user — indistinguishable, from the outside, from the provider
+   outage the grace window now exists to survive, and diagnosable only from a
+   browser console nobody is watching. So each registry entry declares its own
+   connect-src origins and this file consumes whatever they are. Every origin
+   currently declared is one the same entry already trusts for script-src, so
+   this widens nothing an active provider had not already been granted.
+   (See .claude/captcha-native-and-outage-plan.md §0-2 / §3.4-F. Confirming the
+   real per-provider requirement with DevTools once live keys exist is a
+   required activation-runbook step; correcting it is then a registry-data edit,
+   not a hunt through this file.) */
+$cspCaptchaScript  = '';
+$cspCaptchaFrame   = '';
+$cspCaptchaConnect = '';
 $captchaCsp = captchaCspOrigins();
 if (!empty($captchaCsp['script'])) {
     $cspCaptchaScript = ' ' . implode(' ', $captchaCsp['script']);
 }
 if (!empty($captchaCsp['frame'])) {
     $cspCaptchaFrame = ' ' . implode(' ', $captchaCsp['frame']);
+}
+if (!empty($captchaCsp['connect'])) {
+    $cspCaptchaConnect = ' ' . implode(' ', $captchaCsp['connect']);
 }
 
 $cspDirectives = [
@@ -252,7 +275,7 @@ $cspDirectives = [
        CSP nonces/hashes don't cover the style ATTRIBUTE.) */
     "object-src 'none'",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}",
+    "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}{$cspCaptchaConnect}",
     "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app{$cspCaptchaFrame}",
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",

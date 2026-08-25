@@ -328,6 +328,19 @@ $sections = [
         'title' => 'Native app stores & Apple Sign-In',
         'group' => 'Operations',
     ],
+    /* ELI5: the "prove you're human" check — what it guards, and (the part
+       people actually need at 9am on a Sunday) what happens if the company
+       that provides it goes down, plus the emergency way back in.
+       DETAILED (#947/#340 + the outage fallback): documents
+       /manage/configuration's CAPTCHA card, the automatic grace window
+       driven by includes/captcha.php's server-side probes, and the
+       CAPTCHA_DISABLED break-glass file. */
+    [
+        'id'    => 'bot-protection',
+        'icon'  => 'bi-shield-check',
+        'title' => 'Bot protection (CAPTCHA)',
+        'group' => 'Operations',
+    ],
     [
         'id'    => 'native-api',
         'icon'  => 'bi-broadcast',
@@ -1951,6 +1964,106 @@ foreach ($sections as $s) {
                         when a death date IS on file is a fixed code constant, not configurable here. Either way
                         it's only ever a suggestion &mdash; nothing auto-ticks the Public Domain checkbox.
                     </p>
+                </section>
+
+                <section id="bot-protection" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-shield-check me-2"></i>Bot protection (CAPTCHA)</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        A card on <a href="/manage/configuration#captcha">Settings</a> that can put a
+                        &ldquo;prove you&rsquo;re human&rdquo; challenge in front of sign-up, sign-in,
+                        password reset, email login and the song-request form. You pick a provider
+                        (Cloudflare Turnstile, hCaptcha or Google reCAPTCHA v2), paste the two keys they
+                        give you, and tick the forms to guard.
+                    </p>
+                    <p class="small">
+                        It does <strong>nothing at all</strong> until all three of those are done &mdash; no
+                        provider, no keys, no ticked form means the site behaves exactly as it did before the
+                        feature existed. The ordinary protections (limits on how many attempts one address or
+                        one account can make, the hidden &ldquo;honeypot&rdquo; field on the request form,
+                        daily caps) are always on underneath, with or without a challenge.
+                    </p>
+
+                    <h3 class="h6">What happens if the provider goes down</h3>
+                    <p>
+                        This is the failure worth understanding, because the obvious behaviour is the wrong
+                        one. If the challenge provider has an outage, visitors&rsquo; browsers cannot get a
+                        &ldquo;you&rsquo;re human&rdquo; ticket &mdash; so if guarded forms simply kept
+                        refusing anyone without a ticket, <em>every real person</em> would be locked out of
+                        signing in, on a Sunday morning, with no way to tell them why.
+                    </p>
+                    <p>
+                        So the site checks for itself. Periodically &mdash; and only when a challenge has
+                        just failed &mdash; the server tries to reach the provider directly. If <em>it</em>
+                        cannot reach them either, guarded forms temporarily fall back to the ordinary rate
+                        limits instead of refusing people. When the provider answers again, normal
+                        enforcement resumes on its own. Nothing to switch, nothing to remember.
+                    </p>
+                    <ul class="small">
+                        <li><strong>You will know it happened.</strong> A banner appears on the
+                            <a href="/manage/index.php">Dashboard</a>, the CAPTCHA card shows the status and how
+                            many requests were let through, and the change is recorded in the
+                            <a href="#activity-log">Activity Log</a> &mdash; once when it starts and once when
+                            it ends, never one entry per visitor.</li>
+                        <li><strong>It is not &ldquo;protection off&rdquo;.</strong> Every limit that guarded
+                            these forms before the challenge existed is still enforced.</li>
+                        <li><strong>Only the server&rsquo;s own checks can open it.</strong> A visitor&rsquo;s
+                            browser can tell us the widget would not load, and that only makes the server go
+                            and look sooner &mdash; a browser can never talk its own way past the challenge,
+                            because otherwise so could a bot.</li>
+                        <li><strong>You can opt a form out.</strong> Each form has a &ldquo;keep strict during
+                            a provider outage&rdquo; tick-box if you would rather it fail than let anyone
+                            through. Registration is the one people most often want sealed; sign-in is the one
+                            you almost certainly do not.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> the check answers &ldquo;can <em>our server</em> reach the
+                        provider?&rdquo; If the provider is fine for us but blocked for some visitors &mdash;
+                        an ad-blocker, a school or office filter, a regional outage &mdash; those visitors are
+                        still refused, and the status still reads healthy. The &ldquo;browsers reporting the
+                        widget would not load&rdquo; count on the card is your only clue that this is
+                        happening.
+                    </div>
+
+                    <h3 class="h6">Wrong secret key &ne; outage</h3>
+                    <p class="small">
+                        If the secret key is mistyped, the provider is perfectly healthy and simply rejects
+                        every check. That would refuse every real visitor forever with nothing obviously
+                        wrong. The site detects this specific case, says so plainly on the card and the
+                        Dashboard (&ldquo;the provider is rejecting our secret key&rdquo;), and lets people
+                        through in the meantime so the site is not bricked by a typo. Waiting will not fix
+                        it &mdash; re-paste the key.
+                    </p>
+
+                    <h3 class="h6">If you are ever locked out &mdash; the emergency switch</h3>
+                    <p>
+                        Guarding <strong>both</strong> Login and Admin login means every route into an admin
+                        session goes through the challenge. Normally that is safe, because of the fallback
+                        above. But if you have also marked those forms &ldquo;keep strict&rdquo;, or the key is
+                        wrong in a way that has not been noticed yet, nobody can sign in to undo it.
+                    </p>
+                    <p>The way back in needs no database and no working login:</p>
+                    <ol>
+                        <li>Connect over SFTP with the credentials the site is deployed with.</li>
+                        <li>Create an <strong>empty</strong> file called <code>CAPTCHA_DISABLED</code> in the
+                            private <code>includes/</code> folder (the same folder as <code>captcha.php</code>).</li>
+                        <li>The challenge switches off completely and immediately, everywhere.</li>
+                        <li>Sign in, fix the setting, then delete the file to switch it back on.</li>
+                    </ol>
+                    <p class="small text-secondary">
+                        That folder is not reachable from the web, so a visitor can neither create the file
+                        nor tell whether it exists. Its presence can only ever <em>switch the challenge
+                        off</em> &mdash; it can never enable or bypass anything else.
+                    </p>
+
+                    <div class="gotcha small">
+                        <strong>Before you tick anything:</strong> the native apps do not show a challenge
+                        yet. Guarding sign-up, sign-in, password reset or email login will break those flows
+                        in the iOS/Android apps until they do. Song requests and Admin login are web-only and
+                        safe to guard today. Each tick-box on the card spells out its own consequence.
+                    </div>
                 </section>
 
                 <section id="native-api" class="help-section card-admin mb-4">

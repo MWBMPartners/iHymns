@@ -944,10 +944,33 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
                 $formsCsv = implode(',', $formsOut);
 
-                $changedKeys = [CAPTCHA_SETTING_PROVIDER, CAPTCHA_SETTING_SITE_KEY, CAPTCHA_SETTING_FORMS];
+                /* The outage-strict opt-out (owner decision D-F1 = A: the
+                   default is that EVERYTHING degrades open, so this list ships
+                   and stays empty until an admin deliberately seals a form).
+                   Validated exactly like the enabled list — ⊆ captchaFormKeys(),
+                   unknown keys dropped rather than fatal — and stored as CSV
+                   (rule #20: a growable vocabulary is never an ENUM, so opting a
+                   form in later is a tick, not a schema change).
+                   Deliberately NOT intersected with $formsOut: leaving a
+                   strict mark on a form that is currently un-ticked is
+                   harmless (it is only ever read for a form being gated) and
+                   means un-ticking and re-ticking a form does not silently
+                   discard the admin's stricter choice. */
+                $postedStrict = (array)($_POST['captcha_strict_forms'] ?? []);
+                $strictOut    = [];
+                foreach ($postedStrict as $f) {
+                    $f = trim((string)$f);
+                    if (in_array($f, $validForms, true) && !in_array($f, $strictOut, true)) {
+                        $strictOut[] = $f;
+                    }
+                }
+                $strictCsv = implode(',', $strictOut);
+
+                $changedKeys = [CAPTCHA_SETTING_PROVIDER, CAPTCHA_SETTING_SITE_KEY, CAPTCHA_SETTING_FORMS, CAPTCHA_SETTING_STRICT_FORMS];
                 $saveSetting($db, CAPTCHA_SETTING_PROVIDER, $provIn);
                 $saveSetting($db, CAPTCHA_SETTING_SITE_KEY, $siteIn);
                 $saveSetting($db, CAPTCHA_SETTING_FORMS, $formsCsv);
+                $saveSetting($db, CAPTCHA_SETTING_STRICT_FORMS, $strictCsv);
                 if ($secretIn !== '') {
                     $changedKeys[] = CAPTCHA_SETTING_SECRET_KEY;
                     $saveSetting($db, CAPTCHA_SETTING_SECRET_KEY, $secretIn);
@@ -957,9 +980,60 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         ['keys' => $changedKeys, 'forms' => $formsCsv], 'success'); /* key NAMES + form list only — never the secret VALUE */
                 }
                 $saveSuccess = 'CAPTCHA settings saved.';
+
+                /* THE BOTH-DOORS WARNING (a heads-up, never a block). Ticking
+                   BOTH the public sign-in and the /manage sign-in means every
+                   route into an admin session runs through the challenge — so
+                   if the widget cannot load AND the grace window cannot open
+                   (the form is in the strict list, or the provider is up but
+                   rejecting our secret in a way we have not yet observed),
+                   nobody can sign in to undo it. Blocking the combination would
+                   be paternalistic: the grace window plus the break-glass file
+                   make it survivable, and an admin may have good reason. So we
+                   name the recovery instead. */
+                if (in_array('login', $formsOut, true) && in_array('manage_login', $formsOut, true)) {
+                    $saveWarning = 'Both sign-in doors are now challenge-gated. If the provider fails, '
+                        . 'the outage grace window normally lets people back in automatically — but if '
+                        . 'you have also marked those forms strict, or the provider is rejecting the '
+                        . 'secret key, the only way back in is the CAPTCHA_DISABLED break-glass file '
+                        . '(drop an empty file of that name into the private includes/ folder over SFTP). '
+                        . 'See the note under "If you are ever locked out" below.';
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_captcha] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
+            }
+        } elseif ($action === 'captcha_probe') {
+            /* "Check provider now" — the health strip's manual probe.
+               THE HONESTY RULE (the intappsForceRefresh() precedent,
+               includes/intapps_client.php): a diagnostic button must never
+               silently do nothing. This bypasses the every-30-seconds interval
+               floor deliberately — an operator on this page is trying to find
+               out what is wrong, and a backoff clause quietly matching is at its
+               most useless there — and it ALWAYS reports either a verdict or an
+               explicit "could not check". */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+            try {
+                $probeCfg = captchaConfig();
+                if ($probeCfg === null) {
+                    $saveError = 'CAPTCHA is not configured (or the CAPTCHA_DISABLED break-glass file is present), so there is nothing to check.';
+                } else {
+                    $probeRes = captchaForceProbe($probeCfg);
+                    if ($probeRes === null) {
+                        $saveError = 'Could not check the provider: this server has no usable outbound HTTP client. Nothing was recorded.';
+                    } elseif ($probeRes['status'] === 'up') {
+                        $saveSuccess = 'Provider checked just now — reachable and answering. Normal enforcement.';
+                    } elseif ($probeRes['status'] === 'misconfig') {
+                        $saveError = 'The provider answered, and REJECTED our secret key. Paste the correct secret key above — this is a configuration error, not an outage.';
+                    } else {
+                        $saveWarning = 'Provider checked just now — NOT reachable from this server (curl errno '
+                            . (int)$probeRes['errno'] . ', HTTP ' . (int)$probeRes['httpStatus'] . '). '
+                            . 'Gated forms will fall back to the ordinary rate limits until it answers again.';
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log('[manage configuration captcha_probe] ' . $e->getMessage());
+                $saveError = 'Provider check failed: ' . $e->getMessage();
             }
         } elseif ($action === 'save_webhooks') {
             /* Outbound partner-webhooks platform (#1909). Three settings + an
@@ -1172,6 +1246,19 @@ $captchaSecretSet     = ((string)(getAppSetting(CAPTCHA_SETTING_SECRET_KEY, '') 
 $captchaEnabledFormsV = captchaEnabledFormsList();
 $captchaConfiguredNow = captchaConfigured();
 $captchaProvidersReg  = captchaProviders();
+
+/* Outage-fallback render prep (#947/#340 outage fallback). BOTH reads are
+   passive — getAppSetting() only, no probe, no outbound call from a page
+   render, ever. The only thing on this page that talks to the provider is the
+   explicit "Check provider now" button. */
+$captchaStrictFormsV  = captchaOutageStrictForms();
+$captchaHealthV       = captchaHealthState();
+$captchaHealthChecked = (int)($captchaHealthV['checkedAt'] ?? 0);
+$captchaHealthStatusV = (string)($captchaHealthV['status'] ?? 'up');
+/* "Is the grace window open RIGHT NOW?" answered by the SAME pure function the
+   gate uses (rule #35 — the card can never disagree with enforcement, because
+   there is only one implementation of the verdict). */
+$captchaWindowOpen    = captchaOutageDecision($captchaHealthV, time()) === 'admit';
 
 /* #1909 — outbound-webhooks card render prep. webhook_admin.php pulls in the
    engine (constants + gates + webhookDrainHealth()). All reads are gate/schema
@@ -1593,8 +1680,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <!-- ===========================
          CAPTCHA SECTION (#947/#340) — dormant until a provider + both keys + a form
+         The id is the deep-link target for the dashboard's provider-health
+         banner (manage/index.php) — rule #33: a link another page emits is a
+         contract, so the anchor lives here rather than being assumed.
          =========================== -->
-    <div class="card bg-body-tertiary border-secondary mb-4">
+    <div class="card bg-body-tertiary border-secondary mb-4" id="captcha">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
@@ -1616,6 +1706,83 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     Pick a provider, paste its site key + secret key (create an account with the provider
                     first), then tick the forms to guard. The challenge goes live the moment all three are set.
                 </p>
+            <?php else: ?>
+                <?php
+                /* PROVIDER HEALTH STRIP. Rendered only when configured, and
+                   built entirely from the stored state — this page never
+                   probes on render (an admin loading Settings must not trigger
+                   an outbound call). The badge wording deliberately names the
+                   REMEDY, not the symptom: "secret rejected" and "unreachable"
+                   need completely different actions from an operator. */
+                $hsBadgeClass = 'bg-success';
+                $hsBadgeText  = 'Provider healthy';
+                $hsIcon       = 'bi-check-circle';
+                if ($captchaHealthChecked === 0) {
+                    $hsBadgeClass = 'bg-secondary';
+                    $hsBadgeText  = 'Not yet checked';
+                    $hsIcon       = 'bi-question-circle';
+                } elseif ($captchaHealthStatusV === 'misconfig') {
+                    $hsBadgeClass = 'bg-danger';
+                    $hsBadgeText  = 'Secret key rejected by the provider';
+                    $hsIcon       = 'bi-key';
+                } elseif ($captchaHealthStatusV === 'down') {
+                    $hsBadgeClass = 'bg-warning text-dark';
+                    $hsBadgeText  = 'Provider unreachable from this server';
+                    $hsIcon       = 'bi-exclamation-triangle';
+                }
+                ?>
+                <div class="border-start border-3 <?= $captchaHealthStatusV === 'up' ? 'border-success' : 'border-warning' ?> ps-2 mb-3">
+                    <p class="small mb-1">
+                        <span class="badge <?= $hsBadgeClass ?>"><i class="bi <?= $hsIcon ?> me-1"></i><?= htmlspecialchars($hsBadgeText, ENT_QUOTES, 'UTF-8') ?></span>
+                        <?php if ($captchaWindowOpen): ?>
+                            <span class="badge bg-warning text-dark ms-1">Grace window OPEN</span>
+                        <?php endif; ?>
+                        <span class="text-secondary ms-2">
+                            <?= $captchaHealthChecked > 0
+                                ? 'Last checked ' . htmlspecialchars(date('j M Y, H:i', $captchaHealthChecked), ENT_QUOTES, 'UTF-8')
+                                : 'No check has run yet — one runs automatically the first time a challenge is refused.' ?>
+                        </span>
+                    </p>
+                    <?php if ($captchaWindowOpen): ?>
+                        <p class="small mb-1">
+                            Gated forms are currently letting requests through <strong>without</strong> a challenge,
+                            <?php if (!empty($captchaHealthV['downSince'])): ?>
+                                since <?= htmlspecialchars(date('j M Y, H:i', (int)$captchaHealthV['downSince']), ENT_QUOTES, 'UTF-8') ?>,
+                            <?php endif; ?>
+                            because this server has confirmed the provider is not answering. The per-IP,
+                            per-account and per-identifier rate limits, the honeypot and the daily caps
+                            are all still enforced underneath — this is the protection level these forms
+                            had before the challenge was added, not "no protection". It closes by itself
+                            the moment the provider answers again.
+                        </p>
+                    <?php elseif ($captchaHealthStatusV === 'misconfig'): ?>
+                        <p class="small mb-1">
+                            The provider is perfectly healthy and is telling us the <strong>secret key</strong>
+                            above is wrong. This is not an outage — no amount of waiting will fix it.
+                            Paste the correct secret key and save.
+                        </p>
+                    <?php endif; ?>
+                    <p class="small text-secondary mb-1">
+                        Requests admitted since this status began: <strong><?= (int)($captchaHealthV['admitCount'] ?? 0) ?></strong>.
+                        Browsers reporting the widget would not load: <strong><?= (int)($captchaHealthV['hintCount'] ?? 0) ?></strong>.
+                        <?php if ((int)($captchaHealthV['consecutiveFailures'] ?? 0) > 0): ?>
+                            Consecutive failed checks: <strong><?= (int)$captchaHealthV['consecutiveFailures'] ?></strong>.
+                        <?php endif; ?>
+                    </p>
+                    <p class="small text-secondary mb-2">
+                        <i class="bi bi-info-circle me-1"></i>This answers &ldquo;can <em>this server</em> reach the
+                        provider?&rdquo; If the provider is up for us but blocked for some visitors (an ad-blocker, a
+                        corporate filter, a regional outage), the status stays healthy and those visitors are still
+                        refused &mdash; the &ldquo;widget would not load&rdquo; count above is the only sign of it.
+                    </p>
+                    <form method="post" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="hidden" name="action" value="captcha_probe">
+                        <button type="submit" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-arrow-repeat me-1"></i>Check provider now
+                        </button>
+                    </form>
+                </div>
             <?php endif; ?>
             <form method="post" class="row g-3 align-items-end mb-2">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -1651,12 +1818,21 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <label class="form-label mb-1">Guard these forms</label>
+                    <p class="form-text small mt-0 mb-2">
+                        If the provider ever goes down, a guarded form normally falls back to the ordinary
+                        rate limits rather than locking people out &mdash; automatically, and only while
+                        <em>this server</em> has confirmed the provider is not answering. Tick
+                        &ldquo;keep strict&rdquo; on a form you would rather see fail than let through
+                        during such an outage.
+                    </p>
                     <div class="row g-2">
                         <?php foreach (captchaFormKeys() as $fKey): ?>
                             <?php
                             $fMeta   = $captchaFormMeta[$fKey] ?? ['label' => $fKey, 'caption' => ''];
                             $fId     = 'captcha_form_' . preg_replace('/[^a-z0-9_]/', '', (string)$fKey);
+                            $fStrId  = 'captcha_strict_' . preg_replace('/[^a-z0-9_]/', '', (string)$fKey);
                             $fOn     = in_array($fKey, $captchaEnabledFormsV, true);
+                            $fStrict = in_array($fKey, $captchaStrictFormsV, true);
                             ?>
                             <div class="col-md-6">
                                 <div class="form-check">
@@ -1669,6 +1845,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                     <?php if (($fMeta['caption'] ?? '') !== ''): ?>
                                         <div class="form-text small"><?= htmlspecialchars((string)$fMeta['caption'], ENT_QUOTES, 'UTF-8') ?></div>
                                     <?php endif; ?>
+                                    <div class="form-check form-check-inline mt-1 ms-1">
+                                        <input class="form-check-input" type="checkbox" name="captcha_strict_forms[]"
+                                               value="<?= htmlspecialchars((string)$fKey, ENT_QUOTES, 'UTF-8') ?>"
+                                               id="<?= htmlspecialchars($fStrId, ENT_QUOTES, 'UTF-8') ?>"<?= $fStrict ? ' checked' : '' ?>>
+                                        <label class="form-check-label small text-secondary" for="<?= htmlspecialchars($fStrId, ENT_QUOTES, 'UTF-8') ?>">
+                                            Keep strict during a provider outage
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -1680,6 +1864,36 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </button>
                 </div>
             </form>
+
+            <details class="small mt-3">
+                <summary class="text-secondary">If you are ever locked out &mdash; the emergency switch</summary>
+                <div class="mt-2">
+                    <p class="mb-2">
+                        Guarding <strong>both</strong> sign-in forms (Login and Admin login) means every way into an
+                        admin session goes through the challenge. Normally that is safe: if the provider goes down,
+                        the fallback above lets people back in on their own. But if the challenge is broken in a way
+                        the fallback cannot cover &mdash; a wrong secret key you have not noticed yet, or forms you
+                        have marked &ldquo;keep strict&rdquo; &mdash; nobody can sign in to undo it.
+                    </p>
+                    <p class="mb-2">
+                        The way back in needs no database and no working login:
+                    </p>
+                    <ol class="mb-2">
+                        <li>Connect over SFTP with the same credentials the site is deployed with.</li>
+                        <li>Create an <strong>empty</strong> file called <code>CAPTCHA_DISABLED</code> inside the
+                            private <code>includes/</code> folder, next to <code>captcha.php</code>.</li>
+                        <li>CAPTCHA switches off completely and instantly &mdash; every form goes back to how it
+                            behaved before the challenge was added. Nothing else changes, and no other setting is
+                            touched.</li>
+                        <li>Sign in, fix the problem here, then delete the file to switch the challenge back on.</li>
+                    </ol>
+                    <p class="mb-0 text-secondary">
+                        That folder is not reachable from the web, so the file cannot be created or read by a
+                        visitor. Its presence can only ever <em>disable</em> the challenge &mdash; it can never
+                        enable or bypass anything else.
+                    </p>
+                </div>
+            </details>
         </div>
     </div>
 

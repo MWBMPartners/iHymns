@@ -4883,14 +4883,26 @@ paths:
                     type: object
                     description: >-
                       CAPTCHA challenge configuration for web clients (#947/#340).
-                      **Emitted ONLY when a provider + both keys are configured
-                      AND at least one form is gated** — the key is ABSENT (not
-                      an empty object) when dormant, which is the shipped default
-                      on every environment (so a dormant install's app_status is
-                      byte-identical to before this feature). Carries the PUBLIC
-                      facts a browser needs to draw + read the widget; the secret
-                      key is NEVER emitted. `js/modules/captcha-widget.js` reads
-                      this to decide which forms to challenge and how to render.
+                      **Emitted whenever a provider + both keys are configured** —
+                      the key is ABSENT (not an empty object) when dormant, which
+                      is the shipped default on every environment (so a dormant
+                      install's app_status is byte-identical to before this
+                      feature). NOTE: this documentation previously said the emit
+                      ALSO required at least one form to be gated. It does not,
+                      and never did: `captchaClientConfig()` returns a non-null
+                      object with `forms: []` as soon as the provider and both
+                      keys are saved. A client must therefore treat an empty
+                      `forms` array as "configured, but nothing is challenged
+                      yet" rather than assuming the key's presence implies a
+                      gated form. Carries the PUBLIC facts a browser needs to
+                      draw + read the widget; the secret key is NEVER emitted.
+                      `js/modules/captcha-widget.js` reads this to decide which
+                      forms to challenge and how to render.
+
+                      Deliberately absent from this object: any provider-health
+                      or outage-grace-window state. The server's outage fallback
+                      (#947/#340) is invisible to clients by design — telling a
+                      client the gate is temporarily open would be telling a bot.
                     properties:
                       provider:
                         type: string
@@ -13461,6 +13473,75 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "405":
+          description: POST method required
+
+  # ---------------------------------------------------------------------------
+  # CAPTCHA — provider-outage telemetry (#947/#340 outage fallback)
+  # ---------------------------------------------------------------------------
+
+  /api.php?action=captcha_widget_health:
+    post:
+      operationId: captchaWidgetHealth
+      tags: [System]
+      summary: Report that the CAPTCHA widget failed to load (anonymous telemetry)
+      description: |
+        Fired by `js/modules/captcha-widget.js` when the provider's widget
+        script cannot be loaded or rendered in the browser.
+
+        **This endpoint cannot let anybody through, and returns nothing a
+        client can act on.** It does exactly two things: increments a
+        telemetry counter, and asks the server to re-check the provider
+        itself (a rate-limited outbound probe the server was entitled to
+        make anyway). The server's decision about whether to admit
+        challenge-less requests during an outage is derived **exclusively**
+        from its own observations — never from a request. A client-asserted
+        "the widget failed" flag would be a universal bypass the moment a
+        bot copied it, so this reports; it does not claim.
+
+        Consequently the response is **identical in every state** (`{ok:
+        true}`), including when the rate limit has been hit — it is never an
+        oracle for whether a grace window is open.
+
+        **Dormant:** answers `400` when no CAPTCHA provider is configured, so
+        the endpoint does not observably exist on an unconfigured install
+        (which is every install by default).
+
+        **Rate limit:** 5 requests / 5 minutes per IP. Exceeding it is
+        silently ignored (still `200 {ok: true}`).
+
+        Not CSRF-protected, deliberately: it changes no user-visible state,
+        and it must remain callable from precisely the broken client path
+        that produces it.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [captcha_widget_health] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                form:
+                  type: string
+                  description: >-
+                    Optional. The gated form whose challenge failed to render.
+                    Validated against the server's form vocabulary and then
+                    DISCARDED — it reaches no decision and is not stored.
+                  enum: [registration, login, password_reset, email_login, song_request, manage_login]
+      responses:
+        "200":
+          description: >-
+            Always `{ok: true}` — whether the hint was recorded, ignored as
+            rate-limited, or acted on. Carries no state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: No CAPTCHA provider configured (dormant), or an unknown `form` value.
         "405":
           description: POST method required
 

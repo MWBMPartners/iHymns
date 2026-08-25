@@ -19686,6 +19686,76 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * CAPTCHA WIDGET-HEALTH HINT (the outage grace window's early warning)
+         *
+         * ELI5: when a visitor's browser cannot load the human-check widget, it
+         * quietly tells us so — and all that does is make the server go and
+         * check the provider for itself, a bit sooner than it otherwise would.
+         *
+         * ⚠️ THIS ENDPOINT CAN NEVER LET ANYBODY THROUGH. It is the one place
+         * in this feature a CLIENT touches the outage machinery, so the rule
+         * matters most here: "the provider is down" and "a bot omitted the
+         * token" are indistinguishable if the evidence comes from the client,
+         * so a request-borne claim must never move an allow decision — it would
+         * be a one-line universal bypass the moment a bot copied it. What this
+         * case is allowed to do is exactly two things: increment a telemetry
+         * counter, and ASK THE SERVER TO LOOK. The looking
+         * (captchaHealthEnsureFresh) makes an outbound probe the server was
+         * entitled to make anyway, and the probe's verdict — not this request —
+         * is what any later admission derives from. The response is identical
+         * whatever the state, so it leaks nothing either.
+         * Guard-enforced: tests/php/test-captcha-gate.php §8 asserts this case
+         * body calls no decision function, and that captchaOutageDecision() has
+         * exactly ONE call site tree-wide (captchaGate).
+         *
+         * WHY IT EARNS ITS KEEP: the widget fails in the BROWSER seconds before
+         * the first token-less submission reaches us, and during a pure
+         * widget-load outage the server would otherwise observe nothing at all
+         * (token-less requests are refused with no network call). This turns
+         * "the window opens after someone is refused" into "the window is
+         * usually already open when they submit".
+         *
+         * NOT CSRF-GATED, deliberately: rule #29 targets state-changing writes,
+         * and the only state here is a rate-limited counter plus a probe with
+         * no user-visible effect. It must also remain callable from precisely
+         * the broken path that produces it.
+         *
+         * DORMANT-GATED: on an unconfigured install this 400s like any unknown
+         * action would — the endpoint does not observably exist.
+         * ----------------------------------------------------------------- */
+        case 'captcha_widget_health': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            if (captchaConfig() === null) { sendJson(['error' => 'Not available.'], 400); break; }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+            $cwhIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            /* Per-IP so one address cannot fill tblLoginAttempts. Not per
+               presence/session — there is nothing to protect but the table. */
+            if (!checkRateLimit(CAPTCHA_RATE_ACTION_HINT, $cwhIp, CAPTCHA_HINT_MAX_PER_WINDOW, CAPTCHA_HINT_WINDOW_SECONDS)) {
+                sendJson(['ok' => true]);   /* same body as success — never a probe oracle */
+                break;
+            }
+            recordRateLimitHit(CAPTCHA_RATE_ACTION_HINT, $cwhIp);
+
+            /* The form key is read only to be VALIDATED and dropped: it exists
+               so a future admin surface can say WHICH form users are failing
+               on, and validating it keeps the wire contract honest today. It
+               reaches no decision and is not stored. */
+            $cwhBody = json_decode((string)file_get_contents('php://input'), true);
+            $cwhForm = is_array($cwhBody) ? trim((string)($cwhBody['form'] ?? '')) : '';
+            if ($cwhForm !== '' && !in_array($cwhForm, captchaFormKeys(), true)) {
+                sendJson(['error' => 'Unknown form.'], 400);
+                break;
+            }
+
+            captchaHealthNoteHint();                        /* telemetry counter only */
+            captchaHealthEnsureFresh((array)captchaConfig()); /* ask the server to LOOK */
+
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:

@@ -27,10 +27,34 @@
  * (an external `src` is allowed by `script-src <origin>`, unlike an inline
  * script — rule #30).
  *
+ * WHEN THE WIDGET WON'T LOAD, IT SAYS SO — AND THAT IS ALL IT SAYS. Every
+ * failure path below fires one anonymous, fire-and-forget hint at
+ * `?action=captcha_widget_health`. That hint is TELEMETRY AND A NUDGE, never
+ * evidence: all it can do server-side is bump a counter and ask the server to
+ * probe the provider itself, sooner than it otherwise would. It cannot let
+ * anybody through — a claim carried in a request would be a universal bypass
+ * the moment a bot copied it, so the server's grace-window decision reads only
+ * the server's OWN observations. Nothing here reads the reply, and no code path
+ * branches on it (guard-enforced: tests/test-captcha-client.js §4).
+ *
+ * Why bother at all: the widget dies in the BROWSER seconds before the first
+ * token-less submission arrives, and during a pure widget-load outage the
+ * server would otherwise see nothing whatsoever (a token-less request is
+ * refused with no network call). The hint turns "the outage window opens after
+ * someone has already been refused" into "it is usually open before they
+ * submit".
+ *
  * @see includes/captcha.php (the server core + the app_status emit)
  * @see .claude/account-security-1027-947-340-plan.md §3.8
+ * @see .claude/captcha-native-and-outage-plan.md §3.4-D (the hint's ONE job)
  * @link https://developers.cloudflare.com/turnstile/get-started/client-side-rendering/
  */
+
+/* rule #31 — same-origin requests go through the shared client, NEVER bare
+   fetch() and NEVER a window.fetch override, so cross-cutting request concerns
+   are attached by structure rather than by a side effect that may or may not
+   have been installed on this route. */
+import { apiFetch } from '../utils/api-client.js';
 
 /* The body key the token travels under on every gated JSON endpoint. Mirrors
    IHYMNS_CAPTCHA_BODY_KEY in includes/captcha.php — PHP<->JS lockstep-guarded
@@ -47,6 +71,41 @@ let _config = null;
 /** @type {Promise<void> | null} Memoised provider-script load. */
 let _scriptPromise = null;
 
+/** @type {boolean} One hint per page load — see _reportWidgetFailure(). */
+let _hintSent = false;
+
+/**
+ * Tell the server this browser could not put a challenge on screen.
+ *
+ * FIRE AND FORGET, LITERALLY: the promise is discarded, rejections are
+ * swallowed, and the caller does not await it. There is deliberately no return
+ * value, because there is no answer worth having — the server replies the same
+ * `{ok:true}` in every state (telling the client whether the grace window is
+ * open would be telling a bot), and no client behaviour may depend on it. The
+ * challenge simply does not render, the form submits without a token, and the
+ * SERVER decides what that means.
+ *
+ * ONE PER PAGE LOAD: a page with several gated forms, or a mount retried after
+ * a failed submit, would otherwise send a burst of identical hints. The server
+ * caps them per IP anyway; this keeps a normal page from ever reaching that cap
+ * and turning a real signal into a throttled one.
+ *
+ * @param {string} form the captchaFormKeys() value that failed to render
+ */
+function _reportWidgetFailure(form) {
+    if (!_config || _hintSent) return;
+    _hintSent = true;
+    try {
+        apiFetch('/api?action=captcha_widget_health', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ form: form || '' }),
+        }).catch(() => { /* the report failing is not worth reporting */ });
+    } catch {
+        /* Never let telemetry break the form it is describing. */
+    }
+}
+
 /**
  * Wire the module from the server's app_status payload. Called once at boot
  * (app.js). Absent `captcha` key ⇒ dormant.
@@ -57,6 +116,7 @@ export function initCaptcha(appStatus) {
         ? appStatus.captcha
         : null;
     _scriptPromise = null;
+    _hintSent = false;
 }
 
 /**
@@ -114,10 +174,21 @@ export async function mountCaptcha(hostEl, form) {
     try {
         await _loadProviderScript();
     } catch {
-        return null;   /* script blocked / offline — no token; the server 403s if it's gated */
+        /* Script blocked / provider unreachable / offline — no token. The
+           server 403s if it's gated, UNLESS its own probes confirm the provider
+           is genuinely down, in which case the grace window admits on the
+           ordinary rate limits. Either way that is the server's call: all we do
+           is say what we saw. */
+        _reportWidgetFailure(form);
+        return null;
     }
     const g = window[_config.renderGlobal];
-    if (!g || typeof g.render !== 'function') return null;
+    if (!g || typeof g.render !== 'function') {
+        /* The script loaded but its global never appeared — a partially-served
+           or truncated bundle, which is an outage shape too. */
+        _reportWidgetFailure(form);
+        return null;
+    }
 
     hostEl.innerHTML = '';
     const el = document.createElement('div');
@@ -127,7 +198,10 @@ export async function mountCaptcha(hostEl, form) {
     try {
         widgetId = g.render(el, { sitekey: _config.siteKey });
     } catch {
+        /* The provider's own render() threw — its back end is reachable enough
+           to serve the script but not to draw a challenge. */
         hostEl.innerHTML = '';
+        _reportWidgetFailure(form);
         return null;
     }
 

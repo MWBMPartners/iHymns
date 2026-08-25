@@ -123,6 +123,30 @@ try {
     $stmt->close();
 } catch (\Throwable $_e) {}
 
+/* CAPTCHA provider health (#947/#340 outage fallback) — a banner when the
+   challenge is configured but this server has observed the provider failing.
+   ⚠️ READ-ONLY AND FREE: two memoized getAppSetting() reads, no probe, no
+   outbound call. A dashboard must never be able to trigger a network request to
+   a third party, and the verdict itself comes from the SAME pure function the
+   gate uses, so this banner can never claim something enforcement disagrees
+   with (rule #35). Wrapped defensively so a dormant/blank install, or one whose
+   settings row does not exist yet, renders exactly as before. */
+$captchaHealthBanner = null;
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+    if (captchaConfigured()) {
+        $_chState = captchaHealthState();
+        if ((string)($_chState['status'] ?? 'up') !== 'up') {
+            $captchaHealthBanner = [
+                'status' => (string)$_chState['status'],
+                'open'   => captchaOutageDecision($_chState, time()) === 'admit',
+            ];
+        }
+    }
+} catch (\Throwable $_e) {
+    $captchaHealthBanner = null;   /* never let a status read break the dashboard */
+}
+
 $csrf = csrfToken();
 ?>
 <!DOCTYPE html>
@@ -141,6 +165,29 @@ $csrf = csrfToken();
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
+
+        <?php if ($captchaHealthBanner !== null): ?>
+            <div class="alert <?= $captchaHealthBanner['status'] === 'misconfig' ? 'alert-danger' : 'alert-warning' ?> alert-dismissible fade show" role="alert">
+                <?php if ($captchaHealthBanner['status'] === 'misconfig'): ?>
+                    <i class="bi bi-key me-1"></i>
+                    <strong>The bot-protection provider is rejecting our secret key.</strong>
+                    This is a settings mistake, not an outage &mdash; waiting will not fix it. Guarded forms are
+                    currently letting people through on the ordinary rate limits so nobody is locked out.
+                <?php else: ?>
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <strong>The bot-protection provider is not answering this server.</strong>
+                    <?php if ($captchaHealthBanner['open']): ?>
+                        Guarded forms are temporarily letting people through on the ordinary rate limits, so
+                        nobody is locked out. This clears itself as soon as the provider answers again.
+                    <?php else: ?>
+                        The last check failed, but it is now out of date &mdash; the next guarded request will
+                        re-check before deciding anything.
+                    <?php endif; ?>
+                <?php endif; ?>
+                <a href="/manage/configuration#captcha" class="alert-link">Open CAPTCHA settings</a>.
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        <?php endif; ?>
 
         <h1 class="h4 mb-1"><i class="bi bi-speedometer2 me-2"></i>Admin Portal</h1>
         <p class="text-secondary small mb-4">

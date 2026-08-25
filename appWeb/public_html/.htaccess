@@ -65,6 +65,19 @@ RewriteRule ^includes/ - [F,L]
     Require all denied
 </FilesMatch>
 
+# Block direct HTTP access to the CAPTCHA break-glass kill-file (#947/#340
+# outage fallback). Belt-and-braces: the file only ever lives in includes/,
+# which `RewriteRule ^includes/ - [F,L]` above already forbids outright. This
+# adds an ACCESS-PHASE deny keyed on the NAME, for the same reason #1906 gave
+# for the .md block: a rewrite-based deny can be L-stopped by an earlier
+# passthrough, whereas <FilesMatch>+Require runs in the authz phase and covers
+# the whole docroot wherever the file ends up. The file is always empty and
+# reveals nothing, but a 403 rather than a 200 means an outsider cannot even
+# probe whether the emergency switch is currently thrown.
+<FilesMatch "^CAPTCHA_DISABLED$">
+    Require all denied
+</FilesMatch>
+
 # Block access to hidden files (e.g., .gitkeep, .env)
 RewriteRule (^|/)\.(?!well-known) - [F,L]
 
