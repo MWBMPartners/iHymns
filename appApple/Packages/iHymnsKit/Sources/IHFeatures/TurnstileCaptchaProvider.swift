@@ -129,7 +129,13 @@ public final class TurnstileCaptchaProvider: CaptchaChallengeProviding {
 /// construction), so this is sound despite the compiler being unable to
 /// prove it structurally.
 final class TurnstileCoordinatorBox: @unchecked Sendable {
-    weak var coordinator: TurnstileWebView.Coordinator?
+    // ELI5: only this file may touch this slot, because what it holds is only
+    // visible inside this file.
+    // DETAILED: `fileprivate` is REQUIRED — `TurnstileWebView` is `private` at
+    // file scope in BOTH platform arms, so an `internal` property naming its
+    // nested `Coordinator` fails with "property must be declared fileprivate
+    // because its type uses a private type". Every user of it is in this file.
+    fileprivate weak var coordinator: TurnstileWebView.Coordinator?
 }
 
 /// The macOS `WKWebView` wrapper — `NSViewRepresentable`, since AppKit (not
@@ -207,8 +213,15 @@ extension TurnstileWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController
         let webView = WKWebView(frame: .zero, configuration: configuration)
-        webView.isOpaque = false
+        // ELI5: only the iPhone/iPad/Vision view has a "let the background
+        // show through" switch; the Mac one doesn't, so we only flip it here.
+        // DETAILED: keep `isOpaque` INSIDE this guard — `WKWebView` is a
+        // `UIView` on iOS/visionOS (settable) but an `NSView` on macOS, where
+        // `isOpaque` is GET-ONLY ("cannot assign to property"), and this helper
+        // is shared by BOTH representables. Never hoist it out; never use KVC
+        // to force macOS transparency (the widget paints its own background).
         #if os(iOS) || os(visionOS)
+        webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
         #endif

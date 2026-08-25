@@ -123,20 +123,27 @@ struct SessionControllerCaptchaTests {
             }
             #expect(await controller.state == .signedOut)
             /* ELI5: read the stored token out on its own line first, then check it.
-               Squashing these two lines back into `#expect(try await store.load() == nil)`
-               does not compile HERE, even though that exact one-liner is used ~90 times
-               elsewhere in this suite.
+               Don't squash these back into `#expect(try await store.load() == nil)`.
 
-               DETAIL: `withLock` is generic over throwing, so Swift INFERS whether this
-               closure throws from its statements. Every sibling test has a statement-level
-               `try` (a `try await controller.signIn(…)`), so their closures infer as
-               throwing and a `try` inside an `#expect` expansion has somewhere to
-               propagate. This closure has none: its only `try` sits inside the inner
-               closure handed to `#expect(throws:)`, which is a different scope. So the
-               closure infers as NON-throwing and `#expect`'s expansion — which places the
-               `try` inside `Testing.__checkValue(…)` — fails with "errors thrown from here
-               are not handled". Hoisting the call to a statement makes the closure
-               inferred-throwing and takes the `try` out of the macro, fixing both halves.
+               DETAIL: Apple CI rejected that one-liner HERE with "errors thrown from
+               here are not handled", pointing at `#expect`'s expansion — the `try`
+               lands inside `Testing.__checkValue(…)`. Hoisting the call to its own
+               statement takes the `try` out of the macro and compiles.
+
+               An earlier revision of this comment blamed closure throwing-INFERENCE.
+               That was WRONG and is corrected here rather than quietly deleted:
+               `MockTransportLock.withLock` declares its parameter explicitly as
+               `@Sendable () async throws -> Value` (MockTransportLock.swift:76), and
+               its own doc-block says the body is type-checked against that type
+               "unconditionally" — so there is no inference to get wrong. The true
+               mechanism is NOT established: the same one-liner appears ~90 times in
+               this suite, including in `SessionControllerTests.swift`, which compiled
+               in the same run. What IS established is the empirical fact above.
+
+               Consequence worth knowing: because the compiler stops early, we have no
+               proof the sibling assertion below would have compiled — it may simply
+               never have been reached. It is written in this same hoisted form for
+               that reason, not because it was observed to fail.
                See https://github.com/swiftlang/swift-testing (#expect expansion). */
             let persisted = try await store.load()
             #expect(persisted == nil)
@@ -174,7 +181,12 @@ struct SessionControllerCaptchaTests {
             // Attempt 2 — a genuinely DIFFERENT token — succeeds.
             try await controller.signIn(username: "jane", password: "hunter2", captchaToken: "fresh-token")
             #expect(await controller.state == .signedIn(token: "abc123"))
-            #expect(try await store.load() == "abc123")
+            /* Hoisted for the same reason as the sibling above, as insurance rather
+               than from observation: the compiler stops early, so this line was very
+               likely never reached in the run that flagged line 125 of this file. Two
+               lines cost nothing; another CI round-trip costs a merge into alpha. */
+            let persistedAfterRetry = try await store.load()
+            #expect(persistedAfterRetry == "abc123")
 
             let requests = seenRequests.all
             #expect(requests.count == 2)
