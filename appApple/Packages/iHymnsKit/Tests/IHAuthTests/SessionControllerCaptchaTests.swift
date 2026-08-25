@@ -122,7 +122,24 @@ struct SessionControllerCaptchaTests {
                 try await controller.signIn(username: "jane", password: "hunter2", captchaToken: "missing-or-stale")
             }
             #expect(await controller.state == .signedOut)
-            #expect(try await store.load() == nil)
+            /* ELI5: read the stored token out on its own line first, then check it.
+               Squashing these two lines back into `#expect(try await store.load() == nil)`
+               does not compile HERE, even though that exact one-liner is used ~90 times
+               elsewhere in this suite.
+
+               DETAIL: `withLock` is generic over throwing, so Swift INFERS whether this
+               closure throws from its statements. Every sibling test has a statement-level
+               `try` (a `try await controller.signIn(…)`), so their closures infer as
+               throwing and a `try` inside an `#expect` expansion has somewhere to
+               propagate. This closure has none: its only `try` sits inside the inner
+               closure handed to `#expect(throws:)`, which is a different scope. So the
+               closure infers as NON-throwing and `#expect`'s expansion — which places the
+               `try` inside `Testing.__checkValue(…)` — fails with "errors thrown from here
+               are not handled". Hoisting the call to a statement makes the closure
+               inferred-throwing and takes the `try` out of the macro, fixing both halves.
+               See https://github.com/swiftlang/swift-testing (#expect expansion). */
+            let persisted = try await store.load()
+            #expect(persisted == nil)
         }
     }
 
