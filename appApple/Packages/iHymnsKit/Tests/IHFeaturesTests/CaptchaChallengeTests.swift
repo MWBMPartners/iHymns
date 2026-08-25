@@ -125,6 +125,23 @@ struct AppRootViewModelCaptchaTests {
         return nil
     }
 
+    // ELI5: this helper has to be marked "runs on the main screen thread",
+    // because the thing it builds insists on being built there.
+    //
+    // DETAILED: `@MainActor` is REQUIRED, not decorative. `AppRootViewModel`
+    // is a `@MainActor @Observable` class (`AppRootViewModel.swift`), so its
+    // `init` is main-actor-isolated, and Swift 6 forbids calling it from a
+    // synchronous NON-isolated context — which is what this helper is without
+    // the attribute, since `AppRootViewModelCaptchaTests` is a plain
+    // (un-isolated) `@Suite` struct. Left off, this is:
+    // "error: call to main actor-isolated initializer ... in a synchronous
+    // nonisolated context". Every OTHER `makeViewModel()` in this test target
+    // (`AppRootViewModelFavoritesTests`/`…SetlistsTests`/`…AccountDeleteTests`)
+    // carries the same attribute for the same reason, and every call site
+    // correspondingly reads `try await makeViewModel()` — the `await` is what
+    // hops onto the main actor from `withLock`'s non-isolated closure.
+    // https://developer.apple.com/documentation/swift/mainactor
+    @MainActor
     private func makeViewModel() throws -> AppRootViewModel {
         let apiClient = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
         let sessionController = SessionController(tokenStore: InMemoryTokenStore(), apiClient: apiClient)
@@ -139,7 +156,7 @@ struct AppRootViewModelCaptchaTests {
     @Test("On a DORMANT install (app_status with no captcha key), captchaConfig stays nil and captchaRequired(for:) is false for every form — the scaffold is INERT")
     func dormantInstallStaysInert() async throws {
         try await MockTransportLock.shared.withLock {
-            let viewModel = try makeViewModel()
+            let viewModel = try await makeViewModel()
             MockURLProtocol.requestHandler = { request in
                 switch Self.action(of: request) {
                 case "app_status":
@@ -166,7 +183,7 @@ struct AppRootViewModelCaptchaTests {
     @Test("An OFFLINE/failing app_status call (transient failure) still leaves captchaConfig nil and never blocks sign-in restore")
     func failedAppStatusCallDegradesSafely() async throws {
         try await MockTransportLock.shared.withLock {
-            let viewModel = try makeViewModel()
+            let viewModel = try await makeViewModel()
             MockURLProtocol.requestHandler = { request in
                 switch Self.action(of: request) {
                 case "app_status":
@@ -188,7 +205,7 @@ struct AppRootViewModelCaptchaTests {
     @Test("On a CONFIGURED install, restoreSessionIfNeeded() populates captchaConfig from the real app_status shape")
     func configuredInstallPopulatesConfig() async throws {
         try await MockTransportLock.shared.withLock {
-            let viewModel = try makeViewModel()
+            let viewModel = try await makeViewModel()
             MockURLProtocol.requestHandler = { request in
                 switch Self.action(of: request) {
                 case "app_status":
