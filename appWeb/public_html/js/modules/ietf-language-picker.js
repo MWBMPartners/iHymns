@@ -31,6 +31,20 @@
  *     <datalist id="ietf-script-list-edit"></datalist>
  *     <datalist id="ietf-region-list-edit"></datalist>
  *   </div>
+ *
+ * #1907 (2026-08-25) — bootIetfLanguagePicker() no longer requires being
+ * called AFTER the caller has attached `rootEl` to the live document. It
+ * used to resolve each `<datalist>` via `document.getElementById(...)`
+ * exactly ONCE, at boot, into closure-captured `const`s — which permanently
+ * returned `null` for a picker booted on a still-detached subtree (two of
+ * this module's dynamic callers do exactly that: enrichment-panel.js's
+ * `buildIetfPicker()` and editor.js's `buildInlineIetfPicker()`), so no
+ * suggestion EVER rendered for those callers, silently, forever. Every
+ * datalist lookup is now re-resolved lazily, at the point it's actually
+ * used (see the `resolveList()` helper and its doc-comment inside
+ * `bootIetfLanguagePicker()` below), so the module self-heals the moment
+ * the caller attaches the subtree — no boot-order contract for callers to
+ * remember. Mutation-tested guard: tests/test-ietf-picker-detached-boot.js.
  */
 
 import { apiFetch } from '../utils/api-client.js';
@@ -221,14 +235,74 @@ export function bootIetfLanguagePicker(rootEl) {
     const tagPreview   = rootEl.querySelector('.ietf-tag-preview');
     const tagDisplay   = rootEl.querySelector('.ietf-tag-display');
     const tagOutput    = rootEl.querySelector('.ietf-tag-output');
-    const langList     = document.getElementById(langInput?.getAttribute('list'));
-    const scriptList   = document.getElementById(scriptInput?.getAttribute('list'));
-    const regionList   = document.getElementById(regionInput?.getAttribute('list'));
-    const variantList  = variantInput
-        ? document.getElementById(variantInput.getAttribute('list'))
-        : null;
 
     if (!langInput || !scriptInput || !regionInput || !tagOutput) return null;
+
+    /* ---- detached-boot fix (#1907, sibling of #1849) ---------------------
+     * ELI5: don't go hunting for a subtag's suggestion box the INSTANT the
+     * picker switches on — look it up fresh each time it's actually needed,
+     * because the box might not be plugged into the page yet.
+     *
+     * Detail: `rootEl` is only a LIVE part of the document when the caller
+     * has already attached it under <body> before calling this function.
+     * Two of the four dynamic builders in this codebase instead build a
+     * bare `document.createElement('div')`, call `bootIetfLanguagePicker()`
+     * on it immediately, and attach it to the document only LATER — once a
+     * curator opens the inline form: v1's `buildInlineIetfPicker()`
+     * (manage/editor/editor.js, called from the per-line language/
+     * translation inline forms) and v2's `buildIetfPicker()`
+     * (manage/editor/v2/enrichment-panel.js:116-150, called from
+     * `showLineLangForm()`/`showTranslationForm()`). Each subtag's
+     * <datalist> lives INSIDE that same detached subtree, addressed by
+     * `id=` — and `document.getElementById()` only ever searches the
+     * document (MDN: "must be part of the document tree" —
+     * https://developer.mozilla.org/en-US/docs/Web/API/Document/getElementById),
+     * never a detached subtree. The PRE-#1907 code resolved each datalist
+     * exactly once, right here at boot, into a `const`:
+     *   `const langList = document.getElementById(langInput.getAttribute('list'));`
+     * — on a detached `rootEl` that lookup permanently returns `null`, and
+     * a `const` can never be reassigned once the element is later attached.
+     * `rebuildDatalist(null, …)` then no-ops forever and `resolveCode()`
+     * (which reads `datalistEl?.options`) always falls through to raw typed
+     * text — so the picker LOOKS alive (the tag preview updates, Save
+     * works) but no suggestion EVER renders, and a malformed tag like
+     * "engli" saves unflagged. This is the owner's "no auto/live-search"
+     * report. The exact same class was already diagnosed and fixed for ONE
+     * site (the v2 Metadata tab) in #1849 — see the comment at
+     * manage/editor/v2/metadata-tab.js:1563-1578, which predicted the
+     * misread almost verbatim ("the picker works, it just never suggests
+     * anything"). That fix reordered the ONE caller (boot the picker only
+     * after `container.append()`); this fix instead makes the MODULE
+     * itself immune to call order, so every caller — past, present, and
+     * future — is covered without a boot-order contract to remember
+     * (CLAUDE.md rule #34: derive the fix from the class of bug, not a
+     * typed list of sites).
+     *
+     * The mechanism: `resolveList()` below does the SAME `getElementById`
+     * lookup the old code did, but on EVERY call instead of once at boot.
+     * The very first call made AFTER `rootEl` gets attached — in practice
+     * the user's first `focus`/`input` on one of the visible text inputs,
+     * since a detached element cannot receive real focus or typing in the
+     * first place — now succeeds where a boot-time capture never could.
+     * `setTag()` (used for saved-value pre-fill, and itself sometimes
+     * invoked synchronously right after boot while still detached — see
+     * enrichment-panel.js:142-144's `ctl.setTag(tag)`) routes through this
+     * same helper, so a pre-attach prefill degrades no worse than before
+     * (it shows the raw code instead of the friendly name until the next
+     * lookup — cosmetic only) while every lookup made once the user is
+     * actually interacting now works. Callers that already boot AFTER
+     * attaching — `metadata-tab.js`'s #1849 fix, `songbooks.php`'s two
+     * `document.querySelector(...)`-then-boot call sites, and
+     * `editor/index.php`'s static `edit-song` picker (its markup comes
+     * from the server-rendered `partials/ietf-language-picker.php`, so
+     * it's already live when this module boots it) — are unaffected:
+     * `resolveList()` finds the exact same element a boot-time
+     * `getElementById` would have, just resolved a little later. */
+    function resolveList(inputEl) {
+        if (!inputEl) return null;
+        const listId = inputEl.getAttribute('list');
+        return listId ? document.getElementById(listId) : null;
+    }
 
     const lookup = cachedLookup();
 
@@ -237,7 +311,9 @@ export function bootIetfLanguagePicker(rootEl) {
     const loadLanguages = async () => {
         const data = await lookup('all-languages',
             () => fetchJson(LANG_URL));
-        rebuildDatalist(langList, data?.languages || [],
+        /* resolveList(langInput), not a captured `langList` — see the
+           detached-boot comment above bootIetfLanguagePicker(). */
+        rebuildDatalist(resolveList(langInput), data?.languages || [],
             'code', 'name', 'nativeName');
     };
 
@@ -249,7 +325,7 @@ export function bootIetfLanguagePicker(rootEl) {
         scriptTimer = setTimeout(async () => {
             const url = `${SCRIPT_URL}&q=${encodeURIComponent(q)}&limit=20`;
             const data = await fetchJson(url);
-            rebuildDatalist(scriptList, data?.suggestions || [],
+            rebuildDatalist(resolveList(scriptInput), data?.suggestions || [],
                 'code', 'name', 'nativeName');
         }, DEBOUNCE_MS);
     };
@@ -260,7 +336,7 @@ export function bootIetfLanguagePicker(rootEl) {
         regionTimer = setTimeout(async () => {
             const url = `${REGION_URL}&q=${encodeURIComponent(q)}&limit=20`;
             const data = await fetchJson(url);
-            rebuildDatalist(regionList, data?.suggestions || [],
+            rebuildDatalist(resolveList(regionInput), data?.suggestions || [],
                 'code', 'name');
         }, DEBOUNCE_MS);
     };
@@ -270,10 +346,17 @@ export function bootIetfLanguagePicker(rootEl) {
        so we load once on first focus and don't re-fetch per
        keystroke. Same shape as loadLanguages above. */
     const loadVariants = async () => {
-        if (!variantInput || !variantList) return;
+        /* No `!variantList` early-out any more — a detached picker's
+           datalist can't be resolved yet, but the fetch is cheap
+           (cachedLookup() dedups it) and rebuildDatalist() itself
+           already no-ops safely on a null element (see its own
+           `if (!datalistEl) return;`), so there is nothing to guard
+           against here beyond "does this picker even have a variant
+           input at all". */
+        if (!variantInput) return;
         const data = await lookup('all-variants',
             () => fetchJson(VARIANT_URL));
-        rebuildDatalist(variantList, data?.variants || [],
+        rebuildDatalist(resolveList(variantInput), data?.variants || [],
             'code', 'name');
     };
 
@@ -298,11 +381,14 @@ export function bootIetfLanguagePicker(rootEl) {
        the four inputs change. Reads the canonical code from the
        datalist's selected <option>; falls through to typed text. */
     const refreshTag = () => {
-        const langCode    = resolveCode(langInput,    langList);
-        const scriptCode  = resolveCode(scriptInput,  scriptList);
-        const regionCode  = resolveCode(regionInput,  regionList);
+        /* resolveList(...) per input, freshly, rather than the three/four
+           closure-captured consts the pre-#1907 code used — see the
+           detached-boot comment above bootIetfLanguagePicker(). */
+        const langCode    = resolveCode(langInput,    resolveList(langInput));
+        const scriptCode  = resolveCode(scriptInput,  resolveList(scriptInput));
+        const regionCode  = resolveCode(regionInput,  resolveList(regionInput));
         const variantCode = variantInput
-            ? resolveCode(variantInput, variantList)
+            ? resolveCode(variantInput, resolveList(variantInput))
             : '';
         const tag = composeTag(langCode, scriptCode, regionCode, variantCode);
         tagOutput.value = tag;
@@ -357,7 +443,13 @@ export function bootIetfLanguagePicker(rootEl) {
            options we just built. */
         const langName = (() => {
             if (!lang) return '';
-            const opt = Array.from(langList?.options || []).find(
+            /* resolveList(langInput) — if setTag() runs before rootEl is
+               attached (enrichment-panel.js's buildIetfPicker() does this),
+               this returns null and falls through to the raw `lang` code
+               below, same as the pre-#1907 behaviour; the difference is
+               that EVERY OTHER lookup in this module now self-heals once
+               attachment happens, instead of staying broken forever. */
+            const opt = Array.from(resolveList(langInput)?.options || []).find(
                 o => (o.dataset.code || '').toLowerCase() === lang.toLowerCase()
             );
             return opt ? opt.value : lang;
@@ -374,7 +466,7 @@ export function bootIetfLanguagePicker(rootEl) {
                 s => (s.code || '').toLowerCase() === script.toLowerCase()
             );
             scriptInput.value = match ? match.name : script;
-            rebuildDatalist(scriptList, data?.suggestions || [],
+            rebuildDatalist(resolveList(scriptInput), data?.suggestions || [],
                 'code', 'name', 'nativeName');
         } else {
             scriptInput.value = '';
@@ -389,7 +481,7 @@ export function bootIetfLanguagePicker(rootEl) {
                 s => (s.code || '').toLowerCase() === region.toLowerCase()
             );
             regionInput.value = match ? match.name : region;
-            rebuildDatalist(regionList, data?.suggestions || [], 'code', 'name');
+            rebuildDatalist(resolveList(regionInput), data?.suggestions || [], 'code', 'name');
         } else {
             regionInput.value = '';
         }
@@ -406,7 +498,7 @@ export function bootIetfLanguagePicker(rootEl) {
             if (variants.length > 0) {
                 await loadVariants();
                 const first = variants[0];
-                const opt = Array.from(variantList?.options || []).find(
+                const opt = Array.from(resolveList(variantInput)?.options || []).find(
                     o => (o.dataset.code || '').toLowerCase() === first
                 );
                 variantInput.value = opt ? opt.value : first;
