@@ -25,7 +25,22 @@
 // .loadCatalogue()`/`SongDetailViewModel.load()` already use, so "you're
 // offline"/"too many attempts"/"iHymns is temporarily unavailable" read
 // identically everywhere in this app, never a raw error dump.
+//
+// #947/#340 native scaffold UPDATE (`.claude/captcha-native-and-outage-plan.md`
+// §2.4/§2.5) — this is the ONE screen either gated form
+// (`CaptchaConfig.loginFormKey`/`.emailLoginFormKey`) can be submitted from,
+// so it is the ONE place `captchaSection(form:)` embeds a challenge (when
+// `rootViewModel.captchaConfig` says the form is gated AND a conformance is
+// registered for the configured provider) and attaches the solved token to
+// the NEXT submit. `captchaToken` is per-SUBMIT state, never cached across
+// attempts: `resetCaptcha()` clears it AND tells the live provider instance
+// to invalidate its own solved state, called from EVERY failure branch
+// below (a `.captchaRequired` refusal, a wrong password/code, or any
+// transient error) — tokens are single-use (consumed at the provider's
+// first `siteverify` regardless of whether the request went on to succeed),
+// so a retry must always carry a FRESH one (plan §2.5).
 import IHAPI
+import IHModels
 import SwiftUI
 
 /// Two ways to sign in — mirrors the segmented control this view presents.
@@ -65,6 +80,13 @@ public struct LoginView: View {
 
     @State private var isSubmitting = false
     @State private var errorMessage: String?
+
+    /// The most recently solved CAPTCHA token, if the active form is gated
+    /// — attached to the NEXT submit, then cleared (see this file's header
+    /// "per-submit token acquisition" contract). `nil` on a dormant/
+    /// ungated install (the challenge section never renders, so this never
+    /// gets set) and while a fresh challenge hasn't been solved yet.
+    @State private var captchaToken: String?
 
     public init(rootViewModel: AppRootViewModel) {
         self.rootViewModel = rootViewModel
@@ -129,6 +151,7 @@ public struct LoginView: View {
             SecureField("Password", text: $password)
                 .onSubmit { Task { await signInWithPassword() } }
         }
+        captchaSection(form: CaptchaConfig.loginFormKey)
         Section {
             Button {
                 Task { await signInWithPassword() }
@@ -144,12 +167,14 @@ public struct LoginView: View {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await rootViewModel.signIn(username: username, password: password)
+            try await rootViewModel.signIn(username: username, password: password, captchaToken: captchaToken)
             dismiss()
         } catch let error as APIError {
             errorMessage = error.userFacingMessage
+            resetCaptcha()
         } catch {
             errorMessage = "Something went wrong signing in. Please try again."
+            resetCaptcha()
         }
     }
 
@@ -167,6 +192,7 @@ public struct LoginView: View {
                     #endif
                     .autocorrectionDisabled()
             }
+            captchaSection(form: CaptchaConfig.emailLoginFormKey)
             Section {
                 Button {
                     Task { await requestEmailCode() }
@@ -212,13 +238,19 @@ public struct LoginView: View {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            let message = try await rootViewModel.requestEmailLoginCode(email: email)
+            let message = try await rootViewModel.requestEmailLoginCode(email: email, captchaToken: captchaToken)
             emailRequestConfirmation = message
             emailCodeStep = .enterCode(email: email)
+            // The token (if any) was just spent at the provider's
+            // `siteverify` — never carry it forward into the (ungated)
+            // verify step or a later "use a different email" retry.
+            captchaToken = nil
         } catch let error as APIError {
             errorMessage = error.userFacingMessage
+            resetCaptcha()
         } catch {
             errorMessage = "Something went wrong requesting a code. Please try again."
+            resetCaptcha()
         }
     }
 
@@ -234,6 +266,51 @@ public struct LoginView: View {
         } catch {
             errorMessage = "Something went wrong verifying your code. Please try again."
         }
+    }
+
+    // MARK: - CAPTCHA (#947/#340 native scaffold — see this file's header)
+
+    /// Embeds a challenge for `form` when (a) `rootViewModel.captchaConfig`
+    /// says `form` is gated, AND (b) something registered a conformance for
+    /// the configured provider (`CaptchaChallengeRegistry.provider(for:)`).
+    /// Renders NOTHING in every other case — including "gated, but no
+    /// conformance resolves" (an unsupported platform, or a genuinely
+    /// unknown future provider string this app has no conformance for) —
+    /// per this file's header: the submit then simply proceeds token-less,
+    /// and the server's own branchable 403 drives the message, never a
+    /// client-side hard block (the server may have its own outage-fallback
+    /// grace window open, `.claude/captcha-native-and-outage-plan.md` Part
+    /// 2, which this client must never pre-empt).
+    ///
+    /// A provider that resolves but can't render on THIS platform (tvOS/
+    /// watchOS, D-N2) still gets a `Section` — its own `makeChallengeView`
+    /// degrades to a clear, worded "not available" message there rather
+    /// than nothing at all, so the user isn't left guessing why sign-in
+    /// keeps failing.
+    @ViewBuilder
+    private func captchaSection(form: String) -> some View {
+        if let config = rootViewModel.captchaConfig, config.isRequired(for: form),
+           let provider = CaptchaChallengeRegistry.provider(for: config.provider) {
+            Section {
+                provider.makeChallengeView(config: config) { token in
+                    captchaToken = token
+                }
+                .frame(minHeight: 70)
+            }
+        }
+    }
+
+    /// Clears the captured token AND tells the live provider instance to
+    /// invalidate its own solved state — called from EVERY failed-submit
+    /// branch (a `.captchaRequired` refusal, a wrong password/code, or any
+    /// transient failure), per this file's header "tokens are single-use"
+    /// contract. A no-op when no provider is configured/resolved — safe to
+    /// call unconditionally from every `catch` block regardless of whether
+    /// a challenge was ever actually shown.
+    private func resetCaptcha() {
+        captchaToken = nil
+        guard let config = rootViewModel.captchaConfig else { return }
+        CaptchaChallengeRegistry.provider(for: config.provider)?.reset()
     }
 
     // MARK: - Shared

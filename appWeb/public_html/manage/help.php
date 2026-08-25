@@ -328,6 +328,19 @@ $sections = [
         'title' => 'Native app stores & Apple Sign-In',
         'group' => 'Operations',
     ],
+    /* ELI5: the "prove you're human" check — what it guards, and (the part
+       people actually need at 9am on a Sunday) what happens if the company
+       that provides it goes down, plus the emergency way back in.
+       DETAILED (#947/#340 + the outage fallback): documents
+       /manage/configuration's CAPTCHA card, the automatic grace window
+       driven by includes/captcha.php's server-side probes, and the
+       CAPTCHA_DISABLED break-glass file. */
+    [
+        'id'    => 'bot-protection',
+        'icon'  => 'bi-shield-check',
+        'title' => 'Bot protection (CAPTCHA)',
+        'group' => 'Operations',
+    ],
     [
         'id'    => 'native-api',
         'icon'  => 'bi-broadcast',
@@ -815,10 +828,13 @@ foreach ($sections as $s) {
                         <li><strong>Region</strong> (optional) — e.g. <em>United Kingdom</em> for British English (<code>en-GB</code>) vs. <em>United States</em> for American English (<code>en-US</code>).</li>
                     </ul>
                     <p>
-                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). The full ISO 639 / ISO 15924 / ISO 3166-1 vocabulary — every IANA-registered subtag — is loaded from the same reference data the songbook editor's identical picker uses, so both stay in sync.
+                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). Each of the four fields (Language / Script / Region / Variant) is a live search against the full IANA-registered vocabulary — type a couple of characters and matching suggestions appear, same as the songbook editor's identical picker, so both stay in sync.
                     </p>
                     <p class="small text-muted mb-2">
-                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> has a live-fetch button if you need to pull the latest IANA / CLDR updates.
+                        Typed text that doesn't match a registry entry still saves fine (a script subtag must never be blocked from a valid import) &mdash; an amber note appears under the picker naming which field wasn't recognised, and upgrades to a warning if the whole composed tag isn't even grammatically valid BCP 47 (that shape the server would reject).
+                    </p>
+                    <p class="small text-muted mb-2">
+                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app and refresh themselves automatically every month &mdash; nobody needs to remember to update them. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> also has a manual live-fetch button for an immediate pull. Tags that end up not matching anything in the catalogue (typos, retired subtags) show up on <a href="/manage/languages?view=unknown">Languages → Unknown tags</a> for review.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
@@ -1272,7 +1288,18 @@ foreach ($sections as $s) {
                         <li><strong>Fix a native name</strong> the bundled CLDR data got wrong or didn't carry.</li>
                     </ul>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> You rarely need this. The IANA seed covers nearly everything; reach for the manual editor only when a code is genuinely missing or a native name is wrong. Re-running the seed migration won't clobber your manual rows.
+                        <strong>Gotcha:</strong> You rarely need this. The IANA seed covers nearly everything and refreshes itself monthly; reach for the manual editor only when a code is genuinely missing or a native name is wrong. Re-running the refresh won't clobber your manual rows.
+                    </div>
+                    <h3 class="h6">Unknown tags</h3>
+                    <p>
+                        The <a href="/manage/languages?view=unknown">Unknown tags</a> button opens a review panel above the registry table listing every DISTINCT language tag actually stored anywhere in the catalogue (songs, songbooks, lyric lines, translations, requests, …) that either isn't grammatically valid BCP 47, isn't in the registry yet, or is in the registry but retired (inactive). It's derived live on every visit &mdash; nothing is stored or cached.
+                    </p>
+                    <ul>
+                        <li><strong>Malformed / Unregistered tags</strong> get an <strong>Add to registry</strong> shortcut (pre-fills the Add-language form) and a <strong>Remap</strong> control &mdash; type the replacement tag and the exact usage count shown to arm the button, then it rewrites every occurrence across songs, songbooks, lyric lines, and translations. Song-request text is shown for awareness but never rewritten &mdash; that's a user's own submitted text, not something to curate.</li>
+                        <li><strong>Retired (inactive) subtags</strong> get a <strong>Find &amp; activate</strong> link straight to the existing registry row's toggle.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A remap on a large corpus (thousands of lyric lines) may need running more than once &mdash; the panel caps how many songs one click touches and tells you when to run it again.
                     </div>
                 </section>
 
@@ -1951,6 +1978,117 @@ foreach ($sections as $s) {
                         when a death date IS on file is a fixed code constant, not configurable here. Either way
                         it's only ever a suggestion &mdash; nothing auto-ticks the Public Domain checkbox.
                     </p>
+                    <h3 class="h6">Language registry refresh</h3>
+                    <p>
+                        A card that keeps the <a href="#languages">Language</a> registry (IANA + CLDR reference data) current without anyone having to remember to click a button. A monthly GitHub Action pokes a keyed endpoint that re-checks IANA/CLDR and updates the shared database; this card holds the custody of that endpoint's key.
+                    </p>
+                    <ul>
+                        <li><strong>Regenerate</strong> &mdash; issues a fresh key, shown once. Paste it into the GitHub repository's <code>IHYMNS_LANG_REFRESH_KEY</code> secret.</li>
+                        <li>The card also shows whether the one-time <a href="/manage/setup-database#bcp47">BCP 47 reference data</a> migration has been applied yet &mdash; the scheduled refresh stays dormant until it has, on purpose: an unattended job must never be the thing that first changes the database's structure.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> this is entirely optional. Without it configured, the registry still works exactly as it always has &mdash; the manual "Refresh from IANA + CLDR" button on Database Setup still pulls the latest data on demand.
+                    </div>
+                </section>
+
+                <section id="bot-protection" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-shield-check me-2"></i>Bot protection (CAPTCHA)</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        A card on <a href="/manage/configuration#captcha">Settings</a> that can put a
+                        &ldquo;prove you&rsquo;re human&rdquo; challenge in front of sign-up, sign-in,
+                        password reset, email login and the song-request form. You pick a provider
+                        (Cloudflare Turnstile, hCaptcha or Google reCAPTCHA v2), paste the two keys they
+                        give you, and tick the forms to guard.
+                    </p>
+                    <p class="small">
+                        It does <strong>nothing at all</strong> until all three of those are done &mdash; no
+                        provider, no keys, no ticked form means the site behaves exactly as it did before the
+                        feature existed. The ordinary protections (limits on how many attempts one address or
+                        one account can make, the hidden &ldquo;honeypot&rdquo; field on the request form,
+                        daily caps) are always on underneath, with or without a challenge.
+                    </p>
+
+                    <h3 class="h6">What happens if the provider goes down</h3>
+                    <p>
+                        This is the failure worth understanding, because the obvious behaviour is the wrong
+                        one. If the challenge provider has an outage, visitors&rsquo; browsers cannot get a
+                        &ldquo;you&rsquo;re human&rdquo; ticket &mdash; so if guarded forms simply kept
+                        refusing anyone without a ticket, <em>every real person</em> would be locked out of
+                        signing in, on a Sunday morning, with no way to tell them why.
+                    </p>
+                    <p>
+                        So the site checks for itself. Periodically &mdash; and only when a challenge has
+                        just failed &mdash; the server tries to reach the provider directly. If <em>it</em>
+                        cannot reach them either, guarded forms temporarily fall back to the ordinary rate
+                        limits instead of refusing people. When the provider answers again, normal
+                        enforcement resumes on its own. Nothing to switch, nothing to remember.
+                    </p>
+                    <ul class="small">
+                        <li><strong>You will know it happened.</strong> A banner appears on the
+                            <a href="/manage/index.php">Dashboard</a>, the CAPTCHA card shows the status and how
+                            many requests were let through, and the change is recorded in the
+                            <a href="#activity-log">Activity Log</a> &mdash; once when it starts and once when
+                            it ends, never one entry per visitor.</li>
+                        <li><strong>It is not &ldquo;protection off&rdquo;.</strong> Every limit that guarded
+                            these forms before the challenge existed is still enforced.</li>
+                        <li><strong>Only the server&rsquo;s own checks can open it.</strong> A visitor&rsquo;s
+                            browser can tell us the widget would not load, and that only makes the server go
+                            and look sooner &mdash; a browser can never talk its own way past the challenge,
+                            because otherwise so could a bot.</li>
+                        <li><strong>You can opt a form out.</strong> Each form has a &ldquo;keep strict during
+                            a provider outage&rdquo; tick-box if you would rather it fail than let anyone
+                            through. Registration is the one people most often want sealed; sign-in is the one
+                            you almost certainly do not.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> the check answers &ldquo;can <em>our server</em> reach the
+                        provider?&rdquo; If the provider is fine for us but blocked for some visitors &mdash;
+                        an ad-blocker, a school or office filter, a regional outage &mdash; those visitors are
+                        still refused, and the status still reads healthy. The &ldquo;browsers reporting the
+                        widget would not load&rdquo; count on the card is your only clue that this is
+                        happening.
+                    </div>
+
+                    <h3 class="h6">Wrong secret key &ne; outage</h3>
+                    <p class="small">
+                        If the secret key is mistyped, the provider is perfectly healthy and simply rejects
+                        every check. That would refuse every real visitor forever with nothing obviously
+                        wrong. The site detects this specific case, says so plainly on the card and the
+                        Dashboard (&ldquo;the provider is rejecting our secret key&rdquo;), and lets people
+                        through in the meantime so the site is not bricked by a typo. Waiting will not fix
+                        it &mdash; re-paste the key.
+                    </p>
+
+                    <h3 class="h6">If you are ever locked out &mdash; the emergency switch</h3>
+                    <p>
+                        Guarding <strong>both</strong> Login and Admin login means every route into an admin
+                        session goes through the challenge. Normally that is safe, because of the fallback
+                        above. But if you have also marked those forms &ldquo;keep strict&rdquo;, or the key is
+                        wrong in a way that has not been noticed yet, nobody can sign in to undo it.
+                    </p>
+                    <p>The way back in needs no database and no working login:</p>
+                    <ol>
+                        <li>Connect over SFTP with the credentials the site is deployed with.</li>
+                        <li>Create an <strong>empty</strong> file called <code>CAPTCHA_DISABLED</code> in the
+                            private <code>includes/</code> folder (the same folder as <code>captcha.php</code>).</li>
+                        <li>The challenge switches off completely and immediately, everywhere.</li>
+                        <li>Sign in, fix the setting, then delete the file to switch it back on.</li>
+                    </ol>
+                    <p class="small text-secondary">
+                        That folder is not reachable from the web, so a visitor can neither create the file
+                        nor tell whether it exists. Its presence can only ever <em>switch the challenge
+                        off</em> &mdash; it can never enable or bypass anything else.
+                    </p>
+
+                    <div class="gotcha small">
+                        <strong>Before you tick anything:</strong> the native apps do not show a challenge
+                        yet. Guarding sign-up, sign-in, password reset or email login will break those flows
+                        in the iOS/Android apps until they do. Song requests and Admin login are web-only and
+                        safe to guard today. Each tick-box on the card spells out its own consequence.
+                    </div>
                 </section>
 
                 <section id="native-api" class="help-section card-admin mb-4">
@@ -2052,7 +2190,7 @@ foreach ($sections as $s) {
                     </p>
                     <h3 class="h6">Turning it on (and the drain job)</h3>
                     <p>
-                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain.php?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
+                        The whole feature is <strong>dormant</strong> until an admin enables it per channel on <a href="/manage/configuration">Configuration</a>. That card also holds the <strong>drain key</strong>: retries are pushed along by a tiny endpoint a scheduled job (cPanel cron or an uptime monitor) pokes every minute &mdash; <code>curl "/webhook-drain?key=&lt;drain key&gt;"</code>. Without that job, retries still make progress whenever the site has traffic, just more slowly; the Configuration card shows when the drain last ran so you can tell whether the job is wired.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> a subscription is walled to the environment (alpha / beta / production) it was created on &mdash; the three share one database but never each other's webhook traffic. Test on alpha first; a production partner should be registered on production.

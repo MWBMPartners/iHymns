@@ -65,6 +65,19 @@ RewriteRule ^includes/ - [F,L]
     Require all denied
 </FilesMatch>
 
+# Block direct HTTP access to the CAPTCHA break-glass kill-file (#947/#340
+# outage fallback). Belt-and-braces: the file only ever lives in includes/,
+# which `RewriteRule ^includes/ - [F,L]` above already forbids outright. This
+# adds an ACCESS-PHASE deny keyed on the NAME, for the same reason #1906 gave
+# for the .md block: a rewrite-based deny can be L-stopped by an earlier
+# passthrough, whereas <FilesMatch>+Require runs in the authz phase and covers
+# the whole docroot wherever the file ends up. The file is always empty and
+# reveals nothing, but a 403 rather than a 200 means an outsider cannot even
+# probe whether the emergency switch is currently thrown.
+<FilesMatch "^CAPTCHA_DISABLED$">
+    Require all denied
+</FilesMatch>
+
 # Block access to hidden files (e.g., .gitkeep, .env)
 RewriteRule (^|/)\.(?!well-known) - [F,L]
 
@@ -79,6 +92,64 @@ RewriteRule ^api$ api.php [QSA,L]
 
 # /og-image → og-image.php (hides PHP extension from OG meta tags)
 RewriteRule ^og-image$ og-image.php [QSA,L]
+
+# /qr → qr.php, /org-logo → org-logo.php (routing-bug fix, rules #33/#38/#42)
+#
+# ELI5: these two standalone image endpoints were built to be reached by an
+# extensionless URL exactly like /og-image above — but the extensionless
+# ALIAS was never added here, so every <img src="/qr.php?..."> or
+# <img src="/org-logo.php?..."> the app emitted was a request whose raw
+# request line literally contained ".php", which the "BLOCK DIRECT ACCESS
+# TO PHP FILES" RewriteCond above (it reads %{THE_REQUEST}, the client's
+# ORIGINAL request line — unaffected by any rewrite below it) always 404s.
+# Every QR code and every organisation logo image was silently broken at
+# the routing layer from the day each endpoint shipped.
+#
+# WHY THIS FIXES IT: %{THE_REQUEST} never changes across an internal
+# rewrite/sub-request, so a request whose ORIGINAL text is "/qr" (no
+# ".php" anywhere in it) never trips the block condition, on this pass or
+# the internal sub-request pass that follows the rewrite below — the exact
+# mechanism that already makes /og-image work. The consumers
+# (js/modules/print.js, manage/service-projection.php, js/modules/
+# live-follow.js, js/modules/org-logo.js, includes/org_logo_helpers.php's
+# admin preview) were updated in the same change to emit /qr?... and
+# /org-logo?... — never the .php form — so this alias is now their only
+# route to the browser. tests/php/test-endpoint-routing.php parses this
+# file and asserts every emitted same-origin *.php-targeting URL in the
+# tree is actually routable, so a future endpoint that forgets this step
+# fails CI instead of shipping silently dead.
+#
+# @link https://httpd.apache.org/docs/current/mod/mod_rewrite.html#thecondpattern  THE_REQUEST semantics (why it is immune to the later rewrite)
+RewriteRule ^qr$       qr.php       [QSA,L]
+RewriteRule ^org-logo$ org-logo.php [QSA,L]
+
+# /webhook-drain → webhook-drain.php  (#1909)
+#
+# ELI5: a THIRD, independently-discovered instance of the SAME bug fixed
+# above — this endpoint's own doc-block WIRING section, `/manage/help.php`,
+# and the admin's own `/manage/configuration` webhook card ALL instructed
+# an operator to crontab `curl ".../webhook-drain.php?key=…"` every minute,
+# which has always 404'd for the identical %{THE_REQUEST}-vs-".php" reason.
+# The cron/uptime-monitor "accelerator" half of the outbound-webhooks outbox
+# (design §6.4) has therefore never actually run on any install that wired
+# it exactly as documented — retries were still eventually sent (the
+# post-flush pass that runs inline with each emitting request is the other,
+# unaffected half), just always at the slower, traffic-shaped pace the
+# endpoint's own doc-block describes as the CRON-LESS fallback.
+# @see appWeb/public_html/webhook-drain.php  the endpoint (+ its own doc-block)
+RewriteRule ^webhook-drain$ webhook-drain.php [QSA,L]
+
+# /language-registry-refresh → language-registry-refresh.php (BCP 47
+# registry plan §3, M1). Same shape, same reason, as the three aliases
+# immediately above — this is a NEW endpoint added WITH its alias from day
+# one (learning the /qr + /org-logo + /webhook-drain lesson rather than
+# repeating it a fourth time), so it has never been broken in the first
+# place. tests/php/test-endpoint-routing.php's check C would fail the
+# build if this line were ever missing while the endpoint's own consumers
+# (the language-registry-refresh.yml workflow, this file's own doc-block)
+# kept emitting the extensionless form.
+# @see appWeb/public_html/language-registry-refresh.php  the endpoint (+ its own doc-block)
+RewriteRule ^language-registry-refresh$ language-registry-refresh.php [QSA,L]
 
 # /song-media/<id> → song-media.php?id=<id>  (#853)
 # Gated streaming endpoint for tblSongMedia rows. The handler does

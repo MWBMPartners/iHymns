@@ -4,6 +4,41 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-25 (BCP 47 language registry — scheduled refresh + live-search picker + unknown-tag curation, BUILD pass done, NOT YET COMMITTED)
+
+Full implementation of `.claude/bcp47-language-registry-plan.md` (M1-M5) on branch
+`claude/dormant-features-settings-1sdw4t` — **working tree only, not committed or pushed**
+(explicit instruction this pass). `php tools/run-php-tests.php`: 203/203 (+2 new suites).
+`node tools/run-node-tests.js`: 76/76 (+2 new suites, +1 reworked in place).
+
+- **M1 — scheduled refresh**: monthly GitHub Action (`.github/workflows/language-registry-refresh.yml`)
+  + a new keyed endpoint `/language-registry-refresh` (`webhook-drain.php` shape, dormant 503 until
+  BOTH a key is configured AND a human has pressed the existing #738 setup-database card once — never
+  the first thing to run schema DDL unattended). The fetch/import core is hoisted out of the existing
+  admin button into `includes/language_registry_refresh.php`; the button is now a thin delegate.
+- **M2/M3 — picker rework**: `js/modules/ietf-language-picker.js` no longer uses `<datalist>` — all
+  four subtags (Language/Script/Region/Variant) go through the shared `iHymnsPlaceSearch.attach()`
+  typeahead against 4 new public `/api?action=*_search` actions (one shared `bcp47SubtagSearch()`
+  core in `includes/language_names.php`). Fixes #1907's detached-DOM boot bug at the structural root
+  (attach() never calls `getElementById()`) rather than patching each of the 4 consumer sites
+  separately. Free text still saves (rule #21) but is never silent — an inline warning names the
+  unrecognised subtag, upgrading when the composed tag also fails grammar client-side.
+- **M4 — unknown-tag curation**: `/manage/languages?view=unknown` (new `includes/language_tag_audit.php`
+  core) lists every malformed/unregistered/retired tag actually stored in the catalogue, derived live
+  (no new table), with a type-the-count-to-confirm Remap that rewrites a tag everywhere — the line-path
+  source (`tblLyricLines.LanguageCode`) goes through `lyricLinesWriteComponents()`, never a raw UPDATE.
+- **4 new mutation-proven CI guards** (`test-language-registry-refresh.php`, `test-bcp47-search-endpoints.js`,
+  `test-ietf-picker-live-dom.js`, `test-language-tag-audit.php`) + `test-ietf-picker-detached-boot.js`
+  reworked in place (its old `<datalist>`-option-count assertions can't survive datalists being removed;
+  now exercises the real `place-search.js` + picker integration end-to-end).
+- **Docs**: `api-docs.yaml` (4 new path items), `manage/help.php` (3 sections touched), `CHANGELOG.md`,
+  the plan doc flipped to "IMPLEMENTED, uncommitted".
+- **Side-fix**: `tests/php/test-error-page-coverage.php`'s 502 exemption map gained the new endpoint
+  (a legitimate second 502-emission site, same shape as the existing admin refresh action).
+- **Not done this pass** (see the implementing session's own report): GitHub issue filing, wiki updates —
+  deferred to whoever performs the commit/push, since no commit SHA exists yet to anchor them to and the
+  standing per-task close-out order is commit → issue → docs → handoff.
+
 ## 📌 Continuation note — 2026-08-24 (branch merging to `alpha` — session close-out)
 
 `claude/ilyrics-identity-work-model` is being merged to `alpha` (200 commits ahead; merged

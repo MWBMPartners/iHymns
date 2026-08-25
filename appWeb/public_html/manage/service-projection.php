@@ -20,7 +20,7 @@ declare(strict_types=1);
  * Reuses the shared admin chrome for the SETUP view; projection mode is a
  * full-bleed, high-contrast overlay. Beside the large rotating join code it
  * now also renders a scannable QR of the join URL (#1339, the "buildable
- * half" — see renderQr() below), served by the same-origin /qr.php endpoint
+ * half" — see renderQr() below), served by the same-origin /qr endpoint
  * which generates it via our CueRCode service server-side (owner directive
  * 2026-08-05 — QR via CueRCode; the secret key never reaches this page). The QR
  * is an ACCELERATOR, not a replacement: the typed code stays the primary,
@@ -162,7 +162,12 @@ if ($schemaReady && $venues) {
             );
             if ($asset !== null) {
                 $sha = $shaByKindVariant[$asset['kind'] . '|' . $asset['variant']] ?? '';
-                $orgLogoUrlByOrg[$vOrgId] = '/org-logo.php?org=' . $vOrgId
+                /* "/org-logo", never "/org-logo.php" — the extensionless
+                   .htaccess alias (rules #33/#38/#42) is the ONLY reachable
+                   route: a literal ".php" in the raw request line trips the
+                   "block direct PHP access" rule before org-logo.php's own
+                   code ever runs, so a ".php" src here would 404 silently. */
+                $orgLogoUrlByOrg[$vOrgId] = '/org-logo?org=' . $vOrgId
                     . '&kind=' . rawurlencode($asset['kind'])
                     . '&variant=' . rawurlencode($asset['variant'])
                     . '&v=' . rawurlencode($sha);
@@ -464,7 +469,7 @@ if ($driverKeysReady && $venues) {
         const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
-        /* QR is now served by the same-origin /qr.php endpoint (CueRCode-backed,
+        /* QR is now served by the same-origin /qr endpoint (CueRCode-backed,
            owner directive 2026-08-05) — no client-side QR library is loaded here
            any more; renderQr() below just points an <img> at it. */
         const ROTATE_MS = 30000;
@@ -612,11 +617,11 @@ if ($driverKeysReady && $venues) {
            typed code is the authoritative, always-visible, screen-reader
            fallback whether or not the QR ever renders.
 
-           QR source: the same-origin /qr.php endpoint, which generates the code
+           QR source: the same-origin /qr endpoint, which generates the code
            via our CueRCode service server-side (owner directive 2026-08-05 — QR
            via CueRCode across iHymns; the secret key never reaches this page).
            This replaced the old client-side vendored `qrcode-generator` dynamic
-           import. /qr.php answers 503 when CueRCode isn't configured/reachable,
+           import. /qr answers 503 when CueRCode isn't configured/reachable,
            so the <img> simply fails to load and the typed-code fallback shows —
            and a new code rotation (30s later) issues a fresh <img> that retries. */
         const qrWrap = document.getElementById('svc-proj-qr-wrap');
@@ -643,7 +648,9 @@ if ($driverKeysReady && $venues) {
         function renderQr(code) {
             if (!qrBox || !qrWrap || !qrFallback || !code) return;
             /* SVG scales, so a fixed 512 canvas is crisp at any projector size. */
-            const src = '/qr.php?data=' + encodeURIComponent(joinUrlFor(code)) + '&format=svg&size=512';
+            /* "/qr", never "/qr.php" — the extensionless .htaccess alias
+               (rules #33/#38) is the only reachable route; see .htaccess. */
+            const src = '/qr?data=' + encodeURIComponent(joinUrlFor(code)) + '&format=svg&size=512';
             const img = document.createElement('img');
             img.alt = 'QR code to join the service';
             img.className = 'img-fluid';
@@ -656,11 +663,11 @@ if ($driverKeysReady && $venues) {
             });
             img.addEventListener('error', function () {
                 /* Never a blank box — hide the QR card and point at the still-
-                   working typed code. /qr.php answers 503 when CueRCode isn't
+                   working typed code. /qr answers 503 when CueRCode isn't
                    configured/reachable. console.error so /manage/*'s error
                    monitor (#1599) surfaces it even though nobody watches the
                    projector's console. */
-                console.error('[service-projection] QR image failed to load from /qr.php');
+                console.error('[service-projection] QR image failed to load from /qr');
                 qrBox.innerHTML = '';
                 qrWrap.classList.add('d-none');
                 qrFallback.classList.remove('d-none');

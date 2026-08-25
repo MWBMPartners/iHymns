@@ -252,22 +252,31 @@ function _pdfMpdfFormatForPageSize($pageSize): string
 }
 
 /**
- * Resolve ONE `/qr.php?...` image src (the ONLY `<img src>` shape the
+ * Resolve ONE `/qr?...` image src (the ONLY `<img src>` shape the
  * `print` sanitiser profile ever admits, `includes/html_sanitizer.php`) to
- * an inlined `data:` URI, by calling the SAME CueRCode client `/qr.php`
+ * an inlined `data:` URI, by calling the SAME CueRCode client `/qr`
  * itself uses (`cuercodeGenerate()`, rule #38) — DIRECTLY, never by mPDF
  * self-requesting the host over HTTP (slow, fragile on shared hosting, and
  * a needless SSRF-shaped surface this file's own security posture would
  * then have to re-justify).
  *
  * ELI5: the printed HTML says "put the QR code picture here, fetched from
- * our own /qr.php address" — but mPDF isn't a web browser sitting on that
+ * our own /qr address" — but mPDF isn't a web browser sitting on that
  * address, so instead of asking it to go fetch the picture over the
- * network, we generate the SAME picture directly (the same code /qr.php
+ * network, we generate the SAME picture directly (the same code /qr
  * itself would run) and hand mPDF the finished bytes baked right into the
  * HTML.
  *
- * @param  string $src The sanitised `<img src>` value (must already match `^/qr\.php\?`).
+ * `.php` is deliberately optional in the match below (a routing-bug fix,
+ * rules #33/#38): the endpoint's ONLY browser-reachable address is the
+ * extensionless `.htaccess` alias `/qr` — `qr.php`'s.htaccess-blocked twin
+ * `/qr.php` has never been requestable from a real page, so no HTML this
+ * function receives should ever legitimately carry it — but accepting it
+ * here too costs nothing and means a future accidental re-introduction of
+ * the `.php` form degrades to "logo inlines correctly" instead of "logo
+ * silently vanishes from the PDF", which is the more forgiving failure.
+ *
+ * @param  string $src The sanitised `<img src>` value (must already match `^/qr(?:\.php)?\?`).
  * @return string|null A `data:<mime>;base64,<bytes>` URI, or null on ANY failure
  *                       (dormant CueRCode, malformed query, oversized/failed fetch) —
  *                       the caller then DROPS the `<img>` entirely (§4.5 — the
@@ -276,7 +285,7 @@ function _pdfMpdfFormatForPageSize($pageSize): string
  */
 function _pdfInlineQrImage(string $src): ?string
 {
-    if (preg_match('#^/qr\.php\?#', $src) !== 1) {
+    if (preg_match('#^/qr(?:\.php)?\?#', $src) !== 1) {
         /* Reached today ONLY via a data:image/… src, which the caller
            (_pdfAdaptHtml()) already intercepts and skips before ever
            calling this function (#1767 remainder P7 — the 'layout'
@@ -315,7 +324,7 @@ function _pdfInlineQrImage(string $src): ?string
 }
 
 /**
- * §6.4 of the plan — inline an `/org-logo.php?org=…&kind=…[&variant=…]`
+ * §6.4 of the plan — inline an `/org-logo?org=…&kind=…[&variant=…]`
  * `<img src>` (the print `logo` block's own emission) as a `data:` URI,
  * mirroring `_pdfInlineQrImage()`'s "never mPDF self-requesting over HTTP"
  * doctrine exactly: this calls `orgLogoFetchServeRow()` DIRECTLY rather than
@@ -329,7 +338,13 @@ function _pdfInlineQrImage(string $src): ?string
  * HTML was POSTed (§6.3) — this function only resolves BYTES for a src the
  * client already decided on.
  *
- * @param  string $src The sanitised `<img src>` value (must already match `^/org-logo\.php\?`).
+ * `.php` is deliberately optional in the match below — see
+ * `_pdfInlineQrImage()`'s identical note: `/org-logo` (no extension) is the
+ * only address this endpoint has ever actually been reachable at through a
+ * browser (rules #33/#38/#42), but accepting the `.php` form too is a free,
+ * strictly-more-forgiving defensive floor.
+ *
+ * @param  string $src The sanitised `<img src>` value (must already match `^/org-logo(?:\.php)?\?`).
  * @return string|null A `data:<mime>;base64,<bytes>` URI, or null on ANY failure
  *                       (pre-migration install, no active logo, DB unreachable,
  *                       malformed query) — the caller then DROPS the `<img>`
@@ -338,7 +353,7 @@ function _pdfInlineQrImage(string $src): ?string
  */
 function _pdfInlineOrgLogo(string $src): ?string
 {
-    if (preg_match('#^/org-logo\.php\?#', $src) !== 1) {
+    if (preg_match('#^/org-logo(?:\.php)?\?#', $src) !== 1) {
         return null; // defensive floor — see _pdfInlineQrImage()'s identical comment
     }
     $query = parse_url($src, PHP_URL_QUERY);
@@ -383,11 +398,11 @@ function _pdfInlineOrgLogo(string $src): ?string
  *      message). A 1-column template never carries `columns:2` at all, so
  *      the cheap `str_contains()` pre-check below skips the whole DOM
  *      parse for the common case.
- *   2. Every `/qr.php?…`-sourced `<img>` — the ONE src shape BOTH sanitiser
+ *   2. Every `/qr?…`-sourced `<img>` — the ONE src shape BOTH sanitiser
  *      profiles admit that isn't self-contained (`includes/html_sanitizer.php`)
  *      — is either inlined via `_pdfInlineQrImage()` or REMOVED outright. An
  *      `<img>` is NEVER passed through to mPDF with its original
- *      (relative, unreachable-by-mPDF) `/qr.php?…` src: mPDF has no base
+ *      (relative, unreachable-by-mPDF) `/qr?…` src: mPDF has no base
  *      URL configured for this render, so it would not resolve anyway, and
  *      removing it outright — rather than leaving a broken-image glyph —
  *      matches the "the caption text is the fallback" principle §4.5
@@ -398,7 +413,7 @@ function _pdfInlineOrgLogo(string $src): ?string
  *      layout upload — is left COMPLETELY UNTOUCHED. mPDF resolves a
  *      `data:` URI directly (no network fetch, nothing to adapt), so
  *      routing it through `_pdfInlineQrImage()` (which only recognises
- *      `/qr.php?…` and returns null for anything else) would have silently
+ *      `/qr?…` and returns null for anything else) would have silently
  *      DELETED every embedded image a custom layout carries — caught
  *      before it shipped by re-reading this function against the widened
  *      profile, not by a failing test (a `data:` `<img>` with no
@@ -483,12 +498,12 @@ function _pdfAdaptHtml(string $html): string
                'layout' sanitiser profile, a custom layout's own embedded
                image) is left ALONE: mPDF resolves it directly, and running
                it through _pdfInlineQrImage() below would misread it as
-               "not /qr.php?, so drop it" and silently delete it (see this
+               "not /qr?, so drop it" and silently delete it (see this
                function's own doc-block, point 3). */
             if (str_starts_with($src, 'data:image/')) {
                 continue;
             }
-            /* #1830 §6.4 — /org-logo.php?… srcs go through the org-logo
+            /* #1830 §6.4 — /org-logo?… srcs go through the org-logo
                resolver BEFORE the QR resolver (the two prefixes are
                mutually exclusive, so order is not load-bearing for
                correctness — kept in the plan's stated order for

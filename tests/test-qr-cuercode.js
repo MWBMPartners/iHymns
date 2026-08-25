@@ -3,7 +3,7 @@
  *
  * PURPOSE
  * ELI5: makes sure every QR code in iHymns is drawn by our CueRCode service
- * (through the /qr.php door) and that we did NOT leave any old in-the-browser QR
+ * (through the /qr door) and that we did NOT leave any old in-the-browser QR
  * library lying around — and, most importantly, that CueRCode's secret key can
  * only ever be used by the server, never handed to a browser.
  *
@@ -16,11 +16,21 @@
  *   1. The server client `includes/cuercode_client.php` exists and sends the
  *      `X-API-Key` header — and that header appears in NO client-side JS file
  *      (the key must never reach a browser).
- *   2. The `/qr.php` endpoint exists, calls cuercodeGenerate(), and is the ONLY
- *      thing that talks to the client (streams bytes, never JSON with the key).
- *   3. BOTH QR surfaces render via `/qr.php`:
- *        - js/modules/print.js  (the #1767 R print block)
+ *   2. The `qr.php` file exists, calls cuercodeGenerateCached(), and is the
+ *      ONLY thing that talks to the client (streams bytes, never JSON with
+ *      the key). Reached by the BROWSER only through the extensionless
+ *      `/qr` alias `.htaccess` rewrites to it — `.htaccess`'s "block direct
+ *      PHP access" rule 404s ANY request whose raw text contains ".php"
+ *      before qr.php's own code ever runs (this is what THE_REQUEST-based
+ *      rule blocks — it reads the client's ORIGINAL request line, immune to
+ *      any rewrite below it), so a literal `/qr.php?…` <img src> has NEVER
+ *      been reachable from a real browser. This guard therefore checks
+ *      #3 below asserts the `/qr` shape and explicitly BANS the dead
+ *      `/qr.php` shape reappearing in a surface's emitted src.
+ *   3. EVERY QR surface renders via `/qr`, never `/qr.php`:
+ *        - js/modules/print.js          (the #1767 R print block)
  *        - manage/service-projection.php (the #1339 congregant join QR)
+ *        - js/modules/live-follow.js     (the #1770 C6 host-bar QR overlay)
  *   4. NO client-side QR library remains anywhere under appWeb/public_html:
  *      no `qrcode-generator` / `qrcode.mjs` reference, no `createSvgTag(` call,
  *      no `'qrcodegen' =>` config entry, no `QR_LIB` symbol. (These are the
@@ -28,8 +38,17 @@
  *      migrated but its old code left behind — a split-brain QR path.)
  *
  * Tree-derived (globs the JS tree for #4) and mutation-proven: re-introduce any
- * banned fingerprint, or break either surface's /qr.php wiring, and this goes
- * red; the current tree is green.
+ * banned fingerprint, revert any surface to the dead `/qr.php` shape, or remove
+ * `.htaccess`'s `^qr$` alias, and this goes red; the current tree is green.
+ * `tests/php/test-endpoint-routing.php` is the general-purpose sibling guard
+ * that derives this SAME class of bug (an emitted same-origin URL that the
+ * real `.htaccess` cannot actually route) for every root-level `*.php`
+ * endpoint in the tree, not just this one — this file stays as the
+ * QR-feature-specific guard (fingerprint bans, CueRCode wiring) rather than
+ * being subsumed, per rule #22's "profiles/instances share a core, but a
+ * feature-specific guard earns its keep by checking things the general one
+ * cannot know" (the CueRCode-key-never-in-a-browser check has no routing
+ * angle at all).
  *
  *   node tests/test-qr-cuercode.js
  *
@@ -87,11 +106,36 @@ check('qr.php calls cuercodeGenerateCached()', /cuercodeGenerateCached\s*\(/.tes
 check('qr.php streams image bytes (Content-Type from CueRCode)',
     /header\('Content-Type: '\s*\.\s*\$qr\['mime'\]\)/.test(qrPhp) || /Content-Type/.test(qrPhp));
 
-/* 3. both QR surfaces render via /qr.php */
-check('print.js QR block points at /qr.php', /\/qr\.php\?data=/.test(printJs),
-    'print.js renderBlock(\'qr\') must emit an <img> src of /qr.php?data=…');
-check('service-projection.php QR points at /qr.php', /\/qr\.php\?data=/.test(projPhp),
-    'service-projection.php renderQr() must emit an <img> src of /qr.php?data=…');
+/* 3. QR surfaces render via /qr — NOT /qr.php (routing-bug fix, rules
+      #33/#38): `.htaccess` never had an extensionless alias for this
+      endpoint, so a literal `/qr.php?…` <img src> has NEVER been reachable
+      from a real browser — the "block direct PHP access" RewriteCond reads
+      %{THE_REQUEST} (the client's ORIGINAL, unrewritten request line) and
+      404s any request whose raw text contains ".php" before qr.php's own
+      code ever runs. `/qr` (no extension) is the extensionless alias added
+      alongside this fix (mirrors the pre-existing /og-image rule) — the
+      ONLY address either surface has ever actually been reachable through.
+      Also bans a re-introduced literal "/qr.php?" src in either surface, so
+      a future regression back to the dead shape fails loud instead of
+      silently 404ing in production again. */
+check('print.js QR block points at /qr (not /qr.php)',
+    /\/qr\?data=/.test(printJs) && !/\/qr\.php\?data=/.test(printJs),
+    'print.js renderBlock(\'qr\') must emit an <img> src of /qr?data=…, never /qr.php?data=… (unroutable — see .htaccess)');
+check('service-projection.php QR points at /qr (not /qr.php)',
+    /\/qr\?data=/.test(projPhp) && !/\/qr\.php\?data=/.test(projPhp),
+    'service-projection.php renderQr() must emit an <img> src of /qr?data=…, never /qr.php?data=… (unroutable — see .htaccess)');
+
+/* 3b. live-follow.js — a THIRD QR surface (#1770 C6, the host-bar "Show
+       code" overlay) discovered while fixing the routing bug above; this
+       guard's own doc-block previously claimed only two surfaces exist
+       (rule #34's "a scanner that under-reports is worse than no scanner"
+       — caught here by actually grep'ing for every `/qr` emission in the
+       tree instead of trusting the file's own historical surface count). */
+const liveFollowJs = read(path.join(PUB, 'js', 'modules', 'live-follow.js'));
+check('js/modules/live-follow.js exists (the third QR surface, #1770 C6)', liveFollowJs !== '');
+check('live-follow.js QR overlay points at /qr (not /qr.php)',
+    /\/qr\?data=/.test(liveFollowJs) && !/\/qr\.php\?data=/.test(liveFollowJs),
+    'live-follow.js\'s _showCodeView() must emit an <img> src of /qr?data=…, never /qr.php?data=…');
 
 /* 4. NO client-side QR library fingerprints remain anywhere under public_html.
       Derive the JS/PHP file list from the tree (rule #34), skip the vendor dir
@@ -149,4 +193,4 @@ if (failures) {
     console.error(`\nFAIL: ${failures} QR-via-CueRCode wiring check(s) failed.`);
     process.exit(1);
 }
-console.log(`\nOK: QR via CueRCode wired on both surfaces; no client-side QR library remains (${files.length} files scanned).`);
+console.log(`\nOK: QR via CueRCode wired on every surface via /qr (never /qr.php); no client-side QR library remains (${files.length} files scanned).`);

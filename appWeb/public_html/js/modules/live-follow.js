@@ -756,14 +756,21 @@ export class LiveFollow {
 
     /**
      * #1770 C6 (req #6) — a large code + QR overlay, toggled from the host
-     * bar's "Show code" button. QR ONLY via the same-origin `/qr.php`
+     * bar's "Show code" button. QR ONLY via the same-origin `/qr`
      * endpoint (rule #38 — never a client-side QR library); the join URL is
      * `/?svc_code=<CODE>`, the SAME param the Service-Projection QR already
      * emits (service-projection.php's `joinUrlFor()`) and that
      * `service-follow.js`'s `_readSvcCodeParam()` now reads (rule #33 —
-     * closes the standing emitter-with-no-reader gap). A `/qr.php` 503
+     * closes the standing emitter-with-no-reader gap). A `/qr` 503
      * (CueRCode not configured) simply fails the `<img>` load and the big
      * typed code alongside it keeps working — never a blank box.
+     *
+     * NOTE the deliberate ABSENCE of `.php` in the src below: `/qr` is the
+     * only reachable route (the extensionless `.htaccess` alias — rules
+     * #33/#38, the /og-image precedent). A literal `/qr.php?...` src looks
+     * identical in a code review but 404s every time, silently, because
+     * `.htaccess`'s "block direct PHP access" rule matches the browser's
+     * RAW request line before any rewrite ever runs.
      */
     _toggleCodeView() {
         if (document.getElementById('live-host-code-overlay')) { this._removeCodeView(); return; }
@@ -799,7 +806,7 @@ export class LiveFollow {
         img.style.cssText = 'width:100%;height:100%;display:block;';
         img.addEventListener('error', () => { qrWrap.style.display = 'none'; });
         const joinUrl = location.origin + '/?svc_code=' + encodeURIComponent(this.hostCode);
-        img.src = '/qr.php?data=' + encodeURIComponent(joinUrl) + '&format=svg&size=512';
+        img.src = '/qr?data=' + encodeURIComponent(joinUrl) + '&format=svg&size=512';
         qrWrap.appendChild(img);
 
         const closeBtn = document.createElement('button');

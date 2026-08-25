@@ -228,7 +228,7 @@ try {
 
 /* 7. Outbound-webhooks retention prune (#1909).
    The event ledger + delivery queue each stamp ExpiresAt at insert (enqueue + 30
-   days). This nightly sweep is the same work the /webhook-drain.php endpoint does
+   days). This nightly sweep is the same work the /webhook-drain endpoint does
    per pass, here for installs that already run cleanup.php on cron. Table-existence
    guarded so an un-migrated install (the 3 docroots share ONE MySQL; migrations are
    web-run) is a clean no-op rather than a fatal. Self-contained SQL — this CLI cron

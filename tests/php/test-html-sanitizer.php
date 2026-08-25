@@ -80,10 +80,10 @@ foreach (['print', 'layout'] as $profile) {
  * ============================================================================= */
 
 foreach (['print', 'layout'] as $profile) {
-    $out = ihymnsSanitizeHtml('<img src="/qr.php?data=x" onerror="alert(1)" onload="alert(2)" alt="q">', $profile);
+    $out = ihymnsSanitizeHtml('<img src="/qr?data=x" onerror="alert(1)" onload="alert(2)" alt="q">', $profile);
     check("[$profile] onerror= is stripped from <img>", !str_contains(strtolower($out), 'onerror'));
     check("[$profile] onload= is stripped from <img>", !str_contains(strtolower($out), 'onload'));
-    check("[$profile] the img itself (with its allowed src) survives the attribute strip", str_contains($out, '<img') && str_contains($out, '/qr.php?data=x'));
+    check("[$profile] the img itself (with its allowed src) survives the attribute strip", str_contains($out, '<img') && str_contains($out, '/qr?data=x'));
 }
 
 /* A realistic fixture: print.js's OWN qr block literally emits an onerror=
@@ -91,13 +91,13 @@ foreach (['print', 'layout'] as $profile) {
    strips even the renderer's OWN emitted markup, not just contrived attacks
    (§5.2 of the plan: "the endpoint must hold even if print.js never ran"). */
 $qrBlockFromPrintJs = '<div class="print-qr"><img class="print-qr-img" '
-    . 'src="/qr.php?data=https%3A%2F%2Fexample.test%2Fsong%2FABC123&format=svg&size=512" '
+    . 'src="/qr?data=https%3A%2F%2Fexample.test%2Fsong%2FABC123&format=svg&size=512" '
     . 'alt="QR code linking to this song online" width="128" height="128" '
     . 'style="width:128px;height:128px" onerror="this.style.display=\'none\'">'
     . '<div class="print-qr-caption">https://example.test/song/ABC123</div></div>';
 $qrOut = ihymnsSanitizeHtml($qrBlockFromPrintJs, 'print');
 check('print.js\'s own qr-block onerror= is stripped even though it is print.js\'s OWN output', !str_contains(strtolower($qrOut), 'onerror'));
-check('print.js\'s own qr-block src (/qr.php?…) survives (it is the one allowed src shape)', str_contains($qrOut, '/qr.php?data='));
+check('print.js\'s own qr-block src (/qr?…) survives (it is the one allowed src shape, no \'.php\' — routing-bug fix rules #33/#38)', str_contains($qrOut, '/qr?data='));
 check('print.js\'s own qr-block width/height/style/alt survive', str_contains($qrOut, 'width="128"') && str_contains($qrOut, 'style="width:128px;height:128px"') && str_contains($qrOut, 'alt="QR code linking to this song online"'));
 
 /* =============================================================================
@@ -162,29 +162,41 @@ check('ihymnsSanitizeStyleAttr(): background-image:url(/song-media/123) is ALSO 
     ihymnsSanitizeStyleAttr('color:red;background-image:url(/song-media/123);font-weight:bold') === 'color:red;font-weight:bold');
 
 /* =============================================================================
- * 5b. #1830 — /org-logo.php?… is the print `logo` block's ONE admitted src
- *     shape, in BOTH profiles (v1 -> v2 widening). Positive: the exact shape
- *     print.js's `case 'logo'` emits survives. Negative: a lookalike path
- *     that merely STARTS the same (an attacker's own endpoint hosted at a
- *     path prefixed with "org-logo.php" but not actually matching the
- *     anchored `^/org-logo\.php\?` pattern) does NOT survive, and neither
- *     does the gated `/song-media/<id>` shape via this new pattern.
+ * 5b. #1830 — /org-logo?… is the print `logo` block's ONE admitted src
+ *     shape, in BOTH profiles (v1 -> v2 widening; v2 -> v3 dropped the
+ *     `.php` extension entirely — a routing-bug fix, rules #33/#38/#42:
+ *     `.htaccess` never had an alias for the `.php` form, so it has NEVER
+ *     been reachable from a browser, and the sanitiser now reflects that by
+ *     admitting only the shape that actually routes). Positive: the exact
+ *     shape print.js's `case 'logo'` emits survives. Negative: a lookalike
+ *     path that merely STARTS the same (an attacker's own endpoint hosted
+ *     at a path prefixed with "org-logo" but not actually matching the
+ *     anchored `^/org-logo\?` pattern) does NOT survive, and neither does
+ *     the gated `/song-media/<id>` shape via this new pattern.
  * ============================================================================= */
 
 foreach (['print', 'layout'] as $profile) {
     $logoOut = ihymnsSanitizeHtml(
-        '<img src="/org-logo.php?org=7&kind=primary&v=abc123" alt="Church logo" onerror="alert(1)">',
+        '<img src="/org-logo?org=7&kind=primary&v=abc123" alt="Church logo" onerror="alert(1)">',
         $profile
     );
-    check("[$profile] /org-logo.php?… survives as an <img src> (the ONE new admitted shape, #1830)",
-        str_contains($logoOut, '/org-logo.php?org=7&amp;kind=primary&amp;v=abc123')
-        || str_contains($logoOut, '/org-logo.php?org=7&kind=primary&v=abc123'));
+    check("[$profile] /org-logo?… survives as an <img src> (the ONE admitted shape, #1830/v3)",
+        str_contains($logoOut, '/org-logo?org=7&amp;kind=primary&amp;v=abc123')
+        || str_contains($logoOut, '/org-logo?org=7&kind=primary&v=abc123'));
     check("[$profile] onerror= is still stripped from the logo <img> (unconditional ban unaffected by the new pattern)",
         !str_contains(strtolower($logoOut), 'onerror'));
 
-    $lookalike = ihymnsSanitizeHtml('<img src="/org-logo.phpEVIL?x=1" alt="x">', $profile);
-    check("[$profile] a lookalike '/org-logo.phpEVIL?…' path (NOT the anchored shape) is dropped",
-        !str_contains($lookalike, 'org-logo.phpEVIL'));
+    /* The OLD `.php` form is now itself the "lookalike" — it must NOT
+       survive (v2 -> v3, rules #33/#38/#42): admitting it would let a
+       forever-404 src back into stored output, and (more importantly)
+       proves the anchor is on `^/org-logo\?`, not a loose substring match. */
+    $oldPhpForm = ihymnsSanitizeHtml('<img src="/org-logo.php?org=7&kind=primary" alt="x">', $profile);
+    check("[$profile] the OLD '/org-logo.php?…' form is dropped — it has never been a routable URL (v2 -> v3)",
+        !str_contains($oldPhpForm, 'org-logo.php'));
+
+    $lookalike = ihymnsSanitizeHtml('<img src="/org-logoEVIL?x=1" alt="x">', $profile);
+    check("[$profile] a lookalike '/org-logoEVIL?…' path (NOT the anchored shape) is dropped",
+        !str_contains($lookalike, 'org-logoEVIL'));
 
     $gatedOut = ihymnsSanitizeHtml('<img src="/song-media/123" alt="gated">', $profile);
     check("[$profile] /song-media/123 STILL never matches the widened img_src allow-list (rule M unaffected by #1830)",
@@ -223,7 +235,7 @@ check('…while the surrounding attack payload is still neutralised in the SAME 
  * 8. Nested / malformed markup — must not throw, must return a string.
  * ============================================================================= */
 
-$malformed = '<div class="print-title"><span><div>unclosed<img src="/qr.php?x=1"></div>';
+$malformed = '<div class="print-title"><span><div>unclosed<img src="/qr?x=1"></div>';
 $malformedOut = null;
 try {
     $malformedOut = ihymnsSanitizeHtml($malformed, 'print');

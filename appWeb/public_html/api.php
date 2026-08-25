@@ -6831,6 +6831,46 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * BCP 47 subtag live search (BCP 47 registry plan §4.3, M2/M3)
+         *
+         * GET ?action=language_search|script_search|region_search|variant_search&q=<text>&limit=12
+         *   → {"suggestions":[{"code":"en","name":"English","nativeName":"English","scope":"individual"}]}
+         *
+         * Public (mirrors the `action=variants` precedent: registry data is
+         * public, native clients get parity, and the picker no longer
+         * depends on an admin-only /manage/songbooks URL from editor
+         * surfaces). ONE shared core, bcp47SubtagSearch() —
+         * includes/language_names.php — four thin cases differing only in
+         * `$kind`; never re-fork the query per subtag (rule #22).
+         *
+         * Replaces the WHOLE-CATALOGUE datalist the picker used to build
+         * from `action=languages` for every keystroke's suggestion set:
+         * `js/modules/ietf-language-picker.js` now calls these via
+         * `window.iHymnsPlaceSearch.attach()` (rule #43) instead. The
+         * bulk-dump actions (`languages`/`scripts`/`regions`/`variants`
+         * above) are UNCHANGED — they remain a documented native-client
+         * contract; only the picker's OWN typeahead moved to search.
+         *
+         * Empty `q` → `{"suggestions":[]}`. Un-migrated tables → `[]` +
+         * `note` (the existing sibling contract every action above already
+         * follows). tests/test-bcp47-search-endpoints.js asserts every
+         * emitted `action=*_search` literal in the tree has a matching
+         * case here (or the legacy songbooks.php alias).
+         * ----------------------------------------------------------------- */
+        case 'language_search':
+        case 'script_search':
+        case 'region_search':
+        case 'variant_search': {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
+            $db    = getDbMysqli();
+            $kind  = substr($action, 0, -strlen('_search'));   // 'language_search' -> 'language', etc.
+            $q     = trim((string)($_GET['q'] ?? ''));
+            $limit = max(1, min(50, (int)($_GET['limit'] ?? 12)));
+            sendJson(bcp47SubtagSearch($db, $kind, $q, $limit));
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Get translations for a specific song
          * Parameters: id (required) — source song ID
          * ----------------------------------------------------------------- */
@@ -17580,6 +17620,15 @@ if ($action !== null) {
          *
          * Global-admin only. POST + X-Requested-With per the standard
          * CSRF guard.
+         *
+         * THIN DELEGATE (BCP 47 registry plan §3.3, rule #35 — one
+         * mechanism): the actual fetch/sanity/write/re-import body used to
+         * live inline here. It is now `languageRegistryRefreshCore()` in
+         * `includes/language_registry_refresh.php`, shared with the new
+         * keyed `language-registry-refresh.php` endpoint the monthly
+         * GitHub Action pokes — so a fix here fixes both callers, and
+         * there is exactly ONE `$sources` URL map in the whole codebase
+         * (CI-guarded: tests/php/test-language-registry-refresh.php).
          * ----------------------------------------------------------------- */
         case 'admin_refresh_iana_cldr': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -17592,85 +17641,29 @@ if ($action !== null) {
                 break;
             }
 
-            $dataDir = dirname(__DIR__, 1) . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'data';
-            if (!is_dir($dataDir) || !is_writable($dataDir)) {
-                sendJson([
-                    'error' => "Snapshot directory not writable: {$dataDir}",
-                ], 500);
-                break;
-            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_registry_refresh.php';
+            $result = languageRegistryRefreshCore();
 
-            /* Live URLs. The CLDR base hits the unicode-org/cldr-json
-               GitHub mirror raw content; IANA serves the registry as
-               a stable URL. Both are publicly fetchable, no auth. */
-            $sources = [
-                'iana-language-subtag-registry.txt'
-                    => 'https://www.iana.org/assignments/language-subtag-registry',
-                'cldr-en-languages.json'
-                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/languages.json',
-                'cldr-en-scripts.json'
-                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/scripts.json',
-                'cldr-en-territories.json'
-                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/territories.json',
-                'cldr-en-variants.json'
-                    => 'https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/variants.json',
-            ];
-
-            $fetched = [];
-            $failed  = [];
-            foreach ($sources as $filename => $url) {
-                $ctx = stream_context_create([
-                    'http' => [
-                        'timeout'        => 30,
-                        'follow_location' => 1,
-                        'header'         => "User-Agent: iHymns-IANA-Refresh/1.0\r\n",
-                    ],
-                ]);
-                $body = @file_get_contents($url, false, $ctx);
-                if ($body === false || strlen($body) < 100) {
-                    $failed[] = $filename;
-                    continue;
-                }
-                $target = $dataDir . DIRECTORY_SEPARATOR . $filename;
-                if (@file_put_contents($target, $body) === false) {
-                    $failed[] = $filename . ' (write failed)';
-                    continue;
-                }
-                $fetched[] = $filename . ' (' . number_format(strlen($body)) . ' bytes)';
-            }
-
-            if (!empty($failed)) {
-                sendJson([
-                    'error'   => 'One or more source fetches failed.',
-                    'fetched' => $fetched,
-                    'failed'  => $failed,
-                    'hint'    => 'Check server outbound HTTPS connectivity. The bundled snapshots remain in place; pre-existing data is untouched.',
-                ], 502);
-                break;
-            }
-
-            /* Snapshots refreshed. Now re-run the migration so the DB
-               picks up new rows. Run as a sub-process include so the
-               migration's "echo" output is captured in our response
-               instead of streaming through. */
-            ob_start();
-            try {
-                define('IHYMNS_SETUP_DASHBOARD', true);
-                require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '.sql' . DIRECTORY_SEPARATOR . 'migrate-iana-language-subtag-registry.php';
-                $migOutput = ob_get_clean();
-            } catch (\Throwable $e) {
-                ob_end_clean();
-                sendJson([
-                    'error'   => 'Snapshots refreshed but migration re-run failed: ' . $e->getMessage(),
-                    'fetched' => $fetched,
-                ], 500);
+            if (!$result['ok']) {
+                /* Two distinct failure shapes the pre-hoist handler had:
+                   a directory-not-writable 500, or an upstream-fetch 502.
+                   Tell them apart by whether any fetch actually failed. */
+                $status = !empty($result['failed']) ? 502 : 500;
+                sendJson(array_filter([
+                    'error'   => $result['error'],
+                    'fetched' => $result['fetched'],
+                    'failed'  => $result['failed'] ?: null,
+                    'hint'    => !empty($result['failed'])
+                        ? 'Check server outbound HTTPS connectivity. The bundled snapshots remain in place; pre-existing data is untouched.'
+                        : null,
+                ], static fn($v) => $v !== null && $v !== []), $status);
                 break;
             }
 
             sendJson([
-                'ok'             => true,
-                'fetched'        => $fetched,
-                'migrationLog'   => $migOutput,
+                'ok'           => true,
+                'fetched'      => $result['fetched'],
+                'migrationLog' => $result['migrationLog'],
             ]);
             break;
         }
@@ -19682,6 +19675,76 @@ if ($action !== null) {
             }, $rows);
 
             sendJson(['ok' => true, 'keys' => $keys]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * CAPTCHA WIDGET-HEALTH HINT (the outage grace window's early warning)
+         *
+         * ELI5: when a visitor's browser cannot load the human-check widget, it
+         * quietly tells us so — and all that does is make the server go and
+         * check the provider for itself, a bit sooner than it otherwise would.
+         *
+         * ⚠️ THIS ENDPOINT CAN NEVER LET ANYBODY THROUGH. It is the one place
+         * in this feature a CLIENT touches the outage machinery, so the rule
+         * matters most here: "the provider is down" and "a bot omitted the
+         * token" are indistinguishable if the evidence comes from the client,
+         * so a request-borne claim must never move an allow decision — it would
+         * be a one-line universal bypass the moment a bot copied it. What this
+         * case is allowed to do is exactly two things: increment a telemetry
+         * counter, and ASK THE SERVER TO LOOK. The looking
+         * (captchaHealthEnsureFresh) makes an outbound probe the server was
+         * entitled to make anyway, and the probe's verdict — not this request —
+         * is what any later admission derives from. The response is identical
+         * whatever the state, so it leaks nothing either.
+         * Guard-enforced: tests/php/test-captcha-gate.php §8 asserts this case
+         * body calls no decision function, and that captchaOutageDecision() has
+         * exactly ONE call site tree-wide (captchaGate).
+         *
+         * WHY IT EARNS ITS KEEP: the widget fails in the BROWSER seconds before
+         * the first token-less submission reaches us, and during a pure
+         * widget-load outage the server would otherwise observe nothing at all
+         * (token-less requests are refused with no network call). This turns
+         * "the window opens after someone is refused" into "the window is
+         * usually already open when they submit".
+         *
+         * NOT CSRF-GATED, deliberately: rule #29 targets state-changing writes,
+         * and the only state here is a rate-limited counter plus a probe with
+         * no user-visible effect. It must also remain callable from precisely
+         * the broken path that produces it.
+         *
+         * DORMANT-GATED: on an unconfigured install this 400s like any unknown
+         * action would — the endpoint does not observably exist.
+         * ----------------------------------------------------------------- */
+        case 'captcha_widget_health': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            if (captchaConfig() === null) { sendJson(['error' => 'Not available.'], 400); break; }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+            $cwhIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            /* Per-IP so one address cannot fill tblLoginAttempts. Not per
+               presence/session — there is nothing to protect but the table. */
+            if (!checkRateLimit(CAPTCHA_RATE_ACTION_HINT, $cwhIp, CAPTCHA_HINT_MAX_PER_WINDOW, CAPTCHA_HINT_WINDOW_SECONDS)) {
+                sendJson(['ok' => true]);   /* same body as success — never a probe oracle */
+                break;
+            }
+            recordRateLimitHit(CAPTCHA_RATE_ACTION_HINT, $cwhIp);
+
+            /* The form key is read only to be VALIDATED and dropped: it exists
+               so a future admin surface can say WHICH form users are failing
+               on, and validating it keeps the wire contract honest today. It
+               reaches no decision and is not stored. */
+            $cwhBody = json_decode((string)file_get_contents('php://input'), true);
+            $cwhForm = is_array($cwhBody) ? trim((string)($cwhBody['form'] ?? '')) : '';
+            if ($cwhForm !== '' && !in_array($cwhForm, captchaFormKeys(), true)) {
+                sendJson(['error' => 'Unknown form.'], 400);
+                break;
+            }
+
+            captchaHealthNoteHint();                        /* telemetry counter only */
+            captchaHealthEnsureFresh((array)captchaConfig()); /* ask the server to LOOK */
+
+            sendJson(['ok' => true]);
             break;
         }
 

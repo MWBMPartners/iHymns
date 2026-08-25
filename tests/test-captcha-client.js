@@ -21,6 +21,15 @@
  *      captcha-widget.js) branches on isCaptchaRefusal(status,data) — never a
  *      regex / .includes() on the server's error prose — and names no provider
  *      hostname / site key.
+ *   4. The widget-failure HINT (the provider-outage fallback) is wired the one
+ *      safe way: sent through the shared apiFetch (rule #31, never bare fetch),
+ *      fired from the module's failure paths, and — the load-bearing part —
+ *      DECISION-INERT on the client too. Nothing awaits it, nothing reads its
+ *      body, and no mount/allow path branches on it. A client that could act on
+ *      the reply would be one refactor away from a client that decides whether
+ *      a challenge is required, which is the universal bypass the server-side
+ *      design exists to make impossible. captcha-widget.js must also be the
+ *      ONLY js file that knows this action exists (tree-derived).
  *
  *   node tests/test-captcha-client.js
  *
@@ -136,6 +145,91 @@ for (const f of consumers) {
     const prose = proseMatchers.some((re) => re.test(s));
     check(`3.3 [${rel}] does not prose-match the server captcha error`, !prose);
     check(`3.4 [${rel}] names no provider hostname`, !providerHosts.test(s));
+}
+
+/* ---- 4. The outage widget-failure hint is wired, and inert ------------- */
+/* The action name is DERIVED from the PHP constant, so renaming it on either
+   side fails here rather than silently sending hints nothing handles (rule #35:
+   two files that must agree need a mechanism, not a comment). */
+const phpHintM = phpSrc.match(/const\s+CAPTCHA_RATE_ACTION_HINT\s*=\s*'([^']+)'/);
+check('4.1 includes/captcha.php declares CAPTCHA_RATE_ACTION_HINT', !!phpHintM);
+const HINT_ACTION = phpHintM ? phpHintM[1] : 'captcha_widget_health';
+
+/* The server case must exist for the action the client sends. */
+const apiSrc = read(path.join(PUB, 'api.php'));
+check('4.2 api.php handles the exact hint action the client sends',
+    apiSrc.includes(`case '${HINT_ACTION}':`), `looked for case '${HINT_ACTION}':`);
+
+/* ⚠️ BOUNDED, not a substring test. The first draft used
+   `.includes('action=' + HINT_ACTION)` and stayed GREEN while the client sent
+   `action=captcha_widget_healthz` — because the correct name is a PREFIX of the
+   typo'd one, so the drift this assertion exists to catch satisfied it. Caught
+   only by mutation-testing it (rule #34: a scanner that under-reports is worse
+   than none, because its tick is read as coverage). The trailing boundary is
+   what makes it real. */
+const hintActionRe = new RegExp(`action=${HINT_ACTION}(?![A-Za-z0-9_-])`);
+check('4.3 captcha-widget.js sends the hint to that exact action (bounded match)',
+    hintActionRe.test(jsNoComments), `looked for action=${HINT_ACTION} with a word boundary`);
+check('4.4 the hint goes through the shared apiFetch, not bare fetch (rule #31)',
+    /import\s*\{[^}]*\bapiFetch\b[^}]*\}\s*from\s*['"][^'"]*api-client\.js['"]/.test(jsNoComments)
+    && /apiFetch\(\s*['"`][^'"`]*action=/.test(jsNoComments));
+check('4.5 captcha-widget.js does not call bare fetch( for the hint',
+    !/(^|[^.\w])fetch\s*\(/.test(jsNoComments.replace(/apiFetch\s*\(/g, 'X(')));
+
+/* DECISION-INERTNESS on the client. The hint call expression must not be
+   awaited and must not have a .then() that could feed a value back into mount
+   or submit logic. Scoped narrowly to the call expression itself — rule #34
+   warns that a guard blunt enough to flag correct code gets weakened or
+   deleted, and `.catch(` on the same expression is not only allowed but
+   required (an unhandled rejection would surface as a console error on the very
+   path the user is already having trouble with). */
+const hintCallM = jsNoComments.match(/(await\s+)?apiFetch\(\s*['"`][^'"`]*action=[^'"`]*['"`][\s\S]{0,400}?\)\s*(\.[a-zA-Z]+\([^)]*\)\s*)*;/);
+check('4.6 the hint call expression is locatable for the inertness scan', !!hintCallM);
+if (hintCallM) {
+    const expr = hintCallM[0];
+    check('4.7 the hint is never awaited (it must not delay or block the form)',
+        !/\bawait\b/.test(expr), expr.slice(0, 120));
+    check('4.8 the hint reply is never read (.then/.json are absent — fire and forget)',
+        !/\.then\s*\(/.test(expr) && !/\.json\s*\(/.test(expr), expr.slice(0, 120));
+}
+/* No assignment of the hint's result to anything — a stored promise/response is
+   the first step towards branching on it. */
+check('4.9 the hint result is not assigned to a variable',
+    !/(?:const|let|var)\s+\w+\s*=\s*(?:await\s+)?apiFetch\(\s*['"`][^'"`]*action=/.test(jsNoComments)
+    && !/return\s+(?:await\s+)?apiFetch\(\s*['"`][^'"`]*action=/.test(jsNoComments));
+
+/* Tree-derived: captcha-widget.js is the ONLY js file that knows this action
+   exists. A second sender would be a second, unreviewed telemetry path. */
+const hintActionAnywhereRe = new RegExp(`${HINT_ACTION}(?![A-Za-z0-9_-])`);
+const hintSenders = allJs.filter((f) => hintActionAnywhereRe.test(stripJsComments(read(f))));
+const hintSenderRels = hintSenders.map((f) => path.relative(PUB, f));
+check('4.10 captcha-widget.js is the ONLY js file naming the hint action',
+    hintSenderRels.length === 1 && hintSenderRels[0] === MODULE_REL,
+    hintSenderRels.join(', '));
+
+/* The hint must fire from the module's FAILURE paths, not from a success path
+   (which would make it constant background noise and drown the real signal).
+   Derived structurally: the reporter is called only inside catch blocks or
+   immediately before a `return null` bail-out in mountCaptcha. */
+const mountM = jsNoComments.match(/export\s+async\s+function\s+mountCaptcha\s*\([\s\S]*?\n\}/);
+check('4.11 mountCaptcha body is locatable', !!mountM);
+if (mountM) {
+    const mount = mountM[0];
+    const reporterName = (jsNoComments.match(/function\s+(_report\w+)\s*\(/) || [])[1];
+    check('4.12 a dedicated failure-reporter helper exists (one place sends the hint)', !!reporterName);
+    if (reporterName) {
+        const calls = mount.split(`${reporterName}(`).length - 1;
+        check('4.13 mountCaptcha reports from every failure path (script load / missing global / render throw)',
+            calls === 3, `found ${calls} call(s), expected 3`);
+        /* Each call must be followed by a bail-out — never by continuing to
+           treat the widget as mounted. */
+        const followedByBail = mount
+            .split(`${reporterName}(`)
+            .slice(1)
+            .every((seg) => /^[^;]*;\s*(?:hostEl\.innerHTML\s*=\s*'';\s*)?return null;/.test(seg));
+        check('4.14 every hint call is immediately followed by returning null (no token, server decides)',
+            followedByBail);
+    }
 }
 
 /* ---------------------------------------------------------------------- */

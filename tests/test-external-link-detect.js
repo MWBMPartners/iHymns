@@ -79,6 +79,15 @@ check('https://id.loc.gov/authorities/names/n12345',                  'loc-name-
 check('https://www.findagrave.com/memorial/123/john-newton',          'find-a-grave');
 check('https://songselect.ccli.com/Songs/22025',                      'ccli-songselect');
 check('https://imslp.org/wiki/Foo',                                   'imslp');
+/* Scribd — document/sheet-music host (owner directive 2026-08-25). All
+   four real URL shapes are the SAME provider, matched by host alone. */
+check('https://www.scribd.com/document/123456789/Amazing-Grace',      'scribd');
+check('https://www.scribd.com/doc/123456789/Amazing-Grace',           'scribd');  /* legacy path, same provider */
+check('https://www.scribd.com/presentation/123456789/Hymn-Slides',    'scribd');
+check('https://scribd.com/document/1/foo',                            'scribd');  /* bare domain, no www */
+check('https://es.scribd.com/document/1/foo',                         'scribd');  /* localised subdomain — suffix match */
+check('https://example.com/redirect?to=scribd.com',                   null);      /* "scribd" in the URL string, but NOT the host — must not over-match */
+check('https://notscribd.com/document/1',                             null);      /* boundary check, same shape as notyoutube.com above */
 check('https://www.youtube.com/watch?v=abc',                          'youtube');
 check('https://youtu.be/abc',                                         'youtube');
 check('https://m.youtube.com/watch?v=abc',                            'youtube');

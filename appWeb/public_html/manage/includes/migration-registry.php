@@ -3231,6 +3231,45 @@ return [
     ],
 
     /* ----------------------------------------------------------------------
+     * #947/#340 outage fallback — the two settings rows behind the CAPTCHA
+     * provider-outage grace window. ZERO DDL (rule #20: a growable form
+     * vocabulary is a CSV in a settings row, never an ENUM column), and the
+     * code reads both with safe getAppSetting() defaults, so this card is
+     * HYGIENE — description text + schema.sql parity — not correctness. An
+     * install that never runs it behaves identically.
+     * -------------------------------------------------------------------- */
+    'captcha-outage-settings' => [
+        'script' => 'migrate-captcha-outage-settings.php',
+        'card' => [
+            'title'  => 'CAPTCHA outage fallback settings (#947/#340)',
+            'body'   => 'Seeds two <code>tblAppSettings</code> rows used by the CAPTCHA'
+                      . ' provider-outage grace window: <code>captcha_outage_strict_forms</code>'
+                      . ' (CSV of forms that must keep failing closed even during a'
+                      . ' server-verified outage — seeded <em>empty</em>, so every gated form'
+                      . ' instead falls back to the ordinary rate-limit / honeypot floor rather'
+                      . ' than locking users out) and <code>captcha_health_state</code> (the'
+                      . ' machine-written JSON record of what this server last observed about'
+                      . ' the provider). Additive, idempotent, no schema change; the feature'
+                      . ' stays dormant until a provider is configured.',
+            'button' => 'Seed CAPTCHA Outage Settings',
+        ],
+        /* Multi-object AND-probe (rule #19): pending while EITHER row is
+           missing, so a partial apply never shows the card green. Reads the
+           live table — never a `=> true` stub, which would make the pending
+           counter impossible to drive to zero. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT COUNT(*) AS c FROM tblAppSettings"
+                . " WHERE SettingKey IN ('captcha_outage_strict_forms', 'captcha_health_state')"
+            );
+            $stmt->execute();
+            $r = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return ((int)($r['c'] ?? 0)) < 2;   /* fewer than both → still pending */
+        })($db),
+    ],
+
+    /* ----------------------------------------------------------------------
      * #1661 — setlist tombstones + optional expiry. The storage half of sync
      * protocol 2: deletion becomes something a client SAYS (a tombstone row)
      * rather than something the server INFERS from a setlist being absent
@@ -4520,7 +4559,7 @@ return [
         'card' => [
             'title'  => 'QR image cache (#1920)',
             'body'   => 'Creates <code>tblQrCache</code> — a server-side cache of CueRCode-generated'
-                      . ' QR images keyed by a payload+options hash, so <code>/qr.php</code> and the'
+                      . ' QR images keyed by a payload+options hash, so <code>/qr</code> and the'
                       . ' server PDF renderer stop round-tripping the CueRCode service for a picture'
                       . ' that never changes. Fail-open: absent table = today\'s behaviour.'
                       . ' Additive, idempotent, dormant. Safe to re-run.',
@@ -4569,5 +4608,41 @@ return [
             !_migProbe_tableExists($db, 'tblWebhookSubscriptions')
             || !_migProbe_tableExists($db, 'tblWebhookEvents')
             || !_migProbe_tableExists($db, 'tblWebhookDeliveries'),
+    ],
+
+    'scribd-link' => [
+        'script' => 'migrate-scribd-link.php',
+        'card' => [
+            'title'  => 'Scribd external-link provider',
+            'body'   => 'Adds Scribd (scribd.com — a document/sheet-music hosting service)'
+                      . ' to <code>tblExternalLinkTypes</code> (#833), filed under the'
+                      . ' <code>sheet-music</code> category alongside IMSLP, with a host'
+                      . ' pattern in <code>tblExternalLinkPatterns</code> (#845) so pasting'
+                      . ' a <code>scribd.com/document/…</code>, <code>/doc/…</code> or'
+                      . ' <code>/presentation/…</code> URL auto-detects to Scribd in the'
+                      . ' songs / songbooks external-links editors. Idempotent — the link'
+                      . ' type upserts by Slug, the pattern guards on'
+                      . ' (LinkTypeId, Host, PathPrefix) before inserting.',
+            'button' => 'Run Scribd Link Migration',
+        ],
+        /* Single-sentinel probe (rule #19), same shape as
+           'musicbrainz-style-links' / 'media-database-providers' /
+           'extra-streaming-platforms' above: pending until the prerequisite
+           registry tables exist AND the 'scribd' slug has been seeded. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')
+                || !_migProbe_tableExists($db, 'tblExternalLinkPatterns')) {
+                return false;
+            }
+            $stmt = $db->prepare(
+                'SELECT 1 FROM tblExternalLinkTypes WHERE Slug = ? LIMIT 1'
+            );
+            $sentinel = 'scribd';
+            $stmt->bind_param('s', $sentinel);
+            $stmt->execute();
+            $present = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$present;
+        },
     ],
 ];

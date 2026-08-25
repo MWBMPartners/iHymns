@@ -77,6 +77,13 @@
         { slug: 'find-a-grave',          hosts: ['findagrave.com'] },
         { slug: 'ccli-songselect',       hosts: ['songselect.ccli.com'] },
         { slug: 'imslp',                 hosts: ['imslp.org'] },
+        /* Scribd — document/sheet-music host. One suffix rule covers every
+           real URL shape (/document/, legacy /doc/, /presentation/) on any
+           subdomain (www., es., id., …) because they're all the same
+           provider — unlike MusicBrainz above, no pathPrefix is needed to
+           tell them apart. Mirrors the tblExternalLinkPatterns seed in
+           migrate-scribd-link.php. */
+        { slug: 'scribd',                hosts: ['scribd.com'] },
         { slug: 'vimeo',                 hosts: ['vimeo.com'] },
         { slug: 'spotify',               hosts: ['open.spotify.com', 'spotify.com'] },
         { slug: 'apple-music',           hosts: ['music.apple.com'] },

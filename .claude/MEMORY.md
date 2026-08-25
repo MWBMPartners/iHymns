@@ -6,7 +6,7 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-24 (branch `claude/ilyrics-identity-work-model` merging to alpha)._
+_Last updated: 2026-08-25 (branch `claude/dormant-features-settings-1sdw4t` — BCP 47 language registry M1-M5 built, uncommitted)._
 
 ## Where things stand
 - **Version:** `1.0.0` (tag-derived since #1899) — authoritative source is `includes/infoAppVer.php`
@@ -607,3 +607,27 @@ after checkout showed the call count drop to 0) and re-applied from the diff I'd
 ⚠️ **Deferred WITH the demoted OpenAPI work (NOT skipped):** the wiki `API-Reference.md` per-action
 entries for the v2 editor surfaces (song_links/#1608, create_song, #882 import) ride with the
 comprehensive OpenAPI/#1201 pass, which the owner demoted to AFTER #1741 reshapes those APIs.
+
+## 2026-08-25 — BCP 47 language registry (M1-M5) + a sharper edge on the git-checkout mutation-testing gotcha
+
+Implemented `.claude/bcp47-language-registry-plan.md` in full (scheduled refresh, `<datalist>` → live-
+search picker rework, unknown-tag curator surface on `/manage/languages`) — see the ProjectBrief
+continuation note and the plan doc's own "what actually shipped" list for detail. `php` 203/203,
+`node` 76/76. **Uncommitted** — a future session must commit (plan §10's 7-commit order), THEN file
+the epic + M1-M5 issues (issues precede the commits that close them, per the plan's own instruction),
+THEN update the Wiki.
+
+⚠️ **PROCESS LESSON, sharper edge on the 2026-08-02 entry above:** that entry warns `git checkout
+<file>` on an *uncommitted, already-tracked* file silently reverts to HEAD. The untracked-file variant
+is worse in one way and better in another: `git checkout -- <path>` on a file that was **never
+`git add`ed** (a brand-new file this session created) has **no HEAD copy to revert to at all**, so git
+prints `error: pathspec '<path>' did not match any file(s) known to git` and **exits non-zero — leaving
+whatever mutated content is currently on disk untouched**. Better, because at least it doesn't silently
+substitute stale content; worse, because a mutation-test loop that does `cp file backup.php; mutate
+file; run test; git checkout -- file` (instead of `cp backup.php file`) will find the "restore" step
+silently no-ops on a new file, and the NEXT test run then executes against **mutated content it
+believes is clean** — a false read in whichever direction the mutation broke. Caught here because the
+post-restore diagnostic run failed with an error attributable to the SAME mutation just applied (not a
+coincidence) — always verify a restore with a content check (`diff`/`md5sum` against a real,
+independently-made backup copy), never trust `git checkout`'s exit code alone, and NEVER rely on
+`git checkout --` as the restore mechanism for a file this session itself created and hasn't staged.

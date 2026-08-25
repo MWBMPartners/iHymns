@@ -521,8 +521,11 @@ $exemptions = [
                   . "PHP-emitted' (Apache/reverse-proxy Bad Gateway only). api.php's admin-only snapshot-"
                   . 'refresh action (the outbound-fetch step used by setup-database.php) emits a genuine PHP '
                   . '502 via sendJson() when the upstream fetch fails — JSON-only, admin-gated, no render '
-                  . 'surface. See error.php\'s $allowed comment for the corrected note.',
-        'paths' => ['api.php'],
+                  . 'surface. See error.php\'s $allowed comment for the corrected note. BCP 47 registry plan '
+                  . '§3 (M1) added language-registry-refresh.php as a second site: the SAME upstream-fetch '
+                  . 'failure, reported via a plain json_encode()+http_response_code(502) (the webhook-drain.php '
+                  . 'shape has no sendJson() available), also JSON-only / keyed-caller-only / no render surface.',
+        'paths' => ['api.php', 'language-registry-refresh.php'],
     ],
 ];
 

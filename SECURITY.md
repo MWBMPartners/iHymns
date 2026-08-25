@@ -91,6 +91,60 @@ These are enforced conventions; new code must follow them (see
   an unconfigured install. The challenge raises an attacker's per-attempt cost;
   it does not replace the per-IP / per-account / per-identifier budgets, which
   stack underneath it.
+- **CAPTCHA provider-outage grace window — server-observed only, self-closing**
+  (#947/#340 outage fallback). Fail-closed-on-missing-token had an asymmetry
+  worth stating plainly: during a provider outage the shipped verify fail-open
+  already admitted any request carrying *any* non-empty garbage token, while a
+  legitimate user whose widget never rendered had no token to send and was the
+  only party actually refused. The window closes that gap. While **this
+  server's own outbound probes** confirm the provider is unreachable (or is
+  rejecting our secret), non-strict gated forms fall back to the pre-CAPTCHA
+  defence floor — rate limits, honeypot and daily caps all still enforced.
+  Load-bearing properties:
+  - **The allow decision derives exclusively from server-side observations**
+    (our probes + the transport results of real siteverify calls). No request
+    field, header or client hint reaches it — a client-asserted "the widget
+    failed" flag would be a universal bypass the moment a bot copied it. The
+    anonymous `captcha_widget_health` hint may only bump a counter and ask the
+    server to probe sooner; CI asserts no decision function reads a superglobal
+    and that the decision has exactly one call site.
+  - **Self-closing.** Freshness is re-checked on every decision, so a stale
+    "down" never admits — it forces a re-probe first, and the first healthy
+    observation resumes enforcement. Probes are globally rate-limited (1 per
+    30 s) with 2 s/3 s timeouts, so the window is not an amplification vector.
+  - **Opening it requires making the provider unreachable *from this server*** —
+    exactly the capability the pre-existing verify-time fail-open already rests
+    on. No new attacker capability is introduced.
+  - **Nothing is emitted to clients.** No health or "degraded" field appears in
+    `app_status` or any response: telling clients the gate is open would be
+    telling bots.
+  - **Misconfiguration is detected and reported, not tolerated silently.** A
+    provider answering `invalid-input-secret`/`missing-input-secret` means our
+    stored secret is wrong — every real user would be refused forever with no
+    error anywhere. It fails open (a typo must not brick the site), raises an
+    admin banner naming the actual remedy, and is recorded under its own state.
+    Response-side error codes (a wrong, expired or replayed token) remain
+    fail-closed exactly as before.
+  - **Per-form opt-out** via `captcha_outage_strict_forms` (CSV, seeded empty):
+    a form listed there keeps today's fail-closed behaviour under every state.
+- **CAPTCHA break-glass — `includes/CAPTCHA_DISABLED`.** Ticking both `login`
+  and `manage_login` puts every route into an admin session behind the
+  challenge; if the challenge itself is broken in a way the grace window cannot
+  cover, there is otherwise no way in but hand-editing `tblAppSettings`.
+  **Recovery:** create an empty file named `CAPTCHA_DISABLED` in
+  `appWeb/public_html*/includes/` over the same SFTP access every deploy uses.
+  `captchaConfig()` checks for it *before* reading any setting — deliberately,
+  since the failure it rescues is "the stored configuration is the problem" —
+  and resolves to null, returning the whole feature to its dormant state
+  (gates, CSP, `app_status` emit and server-rendered widget alike). Delete the
+  file to restore. Custody notes: the directory is denied by `.htaccess` both as
+  a rewrite-phase `[F]` on `^includes/` and as an authz-phase `<FilesMatch>` on
+  the filename, so it can be neither read nor probed from the web; the file is
+  never committed (CI asserts this — shipping it would disable CAPTCHA
+  fleet-wide on deploy); and its presence can only ever *downgrade* to the
+  pre-CAPTCHA posture, never enable, widen or bypass anything else. Anyone able
+  to write into `includes/` already has RCE-adjacent access and needs no CAPTCHA
+  bypass.
 - **Authorization** — role hierarchy (`user` < `editor` < `admin` <
   `global_admin`) plus a fine-grained **entitlement** system
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call

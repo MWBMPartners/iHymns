@@ -1,0 +1,246 @@
+# =============================================================================
+# iHymns — Scheduled BCP 47 Language Registry Refresh
+#
+# Copyright © 2026 MWBM Partners Ltd. All rights reserved.
+# This software is proprietary.
+#
+# PURPOSE (BCP 47 registry plan §3, M1 — owner decision: automatic,
+# GitHub-Action-scheduled, silent):
+# Keeps the IETF BCP 47 / IANA Language Subtag Registry + CLDR display-name
+# data current WITHOUT a human ever needing to click a button. Two
+# independent, individually-harmless legs run every month:
+#
+#   Leg A (snapshot-sync) — fetches the 5 upstream IANA/CLDR files, sanity-
+#     checks them, and — only if something actually changed — commits the
+#     diff straight to `alpha` (mirrors changelog.yml's direct-push
+#     precedent; alpha is NOT push-protected, unlike beta/main — see
+#     promotion-deploy-bridge.yml's "main is push-protected… commit to
+#     ALPHA" note). That push then rides the EXISTING `deploy.yml` trigger
+#     (paths: appWeb/**) so the refreshed snapshot files land on the alpha
+#     server on the next deploy — first installs / offline installs stay
+#     current without ever touching the live DB.
+#
+#   Leg B (db-refresh) — independently pokes the NEW keyed endpoint
+#     `/language-registry-refresh` (appWeb/public_html/language-registry-
+#     refresh.php), which re-fetches the SAME 5 files server-side and
+#     re-runs the idempotent `migrate-iana-language-subtag-registry.php`
+#     import directly against the shared live DB — no dependency on Leg A
+#     or on a deploy having happened. One shared MySQL means poking ONE
+#     channel's endpoint refreshes every channel (alpha/beta/main all read
+#     the same DB).
+#
+# Both legs run even if the other found nothing to do / failed — see the
+# plan's §3.6 failure-mode table: an upstream outage on either leg is
+# self-healing next month (or via workflow_dispatch), never a build
+# blocker, and the endpoint stays 503-dormant (a no-op, not an error) until
+# BOTH the one-time #738 schema apply AND the refresh key have been set up
+# (Activation Runbook §7 in the plan).
+#
+# CADENCE (owner decision D1): monthly — the IANA registry moves roughly
+# monthly, CLDR about twice a year, so monthly comfortably covers both
+# without wasting Action minutes on a near-always-empty diff.
+#
+# SECRETS / VARIABLES REQUIRED (Activation Runbook §7 steps 3-4):
+#   secrets.IHYMNS_LANG_REFRESH_KEY  — same value pasted into
+#                                       /manage/configuration's
+#                                       language_registry_refresh_key field.
+#   vars.IHYMNS_LANG_REFRESH_URL     — https://<alpha host>/language-registry-refresh
+#                                       (the extensionless address — see
+#                                       .htaccess + rule #41/#33; a literal
+#                                       ".php" URL 404s before PHP even runs).
+# Both are OPTIONAL in the sense that their absence just means Leg B's curl
+# 403s/503s and the job goes red in the Actions tab — nothing else in the
+# app depends on this workflow existing at all (fully additive, dormant
+# until configured).
+#
+# @see .claude/bcp47-language-registry-plan.md §3     the plan this implements
+# @see appWeb/public_html/language-registry-refresh.php  Leg B's target
+# @see appWeb/public_html/includes/language_registry_refresh.php  the shared refresh core both legs ultimately exercise
+# @see .github/workflows/changelog.yml                the direct-push-to-a-branch precedent Leg A follows
+# =============================================================================
+
+name: Language Registry Refresh
+
+on:
+  schedule:
+    # Monthly, 1st of the month, 04:17 UTC — deliberately off the :00/:30
+    # marks (GitHub's own scheduling guidance: exact-hour crons are the
+    # most oversubscribed slot on shared runners and can be delayed).
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ===========================================================================
+  # Leg A — refresh the git-tracked snapshot files under appWeb/.sql/data/
+  # and push any diff straight to alpha. Independent of Leg B below — this
+  # job's own success/failure never gates the other's.
+  # ===========================================================================
+  snapshot-sync:
+    name: Refresh bundled snapshots (Leg A)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout alpha
+        uses: actions/checkout@v7
+        with:
+          ref: alpha
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream IANA + CLDR files
+        id: fetch
+        run: |
+          set -euo pipefail
+          DATA_DIR="appWeb/.sql/data"
+          mkdir -p "$DATA_DIR"
+
+          declare -A SOURCES=(
+            ["iana-language-subtag-registry.txt"]="https://www.iana.org/assignments/language-subtag-registry"
+            ["cldr-en-languages.json"]="https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/languages.json"
+            ["cldr-en-scripts.json"]="https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/scripts.json"
+            ["cldr-en-territories.json"]="https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/territories.json"
+            ["cldr-en-variants.json"]="https://raw.githubusercontent.com/unicode-org/cldr-json/main/cldr-json/cldr-localenames-full/main/en/variants.json"
+          )
+
+          FAILED=0
+          for filename in "${!SOURCES[@]}"; do
+            url="${SOURCES[$filename]}"
+            tmp="/tmp/${filename}"
+            if ! curl -fsSL --max-time 30 -A "iHymns-IANA-Refresh-Action/1.0" -o "$tmp" "$url"; then
+              echo "::warning::Fetch failed for ${filename} (${url})"
+              FAILED=1
+              continue
+            fi
+            SIZE=$(wc -c < "$tmp")
+            if [ "$SIZE" -lt 100 ]; then
+              echo "::warning::${filename} fetched but suspiciously small (${SIZE} bytes) — refusing to trust it"
+              FAILED=1
+              continue
+            fi
+            mv "$tmp" "${DATA_DIR}/${filename}"
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::warning::One or more upstream fetches failed or failed sanity-check — leaving those files at their existing committed content. Self-heals next month / on manual re-dispatch."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Sanity gates (plan §3.5): the IANA file must carry a non-empty
+      # File-Date header and a record count comparable to the bundled
+      # file's (>=99%, guarding against a truncated/HTML-error-page
+      # response that still happens to clear the 100-byte floor above); the
+      # CLDR files must be valid JSON with the expected top-level shape. A
+      # gate failure reverts JUST that file to its pre-fetch (git HEAD)
+      # content — never commits a corrupt/truncated snapshot — and warns
+      # rather than failing the job outright (self-heals next month).
+      # -----------------------------------------------------------------------
+      - name: Sanity-check fetched files
+        run: |
+          set -euo pipefail
+          DATA_DIR="appWeb/.sql/data"
+          IANA_FILE="${DATA_DIR}/iana-language-subtag-registry.txt"
+
+          revert_file() {
+            local f="$1"
+            local reason="$2"
+            echo "::warning::${f} failed sanity check (${reason}) — reverting to the last-committed copy"
+            git checkout -- "$f" 2>/dev/null || true
+          }
+
+          # IANA: must have a File-Date: line, and its record count
+          # (occurrences of "Type: language" — the most numerous record
+          # kind) must be >= 99% of the git HEAD copy's count.
+          if [ -f "$IANA_FILE" ]; then
+            if ! grep -q '^File-Date:' "$IANA_FILE"; then
+              revert_file "$IANA_FILE" "no File-Date header"
+            else
+              NEW_COUNT=$(grep -c '^Type: language$' "$IANA_FILE" || true)
+              OLD_COUNT=$(git show "HEAD:${IANA_FILE}" 2>/dev/null | grep -c '^Type: language$' || echo 0)
+              if [ "$OLD_COUNT" -gt 0 ]; then
+                THRESHOLD=$(( OLD_COUNT * 99 / 100 ))
+                if [ "$NEW_COUNT" -lt "$THRESHOLD" ]; then
+                  revert_file "$IANA_FILE" "record count dropped from ${OLD_COUNT} to ${NEW_COUNT} (below 99% floor)"
+                fi
+              fi
+            fi
+          fi
+
+          # CLDR: must parse as JSON and carry ['main']['en']['localeDisplayNames'].
+          for cldr_file in "${DATA_DIR}"/cldr-en-*.json; do
+            [ -f "$cldr_file" ] || continue
+            if ! jq -e '.main.en.localeDisplayNames' "$cldr_file" >/dev/null 2>&1; then
+              revert_file "$cldr_file" "not valid JSON, or missing .main.en.localeDisplayNames"
+            fi
+          done
+
+      - name: Commit + push any diff to alpha
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add appWeb/.sql/data/
+          if git diff --cached --quiet; then
+            echo "No IANA/CLDR snapshot changes — nothing to commit."
+            exit 0
+          fi
+
+          # Deliberately NO [skip ci] (unlike changelog.yml's own commits) —
+          # this push SHOULD trigger deploy.yml (paths: appWeb/**) so the
+          # alpha server's appWeb/.sql/data/ picks up the refreshed
+          # snapshot on its next deploy.
+          git commit -m "chore(data): refresh IANA/CLDR language snapshots"
+
+          # 5-attempt rebase-retry push — the proven changelog.yml /
+          # promotion-deploy-bridge.yml shape. alpha is NOT push-protected
+          # (unlike beta/main), so this is expected to succeed outright on
+          # attempt 1 in the normal case; the retry loop only matters if
+          # something else pushed to alpha in the same instant.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:alpha; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt — rebasing onto origin/alpha and retrying"
+            git fetch origin alpha
+            if ! git rebase origin/alpha; then
+              git rebase --abort || true
+              echo "::error::Rebase onto origin/alpha conflicted — snapshot refresh not pushed this run. Will retry next scheduled run / manual re-dispatch."
+              exit 1
+            fi
+            sleep $(( attempt * 2 ))
+          done
+
+          echo "::error::Could not push snapshot refresh after 5 attempts."
+          exit 1
+
+  # ===========================================================================
+  # Leg B — poke the live keyed endpoint so the SHARED DB re-fetches upstream
+  # itself and re-runs the idempotent import. Runs independently of Leg A
+  # (no `needs:` between them) — a snapshot-sync failure never blocks the
+  # live-DB refresh, and vice versa.
+  # ===========================================================================
+  db-refresh:
+    name: Refresh live DB (Leg B)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Poke /language-registry-refresh
+        run: |
+          set -euo pipefail
+          URL="${{ vars.IHYMNS_LANG_REFRESH_URL }}"
+          if [ -z "$URL" ]; then
+            echo "::error::vars.IHYMNS_LANG_REFRESH_URL is not set — see the plan's Activation Runbook §7 step 4. Nothing to poke."
+            exit 1
+          fi
+
+          # -f: a non-2xx status (403 wrong key, 503 dormant, 502 upstream
+          # fetch failed) fails this step and shows up red in the Actions
+          # tab — the endpoint itself is otherwise completely silent (no
+          # notification, no issue filed), matching the owner's "silent"
+          # instruction for the SUCCESS path while still surfacing a real
+          # problem somewhere a human will eventually notice.
+          curl -fsS -X POST "$URL" \
+               -H "X-Refresh-Key: ${{ secrets.IHYMNS_LANG_REFRESH_KEY }}" \
+               --max-time 120

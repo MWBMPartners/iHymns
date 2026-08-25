@@ -685,23 +685,23 @@ export function mountMetadataTab(container, opts) {
         lwrap.setAttribute('data-initial-tag', song.Language != null ? String(song.Language) : '');
         /* Static structure mirroring the module's own doc-comment markup
            contract (js/modules/ietf-language-picker.js header): three
-           labelled inputs, a live tag preview, a hidden composed-tag output,
-           and one <datalist> per input. The only interpolation is the
-           literal 'ed2' picker id above (never user data), so this innerHTML
-           is not an XSS surface — the same shape v2/enrichment-panel.js's
-           buildIetfPicker() already builds for its own inline per-line
-           picker, and the same reasoning for why THAT innerHTML is safe. */
+           labelled inputs (each with a hidden `-code` sibling), a live tag
+           preview, and a hidden composed-tag output — NO `<datalist>` any
+           more (#1907 live-search rework, BCP 47 registry plan §4). The
+           only interpolation is the literal 'ed2' picker id above (never
+           user data), so this innerHTML is not an XSS surface — the same
+           shape v2/enrichment-panel.js's buildIetfPicker() already builds
+           for its own inline per-line picker, and the same reasoning for
+           why THAT innerHTML is safe. */
         lwrap.innerHTML =
             '<div class="row g-1">'
-          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" id="meta-language-lang" list="ietf-lang-list-ed2" autocomplete="off" placeholder="English"></div>'
-          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-ed2" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
-          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-ed2" autocomplete="off" placeholder="Region"></div>'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" id="meta-language-lang" autocomplete="off" placeholder="English"><input type="hidden" class="ietf-picker-language-code"></div>'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" autocomplete="off" placeholder="Script (e.g. Latin)"><input type="hidden" class="ietf-picker-script-code"></div>'
+          +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" autocomplete="off" placeholder="Region"><input type="hidden" class="ietf-picker-region-code"></div>'
           + '</div>'
           + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
-          + '<input type="hidden" class="ietf-tag-output" value="">'
-          + '<datalist id="ietf-lang-list-ed2"></datalist>'
-          + '<datalist id="ietf-script-list-ed2"></datalist>'
-          + '<datalist id="ietf-region-list-ed2"></datalist>';
+          + '<div class="ietf-picker-unknown-warning form-text text-warning-emphasis d-none"></div>'
+          + '<input type="hidden" class="ietf-tag-output" value="">';
         /* Grabbed now (querySelector walks lwrap's own subtree regardless of
            whether lwrap is connected to the document yet) but not USED until
            after the block is attached to `container` below — see the comment
@@ -1560,21 +1560,22 @@ export function mountMetadataTab(container, opts) {
 
         container.append(identity.fieldset, composition.fieldset, publication.fieldset);
 
-        /* #1849 — boot the language picker only NOW, after `lwrap` is
-           actually attached to the live document via the `container.append(…)`
-           immediately above — not right after building its markup earlier.
-           bootIetfLanguagePicker() resolves its three <datalist>s via
-           `document.getElementById(input.getAttribute('list'))`, which
-           searches the WHOLE DOCUMENT: a <datalist> that exists only inside a
-           detached `document.createElement()` subtree is invisible to that
-           lookup, and the null it gets back is captured ONCE into a closure
-           the module never re-queries later. Booting too early would
-           silently strand the typeahead — free typing would still work (the
-           module's own resolveCode() falls through to whatever was typed
-           when no matching option exists), so this would misread as "the
-           picker works, it just never suggests anything" rather than fail
-           loudly. Mirrors why the geocoder/tune/holder `attach()` calls all
-           wait for this exact same live-DOM requirement. */
+        /* #1849, superseded by #1907 (BCP 47 registry plan §4) — boot the
+           language picker only NOW, after `lwrap` is actually attached to
+           the live document via the `container.append(…)` immediately
+           above, kept as belt-and-braces even though it is no longer
+           load-bearing: pre-#1907 this ordering was REQUIRED
+           (`bootIetfLanguagePicker()` resolved its `<datalist>`s via
+           `document.getElementById()`, which cannot see into a detached
+           subtree). The module now wires each subtag's suggestions via
+           `window.iHymnsPlaceSearch.attach()` (no `<datalist>`, no
+           `getElementById()` at all) and defers even THAT call to a
+           one-time `focusin` on the picker root — so this specific
+           ordering can no longer strand the typeahead either way. Left
+           unchanged because it costs nothing and matches the geocoder/
+           tune/holder `attach()` calls immediately below, which DO still
+           need a live element for their `getBoundingClientRect()`-based
+           panel positioning. */
         bootIetfLanguagePicker(lwrap);
         langPickerDetach = function () { /* see the langPickerDetach declaration above — nothing to detach */ };
 

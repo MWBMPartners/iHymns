@@ -2341,6 +2341,203 @@ paths:
                     type: string
                     description: Present only when the lookup table has not yet been created.
 
+  /api.php?action=language_search:
+    get:
+      operationId: searchLanguages
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 languages (BCP 47 registry plan §4.3)
+      description: |
+        Prefix/substring typeahead over `tblLanguages`, ranked so an exact
+        code match wins outright, then a name-prefix match, then (when the
+        `Scope` column exists) macrolanguages before individual /
+        collection / private-use / special, then shortest name, then
+        alphabetic. Backs the IETF BCP 47 language picker's live search
+        (`js/modules/ietf-language-picker.js`) — replaces the old
+        whole-catalogue `action=languages` dump as the picker's own
+        per-keystroke data source; `action=languages` itself is unchanged
+        and still serves the same full-dump native-client contract.
+
+        Empty `q` returns an empty list. Pre-migration deployments (where
+        `tblLanguages` lacks the expected columns) degrade gracefully —
+        never a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [language_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: Search text — matched against Code, Name, and NativeName.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching languages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      description: |
+                        Same core fields as the `Language` schema (code/name/nativeName),
+                        plus an OPTIONAL `scope` (present only once `tblLanguages.Scope`
+                        exists — the #738 migration) — deliberately a bespoke inline shape
+                        rather than `$ref: Language`, since the full schema's `textDirection`
+                        field is not part of the search response.
+                      properties:
+                        code: { type: string, example: en }
+                        name: { type: string, example: English }
+                        nativeName: { type: string, example: English }
+                        scope: { type: string, example: individual }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: en
+                    name: English
+                    nativeName: English
+                    scope: individual
+
+  /api.php?action=script_search:
+    get:
+      operationId: searchScripts
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 scripts (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblLanguageScripts` (ISO 15924). Public twin of the admin-only
+        `/manage/songbooks?action=script_search` alias, which stays live
+        for anyone still linking to it but is no longer what the picker
+        itself calls.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [script_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching scripts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Script"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: Latn
+                    name: Latin
+                    nativeName: Latin
+
+  /api.php?action=region_search:
+    get:
+      operationId: searchRegions
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 regions (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblRegions` (ISO 3166-1 / M.49). Public twin of the admin-only
+        `/manage/songbooks?action=region_search` alias, which stays live
+        for anyone still linking to it but is no longer what the picker
+        itself calls.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [region_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching regions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Region"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: GB
+                    name: United Kingdom
+
+  /api.php?action=variant_search:
+    get:
+      operationId: searchLanguageVariants
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 language variants (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblLanguageVariants`. The variant subtag catalogue is small
+        (~140 rows), but the picker searches it the same way as every
+        other subtag for consistency rather than preloading the whole set.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [variant_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching variants
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, example: "1996" }
+                        name: { type: string, example: "German orthography of 1996" }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+
   /api.php?action=admin_refresh_iana_cldr:
     post:
       operationId: adminRefreshIanaCldr
@@ -4883,14 +5080,26 @@ paths:
                     type: object
                     description: >-
                       CAPTCHA challenge configuration for web clients (#947/#340).
-                      **Emitted ONLY when a provider + both keys are configured
-                      AND at least one form is gated** — the key is ABSENT (not
-                      an empty object) when dormant, which is the shipped default
-                      on every environment (so a dormant install's app_status is
-                      byte-identical to before this feature). Carries the PUBLIC
-                      facts a browser needs to draw + read the widget; the secret
-                      key is NEVER emitted. `js/modules/captcha-widget.js` reads
-                      this to decide which forms to challenge and how to render.
+                      **Emitted whenever a provider + both keys are configured** —
+                      the key is ABSENT (not an empty object) when dormant, which
+                      is the shipped default on every environment (so a dormant
+                      install's app_status is byte-identical to before this
+                      feature). NOTE: this documentation previously said the emit
+                      ALSO required at least one form to be gated. It does not,
+                      and never did: `captchaClientConfig()` returns a non-null
+                      object with `forms: []` as soon as the provider and both
+                      keys are saved. A client must therefore treat an empty
+                      `forms` array as "configured, but nothing is challenged
+                      yet" rather than assuming the key's presence implies a
+                      gated form. Carries the PUBLIC facts a browser needs to
+                      draw + read the widget; the secret key is NEVER emitted.
+                      `js/modules/captcha-widget.js` reads this to decide which
+                      forms to challenge and how to render.
+
+                      Deliberately absent from this object: any provider-health
+                      or outage-grace-window state. The server's outage fallback
+                      (#947/#340) is invisible to clients by design — telling a
+                      client the gate is temporarily open would be telling a bot.
                     properties:
                       provider:
                         type: string
@@ -13461,6 +13670,75 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "405":
+          description: POST method required
+
+  # ---------------------------------------------------------------------------
+  # CAPTCHA — provider-outage telemetry (#947/#340 outage fallback)
+  # ---------------------------------------------------------------------------
+
+  /api.php?action=captcha_widget_health:
+    post:
+      operationId: captchaWidgetHealth
+      tags: [System]
+      summary: Report that the CAPTCHA widget failed to load (anonymous telemetry)
+      description: |
+        Fired by `js/modules/captcha-widget.js` when the provider's widget
+        script cannot be loaded or rendered in the browser.
+
+        **This endpoint cannot let anybody through, and returns nothing a
+        client can act on.** It does exactly two things: increments a
+        telemetry counter, and asks the server to re-check the provider
+        itself (a rate-limited outbound probe the server was entitled to
+        make anyway). The server's decision about whether to admit
+        challenge-less requests during an outage is derived **exclusively**
+        from its own observations — never from a request. A client-asserted
+        "the widget failed" flag would be a universal bypass the moment a
+        bot copied it, so this reports; it does not claim.
+
+        Consequently the response is **identical in every state** (`{ok:
+        true}`), including when the rate limit has been hit — it is never an
+        oracle for whether a grace window is open.
+
+        **Dormant:** answers `400` when no CAPTCHA provider is configured, so
+        the endpoint does not observably exist on an unconfigured install
+        (which is every install by default).
+
+        **Rate limit:** 5 requests / 5 minutes per IP. Exceeding it is
+        silently ignored (still `200 {ok: true}`).
+
+        Not CSRF-protected, deliberately: it changes no user-visible state,
+        and it must remain callable from precisely the broken client path
+        that produces it.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [captcha_widget_health] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                form:
+                  type: string
+                  description: >-
+                    Optional. The gated form whose challenge failed to render.
+                    Validated against the server's form vocabulary and then
+                    DISCARDED — it reaches no decision and is not stored.
+                  enum: [registration, login, password_reset, email_login, song_request, manage_login]
+      responses:
+        "200":
+          description: >-
+            Always `{ok: true}` — whether the hint was recorded, ignored as
+            rate-limited, or acted on. Carries no state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: No CAPTCHA provider configured (dormant), or an unknown `form` value.
         "405":
           description: POST method required
 

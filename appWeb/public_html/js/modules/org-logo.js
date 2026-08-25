@@ -106,7 +106,17 @@ export function resolveThemedAsset(logos, surface, theme) {
  * caller of this module emits the returned string as a plain `<img src>`
  * attribute; `tests/php/test-org-logo-surfaces.php` check (k) asserts the
  * consumer files that build a src this way actually do so via
- * `/org-logo.php?`.
+ * `/org-logo?`.
+ *
+ * ELI5: the address is `/org-logo`, NOT `/org-logo.php` — the trailing
+ * `.php` is invisible in a screenshot of the rendered page but fatal: the
+ * server's `.htaccess` refuses ANY request whose raw text contains
+ * `.php` (a security rule to hide that the backend is PHP at all) before
+ * the org-logo.php script's own code ever gets a chance to run, so that
+ * request always 404s. `/org-logo` (no extension) is a dedicated alias
+ * `.htaccess` rewrites internally to `org-logo.php` — the SAME mechanism
+ * `/og-image` already relied on — and it is the only URL shape this
+ * feature has ever actually been reachable through in a browser.
  *
  * @param {number|string} orgId
  * @param {{kind:string, variant:string, v?:string}} asset
@@ -114,7 +124,7 @@ export function resolveThemedAsset(logos, surface, theme) {
  */
 export function orgLogoUrl(orgId, asset) {
     const { kind, variant, v } = asset || {};
-    return '/org-logo.php?org=' + encodeURIComponent(orgId)
+    return '/org-logo?org=' + encodeURIComponent(orgId)
         + '&kind=' + encodeURIComponent(kind || '')
         + '&variant=' + encodeURIComponent(variant || 'default')
         + '&v=' + encodeURIComponent(v || '');

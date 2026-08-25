@@ -32,14 +32,20 @@ extension AppRootViewModel {
     /// ELI5: "Here's my username and password — log me in, then go fetch
     /// who I am and reconcile my favourites."
     ///
-    /// - Throws: Whatever `SessionController.signIn(username:password:)`
+    /// - Parameter captchaToken: The solved CAPTCHA token, when
+    ///   `captchaRequired(for: CaptchaConfig.loginFormKey)` is true
+    ///   (#947/#340 native scaffold) — `nil` default; `LoginView` is the
+    ///   ONE caller that ever supplies one, sourced from the provider its
+    ///   `captchaSection(form:)` embeds.
+    /// - Throws: Whatever `SessionController.signIn(username:password:captchaToken:)`
     ///   throws (`APIError.unauthorized` for wrong credentials,
-    ///   `.rateLimited` after too many failed attempts, `.offline`/
+    ///   `.rateLimited` after too many failed attempts, `.captchaRequired`
+    ///   for a missing/invalid/already-spent token, `.offline`/
     ///   `.maintenance` for a transient failure, ...) — `LoginView` maps
     ///   these to user-facing copy via `APIError.userFacingMessage`, the
     ///   same convention every other load path in this package uses.
-    public func signIn(username: String, password: String) async throws {
-        try await sessionController.signIn(username: username, password: password)
+    public func signIn(username: String, password: String, captchaToken: String? = nil) async throws {
+        try await sessionController.signIn(username: username, password: password, captchaToken: captchaToken)
         await syncAfterSignIn()
     }
 
@@ -67,11 +73,16 @@ extension AppRootViewModel {
     ///
     /// ELI5: "Email me a one-time login code."
     ///
+    /// - Parameter captchaToken: The solved CAPTCHA token, when
+    ///   `captchaRequired(for: CaptchaConfig.emailLoginFormKey)` is true —
+    ///   same "`LoginView` is the one caller that ever supplies one"
+    ///   contract as `signIn(username:password:captchaToken:)` above.
     /// - Returns: The server's user-facing confirmation message — see
-    ///   `APIClient.authEmailLoginRequest(email:)`'s own doc comment for why
-    ///   this is always the SAME reassuring copy, even for an unknown email.
-    public func requestEmailLoginCode(email: String) async throws -> String {
-        try await apiClient.authEmailLoginRequest(email: email)
+    ///   `APIClient.authEmailLoginRequest(email:captchaToken:)`'s own doc
+    ///   comment for why this is always the SAME reassuring copy, even for
+    ///   an unknown email.
+    public func requestEmailLoginCode(email: String, captchaToken: String? = nil) async throws -> String {
+        try await apiClient.authEmailLoginRequest(email: email, captchaToken: captchaToken)
     }
 
     /// Signs out — revokes the token server-side, forgets it locally
@@ -217,6 +228,12 @@ extension AppRootViewModel {
     public func restoreSessionIfNeeded() async {
         guard !hasAttemptedSessionRestore else { return }
         hasAttemptedSessionRestore = true
+        // #947/#340 native scaffold — the app's first `app_status` read,
+        // piggy-backed on this method's own one-shot guard rather than a
+        // second guard property (`AppRootViewModel+Captcha.swift`'s own
+        // header explains why); failure is swallowed there, so this can
+        // never itself fail or block the sign-in restore below.
+        await loadAppStatus()
         try? await sessionController.restoreFromStorage()
         if await isSignedInNow() {
             await syncAfterSignIn()

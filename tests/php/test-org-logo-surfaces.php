@@ -391,10 +391,16 @@ if ($logoUploadSites > 0 && $logoUploadSites < 2) {
 
 $htmlSanitizerPhp = $pub . '/includes/html_sanitizer.php';
 $pdfRendererPhp   = $pub . '/includes/pdf_renderer.php';
-$htmlSanitizerHasPattern = is_file($htmlSanitizerPhp) && str_contains((string)file_get_contents($htmlSanitizerPhp), '/org-logo\\.php');
+/* v3 (routing-bug fix, rules #33/#38/#42): the sanitiser's img_src pattern
+   dropped the `.php` extension entirely (`/org-logo\.php` -> `/org-logo\?`)
+   because `.htaccess` never had an alias for the `.php` form, so it was
+   NEVER a reachable URL — see html_sanitizer.php's own
+   IHYMNS_HTML_SANITISER_VERSION v2->v3 changelog. This check's anchor moves
+   with it so it keeps testing the REAL pattern text, not a stale one. */
+$htmlSanitizerHasPattern = is_file($htmlSanitizerPhp) && str_contains((string)file_get_contents($htmlSanitizerPhp), '/org-logo\\?');
 $pdfRendererHasResolver  = is_file($pdfRendererPhp) && str_contains((string)file_get_contents($pdfRendererPhp), '_pdfInlineOrgLogo');
 if ($htmlSanitizerHasPattern xor $pdfRendererHasResolver) {
-    orgLogoFail($failures, 'html_sanitizer.php\'s /org-logo.php img_src pattern and pdf_renderer.php\'s _pdfInlineOrgLogo() resolver landed HALF a pair — a template with a logo block would sanitise-in but silently drop out of the PDF (or vice-versa).');
+    orgLogoFail($failures, 'html_sanitizer.php\'s /org-logo img_src pattern and pdf_renderer.php\'s _pdfInlineOrgLogo() resolver landed HALF a pair — a template with a logo block would sanitise-in but silently drop out of the PDF (or vice-versa).');
 }
 
 /* =============================================================================
@@ -621,15 +627,21 @@ if (is_file($ogImagePhpPath)) {
     $ogImageSrcRaw = orgLogoStripComments((string)file_get_contents($ogImagePhpPath));
     if (str_contains($ogImageSrcRaw, 'orgLogo') || str_contains($ogImageSrcRaw, 'OrgLogo') || str_contains($ogImageSrcRaw, 'BrandColor')) {
         if (!str_contains($ogImageSrcRaw, 'orgLogoFetchServeRow(')) {
-            orgLogoFail($failures, 'og-image.php references org branding but never calls orgLogoFetchServeRow() — logo bytes must be read directly, never via an HTTP self-request to org-logo.php (#1840).');
+            orgLogoFail($failures, 'og-image.php references org branding but never calls orgLogoFetchServeRow() — logo bytes must be read directly, never via an HTTP self-request to org-logo (#1840).');
         }
         /* Ban an HTTP-fetch shape (curl_init(...) or file_get_contents('http...'))
-           whose target string contains org-logo.php — the string 'org-logo.php'
-           is legitimately present elsewhere in this file (e.g. inside a doc
+           whose target string contains 'org-logo' — the string is
+           legitimately present elsewhere in this file (e.g. inside a doc
            comment describing the doctrine, already stripped above), so this
-           bans the SELF-REQUEST SHAPE specifically, not the bare substring. */
-        if (preg_match('/(curl_init\s*\(|file_get_contents\s*\(\s*[\'"]https?:)[^;]{0,400}org-logo\.php/s', $ogImageSrcRaw) === 1) {
-            orgLogoFail($failures, 'og-image.php appears to fetch org-logo.php over HTTP (curl/file_get_contents) instead of reading bytes directly via orgLogoFetchServeRow() (#1840).');
+           bans the SELF-REQUEST SHAPE specifically, not the bare substring.
+           Matches 'org-logo' WITHOUT requiring '.php' (routing-bug fix,
+           rules #33/#38/#42): the endpoint's real client-facing address is
+           now the extensionless `/org-logo` alias, so a self-request regression
+           would build a URL containing that shape, not '.php' at all — a
+           check anchored only on the old '.php' substring would silently
+           stop catching the exact mutation it exists to catch. */
+        if (preg_match('/(curl_init\s*\(|file_get_contents\s*\(\s*[\'"]https?:)[^;]{0,400}org-logo/s', $ogImageSrcRaw) === 1) {
+            orgLogoFail($failures, 'og-image.php appears to fetch org-logo over HTTP (curl/file_get_contents) instead of reading bytes directly via orgLogoFetchServeRow() (#1840).');
         }
     }
 }
@@ -672,7 +684,7 @@ if (is_file($headerBrandingPath)) {
     if (preg_match('/createElement\(\s*[\'"]img[\'"]\s*\)/', $headerCode, $hm, PREG_OFFSET_CAPTURE)) {
         $window = substr($headerCode, $hm[0][1], 600);
         if (!str_contains($window, 'orgLogoUrl(')) {
-            orgLogoFail($failures, "$headerRel creates an <img> but its .src isn't built via the shared orgLogoUrl() (or a literal /org-logo.php?) within a reasonable window — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
+            orgLogoFail($failures, "$headerRel creates an <img> but its .src isn't built via the shared orgLogoUrl() (or a literal /org-logo?) within a reasonable window — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
         }
     } elseif (str_contains($headerCode, 'orgLogo') || str_contains($headerCode, 'OrgLogo')) {
         orgLogoFail($failures, "$headerRel mentions the org-logo feature but never creates an <img> element (#1840, rule #42).");
@@ -726,8 +738,14 @@ if (is_file($svcProjPath)) {
         if (preg_match('/<img\b[^>]*\bid\s*=\s*["\']svc-proj-logo["\'][^>]*>/', $svcProjCode) !== 1) {
             orgLogoFail($failures, "$svcProjRel resolves OrgLogoUrl but no <img id=\"svc-proj-logo\"> element exists — logos must be served as <img src>, never inlined markup or a data-URI (#1840, rule #42).");
         }
-        if (!orgLogoProximity($svcProjCode, 'OrgLogoUrl', '/org-logo.php?', 700)) {
-            orgLogoFail($failures, "$svcProjRel references OrgLogoUrl but it isn't resolved from a literal /org-logo.php? URL within a reasonable window (#1840).");
+        /* '/org-logo?' — not '/org-logo.php?' (routing-bug fix, rules
+           #33/#38/#42): service-projection.php's real emission dropped the
+           `.php` extension because it was never a routable URL; this
+           anchor moves with it, or check (k) half 2 silently stops
+           testing anything real the moment the source no longer contains
+           the old substring at all. */
+        if (!orgLogoProximity($svcProjCode, 'OrgLogoUrl', '/org-logo?', 700)) {
+            orgLogoFail($failures, "$svcProjRel references OrgLogoUrl but it isn't resolved from a literal /org-logo? URL within a reasonable window (#1840).");
         }
     }
 }

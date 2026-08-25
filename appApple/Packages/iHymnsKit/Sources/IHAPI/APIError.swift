@@ -73,6 +73,23 @@ public enum APIError: Error, Sendable, Equatable {
     /// ELI5: "The server sent something we don't understand" — a contract
     /// drift, and worth logging loudly per strategy §1.5.
     case decoding
+
+    /// A gated form's submit was refused because a CAPTCHA challenge is
+    /// required (#947/#340 native scaffold,
+    /// `.claude/captcha-native-and-outage-plan.md` §2.3-2) — the machine
+    /// `code`/`reason: "captcha_required"` classification of an HTTP 403,
+    /// recognised by `APIClient.classifyMachineRefusal(httpStatus:body:)`
+    /// BEFORE the generic `classify(httpStatus:retryAfterSeconds:)` ever
+    /// sees the response (which would otherwise fold every 403 into the
+    /// opaque `.server(status: 403, message: nil)`). No associated value:
+    /// the server emits ONE reason for both "token missing" and "token
+    /// invalid/expired" (telling a bot which failure it hit would only help
+    /// the bot — `IHYMNS_CAPTCHA_REASON`'s own doc comment,
+    /// `includes/captcha.php:87`), and the client's response is identical
+    /// either way (re-render/reset the challenge, let the user retry).
+    ///
+    /// ELI5: "Prove you're human before I'll let this one through."
+    case captchaRequired
 }
 
 // MARK: - #1505 logging-safe descriptors
@@ -99,6 +116,7 @@ extension APIError {
         case .rateLimited: return "rateLimited"
         case .server: return "server"
         case .decoding: return "decoding"
+        case .captchaRequired: return "captchaRequired"
         }
     }
 
@@ -122,6 +140,8 @@ extension APIError {
             return 429
         case .server(let status, _):
             return status
+        case .captchaRequired:
+            return 403
         }
     }
 }
