@@ -2341,6 +2341,203 @@ paths:
                     type: string
                     description: Present only when the lookup table has not yet been created.
 
+  /api.php?action=language_search:
+    get:
+      operationId: searchLanguages
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 languages (BCP 47 registry plan §4.3)
+      description: |
+        Prefix/substring typeahead over `tblLanguages`, ranked so an exact
+        code match wins outright, then a name-prefix match, then (when the
+        `Scope` column exists) macrolanguages before individual /
+        collection / private-use / special, then shortest name, then
+        alphabetic. Backs the IETF BCP 47 language picker's live search
+        (`js/modules/ietf-language-picker.js`) — replaces the old
+        whole-catalogue `action=languages` dump as the picker's own
+        per-keystroke data source; `action=languages` itself is unchanged
+        and still serves the same full-dump native-client contract.
+
+        Empty `q` returns an empty list. Pre-migration deployments (where
+        `tblLanguages` lacks the expected columns) degrade gracefully —
+        never a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [language_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: Search text — matched against Code, Name, and NativeName.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching languages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      description: |
+                        Same core fields as the `Language` schema (code/name/nativeName),
+                        plus an OPTIONAL `scope` (present only once `tblLanguages.Scope`
+                        exists — the #738 migration) — deliberately a bespoke inline shape
+                        rather than `$ref: Language`, since the full schema's `textDirection`
+                        field is not part of the search response.
+                      properties:
+                        code: { type: string, example: en }
+                        name: { type: string, example: English }
+                        nativeName: { type: string, example: English }
+                        scope: { type: string, example: individual }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: en
+                    name: English
+                    nativeName: English
+                    scope: individual
+
+  /api.php?action=script_search:
+    get:
+      operationId: searchScripts
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 scripts (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblLanguageScripts` (ISO 15924). Public twin of the admin-only
+        `/manage/songbooks?action=script_search` alias, which stays live
+        for anyone still linking to it but is no longer what the picker
+        itself calls.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [script_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching scripts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Script"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: Latn
+                    name: Latin
+                    nativeName: Latin
+
+  /api.php?action=region_search:
+    get:
+      operationId: searchRegions
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 regions (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblRegions` (ISO 3166-1 / M.49). Public twin of the admin-only
+        `/manage/songbooks?action=region_search` alias, which stays live
+        for anyone still linking to it but is no longer what the picker
+        itself calls.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [region_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching regions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Region"
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+              example:
+                suggestions:
+                  - code: GB
+                    name: United Kingdom
+
+  /api.php?action=variant_search:
+    get:
+      operationId: searchLanguageVariants
+      tags: [Languages]
+      summary: Live-search IETF BCP 47 language variants (BCP 47 registry plan §4.3)
+      description: |
+        Same shape and ranking as `action=language_search`, over
+        `tblLanguageVariants`. The variant subtag catalogue is small
+        (~140 rows), but the picker searches it the same way as every
+        other subtag for consistency rather than preloading the whole set.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [variant_search] }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+      responses:
+        "200":
+          description: Matching variants
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        code: { type: string, example: "1996" }
+                        name: { type: string, example: "German orthography of 1996" }
+                  note:
+                    type: string
+                    description: Present only when the lookup table has not yet been created.
+
   /api.php?action=admin_refresh_iana_cldr:
     post:
       operationId: adminRefreshIanaCldr

@@ -502,6 +502,16 @@ function secretSettingKeys(): array
            enveloped by the engine directly — secretSettingKeys() governs
            tblAppSettings rows only. */
         'webhook_drain_key',
+        /* BCP 47 registry plan §3.4 — the language-registry-refresh key.
+           Authorises /language-registry-refresh (the webhook-drain.php
+           shape: a monthly GitHub Action, or any cron, POSTs it to run the
+           IANA + CLDR refresh unattended). Registered here so it is
+           encrypted at rest from its first save on the /manage/configuration
+           card, read back transparently decrypted via getAppSetting()
+           (appWeb/public_html/language-registry-refresh.php never touches
+           the encryption layer directly — same custody pattern as
+           webhook_drain_key immediately above). */
+        'language_registry_refresh_key',
     ];
 }
 

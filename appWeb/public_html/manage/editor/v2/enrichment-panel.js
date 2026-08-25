@@ -84,14 +84,22 @@
  *       picker.el)` / `host.appendChild(form)` ran) — `document.getElementById`
  *       cannot see into a detached subtree, so every subtag suggestion list
  *       came back permanently empty (the owner's "no auto/live-search"
- *       report). Fixed at the MODULE level in ietf-language-picker.js
- *       (bootIetfLanguagePicker() now re-resolves each `<datalist>` lazily,
- *       at USE time, rather than capturing it once at boot) rather than
- *       reordering this file's call site, so every caller — this one, v1's
- *       equivalent in editor.js, and any future one — is covered without a
- *       boot-order contract to remember. See that module's own doc-comment
- *       above `bootIetfLanguagePicker()` for the full mechanism, and
- *       metadata-tab.js:1563-1578 for the #1849 precedent this generalises.
+ *       report). Fixed at the MODULE level, TWICE over the same day: first
+ *       a lazy re-resolve of the `<datalist>` lookup (still boot-order-
+ *       sensitive in spirit), then — same day, BCP 47 registry plan §4 —
+ *       the `<datalist>` mechanism was removed ENTIRELY in favour of the
+ *       shared `window.iHymnsPlaceSearch.attach()` live-search typeahead
+ *       (rule #43), which never calls `getElementById()` at all and so is
+ *       structurally immune to this whole bug class; the live-search
+ *       binding is still made lazily (a one-time `focusin` on the picker
+ *       root) as belt-and-braces against a script-load-order race, not
+ *       because it needs the DOM to be live. Fixed once, at the MODULE
+ *       level, rather than reordering this file's call site, so every
+ *       caller — this one, v1's equivalent in editor.js, and any future
+ *       one — is covered without a boot-order contract to remember. See
+ *       that module's own doc-comment above `bootIetfLanguagePicker()` for
+ *       the full mechanism, and metadata-tab.js:1563-1578 for the #1849
+ *       precedent this generalises.
  *   (2) The owner separately reported not knowing WHERE to type a
  *       translation after clicking "Set language" (which only tags the
  *       ORIGINAL line's language). `showLineLangForm()` and
@@ -160,8 +168,9 @@ let enrichFormSeq = 0;
 /**
  * buildIetfPicker(initialTag) — build the picker markup
  * (js/modules/ietf-language-picker.js's documented DOM contract: three
- * labelled inputs + a hidden composed-tag output + three matching
- * <datalist>s) and boot it via the real ES module import above. Ported from
+ * labelled inputs, each with a hidden `-code` sibling, + a hidden
+ * composed-tag output — NO `<datalist>` any more, #1907 live-search
+ * rework) and boot it via the real ES module import above. Ported from
  * v1's `buildInlineIetfPicker` (editor.js ~1332) minus its classic-script
  * fallback branch — v1 needed that because `window.bootIetfLanguagePicker`
  * might not have loaded yet (deferred classic <script>); v2 `import`s the
@@ -181,15 +190,13 @@ function buildIetfPicker(initialTag) {
        user data), so this innerHTML is not an XSS surface. */
     wrap.innerHTML =
         '<div class="row g-1">'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" list="ietf-lang-list-' + id + '" autocomplete="off" placeholder="Language"></div>'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-' + id + '" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-' + id + '" autocomplete="off" placeholder="Region"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" autocomplete="off" placeholder="Language"><input type="hidden" class="ietf-picker-language-code"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" autocomplete="off" placeholder="Script (e.g. Latin)"><input type="hidden" class="ietf-picker-script-code"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" autocomplete="off" placeholder="Region"><input type="hidden" class="ietf-picker-region-code"></div>'
       + '</div>'
       + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
-      + '<input type="hidden" class="ietf-tag-output" value="">'
-      + '<datalist id="ietf-lang-list-' + id + '"></datalist>'
-      + '<datalist id="ietf-script-list-' + id + '"></datalist>'
-      + '<datalist id="ietf-region-list-' + id + '"></datalist>';
+      + '<div class="ietf-picker-unknown-warning form-text text-warning-emphasis d-none"></div>'
+      + '<input type="hidden" class="ietf-tag-output" value="">';
 
     const ctl = bootIetfLanguagePicker(wrap);
     /* setTag() awaits the languages/script/region lookups before it fills the

@@ -358,8 +358,15 @@ foreach ($rootPhpFiles as $basename) {
         }
         foreach ($m as $one) {
             $checkAMatches++;
-            $isManageExempt = $one[2][0] !== '';
-            $urlPath = '/' . $one[2][0] . $basename . $one[3][0];
+            /* An optional group that did not participate is ABSENT from the match
+       array under PREG_OFFSET_CAPTURE (a trailing one entirely; PHP then warns
+       on the [0] deref and yields null). Both groups here are optional — a URL
+       need not be under /manage/ and need not carry a query string — so each is
+       null-coalesced. Detection was never wrong (the synthetic request line
+       appends ' HTTP/1.1', so a bare '/x.php' still matches the block pattern),
+       but a guard that emits warnings is a guard people learn to ignore. */
+            $isManageExempt = ($one[2][0] ?? '') !== '';
+            $urlPath = '/' . ($one[2][0] ?? '') . $basename . ($one[3][0] ?? '');
             if ($isManageExempt) {
                 continue; // /manage/*.php is exempt — the passthrough rule (step 1b) handles it
             }

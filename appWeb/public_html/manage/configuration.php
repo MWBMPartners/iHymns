@@ -233,6 +233,7 @@ $saveSuccess = '';
 $saveError   = '';
 $saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved SMTP host) */
 $webhookNewDrainKey = null;   /* #1909 — one-shot: a freshly regenerated drain key, shown ONCE */
+$langRefreshNewKey  = null;   /* BCP 47 registry plan §3.4 — one-shot: a freshly generated refresh key, shown ONCE */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
 
 /* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
@@ -1085,6 +1086,29 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_webhooks] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_language_registry_refresh') {
+            /* BCP 47 registry plan §3.4 — the ONLY setting this card manages is
+               the refresh key itself (a tblAppSettings SECRET, encrypted at rest
+               via $saveSetting() — registered in secretSettingKeys()).
+               Mirrors save_webhooks' drain-key regenerate-on-demand pattern
+               exactly: a fresh 192-bit key, shown ONCE, never echoed again. */
+            try {
+                if (!empty($_POST['language_registry_refresh_regenerate_key'])) {
+                    $newRefreshKey = bin2hex(random_bytes(24));
+                    $saveSetting($db, 'language_registry_refresh_key', $newRefreshKey);
+                    $langRefreshNewKey = $newRefreshKey; /* one-shot render var — never persisted */
+                    if (function_exists('logActivity')) {
+                        logActivity('app_setting.update', 'app_setting', 'language_registry_refresh_key',
+                            ['keys' => ['language_registry_refresh_key']], 'success'); /* key NAME only — the VALUE is never logged */
+                    }
+                    $saveSuccess = 'Language registry refresh key regenerated.';
+                } else {
+                    $saveSuccess = 'Nothing to save — tick "Regenerate" to issue a new key.';
+                }
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_language_registry_refresh] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         } elseif ($action === 'save_live_follow_idle') {
             /* #1770 §4.7 — the APP layer of the leader-idle precedence chain
                (includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
@@ -1274,6 +1298,16 @@ try {
 } catch (\Throwable $_e) {
     $webhookHealthV = ['due_now' => 0, 'oldest_due_age_secs' => null, 'last_drain_at' => null, 'active_subs' => 0];
 }
+
+/* BCP 47 registry plan §3.4 — render prep for the language-registry-refresh
+   card. languageRegistrySchemaReady() answers whether the ONE-TIME #738
+   card has ever been pressed on this shared DB (the dormancy gate the
+   endpoint itself also checks) — surfaced here so the admin sees the SAME
+   "why is this dormant?" reason the endpoint's own 503 represents, rather
+   than guessing. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_registry_refresh.php';
+$langRefreshKeySet      = ((string)(getAppSetting('language_registry_refresh_key', '') ?? '')) !== '';
+$langRefreshSchemaReady = languageRegistrySchemaReady($db);
 
 /* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
    captchaFormKeys() value; a key without an entry falls back to a generic
@@ -1997,6 +2031,77 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div>Last drain: <strong><?= $webhookHealthV['last_drain_at'] !== null ? htmlspecialchars((string)$webhookHealthV['last_drain_at'], ENT_QUOTES, 'UTF-8') . ' UTC' : 'never — cron not wired' ?></strong></div>
             </div>
+        </div>
+    </div>
+
+    <!-- ===========================
+         LANGUAGE REGISTRY REFRESH SECTION (BCP 47 registry plan §3, M1)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-translate me-2"></i>Language registry refresh
+            </h2>
+            <a href="/manage/languages" class="btn btn-sm btn-outline-light">
+                <i class="bi bi-list-ul me-1"></i>Manage languages
+            </a>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                Keeps the IETF BCP 47 / IANA Language Subtag Registry + CLDR display names (#738) current
+                automatically — a monthly GitHub Action pokes the endpoint below so nobody has to remember to
+                click "Refresh from IANA + CLDR" on
+                <a href="/manage/setup-database" class="link-light">Setup / Database</a> by hand. This card is the
+                key custody only; the refresh itself runs server-side against the SAME core the manual button uses.
+            </p>
+            <?php if (!$langRefreshSchemaReady): ?>
+                <div class="alert alert-warning small mb-3" role="alert">
+                    <strong>Dormant:</strong> the #738 reference-data schema hasn't been applied on this shared
+                    database yet. Press "Run IANA + CLDR Import" on
+                    <a href="/manage/setup-database" class="alert-link">Setup / Database</a> once — after that this
+                    endpoint (and every scheduled refresh) works with no further schema changes, ever.
+                </div>
+            <?php endif; ?>
+            <?php if ($langRefreshNewKey !== null): ?>
+                <div class="alert alert-warning" role="alert">
+                    <strong>New refresh key — copy it now, it is shown only once:</strong>
+                    <code class="user-select-all d-block mt-1"><?= htmlspecialchars($langRefreshNewKey, ENT_QUOTES, 'UTF-8') ?></code>
+                    <span class="small">Paste it as the <code>IHYMNS_LANG_REFRESH_KEY</code> repository secret (or use it as <code>X-Refresh-Key</code> on the endpoint below).</span>
+                </div>
+            <?php endif; ?>
+            <form method="post" class="mb-3">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_language_registry_refresh">
+                <div class="mb-3">
+                    <label class="form-label mb-1">
+                        Refresh key
+                        <?= $langRefreshKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="language_registry_refresh_regenerate_key"
+                               value="1" id="lrr_regen">
+                        <label class="form-check-label" for="lrr_regen">
+                            Regenerate the refresh key on save (shown once)
+                        </label>
+                    </div>
+                    <div class="form-text">
+                        Authorises the endpoint a GitHub Action (or any cron / uptime monitor) pokes monthly to
+                        silently re-check IANA + CLDR and update this shared database:<br>
+                        <?php /* "/language-registry-refresh", never "/language-registry-refresh.php" — this
+                                 is a real command an operator copy-pastes into a repository secret / crontab,
+                                 so the URL shown here must be the one .htaccess actually routes (rules
+                                 #33/#38/#41/#42; see .htaccess + language-registry-refresh.php's own
+                                 doc-block). Host resolution mirrors the webhook drain card immediately
+                                 above. */ ?>
+                        <code>curl -fsS -X POST "https://<?= htmlspecialchars($webhookThisChannel === 'production' ? 'ihymns.app' : ($webhookThisChannel === 'beta' ? 'beta.ihymns.app' : 'dev.ihymns.app'), ENT_QUOTES, 'UTF-8') ?>/language-registry-refresh" -H "X-Refresh-Key: &lt;refresh key&gt;"</code>
+                        every month (or on demand). Server-side secret, encrypted at rest. Stays 503-dormant until
+                        both this key AND the #738 schema (above) are in place.
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save
+                </button>
+            </form>
         </div>
     </div>
 

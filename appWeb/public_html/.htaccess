@@ -139,6 +139,18 @@ RewriteRule ^org-logo$ org-logo.php [QSA,L]
 # @see appWeb/public_html/webhook-drain.php  the endpoint (+ its own doc-block)
 RewriteRule ^webhook-drain$ webhook-drain.php [QSA,L]
 
+# /language-registry-refresh → language-registry-refresh.php (BCP 47
+# registry plan §3, M1). Same shape, same reason, as the three aliases
+# immediately above — this is a NEW endpoint added WITH its alias from day
+# one (learning the /qr + /org-logo + /webhook-drain lesson rather than
+# repeating it a fourth time), so it has never been broken in the first
+# place. tests/php/test-endpoint-routing.php's check C would fail the
+# build if this line were ever missing while the endpoint's own consumers
+# (the language-registry-refresh.yml workflow, this file's own doc-block)
+# kept emitting the extensionless form.
+# @see appWeb/public_html/language-registry-refresh.php  the endpoint (+ its own doc-block)
+RewriteRule ^language-registry-refresh$ language-registry-refresh.php [QSA,L]
+
 # /song-media/<id> → song-media.php?id=<id>  (#853)
 # Gated streaming endpoint for tblSongMedia rows. The handler does
 # checkContentAccess('song', <SongId>) so this URL is safe to expose

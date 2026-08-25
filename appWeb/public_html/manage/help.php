@@ -828,10 +828,13 @@ foreach ($sections as $s) {
                         <li><strong>Region</strong> (optional) — e.g. <em>United Kingdom</em> for British English (<code>en-GB</code>) vs. <em>United States</em> for American English (<code>en-US</code>).</li>
                     </ul>
                     <p>
-                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). The full ISO 639 / ISO 15924 / ISO 3166-1 vocabulary — every IANA-registered subtag — is loaded from the same reference data the songbook editor's identical picker uses, so both stay in sync.
+                        The "IETF tag:" line below the picker shows the composed tag live as you type, with a human-readable rendering next to it (e.g. <em>"Spanish (Mexico)"</em> for <code>es-MX</code>). Each of the four fields (Language / Script / Region / Variant) is a live search against the full IANA-registered vocabulary — type a couple of characters and matching suggestions appear, same as the songbook editor's identical picker, so both stay in sync.
                     </p>
                     <p class="small text-muted mb-2">
-                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> has a live-fetch button if you need to pull the latest IANA / CLDR updates.
+                        Typed text that doesn't match a registry entry still saves fine (a script subtag must never be blocked from a valid import) &mdash; an amber note appears under the picker naming which field wasn't recognised, and upgrades to a warning if the whole composed tag isn't even grammatically valid BCP 47 (that shape the server would reject).
+                    </p>
+                    <p class="small text-muted mb-2">
+                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app and refresh themselves automatically every month &mdash; nobody needs to remember to update them. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> also has a manual live-fetch button for an immediate pull. Tags that end up not matching anything in the catalogue (typos, retired subtags) show up on <a href="/manage/languages?view=unknown">Languages → Unknown tags</a> for review.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
@@ -1285,7 +1288,18 @@ foreach ($sections as $s) {
                         <li><strong>Fix a native name</strong> the bundled CLDR data got wrong or didn't carry.</li>
                     </ul>
                     <div class="gotcha small">
-                        <strong>Gotcha:</strong> You rarely need this. The IANA seed covers nearly everything; reach for the manual editor only when a code is genuinely missing or a native name is wrong. Re-running the seed migration won't clobber your manual rows.
+                        <strong>Gotcha:</strong> You rarely need this. The IANA seed covers nearly everything and refreshes itself monthly; reach for the manual editor only when a code is genuinely missing or a native name is wrong. Re-running the refresh won't clobber your manual rows.
+                    </div>
+                    <h3 class="h6">Unknown tags</h3>
+                    <p>
+                        The <a href="/manage/languages?view=unknown">Unknown tags</a> button opens a review panel above the registry table listing every DISTINCT language tag actually stored anywhere in the catalogue (songs, songbooks, lyric lines, translations, requests, …) that either isn't grammatically valid BCP 47, isn't in the registry yet, or is in the registry but retired (inactive). It's derived live on every visit &mdash; nothing is stored or cached.
+                    </p>
+                    <ul>
+                        <li><strong>Malformed / Unregistered tags</strong> get an <strong>Add to registry</strong> shortcut (pre-fills the Add-language form) and a <strong>Remap</strong> control &mdash; type the replacement tag and the exact usage count shown to arm the button, then it rewrites every occurrence across songs, songbooks, lyric lines, and translations. Song-request text is shown for awareness but never rewritten &mdash; that's a user's own submitted text, not something to curate.</li>
+                        <li><strong>Retired (inactive) subtags</strong> get a <strong>Find &amp; activate</strong> link straight to the existing registry row's toggle.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A remap on a large corpus (thousands of lyric lines) may need running more than once &mdash; the panel caps how many songs one click touches and tells you when to run it again.
                     </div>
                 </section>
 
@@ -1964,6 +1978,17 @@ foreach ($sections as $s) {
                         when a death date IS on file is a fixed code constant, not configurable here. Either way
                         it's only ever a suggestion &mdash; nothing auto-ticks the Public Domain checkbox.
                     </p>
+                    <h3 class="h6">Language registry refresh</h3>
+                    <p>
+                        A card that keeps the <a href="#languages">Language</a> registry (IANA + CLDR reference data) current without anyone having to remember to click a button. A monthly GitHub Action pokes a keyed endpoint that re-checks IANA/CLDR and updates the shared database; this card holds the custody of that endpoint's key.
+                    </p>
+                    <ul>
+                        <li><strong>Regenerate</strong> &mdash; issues a fresh key, shown once. Paste it into the GitHub repository's <code>IHYMNS_LANG_REFRESH_KEY</code> secret.</li>
+                        <li>The card also shows whether the one-time <a href="/manage/setup-database#bcp47">BCP 47 reference data</a> migration has been applied yet &mdash; the scheduled refresh stays dormant until it has, on purpose: an unattended job must never be the thing that first changes the database's structure.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> this is entirely optional. Without it configured, the registry still works exactly as it always has &mdash; the manual "Refresh from IANA + CLDR" button on Database Setup still pulls the latest data on demand.
+                    </div>
                 </section>
 
                 <section id="bot-protection" class="help-section card-admin mb-4">

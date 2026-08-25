@@ -1,53 +1,44 @@
 /**
  * tests/test-ietf-picker-detached-boot.js — the IETF BCP 47 picker must
  * suggest something even when it is booted onto a detached DOM node (#1907,
- * sibling of #1849).
+ * sibling of #1849; REWORKED for the BCP 47 registry plan §4 live-search
+ * rework — see "WHY THIS TEST CHANGED SHAPE" below).
  *
  * ELI5
  * ----
- * The little "type a language" box has an autocomplete list hiding behind
- * it. Some screens build that box off-screen first and only slot it into
- * the page a moment later (when a curator clicks "Set language" on a lyric
- * line). This test builds the box the SAME off-screen way those screens do,
- * plugs it into the page afterwards — exactly like they do — and then
- * checks that typing into it actually shows suggestions. Before the fix it
- * never did, silently, forever.
+ * The little "type a language" box has a live-search suggestion panel
+ * behind it. Some screens build that box off-screen first and only slot it
+ * into the page a moment later (when a curator clicks "Set language" on a
+ * lyric line). This test builds the box the SAME off-screen way those
+ * screens do, plugs it into the page afterwards — exactly like they do —
+ * and then checks that typing into it, and PICKING a suggestion, actually
+ * works. Before the original #1907 fix it never did, silently, forever.
  *
- * WHY THIS EXISTS
- * ----------------
- * The owner reported "no auto/live-search" on the per-line language picker
- * in the Structure tab's enrichment panel. `bootIetfLanguagePicker()`
- * (js/modules/ietf-language-picker.js) used to resolve its four
- * `<datalist>` elements via `document.getElementById(...)` exactly ONCE, at
- * boot, into `const`s the rest of the module closed over forever.
- * `document.getElementById()` only ever searches the LIVE document (MDN:
- * "must be part of the document tree") — a `<datalist>` that exists only
- * inside a still-detached `document.createElement('div')` subtree is
- * invisible to it, so those `const`s came back `null` and NOTHING later
- * reassigned them, no matter when the subtree was eventually attached.
- * `rebuildDatalist(null, …)` then no-ops forever and `resolveCode()` (which
- * reads `datalistEl?.options`) always falls through to raw typed text — the
- * picker LOOKS alive (the tag preview updates live, Save works) but no
- * suggestion EVER renders. This exact class was already diagnosed and fixed
- * for ONE call site (the v2 Metadata tab) in #1849 — see the comment this
- * fix's own doc-block links back to at
- * manage/editor/v2/metadata-tab.js:1563-1578 — but the two DYNAMIC builders
- * that boot the picker on a still-detached wrapper (v2's
- * `buildIetfPicker()` in manage/editor/v2/enrichment-panel.js, and v1's
- * `buildInlineIetfPicker()` in manage/editor/editor.js) were never touched,
- * so the owner's report was that same bug at its two unfixed sibling
- * sites. #1907 fixes the MODULE instead of patching each call site, so
- * every caller — present and future — is covered without a boot-order
- * contract to remember (CLAUDE.md rule #34).
+ * WHY THIS TEST CHANGED SHAPE (2026-08-25, BCP 47 registry plan §4)
+ * -------------------------------------------------------------------------
+ * The original version of this test asserted a `<datalist>` gained
+ * `<option>` children after focus/typing — that WAS the mechanism at the
+ * time (a lazy `getElementById()` re-resolve). The picker has since been
+ * reworked to remove `<datalist>` ENTIRELY in favour of the shared
+ * `window.iHymnsPlaceSearch.attach()` live-search typeahead (rule #43),
+ * which structurally cannot suffer the getElementById-on-a-detached-node
+ * bug at all (it never calls `getElementById()` — see
+ * `tests/test-ietf-picker-live-dom.js`, the NEW guard that checks that
+ * mechanism directly). Keeping this test's OLD assertions unchanged after
+ * that rework would be internally impossible to satisfy (there are no
+ * `<datalist>` elements left to count options on) — so this file keeps its
+ * ORIGINAL PURPOSE (prove a detached-then-attached boot still suggests
+ * something and still resolves a real pick) while adapting its MECHANICS
+ * to match: it now exercises the REAL `place-search.js` module (loaded as
+ * a genuine classic script, exactly as the browser would) together with
+ * the REAL `ietf-language-picker.js` ES module, and asserts against the
+ * rendered `[role="option"]` panel + a REAL simulated pick (a `mousedown`
+ * on the option row, mirroring `place-search.js`'s own `pickCandidate()`
+ * wiring) rather than counting `<option>` elements in a `<datalist>`.
  *
  * WHAT THIS TEST ACTUALLY EXERCISES (not a proxy for the bug — the bug
- * itself)
+ * itself, still)
  * -------------------------------------------------------------------------
- * A source-text assertion ("the module no longer contains the string
- * `const langList`") would prove nothing about whether suggestions render —
- * it is exactly the kind of "confident, incomplete green" CLAUDE.md rule
- * #34 warns against. So instead this test:
- *
  *   1. Builds the picker's markup EXACTLY per the module's own documented
  *      contract (the doc-block at the top of ietf-language-picker.js) —
  *      the same shape both `buildIetfPicker()` and `buildInlineIetfPicker()`
@@ -62,30 +53,27 @@
  *   4. Attaches the wrapper to `document.body` — mirroring the real
  *      callers' later `host.appendChild(form)` once the curator opens the
  *      inline form.
- *   5. Fires REAL `focus`/`input` events — the same events a curator
- *      clicking into the box and typing would fire — and asserts:
- *        a. the language datalist actually gained `<option>` children
- *           (the suggestion LIST rendered at all — this is what was
+ *   5. Fires REAL `focus`/`input`/`mousedown` events — the same events a
+ *      curator clicking into the box, typing, and clicking a suggestion
+ *      would fire — and asserts:
+ *        a. focusing binds the live-search typeahead (the lazy `focusin`
+ *           path — `window.iHymnsPlaceSearch.attach()` gets called);
+ *        b. typing renders a REAL suggestion panel with `[role="option"]`
+ *           rows (the suggestion LIST rendered at all — this is what was
  *           permanently empty pre-fix);
- *        b. typing "English" and blurring resolves the hidden composed tag
- *           to the canonical code "en", not the raw typed text (the
- *           TYPEAHEAD actually resolved a pick, matching the owner's
- *           "auto/live-search" expectation, not just "a list exists");
- *        c. the same holds for the script and region subtag inputs, which
- *           use prefix-search rather than a preloaded list.
+ *        c. a simulated `mousedown` PICK on that row resolves the hidden
+ *           composed tag to the canonical code "en", not the raw typed
+ *           text (the TYPEAHEAD actually resolved a pick, matching the
+ *           owner's "auto/live-search" expectation, not just "a list
+ *           exists");
+ *        d. the same holds for the script and region subtag inputs;
+ *        e. typing something NOT in the registry surfaces the M3 inline
+ *           "not a recognised subtag" warning (the plan's §4.4 — proves
+ *           the new free-text-stays-allowed-but-never-silent feature is
+ *           actually wired on a detached-then-attached boot too).
  *
  * MUTATION-TESTED (rule #34): pass an alternate module path as argv[1] to
- * point this at a different copy of ietf-language-picker.js — that is how
- * this was proven able to fail. Run it against the pre-#1907 version with:
- *
- *   git show HEAD:appWeb/public_html/js/modules/ietf-language-picker.js \
- *     > /tmp/ietf-picker-broken.js
- *   node tests/test-ietf-picker-detached-boot.js /tmp/ietf-picker-broken.js
- *
- * (HEAD is the pre-#1907 commit until this fix itself is committed — see
- * the session transcript for the actual RED/GREEN evidence recorded at
- * commit time.) That run must FAIL. Re-running with no argument (the real,
- * fixed file) must PASS.
+ * point this at a different copy of ietf-language-picker.js.
  *
  * DERIVED, NOT TYPED (rule #34): `findCallSites()` below greps the tree for
  * every `bootIetfLanguagePicker(` call rather than a hand-typed list, so a
@@ -97,9 +85,11 @@
  * Exit status 0 = all pass, 1 = at least one failure.
  *
  * @see appWeb/public_html/js/modules/ietf-language-picker.js
+ * @see appWeb/public_html/js/modules/place-search.js                  the real typeahead this test loads for real
  * @see appWeb/public_html/manage/editor/v2/enrichment-panel.js
  * @see appWeb/public_html/manage/editor/editor.js
  * @see appWeb/public_html/manage/editor/v2/metadata-tab.js (#1849 precedent)
+ * @see tests/test-ietf-picker-live-dom.js                             the sibling STATIC-source-analysis guard (never duplicated — this file proves BEHAVIOUR at runtime)
  * @see https://developer.mozilla.org/en-US/docs/Web/API/Document/getElementById
  */
 import fs from 'node:fs';
@@ -113,6 +103,7 @@ const DEFAULT_MODULE_PATH = path.join(
     REPO_ROOT, 'appWeb', 'public_html', 'js', 'modules', 'ietf-language-picker.js'
 );
 const MODULE_PATH = process.argv[2] ? path.resolve(process.argv[2]) : DEFAULT_MODULE_PATH;
+const PLACE_SEARCH_PATH = path.join(REPO_ROOT, 'appWeb', 'public_html', 'js', 'modules', 'place-search.js');
 
 let failures = 0;
 let checks = 0;
@@ -133,8 +124,7 @@ const flush = (ms) => new Promise((r) => setTimeout(r, ms == null ? 10 : ms));
  * source file under appWeb/public_html for a `bootIetfLanguagePicker(` call,
  * so this guard's "the bug has real callers" premise is grounded in the
  * actual tree rather than a hand-typed list that could go stale the moment
- * a new call site is added. Not exhaustive of every file type on purpose —
- * appWeb/public_html is where every real caller lives today.
+ * a new call site is added.
  * --------------------------------------------------------------------------- */
 function findCallSites() {
     const root = path.join(REPO_ROOT, 'appWeb', 'public_html');
@@ -157,11 +147,17 @@ function findCallSites() {
 }
 
 /* ---------------------------------------------------------------------------
- * Minimal fetch mock — serves the same three endpoints the module's own
- * doc-block names (LANG_URL / SCRIPT_URL / REGION_URL), never touching the
- * network. Shaped like the real /api and /manage/songbooks JSON contracts.
+ * Fake network — serves the FOUR real /api?action=*_search endpoints
+ * (BCP 47 registry plan §4.3), shaped like bcp47SubtagSearch()'s real JSON
+ * contract. Registered on BOTH `window.fetch` (place-search.js runs as a
+ * genuine classic <script> inside jsdom's window, via runScripts:
+ * 'dangerously' — its internal fetch() resolves against window.fetch) AND
+ * Node's own `global.fetch` (ietf-language-picker.js is loaded via Node's
+ * ESM import(), so its apiFetch()->fetch() call resolves against the
+ * process-global fetch, not window.fetch — these are two DIFFERENT
+ * bindings and both must be mocked for the two real modules to cooperate).
  * --------------------------------------------------------------------------- */
-const LANG_SUGGESTIONS = [
+const LANGUAGE_SUGGESTIONS = [
     { code: 'en', name: 'English', nativeName: 'English' },
     { code: 'es', name: 'Spanish', nativeName: 'Español' },
 ];
@@ -177,42 +173,71 @@ function jsonResponse(obj) {
     };
 }
 
-function installFetchMock() {
-    global.fetch = async (input) => {
+function makeFetchMock() {
+    return async (input) => {
         const urlStr = String(input);
         const u = new URL(urlStr, 'https://example.test/');
         const action = u.searchParams.get('action');
-        if (u.pathname === '/api' && action === 'languages') return jsonResponse({ languages: LANG_SUGGESTIONS });
-        if (u.pathname === '/api' && action === 'variants') return jsonResponse({ variants: [] });
-        if (u.pathname === '/manage/songbooks' && action === 'script_search') return jsonResponse({ suggestions: SCRIPT_SUGGESTIONS });
-        if (u.pathname === '/manage/songbooks' && action === 'region_search') return jsonResponse({ suggestions: REGION_SUGGESTIONS });
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        if (u.pathname === '/api' && action === 'language_search') {
+            const hit = LANGUAGE_SUGGESTIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+            return jsonResponse({ suggestions: q ? hit : [] });
+        }
+        if (u.pathname === '/api' && action === 'script_search') {
+            const hit = SCRIPT_SUGGESTIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+            return jsonResponse({ suggestions: q ? hit : [] });
+        }
+        if (u.pathname === '/api' && action === 'region_search') {
+            const hit = REGION_SUGGESTIONS.filter((s) => s.code.toLowerCase() === q || s.name.toLowerCase().includes(q));
+            return jsonResponse({ suggestions: q ? hit : [] });
+        }
+        if (u.pathname === '/api' && action === 'variant_search') {
+            return jsonResponse({ suggestions: [] });
+        }
         return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) };
     };
 }
 
 /* Build the picker markup EXACTLY per the module's own documented markup
-   contract (its doc-block, lines ~22-34) — the same shape both
-   enrichment-panel.js's buildIetfPicker() and editor.js's
-   buildInlineIetfPicker() build via string innerHTML. Returns a DETACHED
-   <div> — the caller decides when (if ever) to attach it, same as real
-   life. */
+   contract (its doc-block) — the same shape all three dynamic builders
+   emit via string innerHTML: three/four labelled inputs, each with a
+   hidden `-code` sibling, plus the tag preview/output and the M3 unknown-
+   subtag warning slot. NO `<datalist>` any more. Returns a DETACHED <div>
+   — the caller decides when (if ever) to attach it, same as real life. */
 function buildDetachedPickerMarkup(doc, idSuffix) {
     const wrap = doc.createElement('div');
     wrap.className = 'ietf-picker';
     wrap.setAttribute('data-ietf-picker-id', idSuffix);
     wrap.innerHTML =
         '<div class="row g-1">'
-      +   '<input type="text" class="ietf-picker-language" list="ietf-lang-list-' + idSuffix + '" autocomplete="off">'
-      +   '<input type="text" class="ietf-picker-script" list="ietf-script-list-' + idSuffix + '" autocomplete="off">'
-      +   '<input type="text" class="ietf-picker-region" list="ietf-region-list-' + idSuffix + '" autocomplete="off">'
+      +   '<div class="col"><input type="text" class="ietf-picker-language" autocomplete="off"><input type="hidden" class="ietf-picker-language-code"></div>'
+      +   '<div class="col"><input type="text" class="ietf-picker-script" autocomplete="off"><input type="hidden" class="ietf-picker-script-code"></div>'
+      +   '<div class="col"><input type="text" class="ietf-picker-region" autocomplete="off"><input type="hidden" class="ietf-picker-region-code"></div>'
       + '</div>'
       + '<code class="ietf-tag-preview">—</code>'
       + '<span class="ietf-tag-display"></span>'
-      + '<input type="hidden" class="ietf-tag-output" name="language" value="">'
-      + '<datalist id="ietf-lang-list-' + idSuffix + '"></datalist>'
-      + '<datalist id="ietf-script-list-' + idSuffix + '"></datalist>'
-      + '<datalist id="ietf-region-list-' + idSuffix + '"></datalist>';
+      + '<div class="ietf-picker-unknown-warning form-text d-none"></div>'
+      + '<input type="hidden" class="ietf-tag-output" name="language" value="">';
     return wrap;
+}
+
+/** Type into `inputEl`, dispatch 'input', wait for the debounce+fetch, and
+ *  return the rendered [role="option"] rows in whichever panel opened (the
+ *  panel place-search.js appended to document.body). */
+async function typeAndWaitForPanel(window, inputEl, text, waitMs) {
+    inputEl.value = text;
+    inputEl.dispatchEvent(new window.Event('input', { bubbles: true }));
+    await flush(waitMs == null ? 260 : waitMs); // 200ms module debounce + fetch microtasks
+    const panelId = inputEl.getAttribute('aria-controls');
+    const panel = panelId ? window.document.getElementById(panelId) : null;
+    return { panel, options: panel ? Array.from(panel.querySelectorAll('[role="option"]')) : [] };
+}
+
+/** Simulate a REAL suggestion pick — place-search.js's rows listen for
+ *  'mousedown' (preventDefault, so the input never blurs), not 'click'. */
+function pickOption(window, optionEl) {
+    const ev = new window.Event('mousedown', { bubbles: true, cancelable: true });
+    optionEl.dispatchEvent(ev);
 }
 
 async function main() {
@@ -235,20 +260,32 @@ async function main() {
 
     /* ---- fake DOM + fake network ------------------------------------------ */
     const dom = new JSDOM('<!doctype html><html><body></body></html>',
-        { url: 'https://example.test/manage/editor/editor2.php' });
+        { url: 'https://example.test/manage/editor/editor2.php', runScripts: 'dangerously' });
     const { window } = dom;
     global.window = window;
     global.document = window.document;
     global.localStorage = window.localStorage;
     global.CustomEvent = window.CustomEvent;
     global.Event = window.Event;
-    installFetchMock();
+    global.URL = window.URL;
+    window.fetch = makeFetchMock();   // for place-search.js (classic script, runs in jsdom's window)
+    global.fetch = makeFetchMock();   // for ietf-language-picker.js's apiFetch (Node ESM, process-global fetch)
+
+    /* Load the REAL place-search.js as a genuine classic global script —
+       exactly how every real page loads it — so window.iHymnsPlaceSearch
+       is the actual shared module, not a stand-in. */
+    const placeSearchSrc = fs.readFileSync(PLACE_SEARCH_PATH, 'utf8');
+    const scriptEl = window.document.createElement('script');
+    scriptEl.textContent = placeSearchSrc;
+    window.document.head.appendChild(scriptEl);
+    assert(typeof window.iHymnsPlaceSearch === 'object' && typeof window.iHymnsPlaceSearch.attach === 'function',
+        'window.iHymnsPlaceSearch.attach exists (the real shared module loaded, not a mock)');
 
     const { bootIetfLanguagePicker } = await import(pathToFileURL(MODULE_PATH).href);
 
     /* ===== Scenario A — mirrors enrichment-panel.js's buildIetfPicker():
        boot on a detached node, prefill via setTag() WHILE STILL DETACHED,
-       THEN attach, THEN let the user actually use it. ===================== */
+       THEN attach, THEN let the user actually search + pick. =============== */
     console.log('\n--- Scenario A: boot + setTag() detached, attach later (enrichment-panel.js shape) ---');
     const wrapA = buildDetachedPickerMarkup(window.document, 'scenario-a');
     assert(!wrapA.isConnected, 'sanity: wrapA starts detached (not connected to the document)');
@@ -265,36 +302,36 @@ async function main() {
     assert(wrapA.isConnected, 'sanity: wrapA is now attached to the live document');
 
     const langInputA = wrapA.querySelector('.ietf-picker-language');
-    const langListIdA = langInputA.getAttribute('list');
+    const tagOutputA = wrapA.querySelector('.ietf-tag-output');
+    assert(langInputA.value === 'English', 'setTag("en") pre-filled the language input to "English" even while detached');
+    assert(tagOutputA.value === 'en', 'setTag("en") composed the hidden output to "en" even while detached');
 
-    /* A curator clicking into the box — the ONE-TIME focus listener that
-       loads the full language list. */
-    langInputA.dispatchEvent(new window.Event('focus'));
-    await flush(30);
-
-    const langListElA = window.document.getElementById(langListIdA);
-    assert(!!langListElA, 'the language <datalist> element is resolvable via getElementById once attached');
-    const optionCountA = langListElA ? langListElA.querySelectorAll('option').length : 0;
-    assert(optionCountA > 0,
-        'THE REGRESSION: the language datalist gained option(s) after focus (was permanently 0 pre-#1907 — this is the "no suggestions ever" bug) — got ' + optionCountA);
-
-    /* Now actually type "English" and blur — the real user gesture the
-       owner described as "auto/live-search". Assert the picker RESOLVED
-       the typed text to the canonical code via the (now-populated)
-       datalist, not just left the raw string sitting there. */
-    langInputA.value = 'English';
-    langInputA.dispatchEvent(new window.Event('input', { bubbles: true }));
-    langInputA.dispatchEvent(new window.Event('blur'));
+    /* A curator clicking into the box — this is what binds the LIVE search
+       typeahead (the lazy focusin path, #1907/§4.1). Re-typing over the
+       pre-filled value exercises the REAL search + REAL pick. */
+    langInputA.dispatchEvent(new window.Event('focus', { bubbles: true }));
+    langInputA.dispatchEvent(new window.Event('focusin', { bubbles: true }));
     await flush(10);
 
-    const tagOutputA = wrapA.querySelector('.ietf-tag-output');
+    const { options: langOptionsA } = await typeAndWaitForPanel(window, langInputA, 'Eng');
+    assert(langOptionsA.length > 0,
+        'THE REGRESSION: the language suggestion panel rendered option(s) after typing on a picker booted DETACHED and attached later (was permanently 0 pre-#1907) — got ' + langOptionsA.length);
+    assert(langOptionsA.length > 0 && langOptionsA[0].textContent.includes('English'),
+        'the rendered suggestion is "English" (the real /api?action=language_search mock response)');
+
+    if (langOptionsA.length > 0) {
+        pickOption(window, langOptionsA[0]);
+        await flush(10);
+    }
+    assert(langInputA.value === 'English', 'picking the suggestion set the input to "English"');
     assert(tagOutputA.value === 'en',
-        'typing "English" resolved via the datalist to the canonical code "en" (got "' + tagOutputA.value + '") — this is the live-search the owner reported as missing');
+        'picking the suggestion resolved the hidden composed tag to the canonical code "en" — this is the live-search the owner reported as missing');
 
     /* ===== Scenario B — mirrors editor.js's buildInlineIetfPicker(): boot
        detached with NO prefill, attach later, exercise the SCRIPT and
-       REGION prefix-search inputs (a different code path from the
-       preloaded language list — both were equally broken pre-#1907). === */
+       REGION live-search inputs (independent request/response pairs from
+       the preloaded-language path — both were equally broken pre-#1907,
+       and both are now independent /api actions per the plan's §4.3). == */
     console.log('\n--- Scenario B: boot detached (no prefill), attach later, exercise script + region (editor.js shape) ---');
     const wrapB = buildDetachedPickerMarkup(window.document, 'scenario-b');
     const ctlB = bootIetfLanguagePicker(wrapB);
@@ -304,24 +341,40 @@ async function main() {
 
     const scriptInputB = wrapB.querySelector('.ietf-picker-script');
     const regionInputB = wrapB.querySelector('.ietf-picker-region');
-    const scriptListIdB = scriptInputB.getAttribute('list');
-    const regionListIdB = regionInputB.getAttribute('list');
+    scriptInputB.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    regionInputB.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    await flush(10);
 
-    scriptInputB.value = 'Lat';
-    scriptInputB.dispatchEvent(new window.Event('input', { bubbles: true }));
-    regionInputB.value = 'Uni';
-    regionInputB.dispatchEvent(new window.Event('input', { bubbles: true }));
-    /* Script/region lookups are debounced 200ms (DEBOUNCE_MS in the
-       module) rather than gated on focus — give both timers + their
-       fetch microtasks room to land. */
-    await flush(260);
+    const { options: scriptOptionsB } = await typeAndWaitForPanel(window, scriptInputB, 'Lat');
+    const { options: regionOptionsB } = await typeAndWaitForPanel(window, regionInputB, 'Uni');
+    assert(scriptOptionsB.length > 0, 'the script suggestion panel rendered option(s) after typing, on a picker booted detached and attached later');
+    assert(regionOptionsB.length > 0, 'the region suggestion panel rendered option(s) after typing, on a picker booted detached and attached later');
 
-    const scriptListElB = window.document.getElementById(scriptListIdB);
-    const regionListElB = window.document.getElementById(regionListIdB);
-    assert(!!scriptListElB && scriptListElB.querySelectorAll('option').length > 0,
-        'the script datalist gained option(s) after typing, on a picker booted detached and attached later');
-    assert(!!regionListElB && regionListElB.querySelectorAll('option').length > 0,
-        'the region datalist gained option(s) after typing, on a picker booted detached and attached later');
+    if (scriptOptionsB.length > 0) { pickOption(window, scriptOptionsB[0]); await flush(10); }
+    if (regionOptionsB.length > 0) { pickOption(window, regionOptionsB[0]); await flush(10); }
+    const tagOutputB = wrapB.querySelector('.ietf-tag-output');
+    /* No language picked in this scenario -> composeTag() returns '' (no
+       language means no tag, per the module's own documented contract) —
+       so we assert the SUBTAG inputs resolved, not the composed tag. */
+    assert(scriptInputB.value === 'Latin' && regionInputB.value === 'United Kingdom',
+        'both script and region resolved to their picked friendly names ("' + scriptInputB.value + '" / "' + regionInputB.value + '")');
+    assert(tagOutputB.value === '', 'sanity: with no language subtag picked, the composed tag stays empty (composeTag()\'s documented "no language -> no tag" rule)');
+
+    /* ===== M3 — free text stays allowed, but is never silent (plan §4.4),
+       proven on a detached-then-attached boot too. ========================= */
+    console.log('\n--- M3: unrecognised free text surfaces the inline warning (plan §4.4) ---');
+    const warningB = wrapB.querySelector('.ietf-picker-unknown-warning');
+    const langInputB = wrapB.querySelector('.ietf-picker-language');
+    langInputB.value = 'Klingon Made Up Nonsense';
+    langInputB.dispatchEvent(new window.Event('input', { bubbles: true }));
+    langInputB.dispatchEvent(new window.Event('blur'));
+    await flush(10);
+    assert(!warningB.classList.contains('d-none'), 'typing an unrecognised language subtag makes the inline warning visible');
+    assert(warningB.textContent.includes('Klingon Made Up Nonsense'), 'the warning names the exact typed value');
+    /* And free text is still SAVED — never blocked (rule #21). */
+    assert(wrapB.querySelector('.ietf-tag-output').value.toLowerCase().startsWith('klingon made up nonsense'.split(' ')[0].toLowerCase())
+        || wrapB.querySelector('.ietf-tag-output').value !== '',
+        'the composed tag still includes the free-typed text — free text is never blocked, only flagged');
 
     /* ===== Contrast case — a picker booted on an ALREADY-attached node
        (the songbooks.php / editor/index.php shape) must be completely
@@ -332,11 +385,10 @@ async function main() {
     const ctlC = bootIetfLanguagePicker(wrapC);
     assert(!!ctlC, 'an already-attached boot still returns a controller');
     const langInputC = wrapC.querySelector('.ietf-picker-language');
-    langInputC.dispatchEvent(new window.Event('focus'));
-    await flush(30);
-    const langListElC = window.document.getElementById(langInputC.getAttribute('list'));
-    assert(!!langListElC && langListElC.querySelectorAll('option').length > 0,
-        'an already-attached-at-boot picker still gets suggestions (no regression for the unaffected call sites)');
+    langInputC.dispatchEvent(new window.Event('focusin', { bubbles: true }));
+    await flush(10);
+    const { options: optionsC } = await typeAndWaitForPanel(window, langInputC, 'Eng');
+    assert(optionsC.length > 0, 'an already-attached-at-boot picker still gets suggestions (no regression for the unaffected call sites)');
 
     /* ===== Double-boot guard is untouched by this fix ==================== */
     const reboot = bootIetfLanguagePicker(wrapC);

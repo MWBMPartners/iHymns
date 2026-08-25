@@ -1352,22 +1352,23 @@ function buildInlineIetfPicker(initialTag) {
     wrap.setAttribute('data-ietf-picker-id', id);
     /* Deliberately NOT setting data-initial-tag: we pre-fill via ctl.setTag(tag)
        below so we can expose its async completion as `ready` (#1345 review). The
-       module's setTag awaits the languages/script/region fetches before it
+       module's setTag awaits the language/script/region lookups before it
        populates the inputs + hidden output; reading getTag() before that resolves
        would mis-report '' and a fast Save could blank an existing tag.
-       Static structure mirroring partials/ietf-language-picker.php — the only
-       interpolation is `id` (generated, no user data) so innerHTML is XSS-safe. */
+       Static structure mirroring the module's own markup-contract doc-comment
+       (js/modules/ietf-language-picker.js header, #1907 live-search rework) — NO
+       `<datalist>`/`list=` any more, each subtag input carries a hidden `-code`
+       sibling instead. The only interpolation is `id` (generated, no user data)
+       so innerHTML is XSS-safe. */
     wrap.innerHTML =
         '<div class="row g-1">'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" list="ietf-lang-list-' + id + '" autocomplete="off" placeholder="Language"></div>'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-' + id + '" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
-      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-' + id + '" autocomplete="off" placeholder="Region"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" autocomplete="off" placeholder="Language"><input type="hidden" class="ietf-picker-language-code"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" autocomplete="off" placeholder="Script (e.g. Latin)"><input type="hidden" class="ietf-picker-script-code"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" autocomplete="off" placeholder="Region"><input type="hidden" class="ietf-picker-region-code"></div>'
       + '</div>'
       + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
-      + '<input type="hidden" class="ietf-tag-output" value="">'
-      + '<datalist id="ietf-lang-list-' + id + '"></datalist>'
-      + '<datalist id="ietf-script-list-' + id + '"></datalist>'
-      + '<datalist id="ietf-region-list-' + id + '"></datalist>';
+      + '<div class="ietf-picker-unknown-warning form-text text-warning-emphasis d-none"></div>'
+      + '<input type="hidden" class="ietf-tag-output" value="">';
 
     var ctl = window.bootIetfLanguagePicker(wrap);
     /* Pre-fill the seed tag and expose the async completion. Callers gate Save on

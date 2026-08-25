@@ -38,6 +38,10 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* BCP 47 registry plan §5 (M4) — the unknown/junk tag curator audit.
+   manage_languages alone gates the whole page (D4, owner decision) — the
+   remap surface below is not a second, separately-gated feature. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_tag_audit.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -351,6 +355,87 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 exit;
             }
 
+            case 'remap_tag': {
+                /* BCP 47 registry plan §5.3 (M4) — remap every occurrence of
+                   $fromTag to $toTag across every derived source. Type-the-
+                   count confirm (the #1218 guard shape): the client arms the
+                   Remap button only once the curator has typed the EXACT
+                   live usage total shown on the panel; the server
+                   independently recomputes that same total right now (never
+                   trusting a client-cached number) and 409s with the real
+                   count if it has drifted — the same "surface the truth,
+                   make them re-confirm" pattern duplicate-songs.php uses for
+                   a same-official-songbook merge. */
+                $fromTag = trim((string)($_POST['from_tag'] ?? ''));
+                $toTag   = trim((string)($_POST['to_tag']   ?? ''));
+                $confirmTotal = $_POST['confirm_total'] ?? null;
+
+                if ($fromTag === '' || $toTag === '') {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'from_tag and to_tag are both required.']);
+                    exit;
+                }
+                if ($fromTag === $toTag) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'to_tag is identical to from_tag — nothing to remap.']);
+                    exit;
+                }
+
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+                if (_ietfBcp47Validate($toTag) === false) {
+                    http_response_code(400);
+                    echo json_encode(['error' => "'{$toTag}' is not a grammatically valid BCP 47 tag — the server would reject it everywhere else too."]);
+                    exit;
+                }
+
+                /* Recompute the LIVE total for $fromTag right now — the
+                   panel's own number may be stale by the time the curator
+                   clicks (another curator remapped it, or new data landed). */
+                $liveRows = languageTagAuditScan($db);
+                $liveTotal = 0;
+                foreach ($liveRows as $r) {
+                    if ($r['tag'] === $fromTag) { $liveTotal = $r['total']; break; }
+                }
+                if ($liveTotal === 0) {
+                    http_response_code(404);
+                    echo json_encode(['error' => "'{$fromTag}' no longer appears in the audit scan — it may already have been remapped."]);
+                    exit;
+                }
+                if ($confirmTotal === null || (int)$confirmTotal !== $liveTotal) {
+                    http_response_code(409);
+                    echo json_encode([
+                        'error'       => 'Confirm count does not match the current live usage — type the number shown and try again.',
+                        'live_total'  => $liveTotal,
+                        'requires_confirm' => true,
+                    ]);
+                    exit;
+                }
+
+                $result = languageTagRemap($db, $fromTag, $toTag);
+                if (!$result['ok']) {
+                    http_response_code(400);
+                    echo json_encode(['error' => $result['error']]);
+                    exit;
+                }
+
+                $logLanguage('remap', $fromTag, [
+                    'to'            => $toTag,
+                    'per_source'    => $result['perSource'],
+                    'songs_touched' => $result['songsTouched'],
+                    'songs_remaining' => $result['songsRemaining'],
+                ]);
+
+                echo json_encode([
+                    'success'        => true,
+                    'from_tag'       => $fromTag,
+                    'to_tag'         => $toTag,
+                    'per_source'     => $result['perSource'],
+                    'songs_touched'  => $result['songsTouched'],
+                    'songs_remaining'=> $result['songsRemaining'],
+                ]);
+                exit;
+            }
+
             default:
                 http_response_code(400);
                 echo json_encode(['error' => 'Unknown action: ' . $action]);
@@ -361,6 +446,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         http_response_code(500);
         echo json_encode(['error' => 'Server error — see server log for details.']);
         exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * BCP 47 registry plan §5.1 (M4) — `?view=unknown` renders the "Unknown
+ * language tags" panel ABOVE the existing registry table below (additive,
+ * not a replacement — the ordinary catalogue table always stays reachable
+ * via the "Back to language list" link the panel renders). Derived live
+ * every request — no new table (rule #44), so this is a genuine on-demand
+ * scan (a handful of GROUP BY queries), never cached / never persisted.
+ * Un-migrated installs (a pre-#738 or pre-#1235-P4 schema) degrade to an
+ * empty scan rather than a 500 — every reader in language_tag_audit.php
+ * already schema-probes internally.
+ * ---------------------------------------------------------------------- */
+$view = ((string)($_GET['view'] ?? '')) === 'unknown' ? 'unknown' : '';
+$unknownRows = [];
+if ($view === 'unknown') {
+    try {
+        $unknownRows = languageTagAuditScan($db);
+    } catch (\Throwable $e) {
+        error_log('[manage/languages view=unknown] ' . $e->getMessage());
+        $unknownRows = [];
     }
 }
 
@@ -471,10 +578,114 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 how a language's own name is written, or hide one you no longer want to offer.
             </p>
         </div>
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create">
-            <i class="bi bi-plus-lg me-1"></i>Add language
-        </button>
+        <div class="d-flex gap-2">
+            <?php if ($view === 'unknown'): ?>
+                <a href="/manage/languages" class="btn btn-outline-light">
+                    <i class="bi bi-arrow-left me-1"></i>Back to language list
+                </a>
+            <?php else: ?>
+                <a href="/manage/languages?view=unknown" class="btn btn-outline-warning">
+                    <i class="bi bi-exclamation-triangle me-1"></i>Unknown tags
+                </a>
+            <?php endif; ?>
+            <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create">
+                <i class="bi bi-plus-lg me-1"></i>Add language
+            </button>
+        </div>
     </div>
+
+    <?php if ($view === 'unknown'): ?>
+    <!-- ===========================
+         UNKNOWN LANGUAGE TAGS PANEL (BCP 47 registry plan §5, M4)
+         =========================== -->
+    <div class="card bg-body-tertiary border-warning mb-4" id="unknown-tags-panel">
+        <div class="card-header">
+            <h2 class="h5 mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Unknown language tags</h2>
+        </div>
+        <div class="card-body">
+            <p class="text-secondary small mb-3">
+                Every DISTINCT language tag actually stored on a song, songbook, lyric line, translation, or
+                request that either isn't grammatically valid BCP 47, isn't yet in the registry above, or is in
+                the registry but retired (inactive). Derived live from the catalogue on every visit to this page
+                — nothing here is cached or stored. Free-text tags always stay saveable elsewhere (a script
+                subtag must never fail import) — this panel is where a curator reviews and cleans them up.
+            </p>
+            <?php if (empty($unknownRows)): ?>
+                <div class="alert alert-success mb-0" role="status">
+                    <i class="bi bi-check-circle me-1"></i>No unknown, malformed, or retired language tags found in the catalogue.
+                </div>
+            <?php else: ?>
+            <div class="table-responsive">
+                <table class="table table-dark table-striped align-middle admin-table-responsive" id="unknown-tags-table">
+                    <thead>
+                        <tr>
+                            <th scope="col" data-col-priority="primary">Tag</th>
+                            <th scope="col" data-col-priority="primary">Issue</th>
+                            <th scope="col" data-col-priority="secondary" class="text-end">Uses</th>
+                            <th scope="col" data-col-priority="tertiary">Where</th>
+                            <th scope="col" data-col-priority="primary" class="text-end">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($unknownRows as $row):
+                        $tag = $row['tag']; $class = $row['class']; $total = $row['total'];
+                        $primarySubtag = strtolower((string)strtok($tag, '-'));
+                        $badgeClass = $class === 'malformed' ? 'bg-danger' : ($class === 'unregistered' ? 'bg-warning text-dark' : 'bg-secondary');
+                        $badgeLabel = $class === 'malformed' ? 'Malformed' : ($class === 'unregistered' ? 'Unregistered' : 'Retired subtag');
+                    ?>
+                        <tr data-tag="<?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?>" data-total="<?= (int)$total ?>" data-class="<?= htmlspecialchars($class, ENT_QUOTES, 'UTF-8') ?>">
+                            <td><code><?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?></code></td>
+                            <td><span class="badge <?= $badgeClass ?>"><?= $badgeLabel ?></span></td>
+                            <td class="text-end"><?= number_format($total) ?></td>
+                            <td class="small text-secondary">
+                                <?php
+                                $bits = [];
+                                foreach ($row['bySource'] as $label => $c) { $bits[] = htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . ' (' . (int)$c . ')'; }
+                                echo implode(', ', $bits);
+                                ?>
+                            </td>
+                            <td class="text-end">
+                                <?php if ($class === 'inactive'): ?>
+                                    <a class="btn btn-sm btn-outline-info" href="/manage/languages?q=<?= urlencode($primarySubtag) ?>">
+                                        <i class="bi bi-toggle-on me-1"></i>Find &amp; activate
+                                    </a>
+                                <?php else: ?>
+                                    <a class="btn btn-sm btn-outline-secondary unk-add-registry-btn"
+                                       href="/manage/languages?prefill_code=<?= urlencode($primarySubtag) ?>" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create" data-prefill-code="<?= htmlspecialchars($primarySubtag, ENT_QUOTES, 'UTF-8') ?>">
+                                        <i class="bi bi-plus-lg me-1"></i>Add to registry
+                                    </a>
+                                    <button type="button" class="btn btn-sm btn-outline-warning unk-remap-btn">
+                                        <i class="bi bi-arrow-left-right me-1"></i>Remap
+                                    </button>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <tr class="unk-remap-row d-none">
+                            <td colspan="5">
+                                <div class="d-flex flex-wrap align-items-end gap-2 bg-body-secondary p-2 rounded">
+                                    <div>
+                                        <label class="form-label small text-muted mb-1">Remap to (BCP 47 tag)</label>
+                                        <input type="text" class="form-control form-control-sm unk-to-tag" placeholder="e.g. en-GB" style="max-width:12rem">
+                                    </div>
+                                    <div>
+                                        <label class="form-label small text-muted mb-1">Type <strong><?= (int)$total ?></strong> to confirm</label>
+                                        <input type="text" class="form-control form-control-sm unk-confirm" placeholder="<?= (int)$total ?>" style="max-width:8rem" autocomplete="off">
+                                    </div>
+                                    <button type="button" class="btn btn-sm btn-warning unk-remap-submit" disabled>
+                                        <i class="bi bi-arrow-left-right me-1"></i>Remap now
+                                    </button>
+                                    <span class="small text-secondary unk-remap-status"></span>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <!-- Summary chips: total / active / native-filled / rtl. Cheap aggregate
          tied to the unfiltered catalogue so curators see baseline health
@@ -817,6 +1028,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             tdSel.value     = 'ltr';
             scopeSel.value  = 'individual';
             activeInp.checked = true;
+            /* BCP 47 registry plan §5.3 — "Add to registry" from the Unknown
+               tags panel pre-fills the Code field with the tag's primary
+               subtag (data-prefill-code, set via the trigger element Bootstrap
+               hands us as event.relatedTarget for ANY data-bs-toggle="modal"
+               element, including our <a> link — no second wiring needed). */
+            if (trigger?.dataset?.prefillCode) {
+                codeInp.value = trigger.dataset.prefillCode;
+            }
         }
     });
 
@@ -970,6 +1189,91 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             dmConfirm.disabled = false;
         }
     });
+
+    /* ---- Unknown tags panel: remap flow (BCP 47 registry plan §5.3) --- */
+    document.querySelectorAll('.unk-remap-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const row = btn.closest('tr');
+            const remapRow = row?.nextElementSibling;
+            if (remapRow?.classList.contains('unk-remap-row')) {
+                remapRow.classList.toggle('d-none');
+            }
+        });
+    });
+
+    document.querySelectorAll('.unk-remap-row').forEach((remapRow) => {
+        const dataRow  = remapRow.previousElementSibling;
+        const fromTag  = dataRow?.dataset?.tag || '';
+        const total    = dataRow?.dataset?.total || '0';
+        const toInput  = remapRow.querySelector('.unk-to-tag');
+        const confirmInput = remapRow.querySelector('.unk-confirm');
+        const submitBtn = remapRow.querySelector('.unk-remap-submit');
+        const statusEl  = remapRow.querySelector('.unk-remap-status');
+
+        /* Type-the-count confirm (#1218 shape) — arms Remap only once the
+           curator has typed the EXACT live total shown next to the field. */
+        const syncArm = () => {
+            const typed = (confirmInput.value || '').trim();
+            submitBtn.disabled = !(toInput.value.trim() !== '' && typed === total);
+        };
+        toInput.addEventListener('input', syncArm);
+        confirmInput.addEventListener('input', syncArm);
+
+        submitBtn.addEventListener('click', async () => {
+            const toTag = toInput.value.trim();
+            if (!toTag) return;
+            submitBtn.disabled = true;
+            statusEl.textContent = 'Remapping…';
+            try {
+                const body = new URLSearchParams({
+                    csrf_token: CSRF,
+                    action: 'remap_tag',
+                    from_tag: fromTag,
+                    to_tag: toTag,
+                    confirm_total: confirmInput.value.trim(),
+                });
+                const r = await fetch(ACTION_URL, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    body,
+                });
+                const d = await r.json().catch(() => ({}));
+                /* A 409 means the live count drifted since the panel rendered
+                   (d.live_total carries the fresh number) — handled uniformly
+                   by the !r.ok branch below, which shows it and lets the
+                   curator retype the confirm field to match. */
+                if (!r.ok) {
+                    statusEl.textContent = d?.error
+                        ? (d.live_total !== undefined ? `Count changed — it's now ${d.live_total}. Re-check and retype to confirm.` : d.error)
+                        : 'Remap failed.';
+                    submitBtn.disabled = false;
+                    return;
+                }
+                statusEl.textContent = `Done — ${JSON.stringify(d.per_source)}`;
+                window.location.reload();
+            } catch (err) {
+                console.error('[languages] remap failed:', err);
+                statusEl.textContent = 'Remap failed — see console.';
+                submitBtn.disabled = false;
+            }
+        });
+    });
+
+    /* ---- Deep-link: ?prefill_code=… opens the Add modal pre-filled, for
+       any caller that links here directly rather than via the panel's own
+       <a data-bs-toggle="modal"> (rule #33 — a URL param another page
+       emits is a contract). ---- */
+    (() => {
+        const params = new URLSearchParams(window.location.search);
+        const prefill = params.get('prefill_code');
+        if (prefill) {
+            codeInp.value = prefill;
+            modalTitle.textContent = 'Add language';
+            actionInp.value = 'create';
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        }
+    })();
 })();
 </script>
 </body>

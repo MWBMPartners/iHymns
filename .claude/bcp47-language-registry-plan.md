@@ -1,10 +1,56 @@
 # BCP 47 language registry — refresh automation, picker live-search & unknown-tag curation
 
-**Status: PLANNED** (2026-08-25, Fable-5 deep-planning pass, branch
-`claude/dormant-features-settings-1sdw4t`). Written after a full read of the
-existing #738 system — this plan deliberately does **NOT** re-plan #738, which
-already exists and covers most of what the original brief asked for. Read §1
-before anything else.
+**Status: IMPLEMENTED, uncommitted** (2026-08-25, branch
+`claude/dormant-features-settings-1sdw4t`). All of M1-M5 landed in the working
+tree in this session (files listed below); `git status --short` on the branch
+shows the full diff. **Not yet committed or pushed** (explicit instruction for
+this pass) — no commit SHAs exist yet, so the commit-plan §10 below is the
+INTENDED shape, not a record of what actually landed; a future session doing
+the commit should follow it and then fill in real SHAs here. Written after a
+full read of the existing #738 system — this plan deliberately does **NOT**
+re-plan #738, which already exists and covers most of what the original brief
+asked for. Read §1 before anything else.
+
+**What actually shipped, file-by-file** (mirrors §10's ordering but reports
+reality, not intent):
+- M1 — `appWeb/public_html/includes/language_registry_refresh.php` (new,
+  `languageRegistryRefreshCore()` + `languageRegistrySchemaReady()`),
+  `api.php`'s `admin_refresh_iana_cldr` now a thin delegate,
+  `appWeb/public_html/language-registry-refresh.php` (new keyed endpoint),
+  `.htaccess` alias, `secret_crypto.php` (`language_registry_refresh_key`),
+  `manage/configuration.php` (new card), `.github/workflows/language-registry-refresh.yml`
+  (new), `tests/php/test-language-registry-refresh.php` (new, 4 mutation-proven checks).
+- M2/M3 — `js/modules/ietf-language-picker.js` rewritten (datalist → live-search),
+  `manage/includes/partials/ietf-language-picker.php`, `manage/editor/editor.js`,
+  `manage/editor/v2/enrichment-panel.js`, `manage/editor/v2/metadata-tab.js` (markup +
+  comments updated), `includes/language_names.php` (`bcp47SubtagSearch()` +
+  `bcp47ResolveTable()` + `IHYMNS_BCP47_SUBTAG_KINDS`), `api.php` (4 new search cases),
+  `manage/songbooks.php` (`script_search`/`region_search` now delegate to the shared
+  core), `tests/test-bcp47-search-endpoints.js` (new), `tests/test-ietf-picker-live-dom.js`
+  (new), `tests/test-ietf-picker-detached-boot.js` (reworked in place — see its own
+  doc-block for why the old datalist-option-count assertions could not survive).
+- M4 — `includes/language_tag_audit.php` (new — sources/scan/classify/remap),
+  `manage/languages.php` (`?view=unknown` panel + `remap_tag` POST action),
+  `tests/php/test-language-tag-audit.php` (new, 5 checks).
+- M5 — folded into the M2/M3 module rewrite (the stale "~14 active rows"
+  framing no longer exists in the rewritten file).
+- Docs — `api-docs.yaml` (4 new path items), `manage/help.php` (Song Editor
+  picker section, Languages section, Configuration section), `CHANGELOG.md`,
+  this file.
+- Incidentally touched — `tests/php/test-error-page-coverage.php` (registered
+  the new endpoint's legitimate 502 emission in its path-pinned exemption map).
+
+**What did NOT survive contact with the real code** (see the implementing
+session's own report for full detail): `tblSongComponents.Language` turned
+out to need NO special line-path handling (a plain column, not one of the
+four doomed JSON shadow columns rule #25 guards) — it classifies 'direct'
+like every other source except the two the plan itself named. The
+`test-orphan-inventory.php` guard (unrelated to this plan, pre-existing)
+initially false-flagged this work twice — once via a JS test fixture listing
+bare action names for its own classification purpose, once via the picker's
+`noun.plural` UI strings — both fixed by avoiding a QUOTED occurrence of the
+two colliding bare words (`'scripts'`/`'regions'`) in JS source, documented
+inline at both sites.
 
 **Owner's binding decisions (do not re-litigate):**
 1. Full IETF BCP 47 / ISO 639 support — the picker searches the complete registry.

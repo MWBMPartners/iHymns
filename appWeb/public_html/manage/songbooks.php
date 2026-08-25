@@ -25,7 +25,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    abbrev / colour / IETF-tag grammar lands on both surfaces in one go. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php'; /* also: bcp47SubtagSearch() — BCP 47 registry plan §4.3 */
 /* #1765 — PUBLICATION_IDENTIFIER_TYPES + mediaIdentifierPublicationClean(),
    the ONE validator for the ark_id / openlibrary_work_id /
    openlibrary_edition_id fields below (Feature 3). Never hand-roll a
@@ -154,13 +154,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 }
 
 /* ---- GET ?action=script_search&q=… (#681 / renamed table in #738) ------
- * JSON typeahead for the IETF BCP 47 picker's Script field. Matches
- * substring (LIKE %q%) against tblLanguageScripts.Name OR
- * tblLanguageScripts.Code so a curator can search either by friendly
- * name ("Latin") or by ISO 15924 code ("Latn"). Empty query → empty
- * list; pre-migration deployments → empty list with a `note` rather
- * than a 500. Probes BOTH the new and legacy names so a deployment
- * mid-migration (rename pending) still serves suggestions.
+ * JSON typeahead for the IETF BCP 47 picker's Script field. LEGACY ALIAS
+ * (BCP 47 registry plan §4.3, rule #33 — links outlive code): the picker
+ * itself moved to the public `/api?action=script_search` action, but this
+ * admin-only URL stays live for anyone still linking to it. Delegates to
+ * the SAME shared core the public action uses (bcp47SubtagSearch(),
+ * includes/language_names.php — rule #22, never a second copy of the
+ * dual-table-name probe / query shape).
  * ----------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     && ($_GET['action'] ?? '') === 'script_search'
@@ -169,62 +169,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     header('Cache-Control: no-store');
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
-    if ($q === '') {
-        echo json_encode(['suggestions' => []]);
-        exit;
-    }
-
-    $tableName = '';
     try {
-        /* Prefer the renamed table (#738); fall back to the legacy
-           name if a deployment hasn't applied the rename yet. */
-        foreach (['tblLanguageScripts', 'tblScripts'] as $candidate) {
-            $probe = $db->prepare(
-                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
-            );
-            $probe->bind_param('s', $candidate);
-            $probe->execute();
-            $found = $probe->get_result()->fetch_row() !== null;
-            $probe->close();
-            if ($found) { $tableName = $candidate; break; }
-        }
-    } catch (\Throwable $e) {
-        error_log('[script_search] probe failed: ' . $e->getMessage());
-    }
-    if ($tableName === '') {
-        echo json_encode([
-            'suggestions' => [],
-            'note'        => 'tblLanguageScripts not yet created — run /manage/setup-database',
-        ]);
-        exit;
-    }
-
-    try {
-        $like = '%' . $q . '%';
-        /* Identifier built from the allowlisted probe above — never
-           user input, so no SQL injection surface. */
-        $stmt = $db->prepare(
-            "SELECT Code AS code, Name AS name, NativeName AS nativeName
-               FROM {$tableName}
-              WHERE IsActive = 1
-                AND (Name LIKE ? OR Code LIKE ?)
-              ORDER BY Name ASC
-              LIMIT ?"
-        );
-        $stmt->bind_param('ssi', $like, $like, $limit);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $suggestions = [];
-        while ($row = $res->fetch_assoc()) {
-            $suggestions[] = [
-                'code'       => (string)$row['code'],
-                'name'       => (string)$row['name'],
-                'nativeName' => (string)$row['nativeName'],
-            ];
-        }
-        $stmt->close();
-        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+        echo json_encode(bcp47SubtagSearch($db, 'script', $q, $limit), JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[script_search] ' . $e->getMessage());
         http_response_code(500);
@@ -234,10 +180,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 }
 
 /* ---- GET ?action=region_search&q=… (#681) ------------------------------
- * Same shape as script_search, against tblRegions. Codes are
- * uppercase ISO 3166-1 alpha-2 (or 3-digit M.49 numeric area codes
- * for groupings like 419 = Latin America), so the typeahead matches
- * either Name or Code as the user types.
+ * Same shape as script_search, against tblRegions. LEGACY ALIAS — see the
+ * script_search comment immediately above; delegates to the same shared
+ * bcp47SubtagSearch() core.
  * ----------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     && ($_GET['action'] ?? '') === 'region_search'
@@ -246,53 +191,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     header('Cache-Control: no-store');
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
-    if ($q === '') {
-        echo json_encode(['suggestions' => []]);
-        exit;
-    }
-
-    $hasTable = false;
     try {
-        $probe = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblRegions' LIMIT 1"
-        );
-        $probe->execute();
-        $hasTable = $probe->get_result()->fetch_row() !== null;
-        $probe->close();
-    } catch (\Throwable $e) {
-        error_log('[region_search] probe failed: ' . $e->getMessage());
-    }
-    if (!$hasTable) {
-        echo json_encode([
-            'suggestions' => [],
-            'note'        => 'tblRegions not yet created — run /manage/setup-database',
-        ]);
-        exit;
-    }
-
-    try {
-        $like = '%' . $q . '%';
-        $stmt = $db->prepare(
-            'SELECT Code AS code, Name AS name
-               FROM tblRegions
-              WHERE IsActive = 1
-                AND (Name LIKE ? OR Code LIKE ?)
-              ORDER BY Name ASC
-              LIMIT ?'
-        );
-        $stmt->bind_param('ssi', $like, $like, $limit);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $suggestions = [];
-        while ($row = $res->fetch_assoc()) {
-            $suggestions[] = [
-                'code' => (string)$row['code'],
-                'name' => (string)$row['name'],
-            ];
-        }
-        $stmt->close();
-        echo json_encode(['suggestions' => $suggestions], JSON_UNESCAPED_UNICODE);
+        echo json_encode(bcp47SubtagSearch($db, 'region', $q, $limit), JSON_UNESCAPED_UNICODE);
     } catch (\Throwable $e) {
         error_log('[region_search] ' . $e->getMessage());
         http_response_code(500);
