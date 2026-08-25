@@ -237,21 +237,64 @@
      *  SECTION 4 — RTF builder for slide lyric text
      * ==================================================================
      * ProPresenter stores slide text as RTF bytes inside
-     * `Graphics.Text.rtf_data`. We emit the minimum subset described
-     * in iHymns issue #887: ANSI prefix, lines separated by `\par`,
-     * RTF metacharacters (`\`, `{`, `}`) escaped, non-ASCII via
-     * `\uN?` (signed-16-bit Unicode form).
+     * `Graphics.Text.rtf_data`. We emit a minimal but STRUCTURALLY
+     * COMPLETE RTF document: header (charset + font table + colour
+     * table), one centred paragraph run selecting that font, lines
+     * separated by `\par`, RTF metacharacters (`\`, `{`, `}`) escaped,
+     * non-ASCII via `\uN?` (signed-16-bit Unicode form, #887).
      *
-     * #1918 — deliberately NOT extended with a font table / `\pard` /
-     * `\fs` run here. Now that `makeLyricCue()` sets `text.attributes`
-     * (font/colour/paragraph alignment — SECTION 5c), ProPresenter uses
-     * THOSE for the element's default styling; the bare RTF stays legible
-     * on its own. Adding paragraph/font control words here would be
-     * redundant with `attributes` and risks disagreeing with it. It would
-     * also break the existing exact-prefix assertions in
-     * tests/test-propresenter-export.js (notably the empty-input case,
-     * which asserts the WHOLE string is `{\rtf1\ansi\uc1 }` — inserting
-     * `\pard` unconditionally would no longer match). */
+     * #1918 follow-up (owner-reported 2026-08-25 — every slide blank,
+     * Reflow rows empty): THE FONT TABLE IS NOT OPTIONAL. This builder
+     * used to emit a header-less `{\rtf1\ansi\uc1 …}` on the theory
+     * that `text.attributes` (SECTION 5c) supplied the styling and the
+     * RTF only needed to carry words. That RTF violates the RTF spec's
+     * formal header grammar —
+     *   <header> ::= \rtf <charset> \deff? <fonttbl> <filetbl>?
+     *                <colortbl>? <stylesheet>? <listtables>? <revtbl>?
+     * (RTF 1.5+ spec, "Contents of an RTF File": every header component
+     * EXCEPT <fonttbl> carries the optional `?` marker) — and
+     * ProPresenter's RTF reader (Apple's Cocoa text system; PP7 is a
+     * Cocoa app and its own files carry `\cocoartf`-stamped RTF)
+     * extracted ZERO text from it: the export opened with the right
+     * slide count and group labels but every slide blank, and the
+     * Reflow editor showed 12 numbered EMPTY rows — text extraction
+     * failing, not styling. Both of this repo's OTHER RTF emitters
+     * already knew this: `buildPro6Rtf()` (format-export.js) and the
+     * EasyWorship exporter (includes/easyworship_export.php) each emit
+     * `{\fonttbl…}\pard\qc\f0\fs…` and are accepted by their targets.
+     *
+     * The header below is DERIVED from the same SECTION 5c constants
+     * that feed `text.attributes` (DEFAULT_FONT_NAME / DEFAULT_FONT_SIZE
+     * / DEFAULT_TEXT_COLOR), so the two descriptions of the default
+     * style cannot drift apart (rule #35 — agreement by mechanism, not
+     * comment). Emitted shape:
+     *
+     *   {\rtf1\ansi\ansicpg1252\deff0
+     *    {\fonttbl{\f0\fswiss\fcharset0 Arial;}}
+     *    {\colortbl;\red255\green255\blue255;}
+     *    \pard\qc\f0\fsN\cf1\uc1 LINE1\par
+     *    LINE2}
+     *
+     *   - `\ansicpg1252` names the ANSI code page; consistent with the
+     *     escaping below, which never emits a byte > 127 (non-ASCII is
+     *     always `\uN?`, so the document is pure 7-bit ASCII).
+     *   - `\deff0` + `\f0` declare AND SELECT the font — a declared
+     *     font that is never selected leaves a strict reader with no
+     *     current font, which is the same empty-extraction failure.
+     *   - `\fsN` is in HALF-points (RTF spec) — DEFAULT_FONT_SIZE * 2.
+     *   - `\colortbl` index 1 is DEFAULT_TEXT_COLOR (white); `\cf1`
+     *     selects it. Index 0 is the conventional empty "auto" slot.
+     *   - `\qc` centres the paragraph. This is the RTF-level centring
+     *     SECTION 5c's alignment comment reserved for exactly this
+     *     situation — it adds NO protobuf field, so the #1788
+     *     static/reflection byte-identity is untouched.
+     *   - `\uc1` still precedes the text so every `\uN` keeps its
+     *     one-character `?` ANSI fallback (#887).
+     *
+     * `text.attributes` (SECTION 5c) stays: it is the ELEMENT-level
+     * default ProPresenter shows in its inspector; the RTF is what the
+     * text engine actually parses for content. They now agree by
+     * construction. */
 
     function buildRTF(lines) {
         var arr;
@@ -287,7 +330,27 @@
             }
             parts.push(escaped);
         }
-        return '{\\rtf1\\ansi\\uc1 ' + parts.join('\\par\n') + '}';
+
+        /* ELI5: write the RTF "title page" — which font, what size, what
+           colour — before the words, because ProPresenter's reader throws
+           the whole document away if that page is missing.
+           Detail: header values are computed from the SECTION 5c styling
+           constants (single source of truth, rule #35). `\fs` takes
+           half-points per the RTF spec, hence * 2; colour components are
+           rv.data.Color floats (0..1) scaled to RTF's 0..255 ints. The
+           font NAME goes into the table verbatim — DEFAULT_FONT_NAME is
+           a compile-time ASCII constant ('Arial'), never user input, so
+           it needs no escaping here. */
+        var fsHalfPoints = DEFAULT_FONT_SIZE * 2;
+        var colR = Math.round(DEFAULT_TEXT_COLOR.red * 255);
+        var colG = Math.round(DEFAULT_TEXT_COLOR.green * 255);
+        var colB = Math.round(DEFAULT_TEXT_COLOR.blue * 255);
+
+        return '{\\rtf1\\ansi\\ansicpg1252\\deff0' +
+            '{\\fonttbl{\\f0\\fswiss\\fcharset0 ' + DEFAULT_FONT_NAME + ';}}' +
+            '{\\colortbl;\\red' + colR + '\\green' + colG + '\\blue' + colB + ';}' +
+            '\\pard\\qc\\f0\\fs' + fsHalfPoints + '\\cf1\\uc1 ' +
+            parts.join('\\par\n') + '}';
     }
 
     /* ==================================================================
@@ -390,8 +453,8 @@
      *  SECTION 5c — Slide geometry & default text styling (#1918)
      * ==================================================================
      * ISSUE #1918: exported .pro files opened in ProPresenter 7+ as blank
-     * blue slides — no visible lyric text. Root cause per
-     * `rv.data.Graphics.Element` (graphicsData.proto line 17-44 —
+     * blue slides — no visible lyric text. #1918 diagnosed the missing
+     * `rv.data.Graphics.Element.bounds` (graphicsData.proto line 17-44 —
      * `Graphics.Element.bounds = 3`, type `Graphics.Rect`): every text
      * element `makeLyricCue()` built set NO `bounds`, so the element's
      * frame defaulted to 0×0 — invisible, with nothing for ProPresenter's
@@ -399,6 +462,16 @@
      * emitted (we still emit none, deliberately — see makeLyricCue() below);
      * it's ProPresenter's own "this slide is empty" placeholder, shown
      * because a 0×0 element renders nothing at all.
+     *
+     * ⚠️ #1918 was NECESSARY BUT NOT SUFFICIENT (owner-reported
+     * 2026-08-25): with bounds + attributes shipped, slides STILL opened
+     * blank and the Reflow editor showed every row empty — Reflow shows
+     * text content regardless of styling, so the remaining failure was
+     * text EXTRACTION, not layout. The second (and load-bearing) cause
+     * was the header-less RTF `buildRTF()` emitted: no `{\fonttbl}`, no
+     * selected font — spec-invalid, and ProPresenter's RTF reader
+     * extracts zero text from it. See the SECTION 4 doc-block for the
+     * full evidence chain; the fix lives there.
      *
      * SLIDE_WIDTH/SLIDE_HEIGHT are standard ProPresenter 16:9 (1920×1080).
      * MARGIN insets the text frame off all four edges (~5%) so lyric text
@@ -427,10 +500,11 @@
        trips the #1788 byte-identical determinism guard. Both encoders produce
        a VALID file that round-trips, but the static/reflection outputs must
        stay identical so the CSP-safe static path is trustworthy. Centre
-       alignment therefore rides on ProPresenter's own default; if a real
-       ProPresenter check ever shows left-aligned lyrics, add `\qc` to the RTF
-       in buildRTF() (RTF-level, no protobuf divergence) rather than
-       re-introducing paragraph_style. See tests/test-propresenter-static-csp.js.
+       alignment therefore lives at the RTF level: buildRTF() emits `\qc`
+       in its paragraph run (added with the #1918 follow-up font-table fix,
+       2026-08-25 — RTF-level, no protobuf divergence), exactly the escape
+       hatch this comment reserved. Never re-introduce paragraph_style
+       here. See tests/test-propresenter-static-csp.js.
        Graphics.Text.VerticalAlignment (graphicsData.proto line 209-213):
        TOP=0, MIDDLE=1, BOTTOM=2. */
     var TEXT_VERTICAL_ALIGNMENT_MIDDLE = 1;
@@ -515,15 +589,19 @@
        Returns `{ cueId, cue }` so the caller can push the cue into the
        presentation and reference its UUID from the parent cue_group.
 
-       #1918 THE FIX: the element now carries `bounds` (a real, non-zero
-       frame — see SECTION 5c) and `text.attributes` (font/colour/centred
-       paragraph) so ProPresenter has something to actually lay out and
-       render, plus `vertical_alignment`/`scale_behavior` so a long verse
-       centres and shrinks-to-fit rather than overflowing. `base_slide`
-       also now carries `size` (`rv.data.Slide.size`, slide.proto line 19
-       — the per-slide canvas the element's `bounds` are laid out inside),
-       matching the same SLIDE_WIDTH/SLIDE_HEIGHT the element frame is
-       computed from.
+       #1918 (partial fix): the element carries `bounds` (a real, non-zero
+       frame — see SECTION 5c) and `text.attributes` (font/colour) so
+       ProPresenter has a frame to lay out, plus
+       `vertical_alignment`/`scale_behavior` so a long verse centres and
+       shrinks-to-fit rather than overflowing. `base_slide` also carries
+       `size` (`rv.data.Slide.size`, slide.proto line 19 — the per-slide
+       canvas the element's `bounds` are laid out inside), matching the
+       same SLIDE_WIDTH/SLIDE_HEIGHT the element frame is computed from.
+       ⚠️ That alone did NOT put words on screen — the text itself comes
+       from parsing `rtf_data`, and the RTF also had to become a
+       structurally complete document (font table + selected font) before
+       ProPresenter's reader would extract any text at all (#1918
+       follow-up, owner-reported 2026-08-25 — see SECTION 4).
 
        Deliberately still NO background (no `Slide.background_color`, no
        `draws_background_color`, no `Presentation.background`): the slide
@@ -1215,6 +1293,11 @@
             paddingFor: paddingFor,
             padSongNumber: padSongNumber,
             buildBulkFiles: buildBulkFiles,
+            /* #1918 follow-up: exposed so the test suite can assert the
+               RTF header and text.attributes stay derived from the same
+               SECTION 5c constants (rule #35 lockstep). */
+            defaultTextAttributes: defaultTextAttributes,
+            defaultTextBounds: defaultTextBounds,
             getRoot: function () { return protoRoot; },
             resetForTests: function () { protoRoot = null; initPromise = null; }
         }

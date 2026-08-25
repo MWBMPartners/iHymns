@@ -121,6 +121,132 @@ const SAMPLE_SONG = {
 const decodeRoot = protobuf.Root.fromJSON(bundle);
 const Presentation = decodeRoot.lookupType('rv.data.Presentation');
 
+/* =====================================================================
+ * Structural RTF validity — the #1918 follow-up guard (owner-reported
+ * 2026-08-25: every exported slide blank, Reflow rows empty).
+ *
+ * ELI5: instead of checking the RTF string matches one exact spelling,
+ * these helpers check it is a REAL RTF document any strict reader can
+ * open — because the exact-spelling check is how the broken format
+ * survived here for months.
+ *
+ * Detail (rule #34, .claude/CLAUDE.md): this suite used to assert the
+ * exporter's RTF byte-for-byte (`^\{\\rtf1\\ansi\\uc1 `) — a snapshot
+ * of whatever the code emitted. That output had NO font table and NO
+ * selected font, which violates the RTF spec's formal header grammar
+ * (`<header> ::= \rtf <charset> \deff? <fonttbl> <filetbl>? <colortbl>?
+ * …` — every header component EXCEPT <fonttbl> carries the optional `?`
+ * marker), and ProPresenter's RTF reader (Apple's Cocoa text system)
+ * extracts ZERO text from it: right slide count, right group labels,
+ * every slide blank. The snapshot assertions stayed green throughout —
+ * and the module even cited them as a reason NOT to fix the RTF. A
+ * guard must assert the BEHAVIOURAL contract (parseable document, text
+ * present, escaping correct), never a byte-snapshot of the current
+ * implementation. Mutation-proven: removing the font table, the \f0
+ * selector, the \fsN size, or the closing brace from buildRTF() each
+ * turn assertValidRtfDoc() red (see the PR's mutation transcript).
+ * =================================================================== */
+
+/* Return the index just past the `}` closing the group that opens at
+   `start` (which must point at a `{`). Backslash-escaped braces
+   (`\{`/`\}`) don't count. Throws on unbalanced input. */
+function findGroupEnd(rtf, start) {
+    let depth = 0;
+    for (let i = start; i < rtf.length; i++) {
+        const ch = rtf[i];
+        if (ch === '\\') { i++; continue; } /* skip the escaped/next char */
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return i + 1;
+        }
+    }
+    throw new Error('unbalanced RTF group starting at index ' + start);
+}
+
+/* Extract the plain text a conforming RTF reader would see: drop the
+   fonttbl/colortbl header groups, resolve `\par` to \n, resolve `\uN`
+   escapes (consuming the one-char ANSI fallback per `\uc1`), unescape
+   `\\` `\{` `\}`, and drop every other control word / brace. */
+function extractRtfText(rtf) {
+    let s = rtf;
+    for (const marker of ['{\\fonttbl', '{\\colortbl']) {
+        const at = s.indexOf(marker);
+        if (at !== -1) s = s.slice(0, at) + s.slice(findGroupEnd(s, at));
+    }
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === '{' || ch === '}') continue;
+        /* Raw CR/LF bytes are ignored by RTF readers (the spec's line
+           breaks are \par / \line control words, never naked newlines) —
+           the exporter emits a cosmetic "\n" after each \par. */
+        if (ch === '\r' || ch === '\n') continue;
+        if (ch !== '\\') { out += ch; continue; }
+        const next = s[i + 1];
+        if (next === '\\' || next === '{' || next === '}') {
+            out += next;
+            i++;
+            continue;
+        }
+        const m = /^\\([a-z]+)(-?\d+)? ?/.exec(s.slice(i));
+        if (m) {
+            if (m[1] === 'par') out += '\n';
+            i += m[0].length - 1;
+            if (m[1] === 'u' && m[2] !== undefined) {
+                const n = parseInt(m[2], 10);
+                out += String.fromCharCode(n < 0 ? n + 65536 : n);
+                /* \uc1 contract: ONE fallback char follows each \uN. */
+                i++;
+            }
+            continue;
+        }
+        i++; /* lone control symbol — skip it */
+    }
+    return out;
+}
+
+/* Assert `rtf` is a structurally valid, self-contained RTF document a
+   strict reader (ProPresenter / Cocoa) can extract text from. */
+function assertValidRtfDoc(rtf, label) {
+    label = label || 'rtf';
+    /* Envelope: RTF magic + ANSI charset, closed at the end. */
+    assert.match(rtf, /^\{\\rtf1\\ansi/, label + ': must open with {\\rtf1\\ansi');
+    assert.ok(rtf.endsWith('}'), label + ': must close with }');
+    /* Whole document is one balanced group tree. */
+    assert.equal(findGroupEnd(rtf, 0), rtf.length, label + ': unbalanced braces');
+    /* REQUIRED font table (the #1918 follow-up root cause): the RTF
+       header grammar has no `?` on <fonttbl>; without it ProPresenter
+       extracts zero text — right slides, blank screens. */
+    const ftStart = rtf.indexOf('{\\fonttbl');
+    assert.ok(ftStart !== -1, label + ': missing {\\fonttbl} — the RTF header REQUIRES a font table; ProPresenter extracts no text without one (#1918 follow-up)');
+    const ftEnd = findGroupEnd(rtf, ftStart);
+    const table = rtf.slice(ftStart, ftEnd);
+    const decl = table.match(/\\f0(?:\\[a-z]+\d*)* +([^;{}\\]+);/);
+    assert.ok(decl && decl[1].trim() !== '', label + ': font table must declare \\f0 with a non-empty name terminated by ";"');
+    /* The declared font must also be SELECTED in the document area —
+       declared-but-never-selected leaves a strict reader with no
+       current font (same empty-extraction failure). */
+    const body = rtf.slice(ftEnd);
+    assert.match(body, /\\f0(?![0-9])/, label + ': \\f0 is declared but never selected in the document area');
+    const fs = body.match(/\\fs(\d+)/);
+    assert.ok(fs && parseInt(fs[1], 10) > 0, label + ': missing \\fsN font size in the document area');
+    /* \cfN colour reference requires a colour table to index into. */
+    if (/\\cf\d/.test(body)) {
+        assert.ok(rtf.includes('{\\colortbl'), label + ': \\cf used without a {\\colortbl}');
+    }
+    /* \uc1 must precede any \uN so the one-char fallback contract holds. */
+    const uAt = rtf.search(/\\u-?\d/);
+    if (uAt !== -1) {
+        const ucAt = rtf.indexOf('\\uc1');
+        assert.ok(ucAt !== -1 && ucAt < uAt, label + ': \\uN used before \\uc1');
+    }
+    /* Pure 7-bit ASCII: non-ASCII must ride \uN?, never raw UTF-8 bytes
+       (an \ansi reader would garble multi-byte sequences). */
+    assert.ok(!/[^\x00-\x7f]/.test(rtf), label + ': raw non-ASCII byte in RTF — must be \\uN? escaped');
+    return { table, body };
+}
+
 /* ELI5: this builds a brand-new pretend-browser tab for the bundle-URL
    tests below, instead of reusing the one already opened at the top of
    this file.
@@ -184,26 +310,49 @@ function createFreshExporter(overrides) {
 
     /* ---------------------------------------------------------------- */
     console.log('\nRTF builder:');
-    await test('wraps with rtf1 prefix and closing brace', () => {
+    await test('emits a structurally valid RTF document containing the text (#1918 follow-up)', () => {
         const rtf = exporter.buildRTF(['Hello']);
-        assert.match(rtf, /^\{\\rtf1\\ansi\\uc1 /);
-        assert.ok(rtf.endsWith('}'));
+        assertValidRtfDoc(rtf, 'buildRTF([Hello])');
+        assert.equal(extractRtfText(rtf), 'Hello');
     });
     await test('separates lines with \\par', () => {
         const rtf = exporter.buildRTF(['Line 1', 'Line 2']);
         assert.match(rtf, /Line 1\\par\nLine 2/);
+        assert.equal(extractRtfText(rtf), 'Line 1\nLine 2');
     });
     await test('escapes RTF metacharacters (\\, {, })', () => {
         const rtf = exporter.buildRTF(['a\\b{c}d']);
         assert.ok(rtf.includes('a\\\\b\\{c\\}d'));
+        assertValidRtfDoc(rtf, 'buildRTF(metachars)');
+        assert.equal(extractRtfText(rtf), 'a\\b{c}d');
     });
     await test('escapes non-ASCII via \\uN?', () => {
         const rtf = exporter.buildRTF(['Noël']);
         assert.ok(rtf.includes('\\u235?'));
+        assertValidRtfDoc(rtf, 'buildRTF(Noël)');
+        assert.equal(extractRtfText(rtf), 'Noël');
     });
-    await test('handles empty/missing input gracefully', () => {
-        assert.match(exporter.buildRTF([]), /^\{\\rtf1\\ansi\\uc1 \}$/);
-        assert.match(exporter.buildRTF(null), /^\{\\rtf1\\ansi\\uc1 \}$/);
+    await test('handles empty/missing input gracefully (still a valid document)', () => {
+        for (const input of [[], null]) {
+            const rtf = exporter.buildRTF(input);
+            assertValidRtfDoc(rtf, 'buildRTF(' + JSON.stringify(input) + ')');
+            assert.equal(extractRtfText(rtf), '', 'empty input must yield an empty-bodied document');
+        }
+    });
+    await test('RTF header styling agrees with SECTION 5c text.attributes (rule #35)', () => {
+        /* ELI5: the RTF says "Arial, 80pt, white" and so does the
+           protobuf attributes field — this checks the two can't drift.
+           Detail: buildRTF() derives its header from the SAME
+           DEFAULT_FONT_NAME / DEFAULT_FONT_SIZE / DEFAULT_TEXT_COLOR
+           constants defaultTextAttributes() reads; \fs is half-points,
+           so RTF \fsN must equal attributes.font.size * 2. */
+        const attrs = exporter._internal.defaultTextAttributes();
+        const { table, body } = assertValidRtfDoc(exporter.buildRTF(['x']), 'lockstep');
+        assert.ok(table.includes(' ' + attrs.font.name + ';'),
+            'font table must name the same font as text.attributes.font.name');
+        const fs = body.match(/\\fs(\d+)/);
+        assert.equal(parseInt(fs[1], 10), attrs.font.size * 2,
+            'RTF \\fsN (half-points) must equal text.attributes.font.size * 2');
     });
 
     /* ---------------------------------------------------------------- */
@@ -466,9 +615,32 @@ function createFreshExporter(overrides) {
         const element = action.slide.presentation.base_slide.elements[0].element;
         assert.equal(element.name, 'Lyrics');
         const rtf = Buffer.from(element.text.rtf_data).toString('utf8');
-        assert.match(rtf, /^\{\\rtf1\\ansi\\uc1 /);
+        assertValidRtfDoc(rtf, 'decoded slide 1 rtf_data');
         assert.ok(rtf.includes('Line one'));
         assert.ok(rtf.includes('Line two'));
+    });
+
+    await test('EVERY slide\'s rtf_data is a valid self-contained RTF document (#1918 follow-up)', () => {
+        /* ELI5: check every single slide's text file, not just the first
+           one, is something ProPresenter can actually read words out of.
+           Detail: the 2026-08-25 owner report was exactly this failure —
+           12 slides, right group labels, ZERO text extracted, because
+           each slide's RTF had no font table. Reflow shows text content
+           regardless of styling, so an empty Reflow row means the READER
+           got nothing, which this assertion now models: structural
+           validity (assertValidRtfDoc) plus the slide's own words
+           surviving a conforming-reader text extraction. */
+        const decoded = Presentation.decode(encoded);
+        const expectedTexts = ['Line one\nLine two', 'Gloria, gloria', 'Line three'];
+        decoded.cues.forEach((cue, i) => {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                const rtf = new TextDecoder().decode(element.text.rtf_data);
+                assertValidRtfDoc(rtf, 'cue ' + (i + 1) + ' (' + cue.name + ') rtf_data');
+                assert.equal(extractRtfText(rtf), expectedTexts[i],
+                    'cue ' + (i + 1) + ': a conforming RTF reader must extract the slide\'s own words');
+            }
+        });
     });
 
     /* ---------------------------------------------------------------- */
@@ -482,7 +654,16 @@ function createFreshExporter(overrides) {
        user would see actually contains the song's own words. Mutation
        tested: temporarily removing `bounds:` from makeLyricCue() in
        propresenter-export.js turns the first assertion below RED (see
-       the session's mutation transcript in the handoff/PR description). */
+       the session's mutation transcript in the handoff/PR description).
+
+       ⚠️ #1918 POSTSCRIPT (2026-08-25): these guards were themselves
+       wrong-but-green in the rule-#34 sense — bounds/attributes were
+       necessary but NOT the cause of the blank slides. The RTF itself
+       was unreadable (no font table), the `rtf.includes(...)` check
+       below only proved OUR text sat in OUR bytes, and the then-active
+       exact-prefix snapshot assertions actively locked the broken
+       format in. The behavioural guard is assertValidRtfDoc() +
+       extractRtfText() above; these remain as the layout-shape guard. */
     await test('every lyric slide element has a non-zero bounds.size (#1918)', () => {
         const decoded = Presentation.decode(encoded);
         assert.ok(decoded.cues.length > 0, 'expected at least one cue to check');
