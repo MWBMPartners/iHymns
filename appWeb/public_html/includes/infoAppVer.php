@@ -165,14 +165,21 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      bottom-right toast (#1856) — and a compacted, still-accessible (buttons,
      never drag) arrangement editor (#1857).
    - 1.0.0 -> 1.1.0, retrospective minor for the #1955 dormant-features
-     enhancement batch landed since the 2026-08-24 v1.0.0 baseline (#1963,
-     extending #1899): the anchor is now the latest REACHABLE v* tag, minted
-     on alpha by the Conventional Commits classifier
-     (.github/workflows/scripts/classify-bump.sh) rather than unconditionally
-     at every beta->main promotion; this committed value is only the
-     local-dev / no-tag / classifier-found-nothing fallback deploy.yml falls
-     back to — it is not itself re-bumped by hand on every release the
-     classifier cuts. */
+     enhancement batch landed since the 2026-08-24 v1.0.0 baseline (#1963).
+     *** VERSIONING MODEL (#1965, SUPERSEDES #1963's git-tag anchor) ***
+     iHymns deploys DIRECT via SFTP and cuts NO git tags and NO GitHub
+     Releases. THIS committed MAJOR.MINOR ("1.1") IS the version anchor —
+     authoritative, not a fallback. deploy.yml injects
+     <MAJOR>.<MINOR>.<git rev-list --count HEAD> for display on every deploy;
+     on alpha, when a Conventional-Commit `feat` (minor) or `!` / line-anchored
+     `BREAKING CHANGE` (major) lands among the commits since the last change to
+     THIS line, deploy.yml bumps this committed value and commits it back
+     `[skip ci]` (a branch push — never a tag). fix/chore/docs/etc. move only
+     the build number. The patch digit here is a placeholder the build count
+     overwrites at deploy time. Classifier:
+     .github/workflows/scripts/classify-bump.sh (rule #46 in .claude/CLAUDE.md
+     is the full contract). Title PRs with a Conventional-Commit prefix or the
+     minor silently won't move. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */

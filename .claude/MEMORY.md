@@ -6,18 +6,24 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-25 (branch `claude/dormant-features-settings-1sdw4t` — BCP 47 language registry M1-M5 built, uncommitted)._
+_Last updated: 2026-08-26 (branch `claude/dormant-features-settings-1sdw4t` — offline version-proofing #1962 + tag-free Conventional-Commit versioning #1963→#1965 on alpha)._
 
 ## Where things stand
-- **Version:** `1.0.0` (tag-derived since #1899) — authoritative source is `includes/infoAppVer.php`
-  (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
-  hardcode a version rot within days — point at the file. **Versioning changed at #1899:** MAJOR is
-  hand-edited (rare), RELEASE (Y) is set at the beta→main promotion by `promotion-deploy-bridge.yml`,
-  BUILD (Z) is the per-commit `git rev-list --count`. The old minute-bumper `version-bump.yml` was
-  **RETIRED** (#1899) — the "bump alpha by hand" ritual below no longer applies; there is no minor
-  auto-bump to miss. (Historical: the bumper never ran on alpha anyway because alpha auto-merges via a
-  `GITHUB_TOKEN` push, which GitHub does not re-trigger workflows on — the same mechanism that still
-  forces the explicit deploy dispatch, see the workflow note below.)
+- **Version:** committed `MAJOR.MINOR` in `includes/infoAppVer.php` (currently **`1.1`**) is the anchor;
+  deploy injects `MAJOR.MINOR.<git rev-list --count HEAD>` for display (the PWA SW cache version + every
+  `?v=` cache-buster auto-sync off it, #81). Docs that hardcode a version rot within days — point at the
+  file. **⚠️ VERSIONING IS TAG-FREE (#1965, 2026-08-26 — supersedes #1899's tag scheme):** iHymns deploys
+  DIRECT via SFTP with **NO git tags and NO GitHub Releases**. On alpha, `deploy.yml` classifies the
+  squash-merge subject via `.github/workflows/scripts/classify-bump.sh` — `feat:`→**minor**, `!` /
+  line-anchored `BREAKING CHANGE:`→**major**, everything else→**build-only** — and on a minor/major edits
+  the committed `Version.Number` and commits it back `[skip ci]` (a branch push, NEVER a tag). SAFE DEFAULT
+  = build-only, so **a feature merged WITHOUT a `feat:` prefix silently won't bump the minor** (a soft,
+  safe miss) — title every PR/squash with a Conventional-Commit prefix (mint on clear signals only). Full
+  contract = CLAUDE.md rule #46; guard = `tests/test-versioning-pipeline.js`; classifier truth-table =
+  `tests/test-bump-classifier.js`. The old minute-bumper `version-bump.yml` stays RETIRED (#1899/#1596/#1622
+  — never reintroduce a commit-message-interpolating bumper); `promotion-deploy-bridge.yml` mints nothing
+  now (just dispatches the deploy). beta/main show their own committed anchor (it travels with promoted
+  content — no tag reachability needed).
 - **Current branch — `claude/ilyrics-identity-work-model` (MERGING TO ALPHA, 2026-08-24):** ~200 commits
   ahead of alpha; merged `origin/alpha` in and resolved the one conflict (`version-bump.yml` kept
   deleted per #1899). The huge iLyrics identity + Work-model epic (#1860, IL-ids + Works + medley

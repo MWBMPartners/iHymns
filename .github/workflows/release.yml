@@ -1,41 +1,45 @@
 # =============================================================================
-# iHymns — GitHub Releases Workflow
+# iHymns — GitHub Releases Workflow  ⚠️ DORMANT / MANUAL-ONLY (#1965)
 #
 # Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
 # This software is proprietary. Unauthorized copying, modification, or
 # distribution is strictly prohibited.
 #
-# PURPOSE:
-# Creates a GitHub Release for a version tag (v*). TWO triggers (#1899):
+# STATUS (#1965, owner directive): iHymns deploys DIRECT VIA SFTP. There is
+# no GitHub Releases-driven rollout anywhere in this project's toolchain, and
+# the tag-free committed-anchor versioning scheme deploy.yml now runs
+# (replacing #1963's git-tag scheme — see deploy.yml's own "COMMITTED-ANCHOR
+# VERSIONING" header) cuts NO git tags and dispatches this workflow NOWHERE.
+# This file is therefore DORMANT in normal operation: nothing in CI ever
+# triggers it. It fires ONLY if a human deliberately pushes a `v*` tag by
+# hand, or runs it via `workflow_dispatch` from the Actions UI — both left
+# wired below purely as a manual escape hatch (e.g. cutting one ad-hoc GitHub
+# Release for an external announcement), never as part of the automated
+# pipeline. Do NOT reintroduce a dispatch of this file from deploy.yml or
+# promotion-deploy-bridge.yml — that would be re-adding the retired #1963
+# minter tests/test-versioning-pipeline.js now asserts is gone.
+#
+# PURPOSE (when manually invoked):
+# Creates a GitHub Release for a version tag (v*). TWO triggers:
 #   - `on: push: tags: v*` — a HUMAN-pushed tag fires this directly.
-#   - `workflow_dispatch` — the tag MINTER dispatches this ON THE TAG REF,
-#     because a GITHUB_TOKEN-pushed tag does NOT fire `on: push`
-#     (anti-recursion — the same trap the minter's own dispatch step exists to
-#     work around). On a `--ref v1.2.0` dispatch, github.ref_name IS the tag,
-#     so every step below works unchanged regardless of who dispatched it.
-#     ⚠️ MINTER UPDATE (#1963, extending #1899): the minter is now deploy.yml's
-#     "Classify and cut release tag" + "Dispatch release.yml" steps, running on
-#     ALPHA and gated on a Conventional-Commits classifier (classify-bump.sh) —
-#     NOT promotion-deploy-bridge.yml, which minted unconditionally on every
-#     beta→main promotion under #1899 and has since had that whole
-#     responsibility retired (see its own header). This file needs no
-#     mechanical change for that move: it only cares that SOMETHING dispatched
-#     it on a tag ref, never who.
+#   - `workflow_dispatch` — lets a human re-run it by hand (e.g. `--ref
+#     v1.2.0`) without having to push/re-push a tag; every step below works
+#     unchanged either way since `github.ref_name` is the tag in both cases.
 # - Extracts the release notes from CHANGELOG.md for the tagged version, falling
-#   back to the `## [unreleased] — alpha` section (which at the tagged commit
-#   holds exactly this release's entries — the rollover commit lands on ALPHA,
-#   never on the tagged branch itself, so a fresh tag never already has its own
-#   dated heading).
+#   back to the `## [unreleased] — alpha` section (which, for a tag cut at the
+#   moment CHANGELOG.md had no dated heading yet for that version, holds
+#   exactly the right entries).
 # - Marks tags containing "-beta" or "-rc" as pre-releases.
 #
-# ⚠️ The historical "KNOWN ONE-TIME v1.0.0 collision" note that used to live
-# here (#1899 §2, baseline (a)) is now MOOT: v1.0.0 was the scheme's actual
-# first tag and is already cut (2026-08-24) — it will never be minted again.
-# Every tag #1963's classifier cuts from here on (v1.1.0, v1.2.0, …) is
-# collision-free against the dead-scheme `## [1.0.0] — 2026-04-06` CHANGELOG.md
-# heading this step's version-specific match still has to coexist with; that
-# heading is simply never matched by anything but that one already-resolved
-# historical case.
+# HISTORY: this file automated a real pipeline stage under #1899 (unconditional
+# tag-per-promotion) and #1963 (Conventional-Commits-gated tag-per-alpha-bump,
+# dispatched by deploy.yml). Both are retired — #1965 replaced the tag anchor
+# with the committed MAJOR.MINOR in infoAppVer.php, which needs no Release and
+# no tag to exist. v1.0.0 (2026-08-24) was and remains the only tag this
+# project's automation ever cut; the dead-scheme `## [1.0.0] — 2026-04-06`
+# CHANGELOG.md heading this step's version-specific match still has to coexist
+# with is a historical artefact, not something new automation will collide
+# with again — there is no more automation cutting tags at all.
 # =============================================================================
 
 name: Release

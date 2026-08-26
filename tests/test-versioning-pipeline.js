@@ -1,73 +1,77 @@
 /**
- * tests/test-versioning-pipeline.js — tag-derived version pipeline guard
- * (#1899, extended #1963)
+ * tests/test-versioning-pipeline.js — committed-anchor version pipeline guard
+ * (#1899, tag-based #1963, made TAG-FREE by #1965)
  *
  * PURPOSE
- * ELI5: the pieces that turn a production tag into the version number the site
- * shows are spread across three workflow files, one shell script and one PHP
- * file. If any two silently disagree — a sed anchor renamed, a tag-filter
- * regex tweaked in one file but not the other, a dispatch trigger dropped, a
- * step reordered — the deploy still goes GREEN and prod just shows a stale or
- * NULL version. That is the worst failure class this repo produces
- * (rule #34/#35). This guard reads the REAL files and asserts they agree, so a
- * silent disagreement goes red in CI instead.
+ * ELI5: the pieces that turn the version number committed in infoAppVer.php
+ * into the version number the site actually shows are spread across two
+ * workflow files, one shell script and one PHP file. If any two silently
+ * disagree — a sed anchor renamed, a step reordered, a dispatch trigger
+ * re-added, a stray tag creeping back in — the deploy still goes GREEN and
+ * prod just shows a stale or NULL version. That is the worst failure class
+ * this repo produces (rule #34/#35). This guard reads the REAL files and
+ * asserts they agree, so a silent disagreement goes red in CI instead.
  *
- * #1963 CHANGE OF SHAPE: #1899 minted the release tag in
- * promotion-deploy-bridge.yml, on every beta->main promotion, unconditionally.
- * #1963 moves minting to deploy.yml, running on alpha, gated on a Conventional
- * Commits classifier (classify-bump.sh — see tests/test-bump-classifier.js for
- * its OWN functional truth table; this file only checks the WORKFLOW WIRING
- * around it). The single-source-of-truth invariant this file now enforces is
- * therefore SHARPER than #1899's "two files must agree" — the tag-filter
- * regex, the tag-cutting step, and the CHANGELOG rollover MUST exist in
- * deploy.yml alone and be ABSENT from promotion-deploy-bridge.yml, which goes
- * back to being nothing but the #1007 deploy-dispatch bridge.
+ * #1965 CHANGE OF SHAPE: iHymns deploys direct via SFTP — there is no GitHub
+ * Releases-driven rollout and never will be (owner directive). #1899 minted a
+ * release tag on every beta->main promotion, unconditionally; #1963 moved
+ * minting to deploy.yml, running on alpha, gated on a Conventional Commits
+ * classifier (classify-bump.sh); #1965 keeps that SAME classifier but removes
+ * the tag entirely — deploy.yml now edits the COMMITTED MAJOR.MINOR in
+ * infoAppVer.php (plus its lockstep mirrors, api-docs.yaml and
+ * manifest.json) and commits the edit straight back to alpha, `[skip ci]`.
+ * There is no `v*` tag, no GitHub Release, and no `gh workflow run
+ * release.yml` dispatch anywhere in the automated pipeline any more —
+ * release.yml itself is now dormant/manual-only (see its own header).
+ *
+ * classify-bump.sh's OWN functional truth table (none/minor/major, scopes,
+ * `!`, BREAKING CHANGE footers, near-misses, multi-commit ranges) is
+ * UNCHANGED by #1965 and lives in tests/test-bump-classifier.js; this file
+ * only checks the WORKFLOW WIRING around it.
  *
  * DETAIL — every assertion is DERIVED from the tree (no typed lists) and each
  * is mutation-proven (break the thing, watch it go red — see the foot):
- *   1. Anchor pairing — every `sed ... = NULL` anchor deploy.yml injects has a
- *      matching `... = NULL` line in infoAppVer.php (also covers PR1's SHA/date
- *      /build seds — an anchor rename silently no-ops the injection).
+ *   1. Anchor pairing — every `sed ... = NULL` anchor deploy.yml's "Inject
+ *      build info" step injects has a matching `... = NULL` line in
+ *      infoAppVer.php (commit SHA/date/URL/build seds — an anchor rename
+ *      silently no-ops the injection). Unaffected by #1965 (these are commit
+ *      metadata anchors, not version-tag anchors).
  *   2. Version-sed pairing — deploy.yml has a sed writing Version.Number, and
  *      the COMMITTED value is three plain integers ("X.Y.Z"), the contract
  *      sync-version.sh's regex and the sed both rely on.
- *   3'. Tag-filter singularity (#1963, supersedes #1899's two-file agreement
- *      check) — the `^v[0-9]+\.[0-9]+\.[0-9]+$` filter is scanned across EVERY
- *      `.github/workflows/*.yml` file: every occurrence found anywhere must be
- *      byte-identical, it must occur at least once in deploy.yml, and it must
- *      occur ZERO times in promotion-deploy-bridge.yml (the retired minter).
- *   4. release.yml dispatchability — its `on:` declares workflow_dispatch (else
- *      the alpha minter's `gh workflow run` 422s and no GitHub Release is
- *      created).
- *   5'. deploy.yml step order (#1963, supersedes #1899's bridge-step-order
- *      check, which no longer applies — the bridge doesn't cut tags any more)
- *      — "Resolve release anchor" precedes "Classify and cut release tag"
- *      precedes "Inject build info" (else the injection reads an anchor that
- *      was never resolved, or resolves it before the classifier had a chance
- *      to mint a fresher one — the same off-by-one #1899 guarded against, now
- *      guarded within one file instead of across two).
- *   6. fetch-tags — deploy.yml's checkout asks for tags (the injection can't
- *      parse a tag it never fetched).
- *   7. Retirement holds — version-bump.yml is gone, and no workflow file except
- *      deploy.yml writes Version.Number with sed.
- *   8. `--merged HEAD` — deploy.yml's tag-listing line is ancestry-scoped, not
- *      a raw `git tag -l` (else a tag cut on an unrelated branch could be
- *      picked up as "latest" on this one — see promotion-deploy-bridge.yml's
- *      "OPERATIONAL INVARIANT" note on squash-merged promotions).
- *   9. deploy.yml requests `actions: write` (else the "Dispatch release.yml"
- *      step 403s while the rest of the job — including the tag push itself,
- *      which only needs `contents: write` — still goes green).
- *   10. The bridge carries no "Cut release tag" step name and no `git tag -a`
- *      call anywhere (the minter is fully retired from this file), while
- *      still keeping its one remaining job — the deploy dispatch.
- *   11. deploy.yml carries the classifier's exact stdin contract
- *      (`--format='%s%x1f%b%x1e'`) AND actually invokes classify-bump.sh — the
- *      two halves of one call, checked together so a format-string edit on
- *      one side without the other goes red (rule #35).
- *   12. The "Inject build info" step reads a prior step's `steps.*.outputs`
- *      for the tag anchor rather than re-resolving it with a second
- *      `git tag -l` grep — the exact re-ask-the-same-question drift rule #35
- *      exists to ban.
+ *   3. Tag-free invariant (#1965, REPLACES #1963's tag-filter-singularity
+ *      check) — deploy.yml contains NO `git tag` creation, NO `refs/tags/`
+ *      push, and no reference to `release.yml` anywhere (the retired
+ *      dispatch). Scanned as a single mutation-proven invariant rather than
+ *      pinning a tag-filter regex that no longer exists anywhere in the tree.
+ *   4. Committed anchor read — deploy.yml has a `relanchor` step that reads
+ *      the committed Version.Number via the `["Number"] = "` grep pattern
+ *      into a step output.
+ *   5. Bump step — deploy.yml has an alpha-gated (`github.ref_name ==
+ *      'alpha'`) `versionbump` step that invokes classify-bump.sh, computes a
+ *      `NEXT` version, and commits it with a `chore(version): bump` message
+ *      carrying `[skip ci]`.
+ *   6. Inject reads outputs, not tags — the "Inject build info" step computes
+ *      MAJOR.MINOR from `steps.versionbump`/`steps.relanchor` outputs, never
+ *      re-resolves anything itself, and carries no `LATEST_TAG`-shaped
+ *      variable or dormant "no tag yet" branch — it always injects.
+ *   7. deploy.yml step order — "Resolve committed version anchor" precedes
+ *      "Classify and bump committed version" precedes "Inject build info"
+ *      (else the injection reads an anchor that was never resolved, or
+ *      resolves it before the classifier had a chance to bump it — the same
+ *      off-by-one #1899/#1963 guarded against, now guarded on the new steps).
+ *   8. Retirement holds — version-bump.yml is gone, and no workflow file
+ *      except deploy.yml writes Version.Number with sed.
+ *   9. deploy.yml permissions — carries `contents: write` (the bump commit
+ *      push) and NOT `actions: write` (nothing left to dispatch).
+ *  10. Bridge stays tag-free — promotion-deploy-bridge.yml has no
+ *      `git tag -a` call, no "Cut release tag"-shaped step, and still keeps
+ *      its one remaining job, the deploy dispatch.
+ *  11. Classifier call contract — deploy.yml carries the classifier's exact
+ *      stdin contract (`--format='%s%x1f%b%x1e'`) AND actually invokes
+ *      classify-bump.sh, together inside the "Classify and bump committed
+ *      version" step, so a format-string edit on one side without the other
+ *      goes red (rule #35).
  *
  *   node tests/test-versioning-pipeline.js
  *
@@ -97,7 +101,7 @@ const bridgeYml = read(path.join(WF, 'promotion-deploy-bridge.yml'));
 const releaseYml = read(path.join(WF, 'release.yml'));
 const infoSrc = read(INFO);
 
-console.log('Tag-derived version pipeline:');
+console.log('Committed-anchor (tag-free) version pipeline:');
 
 check('deploy.yml exists', deployYml !== '');
 check('promotion-deploy-bridge.yml exists', bridgeYml !== '');
@@ -118,6 +122,16 @@ function stepBody(src, nameSubstr) {
         if (/^\s*- name:/.test(lines[i])) { end = i; break; }
     }
     return lines.slice(start, end).join('\n');
+}
+
+/* Strip full-line `#` comments before scanning for an ACTIVE shell
+   invocation — several steps below legitimately NARRATE the retired tag
+   scheme in prose/doc-comments (e.g. "this used to git tag -a here"), and a
+   bare substring ban would be exactly the over-broad guard rule #34 warns
+   against (a guard that fails on correct, explanatory code gets weakened or
+   deleted rather than fixed). Only code lines count. */
+function stripComments(src) {
+    return src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
 }
 
 /* ---- 1. Anchor pairing (derived from deploy.yml's inject step) ----------- */
@@ -161,93 +175,87 @@ check(`committed Version.Number is three plain integers (got "${committed}")`,
     committed !== null && /^\d+\.\d+\.\d+$/.test(committed),
     'sync-version.sh\'s regex + the deploy sed both require plain X.Y.Z (no suffix)');
 
-/* ---- 3'. Tag-filter singularity (#1963) --------------------------------- */
-// Extract every `grep -E '<pattern>'` whose pattern is a version-tag filter
-// (starts with ^v). #1963 collapses this to ONE canonical copy, living solely
-// in deploy.yml's "Resolve release anchor" step — scan EVERY workflow file
-// (tree-derived, not a typed two-file list — rule #34) so a filter that
-// resurfaces ANYWHERE, not just in the two files #1899 used to pair, is caught.
-function tagFilters(src) {
-    const out = new Set();
-    const re = /grep\s+-E\s+'([^']*)'/g;
-    let m;
-    while ((m = re.exec(src)) !== null) {
-        if (m[1].startsWith('^v')) { out.add(m[1]); }
-    }
-    return out;
-}
+/* ---- 3. Tag-free invariant (#1965) --------------------------------------- */
+// The whole point of #1965: NO git tag is ever created, pushed, or dispatched
+// from the automated pipeline. Scanned on deploy.yml's CODE lines only (doc-
+// comments narrating the retired #1963 tag scheme are exempt — see
+// stripComments's own rationale) so this stays a guard against LIVE
+// behaviour, not a ban on explaining history.
 {
-    const wfFiles = fs.readdirSync(WF).filter((n) => /\.ya?ml$/.test(n));
-    const allFilters = new Set();
-    const perFile = new Map();
-    for (const name of wfFiles) {
-        const filters = tagFilters(read(path.join(WF, name)));
-        if (filters.size > 0) { perFile.set(name, filters); }
-        for (const f of filters) { allFilters.add(f); }
-    }
-    check('exactly one distinct v-tag filter exists across every workflow file',
-        allFilters.size === 1,
-        `found ${allFilters.size} distinct filter(s): ${[...allFilters].join(' | ')} (in: ${[...perFile.keys()].join(', ')})`);
-    // #1963 leaves exactly ONE copy of this regex standing (deploy.yml's own),
-    // so byte-identity against a SECOND copy — #1899's original mechanism — no
-    // longer exists to catch a tweak to it. The regex's own correct shape is
-    // pinned here as the one thing nothing else in the tree can derive it
-    // from any more (classify-bump.sh never touches tags, only commit
-    // subjects) — the same kind of fixed-shape pin check 2 already uses for
-    // "three plain integers" and release.yml's own check for the `'v\*'`
-    // on:push:tags literal, not the typed-list-of-things-to-check rule #34
-    // actually warns against.
-    const CANONICAL_TAG_FILTER = '^v[0-9]+\\.[0-9]+\\.[0-9]+$';
-    check('the tag-filter regex is the canonical `^v[0-9]+\\.[0-9]+\\.[0-9]+$` pattern',
-        allFilters.size === 1 && [...allFilters][0] === CANONICAL_TAG_FILTER,
-        `found: ${[...allFilters].join(' | ')}`);
-    check('deploy.yml carries the v-tag filter at least once',
-        (perFile.get('deploy.yml') ?? new Set()).size >= 1);
-    check('promotion-deploy-bridge.yml carries the v-tag filter ZERO times (minter retired, #1963)',
-        !perFile.has('promotion-deploy-bridge.yml'),
-        perFile.has('promotion-deploy-bridge.yml')
-            ? `found: ${[...perFile.get('promotion-deploy-bridge.yml')].join(' | ')}`
-            : undefined);
+    const deployCode = stripComments(deployYml);
+    check('deploy.yml has NO `git tag` creation',
+        !/\bgit\s+tag\s+-a\b/.test(deployCode) && !/\bgit\s+tag\s+\S/.test(deployCode),
+        'a live `git tag` invocation would mean #1965\'s tag-free model was reintroduced');
+    check('deploy.yml has NO `refs/tags/` push',
+        !/refs\/tags\//.test(deployCode));
+    check('deploy.yml never references release.yml (dispatch retired, #1965)',
+        !deployCode.includes('release.yml'),
+        'the "Dispatch release.yml" step and its `gh workflow run release.yml` call must be fully gone');
 }
 
-/* ---- 4. release.yml dispatchability ------------------------------------- */
-// workflow_dispatch must be declared in the `on:` block (before permissions/jobs).
+/* ---- 4. Committed anchor read -------------------------------------------- */
 {
-    const onSlice = releaseYml.split(/\n(?:permissions|jobs)\s*:/)[0];
-    check('release.yml declares workflow_dispatch in on:',
-        /\n\s*workflow_dispatch\s*:/.test(onSlice),
-        'the bridge\'s `gh workflow run release.yml` 422s without it — no GitHub Release is ever created');
-    check('release.yml keeps the on:push:tags trigger too',
-        /\n\s*tags\s*:/.test(onSlice) && /'v\*'/.test(onSlice),
-        'a human-pushed tag must still fire release.yml directly');
+    const relanchorStep = stepBody(deployYml, 'Resolve committed version anchor');
+    check('deploy.yml has the "Resolve committed version anchor" step', relanchorStep !== '');
+    check('the anchor step declares id: relanchor', /^\s*id:\s*relanchor\s*$/m.test(relanchorStep));
+    check('the anchor step greps the committed Version.Number into an output',
+        deEscape(relanchorStep).includes('["Number"]') && /echo\s+"mm=\$MM"\s*>>\s*"?\$GITHUB_OUTPUT"?/.test(relanchorStep),
+        'expected a grep on the ["Number"] = "..." pattern feeding `echo "mm=$MM" >> $GITHUB_OUTPUT`');
 }
 
-/* ---- 5'. deploy.yml step order (#1963) ----------------------------------- */
-// The tag scheme now lives entirely inside deploy.yml: resolve the anchor,
-// THEN (alpha only) classify commits and maybe mint a fresher one, THEN read
-// whichever anchor resulted when injecting build info. Any other order either
-// injects a stale anchor or resolves one before the classifier could act.
+/* ---- 5. Bump step --------------------------------------------------------- */
 {
-    const relIdx = deployYml.indexOf('Resolve release anchor');
-    const classifyIdx = deployYml.indexOf('Classify and cut release tag');
-    const injectIdx = deployYml.indexOf('Inject build info');
-    check('deploy.yml has the "Resolve release anchor" step', relIdx >= 0);
-    check('deploy.yml has the "Classify and cut release tag" step', classifyIdx >= 0);
+    const bumpStep = stepBody(deployYml, 'Classify and bump committed version');
+    check('deploy.yml has the "Classify and bump committed version" step', bumpStep !== '');
+    check('the bump step declares id: versionbump', /^\s*id:\s*versionbump\s*$/m.test(bumpStep));
+    check("the bump step is gated on github.ref_name == 'alpha'",
+        /if:\s*github\.ref_name\s*==\s*'alpha'/.test(bumpStep));
+    check('the bump step invokes classify-bump.sh', bumpStep.includes('classify-bump.sh'));
+    check('the bump step computes a NEXT version',
+        /\bNEXT="/.test(bumpStep) || /\bNEXT=\$/.test(bumpStep));
+    check('the bump step commits with a "chore(version): bump" message carrying [skip ci]',
+        /chore\(version\):\s*bump/.test(bumpStep) && bumpStep.includes('[skip ci]'));
+}
+
+/* ---- 6. Inject reads outputs, not tags ------------------------------------ */
+{
+    check('the "Inject build info" step reads steps.versionbump/steps.relanchor outputs for MM',
+        /MM="\$\{\{\s*steps\.versionbump\.outputs\.next_mm\s*\|\|\s*steps\.relanchor\.outputs\.mm\s*\}\}"/.test(injectStep));
+    const injectStepCode = stripComments(injectStep);
+    check('the "Inject build info" step does NOT re-resolve a tag with its own git tag -l grep',
+        !/git\s+tag\s+-l/.test(injectStepCode),
+        'a live git-tag-l invocation would mean it stopped reading steps.*.outputs and started re-asking the question rule #35 bans re-asking');
+    check('the "Inject build info" step carries no LATEST_TAG-shaped variable',
+        !/LATEST_TAG/.test(injectStepCode),
+        'checked on comment-stripped code — the step\'s own doc-comment may legitimately NARRATE the retired variable name (rule #34: a guard must not ban correct explanatory prose)');
+    check('the "Inject build info" step always injects (no dormant "no release yet" else-branch)',
+        !/No release tags yet/i.test(injectStepCode) && !/release scheme dormant/i.test(injectStepCode));
+}
+
+/* ---- 7. deploy.yml step order --------------------------------------------- */
+// Line-anchored on an ACTUAL `- name:` declaration (mirroring stepBody's own
+// technique), not a raw substring search — several of these steps' own
+// doc-comments legitimately mention a LATER step's name in prose ("...then
+// 'Inject build info' below reads..."), and a raw indexOf would find that
+// earlier in-comment mention instead of the real step declaration, silently
+// misjudging the order. This bit us once already writing this very test —
+// see the mutation-proof foot.
+{
+    function stepLineIndex(src, nameSubstr) {
+        return src.split('\n').findIndex((l) => /^\s*- name:/.test(l) && l.includes(nameSubstr));
+    }
+    const relIdx = stepLineIndex(deployYml, 'Resolve committed version anchor');
+    const bumpIdx = stepLineIndex(deployYml, 'Classify and bump committed version');
+    const injectIdx = stepLineIndex(deployYml, 'Inject build info');
+    check('deploy.yml has the "Resolve committed version anchor" step', relIdx >= 0);
+    check('deploy.yml has the "Classify and bump committed version" step', bumpIdx >= 0);
     check('deploy.yml has an "Inject build info" step', injectIdx >= 0);
-    check('deploy.yml orders: Resolve release anchor < Classify and cut release tag < Inject build info',
-        relIdx >= 0 && classifyIdx >= 0 && injectIdx >= 0 && relIdx < classifyIdx && classifyIdx < injectIdx,
-        `relanchor@${relIdx} classify@${classifyIdx} inject@${injectIdx}`);
+    check('deploy.yml orders: Resolve committed version anchor < Classify and bump committed version < Inject build info',
+        relIdx >= 0 && bumpIdx >= 0 && injectIdx >= 0 && relIdx < bumpIdx && bumpIdx < injectIdx,
+        `relanchor@line${relIdx} versionbump@line${bumpIdx} inject@line${injectIdx}`);
 }
 
-/* ---- 6. fetch-tags ------------------------------------------------------ */
-{
-    const checkoutStep = stepBody(deployYml, 'Checkout code');
-    check('deploy.yml checkout requests fetch-tags: true',
-        /fetch-tags:\s*true/.test(checkoutStep),
-        'the injection parses the latest v* tag — it must be fetched');
-}
-
-/* ---- 7. Retirement holds ------------------------------------------------ */
+/* ---- 8. Retirement holds --------------------------------------------------- */
 check('version-bump.yml is deleted', !fs.existsSync(path.join(WF, 'version-bump.yml')));
 {
     // Derive the workflow list from the tree; no file except deploy.yml may
@@ -268,46 +276,33 @@ check('version-bump.yml is deleted', !fs.existsSync(path.join(WF, 'version-bump.
         offenders.length === 0, 'offending workflow(s): ' + offenders.join(', '));
 }
 
-/* ---- 8. --merged HEAD is load-bearing (#1963) ---------------------------- */
-// A raw `git tag -l` lists every tag reachable in the fetched refs regardless
-// of ancestry; `--merged HEAD` scopes the anchor to tags that are actual
-// ancestors of the commit being deployed. Checked on the SAME line as the
-// tag-filter grep (the "Resolve release anchor" step), not merely "somewhere
-// in the file", so this can't accidentally pass on an unrelated --merged use.
-{
-    const relanchorStep = stepBody(deployYml, 'Resolve release anchor');
-    check('deploy.yml has the "Resolve release anchor" step body', relanchorStep !== '');
-    const tagListLine = relanchorStep.split('\n').find((l) => /git\s+tag\s+-l/.test(l)) ?? '';
-    check('the tag-listing line uses `--merged HEAD` (ancestry-scoped, not a raw tag list)',
-        /--merged\s+HEAD/.test(tagListLine), `line: ${JSON.stringify(tagListLine)}`);
-}
-
-/* ---- 9. deploy.yml requests actions: write (#1963) ----------------------- */
-// Isolated the same way release.yml's `on:` block is isolated above: slice up
-// to the next top-level key so a permission mentioned in a step body (e.g. an
-// explanatory comment) can't false-positive this check.
+/* ---- 9. deploy.yml permissions (#1965 — actions: write dropped) ---------- */
+// Isolated the same way release.yml's `on:` block used to be isolated (still
+// the right technique): slice up to the next top-level key so a permission
+// mentioned in a step body (e.g. an explanatory comment) can't false-positive
+// this check.
 {
     const permSlice = deployYml.split(/\n(?:jobs)\s*:/)[0];
     const permBlock = permSlice.slice(permSlice.indexOf('\npermissions:'));
-    check('deploy.yml permissions: includes actions: write',
-        /\n\s*actions:\s*write\s*$/m.test(permBlock),
-        'the "Dispatch release.yml" step calls `gh workflow run` and needs this scope');
-    check('deploy.yml permissions: still includes contents: write',
+    check('deploy.yml permissions: includes contents: write',
         /\n\s*contents:\s*write\s*$/m.test(permBlock),
-        'the tag push (git push origin refs/tags/...) needs this scope');
+        'the version-bump commit push needs this scope');
+    check('deploy.yml permissions: does NOT include actions: write (#1965 — nothing left to dispatch)',
+        !/\n\s*actions:\s*write\s*$/m.test(permBlock),
+        'actions: write existed only for the retired "Dispatch release.yml" step — its presence now would be a stale over-broad grant');
 }
 
-/* ---- 10. Bridge no longer mints (#1963) ---------------------------------- */
+/* ---- 10. Bridge stays tag-free -------------------------------------------- */
 {
     check('promotion-deploy-bridge.yml has NO "Cut release tag" step',
         !bridgeYml.includes('- name: Cut release tag'));
     check('promotion-deploy-bridge.yml has NO `git tag -a` call',
-        !/git\s+tag\s+-a/.test(bridgeYml));
+        !/git\s+tag\s+-a/.test(stripComments(bridgeYml)));
     check('promotion-deploy-bridge.yml STILL has the deploy-dispatch step (its one remaining job)',
         bridgeYml.includes('- name: Dispatch deploy.yml for the base branch'));
 }
 
-/* ---- 11. Classifier call contract (#1963, rule #35) ----------------------- */
+/* ---- 11. Classifier call contract (rule #35) ------------------------------ */
 // The exact stdin format classify-bump.sh's own header documents, AND an
 // actual invocation of the script — checked together so a format-string edit
 // on one side without the other (or a call to some OTHER script) goes red.
@@ -316,53 +311,49 @@ check('version-bump.yml is deleted', !fs.existsSync(path.join(WF, 'version-bump.
         deployYml.includes("--format='%s%x1f%b%x1e'"));
     check('deploy.yml actually invokes classify-bump.sh',
         deployYml.includes('classify-bump.sh'));
-    const classifyStep = stepBody(deployYml, 'Classify and cut release tag');
-    check('classify-bump.sh is invoked from WITHIN the "Classify and cut release tag" step',
-        classifyStep.includes('classify-bump.sh') && classifyStep.includes("--format='%s%x1f%b%x1e'"));
-}
-
-/* ---- 12. Inject step reads steps.*.outputs, not a second tag grep -------- */
-{
-    check('the "Inject build info" step reads a prior step\'s outputs for the tag anchor',
-        /LATEST_TAG="\$\{\{\s*steps\.\w+\.outputs\.\w+/.test(injectStep));
-    // Comment-strip before scanning for an ACTIVE `git tag -l` invocation — the
-    // step's own doc-comment legitimately narrates the #1963 change ("this
-    // used to re-grep `git tag -l` right here"), and banning the phrase
-    // outright would be exactly the over-broad guard rule #34 warns against
-    // (a guard that fails on correct, explanatory code gets weakened or
-    // deleted rather than fixed). Only a REAL shell line counts.
-    const injectStepCode = injectStep.split('\n')
-        .filter((l) => !/^\s*#/.test(l))
-        .join('\n');
-    check('the "Inject build info" step does NOT re-resolve the tag with its own git tag -l grep',
-        !/git\s+tag\s+-l/.test(injectStepCode),
-        'a live git-tag-l invocation would mean it stopped reading steps.*.outputs and started re-asking the question rule #35 bans re-asking');
+    const bumpStep = stepBody(deployYml, 'Classify and bump committed version');
+    check('classify-bump.sh is invoked from WITHIN the "Classify and bump committed version" step',
+        bumpStep.includes('classify-bump.sh') && bumpStep.includes("--format='%s%x1f%b%x1e'"));
 }
 
 if (failures) {
     console.error(`\nFAIL: ${failures} versioning-pipeline check(s) failed.`);
     process.exit(1);
 }
-console.log('\nOK: tag-derived version pipeline agrees end-to-end (anchors, tag-filter singularity, dispatch, step order, fetch-tags, retirement, --merged HEAD, permissions, bridge retirement, classifier contract, outputs-not-regrep).');
+console.log('\nOK: committed-anchor (tag-free) version pipeline agrees end-to-end (anchors, tag-free invariant, anchor read, bump step, outputs-not-tags, step order, retirement, permissions, bridge tag-freedom, classifier contract).');
 
 /* -----------------------------------------------------------------------------
- * MUTATION PROOF (#1899 checks, run by hand and recorded in the #1899 PR body):
- *   (i)   rename a NULL anchor in infoAppVer.php (e.g. ["Build"]["Number"]) => (1) RED
- *   (ii)  delete `workflow_dispatch:` from release.yml                      => (4) RED
- *   (iii) remove `fetch-tags: true` from deploy.yml's checkout              => (6) RED
- *   (iv)  restore all                                                       => GREEN
+ * MUTATION PROOF (#1899/#1963 checks — historical, recorded in those PR bodies):
+ *   (i)    rename a NULL anchor in infoAppVer.php (e.g. ["Build"]["Number"]) => (1) RED
+ *   (ii)   remove `fetch-tags: true` from deploy.yml's checkout               => n/a (check retired, #1965 — no tag is ever parsed any more)
+ *   (iii)  restore all                                                        => GREEN
  *
- * MUTATION PROOF (#1963 checks, run by hand and recorded in the #1963 PR body):
- *   (v)    change one char of deploy.yml's tag-filter regex                 => (3') RED
- *   (vi)   re-add a `grep -E '^v...'` tag filter into
- *          promotion-deploy-bridge.yml                                     => (3') RED
- *   (vii)  move "Inject build info" above "Classify and cut release tag"
- *          in deploy.yml                                                   => (5') RED
- *   (viii) delete `--merged HEAD` from deploy.yml's tag-listing line        => (8) RED
- *   (ix)   remove `actions: write` from deploy.yml's permissions:           => (9) RED
- *   (x)    re-add a `- name: Cut release tag` step name to
- *          promotion-deploy-bridge.yml                                     => (10) RED
- *   (xi)   change ONLY deploy.yml's classifier format string (leave
- *          classify-bump.sh's own header contract alone)                   => (11) RED
- *   (xii)  restore all                                                      => GREEN
+ * ALSO CAUGHT WRITING THIS FILE (not a deliberate mutation — a genuine
+ * wrong-but-green false-positive rule #34 warns about, worth recording
+ * because it happened for real): check 7's ORIGINAL implementation used
+ * `deployYml.indexOf('Inject build info')` on the whole file, and this same
+ * file's own "Classify and bump committed version" doc-comment narrates
+ * "...then 'Inject build info' below reads..." — that in-comment mention
+ * sits BEFORE the real `- name: Inject build info...` line, so indexOf
+ * silently found the WRONG occurrence and check 7 went red on entirely
+ * correct code. Fixed by requiring the match sit on an actual `- name:`
+ * line (stepLineIndex), same technique stepBody() already used elsewhere in
+ * this file. The `LATEST_TAG` and "release scheme dormant" checks in
+ * section 6 had the identical trap (this file's OWN doc-comments narrate
+ * both retired strings) and are fixed the same way, comment-stripped first.
+ *
+ * MUTATION PROOF (#1965 checks — run by hand this session, recorded in the
+ * #1965 PR body):
+ *   (iv)   add `git tag -a v9.9.9 -m x` as a live line inside deploy.yml's
+ *          "Classify and bump committed version" step                        => (3) RED ("NO `git tag` creation")
+ *          — restore                                                         => GREEN
+ *   (v)    change ONLY deploy.yml's classifier format string (leave
+ *          classify-bump.sh's own header contract alone)                     => (11) RED
+ *          — restore                                                         => GREEN
+ *   (vi)   remove the `classify-bump.sh` invocation from the "Classify and
+ *          bump committed version" step (replace with a hardcoded `BUMP=minor`) => (5) RED ("the bump step invokes classify-bump.sh"), and (11) RED too
+ *          — restore                                                         => GREEN
+ *   (vii)  make the "Inject build info" step re-introduce a `git tag -l`
+ *          grep (e.g. `LEGACY=$(git tag -l | tail -1)`)                      => (6) RED ("does NOT re-resolve a tag with its own git tag -l grep")
+ *          — restore                                                         => GREEN
  * --------------------------------------------------------------------------- */

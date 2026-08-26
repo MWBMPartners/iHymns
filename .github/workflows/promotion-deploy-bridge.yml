@@ -37,26 +37,25 @@
 # (no more `base.ref == 'main'`-only branch in its own steps; deploy.yml on
 # main still resolves + injects whatever the latest tag is, same as before).
 #
-# ⚠️ OPERATIONAL INVARIANT — promotion PRs MUST stay ancestry-preserving
-# (merged with a real merge commit, NEVER squashed or rebased) or beta/main
-# silently lose `v*` tag reachability. deploy.yml's "Resolve release anchor"
-# step (the tag scheme's ONE anchor resolution, #1963) filters on
-# `git tag -l --merged HEAD` — a tag stays visible to a branch only while it
-# is an actual ancestor of that branch's tip. A SQUASH merge of a promotion PR
+# ⚠️ FORMER OPERATIONAL INVARIANT — NOW MOOT UNDER THE TAG-FREE MODEL (#1965).
+# Until #1965 this note warned that promotion PRs had to stay ancestry-
+# preserving (a real merge commit, never squashed/rebased) because deploy.yml
+# resolved the release anchor via `git tag -l --merged HEAD` — a SQUASH merge
 # rewrites the promoted commits onto a brand-new SHA that is not a descendant
-# of alpha's tagged history, so every tag alpha ever minted stops being
-# `--merged` beta/main's new HEAD — the anchor resolves to empty, and
-# deploy.yml's injection step falls back to the dormant path (the committed
-# Version.Number in infoAppVer.php, unchanged since the last hand-edit). The
-# symptom is quiet, not a failure: the deploy still goes green, the site still
-# serves, and the footer/settings page just shows a STALE version number
-# indefinitely. This is exactly the "identity ≠ content" trap
-# .claude/CLAUDE.md's commit/PR section already warns about for judging a
-# squash-merged branch as absorbed — the same squash that makes `git cherry`
-# lie about a branch's history makes `--merged` lie about a tag's reachability
-# from a promoted branch. Promotion PRs already merge this way by convention;
-# this note exists so a future change to that convention doesn't silently
-# break versioning on beta/main with no red anywhere to catch it.
+# of alpha's tagged history, so every tag alpha ever minted would stop being
+# `--merged` beta/main's new HEAD, and the version would silently go stale
+# (the deploy still green, the site still serving, the footer just frozen on
+# an old number — the same "identity ≠ content" trap .claude/CLAUDE.md's
+# commit/PR section warns about for judging a squash-merged branch absorbed).
+#
+# #1965 removes the tag anchor entirely: deploy.yml's "Resolve committed
+# version anchor" step reads the committed MAJOR.MINOR straight out of
+# infoAppVer.php's checked-out CONTENT, not a ref's ancestry. That content
+# travels WITH the promoted commits by construction — a squash merge changes
+# the SHA but not the file bytes it carries — so beta/main display their own
+# committed anchor automatically regardless of how the promotion PR was
+# merged. There is no reachability chain left to break here. Promotion PRs
+# may still be merged however the team prefers; this workflow no longer cares.
 #
 # HOW:
 # On a *merged* PR into beta/main, dispatch deploy.yml for the base branch via
