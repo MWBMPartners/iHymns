@@ -1721,8 +1721,11 @@ try {
     </script>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
-         is handled in this separate file to keep concerns separated -->
-    <script src="editor.js"></script>
+         is handled in this separate file to keep concerns separated.
+         #1950 — cache-bust with filemtime like every OTHER local script on this
+         page (external-link-detect.js / external-links-editor.js / place-search.js
+         / combobox-a11y.js just above, #1594). This tag was the odd one out. -->
+    <script src="editor.js?v=<?= filemtime(__DIR__ . '/editor.js') ?>"></script>
 
     <!-- ProPresenter 7+ exporter (#887). protobufjs is vendored locally
          (vendor/protobuf.min.js, BSD-3-Clause) so the editor works on shared
@@ -1730,10 +1733,20 @@ try {
          Loaded AFTER editor.js so the inline wiring can read its globals.
          #1788 — pp7-proto-static.js (CSP-safe `pbjs -t static` schema) loads
          between the runtime and the exporter; the exporter prefers it over the
-         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses. -->
-    <script src="vendor/protobuf.min.js"></script>
-    <script src="protos/pp7-proto-static.js"></script>
-    <script src="propresenter-export.js"></script>
+         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses.
+
+         #1950 — ALL THREE of these were loaded with no `?v=` at all. A shipped
+         fix to propresenter-export.js (this exact file) landed on the server but
+         a returning curator's browser kept serving its cached pre-fix copy
+         indefinitely — the export "didn't work" even though the deploy had gone
+         out, because nothing told the browser the file had changed. filemtime()
+         matches the convention this page already uses above and every sibling
+         admin page (#1594): the query string changes whenever this directory is
+         redeployed. Order is unchanged — load order (protobuf -> pp7-proto-static
+         -> propresenter-export, #1567) is independent of each src's query string. -->
+    <script src="vendor/protobuf.min.js?v=<?= filemtime(__DIR__ . '/vendor/protobuf.min.js') ?>"></script>
+    <script src="protos/pp7-proto-static.js?v=<?= filemtime(__DIR__ . '/protos/pp7-proto-static.js') ?>"></script>
+    <script src="propresenter-export.js?v=<?= filemtime(__DIR__ . '/propresenter-export.js') ?>"></script>
     <script>
     /* #1571 — an honest confirm before building a LARGE songbook export,
        shared by BOTH export wiring blocks below (the PP7 bundle wiring and
@@ -1864,8 +1877,10 @@ try {
 
     <!-- File-format exporters (#1054 OpenSong / #1055 VideoPsalm / …).
          format-export.js exposes window.iHymnsFormatExport and reuses
-         propresenter-export.js's ZIP writer (loaded above). -->
-    <script src="format-export.js"></script>
+         propresenter-export.js's ZIP writer (loaded above).
+         #1950 — cache-bust with filemtime like the export cluster above; this
+         tag was likewise loaded with no `?v=` at all. -->
+    <script src="format-export.js?v=<?= filemtime(__DIR__ . '/format-export.js') ?>"></script>
     <script>
     /* Wire the file-format export dropdowns to window.iHymnsFormatExport via a
        single generic binder (one bindFormat() line per format). Reuses
