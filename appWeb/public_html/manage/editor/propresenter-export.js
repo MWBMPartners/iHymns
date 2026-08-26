@@ -267,34 +267,89 @@
      * that feed `text.attributes` (DEFAULT_FONT_NAME / DEFAULT_FONT_SIZE
      * / DEFAULT_TEXT_COLOR), so the two descriptions of the default
      * style cannot drift apart (rule #35 — agreement by mechanism, not
-     * comment). Emitted shape:
+     * comment).
      *
-     *   {\rtf1\ansi\ansicpg1252\deff0
+     * ⚠️ #1918/#1950 follow-up — CocoaRTF dialect (owner-reported AGAIN
+     * on the live alpha deploy v1.1.1009: the cue GROUPS and all 3 slides
+     * render, but EVERY slide's lyric text is blank and every Reflow row
+     * empty). The font-table fix above was NECESSARY BUT STILL NOT
+     * SUFFICIENT.
+     *
+     * ELI5: ProPresenter can only read the words out of a slide when the
+     * RTF is written in Apple's own flavour of RTF. Ours was plain RTF —
+     * a valid document, but the wrong flavour — so PP built the slides but
+     * pulled zero text out of each one. We now stamp it with Apple's flavour.
+     *
+     * Detail: ProPresenter 7 is a Cocoa (macOS/AppKit) application and its
+     * text reader is Apple's Cocoa text system (NSAttributedString's RTF
+     * importer). That importer yields text only from RTF written in Apple's
+     * "Cocoa RTF" dialect; a generic-but-spec-valid document parses its
+     * structure (hence the right cue/group/slide counts) yet returns an
+     * EMPTY attributed string for the body, so every slide is blank. This
+     * is why #1950's earlier fonttbl addition — still plain RTF — shipped
+     * green on the encode/decode round-trip and STILL failed in real PP.
+     * Every genuine .pro file, and every INDEPENDENTLY PP7-verified
+     * generator (ChrisMBarr/ProPresenter-Parser's real-export test
+     * fixture, jhjonesmo/ChordPresenter, thisiskaysis/scripture-builder,
+     * bussnet/propresenter7-php-lib), carries the Cocoa envelope. The
+     * marker consistent across ALL of them — and THE load-bearing one — is
+     * the header token `\cocoartf<version>`: it is what tells Cocoa's
+     * reader "parse me as Cocoa RTF". Alongside it Cocoa always writes the
+     * `\cocoatextscaling0\cocoaplatform0` platform preamble, the
+     * `{\*\expandedcolortbl;;}` ignorable-destination companion to the
+     * colour table, and the `\pardirnatural\partightenfactor0` paragraph
+     * flags — so we emit those too, matching real Cocoa output byte-shape
+     * as closely as a from-scratch generator can.
+     *   AppKit RTF writer/reader ("Cocoa" RTF):
+     *   https://developer.apple.com/documentation/appkit/nsattributedstring
+     * `\CocoaLigature0` is also emitted immediately before the text run
+     * (bussnet does this and documents it as required "to function
+     * properly"); the evidence that it is ITSELF load-bearing is weaker —
+     * a real PP7 export omits it and only `\cocoartf` is universal — but
+     * it is an inert Cocoa control word (disable ligatures), so it is
+     * included belt-and-braces and can be dropped later with no risk.
+     *
+     * Emitted shape (Apple Cocoa RTF, version 2761):
+     *
+     *   {\rtf1\ansi\ansicpg1252\cocoartf2761\cocoatextscaling0\cocoaplatform0
      *    {\fonttbl{\f0\fswiss\fcharset0 Arial;}}
      *    {\colortbl;\red255\green255\blue255;}
-     *    \pard\qc\f0\fsN\cf1\uc1 LINE1\par
+     *    {\*\expandedcolortbl;;}
+     *    \pard\pardirnatural\qc\partightenfactor0\f0\fsN \cf1 \uc1 \CocoaLigature0 LINE1\par
      *    LINE2}
      *
+     *   - `\cocoartf2761` is THE Cocoa-RTF header token (version 2761, the
+     *     value bussnet's PP7-verified template carries). Without it PP7's
+     *     Cocoa reader extracts zero text — this single token is the bug.
      *   - `\ansicpg1252` names the ANSI code page; consistent with the
      *     escaping below, which never emits a byte > 127 (non-ASCII is
      *     always `\uN?`, so the document is pure 7-bit ASCII).
-     *   - `\deff0` + `\f0` declare AND SELECT the font — a declared
-     *     font that is never selected leaves a strict reader with no
-     *     current font, which is the same empty-extraction failure.
+     *   - `\f0` selects the font declared in the font table. `\deff0` is
+     *     dropped: once the run explicitly selects `\f0`, a default-font
+     *     declaration is redundant and real Cocoa output does not carry it.
      *   - `\fsN` is in HALF-points (RTF spec) — DEFAULT_FONT_SIZE * 2.
      *   - `\colortbl` index 1 is DEFAULT_TEXT_COLOR (white); `\cf1`
      *     selects it. Index 0 is the conventional empty "auto" slot.
-     *   - `\qc` centres the paragraph. This is the RTF-level centring
-     *     SECTION 5c's alignment comment reserved for exactly this
-     *     situation — it adds NO protobuf field, so the #1788
-     *     static/reflection byte-identity is untouched.
+     *     `{\*\expandedcolortbl;;}` is the ignorable-destination companion
+     *     Cocoa writes beside every `\colortbl` (the leading `\*` marks it
+     *     ignorable, so a reader that doesn't grok it skips the group).
+     *   - `\qc` centres the paragraph. RTF-level centring adds NO protobuf
+     *     field, so the #1788 static/reflection byte-identity is untouched;
+     *     the `paragraph_style` sub-message is still NOT set (SECTION 5c).
      *   - `\uc1` still precedes the text so every `\uN` keeps its
      *     one-character `?` ANSI fallback (#887).
      *
-     * `text.attributes` (SECTION 5c) stays: it is the ELEMENT-level
-     * default ProPresenter shows in its inspector; the RTF is what the
-     * text engine actually parses for content. They now agree by
-     * construction. */
+     * Line joins stay `\par` (deliberately unchanged): the same owner
+     * report showed the Reflow editor listing the CORRECT number of
+     * (empty) rows, i.e. PP was already parsing our `\par` breaks into
+     * separate lines — only the per-row TEXT was missing. The defect is
+     * the RTF dialect, not the line separator, so `\par` is left alone.
+     *
+     * This edits ONLY the opaque `bytes` of `rtf_data`; it adds no
+     * protobuf field, so the #1788 static/reflection byte-identity guard
+     * is unaffected. `text.attributes` (SECTION 5c) stays: it is the
+     * ELEMENT-level default ProPresenter shows in its inspector; the RTF
+     * is what the Cocoa text engine actually parses for content. */
 
     function buildRTF(lines) {
         var arr;
@@ -331,25 +386,34 @@
             parts.push(escaped);
         }
 
-        /* ELI5: write the RTF "title page" — which font, what size, what
-           colour — before the words, because ProPresenter's reader throws
-           the whole document away if that page is missing.
+        /* ELI5: write the RTF "title page" — Apple's flavour tag, which
+           font, what size, what colour — before the words, because
+           ProPresenter's Cocoa reader pulls zero text out of a document
+           that isn't stamped as Apple "Cocoa RTF" (see the SECTION 4
+           doc-block: #1918/#1950 follow-up, the live v1.1.1009 blank-slide
+           report).
            Detail: header values are computed from the SECTION 5c styling
            constants (single source of truth, rule #35). `\fs` takes
            half-points per the RTF spec, hence * 2; colour components are
            rv.data.Color floats (0..1) scaled to RTF's 0..255 ints. The
            font NAME goes into the table verbatim — DEFAULT_FONT_NAME is
            a compile-time ASCII constant ('Arial'), never user input, so
-           it needs no escaping here. */
+           it needs no escaping here. `\cocoartf2761` +
+           `\cocoatextscaling0\cocoaplatform0` + `{\*\expandedcolortbl;;}`
+           + `\pardirnatural\partightenfactor0` + `\CocoaLigature0` are the
+           Cocoa-dialect envelope; `\cocoartf<version>` is the load-bearing
+           token that makes PP7's text reader extract the body at all. */
         var fsHalfPoints = DEFAULT_FONT_SIZE * 2;
         var colR = Math.round(DEFAULT_TEXT_COLOR.red * 255);
         var colG = Math.round(DEFAULT_TEXT_COLOR.green * 255);
         var colB = Math.round(DEFAULT_TEXT_COLOR.blue * 255);
 
-        return '{\\rtf1\\ansi\\ansicpg1252\\deff0' +
+        return '{\\rtf1\\ansi\\ansicpg1252\\cocoartf2761\\cocoatextscaling0\\cocoaplatform0' +
             '{\\fonttbl{\\f0\\fswiss\\fcharset0 ' + DEFAULT_FONT_NAME + ';}}' +
             '{\\colortbl;\\red' + colR + '\\green' + colG + '\\blue' + colB + ';}' +
-            '\\pard\\qc\\f0\\fs' + fsHalfPoints + '\\cf1\\uc1 ' +
+            '{\\*\\expandedcolortbl;;}' +
+            '\\pard\\pardirnatural\\qc\\partightenfactor0' +
+            '\\f0\\fs' + fsHalfPoints + ' \\cf1 \\uc1 \\CocoaLigature0 ' +
             parts.join('\\par\n') + '}';
     }
 
@@ -501,10 +565,10 @@
        a VALID file that round-trips, but the static/reflection outputs must
        stay identical so the CSP-safe static path is trustworthy. Centre
        alignment therefore lives at the RTF level: buildRTF() emits `\qc`
-       in its paragraph run (added with the #1918 follow-up font-table fix,
-       2026-08-25 — RTF-level, no protobuf divergence), exactly the escape
-       hatch this comment reserved. Never re-introduce paragraph_style
-       here. See tests/test-propresenter-static-csp.js.
+       in its paragraph run (now inside the Cocoa-RTF envelope — see
+       SECTION 4 — but still RTF-level, no protobuf divergence), exactly
+       the escape hatch this comment reserved. Never re-introduce
+       paragraph_style here. See tests/test-propresenter-static-csp.js.
        Graphics.Text.VerticalAlignment (graphicsData.proto line 209-213):
        TOP=0, MIDDLE=1, BOTTOM=2. */
     var TEXT_VERTICAL_ALIGNMENT_MIDDLE = 1;
@@ -598,10 +662,13 @@
        canvas the element's `bounds` are laid out inside), matching the
        same SLIDE_WIDTH/SLIDE_HEIGHT the element frame is computed from.
        ⚠️ That alone did NOT put words on screen — the text itself comes
-       from parsing `rtf_data`, and the RTF also had to become a
-       structurally complete document (font table + selected font) before
-       ProPresenter's reader would extract any text at all (#1918
-       follow-up, owner-reported 2026-08-25 — see SECTION 4).
+       from parsing `rtf_data`, and the RTF had to become BOTH a
+       structurally complete document (font table + selected font, #1918
+       follow-up) AND, load-bearingly, Apple "Cocoa RTF" (the
+       `\cocoartf` header token) before ProPresenter's Cocoa text reader
+       would extract any text at all (#1918/#1950 follow-up, re-reported on
+       live alpha v1.1.1009 — see SECTION 4). The `info: 3` scalar below is
+       a defensive second lever from the same fix.
 
        Deliberately still NO background (no `Slide.background_color`, no
        `draws_background_color`, no `Presentation.background`): the slide
@@ -637,7 +704,28 @@
                                     vertical_alignment: TEXT_VERTICAL_ALIGNMENT_MIDDLE,
                                     scale_behavior: TEXT_SCALE_BEHAVIOR_SCALE_FONT_DOWN
                                 }
-                            }
+                            },
+                            /* ELI5: mark this element the way a real
+                               ProPresenter file marks a text box, in case
+                               PP wants that flag set before it treats the
+                               box as text.
+                               Detail: rv.data.Slide.Element.info (field 4,
+                               uint32 — slide.proto:26) is a flags scalar the
+                               PP7-verified bussnet generator sets to 3 on
+                               every text element; iHymns omitted it. This is
+                               a DEFENSIVE belt for the #1918/#1950 CocoaRTF
+                               fix — the RTF dialect is the diagnosed cause,
+                               but `info` is a second variable that differs
+                               between our output and a known-good file, so
+                               we match it. A uint32 scalar encodes as one
+                               varint (tag 32 = field 4<<3) IDENTICALLY under
+                               both the static (pbjs -t static) and reflection
+                               encoders, so — unlike a sub-message such as
+                               paragraph_style — it does NOT disturb the #1788
+                               byte-identity guard (verified:
+                               tests/test-propresenter-static-csp.js still
+                               passes byte-identical). */
+                            info: 3
                         }]
                     }
                 }

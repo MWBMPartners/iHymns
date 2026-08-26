@@ -122,13 +122,25 @@ const decodeRoot = protobuf.Root.fromJSON(bundle);
 const Presentation = decodeRoot.lookupType('rv.data.Presentation');
 
 /* =====================================================================
- * Structural RTF validity — the #1918 follow-up guard (owner-reported
- * 2026-08-25: every exported slide blank, Reflow rows empty).
+ * Structural RTF validity + Cocoa-dialect + wire-path — the #1918/#1950
+ * follow-up guard (owner-reported repeatedly: right groups + right slide
+ * count, but every exported slide blank and every Reflow row empty).
  *
  * ELI5: instead of checking the RTF string matches one exact spelling,
  * these helpers check it is a REAL RTF document any strict reader can
- * open — because the exact-spelling check is how the broken format
- * survived here for months.
+ * open, that it is Apple's "Cocoa RTF" flavour ProPresenter actually
+ * reads, and that those bytes sit at the exact place on the wire PP7
+ * pulls slide text from — because a self-consistent encode/decode check
+ * is how the broken format shipped GREEN twice while PP showed blanks.
+ *
+ * The load-bearing finding (2026, live alpha v1.1.1009): ProPresenter 7
+ * is a Cocoa app; its text reader extracts text ONLY from Apple "Cocoa
+ * RTF" (the `\cocoartf<version>` header token). Plain RTF — even the
+ * spec-valid, font-table-bearing RTF #1950 shipped — parses structurally
+ * but yields an EMPTY attributed string, so slides are blank. See
+ * assertValidRtfDoc()'s \cocoartf assertion and the raw wire-descent
+ * tests further down (which prove the Cocoa bytes land at the PP7 field
+ * path WITHOUT a circular protobufjs decode).
  *
  * Detail (rule #34, .claude/CLAUDE.md): this suite used to assert the
  * exporter's RTF byte-for-byte (`^\{\\rtf1\\ansi\\uc1 `) — a snapshot
@@ -164,12 +176,28 @@ function findGroupEnd(rtf, start) {
     throw new Error('unbalanced RTF group starting at index ' + start);
 }
 
-/* Extract the plain text a conforming RTF reader would see: drop the
-   fonttbl/colortbl header groups, resolve `\par` to \n, resolve `\uN`
-   escapes (consuming the one-char ANSI fallback per `\uc1`), unescape
-   `\\` `\{` `\}`, and drop every other control word / brace. */
+/* Extract the plain text a conforming RTF reader would see: drop ignorable
+   destination groups `{\* … }` and the fonttbl/colortbl header groups,
+   resolve `\par` to \n, resolve `\uN` escapes (consuming the one-char ANSI
+   fallback per `\uc1`), unescape `\\` `\{` `\}`, and drop every other
+   control word / brace.
+
+   #1918/#1950 follow-up: this models the Apple "Cocoa RTF" the exporter now
+   emits. Two reader behaviours the earlier plain-RTF model didn't need:
+   (a) a leading-`\*` group is an IGNORABLE DESTINATION — Cocoa writes
+   `{\*\expandedcolortbl;;}` beside the colour table and a conforming reader
+   renders NONE of its contents; (b) control words may contain UPPERCASE
+   letters (Cocoa emits `\CocoaLigature0`), so the control-word scan is
+   `[a-zA-Z]+`, not lowercase-only — otherwise "CocoaLigature0" would leak
+   into the body. (RTF spec: control word = `\` + letters; ignorable
+   destination = `{\* …}`.) */
 function extractRtfText(rtf) {
     let s = rtf;
+    /* Ignorable destinations first: `{\* …}` groups contribute no body text. */
+    let star;
+    while ((star = s.indexOf('{\\*')) !== -1) {
+        s = s.slice(0, star) + s.slice(findGroupEnd(s, star));
+    }
     for (const marker of ['{\\fonttbl', '{\\colortbl']) {
         const at = s.indexOf(marker);
         if (at !== -1) s = s.slice(0, at) + s.slice(findGroupEnd(s, at));
@@ -189,7 +217,10 @@ function extractRtfText(rtf) {
             i++;
             continue;
         }
-        const m = /^\\([a-z]+)(-?\d+)? ?/.exec(s.slice(i));
+        /* Control words may contain UPPERCASE letters — Cocoa emits
+           `\CocoaLigature0`. A lowercase-only class would stop at the `C`
+           and leak the rest as body text. */
+        const m = /^\\([a-zA-Z]+)(-?\d+)? ?/.exec(s.slice(i));
         if (m) {
             if (m[1] === 'par') out += '\n';
             i += m[0].length - 1;
@@ -213,6 +244,19 @@ function assertValidRtfDoc(rtf, label) {
     /* Envelope: RTF magic + ANSI charset, closed at the end. */
     assert.match(rtf, /^\{\\rtf1\\ansi/, label + ': must open with {\\rtf1\\ansi');
     assert.ok(rtf.endsWith('}'), label + ': must close with }');
+    /* THE #1918/#1950 follow-up root cause (owner-reported again on live
+       alpha v1.1.1009): ProPresenter 7 is a Cocoa app and its text reader
+       extracts text ONLY from Apple "Cocoa RTF". A generic — even fully
+       spec-valid — document parses its structure (right cue/slide counts)
+       but yields an EMPTY attributed string, so every slide renders blank.
+       The load-bearing marker is the `\cocoartf<version>` header token in
+       the document preamble; without it PP7 extracts zero text. This is the
+       assertion that would have caught the plain-RTF that shipped in
+       #1918/#1950. (We deliberately do NOT assert \CocoaLigature0 — a real
+       PP7 export omits it and only \cocoartf is universal across known-good
+       files, so asserting it would fail on correct output — rule #34.) */
+    assert.match(rtf, /^\{\\rtf1\\ansi\\ansicpg\d+\\cocoartf\d+/,
+        label + ': missing \\cocoartf<version> — PP7 (Cocoa) extracts NO text from non-Cocoa RTF (#1918/#1950 follow-up)');
     /* Whole document is one balanced group tree. */
     assert.equal(findGroupEnd(rtf, 0), rtf.length, label + ': unbalanced braces');
     /* REQUIRED font table (the #1918 follow-up root cause): the RTF
@@ -245,6 +289,83 @@ function assertValidRtfDoc(rtf, label) {
        (an \ansi reader would garble multi-byte sequences). */
     assert.ok(!/[^\x00-\x7f]/.test(rtf), label + ': raw non-ASCII byte in RTF — must be \\uN? escaped');
     return { table, body };
+}
+
+/* =====================================================================
+ * Raw protobuf WIRE descent (the NON-CIRCULAR path proof) — #1918/#1950.
+ *
+ * ELI5: instead of decoding the file with the same schema that wrote it
+ * (which always agrees with itself), we walk the raw bytes by hand,
+ * field number by field number, down to the exact spot ProPresenter reads
+ * slide text from — and check the Cocoa RTF is really there.
+ *
+ * Detail: the twice-shipped false-green was an encode→decode round-trip
+ * against ONE schema (self-consistent by construction). These helpers use
+ * NO protobufjs: they read varints and length-delimited chunks straight
+ * off the wire and follow the field-number path re-derived from the .proto
+ * sources (matching the greyshirtguy Proto 7.16 the bundle is built from):
+ *   Presentation.cues=13 → Cue.actions=10 → Action.slide=23 →
+ *   Action.SlideType.presentation=2 → PresentationSlide.base_slide=1 →
+ *   Slide.elements=1 → [Slide.Element] → element=1 →
+ *   Graphics.Element.text=13 → Graphics.Text.rtf_data=5,
+ * with Slide.Element.info=4 (a varint) read directly off the Slide.Element
+ * message. If the exporter ever moved the RTF to the wrong field, or
+ * dropped the Cocoa dialect, or stopped setting info, these turn red
+ * against the SHIPPED bytes — not against a decode of them.
+ * =================================================================== */
+function wireReadVarint(buf, pos) {
+    let result = 0n, shift = 0n, p = pos;
+    for (;;) {
+        const b = buf[p++];
+        result |= BigInt(b & 0x7f) << shift;
+        if ((b & 0x80) === 0) break;
+        shift += 7n;
+    }
+    return { value: result, next: p };
+}
+/* Enumerate the DIRECT fields of a message region [start,end). Each entry is
+   { field, wt, varint? , vStart?, vEnd? }. */
+function wireFields(buf, start, end) {
+    const out = [];
+    let p = start;
+    while (p < end) {
+        const t = wireReadVarint(buf, p); p = t.next;
+        const tag = Number(t.value);
+        const field = tag >>> 3, wt = tag & 7;
+        if (wt === 0) { const v = wireReadVarint(buf, p); out.push({ field, wt, varint: Number(v.value) }); p = v.next; }
+        else if (wt === 1) { out.push({ field, wt, vStart: p, vEnd: p + 8 }); p += 8; }
+        else if (wt === 5) { out.push({ field, wt, vStart: p, vEnd: p + 4 }); p += 4; }
+        else if (wt === 2) { const ld = wireReadVarint(buf, p); const len = Number(ld.value); out.push({ field, wt, vStart: ld.next, vEnd: ld.next + len }); p = ld.next + len; }
+        else throw new Error('bad wire type ' + wt + ' at byte ' + (p - 1));
+    }
+    return out;
+}
+/* First DIRECT field #field of wire-type #wt in [s,e). Throws if absent. */
+function wireFirst(buf, s, e, field, wt) {
+    const f = wireFields(buf, s, e).find(x => x.field === field && x.wt === wt);
+    if (!f) throw new Error('wire field ' + field + '/wt' + wt + ' not found in [' + s + ',' + e + ')');
+    return f;
+}
+/* Descend the spine to every cue's first Slide.Element region (pure
+   field-number walk, no schema). Returns [{ vStart, vEnd }]. */
+function wireSlideElements(buf) {
+    const els = [];
+    for (const cue of wireFields(buf, 0, buf.length).filter(x => x.field === 13 && x.wt === 2)) {
+        const a  = wireFirst(buf, cue.vStart, cue.vEnd, 10, 2); // Cue.actions=10
+        const s  = wireFirst(buf, a.vStart, a.vEnd, 23, 2);     // Action.slide=23
+        const pr = wireFirst(buf, s.vStart, s.vEnd, 2, 2);      // SlideType.presentation=2
+        const b  = wireFirst(buf, pr.vStart, pr.vEnd, 1, 2);    // PresentationSlide.base_slide=1
+        const el = wireFirst(buf, b.vStart, b.vEnd, 1, 2);      // Slide.elements=1 (Slide.Element)
+        els.push({ vStart: el.vStart, vEnd: el.vEnd });
+    }
+    return els;
+}
+/* The rtf_data leaf bytes (latin1) for one Slide.Element region. */
+function wireRtfOfElement(buf, el) {
+    const g = wireFirst(buf, el.vStart, el.vEnd, 1, 2);   // Slide.Element.element=1
+    const t = wireFirst(buf, g.vStart, g.vEnd, 13, 2);    // Graphics.Element.text=13
+    const r = wireFirst(buf, t.vStart, t.vEnd, 5, 2);     // Graphics.Text.rtf_data=5
+    return buf.toString('latin1', r.vStart, r.vEnd);
 }
 
 /* ELI5: this builds a brand-new pretend-browser tab for the bundle-URL
@@ -640,6 +761,50 @@ function createFreshExporter(overrides) {
                 assert.equal(extractRtfText(rtf), expectedTexts[i],
                     'cue ' + (i + 1) + ': a conforming RTF reader must extract the slide\'s own words');
             }
+        });
+    });
+
+    /* ---------------------------------------------------------------- */
+    /* #1918/#1950 follow-up — NON-CIRCULAR wire-path proof. Everything
+       above decodes with the SAME protobufjs schema that encoded the
+       bytes; that is exactly the self-consistent check that shipped green
+       twice while ProPresenter showed blank slides. These two tests walk
+       the RAW shipped bytes by field number (no protobufjs decode) and
+       assert the load-bearing facts: the Cocoa-dialect RTF sits at the
+       precise PP7 field path, and info=3 is set. Mutation-proven — revert
+       \cocoartf in buildRTF() or drop info:3 in makeLyricCue() and the
+       matching test below turns red (see the PR's mutation transcript). */
+    await test('the Cocoa-dialect RTF lands at the exact PP7 wire field path (raw bytes, no decode)', () => {
+        const buf = Buffer.from(encoded);
+        const els = wireSlideElements(buf);
+        assert.equal(els.length, 3, 'expected 3 Slide.Element regions on the wire (one per component)');
+        els.forEach((el, i) => {
+            /* rtf_data reached ONLY by field-number descent:
+               13→10→23→2→1→1→1→13→5. wireRtfOfElement throws if any hop's
+               field is missing, so a moved field fails loudly here. */
+            const rtf = wireRtfOfElement(buf, el);
+            assert.ok(rtf.startsWith('{\\rtf1'),
+                'slide ' + (i + 1) + ': rtf_data at the PP7 leaf must begin {\\rtf1');
+            assert.match(rtf, /\\cocoartf\d+/,
+                'slide ' + (i + 1) + ': rtf_data at the PP7 leaf must carry \\cocoartf<version> — the token PP7 (Cocoa) needs to extract ANY text (#1918/#1950)');
+            /* the pure-ASCII opening word must be physically present in the
+               shipped bytes (rules out a char-escaping cause: every prior
+               slide was blank INCLUDING pure-ASCII lines). */
+            assert.ok(/[A-Za-z]/.test(rtf.replace(/\\[A-Za-z]+\d*/g, '')),
+                'slide ' + (i + 1) + ': rtf_data carries no literal body text');
+        });
+    });
+
+    await test('every Slide.Element sets info=3 on the wire (defensive #1918/#1950 lever)', () => {
+        const buf = Buffer.from(encoded);
+        const els = wireSlideElements(buf);
+        assert.ok(els.length > 0, 'expected at least one Slide.Element');
+        els.forEach((el, i) => {
+            /* Slide.Element.info = field 4, uint32 varint (slide.proto:26). */
+            const info = wireFields(buf, el.vStart, el.vEnd).find(x => x.field === 4 && x.wt === 0);
+            assert.ok(info, 'slide ' + (i + 1) + ': Slide.Element.info (field 4 varint) is absent on the wire');
+            assert.equal(info.varint, 3,
+                'slide ' + (i + 1) + ': Slide.Element.info must be 3 (matches the PP7-verified bussnet generator)');
         });
     });
 
