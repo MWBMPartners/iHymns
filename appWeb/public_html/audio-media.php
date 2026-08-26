@@ -160,6 +160,62 @@ if (audioSigningEnabled()) {
     }
 }
 
+/* ---------- Conditional GET (#1452-style, #1962) --------------------
+   ELI5: this legacy MP3 route never told the browser "you already have
+   this file — no need to re-download it", so the offline Service Worker's
+   background revalidation (swRevalidateMediaEntry(), service-worker.js.php)
+   had nothing to conditionally ask about and had to treat every check as
+   "fetch the whole file again" — quietly violating CLAUDE.md rule #6
+   invariant (B): downloaded content should refresh ONLY when the backend
+   content itself actually changed.
+
+   DETAILED: song-media.php (the tblSongMedia-backed sibling route) has
+   carried a strong ETag off `Sha256` — a REAL content hash computed at
+   upload time — since #1452. This route serves a bare static file with no
+   content-hash column to read at all, so the cheapest HONEST validator
+   available is the file's own size + modification time, the same
+   inode-less shape Apache's own mod_headers FileETag directive falls back
+   to. This is intentionally a WEAKER validator than song-media.php's
+   Sha256 (a same-size-and-mtime-but-different-bytes replacement would go
+   undetected) — acceptable here because this route is the LEGACY static
+   file family that #1358 documents as being phased out in favour of
+   tblSongMedia, not a place to invest in a new content-hashing pipeline.
+
+   A `304` carries NO body (RFC 7232 §4.1), so it MUST be sent before any
+   Content-Length/Range/body work below. And — same rule as song-media.php
+   — this block runs only AFTER every access gate above: confirming
+   "unchanged" to a caller who was never allowed to see the 200 body in the
+   first place would leak the file's mere existence/freshness to them.
+   Per RFC 7232 §6, If-None-Match takes priority over If-Modified-Since
+   when a client sends both — mirrors song-media.php's own conditional
+   block exactly, so the two media routes behave identically to any client.
+   https://developer.mozilla.org/en-US/docs/Web/HTTP/Conditional_requests
+   https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304
+   ---------------------------------------------------------------------- */
+$condMtime = @filemtime($path);
+$condSize  = @filesize($path);
+$condEtag  = '"' . $condSize . '-' . $condMtime . '"';
+header('ETag: ' . $condEtag);
+if ($condMtime !== false) {
+    header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $condMtime) . ' GMT');
+}
+
+$condIfNoneMatch = trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? ''));
+$condNotModified = false;
+if ($condIfNoneMatch !== '') {
+    $condNotModified = ($condIfNoneMatch === '*') || ($condIfNoneMatch === $condEtag);
+} elseif ($condMtime !== false) {
+    $condIfModifiedSince = trim((string)($_SERVER['HTTP_IF_MODIFIED_SINCE'] ?? ''));
+    if ($condIfModifiedSince !== '') {
+        $condImsTs = strtotime($condIfModifiedSince);
+        $condNotModified = ($condImsTs !== false && $condMtime <= $condImsTs);
+    }
+}
+if ($condNotModified) {
+    http_response_code(304);
+    exit;
+}
+
 /* #1906 — cap media BYTE volume BEFORE streaming (bandwidth exhaustion). Runs
    after the shape/traversal validation and the (signing-gated) access check, so
    a bad id / denied caller is never counted, and before any 200/206 header or

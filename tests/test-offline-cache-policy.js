@@ -113,12 +113,19 @@ check(
    the harness then reports "helper missing" rather than throwing. */
 const HARVEST = [
     'SW_CACHE_REVISION',
-    'CACHE_VERSION', 'PAGES_CACHE', 'RECENT_CACHE', 'SAVED_CACHE', 'MEDIA_CACHE',
-    'RECENT_CACHE_LIMIT', 'PAGES_CACHE_LIMIT',
+    'CACHE_VERSION', 'PAGES_CACHE', 'RECENT_CACHE', 'SAVED_CACHE', 'MEDIA_CACHE', 'INDEX_CACHE',
+    'RECENT_CACHE_LIMIT', 'PAGES_CACHE_LIMIT', 'MEDIA_REVALIDATE_TTL_MS',
     'OFFLINE_PAGE_FRAGMENTS',
     'swKeptCacheNames', 'swIsCacheKept', 'swSongCacheName',
     'swKeysToTrim', 'swPagesKeysToTrim',
     'swSongbookFromMediaUrl', 'swSongbookFromSongCacheUrl', 'swOfflinePageFragment',
+    /* #1962 — the media cache policy helpers (see service-worker.js.php's
+       "MEDIA CACHE POLICY" section doc-block). All PURE except
+       swRevalidateMediaEntry(), which needs its OWN fetch-controllable
+       sandbox — see the dedicated section below, mirroring the
+       networkFirstRevalidated() sandbox pattern already used for #1921. */
+    'swIsMediaUrl', 'swMediaShouldRevalidate', 'swMediaSupersededKeys',
+    'swMediaValidators', 'swMediaBulkPlan',
 ];
 
 const harvestTail = '\n;return {'
@@ -273,6 +280,37 @@ check(
 );
 
 /* ======================================================================
+ * 2b — #1962 G5: the keep-list partitions cleanly into version-keyed vs
+ * version-free buckets. A deploy must invalidate the APP-SHELL buckets
+ * (markup/JS can go stale) but must NEVER touch the user's own content
+ * (songs, audio, offline index) — this is invariant (A) applied to the
+ * keep-list's own membership, not just its presence.
+ * ==================================================================== */
+console.log('\n#1962 G5 — the keep-list is exactly {version-keyed} ∪ {version-free}\n');
+
+const PAGES_EARLY = need('PAGES_CACHE');
+const INDEX = need('INDEX_CACHE');
+
+if (keptNames && typeof PAGES_EARLY === 'string' && typeof INDEX === 'string') {
+    const kept = keptNames();
+    const versionKeyed = kept.filter(n => typeof n === 'string' && n.includes(STUB_VERSION));
+    const versionFree  = kept.filter(n => typeof n === 'string' && !n.includes(STUB_VERSION));
+
+    eq('the version-KEYED subset of the keep-list is EXACTLY {CACHE_VERSION, PAGES_CACHE}',
+        JSON.stringify(versionKeyed.slice().sort()),
+        JSON.stringify([sw.CACHE_VERSION, PAGES_EARLY].slice().sort()));
+
+    check('RECENT_CACHE is version-free (survives a deploy)', versionFree.includes(RECENT));
+    check('SAVED_CACHE is version-free (survives a deploy)', versionFree.includes(SAVED));
+    check('MEDIA_CACHE is version-free (survives a deploy)', versionFree.includes(MEDIA));
+    check('INDEX_CACHE is version-free (survives a deploy — THE #1962 G5 FIX)',
+        versionFree.includes(INDEX));
+    check('the two subsets are exhaustive and disjoint (partition the whole keep-list)',
+        versionKeyed.length + versionFree.length === kept.length
+        && versionKeyed.every(n => !versionFree.includes(n)));
+}
+
+/* ======================================================================
  * 3 — RC3: offline navigation beyond the song page
  * ==================================================================== */
 console.log('\n#1597 RC3 — home / songbooks / songbook / search are offline-cacheable\n');
@@ -348,6 +386,18 @@ if (bookFromMedia) {
         bookFromMedia('/api?page=song&id=MP-1008'), null);
     eq('a malformed URL yields null rather than throwing',
         bookFromMedia('::::'), null);
+
+    /* #1962 — the /song-media/<id> route (#853): the id is an opaque
+       tblSongMedia.Id, not a SongId, so the songbook comes from the
+       `?song=` query param SongData::_songMediaMap() now stamps. */
+    eq('/song-media/<id>?song=<SongId>&v=… yields the SongId prefix (numeric id)',
+        bookFromMedia('/song-media/123?song=MP-1008&v=abc123def456'), 'MP');
+    eq('/song-media/<IL id>?song=<SongId> also resolves (id shape doesn\'t matter, only ?song= does)',
+        bookFromMedia('/song-media/ILD0000012345?song=CP-0007&v=deadbeefcafe'), 'CP');
+    eq('bare /song-media/<id> with NO ?song= yields null (nothing to attribute)',
+        bookFromMedia('/song-media/123'), null);
+    eq('/song-media/<id>?song=<junk> yields null rather than a wrong guess',
+        bookFromMedia('/song-media/123?song=not-a-songid-shape'), null);
 }
 
 const bookFromSong = need('swSongbookFromSongCacheUrl');
@@ -510,6 +560,13 @@ try {
 }
 check('networkFirstRevalidated() harvested as a callable function', typeof nfr === 'function');
 
+/* #1962 G5 — every call below now passes the `cacheName` param explicitly
+   (INDEX_CACHE's real value), matching the fetch handler's own call site,
+   even though `cachesStub2.open()` ignores its argument and would pass
+   regardless — this keeps the test's call SHAPE honest as a form of
+   documentation, not because the stub needs it. */
+const NFR_CACHE_NAME = 'ihymns-index-v1';
+
 if (typeof nfr === 'function') {
     /* Top-level `await` (this file is loaded as an ES module, package.json
        "type":"module") — each case MUST be awaited before the next runs, and
@@ -528,7 +585,7 @@ if (typeof nfr === 'function') {
         return new Response('{"songs":[]}', { status: 200, headers: { ETag: '"si1-fresh"' } });
     };
     const requestA = new Request('https://www.ihymns.app/api?action=songs_index');
-    const resultA = await nfr(requestA);
+    const resultA = await nfr(requestA, NFR_CACHE_NAME);
     check('A: fetch is called with cache: \'no-store\'', !!capturedOptsA && capturedOptsA.cache === 'no-store');
     check('A: no cached copy -> no If-None-Match is sent', !capturedReqA.headers.get('If-None-Match'));
     check('A: the 200 response is returned', resultA.status === 200);
@@ -542,7 +599,7 @@ if (typeof nfr === 'function') {
     let capturedReqB = null;
     fetchImpl = async (req) => { capturedReqB = req; return new Response(null, { status: 304 }); };
     const requestB = new Request('https://www.ihymns.app/api?action=songs_index');
-    const resultB = await nfr(requestB);
+    const resultB = await nfr(requestB, NFR_CACHE_NAME);
     check('B: If-None-Match sent matches the cached response\'s own ETag', capturedReqB.headers.get('If-None-Match') === priorEtagB);
     check('B: the CACHED response is returned on a 304 (not a new/empty one)', resultB === cachedResponseB);
     check('B: cache.put is NEVER called on a 304 (a 304 has no body to store)', cacheStore.putCalls.length === 0);
@@ -554,7 +611,7 @@ if (typeof nfr === 'function') {
     const freshResponseC = new Response('{"songs":["new"]}', { status: 200, headers: { ETag: '"si1-new"' } });
     fetchImpl = async () => freshResponseC;
     const requestC = new Request('https://www.ihymns.app/api?action=songs_index');
-    const resultC = await nfr(requestC);
+    const resultC = await nfr(requestC, NFR_CACHE_NAME);
     check('C: the fresh 200 response is returned (not the stale cached one)', resultC === freshResponseC);
     check('C: the fresh response replaces the cache entry, keyed on the ORIGINAL request',
         cacheStore.putCalls.length === 1 && cacheStore.putCalls[0].req === requestC);
@@ -564,14 +621,337 @@ if (typeof nfr === 'function') {
     cacheStore = { match: async () => cachedResponseD, put: async () => {} };
     fetchImpl = async () => { throw new TypeError('simulated network failure'); };
     const requestD1 = new Request('https://www.ihymns.app/api?action=songs_index');
-    const resultD1 = await nfr(requestD1);
+    const resultD1 = await nfr(requestD1, NFR_CACHE_NAME);
     check('D1: network failure WITH a cached copy returns the cached response', resultD1 === cachedResponseD);
 
     cacheStore = { match: async () => undefined, put: async () => {} };
     fetchImpl = async () => { throw new TypeError('simulated network failure'); };
     const requestD2 = new Request('https://www.ihymns.app/api?action=songs_index');
-    const resultD2 = await nfr(requestD2);
+    const resultD2 = await nfr(requestD2, NFR_CACHE_NAME);
     check('D2: network failure with NO cached copy falls back to the offline response (503)', resultD2.status === 503);
+}
+
+/* ======================================================================
+ * 8 — #1962: swIsMediaUrl() truth table — the 4 legacy shapes + the new
+ * /song-media/<id> route, plus deliberate near-misses.
+ * ==================================================================== */
+console.log('\n#1962 — swIsMediaUrl(): every emitted media shape, and near-misses\n');
+
+const isMediaUrl = need('swIsMediaUrl');
+if (isMediaUrl) {
+    eq('flat /data/audio/<SongId>.mp3', isMediaUrl('/data/audio/MP-1008.mp3'), true);
+    eq('flat /data/music/<SongId>.pdf', isMediaUrl('/data/music/CP-0001.pdf'), true);
+    eq('legacy nested /data/audio/<book>/<SongId>.mp3', isMediaUrl('/data/audio/MP/MP-1008.mp3'), true);
+    eq('signed /audio/<SongId>.mp3?exp=…&sig=… (#1358)',
+        isMediaUrl('/audio/SDAH-0123.mp3?exp=1799999999&sig=deadbeef'), true);
+    eq('/song-media/<numeric id> (#853/#1962)', isMediaUrl('/song-media/123'), true);
+    eq('/song-media/<IL id> (#1860 Phase 4)', isMediaUrl('/song-media/ILD0000012345'), true);
+    eq('a root-relative absolute URL still matches',
+        isMediaUrl('https://www.ihymns.app/song-media/123'), true);
+    eq('an /api page fragment is NOT media', isMediaUrl('/api?page=song&id=MP-1008'), false);
+    eq('a /song-media/<id>/<extra segment> is NOT media (the route is bare id only)',
+        isMediaUrl('/song-media/1/evil'), false);
+    eq('a malformed URL returns false rather than throwing', isMediaUrl('::::'), false);
+}
+
+/* ======================================================================
+ * 9 — #1962: swMediaShouldRevalidate() staleness truth table
+ * ==================================================================== */
+console.log('\n#1962 — swMediaShouldRevalidate(): staleness truth table\n');
+
+const shouldRevalidate = need('swMediaShouldRevalidate');
+const TTL = need('MEDIA_REVALIDATE_TTL_MS');
+if (shouldRevalidate && typeof TTL === 'number') {
+    const now = Date.parse('2026-08-26T12:00:00Z');
+    const fresh = new Date(now - 1000).toUTCString();          /* 1s old */
+    const stale = new Date(now - TTL - 1000).toUTCString();     /* just over the TTL */
+    const boundary = new Date(now - TTL).toUTCString();         /* exactly at the TTL */
+
+    eq('a fresh Date header → do NOT revalidate', shouldRevalidate(fresh, now, TTL), false);
+    eq('a Date header older than the TTL → revalidate', shouldRevalidate(stale, now, TTL), true);
+    eq('exactly at the TTL boundary → revalidate (>=, not >)', shouldRevalidate(boundary, now, TTL), true);
+    eq('a missing Date header → revalidate (the SAFER default, never "skip forever")',
+        shouldRevalidate(null, now, TTL), true);
+    eq('an unparseable Date header → revalidate (same safer default)',
+        shouldRevalidate('not-a-date', now, TTL), true);
+    eq('an empty-string Date header → revalidate', shouldRevalidate('', now, TTL), true);
+}
+
+/* ======================================================================
+ * 10 — #1962: swMediaSupersededKeys() — same-pathname-only sweep
+ * ==================================================================== */
+console.log('\n#1962 — swMediaSupersededKeys(): same-pathname-only, never cross-song\n');
+
+const supersededKeys = need('swMediaSupersededKeys');
+if (supersededKeys) {
+    const sameSongOld = 'https://www.ihymns.app/song-media/9?song=MP-1008&v=old111111111';
+    const sameSongNew = 'https://www.ihymns.app/song-media/9?song=MP-1008&v=new222222222';
+    const otherSong   = 'https://www.ihymns.app/song-media/12?song=MP-1009&v=old111111111';
+    const keys = [{ url: sameSongOld }, { url: sameSongNew }, { url: otherSong }];
+
+    const doomed = supersededKeys(keys, sameSongNew);
+    eq('exactly ONE key is superseded (the OLD rendition of the SAME pathname)', doomed.length, 1);
+    check('the superseded key is the old /song-media/9 entry',
+        doomed.length === 1 && doomed[0].url === sameSongOld,
+        `doomed: ${doomed.map(k => k.url).join(', ')}`);
+    check('a DIFFERENT tblSongMedia row (/song-media/12) is NEVER superseded',
+        !doomed.some(k => k.url === otherSong));
+    eq('the just-cached URL itself is never returned as its own supersession',
+        supersededKeys(keys, sameSongNew).some(k => k.url === sameSongNew), false);
+    eq('no siblings under this pathname → nothing to delete',
+        supersededKeys([{ url: otherSong }], sameSongNew).length, 0);
+    eq('a malformed justCachedUrl returns [] rather than throwing',
+        supersededKeys(keys, '::::').length, 0);
+}
+
+/* ======================================================================
+ * 11 — #1962: swMediaValidators() extraction
+ * ==================================================================== */
+console.log('\n#1962 — swMediaValidators(): ETag / Last-Modified extraction\n');
+
+const mediaValidators = need('swMediaValidators');
+if (mediaValidators) {
+    const lm = 'Wed, 21 Oct 2015 07:28:00 GMT';
+    eq('ETag only', JSON.stringify(mediaValidators(new Headers({ ETag: '"x"' }))),
+        JSON.stringify({ etag: '"x"', lastModified: null }));
+    eq('Last-Modified only', JSON.stringify(mediaValidators(new Headers({ 'Last-Modified': lm }))),
+        JSON.stringify({ etag: null, lastModified: lm }));
+    eq('both present', JSON.stringify(mediaValidators(new Headers({ ETag: '"x"', 'Last-Modified': lm }))),
+        JSON.stringify({ etag: '"x"', lastModified: lm }));
+    eq('neither present → null (nothing safe to revalidate with)',
+        mediaValidators(new Headers()), null);
+}
+
+/* ======================================================================
+ * 12 — #1962: swMediaBulkPlan() skip/fetch/conditional truth table
+ * ==================================================================== */
+console.log('\n#1962 — swMediaBulkPlan(): CACHE_AUDIO_URLS per-url decision table\n');
+
+const bulkPlan = need('swMediaBulkPlan');
+if (bulkPlan) {
+    eq('exact hit + no validators → skip (nothing safe to ask, nothing to fetch)',
+        bulkPlan(true, null), 'skip');
+    eq('exact hit + validators → conditional (worth a cheap 304 check)',
+        bulkPlan(true, { etag: '"x"', lastModified: null }), 'conditional');
+    eq('no exact hit but a SIBLING carries validators → conditional',
+        bulkPlan(false, { etag: null, lastModified: 'Wed, 21 Oct 2015 07:28:00 GMT' }), 'conditional');
+    eq('no exact hit, no sibling, no validators → fetch (nothing cached at all)',
+        bulkPlan(false, null), 'fetch');
+}
+
+/* ======================================================================
+ * 13 — #1962: bucket-wiring verified from SOURCE (never a re-implementation
+ * of the policy — tree-derived, mirrors rule #34's "derive, don't type").
+ * ==================================================================== */
+console.log('\n#1962 — bucket wiring + branch ordering, verified from source\n');
+
+const mediaBranchIdx    = jsSource.indexOf('if (swIsMediaUrl(event.request.url))');
+const navigateBranchIdx = jsSource.indexOf("event.request.mode === 'navigate'");
+check('the media branch (swIsMediaUrl) was found in source', mediaBranchIdx !== -1);
+check('the navigate branch was found in source', navigateBranchIdx !== -1);
+check('the media branch PRECEDES the navigate branch — an `<a download>` click '
+    + 'dispatches as a `navigate` request, so ordering is load-bearing (#1962)',
+    mediaBranchIdx !== -1 && navigateBranchIdx !== -1 && mediaBranchIdx < navigateBranchIdx,
+    `mediaBranchIdx=${mediaBranchIdx} navigateBranchIdx=${navigateBranchIdx}`);
+
+const mediaBranchSrc = (mediaBranchIdx !== -1 && navigateBranchIdx !== -1)
+    ? jsSource.slice(mediaBranchIdx, navigateBranchIdx)
+    : '';
+check('the media branch opens MEDIA_CACHE', /caches\.open\(MEDIA_CACHE\)/.test(mediaBranchSrc));
+check('the media branch calls swRevalidateMediaEntry (background revalidation is wired up)',
+    /swRevalidateMediaEntry\(/.test(mediaBranchSrc));
+check('the media branch calls swMediaSupersededKeys after a fresh cache.put (rendition sweep is wired up)',
+    /swMediaSupersededKeys\(/.test(mediaBranchSrc));
+{
+    /* COMMENT-STRIPPED before this specific pair of checks. The branch's own
+       doc-comment discusses BOTH `res.status === 200` and `res.ok` by name
+       (explaining why one is used and not the other) — searching the RAW
+       source for those exact substrings would find them in the COMMENT
+       first, regardless of what the CODE below it actually does, which is
+       precisely the "wrong-but-green" trap CLAUDE.md rule #34 warns about
+       (confirmed empirically: mutation (6) in the #1962 plan — swapping the
+       real `if` condition to bare `res.ok` — passed silently against the
+       raw-source version of this exact check during red/green proving,
+       because the comment's own mention of "res.status === 200" still
+       preceded the (unrelated) cache.put() match). Only block comments are
+       stripped here (not double-slash line comments) — good enough for this
+       narrow, single-branch slice, and safer than a full stripper that
+       could mis-handle a double-slash inside a string literal (e.g. a URL)
+       if this helper were ever reused on a wider slice. */
+    const mediaBranchCode = mediaBranchSrc.replace(/\/\*[\s\S]*?\*\//g, '');
+    const statusIdx = mediaBranchCode.indexOf('res.status === 200');
+    const putIdx = mediaBranchCode.indexOf('cache.put(event.request, res.clone())');
+    check('the media branch checks `res.status === 200` BEFORE its cache.put '
+        + '(never bare `.ok` — a 206 Partial Content would poison the cache)',
+        statusIdx !== -1 && putIdx !== -1 && statusIdx < putIdx,
+        `statusIdx=${statusIdx} putIdx=${putIdx}`);
+    check('the media branch never gates its cache.put on bare `res.ok` '
+        + '(matches `res.ok` as a whole word, so `res.ok && …` is ALSO caught, not just an exact `if (res.ok)`)',
+        !/if\s*\(\s*res\.ok\b/.test(mediaBranchCode),
+        mediaBranchCode.match(/if\s*\([^)]*res\.ok[^)]*\)/)?.[0]);
+}
+
+const cacheAllSongsIdx  = jsSource.indexOf("event.data.type === 'CACHE_ALL_SONGS'");
+const cacheAudioUrlsIdx = jsSource.indexOf("event.data.type === 'CACHE_AUDIO_URLS'");
+const evictSongbookIdx  = jsSource.indexOf("event.data.type === 'EVICT_SONGBOOK'");
+check('the CACHE_ALL_SONGS handler was found', cacheAllSongsIdx !== -1);
+check('the CACHE_AUDIO_URLS handler was found', cacheAudioUrlsIdx !== -1);
+check('the EVICT_SONGBOOK handler was found', evictSongbookIdx !== -1);
+
+const cacheAllSongsSrc = (cacheAllSongsIdx !== -1 && cacheAudioUrlsIdx !== -1)
+    ? jsSource.slice(cacheAllSongsIdx, cacheAudioUrlsIdx)
+    : '';
+check('CACHE_ALL_SONGS opens SAVED_CACHE (the deliberate-download bucket, #1597 RC1)',
+    /caches\.open\(SAVED_CACHE\)/.test(cacheAllSongsSrc));
+check('CACHE_ALL_SONGS ALSO warms PAGES_CACHE per songbook (#1962 G4)',
+    /caches\.open\(PAGES_CACHE\)/.test(cacheAllSongsSrc));
+
+const cacheAudioUrlsSrc = (cacheAudioUrlsIdx !== -1 && evictSongbookIdx !== -1)
+    ? jsSource.slice(cacheAudioUrlsIdx, evictSongbookIdx)
+    : '';
+check('CACHE_AUDIO_URLS opens MEDIA_CACHE', /caches\.open\(MEDIA_CACHE\)/.test(cacheAudioUrlsSrc));
+check('CACHE_AUDIO_URLS decides its per-url plan via swMediaBulkPlan (no re-implemented skip logic)',
+    /swMediaBulkPlan\(/.test(cacheAudioUrlsSrc));
+check('CACHE_AUDIO_URLS also sweeps superseded renditions (swMediaSupersededKeys)',
+    /swMediaSupersededKeys\(/.test(cacheAudioUrlsSrc));
+
+const activateIdx = jsSource.indexOf("self.addEventListener('activate'");
+const fetchListenerIdx = jsSource.indexOf("self.addEventListener('fetch'");
+const activateSrc = (activateIdx !== -1 && fetchListenerIdx !== -1)
+    ? jsSource.slice(activateIdx, fetchListenerIdx)
+    : '';
+check('activate() was found', activateIdx !== -1);
+check('activate() re-warms saved songbook pages after the legacy migration (#1962 G4)',
+    /swRewarmSavedSongbookPages\(\)/.test(activateSrc));
+
+/* ======================================================================
+ * 14 — #1962: swRevalidateMediaEntry() functional sandbox — a SEPARATE
+ * fetch-controllable sandbox, mirroring the networkFirstRevalidated()
+ * pattern in section 7 above (`sw`/`sw2` are not reused so this section
+ * cannot disturb their state).
+ * ==================================================================== */
+console.log('\n#1962 — swRevalidateMediaEntry(): functional sandbox\n');
+
+let mediaFetchImpl = async () => { throw new Error('mediaFetchImpl not configured for this test case'); };
+const mediaFetchStub = (...args) => mediaFetchImpl(...args);
+const mediaCachesStub = {
+    open: async () => ({ keys: async () => [], match: async () => undefined }),
+    keys: async () => [],
+    match: async () => undefined,
+    delete: async () => false,
+};
+const mediaSelfStub = {
+    addEventListener() { /* handlers registered but never dispatched here */ },
+    location: { origin: 'https://www.ihymns.app' },
+    registration: { active: null },
+    clients: { matchAll: async () => [], claim: async () => {} },
+    skipWaiting() {},
+};
+
+let revalidateEntry = null;
+try {
+    /* eslint-disable-next-line no-new-func */
+    const sw3 = new Function(
+        'self', 'caches', 'fetch',
+        jsSource + "\n;return { swRevalidateMediaEntry: (typeof swRevalidateMediaEntry !== 'undefined' ? swRevalidateMediaEntry : undefined) };"
+    )(mediaSelfStub, mediaCachesStub, mediaFetchStub);
+    revalidateEntry = sw3 && sw3.swRevalidateMediaEntry;
+} catch (err) {
+    console.error(`  FATAL could not evaluate the #1962 revalidation sandbox: ${err.message}`);
+    failed++;
+}
+check('swRevalidateMediaEntry() harvested as a callable function', typeof revalidateEntry === 'function');
+
+function fakeMediaCache() {
+    const putCalls = [];
+    return { putCalls, put: async (url, res) => { putCalls.push({ url, res }); } };
+}
+
+if (typeof revalidateEntry === 'function') {
+    const MEDIA_URL = 'https://www.ihymns.app/song-media/9?song=MP-1008&v=abc123def456';
+
+    /* --- A: no validators at all → NEVER blind-refetch (the core #1962 invariant-B guard) --- */
+    {
+        const cache = fakeMediaCache();
+        let fetchCalled = false;
+        mediaFetchImpl = async () => { fetchCalled = true; return new Response('', { status: 200 }); };
+        const cachedNoValidators = new Response('audio-bytes', { status: 200, headers: {} });
+        await revalidateEntry(cache, MEDIA_URL, cachedNoValidators);
+        check('A: no ETag/Last-Modified on the cached entry → fetch is NEVER called',
+            !fetchCalled);
+        check('A: no ETag/Last-Modified → cache.put is NEVER called', cache.putCalls.length === 0);
+    }
+
+    /* --- B: ETag present, server says 304 (THE steady-state case) --- */
+    {
+        const cache = fakeMediaCache();
+        const priorEtag = '"media-abc123"';
+        let capturedReq = null;
+        let capturedOpts = null;
+        mediaFetchImpl = async (req, opts) => {
+            capturedReq = req;
+            capturedOpts = opts;
+            return new Response(null, { status: 304 });
+        };
+        const cachedWithEtag = new Response('audio-bytes', { status: 200, headers: { ETag: priorEtag } });
+        await revalidateEntry(cache, MEDIA_URL, cachedWithEtag);
+        check('B: If-None-Match sent matches the cached entry\'s own ETag',
+            capturedReq.headers.get('If-None-Match') === priorEtag);
+        check('B: cache: \'no-store\' bypasses the browser HTTP cache (same fix as networkFirstRevalidated)',
+            !!capturedOpts && capturedOpts.cache === 'no-store');
+        check('B: credentials: \'same-origin\' is set on the Request (no cross-origin cookie leakage)',
+            capturedReq.credentials === 'same-origin');
+        check('B: NO Range header is ever attached to a revalidation request '
+            + '(this asks about the WHOLE resource, never a byte window)',
+            !capturedReq.headers.get('Range'));
+        check('B: a 304 → cache.put is NEVER called (a 304 has no body to store)',
+            cache.putCalls.length === 0);
+    }
+
+    /* --- C: ETag present, server says 200 (genuine content change) --- */
+    {
+        const cache = fakeMediaCache();
+        mediaFetchImpl = async () => new Response('new-bytes', { status: 200, headers: {} });
+        const cachedWithEtag = new Response('old-bytes', { status: 200, headers: { ETag: '"old"' } });
+        await revalidateEntry(cache, MEDIA_URL, cachedWithEtag);
+        check('C: a genuine 200 IS written to the cache', cache.putCalls.length === 1);
+        check('C: written under the SAME key (url) that was passed in — replace IN PLACE',
+            cache.putCalls.length === 1 && cache.putCalls[0].url === MEDIA_URL);
+    }
+
+    /* --- D: Last-Modified only (no ETag) → falls back to If-Modified-Since --- */
+    {
+        const cache = fakeMediaCache();
+        let capturedReq = null;
+        const lm = 'Wed, 21 Oct 2015 07:28:00 GMT';
+        mediaFetchImpl = async (req) => { capturedReq = req; return new Response(null, { status: 304 }); };
+        const cachedWithLm = new Response('audio-bytes', { status: 200, headers: { 'Last-Modified': lm } });
+        await revalidateEntry(cache, MEDIA_URL, cachedWithLm);
+        check('D: falls back to If-Modified-Since when there is no ETag',
+            capturedReq.headers.get('If-Modified-Since') === lm);
+        check('D: If-None-Match is NOT sent when there is no ETag to send',
+            !capturedReq.headers.get('If-None-Match'));
+    }
+
+    /* --- E: a network throw (offline / hiccup) leaves the cache untouched --- */
+    {
+        const cache = fakeMediaCache();
+        mediaFetchImpl = async () => { throw new TypeError('simulated offline'); };
+        const cachedWithEtag = new Response('audio-bytes', { status: 200, headers: { ETag: '"e"' } });
+        await revalidateEntry(cache, MEDIA_URL, cachedWithEtag);
+        check('E: a network throw leaves the cache completely untouched (no put call — invariant A)',
+            cache.putCalls.length === 0);
+    }
+
+    /* --- F: a non-304, non-200 response (403/404/5xx) also leaves the cache untouched --- */
+    {
+        const cache = fakeMediaCache();
+        mediaFetchImpl = async () => new Response('', { status: 404 });
+        const cachedWithEtag = new Response('audio-bytes', { status: 200, headers: { ETag: '"e"' } });
+        await revalidateEntry(cache, MEDIA_URL, cachedWithEtag);
+        check('F: a 403/404/5xx response is NEVER written to the cache (invariant A holds even on error)',
+            cache.putCalls.length === 0);
+    }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
