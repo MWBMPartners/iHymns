@@ -464,10 +464,16 @@ $pdSuggestForJs = [
              shared emitter) — re-emitting here would double-load the bundle
              and double-register its delegated data-API listeners (#1856). */ ?>
 
-    <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses. -->
+    <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses.
+         #1950 — cache-bust with filemtime like every OTHER consumer of this pair
+         (editor/index.php:1698-1699, organisations.php, songbooks.php, musicians.php,
+         venues.php, works.php all do — see the #1594 note on place-search.js just
+         below). These two were the odd ones out with no `?v=` at all: a curator
+         with this file already cached kept running the stale copy across every
+         deploy, silently, with nothing to grep for. -->
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
-    <script src="/js/modules/external-link-detect.js"></script>
-    <script src="/js/modules/external-links-editor.js"></script>
+    <script src="/js/modules/external-link-detect.js?v=<?= filemtime($_pubRoot . '/js/modules/external-link-detect.js') ?>"></script>
+    <script src="/js/modules/external-links-editor.js?v=<?= filemtime($_pubRoot . '/js/modules/external-links-editor.js') ?>"></script>
 
     <!-- #1741 P5b — recording/release/product external-ID vocabulary (slug -> {label,scope}
          only, no validate patterns — see the PHP-side doc-block above) for the Metadata
@@ -519,11 +525,24 @@ $pdSuggestForJs = [
          throws "protobufjs runtime not found" the first time it's invoked.
          #1788 — pp7-proto-static.js (CSP-safe `pbjs -t static` schema) loads
          between the runtime and the exporter; the exporter prefers it over the
-         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses. -->
-    <script src="vendor/protobuf.min.js"></script>
-    <script src="protos/pp7-proto-static.js"></script>
-    <script src="propresenter-export.js"></script>
-    <script src="format-export.js"></script>
+         old reflection descriptor whose lazy codegen the nonce CSP #117 refuses.
+
+         #1950 — ALL FOUR of these were loaded with no `?v=` at all (unlike every
+         sibling tag on this page). A shipped fix to propresenter-export.js (this
+         exact file) landed on the server but a returning curator's browser kept
+         serving its cached pre-fix copy indefinitely — the export "didn't work"
+         even though the deploy had gone out, because nothing ever told the
+         browser the file had changed. filemtime() matches the established
+         convention immediately above (place-search.js / combobox-a11y.js) and
+         every sibling admin page (#1594): the query string changes whenever this
+         directory is redeployed, so a fixed export script actually reaches
+         browsers that already cached the old one. Order is unchanged — load
+         order (protobuf -> pp7-proto-static -> propresenter-export, #1567) is
+         independent of the query string appended to each src. -->
+    <script src="vendor/protobuf.min.js?v=<?= filemtime(__DIR__ . '/vendor/protobuf.min.js') ?>"></script>
+    <script src="protos/pp7-proto-static.js?v=<?= filemtime(__DIR__ . '/protos/pp7-proto-static.js') ?>"></script>
+    <script src="propresenter-export.js?v=<?= filemtime(__DIR__ . '/propresenter-export.js') ?>"></script>
+    <script src="format-export.js?v=<?= filemtime(__DIR__ . '/format-export.js') ?>"></script>
 
     <script type="module">
         import { createStore }       from './v2/store.js';
