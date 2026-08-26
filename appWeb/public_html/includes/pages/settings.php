@@ -1038,6 +1038,18 @@ declare(strict_types=1);
                     <?php endif; ?>
                 </dd>
 
+                <?php /* #1963 — the raw per-commit build number, shown independently of
+                        Version.Number's tag-derived MAJOR.RELEASE.BUILD (rule #35: two
+                        different views of the same value, so this reads it straight from
+                        Build.Number rather than re-parsing the version string). Guarded so
+                        it renders nothing on an un-injected checkout (local dev) — where
+                        Build.Number is still NULL — same degrade-gracefully shape as the
+                        Repo.Commit.SHA-derived "Build" row further down this list. */ ?>
+                <?php if (!empty($app["Application"]["Version"]["Build"]["Number"])): ?>
+                    <dt class="col-sm-4">Build</dt>
+                    <dd class="col-sm-8">#<?= htmlspecialchars((string)$app["Application"]["Version"]["Build"]["Number"]) ?></dd>
+                <?php endif; ?>
+
                 <dt class="col-sm-4">Developer</dt>
                 <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?></dd>
 
@@ -1048,7 +1060,12 @@ declare(strict_types=1);
                 </dd>
 
                 <?php if ($app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"]): ?>
-                    <dt class="col-sm-4">Build</dt>
+                    <?php /* #1963 — relabelled "Build" -> "Commit". This row is the git
+                            commit SHA (linked to the commit on GitHub); it is DISTINCT from
+                            the numeric per-commit "Build" row added above. Two rows both
+                            labelled "Build" read as a bug — the SHA is the commit, so it is
+                            labelled as such. */ ?>
+                    <dt class="col-sm-4">Commit</dt>
                     <dd class="col-sm-8">
                         <?php if ($app["Application"]["Version"]["Repo"]["Commit"]["URL"]): ?>
                             <a href="<?= htmlspecialchars($app["Application"]["Version"]["Repo"]["Commit"]["URL"]) ?>"

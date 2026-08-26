@@ -1450,6 +1450,38 @@ class SongData
      * applies regardless of whether the underlying storage is the
      * filesystem or the database.
      *
+     * STREAMURL CACHE-BUSTING (#1962): `streamUrl` also carries
+     * `?song=<SongId>&v=<Sha256 prefix>`. ELI5 — the extra bits on the
+     * end let the offline app both (a) work out which songbook this
+     * file belongs to, and (b) notice when the file itself has changed,
+     * without changing anything about how the route is actually served.
+     * DETAILED — the `.htaccess` rewrite for `/song-media/<id>` has no
+     * `[QSA]` flag, so these extra query params never reach
+     * song-media.php at all (it reads `$_GET['id']` only); they exist
+     * purely as SERVICE-WORKER-side signals:
+     *   - `?song=` lets `swSongbookFromMediaUrl()` (service-worker.js.php)
+     *     attribute this URL to a songbook for EVICT_SONGBOOK /
+     *     GET_CACHE_SIZES — the id here is an opaque tblSongMedia.Id, not
+     *     a SongId, so unlike the legacy `/data/audio/<SongId>.mp3`
+     *     family there is no SongId to recover from the PATH alone.
+     *   - `&v=` is a content-fingerprint cache-buster: it changes only
+     *     when `Sha256` changes (i.e. the underlying file was actually
+     *     replaced), so `swMediaSupersededKeys()` can tell "the SAME
+     *     media, a newer rendition" (same pathname, different `?v=`) from
+     *     "an unrelated file" and safely delete the STALE cache entry
+     *     once the new one lands. Deliberately keyed on `Sha256`, NEVER
+     *     `UpdatedAt` — an annotation-only DB write (Annotation/SortOrder)
+     *     bumps `UpdatedAt` via `ON UPDATE CURRENT_TIMESTAMP` but leaves
+     *     the BYTES unchanged, and CLAUDE.md rule #6 invariant (B) says a
+     *     downloaded file must refresh ONLY when the backend content
+     *     itself changed — keying on `UpdatedAt` would force every saved
+     *     device to re-download audio it already has, for a change it
+     *     can't even see. Truncated to 12 hex chars (48 bits) — this is a
+     *     cache-key discriminator, not a security control, so the full
+     *     64-char hash would just bloat every song page's HTML for no
+     *     behavioural gain.
+     * https://developer.mozilla.org/en-US/docs/Web/HTTP/Caching#varying_responses
+     *
      * @param string[]|null $songIds Limit to these SongIds; null = all
      * @return array<string, array<int, array{id:int,kind:string,fileName:string,mimeType:string,sizeBytes:int,annotation:string,sortOrder:int,streamUrl:string}>>
      */
@@ -1470,8 +1502,13 @@ class SongData
         if (!$hasSchema) return [];
 
         try {
+            /* #1962 — Sha256 joins the SELECT solely to stamp the `&v=`
+               cache-buster onto streamUrl below; it is never returned to
+               callers as its own field (kept out of the return shape on
+               purpose — bytes/fingerprints stay an internal detail of the
+               streaming route, not the public song JSON). */
             $select = 'SELECT Id, SongId, Kind, FileName, MimeType, SizeBytes,
-                              Annotation, SortOrder
+                              Annotation, SortOrder, Sha256
                          FROM tblSongMedia';
             if ($songIds === null) {
                 $sql  = $select . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
@@ -1503,7 +1540,14 @@ class SongData
                     'sizeBytes'  => (int)$row['SizeBytes'],
                     'annotation' => (string)($row['Annotation'] ?? ''),
                     'sortOrder'  => (int)$row['SortOrder'],
-                    'streamUrl'  => '/song-media/' . (int)$row['Id'],
+                    /* #1962 — `?song=` + `&v=` are SW-side signals only;
+                       the .htaccess rewrite for this route carries no
+                       [QSA], so song-media.php itself never sees them
+                       (see this method's own doc-block for the full
+                       "why", incl. why `Sha256` and never `UpdatedAt`). */
+                    'streamUrl'  => '/song-media/' . (int)$row['Id']
+                        . '?song=' . rawurlencode($sid)
+                        . '&v=' . substr((string)$row['Sha256'], 0, 12),
                 ];
             }
             $stmt->close();
@@ -1512,6 +1556,45 @@ class SongData
             error_log('[SongData::_songMediaMap] ' . $e->getMessage());
             return [];
         }
+    }
+
+    /**
+     * PUBLIC accessor (#1962): `tblSongMedia` audio rows for a set of
+     * SongIds, as flat `{songId, url}` pairs — the shape api.php's
+     * `bulk_audio` manifest already uses for its legacy static-literal
+     * entries, so the two lists concatenate directly.
+     *
+     * ELI5: "give me the real download links for every song's uploaded
+     * audio file, for just these songs" — used by the offline-download
+     * manifest so a curator-uploaded MP3 (not just the old flat
+     * `/data/audio/<SongId>.mp3` scrape file) can be saved for offline
+     * play too.
+     *
+     * DETAILED: `_songMediaMap()` is `private` and returns the FULL media
+     * shape (id/kind/fileName/mimeType/sizeBytes/annotation/sortOrder/
+     * streamUrl) for every media kind — this is a thin public wrapper that
+     * filters to `kind === 'audio'` and projects down to just what the
+     * bulk manifest needs, rather than exposing the private method's full
+     * internal shape to api.php (rule #22 — reuse the existing map/query,
+     * don't fork a parallel SELECT). Kept PER-SONGBOOK by the caller
+     * passing only that songbook's SongIds (rule #17 — no whole-corpus
+     * scan); an empty `$songIds` short-circuits to `[]` without a query.
+     *
+     * @param string[] $songIds SongIds to look up (a single songbook's worth)
+     * @return array<int, array{songId:string, url:string}>
+     */
+    public function getAudioMediaStreamUrls(array $songIds): array
+    {
+        if (!$songIds) return [];
+        $map = $this->_songMediaMap($songIds);
+        $out = [];
+        foreach ($map as $sid => $rows) {
+            foreach ($rows as $m) {
+                if (($m['kind'] ?? '') !== 'audio') continue;
+                $out[] = ['songId' => $sid, 'url' => $m['streamUrl']];
+            }
+        }
+        return $out;
     }
 
     /**

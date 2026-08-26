@@ -80,8 +80,15 @@ concurrency:
   group: deploy-${{ github.ref_name }}
   cancel-in-progress: false
 
+# `actions: write` (added #1963) — the new "Dispatch release.yml" step on
+# alpha needs it to call `gh workflow run release.yml`; without this scope the
+# dispatch 403s while the rest of the job (including the tag push, which only
+# needed `contents: write`) still goes green — a scope-shaped silent failure
+# rule #35 exists to name (a missing permission is a contract two steps must
+# agree on: the step that NEEDS the scope, and the block that GRANTS it).
 permissions:
   contents: write
+  actions: write
 
 jobs:
   # ===========================================================================
@@ -250,6 +257,305 @@ jobs:
               echo "$CHANGED"
             fi
           fi
+
+      # =================================================================
+      # RELEASE VERSIONING (#1963, extending the dormant #1899 scheme)
+      #
+      # ELI5: four small steps that (1) find the last released version,
+      # (2) — alpha only — read what changed since then and, ONLY if it
+      # actually deserves a new version number, mint that new tag and (3) tell
+      # GitHub to publish a Release for it, then (4) fold the CHANGELOG's
+      # "unreleased" notes into that release's own heading. None of the four
+      # ever fails the deploy — a versioning hiccup degrades to "no new tag
+      # this run", never a red pipeline over a page of website code.
+      #
+      # WHY THIS MOVED HERE FROM promotion-deploy-bridge.yml (#1899's original
+      # home): #1899 minted a tag on EVERY beta->main promotion, unconditionally
+      # — so the tag existed but never actually reflected whether the promoted
+      # commits were release-worthy (a promotion of nothing but a typo fix still
+      # cut a new MINOR). #1963 moves the decision to ALPHA, where all work
+      # lands first, and makes it CONDITIONAL: a classifier reads the commits
+      # since the last tag using the Conventional Commits convention
+      # (https://www.conventionalcommits.org/en/v1.0.0/) and only mints a tag
+      # when there is something feat-level or breaking to report. The retired
+      # bridge-side minter is documented in promotion-deploy-bridge.yml's own
+      # header; beta/main promotions now just dispatch this same deploy.yml,
+      # which re-resolves whatever the latest tag is and injects it exactly as
+      # before — nothing downstream of "the tag exists" changed.
+      # =================================================================
+
+      # -- Resolve the release anchor: the latest reachable production tag --
+      #
+      # ELI5: before deciding "does this deploy deserve a NEW version number,"
+      # we first need to know what the LAST one was. This step finds that
+      # starting point on EVERY branch (main/beta still need it below, to
+      # inject Version.Number exactly as #1899 always did; only alpha goes on
+      # to classify commits and possibly mint a NEW tag).
+      #
+      # THE ONE TAG-FILTER REGEX IN THIS WORKFLOW TREE (rule #35): the pattern
+      # `^v[0-9]+\.[0-9]+\.[0-9]+$` appears EXACTLY ONCE across every workflow
+      # file — right here. Every other place in this file that needs "the
+      # latest release tag" reads THIS step's `latest` output (see the classify
+      # step immediately below and the tag resolution inside the build-info
+      # injection step near the bottom of this job) rather than re-grepping
+      # — a second copy of this regex is exactly the class of drift rule #35
+      # exists to ban, and it's what promotion-deploy-bridge.yml used to carry
+      # (now deleted along with the rest of its minter, #1963). tests/
+      # test-versioning-pipeline.js check (3') scans EVERY `.github/workflows/
+      # *.yml` file for this filter and asserts it is byte-identical wherever
+      # it appears, present in deploy.yml, and ABSENT from
+      # promotion-deploy-bridge.yml — mutation-proven (re-add a copy anywhere
+      # and the check goes red).
+      #
+      # `--merged HEAD` is LOAD-BEARING, not decoration: `git tag -l` alone
+      # lists every tag reachable in the fetched refs regardless of ancestry,
+      # so a tag cut on an unrelated branch (or a stray/mistyped tag) could be
+      # picked up as "latest" even though it isn't actually an ancestor of the
+      # commit being deployed. `--merged HEAD` restricts the list to tags that
+      # ARE ancestors of HEAD, so the anchor only ever advances along this
+      # branch's own history. Requires the full tag history the checkout step
+      # already fetches (`fetch-depth: 0` + `fetch-tags: true`, #1899 PR1;
+      # verified by tests/test-versioning-pipeline.js check (6)).
+      # https://git-scm.com/docs/git-tag#Documentation/git-tag.txt---mergedltcommitgt
+      - name: Resolve release anchor
+        id: relanchor
+        run: |
+          set -euo pipefail
+          LATEST=$(git tag -l --merged HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          if [[ -n "$LATEST" ]]; then
+            echo "Release anchor: ${LATEST}"
+          else
+            echo "No reachable release tag yet — release scheme dormant until the first v* tag (#1899/#1963)."
+          fi
+
+      # -- Classify commits since the anchor and, on alpha only, cut a new
+      #    release tag --
+      #
+      # ELI5: look at every commit that landed on alpha since the last release
+      # tag and ask, using the Conventional Commits rules, "does any of this
+      # deserve a bigger version number?" A breaking change bumps MAJOR, a
+      # plain `feat` bumps MINOR, and everything else (fix/docs/chore/refactor/
+      # perf/ci/…) is just a build — the version stays put and only the
+      # per-commit build number (the patch slot, injected further down) moves.
+      #
+      # `git log "${LATEST}..HEAD"` is the exact commit range classified: every
+      # commit reachable from HEAD but NOT from the anchor tag — i.e. everything
+      # that has landed since the anchor was cut. The `%s%x1f%b%x1e` format is
+      # the EXACT stdin contract classify-bump.sh's own header documents (0x1F
+      # separates a record's subject/body, 0x1E separates records) — tests/
+      # test-versioning-pipeline.js check (11) pins this format string
+      # byte-for-byte AND asserts this step actually invokes classify-bump.sh,
+      # so script and caller can never silently drift apart (rule #35).
+      # classify-bump.sh's own functional truth table lives in
+      # tests/test-bump-classifier.js.
+      #
+      # MAJOR/MINOR arithmetic mirrors the retired bridge step's parse-and-
+      # increment (never COUNT) discipline: BASE/MAJOR/MINOR are parsed from
+      # the anchor tag's own digits every run, never from a running tally, so
+      # the scheme self-heals if a tag is ever added or removed out of band.
+      #
+      # Three independent guard-rails before anything is ever pushed:
+      #   - `BUMP == "none"` -> no tag at all. classify-bump.sh's own SAFE
+      #     DEFAULT (see its header) already means an unrecognised commit shape
+      #     classifies as "none" — this branch is what turns that into a true
+      #     no-op here rather than an accidental minor bump.
+      #   - the computed NEXT tag must not already exist (`git rev-parse -q
+      #     --verify`) — refuses to move or reuse a tag, mirroring the retired
+      #     bridge step's own idempotency guard.
+      #   - a failed `git push` (permissions hiccup, transient network error)
+      #     deletes the LOCAL tag again (`git tag -d`) so a retried run starts
+      #     clean instead of finding a phantom local tag in its way, and
+      #     reports `created=false` so nothing downstream (the release.yml
+      #     dispatch, the changelog roll) fires over a tag that was never
+      #     actually published.
+      - name: Classify and cut release tag
+        id: alphatag
+        if: github.ref_name == 'alpha' && steps.relanchor.outputs.latest != ''
+        env:
+          LATEST: ${{ steps.relanchor.outputs.latest }}
+        run: |
+          set -euo pipefail
+          BUMP=$(git log "${LATEST}..HEAD" --format='%s%x1f%b%x1e' | bash .github/workflows/scripts/classify-bump.sh)
+          echo "Classified bump since ${LATEST}: ${BUMP}"
+
+          if [[ "$BUMP" == "none" ]]; then
+            echo "anchor=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "No feat/breaking-change commits since ${LATEST} — build-only, no new release tag."
+            exit 0
+          fi
+
+          BASE="${LATEST#v}"
+          MAJOR="${BASE%%.*}"
+          MINOR=$(echo "$BASE" | cut -d. -f2)
+          if [[ "$BUMP" == "major" ]]; then
+            NEXT="v$((MAJOR + 1)).0.0"
+          else
+            NEXT="v${MAJOR}.$((MINOR + 1)).0"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
+            echo "::warning::Computed tag ${NEXT} already exists — refusing to move/reuse it. No tag cut."
+            echo "anchor=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEXT" -m "iHymns release ${NEXT} (${BUMP} bump, classified from alpha commits since ${LATEST}, #1963)"
+          if git push origin "refs/tags/${NEXT}"; then
+            echo "anchor=$NEXT" >> "$GITHUB_OUTPUT"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cut release tag ${NEXT} (${BUMP} bump)."
+          else
+            echo "::warning::Failed to push ${NEXT} — deleting the local tag so a retry starts clean. No release tag cut this run."
+            git tag -d "$NEXT" || true
+            echo "anchor=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -- Dispatch release.yml for the freshly-cut tag --
+      #
+      # ELI5: once a new version number has actually been decided, tell the
+      # OTHER workflow that turns a tag into a public GitHub Release to go do
+      # that.
+      #
+      # WHY A DISPATCH, NOT `on: push: tags:`: this job's own GITHUB_TOKEN
+      # pushed the tag above, and GitHub Actions suppresses `on: push` for
+      # anything pushed BY a workflow's own token (the anti-recursion rule
+      # documented at the top of promotion-deploy-bridge.yml, and now
+      # load-bearing here too) — so release.yml would never fire on its own
+      # for a bot-pushed tag. Dispatching explicitly `--ref` the tag itself
+      # makes `github.ref_name` equal the tag INSIDE release.yml, so every
+      # step there behaves exactly as it does for a human-pushed tag.
+      #
+      # Non-fatal: a missed GitHub Release is recoverable (re-run this
+      # dispatch, or create the Release by hand) — the tag itself, which this
+      # job's own "Inject build info" step below depends on for
+      # Version.Number, is already pushed regardless of whether this dispatch
+      # succeeds.
+      - name: Dispatch release.yml
+        if: github.ref_name == 'alpha' && steps.alphatag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.alphatag.outputs.anchor }}
+        run: |
+          set -euo pipefail
+          if gh workflow run release.yml --repo "$REPO" --ref "$TAG"; then
+            echo "::notice::Dispatched release.yml for ${TAG}."
+          else
+            echo "::warning::Could not dispatch release.yml for ${TAG} — create the GitHub Release manually or re-run this job."
+          fi
+
+      # -- Roll released CHANGELOG entries onto alpha (idempotent self-heal) --
+      #
+      # ELI5: once a release tag exists, the notes that were sitting under
+      # "unreleased" now belong to that release — this step renames that
+      # section to the release's own heading and re-opens a fresh empty
+      # "unreleased" section, so the CHANGELOG on alpha always reflects what's
+      # actually shipped versus what's still in flight.
+      #
+      # WHY HERE, NOT ONLY IN promotion-deploy-bridge.yml: #1963 moves tag
+      # MINTING onto alpha (the steps above), so the rollover has to follow it
+      # here too — a tag minted on alpha has no promotion-PR merge event to
+      # hang a rollover off any more. This step is deliberately IDEMPOTENT and
+      # SELF-HEALING rather than tied 1:1 to "did THIS run cut a tag": it
+      # re-derives the anchor to roll — this run's freshly-cut tag if there is
+      # one, else the pre-existing latest reachable tag — and does nothing if
+      # that version's heading is already present in CHANGELOG.md. So a run
+      # where a PRIOR run cut the tag but failed to push the rollover (network
+      # blip, rebase conflict) quietly finishes the job on the NEXT alpha
+      # deploy, instead of leaving CHANGELOG.md permanently out of step with
+      # the tag history. `ANCHOR = alphatag.anchor || relanchor.latest` is
+      # exactly that re-derivation: when this run cuts a new tag,
+      # `alphatag.anchor` IS that new tag; when it doesn't (build-only push, or
+      # the classifier said "none"), `alphatag.anchor` still carries the
+      # unchanged LATEST it echoed back, so both env vars agree — the `:-`
+      # fallback below only matters for the rare case the `alphatag` step
+      # itself did not run at all.
+      #
+      # `git show "refs/tags/${ANCHOR}:CHANGELOG.md"` reads the CHANGELOG AS IT
+      # STOOD AT THE TAGGED COMMIT — not this job's current working copy, which
+      # may already have moved on — so `extract` pulls exactly the entries that
+      # were unreleased at the moment this release was cut, mirroring the
+      # retired bridge step's "main's unreleased section AT THIS merge commit"
+      # logic (now: "alpha's unreleased section AT THIS tagged commit").
+      #
+      # WHY A SEPARATE WORKTREE (`/tmp/rollover`), NOT `git checkout -B` in
+      # THIS job's own checkout: unlike the retired bridge step (which ran
+      # alone in its own job), this step runs MID-WAY through deploy.yml, and
+      # later steps in the SAME job (the minification passes, then "Inject
+      # build info" below) read `git log -1` / `git rev-list --count HEAD`
+      # against the ORIGINAL triggering commit. Moving this checkout's own HEAD
+      # to alpha's moving tip would corrupt that build-number/commit-date
+      # arithmetic for the rest of this job. A worktree gives the rollover
+      # commit its own working directory and its own HEAD, fully isolated from
+      # the deploy's.
+      # https://git-scm.com/docs/git-worktree
+      #
+      # Every guard/failure below is a non-fatal `::warning::` + exit 0 — the
+      # release and tag this step rolls FOR are already live regardless of
+      # whether the rollover commit itself lands this run.
+      - name: Roll released changelog entries on alpha
+        if: github.ref_name == 'alpha' && steps.relanchor.outputs.latest != ''
+        env:
+          ALPHATAG_ANCHOR: ${{ steps.alphatag.outputs.anchor }}
+          RELANCHOR_LATEST: ${{ steps.relanchor.outputs.latest }}
+        run: |
+          set -euo pipefail
+          ANCHOR="${ALPHATAG_ANCHOR:-$RELANCHOR_LATEST}"
+          VER="${ANCHOR#v}"
+
+          if grep -qF "## [${VER}]" CHANGELOG.md 2>/dev/null; then
+            echo "CHANGELOG.md already carries a '## [${VER}]' heading — rollover already done, nothing to self-heal."
+            exit 0
+          fi
+
+          if ! git show "refs/tags/${ANCHOR}:CHANGELOG.md" > /tmp/released-changelog.md 2>/dev/null; then
+            echo "::warning::Could not read CHANGELOG.md at tag ${ANCHOR} — skipping changelog rollover this run."
+            exit 0
+          fi
+
+          if ! python3 .github/workflows/scripts/roll-changelog.py extract \
+              /tmp/released-changelog.md /tmp/released-section.md; then
+            echo "::warning::No unreleased section in CHANGELOG.md at ${ANCHOR} — nothing to roll."
+            exit 0
+          fi
+
+          git worktree add /tmp/rollover origin/alpha
+          if ! python3 .github/workflows/scripts/roll-changelog.py roll \
+              /tmp/rollover/CHANGELOG.md /tmp/released-section.md "$VER"; then
+            echo "::warning::Changelog rollover skipped (guards/post-conditions) — CHANGELOG.md untouched. Release + tag are unaffected."
+            git worktree remove /tmp/rollover --force
+            exit 0
+          fi
+
+          git -C /tmp/rollover config user.name  "github-actions[bot]"
+          git -C /tmp/rollover config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C /tmp/rollover add CHANGELOG.md
+          git -C /tmp/rollover commit -m "chore(changelog): roll released entries into ${VER} [skip ci]"
+
+          for attempt in 1 2 3 4 5; do
+            if git -C /tmp/rollover push origin HEAD:alpha; then
+              echo "Pushed changelog rollover on attempt $attempt"
+              git worktree remove /tmp/rollover --force
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt — rebasing on origin/alpha and retrying"
+            git -C /tmp/rollover fetch origin alpha
+            if ! git -C /tmp/rollover rebase origin/alpha; then
+              git -C /tmp/rollover rebase --abort || true
+              echo "::warning::Rebase onto origin/alpha conflicted — rollover not pushed (release/tag unaffected)."
+              git worktree remove /tmp/rollover --force
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+          echo "::warning::Failed to push changelog rollover after 5 attempts (release/tag unaffected)."
+          git worktree remove /tmp/rollover --force
 
       # WS-J #1020: the songs.json corpus file cache was decommissioned — every
       # read is live MySQL now (slim songs_index for the PWA, load_index /
@@ -495,15 +801,32 @@ jobs:
             sed -i "s|\[\"Build\"\]\[\"Number\"\] = NULL|\[\"Build\"\]\[\"Number\"\] = ${BUILD_NUMBER}|" "$VERFILE"
             echo "Injected build info into infoAppVer.php - ${SHORT_SHA} @ ${COMMIT_DATE} (build ${BUILD_NUMBER})"
 
-            # Release version (#1899 PR2): MAJOR.RELEASE from the latest
-            # production tag + the per-commit build number in the patch slot.
-            # Dormant until the first v* tag exists — an untagged repo deploys
-            # the committed value exactly as before. The tag-filter regex MUST
-            # stay byte-identical to promotion-deploy-bridge.yml's copy (guarded
-            # by tests/test-versioning-pipeline.js — rule #35). The `= "` in the
-            # Version.Number pattern makes the line-29 usage docblock
-            # (`echo $app[...]["Number"];`, no `= "`) a non-match; verified.
-            LATEST_TAG=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            # Release version (#1899 PR2, minter model updated #1963): MAJOR.
+            # RELEASE from the latest production tag + the per-commit build
+            # number in the patch slot. Dormant until the first v* tag exists —
+            # an untagged repo deploys the committed value exactly as before.
+            #
+            # #1963 CHANGE — read the anchor, don't re-resolve it: this used to
+            # re-grep `git tag -l` right here, with a comment demanding its
+            # regex stay byte-identical to promotion-deploy-bridge.yml's own
+            # copy (two files, one contract, nothing enforcing it but a
+            # comment — exactly the rule #35 failure shape). Now the SAME job's
+            # own "Resolve release anchor" step (and, on alpha, "Classify and
+            # cut release tag") already resolved this exact question once, so
+            # this step just reads that answer back rather than asking again.
+            # `steps.alphatag.outputs.anchor || steps.relanchor.outputs.latest`
+            # picks the alpha classifier's result when it ran (a fresh tag if
+            # one was just cut, or the unchanged latest if the commits since it
+            # were build-only) and falls back to the plain "latest reachable
+            # tag" resolution on beta/main, where the alpha-only classify step
+            # never runs. tests/test-versioning-pipeline.js check (12) asserts
+            # this step reads `steps.*.outputs` rather than re-grepping tags,
+            # and check (3') asserts the ONE tag-filter regex this now defers
+            # to lives solely in the "Resolve release anchor" step above. The
+            # `= "` in the Version.Number pattern below makes the line-29 usage
+            # docblock (`echo $app[...]["Number"];`, no `= "`) a non-match;
+            # verified.
+            LATEST_TAG="${{ steps.alphatag.outputs.anchor || steps.relanchor.outputs.latest }}"
             if [[ -n "$LATEST_TAG" ]]; then
               REL_BASE="${LATEST_TAG#v}"
               REL_MAJOR="${REL_BASE%%.*}"

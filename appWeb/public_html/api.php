@@ -2237,6 +2237,32 @@ if ($action !== null) {
                 ];
             }
 
+            /* #1962 — append the tblSongMedia REGISTRY's own audio rows for
+               this songbook, alongside the legacy static-literal entries
+               above. ELI5: some songs' audio lives only in the curator
+               upload table now, not the old flat scrape-data file, so the
+               offline downloader needs BOTH lists to actually get every
+               song's audio. DETAILED: `getAudioMediaStreamUrls()` is the
+               thin public accessor SongData exposes over its private
+               `_songMediaMap()` specifically for this (rule #22 — no
+               parallel SELECT here). Scoped to THIS songbook's SongIds only
+               (rule #17 — never a whole-corpus scan) by reusing the ids
+               `getSongs($audioBook)` already fetched, so no second songbook
+               lookup is needed. A song can legitimately end up with BOTH a
+               `/data/audio/…` entry AND a `/song-media/…` entry (e.g. the
+               scrape file still exists AND a curator later uploaded a
+               replacement) — that's fine: they are two DIFFERENT URLs, so
+               MEDIA_CACHE simply holds both, and invariant (A) means
+               neither is ever silently dropped on the caller's behalf. The
+               downstream entity/tier filters below key on `songId`, which
+               every appended entry carries, so they apply unchanged. */
+            $audioAllSongIds = array_column($audioSongs, 'id');
+            if ($audioAllSongIds) {
+                foreach ($songData->getAudioMediaStreamUrls($audioAllSongIds) as $regEntry) {
+                    $manifest[] = $regEntry;
+                }
+            }
+
             /* #1353 media protection — when content gating is ON, drop the audio
                of songs the requester can't access (the ENTITY model, mirroring
                the gated song-media.php route this offline manifest sidesteps).
@@ -2299,6 +2325,23 @@ if ($action !== null) {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'audio_signing.php';
                     if (audioSigningEnabled()) {
                         foreach ($manifest as &$audioEntry) {
+                            /* #1962 — only sign the LEGACY `/data/audio/…`
+                               literal. A `/song-media/…` streamUrl already
+                               carries its own cache-busting `?song=&v=`
+                               query (SongData::_songMediaMap()) and is
+                               served by song-media.php's OWN independent
+                               gate (checkContentAccess() +
+                               contentGatingMediaAllowed(), song-media.php
+                               ~L241-261) — signing it here would be
+                               redundant AND audioSignedUrlFor() returns a
+                               `/audio/<SongId>.mp3?exp=…&sig=…` shape that
+                               would silently DISCARD the streamUrl's own
+                               `?song=&v=` query, breaking
+                               swSongbookFromMediaUrl()'s `?song=`-based
+                               attribution for that entry. */
+                            if (!str_starts_with((string)$audioEntry['url'], '/data/audio/')) {
+                                continue;
+                            }
                             $signed = audioSignedUrlFor((string)$audioEntry['songId']);
                             if ($signed !== null) {
                                 $audioEntry['url'] = $signed;
