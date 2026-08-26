@@ -5,11 +5,9 @@
 # This software is proprietary.
 #
 # PURPOSE:
-# Fire the SFTP deploy when a promotion PR is *merged* into `beta` or `main`,
-# and — for `main` only — cut the `v<MAJOR>.<RELEASE>.0` release tag (#1899),
-# dispatch release.yml for it (a GITHUB_TOKEN-pushed tag does NOT fire
-# `on: push` — the same anti-recursion rule this whole file exists for), and
-# roll the released CHANGELOG entries onto alpha.
+# Fire the SFTP deploy when a promotion PR is *merged* into `beta` or `main`.
+# That is the WHOLE job again, as of #1963 — see "RELEASE TAGGING" below for
+# where its other half went.
 #
 # WHY THIS EXISTS (#1007):
 # deploy.yml triggers on `push` to main/beta/alpha. But the push produced by
@@ -23,32 +21,56 @@
 # step), but it explicitly covers ONLY alpha PRs — "PRs targeting main, beta,
 # etc. are unaffected." This workflow is that missing bridge for beta/main.
 #
-# RELEASE TAGGING (#1899):
-# The tag names a RELEASE, cut once per beta→main promotion:
-#   v<MAJOR>.<RELEASE>.0   RELEASE = latest release tag's minor + 1
-# (first tag = the §2 owner default, v1.0.0). MAJOR is the committed anchor;
-# the deployed patch slot carries the per-commit build number (deploy.yml, PR1).
-# deploy.yml parses this tag to inject `Version.Number = MAJOR.RELEASE.BUILD`.
-# The tag/release/rollover steps are ALL guarded on `base.ref == 'main'`, so
-# beta promotions run exactly the old single deploy-dispatch step, unchanged.
+# RELEASE TAGGING — RETIRED FROM THIS FILE (#1963, extending #1899):
+# #1899 originally cut the `v<MAJOR>.<RELEASE>.0` release tag HERE, on every
+# beta→main promotion, unconditionally — a promotion of nothing but a typo fix
+# still minted a new MINOR, because nothing here ever looked at WHAT was being
+# promoted. #1963 moves tag minting to deploy.yml, running on ALPHA, gated on
+# a Conventional-Commits classifier (`classify-bump.sh`) that reads the
+# commits since the last tag and only mints a new one when they actually
+# contain a `feat` or a breaking change. The GitHub Release dispatch and the
+# CHANGELOG "unreleased -> released" rollover moved with it — deploy.yml's own
+# "Dispatch release.yml" and "Roll released changelog entries on alpha" steps
+# are their new home. This file therefore no longer touches CHANGELOG.md,
+# pushes a tag, or dispatches release.yml — it goes back to being exactly the
+# #1007 deploy bridge it started as, for BOTH beta and main promotions alike
+# (no more `base.ref == 'main'`-only branch in its own steps; deploy.yml on
+# main still resolves + injects whatever the latest tag is, same as before).
+#
+# ⚠️ OPERATIONAL INVARIANT — promotion PRs MUST stay ancestry-preserving
+# (merged with a real merge commit, NEVER squashed or rebased) or beta/main
+# silently lose `v*` tag reachability. deploy.yml's "Resolve release anchor"
+# step (the tag scheme's ONE anchor resolution, #1963) filters on
+# `git tag -l --merged HEAD` — a tag stays visible to a branch only while it
+# is an actual ancestor of that branch's tip. A SQUASH merge of a promotion PR
+# rewrites the promoted commits onto a brand-new SHA that is not a descendant
+# of alpha's tagged history, so every tag alpha ever minted stops being
+# `--merged` beta/main's new HEAD — the anchor resolves to empty, and
+# deploy.yml's injection step falls back to the dormant path (the committed
+# Version.Number in infoAppVer.php, unchanged since the last hand-edit). The
+# symptom is quiet, not a failure: the deploy still goes green, the site still
+# serves, and the footer/settings page just shows a STALE version number
+# indefinitely. This is exactly the "identity ≠ content" trap
+# .claude/CLAUDE.md's commit/PR section already warns about for judging a
+# squash-merged branch as absorbed — the same squash that makes `git cherry`
+# lie about a branch's history makes `--merged` lie about a tag's reachability
+# from a promoted branch. Promotion PRs already merge this way by convention;
+# this note exists so a future change to that convention doesn't silently
+# break versioning on beta/main with no red anywhere to catch it.
 #
 # HOW:
 # On a *merged* PR into beta/main, dispatch deploy.yml for the base branch via
 # `gh workflow run`. workflow_dispatch is one of the events a workflow IS
 # allowed to trigger under GITHUB_TOKEN, so the dispatched deploy run executes
 # normally (and still honours deploy.yml's own `vars.SFTP_ENABLED` kill
-# switch + change detection). For main, the tag is cut BEFORE the deploy
-# dispatch so the release deploy's checkout fetches the fresh tag and injects
-# the new RELEASE (else it would inject the PREVIOUS release's number — an
-# off-by-one the tests/test-versioning-pipeline.js step-order guard pins).
+# switch + change detection, plus its own tag-anchor resolution described
+# above).
 #
 # ACTIVATION NOTE:
 # For `pull_request` events GitHub reads the workflow file from the PR's BASE
 # branch. So this file must exist on `beta` and on `main` to fire for PRs
-# merged into them — and the new main-only tag/release/rollover behaviour only
-# activates for main promotions once THIS file has itself been promoted to
-# `main`. Per repo convention this lands on `alpha` first and reaches beta/main
-# on the next promotion; to activate immediately, also place it on beta/main.
+# merged into them. Per repo convention this lands on `alpha` first and
+# reaches beta/main on the next promotion.
 # =============================================================================
 
 name: Promotion Deploy Bridge
@@ -63,11 +85,14 @@ on:
       - beta
       - main
 
-# `contents: write` (was read) — needed to push the release tag and the alpha
-# rollover commit (#1899). `actions: write` dispatches deploy.yml / release.yml.
+# `contents: read` (#1963 — was `write`): this workflow no longer pushes
+# anything (the tag push, the rollover commit, both moved to deploy.yml on
+# alpha) so it never needs write access to the repo contents. `actions: write`
+# stays — the one remaining step still dispatches deploy.yml via
+# `gh workflow run`, which requires it.
 permissions:
   actions: write
-  contents: write
+  contents: read
 
 # One dispatch in flight per target branch; don't cancel a running dispatch.
 concurrency:
@@ -82,79 +107,14 @@ jobs:
     if: github.event.pull_request.merged == true
     steps:
       # -----------------------------------------------------------------------
-      # Step 1 (main only): Checkout the merged commit.
-      # The bridge had no checkout before — tag naming needs the tag list and
-      # the rollover needs both changelogs. `fetch-tags: true` is explicit:
-      # fetch-depth: 0 alone is not a documented tag guarantee.
-      # -----------------------------------------------------------------------
-      - name: Checkout merged commit
-        if: github.event.pull_request.base.ref == 'main'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
-          fetch-depth: 0
-          fetch-tags: true
-
-      # -----------------------------------------------------------------------
-      # Step 2 (main only): Cut the release tag v<MAJOR>.<RELEASE>.0 (#1899).
-      #   RELEASE = latest release tag's minor + 1 (parse latest, increment —
-      #   never COUNT tags: counting breaks permanently if a tag is deleted/
-      #   added out of band; parse-and-increment is self-healing).
-      # The tag-filter grep MUST stay byte-identical to deploy.yml's copy
-      # (tests/test-versioning-pipeline.js enforces the agreement — rule #35).
-      # `|| true` on each grep pipeline is REQUIRED under pipefail (a no-match
-      # grep exits 1). Two idempotency guards make a job re-run harmless.
-      # -----------------------------------------------------------------------
-      - name: Cut release tag
-        id: reltag
-        if: github.event.pull_request.base.ref == 'main'
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          LATEST=$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-
-          # Idempotency guard 1: a re-run of this job must not double-tag.
-          EXISTING=$(git tag -l --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
-          if [[ -n "$EXISTING" ]]; then
-            echo "::notice::HEAD already carries release tag ${EXISTING} — re-run detected, not re-tagging."
-            echo "tag=$EXISTING" >> "$GITHUB_OUTPUT"
-            echo "created=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ -z "$LATEST" ]]; then
-            # ⚠️ OWNER-DECISION KNOB (#1899 §2): first tag under the new scheme.
-            # Default (a) clean start; option (b) would be v0.5251.0.
-            NEXT="v1.0.0"
-          else
-            BASE="${LATEST#v}"
-            MAJOR="${BASE%%.*}"
-            MINOR=$(echo "$BASE" | cut -d. -f2)
-            NEXT="v${MAJOR}.$((MINOR + 1)).0"
-          fi
-
-          # Idempotency guard 2: the computed name must be new (it always is, by
-          # construction — this catches out-of-band tag surgery; never clobber).
-          if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
-            echo "::warning::Computed tag ${NEXT} already exists elsewhere — refusing to move/reuse it. No tag cut."
-            echo "created=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$NEXT" -m "iHymns release ${NEXT} (promotion PR #${PR_NUMBER}, #1899)"
-          git push origin "refs/tags/${NEXT}"
-          echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "created=true" >> "$GITHUB_OUTPUT"
-          echo "::notice::Cut release tag ${NEXT}."
-
-      # -----------------------------------------------------------------------
-      # Step 3: Dispatch deploy.yml for the base branch (#1007).
-      # Placed AFTER the tag step so main's deploy checkout fetches the fresh
-      # tag and injects the new RELEASE. Beta promotions skip steps 1-2 via the
-      # `if:` guards above and hit this step exactly as before.
+      # Dispatch deploy.yml for the base branch (#1007).
+      #
+      # This is now the ONLY step in this file (#1963 — see the header for
+      # where the tag/release/rollover steps that used to sit here went). No
+      # checkout is needed: dispatching by branch name doesn't require this
+      # job to have the repo content locally at all, and deploy.yml's own
+      # checkout (triggered by this dispatch) resolves its own release anchor
+      # from ITS checkout, not from anything this job could have prepared.
       # -----------------------------------------------------------------------
       - name: Dispatch deploy.yml for the base branch
         env:
@@ -167,89 +127,3 @@ jobs:
           echo "PR #${PR_NUMBER} merged into ${BASE_REF} — dispatching deploy.yml on ${BASE_REF}."
           gh workflow run deploy.yml --repo "$REPO" --ref "$BASE_REF"
           echo "::notice::Dispatched deploy.yml on ${BASE_REF} (promotion deploy bridge, #1007)."
-
-      # -----------------------------------------------------------------------
-      # Step 4 (main only, only when a tag was created): Dispatch release.yml.
-      # The tag push above was GITHUB_TOKEN-authored, so release.yml's
-      # `on: push: tags:` will NOT fire (anti-recursion) — dispatch explicitly,
-      # on the tag ref itself so github.ref_name == the tag inside release.yml.
-      # Non-fatal (mirrors the old version-bump deploy-dispatch philosophy): a
-      # missed GitHub Release is recoverable; the tag deploy depends on is pushed.
-      # -----------------------------------------------------------------------
-      - name: Dispatch release.yml for the new tag
-        if: github.event.pull_request.base.ref == 'main' && steps.reltag.outputs.created == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ steps.reltag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          if gh workflow run release.yml --repo "$REPO" --ref "$TAG"; then
-            echo "::notice::Dispatched release.yml for ${TAG}."
-          else
-            echo "::warning::Could not dispatch release.yml for ${TAG} — create the GitHub Release manually or re-run this job."
-          fi
-
-      # -----------------------------------------------------------------------
-      # Step 5 (main only, only when a tag was created): Roll the released
-      # CHANGELOG entries onto alpha.
-      #   - The released content = main's `## [unreleased] — alpha` section at
-      #     THIS merge commit; extract it verbatim.
-      #   - Commit to ALPHA: main is push-protected (GH013, changelog.yml #904)
-      #     and the unreleased section is where alpha work accumulates; beta/
-      #     main inherit rolled sections on the next promotion (exactly as the
-      #     old version-bump rollover relied on).
-      #   - roll-changelog.py splits: entries that byte-match a released entry
-      #     move under the new heading; alpha-only entries (landed after the
-      #     beta cut) STAY unreleased — they belong to the NEXT release.
-      # Non-fatal on any skip/guard/conflict — the release + tag are unaffected.
-      # -----------------------------------------------------------------------
-      - name: Roll released changelog entries on alpha
-        if: github.event.pull_request.base.ref == 'main' && steps.reltag.outputs.created == 'true'
-        env:
-          TAG: ${{ steps.reltag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          VERSION="${TAG#v}"
-
-          # 1. Extract main's released (unreleased-at-merge) section verbatim.
-          if ! python3 .github/workflows/scripts/roll-changelog.py extract \
-              CHANGELOG.md /tmp/released-section.md; then
-            echo "::warning::No unreleased section in the released CHANGELOG — nothing to roll."
-            exit 0
-          fi
-
-          # 2. Switch to alpha (the branch the rollover commits to).
-          git fetch origin alpha
-          git checkout -B _rollover origin/alpha
-
-          # 3. Roll on alpha. exit 0 = rolled; non-zero = guard/post-condition
-          #    skip (file untouched) — warn and stop, release/tag unaffected.
-          if ! python3 .github/workflows/scripts/roll-changelog.py roll \
-              CHANGELOG.md /tmp/released-section.md "$VERSION"; then
-            echo "::warning::Changelog rollover skipped (guards/post-conditions) — CHANGELOG.md untouched. Release + tag are unaffected."
-            exit 0
-          fi
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git commit -m "chore(changelog): roll released entries into ${VERSION} [skip ci]"
-
-          # 5-attempt rebase-retry push (the proven version-bump/changelog.yml
-          # shape, incl. the abort-on-conflict fail-loud).
-          for attempt in 1 2 3 4 5; do
-            if git push origin "HEAD:alpha"; then
-              echo "Pushed on attempt $attempt"; exit 0
-            fi
-            echo "Push rejected on attempt $attempt — rebasing on origin/alpha and retrying"
-            git fetch origin alpha
-            if ! git rebase origin/alpha; then
-              git rebase --abort || true
-              echo "::error::Rebase onto origin/alpha conflicted — rollover not pushed (release/tag unaffected)."
-              exit 1
-            fi
-            sleep $((attempt * 2))
-          done
-          echo "::error::Failed to push changelog rollover after 5 attempts (release/tag unaffected)."
-          exit 1
