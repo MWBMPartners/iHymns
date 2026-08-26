@@ -84,8 +84,9 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * ========================================================================= */
 
 /* Semantic version number (MAJOR.MINOR.PATCH) */
-/* TAG-DERIVED SCHEME (#1899). This committed value is:
-     - the LOCAL-DEV / pre-first-tag display, and
+/* TAG-DERIVED SCHEME (#1899, minter model updated #1963). This committed
+   value is:
+     - the LOCAL-DEV / pre-first-tag / classifier-found-nothing display, and
      - the Apple MAJOR-parity anchor: appApple/Scripts/sync-version.sh reads
        THIS file (never a deployed artifact) and enforces that its MAJOR equals
        Versioning.xcconfig's MARKETING_VERSION major, so it MUST stay three
@@ -93,10 +94,29 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
        would otherwise fail).
    MAJOR is hand-edited here (rare — a product-identity decision). The DEPLOYED
    value is `MAJOR.RELEASE.BUILD`, rewritten by deploy.yml from the latest
-   production `v*` tag (RELEASE = the tag's minor) + the commit count (BUILD);
-   an untagged checkout deploys this committed value unchanged. The `v*` tags
-   are minted by promotion-deploy-bridge.yml at each beta→main promotion. The
-   old auto-bumper (version-bump.yml) that ballooned the minor to 5250 is
+   REACHABLE production `v*` tag (RELEASE = the tag's minor) + the commit count
+   (BUILD); an untagged checkout, or one where the classifier found nothing
+   feat/breaking since the anchor, deploys this committed value unchanged.
+
+   #1963 — WHO MINTS THE TAG, AND WHEN: the `v*` tags are minted by
+   deploy.yml's "Classify and cut release tag" step, running on ALPHA (not at
+   beta→main promotion — that was #1899's original, now-retired, model; see
+   promotion-deploy-bridge.yml's own header for the full history). Minting is
+   CONDITIONAL: a Conventional Commits classifier
+   (.github/workflows/scripts/classify-bump.sh,
+   https://www.conventionalcommits.org/en/v1.0.0/) reads every commit since
+   the last reachable tag and only cuts a new one when it finds an explicit
+   `feat` (-> new MINOR) or a breaking change (`!` marker or a line-anchored
+   `BREAKING CHANGE:`/`BREAKING-CHANGE:` footer, -> new MAJOR) — a structural
+   SAFE DEFAULT: anything else (fix/docs/chore/refactor/perf/ci/…) is
+   classified "none" and mints nothing, so a docs-only or chore-only alpha
+   push never inflates the version. The anchor itself is resolved via
+   `git tag -l --merged HEAD` (ancestry-scoped, not a raw tag list) so a
+   promotion PR that is ever squash-merged instead of true-merged would break
+   this reachability chain on beta/main — see promotion-deploy-bridge.yml's
+   "OPERATIONAL INVARIANT" note.
+
+   The old auto-bumper (version-bump.yml) that ballooned the minor to 5250 is
    RETIRED — do NOT rely on a "+1 on merge" happening here, and keep
    api-docs.yaml's info.version in lockstep on any manual edit
    (tests/php/test-openapi-actions-exist.php guards it).
@@ -143,11 +163,20 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      with a mutation-proven CI guard and a browser-router mirror. Editor2 also
      regained its admin chrome — navbar/exit, footer, and the shared
      bottom-right toast (#1856) — and a compacted, still-accessible (buttons,
-     never drag) arrangement editor (#1857). */
+     never drag) arrangement editor (#1857).
+   - 1.0.0 -> 1.1.0, retrospective minor for the #1955 dormant-features
+     enhancement batch landed since the 2026-08-24 v1.0.0 baseline (#1963,
+     extending #1899): the anchor is now the latest REACHABLE v* tag, minted
+     on alpha by the Conventional Commits classifier
+     (.github/workflows/scripts/classify-bump.sh) rather than unconditionally
+     at every beta->main promotion; this committed value is only the
+     local-dev / no-tag / classifier-found-nothing fallback deploy.yml falls
+     back to — it is not itself re-bumped by hand on every release the
+     classifier cuts. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "1.0.0";
+$app["Application"]["Version"]["Number"] = "1.1.0";
 
 /* Build number — the git commit count (`git rev-list --count HEAD`): a
  * monotonic, per-commit build identifier that advances on every landed commit,
