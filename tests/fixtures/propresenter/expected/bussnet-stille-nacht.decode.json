@@ -1,0 +1,41 @@
+{
+  "name": "Stille Nacht",
+  "selectedArrangement": "0E40C143-8B08-4BC3-8B21-EB6884E4C171",
+  "arrangements": [
+    {
+      "uuid": "0E40C143-8B08-4BC3-8B21-EB6884E4C171",
+      "name": "normal",
+      "groupIdentifiers": [
+        "D55BC414-416E-4281-9512-4E28FD9A9FD2"
+      ]
+    }
+  ],
+  "cueGroups": [
+    {
+      "groupUuid": "D55BC414-416E-4281-9512-4E28FD9A9FD2",
+      "groupName": "Strophe",
+      "cueIdentifiers": [
+        "A9642A69-7322-4F2E-A017-0AFF3B37761E"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "uuid": "A9642A69-7322-4F2E-A017-0AFF3B37761E",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgU3RpbGxlIE5hY2h0LCBoZWlsaWdlIE5hY2h0XApBbGxlcyBzY2hsXCdlNGZ0LCBlaW5zYW0gd2FjaHR9"
+        }
+      ]
+    }
+  ],
+  "ccli": {
+    "author": "",
+    "artistCredits": "",
+    "songTitle": "",
+    "publisher": "",
+    "copyrightYear": null,
+    "songNumber": null
+  }
+}

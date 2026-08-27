@@ -1,0 +1,51 @@
+{
+  "name": "Doxology",
+  "selectedArrangement": "535A6C27-E2CB-4AD2-AF55-A9899720CC65",
+  "arrangements": [
+    {
+      "uuid": "535A6C27-E2CB-4AD2-AF55-A9899720CC65",
+      "name": "normal",
+      "groupIdentifiers": [
+        "8CAEE286-E430-459A-9D79-BAB63A0BDD7D"
+      ]
+    }
+  ],
+  "cueGroups": [
+    {
+      "groupUuid": "8CAEE286-E430-459A-9D79-BAB63A0BDD7D",
+      "groupName": "Verse",
+      "cueIdentifiers": [
+        "FD972F9E-4B50-40D2-B966-0E1CA2EE68B6",
+        "17F55F5A-3707-4396-8722-C09BF60C524F"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "uuid": "FD972F9E-4B50-40D2-B966-0E1CA2EE68B6",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgUHJhaXNlIEdvZCBmcm9tIHdob20gYWxsIGJsZXNzaW5ncyBmbG93XApQcmFpc2UgSGltIGFsbCBjcmVhdHVyZXMgaGVyZSBiZWxvd30="
+        }
+      ]
+    },
+    {
+      "uuid": "17F55F5A-3707-4396-8722-C09BF60C524F",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgUHJhaXNlIEhpbSBhYm92ZSB5ZSBoZWF2ZW5seSBob3N0XApQcmFpc2UgRmF0aGVyIFNvbiBhbmQgSG9seSBHaG9zdH0="
+        }
+      ]
+    }
+  ],
+  "ccli": {
+    "author": "",
+    "artistCredits": "",
+    "songTitle": "",
+    "publisher": "",
+    "copyrightYear": null,
+    "songNumber": null
+  }
+}

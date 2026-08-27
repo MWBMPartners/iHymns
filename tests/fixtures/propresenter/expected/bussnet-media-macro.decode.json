@@ -1,0 +1,33 @@
+{
+  "name": "Moderation",
+  "selectedArrangement": null,
+  "arrangements": [],
+  "cueGroups": [
+    {
+      "groupUuid": "C2A39072-2542-4BD4-9A71-E21B044F8E34",
+      "groupName": "",
+      "cueIdentifiers": [
+        "B87AED3A-749C-4EB9-85ED-2DE7C0D2C0A0",
+        "39BF6989-6DC0-4A44-9F24-A728C986673F"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "uuid": "B87AED3A-749C-4EB9-85ED-2DE7C0D2C0A0",
+      "elements": []
+    },
+    {
+      "uuid": "39BF6989-6DC0-4A44-9F24-A728C986673F",
+      "elements": []
+    }
+  ],
+  "ccli": {
+    "author": "",
+    "artistCredits": "",
+    "songTitle": "",
+    "publisher": "",
+    "copyrightYear": null,
+    "songNumber": null
+  }
+}

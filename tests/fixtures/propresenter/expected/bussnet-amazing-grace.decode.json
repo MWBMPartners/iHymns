@@ -1,0 +1,68 @@
+{
+  "name": "Amazing Grace",
+  "selectedArrangement": "0FA8AFD4-81A8-464E-B300-CC0FAA2BBEB3",
+  "arrangements": [
+    {
+      "uuid": "0FA8AFD4-81A8-464E-B300-CC0FAA2BBEB3",
+      "name": "normal",
+      "groupIdentifiers": [
+        "BD1A0523-4CF0-4543-B51D-54903FD264B7",
+        "A98B2114-067F-4E3E-B858-C1B6BC38D8F7"
+      ]
+    }
+  ],
+  "cueGroups": [
+    {
+      "groupUuid": "BD1A0523-4CF0-4543-B51D-54903FD264B7",
+      "groupName": "Verse 1",
+      "cueIdentifiers": [
+        "DA4E0C0A-C922-45B5-8C54-6DEC7F8CF55B",
+        "9EB9F92E-0235-464A-9FF6-E3528E335D85"
+      ]
+    },
+    {
+      "groupUuid": "A98B2114-067F-4E3E-B858-C1B6BC38D8F7",
+      "groupName": "Verse 2",
+      "cueIdentifiers": [
+        "A6703D16-8E25-4D1A-8171-F433D6DCDCCA"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "uuid": "DA4E0C0A-C922-45B5-8C54-6DEC7F8CF55B",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgQW1hemluZyBncmFjZSBob3cgc3dlZXQgdGhlIHNvdW5kXApUaGF0IHNhdmVkIGEgd3JldGNoIGxpa2UgbWV9"
+        }
+      ]
+    },
+    {
+      "uuid": "9EB9F92E-0235-464A-9FF6-E3528E335D85",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgSSBvbmNlIHdhcyBsb3N0IGJ1dCBub3cgYW0gZm91bmRcCldhcyBibGluZCBidXQgbm93IEkgc2VlfQ=="
+        }
+      ]
+    },
+    {
+      "uuid": "A6703D16-8E25-4D1A-8171-F433D6DCDCCA",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyNzYxClxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibFxmMFxmbmlsXGZjaGFyc2V0MCBIZWx2ZXRpY2FOZXVlO30Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7XHJlZDI1NVxncmVlbjI1NVxibHVlMjU1O30Ke1wqXGV4cGFuZGVkY29sb3J0Ymw7O1xjc2dyYXlcYzEwMDAwMDt9ClxkZWZ0YWIxNjgwClxwYXJkXHBhcmRlZnRhYjE2ODBccGFyZGlybmF0dXJhbFxxY1xwYXJ0aWdodGVuZmFjdG9yMAoKXGYwXGZzODQgXGNmMiBcQ29jb2FMaWdhdHVyZTAgJ1R3YXMgZ3JhY2UgdGhhdCB0YXVnaHQgbXkgaGVhcnQgdG8gZmVhclwKQW5kIGdyYWNlIG15IGZlYXJzIHJlbGlldmVkfQ=="
+        }
+      ]
+    }
+  ],
+  "ccli": {
+    "author": "",
+    "artistCredits": "",
+    "songTitle": "",
+    "publisher": "",
+    "copyrightYear": null,
+    "songNumber": null
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "Empty Single Slide",
+  "selectedArrangement": null,
+  "arrangements": [],
+  "cueGroups": [
+    {
+      "groupUuid": "3E120CBF-5021-4F05-9232-A928B5C1B856",
+      "groupName": "",
+      "cueIdentifiers": [
+        "9FE98FD2-3987-4694-BF07-C982E4DC025E"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "uuid": "9FE98FD2-3987-4694-BF07-C982E4DC025E",
+      "elements": [
+        {
+          "info": 3,
+          "rtfBase64": "e1xydGYxXGFuc2lcYW5zaWNwZzEyNTJcY29jb2FydGYyODY1Clxjb2NvYXRleHRzY2FsaW5nMFxjb2NvYXBsYXRmb3JtMHtcZm9udHRibH0Ke1xjb2xvcnRibDtccmVkMjU1XGdyZWVuMjU1XGJsdWUyNTU7fQp7XCpcZXhwYW5kZWRjb2xvcnRibDs7fQp9"
+        }
+      ]
+    }
+  ],
+  "ccli": {
+    "author": "",
+    "artistCredits": "",
+    "songTitle": "",
+    "publisher": "",
+    "copyrightYear": null,
+    "songNumber": null
+  }
+}
