@@ -336,6 +336,15 @@ browser and remains owner-verified.
 - Export: `js/modules/export-ui.js` (wiring, router-driven) · `manage/editor/format-export.js`
   (7 formats) · `manage/editor/propresenter-export.js` (PP7 protobuf + the shared ZIP writer) ·
   `includes/partials/export-menu.php` (THE single menu source for both public surfaces).
+- **ProPresenter 7+ interop (epic #1968)** → plan `.claude/propresenter-interop-1968-plan.md`;
+  MIT-licensed reference projects + real fixtures (with a file-verified copyright triage — decode the
+  `ccli`, never trust the filename) in `.claude/propresenter-reference-sources.md`
+  (greyshirtguy/propresenter7-proto = the vendored proto source, ChrisMBarr/propresenter-parser =
+  real `.pro` fixtures incl. the only Windows sample, bussnet/propresenter7-php-lib = PHP reader +
+  `.probundle`/`.proplaylist` specs). `.pro` = protobuf `rv.data.Presentation`; **RTF has TWO dialects
+  PP7 itself writes** (Mac `\cocoartf` + Windows `\rtf0`/`\par`) so import must parse both; `.probundle`
+  = ZIP64/STORED; export fix #1950 (Cocoa RTF) merged. The owner's genuine v21.4 samples are in
+  `_temp/` on alpha (`2642f28`).
 - Duplicate / counterpart scoring → `includes/song_similarity.php` (the ONE scorer; never re-fork).
   Exact dedup fold → `ihymns_normalize_title()`; fuzzy fold → `ihymns_sim_normalise()`.
 - DB access → `includes/db_mysql.php::getDbMysqli()` ONLY (no PDO, no raw `new mysqli`); always
