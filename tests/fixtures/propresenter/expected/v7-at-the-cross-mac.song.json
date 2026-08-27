@@ -1,0 +1,35 @@
+{
+    "title": "At the Cross",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "",
+    "writers": [],
+    "components": [
+        {
+            "type": "refrain",
+            "number": 0,
+            "lines": [
+                "I know a place",
+                "A wonderful place",
+                "Where accused and condemned",
+                "Find mercy and grace",
+                "Where the wrongs we have done",
+                "And the wrongs done to us",
+                "Were nailed there with him",
+                "There on the cross",
+                "At the cross",
+                "He died for our sins",
+                "At the cross",
+                "He gave us life again"
+            ],
+            "label": "Song"
+        }
+    ],
+    "arrangement": null,
+    "warnings": [
+        "skipped non-lyric group \"Blank\"",
+        "artist_credits \"Hymn\" is not imported (no tblSongArtists writer yet)"
+    ]
+}

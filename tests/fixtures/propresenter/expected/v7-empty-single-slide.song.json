@@ -1,0 +1,4 @@
+{
+    "expectFailure": true,
+    "reasonContains": "no lyric text found in ProPresenter 7+ document"
+}

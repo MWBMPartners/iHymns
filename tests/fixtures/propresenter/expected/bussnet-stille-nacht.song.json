@@ -1,0 +1,22 @@
+{
+    "title": "Stille Nacht",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "",
+    "writers": [],
+    "components": [
+        {
+            "type": "refrain",
+            "number": 0,
+            "lines": [
+                "Stille Nacht, heilige Nacht",
+                "Alles schläft, einsam wacht"
+            ],
+            "label": "Strophe"
+        }
+    ],
+    "arrangement": null,
+    "warnings": []
+}

@@ -1,0 +1,59 @@
+{
+    "title": "Titel",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "123456789",
+    "copyright": "Herausgeber 1234",
+    "writers": [
+        "Autor"
+    ],
+    "components": [
+        {
+            "type": "verse",
+            "number": 1,
+            "lines": [
+                "Vers1.1",
+                "Vers1.2",
+                "Vers1.3",
+                "Vers1.4"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 2,
+            "lines": [
+                "Vers2.1",
+                "Vers2.2"
+            ]
+        },
+        {
+            "type": "chorus",
+            "number": 0,
+            "lines": [
+                "Chorus1",
+                "Chorus2"
+            ]
+        },
+        {
+            "type": "outro",
+            "number": 0,
+            "lines": [
+                "Trans Original 1",
+                "Trans Original 2"
+            ],
+            "label": "Ending"
+        }
+    ],
+    "arrangement": [
+        2,
+        0,
+        2,
+        1,
+        2
+    ],
+    "warnings": [
+        "1 translation layer(s) present — not imported (see the per-line-translations follow-up, plan §3.4)",
+        "artist_credits \"Künstler\" is not imported (no tblSongArtists writer yet)"
+    ]
+}

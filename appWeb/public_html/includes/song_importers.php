@@ -3155,6 +3155,18 @@ function _bulkImport_parseOpenLyrics(string $body): array
  * Format-agnostic: any importer whose parser returns the
  * { title, language, ccli, copyright, writers[], components[] } keys can
  * reuse this (OpenLyrics #1052, ProPresenter 6 #1057, …).
+ *
+ * `arrangement` (#1968 PR-1) — an optional `?int[]` of indices into
+ * `components[]` (repeats allowed, e.g. a refrain between every verse),
+ * passed straight through to `_bulkImport_saveSong()`, which already
+ * persists it via `_sanitiseArrangement()` under the schema-probed
+ * `ArrangementJson` column (#892, L591-634) — this is simply the FIRST
+ * parser to actually populate the key; every earlier caller left it unset,
+ * which `?? null` below already handled identically to an explicit null.
+ * `_bulkImport_parsePro7()` is the first producer (`.pro` files carry real
+ * ProPresenter arrangements); any future importer with its own native
+ * arrangement concept (e.g. a richer XML format) can reuse this same key
+ * with no further plumbing.
  */
 function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookName, int $number): array
 {
@@ -3181,6 +3193,7 @@ function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookN
         'translators'        => [],
         'altTitles'          => (array)($parsed['altTitles'] ?? []),
         'components'         => (array)($parsed['components'] ?? []),
+        'arrangement'        => $parsed['arrangement'] ?? null,
     ];
 }
 
@@ -3549,23 +3562,194 @@ function _bulkImport_processXmlAuto(string $body, ?string $filenameHint = null):
  * =========================================================================== */
 
 /**
- * Minimal RTF → plain-text converter, sufficient for the simple RTF
+ * cp1252 (Windows-1252) byte -> UTF-8 string, for one `\'XX` RTF hex escape.
+ * ============================================================================
+ * ELI5: `\ansicpg1252` (declared by every dual-dialect RTF fixture this file has
+ * seen — Mac `\cocoartf…` AND Windows `\rtf0…`) means "when you see `\'93`, that
+ * is not the raw byte 0x93 — it is a Windows-1252-encoded character, and 0x93
+ * means a curly left double-quote, not the C1 control code raw bytes would
+ * suggest." The OLD code (`chr(hexdec($hex))`, pre-#1968) just returned the raw
+ * byte, which for 0x80–0xFF is not valid UTF-8 on its own — every downstream
+ * consumer (the DB write, the browser) either mojibakes it or silently drops
+ * the invalid sequence. This turns the byte into the UTF-8 bytes for the
+ * character it actually means.
+ *
+ * DETAILED — why a hand-rolled 0x80–0x9F table instead of leaning on
+ * `mb_convert_encoding($chr, 'UTF-8', 'Windows-1252')` for the whole range
+ * (plan §3.6 change 2): 0xA0–0xFF is BYTE-IDENTICAL between Windows-1252 and
+ * ISO-8859-1/Unicode Latin-1 Supplement (codepoint == byte value) — a fact
+ * fixed by the standard, not an implementation detail — so those 96 bytes need
+ * no lookup at all, only a codepoint->UTF-8 encode. Only 0x80–0x9F actually
+ * differs (that block is where cp1252 packs the smart quotes / em-dash / €
+ * that ISO-8859-1 instead reserves for C1 control codes), so that is the ONLY
+ * block that needs a table — and a fixed 32-entry table is trivially
+ * unit-testable (tests/php/test-pp7-rtf-extract.php) without depending on
+ * mbstring's own encoding-alias support being present/correctly built (this
+ * codebase already treats `mb_chr`/`mb_convert_encoding` as "assumed present,
+ * guarded" rather than hard-required — see the existing `function_exists`
+ * checks in `_bulkImport_rtfToText()` below). The table's values are the
+ * standard Windows-1252 mapping (5 code points — 0x81/0x8D/0x8F/0x90/0x9D —
+ * are UNDEFINED in the strict cp1252 spec; this table follows the WHATWG
+ * `windows-1252` decoder's convention of falling back to the byte's own value
+ * for those 5, which is also what PHP's own `mb_convert_encoding` does —
+ * verified empirically against this exact PHP build during implementation).
+ *
+ * @param int $byte 0-255 (a `\'XX` escape's two hex digits, already validated
+ *                  by the caller via `ctype_xdigit()`)
+ * @return string the UTF-8 encoding of the character that byte means under
+ *                cp1252 — never throws; degrades to '' only in the
+ *                practically-impossible case that mbstring is entirely absent
+ *                AND the codepoint needs multi-byte encoding
+ * @see https://en.wikipedia.org/wiki/Windows-1252                 the 0x80-0x9F mapping table
+ * @see https://encoding.spec.whatwg.org/#legacy-single-byte-encodings   the "undefined -> identity" fallback convention
+ * @see .claude/propresenter-interop-1968-plan.md                  §3.6 change 2
+ */
+function _bulkImport_rtfCp1252ByteToUtf8(int $byte): string
+{
+    static $upperBlock = null;
+    if ($upperBlock === null) {
+        // 0x80-0x9F only — see the doc-block above for why 0xA0-0xFF needs no table.
+        $upperBlock = [
+            0x80 => 0x20AC, 0x81 => 0x0081, 0x82 => 0x201A, 0x83 => 0x0192,
+            0x84 => 0x201E, 0x85 => 0x2026, 0x86 => 0x2020, 0x87 => 0x2021,
+            0x88 => 0x02C6, 0x89 => 0x2030, 0x8A => 0x0160, 0x8B => 0x2039,
+            0x8C => 0x0152, 0x8D => 0x008D, 0x8E => 0x017D, 0x8F => 0x008F,
+            0x90 => 0x0090, 0x91 => 0x2018, 0x92 => 0x2019, 0x93 => 0x201C,
+            0x94 => 0x201D, 0x95 => 0x2022, 0x96 => 0x2013, 0x97 => 0x2014,
+            0x98 => 0x02DC, 0x99 => 0x2122, 0x9A => 0x0161, 0x9B => 0x203A,
+            0x9C => 0x0153, 0x9D => 0x009D, 0x9E => 0x017E, 0x9F => 0x0178,
+        ];
+    }
+    if ($byte < 0x80) {
+        return chr($byte); // ASCII — identical under every encoding this function ever sees.
+    }
+    // 0xA0-0xFF: Windows-1252 codepoint == byte value (Latin-1 Supplement), no table needed.
+    $codepoint = $byte <= 0x9F ? ($upperBlock[$byte] ?? $byte) : $byte;
+    $ch = function_exists('mb_chr') ? mb_chr($codepoint, 'UTF-8') : null;
+    return ($ch !== null && $ch !== false) ? $ch : '';
+}
+
+/**
+ * Minimal RTF -> plain-text converter, sufficient for the simple RTF
  * ProPresenter stores (lyric runs with \par / \line breaks, \uN unicode,
  * \'XX hex bytes; \fonttbl / \colortbl / \*-destinations discarded).
+ *
+ * DUAL-DIALECT CONTRACT (#1968 plan §3.6) — this is the ONE shared decoder
+ * for every RTF-bearing importer in this file (Pro6, EasyWorship, Proclaim,
+ * and — from PR-1 onward — ProPresenter 7+'s `_bulkImport_parsePro7()`).
+ * Input: one RTF document, EITHER dialect real ProPresenter writes (Mac
+ * `{\rtf1\ansi\ansicpg1252\cocoartf<ver>…` using an escaped-CRLF "soft
+ * return" as its line break, or Windows `{\rtf0\ansi\ansicpg1252…` using
+ * `\par`), or the plain single-dialect RTF Pro6/EasyWorship/Proclaim already
+ * fed it before PR-1. Output: UTF-8 plain text, lines separated by `\n`;
+ * header/table/ignorable-destination groups (`\fonttbl`, `\colortbl`,
+ * `{\*\…}`, …) contribute nothing; formatting control words strip silently;
+ * unknown control words strip silently. NEVER THROWS — malformed/truncated
+ * input degrades to whatever text was recovered before the malformed part,
+ * matching every other importer's "never abort the whole batch on one bad
+ * file" posture (plan §3.7).
+ *
+ * FOUR TARGETED CHANGES landed for #1968 PR-1 (plan §3.6; change 4 is the
+ * PR-1 correctness-defect fix, dominant-font lyric selection) — each one is a
+ * strict correctness fix for the PRE-EXISTING Pro6/EasyWorship/Proclaim
+ * callers too, not just new ProPresenter-7 code, and each is protected by a
+ * non-regression row in tests/php/test-pp7-rtf-extract.php so this shared
+ * function can safely keep being shared (CLAUDE.md modularity rule) instead
+ * of ProPresenter 7+ forking its own copy:
+ *   1. A backslash immediately followed by a raw CR and/or LF (the Cocoa
+ *      "soft return") now emits a newline instead of being silently dropped
+ *      by the generic "other control symbol" branch — verified byte-for-byte
+ *      against a real Mac-exported .pro fixture (see the `\` + CR/LF branch
+ *      below for the exact hex evidence). Before this fix, EVERY Mac-authored
+ *      ProPresenter file (and any Cocoa-flavoured .pro6/EasyWorship RTF) had
+ *      its soft-return-separated lines silently joined into one run-on line.
+ *   2. `\'XX` now converts through `_bulkImport_rtfCp1252ByteToUtf8()` (cp1252-
+ *      aware) instead of `chr($byte)` — the old code emitted the RAW byte for
+ *      0x80-0xFF, which is not valid UTF-8 on its own (a latent mojibake bug
+ *      in every current importer for any Windows-authored source; retrospective
+ *      issue filed per plan §12.2 item 1).
+ *   3. `\uN` supplementary-plane characters are encoded in RTF as a signed
+ *      16-bit HIGH surrogate escape immediately followed by a LOW surrogate
+ *      escape (each with its own `\uc`-controlled ASCII fallback tail) — the
+ *      old code fed each half to `mb_chr()` on its own, which returns `false`
+ *      for a lone surrogate (not a valid Unicode scalar value), so BOTH
+ *      halves were silently dropped. This buffers a high surrogate and
+ *      combines it with the following low surrogate into the one real
+ *      character (rare in hymnody, but cheap to do right — see the
+ *      surrogate-pair truth-table row for the exact math). Separately, the
+ *      Cocoa `\uc0\u8232 ` LINE SEPARATOR (U+2028, and U+2029 PARAGRAPH
+ *      SEPARATOR) idiom is also folded to `\n` here, matching how `\par`
+ *      already reads as a line break.
+ *   4. OPTIONAL dominant-font suppression via `$minFontHalfPts` (epic #1968
+ *      PR-1 correctness-defect fix). ELI5: a genuine ProPresenter lyric
+ *      slide can carry the real, large-font lyric AND a small copyright /
+ *      CCLI-display run (or, empirically, a stray small-font RTF-writer
+ *      artifact — see `_bulkImport_pro7RtfMaxFontHalfPts()`'s doc-block) in
+ *      the SAME `rtf_data`; without this, both runs were concatenated
+ *      verbatim, PREPENDING the small run onto the real lyric line
+ *      ("',I know a place" instead of "I know a place"). DETAILED: while
+ *      walking, the CURRENT `\fsN` (half-point font size) is tracked on a
+ *      group-scoped stack (`$fontSizeStack`), mirroring exactly how `\uc`'s
+ *      skip-count is already tracked on `$ucStack` just above — `\fsN` sets
+ *      the CURRENT group's size, a nested `{…}` group inherits it, and it
+ *      reverts when that group closes, per the RTF spec's normal character-
+ *      formatting-attribute scoping (see the `@see` RTF spec link below).
+ *      Whenever `$minFontHalfPts > 0` (the caller's chosen "this run is the
+ *      lyric" cutoff — see `_bulkImport_pro7RtfMaxFontHalfPts()`) AND the
+ *      CURRENT tracked size is BOTH non-zero (an `\fsN` was actually seen —
+ *      size 0 means "unknown", never suppressed, so a run with no explicit
+ *      `\fsN` at all is never accidentally dropped) AND strictly LESS than
+ *      `$minFontHalfPts`, every text-emitting branch below (`\'XX`, `\uN`,
+ *      `\par`/`\line`, `\tab`, escaped braces, and plain literal characters)
+ *      suppresses ONLY that emission — control words, group nesting and the
+ *      `\uc`/`\'XX` skip-count bookkeeping still process completely
+ *      normally, so a suppressed run never desyncs the rest of the walk.
+ *      **DEFAULT-0 NON-REGRESSION CONTRACT**: `$minFontHalfPts = 0` (every
+ *      EXISTING Pro6/EasyWorship/Proclaim call site, which passes nothing)
+ *      makes the suppression check always false — font-size tracking still
+ *      runs (harmless bookkeeping with no side effect), but NOTHING is ever
+ *      suppressed, so output is BYTE-IDENTICAL to before this change;
+ *      proven by tests/php/test-pp7-rtf-extract.php section (b) and by the
+ *      truth-table row pairing the SAME two-font input against
+ *      `$minFontHalfPts = 0` vs. a real cutoff (section (a)).
  *
  * Implemented as a single-pass tokeniser tracking group depth so nested
  * destination groups (font/colour/style tables, \* groups) are skipped
  * wholesale rather than leaking control text into the lyrics.
+ *
+ * @param string $rtf             one RTF document (Mac dialect, Windows dialect, or plain)
+ * @param int    $minFontHalfPts  #1968 PR-1: suppress text emitted while the CURRENT
+ *                                 group-scoped `\fsN` (RTF half-points) is non-zero and
+ *                                 strictly less than this value. Default 0 = no filtering
+ *                                 at all (today's exact behaviour — the non-regression
+ *                                 contract every pre-existing caller relies on).
+ * @return string UTF-8 plain text, `\n`-separated lines; never throws
+ * @see https://www.biblioscape.com/rtf15_spec.htm                 §"An RTF Reader" (destinations, \uN, \'XX, character formatting scope)
+ * @see .claude/propresenter-interop-1968-plan.md                  §3.6 (this function's brief + truth table)
+ * @see tests/php/test-pp7-rtf-extract.php                          the truth table + non-regression rows
  */
-function _bulkImport_rtfToText(string $rtf): string
+function _bulkImport_rtfToText(string $rtf, int $minFontHalfPts = 0): string
 {
     $out = '';
     $i   = 0;
     $n   = strlen($rtf);
     $depth          = 0;
     $ucStack        = [1];   // \uc skip-count per group level
+    $fontSizeStack  = [0];   // #1968 change 4 — \fsN (half-points) per group level, 0 = "unknown"
     $unicodeSkip    = 0;     // literal chars still to swallow after a \uN
     $skipUntilDepth = -1;    // when >=0, suppress output until depth drops below it
+    $pendingHighSurrogate = null; // #1968 change 3 — a buffered \uN high surrogate awaiting its low pair
+
+    /* #1968 change 4 — true while the CURRENT group's tracked \fsN is smaller
+       than the caller's dominant-font cutoff. A closure (not a plain bool)
+       because it must always read the LIVE top of $fontSizeStack, which
+       changes on every \fsN / group open+close below. $minFontHalfPts === 0
+       (every pre-existing caller) makes this always false — see the
+       function doc-block's "DEFAULT-0 NON-REGRESSION CONTRACT". */
+    $isFontSuppressed = static function () use (&$fontSizeStack, $minFontHalfPts): bool {
+        $current = $fontSizeStack[count($fontSizeStack) - 1];
+        return $minFontHalfPts > 0 && $current > 0 && $current < $minFontHalfPts;
+    };
 
     while ($i < $n) {
         $c = $rtf[$i];
@@ -3577,19 +3761,50 @@ function _bulkImport_rtfToText(string $rtf): string
             if ($next === '\\' || $next === '{' || $next === '}') {
                 if ($skipUntilDepth < 0) {
                     if ($unicodeSkip > 0) { $unicodeSkip--; }
-                    else                  { $out .= $next; }
+                    elseif (!$isFontSuppressed()) { $out .= $next; }
                 }
                 $i += 2;
                 continue;
             }
 
-            /* \'XX — one hex-encoded byte. */
+            /* #1968 change 1 — a backslash immediately followed by a raw CR
+               and/or LF is the Cocoa "soft return": RTF spec-equivalent to
+               \par (https://www.biblioscape.com/rtf15_spec.htm — an escaped
+               end-of-line is a paragraph break). Byte-verified against a real
+               Mac-exported ProPresenter 7 fixture during implementation
+               (tests/fixtures/propresenter/bussnet-test.pro, the "Ending" cue's
+               first text element: the bytes `...31 5C 0A 54 72 61 6E 73...`
+               are "1" + [\ + LF] + "Trans" — i.e. exactly a backslash directly
+               followed by a raw newline, mid-word-boundary, meaning "line
+               break here", not "drop this character"). Consumes AT MOST one
+               CR then one LF so a CRLF-terminated soft return collapses to
+               ONE newline, matching \par's single "\n" output below. Before
+               this fix the "other control symbol" branch further down treated
+               `\` + newline as a two-byte symbol to silently drop, joining
+               every soft-return-separated line into one run-on line — the
+               EXACT bug this fixture's "Trans Original 1<newline>Trans
+               Original 2" text was written to expose (see
+               tests/php/test-pp7-rtf-extract.php truth-table row 1). */
+            if ($next === "\r" || $next === "\n") {
+                $j = $i + 2;
+                if ($next === "\r" && $j < $n && $rtf[$j] === "\n") { $j++; }
+                if ($skipUntilDepth < 0) {
+                    if ($unicodeSkip > 0) { $unicodeSkip--; }
+                    elseif (!$isFontSuppressed()) { $out .= "\n"; }
+                }
+                $i = $j;
+                continue;
+            }
+
+            /* \'XX — one hex-encoded byte. #1968 change 2: cp1252-aware
+               conversion (was raw chr($byte), invalid UTF-8 for 0x80-0xFF —
+               see _bulkImport_rtfCp1252ByteToUtf8()'s doc-block). */
             if ($next === "'") {
                 $hex = substr($rtf, $i + 2, 2);
                 $i  += 4;
                 if ($skipUntilDepth < 0) {
                     if ($unicodeSkip > 0) { $unicodeSkip--; }
-                    elseif (ctype_xdigit($hex)) { $out .= chr(hexdec($hex)); }
+                    elseif (ctype_xdigit($hex) && !$isFontSuppressed()) { $out .= _bulkImport_rtfCp1252ByteToUtf8(hexdec($hex)); }
                 }
                 continue;
             }
@@ -3613,23 +3828,72 @@ function _bulkImport_rtfToText(string $rtf): string
 
                 switch ($word) {
                     case 'u':
+                        /* #1968 change 3 — surrogate-pair combining. RTF encodes a
+                           supplementary-plane character (anything past the Basic
+                           Multilingual Plane, e.g. an emoji) as TWO \uN escapes back
+                           to back: a signed 16-bit HIGH surrogate (0xD800-0xDBFF once
+                           normalised) then a LOW surrogate (0xDC00-0xDFFF), each with
+                           its own \uc-controlled ASCII fallback tail. The pre-#1968
+                           code called mb_chr() on EACH half independently — mb_chr()
+                           returns false for a lone surrogate (not a valid Unicode
+                           scalar value on its own — https://www.unicode.org/glossary/#surrogate_pair)
+                           — so BOTH halves were silently dropped. This buffers a high
+                           surrogate across the loop iteration and combines it with the
+                           very next low surrogate into the one real codepoint (the
+                           standard UTF-16 combining formula); see
+                           tests/php/test-pp7-rtf-extract.php's surrogate-pair truth-
+                           table row for a worked example (U+1F600 GRINNING FACE). */
                         $code = (int)$num;
                         if ($code < 0) { $code += 65536; }
                         if ($skipUntilDepth < 0) {
-                            $ch = function_exists('mb_chr') ? mb_chr($code, 'UTF-8') : null;
-                            if ($ch !== null && $ch !== false) { $out .= $ch; }
+                            if ($code >= 0xD800 && $code <= 0xDBFF) {
+                                // High surrogate — buffer it; nothing to emit yet.
+                                $pendingHighSurrogate = $code;
+                            } elseif ($code >= 0xDC00 && $code <= 0xDFFF && $pendingHighSurrogate !== null) {
+                                // Low surrogate completing a buffered high — combine.
+                                $full = 0x10000 + (($pendingHighSurrogate - 0xD800) << 10) + ($code - 0xDC00);
+                                $pendingHighSurrogate = null;
+                                $ch = function_exists('mb_chr') ? mb_chr($full, 'UTF-8') : null;
+                                if ($ch !== null && $ch !== false && !$isFontSuppressed()) { $out .= $ch; }
+                            } else {
+                                // An orphaned/lone surrogate (no buffered pair) never
+                                // combines with what follows — drop it, same as before.
+                                $pendingHighSurrogate = null;
+                                if ($code === 0x2028 || $code === 0x2029) {
+                                    /* Cocoa's \uc0\u8232 idiom for LINE SEPARATOR (and
+                                       \u8233 PARAGRAPH SEPARATOR) is a soft line break
+                                       in practice, exactly like \par above — fold it to
+                                       "\n" rather than emitting the invisible U+2028/29
+                                       character verbatim, which would render as nothing
+                                       and silently re-join the two lines downstream. */
+                                    if (!$isFontSuppressed()) { $out .= "\n"; }
+                                } else {
+                                    $ch = function_exists('mb_chr') ? mb_chr($code, 'UTF-8') : null;
+                                    if ($ch !== null && $ch !== false && !$isFontSuppressed()) { $out .= $ch; }
+                                }
+                            }
                         }
                         $unicodeSkip = $ucStack[count($ucStack) - 1];
                         break;
                     case 'uc':
                         $ucStack[count($ucStack) - 1] = max(0, (int)$num);
                         break;
+                    case 'fs':
+                        /* #1968 change 4 — \fsN sets the CURRENT group's RTF
+                           half-point font size (see the function doc-block's
+                           point 4). Tracked unconditionally — even when
+                           $minFontHalfPts === 0 — because the tracking itself
+                           is inert bookkeeping; $isFontSuppressed() is what
+                           turns it into a no-op for every pre-existing
+                           caller, not skipping the tracking. */
+                        $fontSizeStack[count($fontSizeStack) - 1] = max(0, (int)$num);
+                        break;
                     case 'par':
                     case 'line':
-                        if ($skipUntilDepth < 0) { $out .= "\n"; }
+                        if ($skipUntilDepth < 0 && !$isFontSuppressed()) { $out .= "\n"; }
                         break;
                     case 'tab':
-                        if ($skipUntilDepth < 0) { $out .= "\t"; }
+                        if ($skipUntilDepth < 0 && !$isFontSuppressed()) { $out .= "\t"; }
                         break;
                     case 'fonttbl':
                     case 'colortbl':
@@ -3665,6 +3929,7 @@ function _bulkImport_rtfToText(string $rtf): string
         if ($c === '{') {
             $depth++;
             $ucStack[] = $ucStack[count($ucStack) - 1];
+            $fontSizeStack[] = $fontSizeStack[count($fontSizeStack) - 1]; // #1968 change 4 — inherit, like $ucStack
             $i++;
             continue;
         }
@@ -3674,6 +3939,7 @@ function _bulkImport_rtfToText(string $rtf): string
             }
             if ($depth > 0) { $depth--; }
             if (count($ucStack) > 1) { array_pop($ucStack); }
+            if (count($fontSizeStack) > 1) { array_pop($fontSizeStack); } // #1968 change 4
             $i++;
             continue;
         }
@@ -3683,7 +3949,7 @@ function _bulkImport_rtfToText(string $rtf): string
 
         if ($skipUntilDepth < 0) {
             if ($unicodeSkip > 0) { $unicodeSkip--; }
-            else                  { $out .= $c; }
+            elseif (!$isFontSuppressed()) { $out .= $c; }
         }
         $i++;
     }
@@ -3931,6 +4197,792 @@ function _bulkImport_processPro6(string $body, ?string $filenameHint = null): ar
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['propresenter6' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  ProPresenter 7+ import (#1968 PR-1, epic #885)
+ * ---------------------------------------------------------------------------
+ * ELI5: a `.pro` file is ProPresenter's own binary format (protobuf, not
+ * XML like `.pro6`) — `includes/propresenter7_decode.php` already turns those
+ * bytes into a plain PHP array (arrangements / cue groups / cues / RTF lyric
+ * bytes / CCLI metadata); THIS section turns that array into the same neutral
+ * "song" shape every other importer in this file produces
+ * ({title,ccli,copyright,writers,components,arrangement}), so it can flow
+ * through the exact same `_bulkImport_assembleSong()` -> `_bulkImport_saveSong()`
+ * pipeline as Pro6/OpenSong/OpenLyrics/etc. — this file adds ZERO new writes
+ * of its own (CLAUDE.md modularity rule + rule #25's ONE write path).
+ *
+ * DETAILED — closest precedent is `_bulkImport_parsePro6()` /
+ * `_bulkImport_processPro6()` just above (same neutral-shape contract, same
+ * "file under a fixed catch-all songbook" convention for a format that
+ * carries no songbook of its own) — this section mirrors that shape
+ * line-for-line rather than inventing a new one. It differs from Pro6 in
+ * three structural ways Pro6 never had to handle: (a) a `.pro` carries
+ * ARRANGEMENTS (an explicit running order, possibly with repeats — a refrain
+ * between every verse) that Pro6 XML has no equivalent of, so this is the
+ * FIRST parser in this file that populates the `arrangement` key
+ * `_bulkImport_assembleSong()` passes through to `_sanitiseArrangement()`;
+ * (b) a `.pro` can carry MULTIPLE text elements per slide (translation
+ * layers) that Pro6's single `<RVTextElement>` never does — see the
+ * element-selection helper below; (c) a `.pro`'s RTF is genuinely
+ * DUAL-DIALECT (Mac `\cocoartf…` soft-return vs. Windows `\rtf0…` `\par`),
+ * which is what motivated the three `_bulkImport_rtfToText()` changes
+ * directly above this section.
+ *
+ * See `.claude/propresenter-interop-1968-plan.md` §3.3-3.5 for the full
+ * design this section implements precisely (parse walk, element selection,
+ * section-label mapping); `tests/php/test-pp7-parse.php` validates every
+ * function here against REAL third-party `.pro` fixtures
+ * (`tests/fixtures/propresenter/`) with committed expected output — never a
+ * self-round-trip through this app's own exporter (the owner's #1 rule for
+ * this epic; see the plan's header + §8).
+ * =========================================================================== */
+
+/**
+ * "Type word" -> its canonical display form ("pre-chorus" -> "Pre-Chorus"),
+ * used by _bulkImport_pro7GroupType() to decide whether a raw PP group name
+ * carries extra information worth preserving as a display `label` (rule #45)
+ * beyond what the resolved `type` + `number` already say. Title-cases each
+ * hyphen-separated part, which reproduces the exporter's own
+ * COMPONENT_LABEL_MAP `name` strings (propresenter-export.js) for every type
+ * that map defines ("Verse", "Pre-Chorus", "Tag", …) without importing that
+ * JS file — this is a NEW PHP function with no live cross-reference to the
+ * export map, so the reproduction is by consistent RULE (ucfirst each part),
+ * not by copying the map's literal strings, which would drift silently if
+ * either side changed a spelling.
+ */
+function _bulkImport_pro7TypeDisplayWord(string $type): string
+{
+    return implode('-', array_map('ucfirst', explode('-', $type)));
+}
+
+/**
+ * Reverse-map ONE ProPresenter `rv.data.Group.name` (a cue group's raw
+ * label — "Verse 1", "Chorus", "Tag", "Verse 1 (SDAH)", "V2", …) into the
+ * iHymns component shape `{type, number, label}` (#1968 plan §3.5).
+ *
+ * ELI5: ProPresenter's own export (`propresenter-export.js`'s
+ * COMPONENT_LABEL_MAP) turns an iHymns component into a PP group name like
+ * "Pre-Chorus 2"; this is the reverse trip — given "Pre-Chorus 2" (or a
+ * label ProPresenter never generated but a human operator typed, like "V2"
+ * or "Verse 1 (SDAH)"), work out which iHymns type it means.
+ *
+ * DETAILED — a NEW function, deliberately NOT a reuse of
+ * `_bulkImport_pro6GroupType()` (which predates the #1138 `tblSongPartTypes`
+ * registry and folds `tag`/`coda`/`interlude` onto `outro`/`outro`/`refrain`
+ * — those are now real, distinct seeded slugs; silently changing PRO6's
+ * fold to match would re-type existing Pro6 round-trip data). This targets
+ * the 16 seeded `tblSongPartTypes` slugs (`migrate-song-part-types.php`)
+ * PLUS every name/short-letter the export map can emit:
+ *   1. Parse the label into {word, number, suffix} via one regex — base
+ *      word (lazy, so trailing digits/parenthetical land in their own
+ *      groups), an optional trailing integer, and an optional
+ *      parenthesised suffix (the real "Verse 1 (SDAH)" hymnal-variant shape
+ *      the owner's genuine v21.4 samples carry — the suffix is arrangement-
+ *      scoping noise for TYPE purposes, never itself mapped to a type).
+ *   2. Fold the base word (case-insensitive) against a static map. Unknown
+ *      words (including every non-English section name — "Strophe" is
+ *      real, byte-verified fixture coverage, see
+ *      tests/fixtures/propresenter/bussnet-stille-nacht.pro) fall to
+ *      'refrain', mirroring `_bulkImport_componentTypeFor()`'s established
+ *      "non-English label -> refrain" convention (#885).
+ *   3. `label` is set to the RAW group name whenever: the word was unknown
+ *      (so nothing is lost when we had to guess — rule #45), OR a
+ *      parenthesised suffix was present, OR the raw name differs from the
+ *      derived "Type Number" display form (`_bulkImport_pro7TypeDisplayWord()`
+ *      + a trailing " N" when N>0) — the same equality check
+ *      `component_upsert`'s server-side D1 hide-when-equal already applies
+ *      (rule #45), applied here locally so the importer never SENDS a
+ *      redundant label in the first place. An empty raw name (a genuinely
+ *      unnamed PP group — real, see the "" cue group in the Windows feature-
+ *      test fixture) never gets a label; there is nothing to preserve.
+ *
+ * @param string $label the raw `rv.data.Group.name` for one cue group
+ * @return array{type:string, number:int, label:?string}
+ * @see .claude/propresenter-interop-1968-plan.md   §3.5 (this function's brief)
+ * @see appWeb/.sql/migrate-song-part-types.php     the 16 seeded canonical slugs
+ * @see appWeb/public_html/manage/editor/propresenter-export.js   the FORWARD map (COMPONENT_LABEL_MAP) this reverses
+ */
+function _bulkImport_pro7GroupType(string $label): array
+{
+    $raw = trim($label);
+
+    if (!preg_match(
+        '/^(?<word>.*?)[\s_-]*(?<num>\d+)?\s*(?:\((?<suffix>[^)]*)\))?\s*$/u',
+        $raw,
+        $m
+    )) {
+        // The pattern's only non-optional piece is a lazy `.*?`, so this is
+        // unreachable on any input in practice — kept as a defensive
+        // fallback (never throws) rather than an assertion, matching this
+        // file's "a parser never throws, it reports [null, reason]" posture.
+        $word = $raw; $num = 0; $suffix = '';
+    } else {
+        $word   = trim((string)($m['word'] ?? ''));
+        $num    = isset($m['num']) && $m['num'] !== '' ? (int)$m['num'] : 0;
+        $suffix = isset($m['suffix']) ? trim((string)$m['suffix']) : '';
+    }
+
+    static $wordMap = null;
+    if ($wordMap === null) {
+        $wordMap = [
+            'verse'       => 'verse',
+            'chorus'      => 'chorus',
+            'refrain'     => 'refrain',
+            'bridge'      => 'bridge',
+            'pre-chorus'  => 'pre-chorus', 'prechorus'  => 'pre-chorus', 'pre chorus'  => 'pre-chorus',
+            'post-chorus' => 'post-chorus', 'postchorus' => 'post-chorus', 'post chorus' => 'post-chorus',
+            'tag'         => 'tag',
+            'coda'        => 'coda',
+            'intro'       => 'intro',
+            'outro'       => 'outro', 'ending' => 'outro',
+            'interlude'   => 'interlude',
+            'vamp'        => 'vamp',
+            'instrumental'=> 'instrumental',
+            'breakdown'   => 'breakdown',
+            'solo'        => 'solo',
+            'ad-lib'      => 'ad-lib', 'adlib' => 'ad-lib', 'ad lib' => 'ad-lib',
+            // Short letter forms (plan §3.5 point 2 — PP operators use both
+            // full names and single-letter shorthand). 'C'/'T'/'I' are each
+            // ambiguous in the FORWARD map too (chorus/refrain share 'C',
+            // tag/coda share 'T', intro/interlude share 'I') — these pick
+            // the map's first-listed (canonical) meaning for each letter,
+            // same choice `propresenter-export.js`'s COMPONENT_LABEL_MAP
+            // itself makes implicitly by listing them in this order.
+            'v' => 'verse', 'c' => 'chorus', 'b' => 'bridge', 'p' => 'pre-chorus',
+            't' => 'tag', 'i' => 'intro', 'o' => 'outro',
+        ];
+    }
+
+    $wordLower = strtolower($word);
+    $known = array_key_exists($wordLower, $wordMap);
+    $type  = $known ? $wordMap[$wordLower] : 'refrain';
+
+    $displayLabel = null;
+    if ($raw !== '') {
+        if (!$known) {
+            $displayLabel = $raw;
+        } else {
+            $derived = _bulkImport_pro7TypeDisplayWord($type) . ($num > 0 ? ' ' . $num : '');
+            if ($suffix !== '' || $raw !== $derived) {
+                $displayLabel = $raw;
+            }
+        }
+    }
+
+    return ['type' => $type, 'number' => $num, 'label' => $displayLabel];
+}
+
+/**
+ * Compute the MAXIMUM `\fsN` (RTF half-point font size) used anywhere in ONE
+ * `rtf_data` blob — the "dominant font" signal `_bulkImport_pro7SelectCueText()`
+ * feeds into `_bulkImport_rtfToText()`'s `$minFontHalfPts` to tell a real
+ * lyric run apart from a smaller sub-dominant run (copyright/CCLI-display
+ * text, or the small-font RTF-writer artifact this exact defect fix targets
+ * — see the correctness-defect note below) merged onto the SAME slide
+ * (#1968 PR-1, epic #1968).
+ *
+ * ELI5: scans one slide's raw RTF text for every "\fs<number>" it can find
+ * and returns the biggest one. On a real ProPresenter lyric slide the
+ * BIGGEST text is always the lyric itself — never the small print under it
+ * — so "biggest font on this slide" is a reliable stand-in for "the actual
+ * lyric run."
+ *
+ * DETAILED — a plain regex scan over the raw bytes (not a full tokeniser
+ * walk) is deliberate and sufficient here: this is called with ONE text
+ * ELEMENT's `rtf_data` (one `Graphics.Text.rtf_data`, i.e. one entry of a
+ * cue's `slideRtf[]`), which never carries a `\fonttbl`/`\colortbl` of its
+ * own worth excluding (those are boilerplate header groups every committed
+ * fixture's `rtf_data` opens with, and they never contain an `\fsN` — font
+ * SIZE information; `\fonttbl` only maps font NAMES to numeric `\fN`
+ * indices, a different control word entirely — verified against every
+ * committed fixture during implementation). `_bulkImport_rtfToText()` itself
+ * still does the CORRECT group-scoped tracking for the case that DOES
+ * matter (an `\fsN` inside a skipped destination group must never leak into
+ * the "current size" the surrounding lyric text is compared against) — this
+ * helper only picks the THRESHOLD passed into that function; it never
+ * decides what to suppress itself.
+ *
+ * CORRECTNESS-DEFECT CONTEXT: two real Mac-exported fixtures
+ * (`v7-at-the-cross-mac.pro`, `v7-come-thou-fount-mac.pro`) prefix every
+ * lyric text run with a small `\f0\fs24 \cf0 ',` RTF-writer artifact
+ * immediately before the real `\f1\fs120 …` lyric run, in the SAME
+ * `rtf_data`, no paragraph break between them — before this fix that
+ * literal "'," was concatenated onto the front of the first real lyric
+ * line ("',I know a place"). Calling `_bulkImport_rtfToText($rtf, $maxFs)`
+ * with `$maxFs` = this function's return value drops the `\fs24` run and
+ * keeps the `\fs120` lyric; a single-font slide is unaffected (its only
+ * size IS the max, so nothing compares as smaller than it).
+ *
+ * @param string $rtf one RTF document (a single text element's `rtf_data`,
+ *                     not a whole presentation)
+ * @return int the largest `\fsN` value found (half-points), or 0 when the
+ *             RTF carries no `\fsN` at all — 0 means "no filtering",
+ *             matching `_bulkImport_rtfToText()`'s own `$minFontHalfPts = 0`
+ *             default.
+ * @see _bulkImport_rtfToText()                     the function this feeds `$minFontHalfPts` into
+ * @see .claude/propresenter-interop-1968-plan.md   PR-1 dominant-font correctness-defect fix
+ */
+function _bulkImport_pro7RtfMaxFontHalfPts(string $rtf): int
+{
+    if ($rtf === '' || strpos($rtf, '\\fs') === false) {
+        return 0;
+    }
+    if (!preg_match_all('/\\\\fs(\d+)/', $rtf, $m)) {
+        return 0;
+    }
+    $max = 0;
+    foreach ($m[1] as $v) {
+        $n = (int)$v;
+        if ($n > $max) { $max = $n; }
+    }
+    return $max;
+}
+
+/**
+ * Select ONE cue's "lyric" text + count how many of its OTHER elements carry
+ * real (non-empty, once RTF-stripped) text — the element-selection rule from
+ * #1968 plan §3.4.
+ *
+ * ELI5: a ProPresenter slide can have more than one text box on it (the
+ * real lyrics, plus e.g. a translation running underneath). We only import
+ * the FIRST one — anything else is counted so the caller can tell the
+ * curator "N translation layers were skipped" instead of silently losing
+ * them with no trace.
+ *
+ * DETAILED: "first" is by `Slide.Element.info` bit 2 (IS_TEXT_ELEMENT) —
+ * the first element with that bit set AND a non-empty `rtf_data`; if NONE
+ * qualifies (real fixture: `db551011-…` in v7-feature-test-win.pro, whose
+ * only bit-2 element decodes to no visible text — see the plan's "empty
+ * slides" coverage note), fall back to the first element with any non-empty
+ * `rtf_data` at all; if that also finds nothing, the cue contributes no
+ * text. Byte-verified against TWO real multi-element cues: `bussnet-test.pro`'s
+ * "Ending" cue (a genuine original/translated pair — "Trans Original
+ * 1↵Trans Original 2" / "Translated 1↵Translated 2") and
+ * `v7-feature-test-win.pro`'s cues (two same-bit-mask text runs on one
+ * slide — the mechanism does not need the layers to be literally different
+ * LANGUAGES, only additional non-empty text elements it must not silently
+ * merge into the first).
+ *
+ * PR-1 correctness-defect fix — EACH element's text (the chosen one AND
+ * every "other" element counted below) is now extracted through
+ * `_bulkImport_pro7RtfMaxFontHalfPts()` + `_bulkImport_rtfToText($rtf,
+ * $maxFs)`: the dominant (largest) font run on that SPECIFIC element is
+ * kept, any smaller run merged into the SAME `rtf_data` is dropped. This is
+ * deliberately PER-ELEMENT, not a file-wide or cross-cue threshold — a
+ * cross-cue threshold was tried and rejected during implementation because
+ * it silently swallows genuinely-real content: `bussnet-test.pro`'s
+ * "Ending" cue pairs a chosen `\fs84` element with an unrelated `\fs80`
+ * "other" (translation-layer) element, and `v7-feature-test-win.pro` has
+ * several single-font cues at DIFFERENT absolute sizes (68/92/100/140/
+ * 142/200) that are each individually dominant on their own slide — a
+ * shared file-wide max would wrongly suppress the smaller ones. Per-element
+ * scoping leaves every one of those untouched (see the non-regression rows
+ * in tests/php/test-pp7-parse.php) while still fixing the two-font-in-one-
+ * element defect this was written for.
+ *
+ * @param array $cue one `pp7DecodePresentation()` cue: {uuid, slideRtf[],
+ *                    slideElementInfos[], mediaRefs}
+ * @param int   &$translationLayerCount running total the caller aggregates
+ *                    into ONE summary warning (never per-cue — plan §3.4:
+ *                    "P1 imports element 0 only and appends ONE summary
+ *                    warning")
+ * @return string the selected element's UTF-8 plain text (via
+ *                 `_bulkImport_rtfToText()`), or '' when the cue carries no
+ *                 usable text at all
+ */
+function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount): string
+{
+    $rtfList  = $cue['slideRtf'] ?? [];
+    $infoList = $cue['slideElementInfos'] ?? [];
+    $n        = count($rtfList);
+    if ($n === 0) {
+        return '';
+    }
+
+    $chosen = null;
+    for ($idx = 0; $idx < $n; $idx++) {
+        if ((((int)($infoList[$idx] ?? 0)) & 2) !== 0 && ($rtfList[$idx] ?? '') !== '') {
+            $chosen = $idx;
+            break;
+        }
+    }
+    if ($chosen === null) {
+        for ($idx = 0; $idx < $n; $idx++) {
+            if (($rtfList[$idx] ?? '') !== '') {
+                $chosen = $idx;
+                break;
+            }
+        }
+    }
+    if ($chosen === null) {
+        return '';
+    }
+
+    $chosenRtf = (string)$rtfList[$chosen];
+    $text      = _bulkImport_rtfToText($chosenRtf, _bulkImport_pro7RtfMaxFontHalfPts($chosenRtf));
+
+    for ($idx = 0; $idx < $n; $idx++) {
+        if ($idx === $chosen) { continue; }
+        $otherRtf = (string)($rtfList[$idx] ?? '');
+        $other    = $otherRtf !== '' ? _bulkImport_rtfToText($otherRtf, _bulkImport_pro7RtfMaxFontHalfPts($otherRtf)) : '';
+        if (trim($other) !== '') {
+            $translationLayerCount++;
+        }
+    }
+
+    return $text;
+}
+
+/**
+ * Append one cue's selected text onto a GROUP's accumulating `$lines` array,
+ * using the exact concatenation idiom `_bulkImport_parsePro6()` already
+ * uses at L3798-3806 (skip LEADING empty lines; keep interior/trailing ones
+ * — the caller does ONE trailing-blank trim pass after every cue in the
+ * group has been appended, matching how the exporter chunks one group's
+ * lyrics across several slides with `linesPerSlide`).
+ *
+ * @param array<int,string> &$lines the group's line accumulator (mutated)
+ * @param string             $text  one cue's already-RTF-stripped text
+ */
+function _bulkImport_pro7AppendCueLines(array &$lines, string $text): void
+{
+    foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
+        $ln = rtrim($ln);
+        if ($ln !== '' || !empty($lines)) {
+            $lines[] = $ln;
+        }
+    }
+}
+
+/**
+ * Parse one ProPresenter 7+ `.pro` document body into the neutral parsed
+ * structure `_bulkImport_assembleSong()` consumes (#1968 plan §3.3-3.4).
+ * PURE — no DB access, so `tests/php/test-pp7-parse.php` can unit-test it
+ * directly against committed binary fixtures with no database at all
+ * (mirrors `_bulkImport_parsePro6()`'s posture, and the decoder's own
+ * `includes/propresenter7_decode.php` purity this function builds on).
+ *
+ * THE WALK (plan §3.3), in order:
+ *   1. `pp7DecodePresentation()` the raw bytes (catches its
+ *      `\InvalidArgumentException` -> `[null, reason]`, never propagates a
+ *      throw out of a parser — rule #9/§3.7's "a parser reports, it does
+ *      not throw" posture every OTHER parser in this file already keeps).
+ *   2. Category gate — `category` non-empty and case-insensitively != "song"
+ *      is rejected ("This is a ProPresenter <category> document, not a
+ *      song."); the ABSENT case (proto3 default `''`, every genuine song
+ *      sample this epic has seen) always passes.
+ *   3. Section palette: ONE component per `cueGroups[]` ENTRY, in
+ *      `cueGroups[]`'s own declared order (NOT the arrangement's walk order
+ *      — the arrangement is resolved SEPARATELY in step 5 below and maps
+ *      onto indices into THIS palette; a real fixture,
+ *      `bussnet-test.pro`, has a cue group — "Ending" — that no arrangement
+ *      in the file references at all, and it still becomes a real palette
+ *      component). "Song Title" / "Lyrics Background" / "Blank"
+ *      (case-insensitive exact match) are skipped outright — the three
+ *      non-lyric groups real files carry. "Blank" was ADDED for the PR-1
+ *      correctness-defect fix: both `v7-*-mac.pro` fixtures carry a genuine
+ *      "Blank" group whose sole cue is ENTIRELY the small-font RTF-writer
+ *      artifact this fix targets (`\f0\fs24 \cf0 ','`, no larger-font
+ *      sibling anywhere in that SAME element) — font-size filtering alone
+ *      (point 4 above / `_bulkImport_pro7SelectCueText()`'s doc-block)
+ *      provably CANNOT drop it: with no larger run on that specific slide
+ *      to compare against, the small run IS that slide's dominant (only)
+ *      font, so nothing is ever suppressed, and the group survives as a
+ *      spurious one-line "'," component. Widening the font-comparison scope
+ *      to reach outside that one slide (file-wide, or borrowed from a
+ *      sibling group) was tried and rejected during implementation — it
+ *      breaks real content in two OTHER fixtures that must stay
+ *      byte-identical (`bussnet-test.pro`'s "Ending" cue legitimately pairs
+ *      an `\fs84` chosen run with an unrelated `\fs80` translation-layer
+ *      run; `v7-feature-test-win.pro` has several single-font cues at
+ *      different absolute sizes that are each individually dominant on
+ *      their own slide). "Blank" name-matching is the same, already-proven
+ *      mechanism this function uses for "Song Title"/"Lyrics Background" —
+ *      confirmed safe by scanning every committed fixture's group names
+ *      during implementation (no OTHER fixture has a "Blank" group with
+ *      real lyric content). Every OTHER group's lines are the concatenation
+ *      of each of its cues' selected text (§3.4); a group whose accumulated
+ *      lines end up empty (every cue empty, OR every cue unresolvable) is
+ *      DROPPED with a warning, exactly mirroring Pro6's own "drop an empty
+ *      grouping" precedent.
+ *   4. Unreferenced cues (present in `cues[]` but in NO group's
+ *      `cueIdentifiers`) are appended, in `cues[]` order, as sequential
+ *      `verse` components with a warning each — a defensive net for a
+ *      malformed/hand-edited file, not something any committed fixture
+ *      exercises (none of the 9 real `.pro` fixtures in this corpus has
+ *      one — verified by scanning every fixture's cue/group union during
+ *      implementation).
+ *   5. Arrangement resolution — completely separate from step 3's palette
+ *      build: pick `selectedArrangement` when it resolves to a real
+ *      `arrangements[]` entry; else the first arrangement named
+ *      CCLI/Standard/Original (case-insensitive); else `arrangements[0]`;
+ *      else none. A SET-but-unresolvable `selected_arrangement` (real:
+ *      `v7-feature-test-win.pro` — Windows PP 7.13.2 sets one while
+ *      `arrangements[]` is entirely empty) is advisory-only, never an
+ *      error — it just falls through the same ladder. The chosen
+ *      arrangement's `groupIdentifiers` (repeats allowed and expected — a
+ *      refrain between every verse) are mapped to the PALETTE's indices
+ *      (built in step 3, which may have fewer entries than `cueGroups[]`
+ *      once skipped/empty groups are dropped); an identity mapping
+ *      (`[0,1,2,…]`) is stored as `null` (matches the render fallback,
+ *      avoids noise on the common no-repeats case).
+ *   6. Metadata from `ccli` (Pro6's exact ladder): `song_title` -> title
+ *      (fallback `Presentation.name`, then the first lyric line — the
+ *      filename-stem fallback is the PROCESSOR's job, which alone has the
+ *      upload filename); `author` split on `[/&,;]` -> `writers[]`;
+ *      `publisher` + `copyright_year` -> `copyright` string;
+ *      `song_number` -> `ccli`. `artist_credits` is NOT imported (no
+ *      importer in this file writes `tblSongArtists` yet — #587-gated) but
+ *      is never silently dropped either: its presence rides a warning.
+ *
+ * @param string $body raw bytes of one `.pro` file
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason] — parsed carries
+ *         {title, songbookName:'', entry:0, language:'', ccli, copyright,
+ *         writers[], components[], arrangement:?int[], warnings[]}
+ * @see .claude/propresenter-interop-1968-plan.md   §3.3 (the walk), §3.4 (element selection), §3.5 (label mapping)
+ * @see includes/propresenter7_decode.php           pp7DecodePresentation() — the decoder this builds on
+ * @see tests/php/test-pp7-parse.php                 real-fixture validation
+ */
+function _bulkImport_parsePro7(string $body): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'propresenter7_decode.php';
+
+    try {
+        $decoded = pp7DecodePresentation($body);
+    } catch (\Throwable $e) {
+        return [null, 'ProPresenter 7+ decode failed: ' . $e->getMessage()];
+    }
+
+    /* §3.3 point 2 — category gate. proto3's default for an unset string
+       field is '' (never null), so an absent category — every genuine song
+       sample this epic has seen — always passes; only an EXPLICIT non-song
+       category (e.g. "Scripture", "Notes") is rejected. */
+    $category = trim((string)($decoded['category'] ?? ''));
+    if ($category !== '' && strcasecmp($category, 'song') !== 0) {
+        return [null, "This is a ProPresenter {$category} document, not a song."];
+    }
+
+    $warnings = [];
+
+    /* Index cues by uuid for O(1) group-walk lookups. A cue with no uuid at
+       all (malformed input) simply can never be referenced or resolved —
+       consistent with every uuid-keyed lookup elsewhere in this walk. */
+    $cuesByUuid = [];
+    foreach ($decoded['cues'] as $cue) {
+        if (($cue['uuid'] ?? '') !== '') {
+            $cuesByUuid[$cue['uuid']] = $cue;
+        }
+    }
+
+    $translationLayerCount = 0;
+
+    /* §3.3 point 3 — section palette: one component per cueGroups[] entry,
+       in cueGroups[]'s own declared order. $paletteGroupUuidToIndex records
+       where each SURVIVING group landed, for step 5's arrangement mapping —
+       built from the surviving component list, per plan §3.3 point 5
+       ("skipped/empty groups shift indices, so the map is built from the
+       surviving component list, not the raw cue_groups array"). */
+    $components              = [];
+    $paletteGroupUuidToIndex = [];
+    foreach ($decoded['cueGroups'] as $group) {
+        $groupName   = (string)($group['groupName'] ?? '');
+        $trimmedName = trim($groupName);
+
+        if (strcasecmp($trimmedName, 'Song Title') === 0
+            || strcasecmp($trimmedName, 'Lyrics Background') === 0
+            || strcasecmp($trimmedName, 'Blank') === 0
+        ) {
+            // "Blank" added for the PR-1 correctness-defect fix — see this
+            // function's doc-block point 3 for the full "why font-size
+            // filtering alone can't reach this one" reasoning.
+            //
+            // PR-1 fix: a skipped group's own cues must ALSO be marked
+            // consumed here (unset from $cuesByUuid), exactly like the real
+            // per-cue walk below does — otherwise they fall through to step
+            // 4's "unreferenced cue" defensive net and get RE-APPENDED as a
+            // sequential verse component, completely defeating the skip
+            // (this was a latent bug: no committed fixture exercised a
+            // named-skip group with real cueIdentifiers until "Blank" was
+            // added above — "Song Title"/"Lyrics Background" never appear
+            // in any fixture in this corpus).
+            foreach ((array)($group['cueIdentifiers'] ?? []) as $skippedCueUuid) {
+                unset($cuesByUuid[$skippedCueUuid]);
+            }
+            $warnings[] = "skipped non-lyric group \"{$trimmedName}\"";
+            continue;
+        }
+
+        $lines = [];
+        foreach ((array)($group['cueIdentifiers'] ?? []) as $cueUuid) {
+            if (!isset($cuesByUuid[$cueUuid])) {
+                $warnings[] = "cue {$cueUuid} referenced by group \"{$trimmedName}\" was not found";
+                continue;
+            }
+            $text = _bulkImport_pro7SelectCueText($cuesByUuid[$cueUuid], $translationLayerCount);
+            _bulkImport_pro7AppendCueLines($lines, $text);
+            /* Mark as referenced — whatever remains in $cuesByUuid after
+               every group has been walked is step 4's "unreferenced cues". */
+            unset($cuesByUuid[$cueUuid]);
+        }
+        while (!empty($lines) && trim((string)end($lines)) === '') {
+            array_pop($lines);
+        }
+        if (empty($lines)) {
+            $warnings[] = $trimmedName !== ''
+                ? "group \"{$trimmedName}\" had no lyric text — skipped"
+                : 'an unnamed group had no lyric text — skipped';
+            continue;
+        }
+
+        $mapped    = _bulkImport_pro7GroupType($groupName);
+        $component = ['type' => $mapped['type'], 'number' => $mapped['number'], 'lines' => $lines];
+        if ($mapped['label'] !== null) {
+            $component['label'] = $mapped['label'];
+        }
+        $components[] = $component;
+        if (($group['groupUuid'] ?? '') !== '') {
+            $paletteGroupUuidToIndex[$group['groupUuid']] = count($components) - 1;
+        }
+    }
+
+    /* §3.3 point 4 — unreferenced cues: present in cues[] but consumed by
+       NO group above (every referenced cue was unset() from $cuesByUuid as
+       it was walked, so whatever remains here was never referenced at
+       all). Appended in original cues[] order as sequential verses. */
+    if (!empty($cuesByUuid)) {
+        $vnum = 0;
+        foreach ($decoded['cues'] as $cue) {
+            $uuid = $cue['uuid'] ?? '';
+            if ($uuid === '' || !isset($cuesByUuid[$uuid])) {
+                continue; // referenced by a group, or carries no uuid at all
+            }
+            $text  = _bulkImport_pro7SelectCueText($cue, $translationLayerCount);
+            $lines = [];
+            _bulkImport_pro7AppendCueLines($lines, $text);
+            while (!empty($lines) && trim((string)end($lines)) === '') {
+                array_pop($lines);
+            }
+            if (empty($lines)) {
+                continue; // an unreferenced, empty cue contributes nothing
+            }
+            $vnum++;
+            $components[] = ['type' => 'verse', 'number' => $vnum, 'lines' => $lines];
+            $warnings[]   = "cue {$uuid} was not referenced by any group — appended as verse {$vnum}";
+        }
+    }
+
+    if (empty($components)) {
+        return [null, 'no lyric text found in ProPresenter 7+ document'];
+    }
+
+    if ($translationLayerCount > 0) {
+        $warnings[] = "{$translationLayerCount} translation layer(s) present — not imported"
+            . ' (see the per-line-translations follow-up, plan §3.4)';
+    }
+
+    /* §3.3 point 5 — arrangement resolution, entirely separate from the
+       palette built above. */
+    $arrangement       = null;
+    $chosenArrangement = null;
+    $selUuid           = $decoded['selectedArrangement'];
+    if ($selUuid !== null) {
+        foreach ($decoded['arrangements'] as $a) {
+            if (($a['uuid'] ?? '') === $selUuid) {
+                $chosenArrangement = $a;
+                break;
+            }
+        }
+        if ($chosenArrangement === null) {
+            /* Dangling selected_arrangement — real, byte-verified fixture:
+               v7-feature-test-win.pro sets one while arrangements[] is
+               entirely empty. Advisory only, never an error (plan §3.3
+               point 5's parenthetical). */
+            $warnings[] = 'selected_arrangement did not resolve to an arrangement — falling back to natural order';
+        }
+    }
+    if ($chosenArrangement === null) {
+        foreach ($decoded['arrangements'] as $a) {
+            if (in_array(strtolower((string)($a['name'] ?? '')), ['ccli', 'standard', 'original'], true)) {
+                $chosenArrangement = $a;
+                break;
+            }
+        }
+    }
+    if ($chosenArrangement === null && !empty($decoded['arrangements'])) {
+        $chosenArrangement = $decoded['arrangements'][0];
+    }
+
+    if ($chosenArrangement !== null) {
+        $indices = [];
+        foreach ((array)($chosenArrangement['groupIdentifiers'] ?? []) as $gid) {
+            if (isset($paletteGroupUuidToIndex[$gid])) {
+                $indices[] = $paletteGroupUuidToIndex[$gid];
+            } else {
+                $warnings[] = "arrangement referenced an unresolved group {$gid}";
+            }
+        }
+        $identity = range(0, count($components) - 1);
+        if (!empty($indices) && $indices !== $identity) {
+            $arrangement = $indices;
+        }
+    }
+
+    /* §3.3 point 6 — metadata from ccli, Pro6's exact ladder
+       (_bulkImport_parsePro6() L3776-3790). */
+    $ccli  = $decoded['ccli'];
+    $title = trim((string)($ccli['songTitle'] ?? ''));
+    if ($title === '') { $title = trim((string)($decoded['name'] ?? '')); }
+    if ($title === '') { $title = trim((string)($components[0]['lines'][0] ?? '')); }
+    // (the filename-stem fallback rung is the PROCESSOR's job — only it has the upload filename.)
+
+    $author  = trim((string)($ccli['author'] ?? ''));
+    $writers = [];
+    if ($author !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') { $writers[] = $w; }
+        }
+    }
+
+    $publisher = trim((string)($ccli['publisher'] ?? ''));
+    $year      = $ccli['copyrightYear'] !== null ? (string)$ccli['copyrightYear'] : '';
+    $copyright = trim(($publisher !== '' ? $publisher : '') . ($year !== '' ? ($publisher !== '' ? ' ' : '') . $year : ''));
+
+    $ccliNumber = $ccli['songNumber'] !== null ? (string)$ccli['songNumber'] : '';
+
+    $artistCredits = trim((string)($ccli['artistCredits'] ?? ''));
+    if ($artistCredits !== '') {
+        $warnings[] = "artist_credits \"{$artistCredits}\" is not imported (no tblSongArtists writer yet)";
+    }
+
+    if ($title === '') {
+        return [null, 'no song title (no CCLI song_title, no presentation name, no slide text)'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',   // .pro carries no songbook; caller supplies one
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => $ccliNumber,
+        'copyright'    => $copyright,
+        'writers'      => $writers,
+        'components'   => $components,
+        'arrangement'  => $arrangement,
+        'warnings'     => $warnings,
+    ], null];
+}
+
+/**
+ * Synchronous single-file ProPresenter 7+ import — mirrors
+ * `_bulkImport_processPro6()`'s shape exactly (dedupe wiring lives inside
+ * `_bulkImport_saveSong()` itself, per rule #22 — nothing bespoke needed
+ * here). `.pro` carries no songbook, so — same convention as Pro6's "PP6" —
+ * every import files under a fixed catch-all "ProPresenter 7 Import" (abbr
+ * "PP7") songbook, unless the upload filename carries a bracketed override
+ * token (`_bulkImport_videopsalmAbbrevFromHint()`, the same helper PP6
+ * uses).
+ *
+ * @param string      $body         raw bytes of one `.pro` file
+ * @param string|null $filenameHint original upload filename — used for the
+ *                                  bracketed-abbreviation override, the
+ *                                  title fallback's LAST rung (no importer
+ *                                  above `_bulkImport_parsePro7()` sees the
+ *                                  filename, only the processor does), and
+ *                                  error reporting
+ * @return array same summary shape as `_bulkImport_processPro6()`, plus a
+ *               `warnings[]` key (the `_bulkImport_processPptx()` precedent
+ *               for a non-fatal-issues channel on the summary) carrying
+ *               every §3.7 warning (skipped groups, translation layers,
+ *               unresolved arrangement uuids, artist_credits) so the
+ *               curator sees an honest report even on a clean 'ok' import.
+ */
+function _bulkImport_processPro7(string $body, ?string $filenameHint = null): array
+{
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
+    [$parsed, $reason] = _bulkImport_parsePro7($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'ProPresenter 7+ parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['propresenter7' => 0],
+            'errors'                 => [],
+            'warnings'               => [],
+        ];
+    }
+
+    /* Title fallback's LAST rung — the filename stem — needs the upload
+       filename, which only this processor (not the pure parser above) has.
+       Mirrors _bulkImport_parsePro6()'s own "caller may further fall back
+       to the filename" comment for the identical situation. */
+    if ($parsed['title'] === '' && $filenameHint !== null) {
+        $stem = pathinfo($filenameHint, PATHINFO_FILENAME);
+        if ($stem !== '') {
+            $parsed['title'] = $stem;
+        }
+    }
+
+    /* .pro has no songbook — file it under a single "ProPresenter 7 Import"
+       songbook (abbr "PP7", or a bracketed token from the upload filename),
+       exactly like PP6's precedent at L4083-4088. */
+    $db       = getDbMysqli();
+    $bookName = 'ProPresenter 7 Import';
+    $abbr     = _bulkImport_videopsalmAbbrevFromHint($filenameHint, '');
+    if ($abbr === 'VP' || $abbr === '') { $abbr = 'PP7'; }
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')       { $songsCreated = 1; }
+    elseif ($action === 'skipped')  { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'pro7') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['propresenter7' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+        'warnings'               => $parsed['warnings'] ?? [],
     ];
 }
 
