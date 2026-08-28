@@ -96,6 +96,7 @@ installGlobalActivityLogHandlers('editor_api');
    reuses the SAME parser code instead of forking it (#1200 Phase 4b). Required
    ABOVE the switch so the constants are defined before any handler runs. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';   /* #1968 P4 — read-only Visibility badge on the (retiring) v1 media list */
 /* #1235 P3 / #1253 — the per-line-language column readiness probe
    (lyricLinesComponentsLangReady) + the shared LanguagesJson builder
    (lineEnrichmentBuildLanguagesJson), so save_song persists per-line language
@@ -3318,7 +3319,8 @@ switch ($action) {
             }
             $stmt = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia
                   WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
@@ -3340,6 +3342,9 @@ switch ($action) {
                     'uploaded_by'    => isset($r['UploadedBy']) ? (int)$r['UploadedBy'] : null,
                     'uploaded_at'    => (string)$r['UploadedAt'],
                     'stream_url'     => '/song-media/' . (int)$r['Id'],
+                    /* #1968 P4 — read-only badge on the retiring v1 editor; 'public'
+                       pre-migration (the fragment was ''). The WRITE control is v2-only. */
+                    'visibility'     => (string)($r['Visibility'] ?? 'public'),
                 ],
                 $rows
             );

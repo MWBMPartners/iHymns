@@ -46,12 +46,12 @@ declare(strict_types=1);
  *       (they MUST see admin rows), so writers are EXCLUDED from (a)'s public-read
  *       filter net and held to this contract instead.
  *
- * DEFERRED to the commit that creates its subject (kept out here so this guard
- * never asserts on not-yet-existing code, rule #34):
- *   - (c) the PHP↔JS kind/cap lockstep (SongMediaStorage vs media-tab.js
- *         KIND_META `video`/`image`) — added with commit 5 (the editor UI).
- *   - G2 the `_bulkImport_pp7ResolveMediaRef()` resolver truth table lives in
- *         its own `test-pp7-media-ingest.php` (commit 4 too).
+ *   (c) PHP↔JS KIND LOCKSTEP — every SongMediaStorage kind (FS_KINDS + DB_KINDS)
+ *       has a media-tab.js KIND_META block whose sizeCap agrees with
+ *       SongMediaStorage::SIZE_CAPS (retro-covering the four original kinds too).
+ *
+ * The `_bulkImport_pp7ResolveMediaRef()` resolver truth table lives in its own
+ * `test-pp7-media-ingest.php` (G2, commit 4).
  *
  * MUTATION PROOF (rule #34 — each applied to the real tree, this test re-run and
  * confirmed RED, then reverted):
@@ -61,6 +61,8 @@ declare(strict_types=1);
  *          leaves the file-level net satisfied, the documented limitation of a
  *          file-granularity net) → (a) RED for song_media_flags.php.
  *   - (b): changed the ingest's `$visibility = 'admin'` to `'public'` → (b) RED.
+ *   - (c): changed media-tab.js's video sizeCap 100→50 MiB → the cap-agrees row
+ *          RED; deleting the `video` KIND_META line → the has-kind row RED.
  *   - (d): added 'video' to `songMediaFlagKinds()['HasAudio']` → (d) RED.
  *   - (e): changed `songMediaVisibilityRowAllowed()`'s `$v === 'public'`
  *          early-return to `$v === 'PUBLIC'` (case-break) → (e) RED (a lowercase
@@ -253,6 +255,54 @@ if ($dbForFragments instanceof \mysqli) {
     }
 } else {
     echo "  (fragment no-op check SKIPPED — no reachable database; pure truth table above stands)\n";
+}
+
+/* ============================================================================
+ * (c) PHP↔JS kind/cap LOCKSTEP — SongMediaStorage ↔ media-tab.js KIND_META
+ * ============================================================================
+ * KIND_META's own comment says its sizeCap "mirrors SongMediaStorage::SIZE_CAPS"
+ * — a rule-#35 keep-in-sync comment finally given its mechanism. Parses BOTH
+ * files from the tree and asserts every server kind has a client block whose cap
+ * agrees (retro-covering the four original kinds too). */
+echo "\n-- (c) PHP↔JS kind/cap lockstep (SongMediaStorage ↔ media-tab.js) --\n";
+$smsCode = smvPhpCode((string)file_get_contents($pub . '/includes/SongMediaStorage.php'));
+$mtCode  = (string)file_get_contents($pub . '/manage/editor/v2/media-tab.js');
+
+/** Kind identifiers inside a `const NAME = [ 'a', 'b' ];` PHP array. */
+$phpKindList = static function (string $code, string $const): array {
+    if (!preg_match('/const\s+' . $const . '\s*=\s*\[(.*?)\]/s', $code, $m)) { return []; }
+    preg_match_all("/'([a-z\\-]+)'/", $m[1], $mm);
+    return $mm[1];
+};
+/** kind => cap-in-MiB from a `'kind' => N * 1024 * 1024` PHP map. */
+$phpCaps = static function (string $code): array {
+    if (!preg_match('/const\s+SIZE_CAPS\s*=\s*\[(.*?)\];/s', $code, $m)) { return []; }
+    preg_match_all("/'([a-z\\-]+)'\\s*=>\\s*([0-9]+)\\s*\\*\\s*1024\\s*\\*\\s*1024/", $m[1], $mm, PREG_SET_ORDER);
+    $out = [];
+    foreach ($mm as $r) { $out[$r[1]] = (int)$r[2]; }
+    return $out;
+};
+/** kind => cap-in-MiB from media-tab.js's `'kind': { … sizeCap: N * 1024 * 1024 }`. */
+$jsCaps = static function (string $code): array {
+    if (!preg_match('/KIND_META\s*=\s*\{(.*)\n\};/sU', $code, $m)) { return []; }
+    preg_match_all("/'([a-z\\-]+)'\\s*:\\s*\\{[^}]*sizeCap:\\s*([0-9]+)\\s*\\*\\s*1024\\s*\\*\\s*1024/s", $m[1], $mm, PREG_SET_ORDER);
+    $out = [];
+    foreach ($mm as $r) { $out[$r[1]] = (int)$r[2]; }
+    return $out;
+};
+
+$serverKinds = array_merge($phpKindList($smsCode, 'FS_KINDS'), $phpKindList($smsCode, 'DB_KINDS'));
+$serverCaps  = $phpCaps($smsCode);
+$clientCaps  = $jsCaps($mtCode);
+ok('parsed at least 6 server media kinds (audio/video/image/sheet-music/midi/musicxml; found ' . count($serverKinds) . ')', count($serverKinds) >= 6);
+ok('parsed at least 6 server SIZE_CAPS (found ' . count($serverCaps) . ')', count($serverCaps) >= 6);
+ok('parsed at least 6 client KIND_META caps (found ' . count($clientCaps) . ')', count($clientCaps) >= 6);
+foreach ($serverKinds as $k) {
+    ok("media-tab.js KIND_META has server kind '{$k}'", isset($clientCaps[$k]));
+    if (isset($serverCaps[$k], $clientCaps[$k])) {
+        ok("size cap for '{$k}' agrees (server {$serverCaps[$k]} MiB == client {$clientCaps[$k]} MiB)",
+            $serverCaps[$k] === $clientCaps[$k]);
+    }
 }
 
 /* ---- summary ---- */

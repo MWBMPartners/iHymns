@@ -251,7 +251,7 @@ export function bootSongMediaEditor(root) {
                                     ${escapeHtml(row.file_name)}
                                 </a>
                                 <span class="text-muted small">
-                                    ${escapeHtml(row.mime_type)} · ${formatBytes(row.size_bytes)}
+                                    ${(row.visibility === 'admin') ? '<span class="badge text-bg-warning-subtle text-warning-emphasis border border-warning-subtle me-1" title="Not shown on the public site — publish it in the new editor">Admin only</span>' : ''}${escapeHtml(row.mime_type)} · ${formatBytes(row.size_bytes)}
                                 </span>
                             </div>
                             <input type="text"

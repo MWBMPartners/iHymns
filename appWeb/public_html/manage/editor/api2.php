@@ -370,6 +370,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* Song media storage layer (#853) — kind→backend routing, MIME-sniff
    validation, FS/DB staging, the same class the streaming route uses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';   /* #1968 P4 — visibility vocabulary + Visibility select fragment for the media tab */
 /* Shared song importers (#1200 Phase 4b) — the SAME bulk-import parsers +
    universal saver the legacy api.php uses (extracted to a shared include so v2
    reuses, never forks, them). Provides _bulkImport_process*() + _bulkImport_dedupeMode(). */
@@ -1179,6 +1180,9 @@ function ed2_mediaRowShape(array $r): array {
         'storageBackend' => (string)($r['StorageBackend'] ?? ''),
         'uploadedAt'     => (string)($r['UploadedAt'] ?? ''),
         'streamUrl'      => '/song-media/' . (int)$r['Id'],
+        /* #1968 P4 — the curator surface BADGES admin-only rows (it never hides
+           them); 'public' when the probe-gated Visibility select was absent. */
+        'visibility'     => (string)($r['Visibility'] ?? 'public'),
     ];
 }
 
@@ -2102,7 +2106,8 @@ try {
         if (ed2_songMediaTableExists($db)) {
             $ms = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
             );
@@ -5073,7 +5078,8 @@ try {
         if (ed2_songMediaTableExists($db)) {
             $ms = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
             );
@@ -5230,6 +5236,48 @@ try {
         }
         logActivity('song-media.update', 'song', $mSongId, ['mediaId' => $mediaId]);
         ed2_respond(['ok' => true, 'mediaId' => $mediaId]);
+        break;
+    }
+
+    /* ---- media_set_visibility (POST JSON) — publish/unpublish one media row
+           (#1968 P4, owner decision D1). Gates come free + are sufficient: the
+           file-wide session + editor gate and the top-of-file X-Requested-With
+           validateCsrfRequest() POST gate (rule #29) cover this. NO new
+           entitlement is minted — a curator who can media_upload instantly-public
+           media today gains no new exposure class by publishing imported media
+           (rule #44's discipline applied to entitlements). 503 (status is the
+           contract, rule #35) when the Visibility column is un-migrated. ---- */
+    case 'media_set_visibility': {
+        if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        $mediaId    = (int)($body['mediaId'] ?? 0);
+        $visibility = trim((string)($body['visibility'] ?? ''));
+        if ($mediaId <= 0) { ed2_respond(['ok' => false, 'error' => 'mediaId is required.'], 400); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+        if (!songMediaVisibilityColumnExists($db)) { ed2_respond(['ok' => false, 'error' => 'Media visibility migration has not been run.'], 503); }
+        if (!songMediaVisibilityIsValid($visibility)) { ed2_respond(['ok' => false, 'error' => 'Invalid visibility value.'], 400); }
+
+        $sel = $db->prepare('SELECT SongId FROM tblSongMedia WHERE Id = ? LIMIT 1');
+        $sel->bind_param('i', $mediaId);
+        $sel->execute();
+        $mrow = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$mrow) { ed2_respond(['ok' => false, 'error' => 'Media not found.'], 404); }
+        $mSongId = (string)$mrow['SongId'];
+
+        $db->begin_transaction();
+        try {
+            $u = $db->prepare('UPDATE tblSongMedia SET Visibility = ? WHERE Id = ?');
+            $u->bind_param('si', $visibility, $mediaId);
+            $u->execute();
+            $u->close();
+            ed2_touchRevision($db, $mSongId, $ed2UserId, 'media');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song-media.visibility', 'song', $mSongId, ['media_id' => $mediaId, 'visibility' => $visibility]);
+        ed2_respond(['ok' => true, 'mediaId' => $mediaId, 'visibility' => $visibility]);
         break;
     }
 

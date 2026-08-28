@@ -363,6 +363,10 @@ export const editorApi = {
     updateMedia:       (mediaId, annotation)     => postJson('media_update', { mediaId: mediaId, annotation: annotation }),
     deleteMedia:       (mediaId)                 => postJson('media_delete', { mediaId: mediaId }),
     reorderMedia:      (songId, kind, ids)       => postJson('media_reorder', { songId: songId, kind: kind, ids: ids }),
+    /* #1968 P4 — publish/unpublish one media row (visibility 'public'|'admin').
+       err.status === 409/422 semantics aren't used here; a 503 (column
+       un-migrated) surfaces as a toast via unwrap(). */
+    setMediaVisibility: (mediaId, visibility)    => postJson('media_set_visibility', { mediaId: mediaId, visibility: visibility }),
 
     /* Revisions — history (metadata) + before/after diff pair + full-snapshot
        restore. getRevision is the #1628 item 4 diff-view read: the server

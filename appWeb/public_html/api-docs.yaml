@@ -16306,6 +16306,49 @@ paths:
           description: The Song Media migration has not been run on this install
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=media_set_visibility:
+    post:
+      operationId: editorMediaSetVisibility
+      tags: [Editor API v2]
+      summary: Publish or unpublish one media file (#1968 P4)
+      description: |
+        POST, editor role only. Sets a media row's publish state — `public`
+        (shown on the public site) or `admin` (curator-only, e.g. imported
+        ProPresenter media before a curator publishes it, owner decision D1).
+        The value is validated against the central visibility vocabulary; no
+        new entitlement is required (a curator who can upload public media
+        gains no new exposure class by publishing imported media).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mediaId, visibility]
+              properties:
+                mediaId: { type: integer }
+                visibility: { type: string, enum: [public, admin], description: The publish state to set. }
+      responses:
+        "200":
+          description: Visibility updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  mediaId: { type: integer }
+                  visibility: { type: string, example: public }
+        "400":
+          description: Missing mediaId or an invalid visibility value
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Media not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: The Song Media or visibility migration has not been run on this install
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=media_delete:
     post:
       operationId: editorMediaDelete
