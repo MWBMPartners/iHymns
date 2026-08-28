@@ -925,8 +925,8 @@ one PR, commits ordered fixtures-and-safeguards-before-feature (the program's st
 4. `feat(importers): probundle/proplaylist media ingest core (resolve→sniff→store admin) + video/image kinds + ZIP input-cap fix + ingest tests`
 5. `feat(editor): media tab video/image blocks + visibility badge/toggle + media_set_visibility endpoint`
 6. `feat(pwa): song-page video/image render blocks + play_video tier cap registration (dormant)`
-7. `feat(export): portable CURRENT_RESOURCE media URLs in the bundle exporter (§6.2 shape, fixture-verified)`
-8. `docs: PROPRESENTER-TESTING.md media scenarios; wiki + CHANGELOG; issue close-outs`
+7. ~~`feat(export): portable CURRENT_RESOURCE media URLs in the bundle exporter`~~ — **DEFERRED to follow-on #1979** (2026-08-28). The plan's own §6.2 scopes the export UI to "a later phase," and validating a media-bearing export needs a REAL ProPresenter to open it (owner checklist D4, §10). Shipping an un-triggered wire-shape helper with no UI/data source would be dead code AND the circular same-schema round-trip the owner's #1 rule bans — so the import loop (commits 1–6) landed fully real-file-validated, and export is tracked separately.
+8. `docs: media scenarios; wiki + CHANGELOG; issue close-outs`  ← now commit 7 (the final commit of PR-4)
 
 Owner verify (§10 checklist grows two rows): a real PP import of our media-bearing exported
 bundle, and a curator walk-through — import the 001 bundle on alpha, see the admin-only badge,

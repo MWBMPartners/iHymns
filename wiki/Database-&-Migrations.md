@@ -150,6 +150,16 @@ This batch landed several feature families as additive, dormant, forward-looking
 
 **Migration cards:** `migrate-ilyrics-internal-ids` (creates + seeds `tblIlyricsIdSequence`, adds the 8 `IlId` columns — additive, dormant until Phase 2 mint-on-create + the go-live A/B/C commits wired every write funnel), `migrate-song-pd-from-year` (adds the two `PdFromYear` columns + a chunked backfill using the same live fold the write path uses), `migrate-reconcile-media-flags` (`'manual'` + `dryRunnable` — a one-time, docroot-sensitive `HasAudio`/`HasSheetMusic` reconcile; no new columns, those predate this batch).
 
+### ProPresenter media ingest — `tblSongMedia.Visibility` (#1968 P4)
+
+Media referenced by an imported ProPresenter `.probundle`/`.proplaylist` (background videos, images) is ingested into `tblSongMedia` linked to the song, **admin-only until a curator publishes it** (owner decision D1). One additive, dormant column drives it:
+
+- **`tblSongMedia.Visibility`** `VARCHAR(20) NOT NULL DEFAULT 'public'` — a per-row publish state (`public | admin`; `org`/`pending` reserved), app-validated via `IHYMNS_SONG_MEDIA_VISIBILITIES` (`includes/song_media_visibility.php`), VARCHAR-not-ENUM (a growable vocabulary). A **verified no-op** for all existing rows (each stamped `public`) and on un-migrated installs.
+
+The serving gate (`includes/song_media_visibility.php`) is the ONE place that decides "may this be served publicly," at both grains — the list-emit SQL filter (every public `FROM tblSongMedia` read) and the `song-media.php` byte gate (404-no-body for an admin row to a non-curator). It is **always active** (an editorial publish state, not a tier cap — so NOT behind `content_gating_enabled`), a no-op for `public` rows, and fail-CLOSED on the serve axis for any unknown value. Ingest itself is **entirely dormant** behind `tblAppSettings.pp7_media_ingest_enabled` (default `'0'`), which the owner flips only after this reaches `main` (a mechanism against the shared-DB cross-channel leak).
+
+**Migration card:** `migrate-song-media-visibility` (additive, idempotent, existence-guarded; no docroot include path, rule #41). Video/image media KINDS are app-level only (`Kind` has been VARCHAR since #1090 — no DDL).
+
 ### User & Access Control Tables
 
 | Table | Purpose |
