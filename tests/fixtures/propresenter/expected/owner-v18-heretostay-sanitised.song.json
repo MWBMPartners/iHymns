@@ -1,0 +1,112 @@
+{
+    "title": "Here To Stay",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "",
+    "writers": [
+        "David Olson",
+        "Jared Jamieson",
+        "Joshua Jamieson"
+    ],
+    "components": [
+        {
+            "type": "verse",
+            "number": 1,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 2,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "chorus",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 3,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "bridge",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "tag",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        }
+    ],
+    "arrangement": [
+        0,
+        1,
+        2,
+        3,
+        2,
+        4,
+        2,
+        5
+    ],
+    "warnings": [
+        "skipped non-lyric group \"Song Title\"",
+        "skipped non-lyric group \"Lyrics Background\"",
+        "arrangement referenced an unresolved group 4E7B3459-4F5D-4A2E-A12A-0654E22F0AA4",
+        "arrangement referenced an unresolved group C8604217-1FAC-4999-8B8C-6ED85ABE220C",
+        "artist_credits \"Anthem Worship (LLUC)\" is not imported (no tblSongArtists writer yet)"
+    ]
+}

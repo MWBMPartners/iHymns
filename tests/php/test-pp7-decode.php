@@ -168,8 +168,8 @@ sort($proFixtures);
 
 // Coverage floor (rule #34's under-report clause): guards against the glob silently matching
 // fewer files than the corpus actually has (e.g. a bad extension filter, a moved directory).
-ok('at least 8 committed .pro fixtures exist to cross-validate against (found ' . count($proFixtures) . ')',
-    count($proFixtures) >= 8);
+ok('at least 11 committed .pro fixtures exist to cross-validate against (found ' . count($proFixtures) . ')',
+    count($proFixtures) >= 11);
 
 foreach ($proFixtures as $proPath) {
     $base = basename($proPath, '.pro');

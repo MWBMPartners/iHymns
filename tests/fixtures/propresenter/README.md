@@ -69,6 +69,35 @@ STORED+ZIP64 throughout) while staying entirely copyright-safe and deterministic
 (`node tools/pp7-gen-zip64-bundle.js`). See `tests/php/test-pp7-zip.php` section (g) for its
 dedicated test coverage and mutation-proof.
 
+## Owner-derived, lyric-sanitised fixtures (#1968 P4 — decision D3)
+
+**Different in kind again:** these are DERIVATIVES of the owner's own genuine ProPresenter v21.4
+and v18.4 exports (`_temp/` on alpha, source commit `2642f28`). Those originals carry copyrighted
+worship lyrics we may not redistribute, but they also carry v21.4 SCHEMA / VOCABULARY / MEDIA-REF
+coverage the small third-party samples above simply don't have. Owner decision **D3** (option b —
+`.claude/propresenter-interop-1968-plan.md` §6.6) resolved this: commit **sanitised derivatives**,
+produced by the committed, deterministic `tools/pp7-sanitise-fixture.js`, which replaces every
+visible lyric run with `Sanitised line N` while preserving byte-for-byte the RTF dialect header
+(`\cocoartf`/`\rtf0`, fonttbl, colortbl, Cocoa `\`+newline soft returns), the arrangements,
+cue-group names (`Verse 1 (SDAH)`, `Tag`), CCLI metadata, and the media references. Regenerate with
+`node tools/pp7-sanitise-fixture.js --all` (reads the `_temp/` originals).
+
+**Honest limitation:** a re-encoded `.pro`'s protobuf FIELD ORDER is protobufjs's, not
+ProPresenter's own writer's — so these carry schema/vocabulary/media-ref coverage, while raw-PP-writer
+byte realism (incl. the broken-EOCD quirk) stays with the untouched MIT fixtures above.
+**Privacy:** the media references + (for the bundle) the media entry NAME retain the owner's real
+absolute paths — deliberately, because the resolution logic keys on the url-decoded basename +
+longest-suffix of `local.path`, so the real path shape IS the P4 coverage; D3 sanitises LYRICS (the
+copyright concern), not directory names, and the corpus lives in the owner's own private repo.
+
+| Committed name | Source original | PP version | Covers |
+|---|---|---|---|
+| `owner-v21-002-sdah-sanitised.pro` | `002 (SDAH) - All Creatures…pro` | **v21.4** | 50 cues → 16 lyric components, `Verse N (SDAH)` + `Tag` vocabulary (sparse `label`), 3 named arrangements, CCLI 1503, a `ROOT_USER_HOME` mediaRef with no container |
+| `owner-v21-001-media-sanitised.probundle` | `001 (SDAH) - Praise…probundle` | **v21.4** | **THE media fixture**: root inner `.pro` + an absolute-path media entry (`…/Music Notes.mp4`, name preserved) whose per-cue `ACTION_TYPE_MEDIA` ref resolves by url-decoded basename (`Music%20Notes.mp4` → `Music Notes.mp4`); the multi-MB motion loop is swapped for `assets/tiny.mp4`; clean STORED zip |
+| `owner-v21-heretostay-video-sanitised.pro` | `Here To Stay …[Video].pro` | **v21.4** | **two identical** `ROOT_SHOW` mediaRefs (dedupe-on-triple coverage) with a Unicode en-dash (`–`, `%E2%80%93`) in the filename, NO container (the warn-only ingest path) |
+| `owner-v18-heretostay-sanitised.pro` | `Here To Stay …pro` | **v18.4** | v18 provenance spread; a `.mov` (`ROOT_USER_HOME`) mediaRef |
+| `assets/tiny.mp4` | (generated) | — | a ~20 KB reusable stub that PHP `finfo` sniffs as `video/mp4` (a minimal `ftyp isom`+`free` ISO-BMFF file — no ffmpeg needed); the real accept path the P4 ingest validation exercises |
+
 ## Deliberately NOT committed (per the reference-sources triage)
 
 - `bussnet .../TestTranslated.pro` — real content is "Oceans (Where Feet May Fail)",
@@ -77,9 +106,10 @@ dedicated test coverage and mutation-proof.
 - `bussnet .../all-songs/Cornerstone.pro` — title tied to a © Hillsong work.
 - `ChrisMBarr .../v4/v5/v6 - …` — copyrighted modern-worship songs, and pre-v7 formats
   outside this epic's scope anyway.
-- The owner's genuine v21.4 SDAH-vocabulary samples (`_temp/` on alpha, commit
-  `2642f28`) — copyrighted lyric content; committing them is owner decision **D3**
-  (`.claude/propresenter-interop-1968-plan.md` §12.3), still open.
+- The owner's genuine v21.4 / v18.4 samples themselves (`_temp/` on alpha, commit
+  `2642f28`) — copyrighted lyric content stays out of the repo; their **lyric-sanitised
+  derivatives** are committed instead (see the section above; owner decision **D3**, resolved
+  option b).
 
 ## Dominant-font lyric selection (#1968 PR-1 correctness-defect fix)
 
