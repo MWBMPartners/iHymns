@@ -39,15 +39,19 @@ declare(strict_types=1);
  *       DB is reachable, also proves the SQL fragments return '' on an
  *       un-migrated install (the verified-no-op property).
  *
- * DEFERRED to the commits that create their subjects (kept out here so this
- * guard never asserts on not-yet-existing code, rule #34):
- *   - (b) song_importers.php's media INSERT references the `admin` vocabulary +
- *         the `pp7_media_ingest_enabled` dormancy gate — added with commit 4
- *         (the ingest core).
+ *   (b) THE WRITER — the tree-derived tblSongMedia WRITER (song_importers.php's
+ *       P4 ingest) stores `Visibility='admin'`, binds Visibility in its INSERT,
+ *       and is gated by `pp7_media_ingest_enabled` — imported media can never
+ *       land public. A writer's own `FROM tblSongMedia` reads are dedup probes
+ *       (they MUST see admin rows), so writers are EXCLUDED from (a)'s public-read
+ *       filter net and held to this contract instead.
+ *
+ * DEFERRED to the commit that creates its subject (kept out here so this guard
+ * never asserts on not-yet-existing code, rule #34):
  *   - (c) the PHP↔JS kind/cap lockstep (SongMediaStorage vs media-tab.js
  *         KIND_META `video`/`image`) — added with commit 5 (the editor UI).
  *   - G2 the `_bulkImport_pp7ResolveMediaRef()` resolver truth table lives in
- *         its own `test-pp7-media-ingest.php` — added with commit 4.
+ *         its own `test-pp7-media-ingest.php` (commit 4 too).
  *
  * MUTATION PROOF (rule #34 — each applied to the real tree, this test re-run and
  * confirmed RED, then reverted):
@@ -56,6 +60,7 @@ declare(strict_types=1);
  *          SongData.php/song-media.php each have two, so removing one there
  *          leaves the file-level net satisfied, the documented limitation of a
  *          file-granularity net) → (a) RED for song_media_flags.php.
+ *   - (b): changed the ingest's `$visibility = 'admin'` to `'public'` → (b) RED.
  *   - (d): added 'video' to `songMediaFlagKinds()['HasAudio']` → (d) RED.
  *   - (e): changed `songMediaVisibilityRowAllowed()`'s `$v === 'public'`
  *          early-return to `$v === 'PUBLIC'` (case-break) → (e) RED (a lowercase
@@ -139,19 +144,47 @@ function smvScanTree(string $root, string $needleRegex): array
     return $hits;
 }
 
-$readNeedle = '/FROM\s+tblSongMedia\b/i';
+$readNeedle  = '/FROM\s+tblSongMedia\b/i';
+$writeNeedle = '/INSERT\s+INTO\s+tblSongMedia\b/i';
 $readers = smvScanTree($pub, $readNeedle);
-ok('derived at least 3 public FROM tblSongMedia read files (vacuity check — a scan finding none would pass vacuously; found ' . count($readers) . ')',
-    count($readers) >= 3);
+
+/* A tblSongMedia WRITER (INSERT INTO tblSongMedia) is a different category: its
+   own `FROM tblSongMedia` reads are DEDUP/existence probes that MUST see EVERY
+   row (public AND admin) to avoid re-storing a file already stored, so they are
+   deliberately UNFILTERED. Writers are held to the write-side contract by check
+   (b) below + test-editor2-metadata-1862.php, not to the public-read filter here.
+   This is a principled category split (derived from the tree via $writeNeedle),
+   never a typed file allowlist (rule #34). */
+$publicReaders = array_values(array_filter($readers, static function (string $path): bool {
+    return !preg_match($GLOBALS['writeNeedle'], smvPhpCode((string)file_get_contents($path)));
+}));
+ok('derived at least 3 public (non-writer) FROM tblSongMedia read files (vacuity check; found ' . count($publicReaders) . ')',
+    count($publicReaders) >= 3);
 
 $blessed = ['songMediaVisibilityPublicFilterSql(', 'songMediaVisibilitySelectFragment(', 'songMediaVisibilityRowAllowed('];
-foreach ($readers as $path) {
+foreach ($publicReaders as $path) {
     $rel  = str_replace($repo . '/', '', $path);
     $code = smvPhpCode((string)file_get_contents($path));
     $has  = false;
     foreach ($blessed as $needle) { if (strpos($code, $needle) !== false) { $has = true; break; } }
     ok("{$rel}: a public read of tblSongMedia carries a visibility mechanism (file-level net — a new ungated read fails here)", $has);
 }
+
+/* ============================================================================
+ * (b) THE WRITER — imported media cannot land public
+ * ============================================================================ */
+echo "\n-- (b) song_importers.php ingest stores admin-only, behind the dormancy gate --\n";
+$importersPath = $pub . '/includes/song_importers.php';
+$importersCode = smvPhpCode((string)file_get_contents($importersPath));
+$writers = smvScanTree($pub, $writeNeedle);
+ok('derived at least 1 tblSongMedia writer file outside manage/ (vacuity check; found ' . count($writers) . ')', count($writers) >= 1);
+ok("song_importers.php is a tblSongMedia writer (INSERT INTO tblSongMedia present)", preg_match($writeNeedle, $importersCode) === 1);
+ok("song_importers.php ingest binds the 'admin' visibility value (imported media is never public)",
+    strpos($importersCode, "\$visibility = 'admin'") !== false);
+ok("song_importers.php ingest is gated by pp7_media_ingest_enabled (dormant by default; fail-closed)",
+    strpos($importersCode, 'pp7_media_ingest_enabled') !== false);
+ok("song_importers.php ingest binds Visibility in the INSERT column list",
+    preg_match('/INSERT\s+INTO\s+tblSongMedia[^;]*Visibility/is', $importersCode) === 1);
 
 /* ============================================================================
  * (d) HONESTY — video/image can never flip HasAudio/HasSheetMusic

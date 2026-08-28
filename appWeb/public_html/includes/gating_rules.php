@@ -145,6 +145,8 @@ const GATING_NEVER_STRIP_KEYS = [
  */
 const GATING_DROPPABLE_MEDIA_KINDS = [
     'audio'       => 'Audio',
+    'video'       => 'Video',        /* #1968 P4 */
+    'image'       => 'Image',        /* #1968 P4 */
     'midi'        => 'MIDI',
     'sheet-music' => 'Sheet music (PDF)',
     'musicxml'    => 'MusicXML notation',

@@ -218,5 +218,12 @@
         "skipped non-lyric group \"Lyrics Background\"",
         "arrangement referenced an unresolved group B697E02C-445D-4BF2-B239-482DFE5EF26D",
         "arrangement referenced an unresolved group E9E6BC93-2F6A-4871-B948-31DEEE36696C"
+    ],
+    "mediaRefs": [
+        {
+            "absoluteString": "file:///Users/lance.manasse/Library/CloudStorage/OneDrive-SharedLibraries-CambridgeSeventh-dayAdventistChurch/ProjectionMedia%20-%20Documents/%5BBackgrounds%5D/Music/Music%20Notes.mp4",
+            "localRoot": 2,
+            "localPath": "Library/CloudStorage/OneDrive-SharedLibraries-CambridgeSeventh-dayAdventistChurch/ProjectionMedia - Documents/[Backgrounds]/Music/Music Notes.mp4"
+        }
     ]
 }

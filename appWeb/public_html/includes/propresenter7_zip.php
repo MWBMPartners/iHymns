@@ -89,10 +89,16 @@ declare(strict_types=1);
  *
  * DEFENSIVE LIMITS
  * ------------------
- *   - total input ≤ `PP7_ZIP_MAX_INPUT_BYTES` (25 MiB — matches the importer's upload cap
- *     elsewhere in this codebase, per `PP7_MAX_INPUT_BYTES` in `propresenter7_decode.php`; kept
- *     as this file's OWN constant rather than a cross-file reference so this file stays
- *     independently includable without a load-order dependency on the decoder);
+ *   - total input ≤ `PP7_ZIP_MAX_INPUT_BYTES` (100 MiB — matches the importer's actual
+ *     `bulk_import_probundle` upload cap in api.php; #1977/#1968 P4 raised it from 25 MiB, which
+ *     was BELOW that upload cap and silently rejected a legitimate 25–100 MiB media bundle AFTER
+ *     it had uploaded fine. A bundle carries MEDIA (motion loops are tens of MiB), so its
+ *     whole-input cap is larger than the `.pro` decoder's own `PP7_MAX_INPUT_BYTES` (25 MiB) —
+ *     and that is fine: the decoder only ever sees an EXTRACTED inner `.pro`, always small, still
+ *     independently bounded by its own 25 MiB cap. Kept as this file's OWN constant rather than a
+ *     cross-file reference so this file stays independently includable without a load-order
+ *     dependency on the decoder. Memory: the reader is whole-buffer, so peak ≈ bundle + one entry
+ *     + one staged copy ≈ 3× — one-line-tunable below if a host affords less);
  *   - entry count ≤ `PP7_ZIP_MAX_ENTRIES` (4096);
  *   - a single entry's declared UNCOMPRESSED size ≤ `PP7_ZIP_MAX_INPUT_BYTES` too — the same cap
  *     reused, because no single entry inside an input this small can legitimately need to inflate
@@ -128,10 +134,12 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 if (!defined('IHYMNS_PP7_ZIP_DEFINED')) {
     define('IHYMNS_PP7_ZIP_DEFINED', true);
 
-    /** Whole-input cap — matches the `.pro` decoder's `PP7_MAX_INPUT_BYTES` (25 MiB), see the
-     *  file-level doc-block's "DEFENSIVE LIMITS" for why this file keeps its own copy instead of
-     *  referencing the decoder's constant. */
-    define('PP7_ZIP_MAX_INPUT_BYTES', 25 * 1024 * 1024);
+    /** Whole-input cap — matches the importer's `bulk_import_probundle` upload cap (100 MiB, api.php);
+     *  #1977 raised it from 25 MiB, which sat BELOW the upload cap and rejected a legitimate
+     *  25–100 MiB media bundle post-upload. See the file-level doc-block's "DEFENSIVE LIMITS" for
+     *  why a bundle's whole-input cap is larger than the `.pro` decoder's own 25 MiB (the decoder
+     *  only ever sees the small extracted inner `.pro`), and why this file keeps its own copy. */
+    define('PP7_ZIP_MAX_INPUT_BYTES', 100 * 1024 * 1024);
 
     /** Max local-file-header entries this reader will walk before giving up — a legitimate
      *  `.probundle`/`.proplaylist` carries a handful to a few dozen entries (one or more `.pro`

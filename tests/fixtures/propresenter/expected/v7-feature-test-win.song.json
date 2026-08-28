@@ -22,5 +22,12 @@
         "group \"Tag\" had no lyric text — skipped",
         "2 translation layer(s) present — not imported (see the per-line-translations follow-up, plan §3.4)",
         "selected_arrangement did not resolve to an arrangement — falling back to natural order"
+    ],
+    "mediaRefs": [
+        {
+            "absoluteString": "C:\\ProgramData\\Renewed Vision Media\\Images\\ImageSample1.jpg",
+            "localRoot": null,
+            "localPath": null
+        }
     ]
 }

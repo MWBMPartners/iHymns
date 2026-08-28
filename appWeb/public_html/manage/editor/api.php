@@ -2452,7 +2452,9 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processPro7($body, $origName);
+            /* #1968 P4 — a bare .pro warns (true) when it references media it
+               can't bring across; a container passes false (it resolves+ingests). */
+            $summary = _bulkImport_processPro7($body, $origName, true);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
@@ -2525,9 +2527,9 @@ switch ($action) {
         /* A `.probundle` carries media alongside its `.pro`(s), so it needs
            real headroom over a bare .pro (10 MiB) — 100 MiB covers a modest
            set of background images/short clips without opening the door to
-           an unbounded upload; the ZIP reader's own per-entry (25 MiB) and
-           entry-count (4096) caps (includes/propresenter7_zip.php) apply on
-           top of this regardless of what this field-level check allows. */
+           an unbounded upload; the ZIP reader's own whole-input/per-entry
+           (100 MiB, #1977 aligned it to this upload cap) and entry-count (4096)
+           caps (includes/propresenter7_zip.php) apply on top regardless. */
         $sizeBytes = (int)($_FILES['probundle']['size'] ?? 0);
         if ($sizeBytes > 100 * 1024 * 1024) {
             http_response_code(413);
@@ -2544,7 +2546,10 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processProbundle($body, $origName);
+            /* #1968 P4 — thread the curator's user id so ingested media rows
+               record UploadedBy (dormant until pp7_media_ingest_enabled). */
+            $importingUserId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            $summary = _bulkImport_processProbundle($body, $origName, $importingUserId > 0 ? $importingUserId : null);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {

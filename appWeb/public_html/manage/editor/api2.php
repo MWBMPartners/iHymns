@@ -5559,8 +5559,8 @@ try {
                     'opensong'   => _bulkImport_processOpenSong($content, $origName),    // #882
                     'xmlauto'    => _bulkImport_processXmlAuto($content, $origName),     // #882
                     'pro6'       => _bulkImport_processPro6($content, $origName),
-                    'pro7'       => _bulkImport_processPro7($content, $origName),        // epic #1968 / #885
-                    'probundle'  => _bulkImport_processProbundle($content, $origName),   // epic #1968 P2
+                    'pro7'       => _bulkImport_processPro7($content, $origName, true),  // epic #1968 / #885 (+P4 bare-media warn)
+                    'probundle'  => _bulkImport_processProbundle($content, $origName, ((int)($ed2UserId ?? 0)) > 0 ? (int)$ed2UserId : null),   // epic #1968 P2 + P4 media ingest (UploadedBy)
                     /* epic #1968 PR-3 — unlike every other arm above, this one
                        creates a SET LIST, not just song(s), so it needs the
                        resolved session user id as its owner. $ed2UserId is

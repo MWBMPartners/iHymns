@@ -137,8 +137,8 @@ _tgrlAssert(
     '(1f) missing "kinds" is rejected'
 );
 _tgrlAssert(
-    gatingRuleValidateDropMediaKinds(['kinds' => ['video']]) !== null,
-    '(1f) an unrecognised media kind ("video") is rejected'
+    gatingRuleValidateDropMediaKinds(['kinds' => ['hologram']]) !== null,
+    '(1f) an unrecognised media kind ("hologram") is rejected'
 );
 _tgrlAssert(
     gatingRuleValidateDropMediaKinds(['kinds' => ['audio', 'audio']]) !== null,
@@ -235,7 +235,7 @@ _tgrlAssert(
 $droppedTwo = gatingRuleEnforceDropMediaKinds($sampleSong, ['kinds' => ['audio', 'midi']]);
 _tgrlAssert(count($droppedTwo['media']) === 1 && $droppedTwo['media'][0]['kind'] === 'sheet-music', '(3b) dropping two kinds leaves only the third');
 
-$droppedNone = gatingRuleEnforceDropMediaKinds($sampleSong, ['kinds' => ['video']]);
+$droppedNone = gatingRuleEnforceDropMediaKinds($sampleSong, ['kinds' => ['hologram']]);
 _tgrlAssert(count($droppedNone['media']) === 3, '(3c) an unrecognised kind (defensive re-check) drops nothing');
 
 $noMediaSong = $sampleSong;
