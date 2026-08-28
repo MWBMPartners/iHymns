@@ -10629,6 +10629,504 @@ paths:
           description: The report query failed (logged server-side)
 
   # ===========================================================================
+  # ORG-ADMIN SELF-SERVICE PARITY — API-coverage batch 3 (O1-O4, #1969,
+  # .claude/api-coverage-2026-08-28.md §4.2). Native/API twins of
+  # manage/my-organisations.php's own-org POST handlers and the WRITE half
+  # of manage/venues.php. Same row-level userCanActOnOrg() gate as the
+  # Org-admin family above — system admin/global_admin, OR an admin/owner
+  # row on tblOrganisationMembers for the target org_id.
+  # ===========================================================================
+
+  /api.php?action=org_admin_settings_update:
+    post:
+      operationId: orgAdminSettingsUpdate
+      tags: [Org-admin]
+      summary: Update Live-Follow idle-timeout + set-list edit-audience org defaults
+      description: |
+        JSON twin of `manage/my-organisations.php`'s `idle_timeout_update`
+        and `setlist_edit_audience_update` handlers, combined into one
+        settings action. At least one settable-key GROUP must be present —
+        `live_idle_timeout_mins`/`enforce_idle_timeout` (either or both),
+        and/or `setlist_edit_audience_choice` — a body with neither is a
+        400, not a silent no-op. Delegates to the SAME constants +
+        dormancy gates the page uses: `includes/service_mode.php`'s
+        `LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES`/`_MAX_MINUTES` +
+        `serviceMode_orgIdleColumnsExist()`; `includes/setlist_collab.php`'s
+        `setlistOrgAudienceColumnsExist()`. Echoes the STORED row back.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_settings_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id]
+              properties:
+                org_id:
+                  type: integer
+                live_idle_timeout_mins:
+                  type: integer
+                  nullable: true
+                  description: Minutes; empty/absent clears the org override (falls back to the app default). Clamped to [5, 240].
+                enforce_idle_timeout:
+                  type: boolean
+                  description: When true, this org's minutes are an ENFORCED ceiling, not just a default.
+                setlist_edit_audience_choice:
+                  type: string
+                  enum: [none, default, require]
+                  description: "'none' clears the org preference; 'default' sets an advisory 'authenticated' audience; 'require' enforces it."
+      responses:
+        "200":
+          description: Settings saved — echoes the stored row
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  org_id: { type: integer }
+                  liveIdleTimeoutMins: { type: integer, nullable: true }
+                  enforceIdleTimeout: { type: boolean }
+                  setlistEditAudience: { type: string, nullable: true }
+                  enforceSetlistEditAudience: { type: boolean }
+        "400":
+          description: Neither settable-key group supplied
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "503":
+          description: The idle-timeout or set-list-audience org columns haven't been migrated on this environment yet
+
+  /api.php?action=org_admin_logo_upload:
+    post:
+      operationId: orgAdminLogoUpload
+      tags: [Org-admin]
+      summary: Upload (or replace) an organisation logo
+      description: |
+        MULTIPART twin of `manage/my-organisations.php`'s `logo_upload`
+        handler — reads `$_POST` + `$_FILES`, NOT a JSON body (mirrors
+        `manage/editor/api2.php?action=media_upload`'s shape). Delegates to
+        `includes/org_logo_admin.php`'s `orgLogoValidateAndStage()` (the
+        SVG upload's ONLY path into `ihymnsSanitizeSvg()` — rule #42) +
+        `orgLogoUpsert()`. `kind`/`variant` are validated against the ONE
+        registry (`includes/org_logo_helpers.php`) before any SQL runs. A
+        re-upload of the same `(kind, variant)` REPLACES the existing row.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_logo_upload] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [org_id, kind, logo_file]
+              properties:
+                org_id: { type: integer }
+                kind: { type: string, description: "One of IHYMNS_ORG_LOGO_KINDS's keys (primary/full/horizontal/stacked/emblem/logotype/secondary/monochrome/reversed/favicon)." }
+                variant: { type: string, enum: [default, light, dark], default: default }
+                alt_text: { type: string }
+                logo_file: { type: string, format: binary, description: SVG or PNG, size- and dimension-capped. }
+      responses:
+        "200":
+          description: Uploaded — echoes the org's full logo list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAdminLogoListResponse"
+        "400":
+          description: Unknown kind/variant, no file, or a file that fails validation (unrecognised format, oversize, unsafe SVG)
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "503":
+          description: The organisation-logos migration has not been run on this environment yet
+
+  /api.php?action=org_admin_logo_delete:
+    post:
+      operationId: orgAdminLogoDelete
+      tags: [Org-admin]
+      summary: Remove an organisation logo
+      description: |
+        JSON twin of `manage/my-organisations.php`'s `logo_remove` handler.
+        Removing the `default` variant cascades to its `light`/`dark`
+        theme versions too (#1840) — an orphaned theme variant is the
+        half-hidden-kind state this codebase refuses to mint. Removing an
+        explicit `light`/`dark` row alone removes just that one.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_logo_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, kind]
+              properties:
+                org_id: { type: integer }
+                kind: { type: string }
+                variant: { type: string, enum: [default, light, dark], default: default }
+      responses:
+        "200":
+          description: Removed (or a no-op if it never existed) — echoes the org's full logo list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAdminLogoListResponse"
+        "400":
+          description: Unknown kind/variant
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "503":
+          description: The organisation-logos migration has not been run on this environment yet
+
+  /api.php?action=org_admin_logo_set_active:
+    post:
+      operationId: orgAdminLogoSetActive
+      tags: [Org-admin]
+      summary: Show/hide an organisation logo kind
+      description: |
+        JSON twin of `manage/my-organisations.php`'s `logo_toggle`
+        handler. KIND-level — every variant of the kind toggles together
+        (#1840); never a half-hidden kind.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_logo_set_active] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, kind]
+              properties:
+                org_id: { type: integer }
+                kind: { type: string }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: Visibility updated — echoes the org's full logo list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgAdminLogoListResponse"
+        "400":
+          description: Unknown kind
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "503":
+          description: The organisation-logos migration has not been run on this environment yet
+
+  /api.php?action=org_admin_brand_update:
+    post:
+      operationId: orgAdminBrandUpdate
+      tags: [Org-admin]
+      summary: Set (or clear) an organisation's brand colour
+      description: |
+        JSON twin of `manage/my-organisations.php`'s `brand_save` handler.
+        Delegates to `ihymnsOrgBrandColourNormalise()` — the ONE hex
+        allowlist (`includes/organisation_validation.php`, rule #42) —
+        never an inline hex parse. Echoes the NORMALISED value back.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_brand_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id]
+              properties:
+                org_id: { type: integer }
+                brand_colour:
+                  type: string
+                  nullable: true
+                  example: "#6a1b9a"
+                  description: "'#rgb', '#rrggbb' or '#rrggbbaa' (case-insensitive); empty/null clears it."
+      responses:
+        "200":
+          description: Saved — echoes the normalised colour
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  org_id: { type: integer }
+                  brandColour: { type: string, nullable: true, example: "#6a1b9a" }
+        "400":
+          description: Not a recognisable colour code
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "503":
+          description: The brand-colour column has not been migrated on this environment yet
+
+  /api.php?action=org_admin_venue_save:
+    post:
+      operationId: orgAdminVenueSave
+      tags: [Org-admin]
+      summary: Create or update a venue
+      description: |
+        JSON twin of the WRITE half of `manage/venues.php`'s `venue_save`
+        POST handler — delegates to `includes/venue_admin.php`'s
+        `venueAdminSaveVenue()`, the SAME core the page itself was
+        re-pointed at (rule #22). `venue_id` absent/0 creates; a positive
+        value updates that row. Gate: `userCanActOnOrg()` against BOTH the
+        `org_id` in the request AND, for an update, the row's CURRENT
+        owning org — an org admin may not reassign a venue they don't
+        administer, nor move their own venue into an org they don't
+        administer.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_venue_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, name]
+              properties:
+                venue_id: { type: integer, description: "0/absent creates a new venue." }
+                org_id: { type: integer }
+                name: { type: string }
+                address_line: { type: string }
+                city: { type: string }
+                postcode: { type: string }
+                country_code: { type: string, example: "GB", description: ISO-2. }
+                timezone: { type: string, example: "Europe/London" }
+                place_id: { type: integer, description: A tblPlaces id from the location autocomplete — wins over manual lat/lng. }
+                latitude: { type: number }
+                longitude: { type: number }
+                radius_metres: { type: integer, description: "Convenience geofence radius, 0-50000. NOT the Service Mode presence gate." }
+                is_active: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Saved — echoes the stored venue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  created: { type: boolean }
+                  venue:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      orgId: { type: integer }
+                      name: { type: string }
+                      addressLine: { type: string, nullable: true }
+                      city: { type: string, nullable: true }
+                      postcode: { type: string, nullable: true }
+                      countryCode: { type: string, nullable: true }
+                      latitude: { type: number, nullable: true }
+                      longitude: { type: number, nullable: true }
+                      radiusMetres: { type: integer, nullable: true }
+                      timeZone: { type: string }
+                      isActive: { type: boolean }
+        "400":
+          description: Validation failure (missing name, unknown organisation, invalid timezone, etc.) — message is plain-English and safe to show
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: venue_id supplied but no such venue exists
+        "503":
+          description: The venue/service-schedule tables have not been migrated on this environment yet
+
+  /api.php?action=org_admin_venue_delete:
+    post:
+      operationId: orgAdminVenueDelete
+      tags: [Org-admin]
+      summary: Delete a venue (cascades its service schedules)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_venue_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [venue_id]
+              properties:
+                venue_id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  venue_id: { type: integer }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: No such venue
+        "503":
+          description: The venue tables have not been migrated on this environment yet
+
+  /api.php?action=org_admin_schedule_save:
+    post:
+      operationId: orgAdminScheduleSave
+      tags: [Org-admin]
+      summary: Create or update a venue's recurring service schedule
+      description: |
+        JSON twin of the WRITE half of `manage/venues.php`'s
+        `schedule_save` POST handler — delegates to
+        `includes/venue_admin.php`'s `venueAdminSaveSchedule()`. `org_id`
+        is ALWAYS DERIVED from the venue — never trusted from the caller;
+        the gate resolves the venue's owning org first.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_schedule_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [venue_id, start_time]
+              properties:
+                schedule_id: { type: integer, description: "0/absent creates a new schedule." }
+                venue_id: { type: integer }
+                title: { type: string, default: Service }
+                recurrence_kind: { type: string, enum: [weekly, fortnightly, monthly_nth, one_off], default: weekly }
+                start_time: { type: string, example: "10:00", description: HH:MM. }
+                duration_mins: { type: integer, default: 90, minimum: 1, maximum: 1440 }
+                timezone: { type: string, description: Override; empty inherits the venue's timezone. }
+                is_active: { type: boolean, default: true }
+                day_of_week: { type: integer, minimum: 1, maximum: 7, description: "ISO-8601 (1=Monday..7=Sunday). Required unless recurrence_kind is one_off." }
+                nth: { type: integer, enum: [1, 2, 3, 4, 5, -1], description: "monthly_nth only; -1 means 'last'." }
+                one_off_date: { type: string, format: date, description: one_off only. }
+                anchor_date: { type: string, format: date, description: "fortnightly only — which week is 'week 1'." }
+                until_date: { type: string, format: date }
+                exceptions: { type: string, description: "Comma/space/newline-separated YYYY-MM-DD dates to skip." }
+      responses:
+        "200":
+          description: Saved — echoes the stored schedule
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  created: { type: boolean }
+                  schedule:
+                    type: object
+                    properties:
+                      id: { type: integer }
+                      orgId: { type: integer }
+                      venueId: { type: integer }
+                      title: { type: string }
+                      dayOfWeek: { type: integer }
+                      startTime: { type: string }
+                      durationMins: { type: integer }
+                      recurrenceKind: { type: string }
+                      timeZone: { type: string }
+                      isActive: { type: boolean }
+        "400":
+          description: Validation failure (invalid start time, missing day of week, malformed date, etc.)
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: Unknown venue
+        "503":
+          description: The venue/service-schedule tables have not been migrated on this environment yet
+
+  /api.php?action=org_admin_schedule_delete:
+    post:
+      operationId: orgAdminScheduleDelete
+      tags: [Org-admin]
+      summary: Delete a service schedule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_admin_schedule_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schedule_id]
+              properties:
+                schedule_id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  schedule_id: { type: integer }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not authorised on this organisation
+        "404":
+          description: No such service schedule
+        "503":
+          description: The venue tables have not been migrated on this environment yet
+
+  # ===========================================================================
   # ADMIN — MUSICIANS  (#719 PR 2d, #545; renamed from "Credit People" by #1741 P2-B)
   # Catalogue-wide CRUD over the people credited on songs across the
   # five song-credit tables + the tblMusicians registry. Every
@@ -19396,6 +19894,41 @@ components:
         notes:
           type: string
           nullable: true
+
+    # -------------------------------------------------------------------------
+    # Org-admin batch 3 (O1-O4, #1969) response shapes
+    # -------------------------------------------------------------------------
+
+    OrgAdminLogoListResponse:
+      type: object
+      description: |
+        The shared response shape for org_admin_logo_upload/_delete/
+        _set_active — every write echoes the organisation's FULL current
+        logo list (rule #35/#40), including hidden rows so a curator can
+        un-hide them. `kind`/`variant`/`v` match the SAME field names the
+        `my_organisations` action's own `logos` field already emits, which
+        `js/modules/org-logo.js`'s `orgLogoUrl()` already knows how to turn
+        into a serving URL.
+      properties:
+        ok:
+          type: boolean
+          example: true
+        org_id:
+          type: integer
+        logos:
+          type: array
+          items:
+            type: object
+            properties:
+              kind: { type: string }
+              variant: { type: string, enum: [default, light, dark] }
+              v: { type: string, description: SHA-256 of the stored bytes — the cache-busting `&v=` query value. }
+              alt: { type: string, nullable: true }
+              width: { type: integer, nullable: true }
+              height: { type: integer, nullable: true }
+              mime: { type: string, example: image/svg+xml }
+              byteSize: { type: integer }
+              isActive: { type: boolean }
 
     # -------------------------------------------------------------------------
     # Credit-people write-input + diagnostics shapes (#719 PR 2d)

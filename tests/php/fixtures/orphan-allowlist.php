@@ -174,6 +174,28 @@ return [
            allowlist entry" self-cleaning check instead.) */
         'org_ccli_report'                       => 'deliberate API-first surface #1969 (API-coverage batch 1 C5); Swagger console consumer; same D1-default-A posture as the admin_musician / admin_tier / admin_tune / admin_licence_type families; manage/my-ccli-report.php does its own direct DB work via the SAME shared includes/ccli_report.php core (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* #1969 (API-coverage plan §4.2, batch 3, O1-O3) — org-admin
+           self-service parity for manage/my-organisations.php's own
+           idle_timeout_update / setlist_edit_audience_update / logo_upload /
+           logo_remove / logo_toggle / brand_save POST handlers. Same
+           D1-default-A posture as org_ccli_report immediately above:
+           deliberate API-first surface, documented in api-docs.yaml,
+           reachable from the Swagger try-it-out console; the web page does
+           its own direct DB work / calls the SAME shared cores
+           (includes/service_mode.php, includes/setlist_collab.php,
+           includes/org_logo_admin.php, includes/organisation_validation.php
+           — never a fork), so nothing first-party calls the JSON twins yet.
+           (O4's four venue/schedule actions are NOT listed here: they are
+           chain-rule-credited via the `?action=…` mentions in
+           includes/venue_admin.php's own doc-block — the SAME mechanism
+           org_venues/tune/publisher_detail use above — so adding them here
+           would trip the "stale allowlist entry" self-cleaning check instead.) */
+        'org_admin_settings_update'             => 'deliberate API-first surface #1969 (API-coverage batch 3, O1); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s idle_timeout_update/setlist_edit_audience_update handlers touch tblOrganisations directly (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_upload'                 => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_upload handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_delete'                 => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_remove handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_set_active'             => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_toggle handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_brand_update'                => 'deliberate API-first surface #1969 (API-coverage batch 3, O3); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s brand_save handler calls the SAME shared includes/organisation_validation.php normaliser (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

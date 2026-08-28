@@ -38,7 +38,16 @@ declare(strict_types=1);
  *       pre-fill a form are the plan's own documented exemption, "plus
  *       their settings-surface writers", and are out of this scan's scope),
  *       ONLY inside `serviceMode_resolveIdleTimeoutMins()` (or the
- *       identifier's own `const` declaration line).
+ *       identifier's own `const` declaration line) — PLUS, since #1969
+ *       API-coverage batch 3 (O1), the `org_admin_settings_update` case
+ *       body in api.php itself: that action IS a settings-surface WRITER
+ *       (the native/API twin of manage/my-organisations.php's own
+ *       idle_timeout_update handler, which the "plus their settings-surface
+ *       writers" clause above already exempted for the web page) — it just
+ *       happens to live inside one of the two files this scan otherwise
+ *       treats as the resolution/enforcement path, so it gets its own
+ *       named, range-scoped exemption rather than a blanket "ignore
+ *       api.php" that would defeat the rest of this check.
  *
  * PART B (DB, else SKIP) — the resolver matrix, §5's own precedence formula
  * `enforced ?? (user ?? (orgDefault ?? appDefault))`, clamped [5,240]:
@@ -231,6 +240,42 @@ $layerIdentifiers = [
    gate every column-existence-gated helper in this codebase needs. */
 $orgProbeRange = lfiFunctionBodyRange($smSrc, 'serviceMode_orgIdleColumnsExist');
 
+/* #1969 API-coverage batch 3 (O1) — the org_admin_settings_update case in
+   api.php IS a settings-surface WRITER (see the doc-block above): it
+   writes the org's own LiveIdleTimeoutMins/EnforceIdleTimeout, exactly as
+   manage/my-organisations.php's idle_timeout_update handler does (that
+   page is entirely outside this scan's scope; this action happens to live
+   inside api.php, one of the two files the scan otherwise polices, so it
+   needs its own named, range-scoped carve-out).
+   BRACE-MATCHED (like lfiFunctionBodyRange()), NOT the "up to the next
+   top-level case label" shape A2 uses above — this action's body contains
+   its OWN nested `switch ($audienceChoice) { case 'require': … }` for the
+   three-way edit-audience mapping, and a naive "next `case '...':`" scan
+   would stop at that NESTED case label, truncating the range and wrongly
+   flagging everything after it (this is exactly how the first version of
+   this carve-out reported false positives at the SELECT-echo lines below
+   the nested switch — caught immediately by running this guard, not
+   inferred). This case's body is written `case '…': { … }` (the SAME
+   explicit-brace shape as every other case in this switch), so brace-
+   depth matching from the FIRST `{` after the label to its balanced `}`
+   is exact regardless of what nests inside. */
+$settingsUpdateRange = null;
+if (preg_match('/case\s+\'org_admin_settings_update\'\s*:\s*\{/', $apiSrc, $mSu, PREG_OFFSET_CAPTURE)) {
+    $suBracePos = strpos($apiSrc, '{', $mSu[0][1]);
+    if ($suBracePos !== false) {
+        $depth = 0;
+        $len = strlen($apiSrc);
+        for ($i = $suBracePos; $i < $len; $i++) {
+            if ($apiSrc[$i] === '{') { $depth++; }
+            elseif ($apiSrc[$i] === '}') {
+                $depth--;
+                if ($depth === 0) { $settingsUpdateRange = [$suBracePos, $i + 1]; break; }
+            }
+        }
+    }
+}
+lfi($settingsUpdateRange !== null, "A3.0 found case 'org_admin_settings_update': block in api.php to exempt");
+
 foreach ($layerIdentifiers as $ident) {
     $strayReads = [];
     foreach (['service_mode.php' => $smSrc, 'api.php' => $apiSrc] as $label => $src) {
@@ -242,7 +287,8 @@ foreach ($layerIdentifiers as $ident) {
             $isDeclaration = (bool)preg_match('/^\s*const\s+' . preg_quote($ident, '/') . '\b/', $lineText);
             $inResolver = ($label === 'service_mode.php') && lfiInRange($pos, $resolverRange);
             $inOrgProbe = ($label === 'service_mode.php') && lfiInRange($pos, $orgProbeRange);
-            if (!$isDeclaration && !$inResolver && !$inOrgProbe) {
+            $inSettingsUpdate = ($label === 'api.php') && lfiInRange($pos, $settingsUpdateRange);
+            if (!$isDeclaration && !$inResolver && !$inOrgProbe && !$inSettingsUpdate) {
                 $line = substr_count(substr($src, 0, $pos), "\n") + 1;
                 $strayReads[] = "$label:$line";
             }
@@ -250,8 +296,9 @@ foreach ($layerIdentifiers as $ident) {
     }
     lfi(
         $strayReads === [],
-        "A3 '$ident' is referenced only by its const declaration and serviceMode_resolveIdleTimeoutMins() "
-            . 'within service_mode.php/api.php (settings-surface admin pages are the documented exemption)'
+        "A3 '$ident' is referenced only by its const declaration, serviceMode_resolveIdleTimeoutMins(), "
+            . "and the org_admin_settings_update settings-surface writer within service_mode.php/api.php "
+            . '(other settings-surface admin pages are the documented exemption)'
             . ($strayReads === [] ? '' : ' — found elsewhere at: ' . implode(', ', $strayReads))
     );
 }

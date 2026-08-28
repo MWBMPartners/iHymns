@@ -16705,6 +16705,662 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * ORG-ADMIN SELF-SERVICE PARITY — API-coverage batch 3 (O1-O4,
+         * .claude/api-coverage-2026-08-28.md §4.2, #1969)
+         *
+         * Native/API twins of manage/my-organisations.php's own-org POST
+         * handlers (idle_timeout_update / setlist_edit_audience_update /
+         * logo_upload / logo_remove / logo_toggle / brand_save) and the
+         * WRITE half of manage/venues.php (venue_save/venue_delete/
+         * schedule_save/schedule_delete). Every action gates via the
+         * shared `userCanActOnOrg` helper (includes/organisation_validation.php,
+         * required at the top of this file) — system admin/global_admin, OR an
+         * admin/owner row on tblOrganisationMembers for the TARGET org_id —
+         * the SAME row-level check manage/my-organisations.php's own
+         * $canActOnOrg closure resolves to (owner Q4: org admins manage
+         * their own venues too, same gate). Every write DELEGATES to the
+         * SAME shared core the page uses (rule #22) — never a second
+         * validation/write path — and every response ECHOES the STORED
+         * value back (rule #35/#40), never an echo of the request.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * O1 — Org behaviour settings: Live-Follow leader-idle timeout
+         * (#1770) + set-list edit-link audience default/enforce (#1791).
+         * POST body: { org_id, live_idle_timeout_mins?, enforce_idle_timeout?,
+         *              setlist_edit_audience_choice?: 'none'|'default'|'require' }
+         * At least one settable-key GROUP must be present (idle-timeout's
+         * pair, and/or the audience choice) — a body with neither is a 400,
+         * not a silent no-op.
+         *
+         * Delegates to the SAME constants + dormancy gates
+         * manage/my-organisations.php's idle_timeout_update /
+         * setlist_edit_audience_update handlers use — never a re-typed
+         * clamp or allow-list: includes/service_mode.php's
+         * LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES/_MAX_MINUTES +
+         * serviceMode_orgIdleColumnsExist(); includes/setlist_collab.php's
+         * setlistOrgAudienceColumnsExist(). (The plan doc names
+         * includes/SharedSetlist.php for the audience half; the actual
+         * shared core is includes/setlist_collab.php — SharedSetlist.php
+         * is the set-list SHARE-TOKEN core, a different concern. This
+         * comment corrects the citation for the next reader.)
+         * ----------------------------------------------------------------- */
+        case 'org_admin_settings_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId = (int)($body['org_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            $wantsIdle     = array_key_exists('live_idle_timeout_mins', $body) || array_key_exists('enforce_idle_timeout', $body);
+            $wantsAudience = array_key_exists('setlist_edit_audience_choice', $body);
+            if (!$wantsIdle && !$wantsAudience) {
+                sendJson(['error' => 'Nothing to save — supply live_idle_timeout_mins/enforce_idle_timeout and/or setlist_edit_audience_choice.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $changed = [];
+
+                if ($wantsIdle) {
+                    if (!serviceMode_orgIdleColumnsExist($db)) {
+                        sendJson(['error' => 'Not available on this environment yet.'], 503);
+                        break;
+                    }
+                    /* Byte-identical clamp to manage/my-organisations.php's
+                       idle_timeout_update handler — empty minutes means "no
+                       override" (NULL), never a coerced 0. */
+                    $idleMinsRaw = trim((string)($body['live_idle_timeout_mins'] ?? ''));
+                    $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                    $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                        ? null
+                        : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                    $idleEnforceVal = !empty($body['enforce_idle_timeout']) ? 1 : 0;
+
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $orgId);
+                    $stmt->execute();
+                    $stmt->close();
+                    $changed[] = 'idle_timeout';
+                }
+
+                if ($wantsAudience) {
+                    if (!setlistOrgAudienceColumnsExist($db)) {
+                        sendJson(['error' => 'Not available on this environment yet.'], 503);
+                        break;
+                    }
+                    /* Byte-identical 3-way mapping to
+                       manage/my-organisations.php's
+                       setlist_edit_audience_update handler — the <select>
+                       there only ever offers these three choices, read as
+                       ONE combined field ('anyone' is never a meaningful
+                       org opinion — it's already the app-wide default). */
+                    $audienceChoice = (string)($body['setlist_edit_audience_choice'] ?? 'none');
+                    switch ($audienceChoice) {
+                        case 'require':
+                            $audienceVal = 'authenticated';
+                            $enforceVal  = 1;
+                            break;
+                        case 'default':
+                            $audienceVal = 'authenticated';
+                            $enforceVal  = 0;
+                            break;
+                        case 'none':
+                        default:
+                            $audienceVal = null;
+                            $enforceVal  = 0;
+                            break;
+                    }
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET SetlistEditAudience = ?, EnforceSetlistEditAudience = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $audienceVal, $enforceVal, $orgId);
+                    $stmt->execute();
+                    $stmt->close();
+                    $changed[] = 'setlist_edit_audience';
+                }
+
+                logActivity('api.org_admin.settings_update', 'organisation', (string)$orgId, [
+                    'changed' => $changed,
+                ]);
+
+                /* Echo the STORED row back (rule #35/#40) — column-existence-
+                   tolerant per settings GROUP, so a partially-migrated
+                   install (e.g. #1770's columns applied, #1791's not) still
+                   returns whatever half is real instead of throwing under
+                   mysqli STRICT (rule #19). */
+                $selectCols = ['Id'];
+                if (serviceMode_orgIdleColumnsExist($db)) { $selectCols[] = 'LiveIdleTimeoutMins'; $selectCols[] = 'EnforceIdleTimeout'; }
+                if (setlistOrgAudienceColumnsExist($db))  { $selectCols[] = 'SetlistEditAudience'; $selectCols[] = 'EnforceSetlistEditAudience'; }
+                $stmt = $db->prepare('SELECT ' . implode(', ', $selectCols) . ' FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc() ?: [];
+                $stmt->close();
+
+                sendJson([
+                    'ok'                        => true,
+                    'org_id'                    => $orgId,
+                    'liveIdleTimeoutMins'        => array_key_exists('LiveIdleTimeoutMins', $row) && $row['LiveIdleTimeoutMins'] !== null ? (int)$row['LiveIdleTimeoutMins'] : null,
+                    'enforceIdleTimeout'         => array_key_exists('EnforceIdleTimeout', $row) ? (bool)$row['EnforceIdleTimeout'] : false,
+                    'setlistEditAudience'        => array_key_exists('SetlistEditAudience', $row) ? $row['SetlistEditAudience'] : null,
+                    'enforceSetlistEditAudience' => array_key_exists('EnforceSetlistEditAudience', $row) ? (bool)$row['EnforceSetlistEditAudience'] : false,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.settings_update', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_settings_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save organisation settings.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2a — Org logo upload (MULTIPART — mirrors manage/editor/api2.php's
+         * media_upload shape exactly: reads $_POST + $_FILES, NOT the JSON
+         * body; the top-of-file X-Requested-With CSRF gate still applies to
+         * a multipart POST the same as any other).
+         * POST fields: org_id, kind, variant? ('default'|'light'|'dark',
+         *              default 'default'), alt_text?, logo_file (the file).
+         * Delegates to includes/org_logo_admin.php's orgLogoValidateAndStage()
+         * (the SVG upload's ONLY path into ihymnsSanitizeSvg() — rule #42)
+         * + orgLogoUpsert(). $kind/$variant are validated against the ONE
+         * registry (includes/org_logo_helpers.php, already required at the
+         * top of this file) before any SQL runs.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_upload': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $orgId   = (int)($_POST['org_id'] ?? 0);
+            $kind    = (string)($_POST['kind'] ?? '');
+            $variant = (string)($_POST['variant'] ?? 'default');
+            $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+            if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                sendJson(['error' => 'Unknown logo variant.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!orgLogoTableExists($db)) {
+                sendJson(['error' => 'Not available on this environment yet.'], 503);
+                break;
+            }
+
+            $file    = $_FILES['logo_file'] ?? null;
+            $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+            if ($fileErr !== UPLOAD_ERR_OK) {
+                $msg = in_array($fileErr, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                    ? 'That file is too large for a logo.'
+                    : 'Please choose a logo file to upload.';
+                sendJson(['error' => $msg, 'phpError' => $fileErr], 400);
+                break;
+            }
+
+            try {
+                $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
+                $userId = (int)$authUser['Id'];
+                orgLogoUpsert($db, $orgId, $kind, $variant, $staged, $altText, $userId);
+
+                logActivity('api.org_admin.logo_upload', 'organisation', (string)$orgId, [
+                    'kind' => $kind, 'variant' => $variant, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\RuntimeException $e) {
+                /* Plain-English validation reject (org_logo_admin.php's own
+                   §4.4 doc-block) — safe to show verbatim, never a stack trace. */
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_upload', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_upload] ' . $e->getMessage());
+                sendJson(['error' => 'Could not upload logo.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2b — Org logo remove.
+         * POST body: { org_id, kind, variant? (default 'default') }
+         * Removing the DEFAULT row cascades to its light/dark theme
+         * versions too (#1840 — mirrors manage/my-organisations.php's
+         * logo_remove handler exactly; an orphaned theme variant is the
+         * half-hidden-kind state this codebase refuses to mint).
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId   = (int)($body['org_id'] ?? 0);
+            $kind    = (string)($body['kind'] ?? '');
+            $variant = (string)($body['variant'] ?? 'default');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+            if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                sendJson(['error' => 'Unknown logo variant.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgLogoTableExists($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                if ($variant === 'default') {
+                    orgLogoDeleteKindAll($db, $orgId, $kind);
+                } else {
+                    orgLogoDelete($db, $orgId, $kind, $variant);
+                }
+
+                logActivity('api.org_admin.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind, 'variant' => $variant]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_remove', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove logo.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2c — Org logo show/hide (KIND-level — every variant of the kind
+         * together, #1840; mirrors manage/my-organisations.php's
+         * logo_toggle handler exactly).
+         * POST body: { org_id, kind, active }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_set_active': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id'] ?? 0);
+            $kind   = (string)($body['kind'] ?? '');
+            $active = !empty($body['active']);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgLogoTableExists($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                orgLogoSetActiveKind($db, $orgId, $kind, $active);
+
+                logActivity('api.org_admin.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_toggle', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_set_active] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update logo visibility.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O3 — Org brand colour.
+         * POST body: { org_id, brand_colour }  ('' / null clears it)
+         * Delegates to ihymnsOrgBrandColourNormalise() — the ONE allowlist
+         * (includes/organisation_validation.php, rule #42) — never an
+         * inline hex parse. Echoes the NORMALISED value back.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_brand_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId     = (int)($body['org_id'] ?? 0);
+            $rawColour = array_key_exists('brand_colour', $body) && $body['brand_colour'] !== null
+                ? (string)$body['brand_colour']
+                : null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+            if ($normalised === false) {
+                sendJson(['error' => "That doesn't look like a colour code — use a value like #6a1b9a."], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgBrandColumnsExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+
+                logActivity('api.org_admin.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'brandColour' => $normalised]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.brand_save', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_brand_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save brand colour.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4a — Venue create/update (the WRITE half of manage/venues.php;
+         * org_venues, API-coverage batch 1 C2, already covers the READ
+         * half). Delegates to includes/venue_admin.php's venueAdminSaveVenue()
+         * — the SAME core manage/venues.php's own venue_save POST handler
+         * was re-pointed at in this same commit (rule #22).
+         * POST body: venue_id? (0/absent creates), org_id, name,
+         *   address_line?, city?, postcode?, country_code?, timezone?,
+         *   place_id?, is_active?, latitude?, longitude?, radius_metres?.
+         * Gate (owner Q4 — org admins manage their own venues: yes):
+         * userCanActOnOrg() against BOTH the org_id in the request AND, for
+         * an update, the row's CURRENT owning org — an org admin may not
+         * reassign a venue they don't administer, nor move their own venue
+         * into an org they don't administer.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_venue_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId   = (int)($body['org_id'] ?? 0);
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                if ($venueId > 0) {
+                    $existing = venueAdminGetVenue($db, $venueId);
+                    if ($existing === null) {
+                        sendJson(['error' => 'Venue not found.'], 404);
+                        break;
+                    }
+                    if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                        sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                        break;
+                    }
+                }
+
+                $result = venueAdminSaveVenue($db, $body);
+                $venue  = venueAdminGetVenue($db, $result['id']);
+
+                logActivity(
+                    $result['created'] ? 'api.org_admin.venue_create' : 'api.org_admin.venue_edit',
+                    'organisation', (string)$result['orgId'], ['venue_id' => $result['id'], 'name' => $result['name']]
+                );
+
+                sendJson(['ok' => true, 'created' => $result['created'], 'venue' => _apiVenueWire($venue)]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.venue_save', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_venue_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save venue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4b — Venue delete (CASCADE removes its schedules).
+         * POST body: { venue_id }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_venue_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $existing = venueAdminGetVenue($db, $venueId);
+                if ($existing === null) {
+                    sendJson(['error' => 'Venue not found.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                $deleted = venueAdminDeleteVenue($db, $venueId);
+
+                logActivity('api.org_admin.venue_delete', 'organisation', (string)($deleted['orgId'] ?? 0), [
+                    'venue_id' => $venueId, 'name' => $deleted['name'] ?? '',
+                ]);
+
+                sendJson(['ok' => true, 'venue_id' => $venueId]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.venue_delete', 'organisation', (string)$venueId, $e);
+                error_log('[org_admin_venue_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete venue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4c — Service-schedule create/update. OrgId is ALWAYS DERIVED
+         * from the venue (venueAdminSaveSchedule() never trusts a posted
+         * org_id) — the gate below resolves the venue's org FIRST.
+         * POST body: venue_id, schedule_id? (0/absent creates), title?,
+         *   recurrence_kind?, start_time, duration_mins?, timezone?,
+         *   is_active?, day_of_week? (required unless one_off), nth?
+         *   (monthly_nth), one_off_date? (one_off), anchor_date?
+         *   (fortnightly), until_date?, exceptions?.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_schedule_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $venue = venueAdminGetVenue($db, $venueId);
+                if ($venue === null) {
+                    sendJson(['error' => 'Unknown venue.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$venue['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                $result   = venueAdminSaveSchedule($db, $body);
+                $schedule = venueAdminGetSchedule($db, $result['id']);
+
+                logActivity(
+                    $result['created'] ? 'api.org_admin.schedule_create' : 'api.org_admin.schedule_edit',
+                    'organisation', (string)$result['orgId'], ['schedule_id' => $result['id'], 'venue_id' => $result['venueId']]
+                );
+
+                sendJson(['ok' => true, 'created' => $result['created'], 'schedule' => _apiScheduleWire($schedule)]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.schedule_save', 'organisation', (string)$venueId, $e);
+                error_log('[org_admin_schedule_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save service time.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4d — Service-schedule delete.
+         * POST body: { schedule_id }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_schedule_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $scheduleId = (int)($body['schedule_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $existing = venueAdminGetSchedule($db, $scheduleId);
+                if ($existing === null) {
+                    sendJson(['error' => 'Service time not found.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                $deleted = venueAdminDeleteSchedule($db, $scheduleId);
+
+                logActivity('api.org_admin.schedule_delete', 'organisation', (string)($deleted['orgId'] ?? 0), [
+                    'schedule_id' => $scheduleId,
+                ]);
+
+                sendJson(['ok' => true, 'schedule_id' => $scheduleId]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.schedule_delete', 'organisation', (string)$scheduleId, $e);
+                error_log('[org_admin_schedule_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete service time.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
          * MUSICIANS — admin CRUD parity (#719 PR 2d, renamed from
          * "Credit People" by #1741 P2-B)
          *
@@ -21309,6 +21965,93 @@ function _authProviderListForUser(\mysqli $db, int $userId): array
 function _liveFollowCleanSongId(string $raw): string
 {
     return mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', $raw), 0, 20);
+}
+
+/* =========================================================================
+ * ORG-ADMIN SELF-SERVICE (batch 3, O2/O4) — private wire-shape helpers
+ * ========================================================================= */
+
+/**
+ * Shape an organisation's logo rows for a JSON response. Field names
+ * (`kind`/`variant`/`v`/`alt`/`width`/`height`) match the `my_organisations`
+ * action's existing `logos` field (§6.3, #1830) EXACTLY — the same
+ * `{kind, variant, v}` triple `js/modules/org-logo.js`'s `orgLogoUrl()`
+ * already knows how to turn into a serving URL — plus the admin-only
+ * fields an EDITING surface needs that a public display doesn't
+ * (`mime`/`byteSize`/`isActive`; `my_organisations` pre-filters to
+ * active-only rows so never needs the flag on the wire, and this O2
+ * surface must show hidden rows too so a curator can un-hide them).
+ * NEVER the stored bytes (rule #42 — a logo is served as `<img src>`,
+ * built by the client from `kind`/`variant`/`v`, never inlined here).
+ * Used by the org_admin_logo_upload/_delete/_set_active actions to echo
+ * the STORED state back after a write (rule #35/#40).
+ */
+function _apiOrgLogoWireList(\mysqli $db, int $orgId): array
+{
+    return array_map(static function (array $l): array {
+        return [
+            'kind'     => (string)$l['Kind'],
+            'variant'  => (string)$l['Variant'],
+            'v'        => (string)$l['Sha256'],
+            'alt'      => $l['AltText'] !== null ? (string)$l['AltText'] : null,
+            'width'    => $l['Width']  !== null ? (int)$l['Width']  : null,
+            'height'   => $l['Height'] !== null ? (int)$l['Height'] : null,
+            'mime'     => (string)$l['Mime'],
+            'byteSize' => (int)$l['ByteSize'],
+            'isActive' => (bool)$l['IsActive'],
+        ];
+    }, orgLogoListForOrg($db, $orgId));
+}
+
+/**
+ * Shape one venue row (`venueAdminGetVenue()`'s shape) for a JSON
+ * response — the SAME per-field names the `org_venues` action (API-
+ * coverage batch 1, C2) already emits for a venue object, plus `orgId`
+ * (org_venues nests venues under their org so never needs it repeated; a
+ * single-venue write echo does). Used by the O4 org_admin_venue_save
+ * action to echo the STORED row back (rule #35/#40).
+ */
+function _apiVenueWire(?array $v): ?array
+{
+    if ($v === null) { return null; }
+    return [
+        'id'           => (int)$v['Id'],
+        'orgId'        => (int)$v['OrgId'],
+        'name'         => (string)$v['Name'],
+        'addressLine'  => $v['AddressLine'] ?? null,
+        'city'         => $v['City'] ?? null,
+        'postcode'     => $v['Postcode'] ?? null,
+        'countryCode'  => $v['CountryCode'] ?? null,
+        'latitude'     => $v['Latitude'] !== null ? (float)$v['Latitude'] : null,
+        'longitude'    => $v['Longitude'] !== null ? (float)$v['Longitude'] : null,
+        'radiusMetres' => $v['RadiusMetres'] !== null ? (int)$v['RadiusMetres'] : null,
+        'timeZone'     => (string)$v['TimeZone'],
+        'isActive'     => (bool)$v['IsActive'],
+    ];
+}
+
+/**
+ * Shape one service-schedule row (`venueAdminGetSchedule()`'s shape) for a
+ * JSON response — the SAME per-field names `org_venues` already emits for
+ * a schedule object, plus `orgId`/`venueId` (org_venues nests schedules
+ * under their venue so never needs either repeated). Used by the O4
+ * org_admin_schedule_save action.
+ */
+function _apiScheduleWire(?array $s): ?array
+{
+    if ($s === null) { return null; }
+    return [
+        'id'             => (int)$s['Id'],
+        'orgId'          => (int)$s['OrgId'],
+        'venueId'        => (int)$s['VenueId'],
+        'title'          => (string)$s['Title'],
+        'dayOfWeek'      => (int)($s['DayOfWeek'] ?? 0),
+        'startTime'      => (string)$s['StartTime'],
+        'durationMins'   => (int)$s['DurationMins'],
+        'recurrenceKind' => (string)$s['RecurrenceKind'],
+        'timeZone'       => (string)$s['_EffTz'],
+        'isActive'       => (bool)$s['IsActive'],
+    ];
 }
 
 /**

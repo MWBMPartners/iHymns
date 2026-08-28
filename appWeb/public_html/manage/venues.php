@@ -60,12 +60,13 @@ $db      = getDbMysqli();
  * is an entry here, never an ALTER (rule #20).
  * ------------------------------------------------------------------ */
 $DOW = [1 => 'Monday', 2 => 'Tuesday', 3 => 'Wednesday', 4 => 'Thursday', 5 => 'Friday', 6 => 'Saturday', 7 => 'Sunday'];
-$RECURRENCE_KINDS = [
-    'weekly'      => 'Every week',
-    'fortnightly' => 'Every 2 weeks',
-    'monthly_nth' => 'Monthly (nth weekday)',
-    'one_off'     => 'One-off date',
-];
+/* #1969 batch 3 (O4) — the vocabulary itself now lives ONCE in
+   includes/venue_admin.php (IHYMNS_VENUE_RECURRENCE_KINDS), reused by the
+   org_admin_schedule_save API action's own validation so the two can never
+   list a different set of cadences (rule #20's "never a hard-coded list
+   that already exists in a central map" applied to this page's own former
+   local copy). */
+$RECURRENCE_KINDS = IHYMNS_VENUE_RECURRENCE_KINDS;
 $NTH_LABELS = [1 => 'first', 2 => 'second', 3 => 'third', 4 => 'fourth', 5 => 'fifth', -1 => 'last'];
 /* Cache the IANA tz list once (DateTimeZone::listIdentifiers is the canonical
    source — https://www.php.net/manual/en/datetimezone.listidentifiers.php). */
@@ -190,108 +191,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $schemaReady) {
     try {
         switch ($action) {
 
-            /* ---- Venue create / update ---- */
+            /* ---- Venue create / update ----
+               #1969 batch 3 (O4) — delegates to the shared write core
+               (includes/venue_admin.php), reused by the org_admin_venue_save
+               API action (rule #22). Validation/defaults/SQL are unchanged;
+               only the source of the input and the failure signal moved. */
             case 'venue_save': {
-                $venueId = (int)($_POST['venue_id'] ?? 0);
-                $orgId   = (int)($_POST['org_id'] ?? 0);
-                $name    = trim((string)($_POST['name'] ?? ''));
-                $addr    = trim((string)($_POST['address_line'] ?? ''));
-                $city    = trim((string)($_POST['city'] ?? ''));
-                $post    = trim((string)($_POST['postcode'] ?? ''));
-                $cc      = strtoupper(trim((string)($_POST['country_code'] ?? '')));
-                $tz      = trim((string)($_POST['timezone'] ?? 'UTC'));
-                $placeId = (int)($_POST['place_id'] ?? 0);
-                $isActive = isset($_POST['is_active']) ? 1 : 0;
-
-                if ($name === '') { throw new \RuntimeException('Venue name is required.'); }
-                if ($orgId <= 0)  { throw new \RuntimeException('Choose an organisation first.'); }
-                if (!in_array($tz, $GLOBALS['TZ_LIST'], true)) { $tz = 'UTC'; }
-                if ($cc !== '' && !preg_match('/^[A-Z]{2}$/', $cc)) { $cc = ''; }
-
-                // Confirm the org exists (FK would throw, but this gives a friendly error).
-                $chk = $db->prepare('SELECT 1 FROM tblOrganisations WHERE Id = ? LIMIT 1');
-                $chk->bind_param('i', $orgId);
-                $chk->execute();
-                if ($chk->get_result()->fetch_row() === null) { $chk->close(); throw new \RuntimeException('Unknown organisation.'); }
-                $chk->close();
-
-                // Resolve coordinates: a geocoder pick (PlaceId) wins; else the
-                // optional manual lat/lng. placesLoadById() returns {lat,lon}.
-                $lat = ($_POST['latitude']  ?? '') !== '' ? (float)$_POST['latitude']  : null;
-                $lng = ($_POST['longitude'] ?? '') !== '' ? (float)$_POST['longitude'] : null;
-                $placeIdOrNull = $placeId > 0 ? $placeId : null;
-                if ($placeIdOrNull !== null && function_exists('placesLoadById')) {
-                    $place = placesLoadById($db, $placeIdOrNull);
-                    if ($place) {
-                        if ($lat === null && isset($place['lat'])) { $lat = (float)$place['lat']; }
-                        if ($lng === null && isset($place['lon'])) { $lng = (float)$place['lon']; }
-                    }
-                }
-                // Clamp coordinates to valid WGS84 ranges.
-                if ($lat !== null && ($lat < -90 || $lat > 90))   { $lat = null; }
-                if ($lng !== null && ($lng < -180 || $lng > 180)) { $lng = null; }
-                $radius = ($_POST['radius_metres'] ?? '') !== '' ? max(0, min(50000, (int)$_POST['radius_metres'])) : null;
-
-                $addrN = $addr !== '' ? $addr : null;
-                $cityN = $city !== '' ? $city : null;
-                $postN = $post !== '' ? $post : null;
-                $ccN   = $cc !== '' ? $cc : null;
-
-                if ($venueId > 0) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblOrgVenues
-                            SET OrgId = ?, Name = ?, AddressLine = ?, City = ?, Postcode = ?,
-                                CountryCode = ?, PlaceId = ?, Latitude = ?, Longitude = ?,
-                                RadiusMetres = ?, TimeZone = ?, IsActive = ?
-                          WHERE Id = ?'
-                    );
-                    // i s s s s  s i d d  i s i  i
-                    $stmt->bind_param(
-                        'isssssiddisii',
-                        $orgId, $name, $addrN, $cityN, $postN,
-                        $ccN, $placeIdOrNull, $lat, $lng,
-                        $radius, $tz, $isActive, $venueId
-                    );
-                    $stmt->execute();
-                    $stmt->close();
-                    logActivity('venue.edit', 'organisation', (string)$orgId, ['venue_id' => $venueId, 'name' => $name]);
-                    $success = 'Venue updated.';
-                } else {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblOrgVenues
-                            (OrgId, Name, AddressLine, City, Postcode, CountryCode,
-                             PlaceId, Latitude, Longitude, RadiusMetres, TimeZone, IsActive)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
-                    );
-                    $stmt->bind_param(
-                        'isssssiddisi',
-                        $orgId, $name, $addrN, $cityN, $postN, $ccN,
-                        $placeIdOrNull, $lat, $lng, $radius, $tz, $isActive
-                    );
-                    $stmt->execute();
-                    $venueId = (int)$db->insert_id;
-                    $stmt->close();
-                    logActivity('venue.create', 'organisation', (string)$orgId, ['venue_id' => $venueId, 'name' => $name]);
-                    $success = 'Venue added.';
-                }
+                $result = venueAdminSaveVenue($db, $_POST);
+                logActivity(
+                    $result['created'] ? 'venue.create' : 'venue.edit',
+                    'organisation', (string)$result['orgId'],
+                    ['venue_id' => $result['id'], 'name' => $result['name']]
+                );
+                $success = $result['created'] ? 'Venue added.' : 'Venue updated.';
                 break;
             }
 
             /* ---- Venue delete (CASCADE removes its schedules) ---- */
             case 'venue_delete': {
                 $venueId = (int)($_POST['venue_id'] ?? 0);
-                if ($venueId <= 0) { throw new \RuntimeException('Missing venue.'); }
-                $stmt = $db->prepare('SELECT OrgId, Name FROM tblOrgVenues WHERE Id = ?');
-                $stmt->bind_param('i', $venueId);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if ($row) {
-                    $del = $db->prepare('DELETE FROM tblOrgVenues WHERE Id = ?');
-                    $del->bind_param('i', $venueId);
-                    $del->execute();
-                    $del->close();
-                    logActivity('venue.delete', 'organisation', (string)$row['OrgId'], ['venue_id' => $venueId, 'name' => $row['Name']]);
+                $deleted = venueAdminDeleteVenue($db, $venueId);
+                if ($deleted !== null) {
+                    logActivity('venue.delete', 'organisation', (string)$deleted['orgId'], ['venue_id' => $venueId, 'name' => $deleted['name']]);
                     $success = 'Venue deleted.';
                 }
                 break;
@@ -299,120 +220,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $schemaReady) {
 
             /* ---- Service schedule create / update ---- */
             case 'schedule_save': {
-                $schedId = (int)($_POST['schedule_id'] ?? 0);
-                $venueId = (int)($_POST['venue_id'] ?? 0);
-                if ($venueId <= 0) { throw new \RuntimeException('Missing venue.'); }
-
-                // Derive OrgId + default tz from the venue — never trust posted OrgId.
-                $vs = $db->prepare('SELECT OrgId, TimeZone FROM tblOrgVenues WHERE Id = ?');
-                $vs->bind_param('i', $venueId);
-                $vs->execute();
-                $venue = $vs->get_result()->fetch_assoc();
-                $vs->close();
-                if (!$venue) { throw new \RuntimeException('Unknown venue.'); }
-                $orgId = (int)$venue['OrgId'];
-
-                $title = trim((string)($_POST['title'] ?? 'Service'));
-                if ($title === '') { $title = 'Service'; }
-                $kind  = (string)($_POST['recurrence_kind'] ?? 'weekly');
-                if (!array_key_exists($kind, $GLOBALS['RECURRENCE_KINDS'])) { $kind = 'weekly'; }
-                $startTime = (string)($_POST['start_time'] ?? '');
-                if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $startTime)) {
-                    throw new \RuntimeException('Enter a valid start time (HH:MM).');
-                }
-                $startTime .= ':00';
-                $duration = max(1, min(1440, (int)($_POST['duration_mins'] ?? 90)));
-                $tzOverride = trim((string)($_POST['timezone'] ?? ''));
-                $tzN = ($tzOverride !== '' && in_array($tzOverride, $GLOBALS['TZ_LIST'], true)) ? $tzOverride : null;
-                $isActive = isset($_POST['is_active']) ? 1 : 0;
-
-                // DayOfWeek required for recurring kinds; NULL for one_off.
-                $dow = (int)($_POST['day_of_week'] ?? 0);
-                if ($kind !== 'one_off') {
-                    if ($dow < 1 || $dow > 7) { throw new \RuntimeException('Choose a day of the week.'); }
-                    $dowN = $dow;
-                } else {
-                    $dowN = null;
-                }
-
-                // Assemble RecurrenceData JSON from the kind-specific inputs.
-                $rd = [];
-                if ($kind === 'monthly_nth') {
-                    $nth = (int)($_POST['nth'] ?? 1);
-                    if (!in_array($nth, [1, 2, 3, 4, 5, -1], true)) { $nth = 1; }
-                    $rd['nth'] = $nth;
-                } elseif ($kind === 'one_off') {
-                    $oneOff = (string)($_POST['one_off_date'] ?? '');
-                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $oneOff)) { throw new \RuntimeException('Enter the one-off date (YYYY-MM-DD).'); }
-                    $rd['date'] = $oneOff;
-                } elseif ($kind === 'fortnightly') {
-                    $anchor = (string)($_POST['anchor_date'] ?? '');
-                    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $anchor)) { $rd['anchor'] = $anchor; }
-                }
-                $until = (string)($_POST['until_date'] ?? '');
-                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $until)) { $rd['until'] = $until; }
-                // Exceptions: comma/space/newline-separated YYYY-MM-DD dates.
-                $excRaw = (string)($_POST['exceptions'] ?? '');
-                if (trim($excRaw) !== '') {
-                    $exc = preg_split('/[\s,]+/', trim($excRaw)) ?: [];
-                    $exc = array_values(array_filter($exc, static fn($d) => preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)));
-                    if ($exc) { $rd['exceptions'] = $exc; }
-                }
-                $rdJson = $rd ? json_encode($rd, JSON_UNESCAPED_SLASHES) : null;
-
-                if ($schedId > 0) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblOrgServiceSchedules
-                            SET VenueId = ?, OrgId = ?, Title = ?, DayOfWeek = ?, StartTime = ?,
-                                DurationMins = ?, RecurrenceKind = ?, RecurrenceData = ?,
-                                TimeZone = ?, IsActive = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param(
-                        'iisisisssii',
-                        $venueId, $orgId, $title, $dowN, $startTime,
-                        $duration, $kind, $rdJson, $tzN, $isActive, $schedId
-                    );
-                    $stmt->execute();
-                    $stmt->close();
-                    logActivity('venue.schedule.edit', 'organisation', (string)$orgId, ['schedule_id' => $schedId, 'venue_id' => $venueId]);
-                    $success = 'Service time updated.';
-                } else {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblOrgServiceSchedules
-                            (VenueId, OrgId, Title, DayOfWeek, StartTime, DurationMins,
-                             RecurrenceKind, RecurrenceData, TimeZone, IsActive)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)'
-                    );
-                    $stmt->bind_param(
-                        'iisisisssi',
-                        $venueId, $orgId, $title, $dowN, $startTime,
-                        $duration, $kind, $rdJson, $tzN, $isActive
-                    );
-                    $stmt->execute();
-                    $newId = (int)$db->insert_id;
-                    $stmt->close();
-                    logActivity('venue.schedule.create', 'organisation', (string)$orgId, ['schedule_id' => $newId, 'venue_id' => $venueId]);
-                    $success = 'Service time added.';
-                }
+                $result = venueAdminSaveSchedule($db, $_POST);
+                logActivity(
+                    $result['created'] ? 'venue.schedule.create' : 'venue.schedule.edit',
+                    'organisation', (string)$result['orgId'],
+                    ['schedule_id' => $result['id'], 'venue_id' => $result['venueId']]
+                );
+                $success = $result['created'] ? 'Service time added.' : 'Service time updated.';
                 break;
             }
 
             /* ---- Schedule delete ---- */
             case 'schedule_delete': {
                 $schedId = (int)($_POST['schedule_id'] ?? 0);
-                if ($schedId <= 0) { throw new \RuntimeException('Missing service time.'); }
-                $stmt = $db->prepare('SELECT OrgId FROM tblOrgServiceSchedules WHERE Id = ?');
-                $stmt->bind_param('i', $schedId);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if ($row) {
-                    $del = $db->prepare('DELETE FROM tblOrgServiceSchedules WHERE Id = ?');
-                    $del->bind_param('i', $schedId);
-                    $del->execute();
-                    $del->close();
-                    logActivity('venue.schedule.delete', 'organisation', (string)$row['OrgId'], ['schedule_id' => $schedId]);
+                $deleted = venueAdminDeleteSchedule($db, $schedId);
+                if ($deleted !== null) {
+                    logActivity('venue.schedule.delete', 'organisation', (string)$deleted['orgId'], ['schedule_id' => $schedId]);
                     $success = 'Service time deleted.';
                 }
                 break;
