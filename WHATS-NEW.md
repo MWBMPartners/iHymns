@@ -16,6 +16,10 @@ with none of the behind-the-scenes technical detail.
   service playlists straight from ProPresenter 7, keeping their verses,
   choruses, arrangements and copyright details. A ProPresenter service playlist
   arrives as a ready-made set list.
+- **Chords travel with ProPresenter files** — Importing a song from ProPresenter
+  now brings its chords across, and exporting a song that has chords sends them
+  along too — ready to show on a stage display, while the words stay clean for
+  the congregation.
 - **Your background video travels with a ProPresenter export** — When you send a
   song that has a background video or image to ProPresenter, that media now goes
   inside the file, so it's ready to play on the other machine instead of turning
