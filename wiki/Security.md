@@ -45,6 +45,7 @@ Uncaught browser errors surface one generic toast to the user and are beaconed �
 - 30-day expiry with server-side validation
 - Stored in `tblApiTokens` table
 - Deleted on logout and password reset
+- **Device metadata + management (#1409 / #1975):** each token row carries an optional `DeviceName` / `Platform` / `AppVersion` / `LastSeenAt`. A web sign-in is auto-named server-side from the request `User-Agent` (e.g. "Chrome on Windows") at token-issue time, so the Settings → Signed-in devices list is legible rather than a wall of "Unnamed device". Users can remotely sign a device out (`device_signout`) or rename it (`device_rename`) — both are own-only (`WHERE UserId = ?`), same-origin-CSRF-gated (`validateCsrfRequest()`) and per-user rate-limited. The client is only ever handed a truncated hash **prefix** as the device id, never the raw token nor the full stored hash.
 
 ### Password Reset Tokens
 
