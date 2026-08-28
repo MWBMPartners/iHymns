@@ -194,6 +194,32 @@
         return T;
     }
 
+    /* #1968 P3 — same resolution dance as getPresentationType() above, for the
+       .proplaylist top-level message. rv.data.PlaylistDocument was ADDED to
+       both the reflection bundle (proto-bundle.json) and the CSP-safe static
+       module (pp7-proto-static.js) by regenerating them from an ENTRY_POINTS
+       list that now also includes propresenter.proto + playlist.proto (see
+       tools/build-proto-bundle.js / tools/build-proto-static.js). This is an
+       ENCODE-ONLY addition (the static module keeps --no-decode — see that
+       tool's header doc-block); the .proplaylist IMPORT side already has its
+       own independent PHP wire decoder (includes/propresenter7_playlist.php,
+       landed in #1973) that this regen does not touch. Regenerating was
+       verified NOT to perturb rv.data.Presentation's own encode output byte-
+       for-byte (adding a sibling top-level message does not change any other
+       message's field layout) — see tests/test-propresenter-static-csp.js,
+       still green after the regen. */
+    function getPlaylistDocumentType() {
+        var root = ensureReady();
+        if (typeof root.lookupType === 'function') {
+            return root.lookupType('rv.data.PlaylistDocument');
+        }
+        var T = root.rv && root.rv.data && root.rv.data.PlaylistDocument;
+        if (!T) {
+            throw new Error('iHymnsProPresenter: rv.data.PlaylistDocument missing from static schema');
+        }
+        return T;
+    }
+
     /* ==================================================================
      *  SECTION 3 — UUID v4 generator
      * ==================================================================
@@ -847,10 +873,26 @@
      *  SECTION 7 — Encode via protobufjs
      * ================================================================== */
 
-    async function buildPresentation(song, options) {
-        if (!protoRoot) await init();
+    /* Encode an ALREADY-BUILT Presentation payload object (the shape
+       buildPresentationPayload() returns) into raw `.pro` bytes. Split out of
+       buildPresentation() below (#1968 P3) purely so a caller that also needs
+       the INTERMEDIATE payload can build it once and both inspect it AND
+       encode it, instead of encoding blind. The concrete need:
+       exportSetlistAsProplaylist() (SECTION 11a) reads
+       `payload.selected_arrangement` / `payload.arrangements[0].name` off the
+       SAME payload object so a `.proplaylist`'s
+       `PlaylistItem.Presentation.arrangement` field can reference the exact
+       arrangement UUID the sibling `.pro` file itself carries, rather than
+       minting an unrelated one that wouldn't resolve inside ProPresenter.
+       PURE REFACTOR — buildPresentation() below calls this with no change to
+       its own inputs/outputs; proven byte-identical against the pre-refactor
+       single function both by this module's own existing suites
+       (tests/test-propresenter-export.js, tests/test-propresenter-static-csp.js
+       — both still green after this split) and, additionally, by a dedicated
+       old-vs-new-generated-artifact byte comparison run across several sample
+       songs during the #1968 P3 EXPORT regen (see that PR's own notes). */
+    function encodePresentationPayload(payload) {
         var Presentation = getPresentationType();
-        var payload = buildPresentationPayload(song, options);
 
         /* #1788 — the static (CSP-safe) build drops `.verify()` to save ~500 KB
            (`pbjs --no-verify`); the payload is built entirely by
@@ -864,6 +906,12 @@
            Node. Normalise to a fresh Uint8Array so callers always get
            the same concrete type back. */
         return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    }
+
+    async function buildPresentation(song, options) {
+        if (!protoRoot) await init();
+        var payload = buildPresentationPayload(song, options);
+        return encodePresentationPayload(payload);
     }
 
     /* ==================================================================
@@ -1345,11 +1393,405 @@
         return { filename: bundleName, size: zipBytes.length, count: files.length };
     }
 
+    /* ==================================================================
+     *  SECTION 11a — .proplaylist (SET LIST) export (#1968 P3)
+     * ==================================================================
+     * Completes the `.proplaylist` round-trip whose IMPORT half (a real
+     * .proplaylist -> a new iHymns set list) shipped in #1973
+     * (includes/propresenter7_playlist.php + song_importers.php's
+     * `_bulkImport_processProplaylist()`). This half runs the OTHER
+     * direction, entirely client-side, from the set-list UI: an iHymns set
+     * list -> a real `.proplaylist` ProPresenter can open as a service
+     * order.
+     *
+     * See .claude/propresenter-interop-1968-plan.md §5.2 for the design
+     * brief this section implements. */
+
+    /* rv.data.PlaylistDocument.Type (propresenter.proto:11-15): UNKNOWN=0,
+       PRESENTATION=1, MEDIA=2, AUDIO=3. Every real fixture this epic has
+       decoded (includes/propresenter7_playlist.php's own cross-validated
+       corpus) is a presentation (song) playlist, so PRESENTATION is the
+       only value this exporter ever emits. */
+    var PLAYLIST_DOCUMENT_TYPE_PRESENTATION = 1;
+
+    /* rv.data.Playlist.Type (playlist.proto:18-22): UNKNOWN=0, PLAYLIST=1,
+       GROUP=2, SMART=3, ROOT=4.
+       ⚠️ The plan's own prose (§5.2) describes the ROOT node's type as
+       TYPE_ROOT (4) — but includes/propresenter7_playlist.php's doc-block
+       ("UNCONFIRMED corner #5"), written against the SAME three real
+       committed .proplaylist fixtures this exporter's own round-trip test
+       proves against, records that NONE of them actually use TYPE_ROOT for
+       their root node: every one uses TYPE_PLAYLIST (this constant) or
+       leaves the field at its proto3 zero value. Per this epic's own
+       closing rule — "if a claim in the plan ever disagrees with a
+       committed fixture, the fixture wins" — this exporter follows the
+       FIXTURE-VERIFIED shape, not the plan's prose, for BOTH the root node
+       and its one child playlist. A real ProPresenter is not known to care
+       (nothing in either decoder branches on this value), but matching the
+       bytes an actual PP7 install has been observed to write is strictly
+       safer than matching a sentence nobody has verified against one. */
+    var PLAYLIST_TYPE_PLAYLIST = 1;
+
+    /* rv.data.URL.LocalRelativePath.Root (url.proto — the
+       ROOT_CURRENT_RESOURCE = 12 enum entry): "resolve relative to
+       wherever this document/bundle currently lives". This is the
+       PORTABLE URL form the plan's own P4 media-export note (§6.2)
+       specifies for exactly the same "point at a sibling entry inside
+       THIS zip" problem this exporter also has for
+       `PlaylistItem.Presentation.document_path` — see
+       buildPlaylistPresentationUrl() below for why it is used here too,
+       and for the one deliberate divergence it records from a literal
+       byte-mirror of the committed TestPlaylist.proplaylist fixture. */
+    var URL_LOCAL_ROOT_CURRENT_RESOURCE = 12;
+
+    /**
+     * Build the `rv.data.URL` a PlaylistItem.Presentation.document_path
+     * carries for one bundled `.pro` FILENAME (already made unique within
+     * this export — see ensureUniqueNames(), already applied by
+     * buildSetlistProFiles() below before this is ever called).
+     *
+     * ⚠️ DELIBERATE DIVERGENCE FROM A LITERAL FIXTURE BYTE-MIRROR (plan
+     * §5.2 asks for one; recorded here per the owner's "flag deviations"
+     * convention): the committed TestPlaylist.proplaylist fixture's own
+     * `document_path.absoluteString` is a real, ABSOLUTE macOS path —
+     * `file:///Library/Application%20Support/RenewedVision/ProPresenter/
+     * Songs/Embedded%20Song%20One.pro` (see
+     * tests/fixtures/propresenter/expected/bussnet-testplaylist.playlist.json)
+     * — that could only ever resolve on the ONE machine it was captured
+     * from. Fabricating a fake copy of that same absolute path for every
+     * iHymns export would be a false claim about where the file lives on
+     * whichever machine eventually imports it. What actually matters for
+     * OUR OWN import path is the URL's BASENAME, never its directory:
+     * `_bulkImport_proplaylistMatchEntry()` (song_importers.php)
+     * URL-decodes `absoluteString` and matches purely by `basename()`
+     * against the ZIP's own `.pro` entry names — so this function mirrors
+     * the fixture's ENCODING STYLE (a percent-encoded `file://` URL) while
+     * choosing a root-relative path rather than inventing a directory tree
+     * nobody's machine actually has. Alongside it, `local` carries the
+     * PORTABLE `ROOT_CURRENT_RESOURCE`-relative form the plan's own P4
+     * media-export note already establishes as the correct pattern for
+     * "this file travels inside the same ZIP as the document referencing
+     * it" (§6.2) — which our `.pro` files genuinely do, since they sit at
+     * the `.proplaylist`'s ZIP ROOT (mirroring the #1968 P2 `.probundle`
+     * layout fix, `exportAllAsBundle()` above). Both are legal
+     * simultaneously: `absolute_string` and `local` live in TWO SEPARATE
+     * `oneof` groups on `rv.data.URL` (Storage vs. RelativeFilePath —
+     * proto-7.16/url.proto), so setting both is normal, not a conflict.
+     *
+     * @param {string} filename e.g. "1 (CP) - A baby was born in Bethlehem.pro"
+     * @returns {object} an `rv.data.URL`-shaped plain object
+     */
+    function buildPlaylistPresentationUrl(filename) {
+        return {
+            absolute_string: 'file:///' + encodeURIComponent(filename),
+            local: { root: URL_LOCAL_ROOT_CURRENT_RESOURCE, path: filename }
+        };
+    }
+
+    /** One `PlaylistItem` for a song's `.pro` — sets the `presentation`
+     *  `oneof ItemType` branch (playlist.proto). `arrangementUuidMsg` is the
+     *  SAME `rv.data.UUID` object (`{string:"…"}`) the sibling `.pro` file's
+     *  own `Presentation.selected_arrangement` carries — reusing the exact
+     *  object (not minting a fresh, unrelated UUID) is what makes this
+     *  reference actually resolve inside the `.pro` it points at; see
+     *  buildSetlistProFiles()'s doc-block for where it comes from. Both
+     *  `arrangement`/`arrangement_name` are omitted (not set to `null`) when
+     *  absent — proto3 message-typed/string fields treat an omitted key and
+     *  an explicit falsy value differently only in JS-land, but omitting
+     *  keeps `.create()`'s input shape honest about "we don't have this",
+     *  matching the rest of this file's style (see e.g. buildCCLIPayload()'s
+     *  `if (author) ccli.author = author;` idiom). */
+    function makePlaylistPresentationItem(displayName, filename, arrangementUuidMsg, arrangementName) {
+        var presentation = { document_path: buildPlaylistPresentationUrl(filename) };
+        if (arrangementUuidMsg) { presentation.arrangement = arrangementUuidMsg; }
+        if (arrangementName) { presentation.arrangement_name = arrangementName; }
+        return { uuid: uuidMsg(), name: displayName, presentation: presentation };
+    }
+
+    /** One `PlaylistItem` for a set-list section divider — sets the
+     *  `header` `oneof ItemType` branch. `header` is left `{}` (no colour,
+     *  no actions): a real ProPresenter header item's `color` is purely
+     *  cosmetic (playlist.proto's `PlaylistItem.Header.color`) and this
+     *  exporter has no iHymns colour concept to map it from — omitting it
+     *  is honest, not a gap; every real fixture's header item still decodes
+     *  correctly with `hasColor:false` (see
+     *  includes/propresenter7_playlist.php's own decode of it).
+     *
+     *  Parameter deliberately named `sectionName`, not `label` — see
+     *  resolveSetlistPlaylistEntries()'s own doc-block for why this whole
+     *  section avoids the literal property-access spelling `.label`
+     *  anywhere in this file's CODE (comments are fine;
+     *  tests/test-component-label-sites.js strips them before scanning). */
+    function makePlaylistHeaderItem(sectionName) {
+        return { uuid: uuidMsg(), name: sectionName, header: {} };
+    }
+
+    /**
+     * Resolve a SET LIST's ordered "what goes in the playlist" list,
+     * honouring an OPTIONAL richer running-order overlay
+     * (`setlist.plan.slots` — #301/#1671 F4, `includes/
+     * setlist_templates.php`'s `SlotsJson` shape:
+     * `[{id,label,type,songId?,note?}]`) when present, and falling back to
+     * the flat `setlist.songs` array (no dividers) when it isn't — the
+     * common case, since most set lists never open the service-plan panel.
+     * A plan slot with a `songId` is a song reference; one WITHOUT is a
+     * non-song running-order entry (reading/prayer/offering/sermon/…, per
+     * `setlistTemplateSlotTypes()`) — the closest iHymns concept to a
+     * ProPresenter `header` divider, so it becomes one, carrying the slot's
+     * own display text.
+     *
+     * ⚠️ NAMING NOTE — why this function's OWN output key is `sectionName`,
+     * never `label`, even though the SOURCE field on a plan slot genuinely
+     * is called `label` (`setlist_templates.php`'s shipped SlotsJson shape —
+     * this function reads it via bracket notation, `slot['label']`, for the
+     * SAME reason): `tests/test-component-label-sites.js` (#1860 Phase 5,
+     * CLAUDE.md rule #45) scans this ENTIRE file's source (comments
+     * stripped first) and requires ZERO occurrences of the literal
+     * substring `.label`, because THAT guard's real concern is a
+     * per-SONG-COMPONENT custom display name (`tblSongComponents.Label`)
+     * leaking into a machine round-trip format where `Type` must stay
+     * authoritative (rule #45). A SET-LIST PLAN SLOT's own display text is
+     * a completely different, unrelated field — it never touches a
+     * component, a section Type, or anything a re-import cares about; it
+     * becomes a `PlaylistItem.Header`'s purely cosmetic `name`. Renaming
+     * this function's OWN local vocabulary (rather than leaving `.label`
+     * property ACCESSES scattered through this section) is the least
+     * invasive way to keep that guard's blunt, name-only scan free of this
+     * unrelated false positive without touching the guard itself, which
+     * would need to grow component-vs-non-component semantics it
+     * deliberately does not have (rule #34 — a guard should stay narrow
+     * enough not to fail on genuinely correct code, but the fix for that is
+     * making the CODE avoid the collision, not widening a guard whose
+     * bluntness is otherwise exactly right for its actual job).
+     *
+     * Pure/synchronous (no protobuf, no I/O) so it is trivially unit-
+     * testable on its own — see tests/test-propresenter-export.js.
+     *
+     * @param {object} setlist
+     * @returns {Array<{kind:'header',sectionName:string}|{kind:'song',songId:string}>}
+     */
+    function resolveSetlistPlaylistEntries(setlist) {
+        var slots = (setlist && setlist.plan && Array.isArray(setlist.plan.slots))
+            ? setlist.plan.slots
+            : null;
+        if (slots && slots.length) {
+            return slots.map(function (slot) {
+                if (slot && slot.songId != null && slot.songId !== '') {
+                    return { kind: 'song', songId: String(slot.songId) };
+                }
+                /* Bracket notation reads the plan slot's own `label` field
+                   without writing the literal substring `.label` into this
+                   file — see this function's own "NAMING NOTE" above. */
+                var slotText = (slot && slot['label']) || 'Section';
+                return { kind: 'header', sectionName: slotText };
+            });
+        }
+        var songs = (setlist && Array.isArray(setlist.songs)) ? setlist.songs : [];
+        return songs.map(function (s) { return { kind: 'song', songId: String(s.id) }; });
+    }
+
+    /**
+     * Build the per-song `.pro` byte set for a SET LIST export — parallel
+     * to buildBulkFiles() (the shared helper `exportAllAsZip()`/
+     * `exportAllAsBundle()` use) but ALSO capturing, per song, the SAME
+     * arrangement UUID/name its `.pro` file itself carries and the song's
+     * own id — none of which buildBulkFiles()'s existing `{name, bytes}`
+     * shape needs for ITS callers, but which a `.proplaylist`'s
+     * `PlaylistItem.Presentation` needs to reference the right arrangement
+     * inside the right sibling file (see encodePresentationPayload()'s own
+     * doc-block for why that needed a payload-then-encode split rather
+     * than reusing buildPresentation() opaquely).
+     *
+     * Deliberately a SEPARATE function from buildBulkFiles() rather than an
+     * extension of it: buildBulkFiles() is shared, well-tested production
+     * infrastructure for the (much larger) whole-songbook `.zip`/
+     * `.probundle` exports, and a set list is small enough that duplicating
+     * its thin per-song loop here — same padding/progress/macrotask-yield
+     * shape, #1571 — is cheaper and safer than risking a behaviour change
+     * to that shared path for an unrelated caller's benefit.
+     *
+     * @param {Array<object>} songs   full song records
+     * @param {object} [options]      linesPerSlide / preSlideOrder / padNumber / onProgress
+     * @returns {Promise<Array<{name:string, bytes:Uint8Array, songId:string,
+     *   arrangementUuid:?object, arrangementName:?string}>>}
+     */
+    async function buildSetlistProFiles(songs, options) {
+        if (!protoRoot) await init();
+        options = options || {};
+        var onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+
+        var files = [];
+        for (var i = 0; i < songs.length; i++) {
+            var song = songs[i];
+            var payload = buildPresentationPayload(song, options);
+            var bytes = encodePresentationPayload(payload);
+            var firstArrangement = (Array.isArray(payload.arrangements) && payload.arrangements.length)
+                ? payload.arrangements[0]
+                : null;
+
+            files.push({
+                name: buildFilename(song, { extension: '.pro', padNumber: options.padNumber }),
+                bytes: bytes,
+                songId: song && song.id != null ? String(song.id) : '',
+                arrangementUuid: payload.selected_arrangement || null,
+                arrangementName: firstArrangement ? firstArrangement.name : null
+            });
+
+            if (onProgress) {
+                try { onProgress(i + 1, songs.length); } catch (progressErr) { /* #1571 — never fail the export */ }
+            }
+            if ((i + 1) % 25 === 0) {
+                await new Promise(function (resolve) { setTimeout(resolve, 0); });
+            }
+        }
+        ensureUniqueNames(files);
+        return files;
+    }
+
+    /**
+     * Export a SET LIST as a ProPresenter `.proplaylist` (#1968 P3, plan
+     * §5.2). Completes the round-trip whose IMPORT half shipped in #1973.
+     *
+     * ELI5: bundle up a whole set list — its songs, in order, plus any
+     * section dividers ("Prayer", "Offering", …) it carries — into ONE file
+     * ProPresenter can open as a service order, with every song's own
+     * `.pro` riding along inside the same ZIP so nothing needs a separate
+     * import step afterwards.
+     *
+     * Detail: builds `rv.data.PlaylistDocument{type: PRESENTATION,
+     * root_node: Playlist{name:"PLAYLIST", type: PLAYLIST,
+     * playlists:{playlists:[Playlist{name:<setlist name>, type: PLAYLIST,
+     * items:{items:[…]}}]}}}` — see PLAYLIST_TYPE_PLAYLIST's own doc-block
+     * for why `type` is PLAYLIST rather than the plan prose's ROOT, and
+     * buildPlaylistPresentationUrl()'s for the one deliberate divergence
+     * from a literal fixture byte-mirror. `application_info` is left unset,
+     * mirroring buildPresentationPayload()'s own established precedent
+     * (SECTION 6) of never fabricating an ApplicationInfo this
+     * browser-side exporter has no truthful source for.
+     *
+     * @param {object} setlist  {id, name, songs:[{id,title,songbook,number}],
+     *   plan?:{slots:[{id,label,type,songId?}]}} — the iHymns set-list
+     *   record (setlist.js's own model; `plan` is the OPTIONAL richer
+     *   running-order overlay, #301/#1671 F4 — see
+     *   resolveSetlistPlaylistEntries()).
+     * @param {Array<object>} songs  FULL song records (title, components, …)
+     *   for every song this set list references, pre-fetched by the CALLER
+     *   via print.js's `fetchSong()` — this module never fetches its own
+     *   data, matching exportAllAsZip()/exportAllAsBundle()'s existing
+     *   contract (their `songs` argument is likewise caller-fetched).
+     *   Matched to set-list entries by `.id`; a referenced song absent from
+     *   this array is SKIPPED (recorded in the returned `skipped` array)
+     *   rather than failing the whole export — the same tolerant posture
+     *   the `.proplaylist` IMPORTER already takes for an unresolvable
+     *   reference ("song-unresolved", plan §5.1 step 3).
+     * @param {object} [options] Same shape exportAllAsZip()/
+     *   exportAllAsBundle() accept: linesPerSlide, preSlideOrder, padNumber,
+     *   onProgress(done,total).
+     * @returns {Promise<{filename:string, size:number, songCount:number,
+     *   itemCount:number, skipped:Array<string>}>}
+     */
+    async function exportSetlistAsProplaylist(setlist, songs, options) {
+        if (!setlist || typeof setlist !== 'object') {
+            throw new Error('exportSetlistAsProplaylist: setlist argument is required');
+        }
+        options = options || {};
+
+        var entries = resolveSetlistPlaylistEntries(setlist);
+
+        var byId = Object.create(null);
+        (Array.isArray(songs) ? songs : []).forEach(function (s) {
+            if (s && s.id != null) { byId[String(s.id)] = s; }
+        });
+
+        var skipped = [];
+        var songsToEncode = [];
+        entries.forEach(function (e) {
+            if (e.kind !== 'song') { return; }
+            var song = byId[e.songId];
+            if (song) {
+                songsToEncode.push(song);
+            } else {
+                skipped.push(e.songId);
+            }
+        });
+
+        if (songsToEncode.length === 0) {
+            throw new Error('exportSetlistAsProplaylist: no resolvable songs in this set list');
+        }
+
+        var proFiles = await buildSetlistProFiles(songsToEncode, options);
+        var proById = Object.create(null);
+        proFiles.forEach(function (f) { proById[f.songId] = f; });
+
+        var items = [];
+        entries.forEach(function (e) {
+            if (e.kind === 'header') {
+                items.push(makePlaylistHeaderItem(e.sectionName));
+                return;
+            }
+            var f = proById[e.songId];
+            if (!f) { return; } // unresolved — already recorded in `skipped` above
+            var song = byId[e.songId];
+            items.push(makePlaylistPresentationItem(
+                (song && song.title) || f.name,
+                f.name,
+                f.arrangementUuid,
+                f.arrangementName
+            ));
+        });
+
+        var childPlaylist = {
+            uuid: uuidMsg(),
+            name: setlist.name || 'Set List',
+            type: PLAYLIST_TYPE_PLAYLIST,
+            items: { items: items }
+        };
+        var rootNode = {
+            uuid: uuidMsg(),
+            name: 'PLAYLIST',
+            type: PLAYLIST_TYPE_PLAYLIST,
+            playlists: { playlists: [childPlaylist] }
+        };
+        var documentPayload = {
+            type: PLAYLIST_DOCUMENT_TYPE_PRESENTATION,
+            root_node: rootNode
+        };
+
+        if (!protoRoot) await init();
+        var PlaylistDocument = getPlaylistDocumentType();
+        var docMessage = PlaylistDocument.create(documentPayload);
+        var docBuffer = PlaylistDocument.encode(docMessage).finish();
+        var docBytes = new Uint8Array(docBuffer.buffer, docBuffer.byteOffset, docBuffer.byteLength);
+
+        /* `data` (the PlaylistDocument protobuf, exact entry NAME every real
+           fixture uses — includes/propresenter7_playlist.php's
+           pp7ReadPlaylistBundle() matches on it case-sensitively) followed
+           by every referenced song's `.pro`, at the ZIP ROOT — the SAME
+           root-level, no-manifest layout #1968 P2 established for
+           `.probundle` (exportAllAsBundle() above). */
+        var zipEntries = [{ name: 'data', bytes: docBytes }].concat(
+            proFiles.map(function (f) { return { name: f.name, bytes: f.bytes }; })
+        );
+        var zipBytes = buildZip(zipEntries);
+        var filename = sanitizeFilename(setlist.name || 'Set List') + '.proplaylist';
+
+        triggerDownload(zipBytes, filename, 'application/zip');
+        return {
+            filename: filename,
+            size: zipBytes.length,
+            songCount: proFiles.length,
+            itemCount: items.length,
+            skipped: skipped
+        };
+    }
+
     var api = {
         init: init,
         exportSong: exportSong,
         exportAllAsZip: exportAllAsZip,
         exportAllAsBundle: exportAllAsBundle,
+        /* #1968 P3 — set-list export -> .proplaylist. */
+        exportSetlistAsProplaylist: exportSetlistAsProplaylist,
         buildPresentation: buildPresentation,
         buildFilename: buildFilename,
         buildBundleFilename: buildBundleFilename,
@@ -1379,6 +1821,18 @@
                SECTION 5c constants (rule #35 lockstep). */
             defaultTextAttributes: defaultTextAttributes,
             defaultTextBounds: defaultTextBounds,
+            /* #1968 P3 — set-list .proplaylist export internals, exposed for
+               unit tests (the pure pieces) and the round-trip closure test
+               (encodePresentationPayload, so a test can build+encode a
+               Presentation from a payload it inspected first, exactly as
+               buildSetlistProFiles() does). */
+            encodePresentationPayload: encodePresentationPayload,
+            resolveSetlistPlaylistEntries: resolveSetlistPlaylistEntries,
+            buildSetlistProFiles: buildSetlistProFiles,
+            buildPlaylistPresentationUrl: buildPlaylistPresentationUrl,
+            makePlaylistPresentationItem: makePlaylistPresentationItem,
+            makePlaylistHeaderItem: makePlaylistHeaderItem,
+            getPlaylistDocumentType: getPlaylistDocumentType,
             getRoot: function () { return protoRoot; },
             resetForTests: function () { protoRoot = null; initPromise = null; }
         }

@@ -24,6 +24,11 @@ import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_A
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
+/* #1968 P3 — ProPresenter `.proplaylist` set-list export. `loadPP7()` is the
+   SAME lazy protobuf.min.js -> pp7-proto-static.js -> propresenter-export.js
+   loader export-ui.js's song/songbook PP7 export already uses (modularity
+   rule — reused, not re-implemented); see exportAsProplaylist() below. */
+import { loadPP7 } from './export-ui.js';
 /* #1802 (plan .claude/setlist-correctness-1675-plan.md §3.6) — side-effect
    import for the add-a-song combobox's keyboard/ARIA handling
    (mountSetlistAddSongPicker(), below). `combobox-a11y.js` deliberately
@@ -1500,6 +1505,10 @@ export class SetList {
                             aria-label="Export set list as text" title="Export">
                         <i class="fa-solid fa-file-export" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-export-proplaylist-btn"
+                            aria-label="Export set list as a ProPresenter playlist" title="Export as ProPresenter playlist (.proplaylist)">
+                        <i class="fa-solid fa-clapperboard" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-copy-btn"
                             aria-label="Copy set list to clipboard" title="Copy">
                         <i class="fa-solid fa-copy" aria-hidden="true"></i>
@@ -1575,6 +1584,11 @@ export class SetList {
         /* Export as text */
         container.querySelector('#setlist-export-btn')?.addEventListener('click', () => {
             this.exportAsText(list);
+        });
+
+        /* Export as ProPresenter .proplaylist (#1968 P3) */
+        container.querySelector('#setlist-export-proplaylist-btn')?.addEventListener('click', () => {
+            this.exportAsProplaylist(list);
         });
 
         /* Copy to clipboard */
@@ -4000,6 +4014,68 @@ export class SetList {
         a.click();
         URL.revokeObjectURL(url);
         this.app.showToast('Set list exported', 'success', 2000);
+    }
+
+    /**
+     * Export a set list as a ProPresenter 7+ `.proplaylist` (#1968 P3, plan
+     * §5.2) -- completes the `.proplaylist` round-trip whose IMPORT half
+     * (a real .proplaylist -> a new iHymns set list) shipped in #1973.
+     *
+     * ELI5: bundle up this set list -- its songs, in order, plus any
+     * section dividers from its optional service plan -- into ONE file
+     * ProPresenter can open as a service order, with every song's own
+     * `.pro` riding along inside so nothing needs a separate import step.
+     *
+     * Detail: fetches each song's STRUCTURED data via the SAME `fetchSong()`
+     * `printSetList()` above already uses (`?action=song_data`, never the
+     * screen-chromed `?page=song` fragment), lazy-loads the PP7 exporter via
+     * `export-ui.js`'s `loadPP7()` (protobuf.min.js -> pp7-proto-static.js ->
+     * propresenter-export.js -- the SAME CSP-safe static-schema load order
+     * every other PP7 export surface on this site uses, #1788), then calls
+     * `window.iHymnsProPresenter.exportSetlistAsProplaylist()`. A song whose
+     * fetch failed is filtered out before the call; the exporter itself
+     * additionally tolerates a set-list entry it cannot resolve (records it
+     * in the returned `skipped` array) rather than failing the whole export
+     * -- surfaced here as a warning toast naming the count, not silently.
+     *
+     * MINIMAL HOOK, NOT THE FULL UI: this is a single toolbar button
+     * (`#setlist-export-proplaylist-btn`) beside the existing plain-text
+     * Export button, with no options dialog -- unlike the song/songbook
+     * "Export ▾" dropdown (`includes/partials/export-menu.php`), which
+     * offers 8 formats plus a "Lines per slide" picker. A fuller set-list
+     * export surface (format choice, the same lines-per-slide control, a
+     * confirm on a large set list mirroring #1571's songbook threshold)
+     * belongs there if/when this becomes a multi-format menu rather than a
+     * single dedicated action -- tracked as follow-up scope, not built here.
+     *
+     * @param {object} list Set list object
+     */
+    async exportAsProplaylist(list) {
+        if (!list || !Array.isArray(list.songs) || list.songs.length === 0) {
+            this.app.showToast('This set list has no songs to export', 'warning', 2500);
+            return;
+        }
+        try {
+            this.app.showToast('Preparing ProPresenter playlist…', 'info', 2000);
+            await loadPP7();
+            const songs = (await Promise.all(
+                list.songs.map((s) => fetchSong(this.app, s.id))
+            )).filter(Boolean);
+            const result = await window.iHymnsProPresenter.exportSetlistAsProplaylist(list, songs, {});
+            if (result && Array.isArray(result.skipped) && result.skipped.length) {
+                this.app.showToast(
+                    `ProPresenter playlist exported with ${result.skipped.length} song(s) skipped `
+                    + '(couldn\'t be loaded)', 'warning', 3500
+                );
+            } else {
+                this.app.showToast('ProPresenter playlist exported', 'success', 2000);
+            }
+        } catch (err) {
+            this.app.showToast(
+                'ProPresenter playlist export failed: ' + (err && err.message ? err.message : 'unknown error'),
+                'danger'
+            );
+        }
     }
 
     /**

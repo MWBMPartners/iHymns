@@ -1268,6 +1268,216 @@ function listZipEntryNames(bytes) {
         assert.equal(seenUrl, '/custom/bundle.json');
     });
 
+    /* ==================================================================
+     * Set-list .proplaylist export (#1968 P3-EXPORT, plan §5.2)
+     * ==================================================================
+     * The deep JS-encoder <-> PHP-decoder closure (playlist name, item
+     * order/types, document_path/arrangement round-trip) lives in
+     * tests/php/test-pp7-setlist-roundtrip.php (a separate process, per
+     * that file's own doc-block on why a same-process self-decode proves
+     * nothing for this epic). These tests cover what belongs IN this
+     * process: the pure entry-resolution logic, the URL-shape helper, the
+     * public function's contract (skip-unresolved, throw-on-nothing-
+     * resolvable), and the ZIP LAYOUT (via the same capturing-Blob
+     * technique createBundleCapturingExporter() already established for
+     * exportAllAsBundle() above). */
+    console.log('\nSet-list .proplaylist export (#1968 P3):');
+
+    /* #1968 P3 — every value under test in this block is built by CODE RUNNING
+       INSIDE the vm sandbox (`exporter._internal.*`, `capturingExporter.*`),
+       which is a SEPARATE V8 realm from this outer test file: a `{}`/`[]`
+       LITERAL written inside sandboxed source code binds to THAT realm's own
+       intrinsic Object/Array prototypes regardless of what `sandbox.Object`/
+       `sandbox.Array` happen to reference (a well-known `vm` quirk — setting
+       those sandbox properties only affects code that explicitly resolves the
+       global IDENTIFIER `Array`/`Object`, never a bare literal). `assert.strict`'s
+       `deepEqual`/`deepStrictEqual` compares prototypes too, so comparing a
+       sandbox-realm object/array directly against an outer-realm literal fails
+       with "same structure but are not reference-equal" even though every KEY
+       and VALUE matches — see the existing `Array.from(payload.cue_groups.map(…))`
+       calls a little further up this file for the same fix applied to a
+       primitives-only array (`Array.from`, called as the OUTER Array's own
+       method, copies elements into a genuine outer-realm array — but does
+       nothing for NESTED objects, which is why a plain array-of-strings can get
+       away with just that while these object-bearing shapes need the fuller
+       fix below). `reify()` round-trips through JSON, which only ever produces
+       genuine plain objects/arrays in the CALLING (outer) realm — safe here
+       because every value in this block is plain JSON-shaped data (strings/
+       numbers/plain objects/arrays), never a class instance, Map, or anything
+       else JSON can't faithfully represent. */
+    const reify = (v) => JSON.parse(JSON.stringify(v));
+
+    await test('resolveSetlistPlaylistEntries: with a plan, a slot WITH songId is a song entry, one WITHOUT is a header', () => {
+        const entries = exporter._internal.resolveSetlistPlaylistEntries({
+            name: 'X',
+            songs: [{ id: 'A' }],
+            plan: { slots: [
+                { id: 's1', label: 'Welcome', type: 'welcome' },
+                { id: 's2', label: 'Song', type: 'song', songId: 'A' },
+                { id: 's3', label: 'Prayer', type: 'prayer' }
+            ] }
+        });
+        assert.deepEqual(reify(entries), [
+            { kind: 'header', sectionName: 'Welcome' },
+            { kind: 'song', songId: 'A' },
+            { kind: 'header', sectionName: 'Prayer' }
+        ]);
+    });
+
+    await test('resolveSetlistPlaylistEntries: no plan falls back to the flat songs array (no headers)', () => {
+        const entries = exporter._internal.resolveSetlistPlaylistEntries({
+            name: 'X',
+            songs: [{ id: 'A' }, { id: 'B' }]
+        });
+        assert.deepEqual(reify(entries), [
+            { kind: 'song', songId: 'A' },
+            { kind: 'song', songId: 'B' }
+        ]);
+    });
+
+    await test('resolveSetlistPlaylistEntries: an empty plan.slots array also falls back to setlist.songs', () => {
+        const entries = exporter._internal.resolveSetlistPlaylistEntries({
+            name: 'X',
+            songs: [{ id: 'A' }],
+            plan: { slots: [] }
+        });
+        assert.deepEqual(reify(entries), [{ kind: 'song', songId: 'A' }]);
+    });
+
+    await test('resolveSetlistPlaylistEntries: an unlabelled non-song slot falls back to "Section"', () => {
+        const entries = exporter._internal.resolveSetlistPlaylistEntries({
+            name: 'X', songs: [], plan: { slots: [{ id: 's1', type: 'other' }] }
+        });
+        assert.deepEqual(reify(entries), [{ kind: 'header', sectionName: 'Section' }]);
+    });
+
+    await test('buildPlaylistPresentationUrl: percent-encodes the basename and sets a CURRENT_RESOURCE-relative local pointer', () => {
+        const url = exporter._internal.buildPlaylistPresentationUrl('1 (CP) - A Song.pro');
+        assert.equal(url.absolute_string, 'file:///1%20(CP)%20-%20A%20Song.pro');
+        assert.deepEqual(reify(url.local), { root: 12, path: '1 (CP) - A Song.pro' });
+    });
+
+    await test('makePlaylistPresentationItem: omits arrangement/arrangement_name when not supplied', () => {
+        const item = exporter._internal.makePlaylistPresentationItem('Song', 'song.pro', null, null);
+        assert.equal(item.name, 'Song');
+        assert.ok(!('arrangement' in item.presentation));
+        assert.ok(!('arrangement_name' in item.presentation));
+    });
+
+    await test('makePlaylistHeaderItem: sets the header oneof branch with the given label as name', () => {
+        const item = exporter._internal.makePlaylistHeaderItem('Prayer');
+        assert.equal(item.name, 'Prayer');
+        assert.deepEqual(reify(item.header), {});
+        assert.ok(!('presentation' in item));
+    });
+
+    const SETLIST_SAMPLE_SONGS = [
+        { id: 'CP-0001', number: 1, title: 'Song One', songbook: 'CP',
+          components: [{ type: 'verse', number: 1, lines: ['line one'] }] },
+        { id: 'MP-0100', number: 100, title: 'Song Two', songbook: 'MP',
+          components: [{ type: 'verse', number: 1, lines: ['line two'] }] }
+    ];
+
+    await test('buildSetlistProFiles: attaches songId + a real minted arrangement UUID/name per file', async () => {
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const files = await exporter._internal.buildSetlistProFiles(SETLIST_SAMPLE_SONGS, {});
+        assert.equal(files.length, 2);
+        files.forEach((f, i) => {
+            assert.equal(f.songId, SETLIST_SAMPLE_SONGS[i].id);
+            assert.equal(f.arrangementName, 'Default');
+            assert.ok(f.arrangementUuid && typeof f.arrangementUuid.string === 'string'
+                && f.arrangementUuid.string.length === 36,
+                `expected a real rv.data.UUID object, got ${JSON.stringify(f.arrangementUuid)}`);
+        });
+    });
+
+    await test('exportSetlistAsProplaylist: ZIP contains "data" + one root-level .pro per song, no other entries', async () => {
+        const { exporter: capturingExporter, getBytes } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        const setlist = { id: 'sl1', name: 'Sunday AM', songs: [{ id: 'CP-0001' }, { id: 'MP-0100' }] };
+        const result = await capturingExporter.exportSetlistAsProplaylist(setlist, SETLIST_SAMPLE_SONGS, {});
+        assert.equal(result.filename, 'Sunday AM.proplaylist');
+        assert.equal(result.songCount, 2);
+        assert.equal(result.itemCount, 2);
+        assert.deepEqual(reify(result.skipped), []);
+
+        const names = listZipEntryNames(getBytes());
+        assert.equal(names.length, 3, `expected 3 entries (data + 2 .pro), got: ${names.join(', ')}`);
+        assert.ok(names.includes('data'), `expected a "data" entry, got: ${names.join(', ')}`);
+        const proNames = names.filter((n) => n !== 'data');
+        proNames.forEach((n) => {
+            assert.ok(!n.includes('/'), `expected '${n}' to carry no '/' (root-level, mirrors .probundle's P2 layout fix)`);
+            assert.ok(n.endsWith('.pro'), `expected '${n}' to be a .pro entry`);
+        });
+    });
+
+    await test('exportSetlistAsProplaylist: honours plan.slots headers -> item count includes headers, songCount does not', async () => {
+        const { exporter: capturingExporter } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        const setlist = {
+            id: 'sl2', name: 'With Headers',
+            songs: [{ id: 'CP-0001' }, { id: 'MP-0100' }],
+            plan: { slots: [
+                { id: 's1', label: 'Welcome', type: 'welcome' },
+                { id: 's2', type: 'song', songId: 'CP-0001' },
+                { id: 's3', label: 'Prayer', type: 'prayer' },
+                { id: 's4', type: 'song', songId: 'MP-0100' }
+            ] }
+        };
+        const result = await capturingExporter.exportSetlistAsProplaylist(setlist, SETLIST_SAMPLE_SONGS, {});
+        assert.equal(result.songCount, 2, 'songCount counts only the .pro files actually built');
+        assert.equal(result.itemCount, 4, 'itemCount counts headers AND songs (4 playlist items)');
+    });
+
+    await test('exportSetlistAsProplaylist: a song referenced but absent from `songs` is SKIPPED, not fatal', async () => {
+        const { exporter: capturingExporter, getBytes } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        const setlist = { id: 'sl3', name: 'Missing One', songs: [{ id: 'CP-0001' }, { id: 'GHOST-9999' }] };
+        const result = await capturingExporter.exportSetlistAsProplaylist(setlist, SETLIST_SAMPLE_SONGS, {});
+        assert.equal(result.songCount, 1);
+        assert.equal(result.itemCount, 1);
+        assert.deepEqual(reify(result.skipped), ['GHOST-9999']);
+        const names = listZipEntryNames(getBytes());
+        assert.equal(names.length, 2, `expected data + 1 .pro, got: ${names.join(', ')}`);
+    });
+
+    await test('exportSetlistAsProplaylist: throws when no setlist argument is given', async () => {
+        await assert.rejects(
+            () => exporter.exportSetlistAsProplaylist(null, SETLIST_SAMPLE_SONGS, {}),
+            /setlist argument is required/
+        );
+    });
+
+    await test('exportSetlistAsProplaylist: throws when nothing in the set list is resolvable', async () => {
+        const setlist = { id: 'sl4', name: 'All Missing', songs: [{ id: 'GHOST-1' }, { id: 'GHOST-2' }] };
+        await assert.rejects(
+            () => exporter.exportSetlistAsProplaylist(setlist, [], {}),
+            /no resolvable songs/
+        );
+    });
+
+    await test('exportSetlistAsProplaylist: the SAME arrangement UUID a song\'s .pro carries is referenced by its playlist item', async () => {
+        /* Cross-checks the encode-time wiring purely in-process (protobufjs
+           decode of BOTH the .pro and the PlaylistItem.Presentation) -- the
+           FULL closure through the independent PHP decoder is
+           tests/php/test-pp7-setlist-roundtrip.php's job; this is the
+           quick in-process confirmation that the same object flows through. */
+        exporter._internal.resetForTests();
+        await exporter.init({ protobuf, bundle });
+        const files = await exporter._internal.buildSetlistProFiles([SETLIST_SAMPLE_SONGS[0]], {});
+        const proBytes = files[0].bytes;
+        const Presentation = protobuf.Root.fromJSON(bundle).lookupType('rv.data.Presentation');
+        const decodedPro = Presentation.decode(proBytes);
+        const proObj = Presentation.toObject(decodedPro, { defaults: false });
+
+        const item = exporter._internal.makePlaylistPresentationItem(
+            'Song One', files[0].name, files[0].arrangementUuid, files[0].arrangementName
+        );
+        assert.equal(item.presentation.arrangement.string, proObj.selected_arrangement.string,
+            'the playlist item\'s arrangement UUID must be the SAME string as the .pro\'s own selected_arrangement');
+    });
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail === 0 ? 0 : 1);
 })();
