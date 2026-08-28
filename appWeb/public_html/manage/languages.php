@@ -42,6 +42,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    manage_languages alone gates the whole page (D4, owner decision) — the
    remap surface below is not a second, separately-gated feature. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_tag_audit.php';
+/* API-coverage batch 4b-ii A6 — the CRUD + remap-glue shared core. This
+   page's create/update/toggle_active/delete/remap_tag POST handlers below
+   call these SAME functions the new admin_language_* API actions call —
+   one validation/persist/delete/remap-preflight core, two thin callers
+   (rule #22/#35). Pulls in language_tag_audit.php transitively (already
+   required directly above too — require_once makes the duplicate a no-op). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -72,54 +79,15 @@ $logLanguage = static function (string $action, string $code, array $details): v
 };
 
 /* ----------------------------------------------------------------------
- * Validators. Kept inline since they're short and only this page
- * uses them. The Code grammar follows BCP 47 — primary subtag is 2-3
- * lowercase letters or 4-8 lowercase letters for private-use, optionally
- * followed by hyphenated subtags (script, region, variant, etc).
+ * Validators — API-coverage batch 4b-ii A6: hoisted into the shared core
+ * includes/language_admin.php (languageAdminValidateFields() + its
+ * per-field helpers, IHYMNS_LANGUAGE_SCOPES) so admin_language_create/
+ * update reject input the exact same way this page does (rule #22/#35).
+ * $ALLOWED_SCOPES stays as a local alias to the shared const — every
+ * existing call site below ($validateScope's old callers, the filter
+ * dropdown, the modal's <option> loop) is unchanged.
  * ---------------------------------------------------------------------- */
-$validateCode = static function (string $code): ?string {
-    $code = trim($code);
-    if ($code === '')                                   return 'Code is required.';
-    if (strlen($code) > 35)                             return 'Code must be 35 characters or fewer.';
-    if (!preg_match('/^[a-zA-Z0-9-]+$/', $code))        return 'Code may contain only letters, digits, and hyphens.';
-    /* Soft-tolerant — IANA codes are lowercase primary, Title-case script,
-       UPPERCASE region, but admins sometimes paste mixed case. We compare
-       lowercase here; the picker lowercases on lookup so case differences
-       don't matter for retrieval. */
-    if (!preg_match('/^[a-z]{2,8}(-[a-z0-9]+)*$/', strtolower($code))) {
-        return 'Code must look like an IETF BCP 47 tag (e.g. en, en-GB, zh-Hans).';
-    }
-    return null;
-};
-
-$validateName = static function (string $name): ?string {
-    $name = trim($name);
-    if ($name === '')              return 'Name is required.';
-    if (strlen($name) > 250)       return 'Name must be 250 characters or fewer.';
-    return null;
-};
-
-$validateNativeName = static function (string $native): ?string {
-    /* NativeName is optional — empty is fine and explicitly meaningful
-       (the picker falls back to Name when NativeName is blank). */
-    if (strlen($native) > 250)     return 'NativeName must be 250 characters or fewer.';
-    return null;
-};
-
-$validateTextDirection = static function (string $td): ?string {
-    if (!in_array($td, ['ltr', 'rtl'], true)) {
-        return 'TextDirection must be ltr or rtl.';
-    }
-    return null;
-};
-
-$ALLOWED_SCOPES = ['individual', 'macrolanguage', 'collection', 'private-use', 'special'];
-$validateScope = static function (string $scope) use ($ALLOWED_SCOPES): ?string {
-    if (!in_array($scope, $ALLOWED_SCOPES, true)) {
-        return 'Scope must be one of: ' . implode(', ', $ALLOWED_SCOPES);
-    }
-    return null;
-};
+$ALLOWED_SCOPES = IHYMNS_LANGUAGE_SCOPES;
 
 /* ----------------------------------------------------------------------
  * POST dispatcher — JSON in / JSON out so the page's client-side
@@ -141,20 +109,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $code       = trim((string)($_POST['code']           ?? ''));
-                $name       = trim((string)($_POST['name']           ?? ''));
-                $native     = trim((string)($_POST['native_name']    ?? ''));
-                $textDir    = trim((string)($_POST['text_direction'] ?? 'ltr'));
-                $scope      = trim((string)($_POST['scope']          ?? 'individual'));
-                $isActive   = !empty($_POST['is_active']) ? 1 : 0;
-
-                $errors = array_filter([
-                    'code'           => $validateCode($code),
-                    'name'           => $validateName($name),
-                    'native_name'    => $validateNativeName($native),
-                    'text_direction' => $validateTextDirection($textDir),
-                    'scope'          => $validateScope($scope),
-                ]);
+                [$fields, $errors] = languageAdminValidateFields(
+                    (string)($_POST['code']           ?? ''),
+                    (string)($_POST['name']           ?? ''),
+                    (string)($_POST['native_name']    ?? ''),
+                    (string)($_POST['text_direction'] ?? 'ltr'),
+                    (string)($_POST['scope']          ?? 'individual')
+                );
+                $isActive = !empty($_POST['is_active']) ? 1 : 0;
                 if ($errors) {
                     http_response_code(400);
                     echo json_encode(['error' => 'Validation failed.', 'fields' => $errors]);
@@ -163,52 +125,35 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
                 /* Check the Code isn't already taken — friendlier than
                    waiting for the unique-key violation. */
-                $stmt = $db->prepare('SELECT 1 FROM tblLanguages WHERE Code = ? LIMIT 1');
-                $stmt->bind_param('s', $code);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) {
+                if (languageAdminCodeExists($db, $fields['code'])) {
                     http_response_code(400);
                     echo json_encode(['error' => 'A language with this code already exists.', 'fields' => ['code' => 'Already in use.']]);
                     exit;
                 }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblLanguages (Code, Name, NativeName, TextDirection, Scope, IsActive)
-                     VALUES (?, ?, ?, ?, ?, ?)'
-                );
-                $stmt->bind_param('sssssi', $code, $name, $native, $textDir, $scope, $isActive);
-                $stmt->execute();
-                $stmt->close();
+                languageAdminCreate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
 
-                $logLanguage('create', $code, [
-                    'name'        => $name,
-                    'native_name' => $native,
-                    'scope'       => $scope,
-                    'text_dir'    => $textDir,
+                $logLanguage('create', $fields['code'], [
+                    'name'        => $fields['name'],
+                    'native_name' => $fields['native'],
+                    'scope'       => $fields['scope'],
+                    'text_dir'    => $fields['textDir'],
                     'is_active'   => $isActive,
                 ]);
 
-                echo json_encode(['success' => true, 'code' => $code]);
+                echo json_encode(['success' => true, 'code' => $fields['code']]);
                 exit;
             }
 
             case 'update': {
-                $code       = trim((string)($_POST['code']           ?? ''));
-                $name       = trim((string)($_POST['name']           ?? ''));
-                $native     = trim((string)($_POST['native_name']    ?? ''));
-                $textDir    = trim((string)($_POST['text_direction'] ?? 'ltr'));
-                $scope      = trim((string)($_POST['scope']          ?? 'individual'));
-                $isActive   = !empty($_POST['is_active']) ? 1 : 0;
-
-                $errors = array_filter([
-                    'code'           => $validateCode($code),
-                    'name'           => $validateName($name),
-                    'native_name'    => $validateNativeName($native),
-                    'text_direction' => $validateTextDirection($textDir),
-                    'scope'          => $validateScope($scope),
-                ]);
+                [$fields, $errors] = languageAdminValidateFields(
+                    (string)($_POST['code']           ?? ''),
+                    (string)($_POST['name']           ?? ''),
+                    (string)($_POST['native_name']    ?? ''),
+                    (string)($_POST['text_direction'] ?? 'ltr'),
+                    (string)($_POST['scope']          ?? 'individual')
+                );
+                $isActive = !empty($_POST['is_active']) ? 1 : 0;
                 if ($errors) {
                     http_response_code(400);
                     echo json_encode(['error' => 'Validation failed.', 'fields' => $errors]);
@@ -216,34 +161,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
 
                 /* Capture the before-state for the audit row. */
-                $stmt = $db->prepare(
-                    'SELECT Code, Name, NativeName, TextDirection, Scope, IsActive
-                       FROM tblLanguages WHERE Code = ? LIMIT 1'
-                );
-                $stmt->bind_param('s', $code);
-                $stmt->execute();
-                $before = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
+                $before = languageAdminFetch($db, $fields['code']);
                 if (!$before) {
                     http_response_code(404);
                     echo json_encode(['error' => 'Language not found.']);
                     exit;
                 }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblLanguages
-                        SET Name = ?, NativeName = ?, TextDirection = ?, Scope = ?, IsActive = ?
-                      WHERE Code = ?'
-                );
-                $stmt->bind_param('ssssis', $name, $native, $textDir, $scope, $isActive, $code);
-                $stmt->execute();
-                $stmt->close();
+                languageAdminUpdate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
 
                 /* Build a compact diff so the audit row is useful. Skip
                    fields whose value didn't change. */
                 $after = [
-                    'Name' => $name, 'NativeName' => $native,
-                    'TextDirection' => $textDir, 'Scope' => $scope,
+                    'Name' => $fields['name'], 'NativeName' => $fields['native'],
+                    'TextDirection' => $fields['textDir'], 'Scope' => $fields['scope'],
                     'IsActive' => $isActive,
                 ];
                 $diff = [];
@@ -253,10 +184,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     }
                 }
                 if ($diff) {
-                    $logLanguage('edit', $code, ['diff' => $diff]);
+                    $logLanguage('edit', $fields['code'], ['diff' => $diff]);
                 }
 
-                echo json_encode(['success' => true, 'code' => $code, 'changed' => count($diff)]);
+                echo json_encode(['success' => true, 'code' => $fields['code'], 'changed' => count($diff)]);
                 exit;
             }
 
@@ -270,11 +201,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     echo json_encode(['error' => 'Missing code.']);
                     exit;
                 }
-                $stmt = $db->prepare('UPDATE tblLanguages SET IsActive = ? WHERE Code = ?');
-                $stmt->bind_param('is', $isActive, $code);
-                $stmt->execute();
-                $touched = $stmt->affected_rows;
-                $stmt->close();
+                $touched = languageAdminToggleActive($db, $code, $isActive);
 
                 if ($touched === 0) {
                     http_response_code(404);
@@ -297,31 +224,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
 
                 /* Pre-flight cite count across tblSongs.Language and
-                   tblSongbooks.Language. The picker normalises tags to
-                   lowercase on the BCP 47 primary subtag, so we match
-                   against that prefix as well as the exact code so a
-                   row 'en' surfaces every 'en', 'en-GB', 'en-US' that
-                   uses it. */
-                $likePrefix = $code . '-%';
-                /* @deleted-visible: refuse-on-cite integrity count (#1694) — a
-                   soft-deleted song still cites the language and would come
-                   back citing it on restore, so it must keep blocking the
-                   delete.
-                   @disabled-visible: same reasoning, one predicate over
-                   (#1765) — a song/songbook in a disabled state still cites
-                   the language and must keep blocking the delete; disabled
-                   is reversible, same as soft-delete. */
-                $stmt = $db->prepare(
-                    'SELECT
-                        (SELECT COUNT(*) FROM tblSongs     WHERE Language = ? OR Language LIKE ?) AS songs,
-                        (SELECT COUNT(*) FROM tblSongbooks WHERE Language = ? OR Language LIKE ?) AS songbooks'
-                );
-                $stmt->bind_param('ssss', $code, $likePrefix, $code, $likePrefix);
-                $stmt->execute();
-                $usage = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                $songCount     = (int)($usage['songs']     ?? 0);
-                $songbookCount = (int)($usage['songbooks'] ?? 0);
+                   tblSongbooks.Language — languageAdminUsageCounts() (#1694/
+                   #1765 @deleted-visible/@disabled-visible integrity counts,
+                   see its doc-comment). */
+                $usage         = languageAdminUsageCounts($db, $code);
+                $songCount     = $usage['songs'];
+                $songbookCount = $usage['songbooks'];
 
                 if (!$force && ($songCount + $songbookCount) > 0) {
                     http_response_code(409);
@@ -334,11 +242,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     exit;
                 }
 
-                $stmt = $db->prepare('DELETE FROM tblLanguages WHERE Code = ?');
-                $stmt->bind_param('s', $code);
-                $stmt->execute();
-                $deleted = $stmt->affected_rows;
-                $stmt->close();
+                $deleted = languageAdminDelete($db, $code);
 
                 if ($deleted === 0) {
                     http_response_code(404);
@@ -370,44 +274,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $toTag   = trim((string)($_POST['to_tag']   ?? ''));
                 $confirmTotal = $_POST['confirm_total'] ?? null;
 
-                if ($fromTag === '' || $toTag === '') {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'from_tag and to_tag are both required.']);
-                    exit;
-                }
-                if ($fromTag === $toTag) {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'to_tag is identical to from_tag — nothing to remap.']);
-                    exit;
-                }
-
-                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
-                if (_ietfBcp47Validate($toTag) === false) {
-                    http_response_code(400);
-                    echo json_encode(['error' => "'{$toTag}' is not a grammatically valid BCP 47 tag — the server would reject it everywhere else too."]);
-                    exit;
-                }
-
-                /* Recompute the LIVE total for $fromTag right now — the
-                   panel's own number may be stale by the time the curator
-                   clicks (another curator remapped it, or new data landed). */
-                $liveRows = languageTagAuditScan($db);
-                $liveTotal = 0;
-                foreach ($liveRows as $r) {
-                    if ($r['tag'] === $fromTag) { $liveTotal = $r['total']; break; }
-                }
-                if ($liveTotal === 0) {
-                    http_response_code(404);
-                    echo json_encode(['error' => "'{$fromTag}' no longer appears in the audit scan — it may already have been remapped."]);
-                    exit;
-                }
-                if ($confirmTotal === null || (int)$confirmTotal !== $liveTotal) {
-                    http_response_code(409);
-                    echo json_encode([
-                        'error'       => 'Confirm count does not match the current live usage — type the number shown and try again.',
-                        'live_total'  => $liveTotal,
-                        'requires_confirm' => true,
-                    ]);
+                /* languageAdminRemapPreflight() — the shared validate-then-
+                   confirm glue (extracted, API-coverage batch 4b-ii A6) that
+                   makes the SAME 400/404/409 decisions
+                   admin_language_remap_tag makes (rule #22/#35). Never
+                   writes — languageTagRemap() below is still the ONE remap
+                   write core (language_tag_audit.php), unchanged. */
+                $pre = languageAdminRemapPreflight($db, $fromTag, $toTag, $confirmTotal);
+                if (!$pre['ok']) {
+                    http_response_code($pre['code']);
+                    $errBody = ['error' => $pre['error']];
+                    if ($pre['code'] === 409) {
+                        $errBody['live_total']       = $pre['liveTotal'];
+                        $errBody['requires_confirm'] = true;
+                    }
+                    echo json_encode($errBody);
                     exit;
                 }
 

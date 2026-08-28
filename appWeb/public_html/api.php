@@ -328,6 +328,30 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tag_admin.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'catalogue_admin.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_series_admin.php';
+/* API-coverage batch 4b-ii (A6/A7/A8) — the language/external-link-type/
+   print-template admin CRUD shared cores. The admin_language_...,
+   admin_external_link_type_... and admin_print_template_... /
+   admin_print_layout_... actions below call these SAME functions
+   manage/languages.php, manage/external-link-types.php and
+   manage/print-templates.php's own POST handlers call — one validation/
+   write core per entity, two thin callers each (rule #22/#35).
+   language_admin.php pulls in language_tag_audit.php transitively
+   (languageTagRemap()/languageTagAuditScan() — the ONE remap write core,
+   never re-forked). print_template_schema.php is required here at THIS
+   file's own top level (not inside a function) so its $BLOCK_SCHEMA /
+   $SHOWIF_CONDITIONS / $PAGE_OPTION_SCHEMA globals + ptSanitiseBlocks() /
+   ptSanitisePageOptions() are available to every case block below,
+   exactly as manage/print-templates.php's own top-level require does for
+   its switch (see that file's doc-block on why top-level require is
+   required); print_custom_layout.php is required here too (it was
+   previously required only inside the print_templates read case, which
+   would leave admin_print_layout_save/_delete undefined if requested
+   before that case ever ran — require_once makes the duplicate a no-op). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_schema.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_type_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -20077,6 +20101,693 @@ if ($action !== null) {
                 logActivityError('api.admin.songbook_series.delete', 'songbook_series', (string)$id, $e);
                 error_log('[admin_songbook_series_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — LANGUAGE REGISTRY CRUD + REMAP (#681/#736/#738,
+         * API-coverage batch 4b-ii A6)
+         *
+         * Mirrors /manage/languages.php's `create`/`update`/`toggle_active`/
+         * `delete`/`remap_tag` POST handlers, via the shared core
+         * includes/language_admin.php (rule #22). The remap action's WRITE
+         * core stays includes/language_tag_audit.php's languageTagRemap()
+         * (already the ONE remap writer, unchanged by this batch) — its
+         * 'line-path' branch goes through lyricLinesEditableComponents() /
+         * lyricLinesWriteComponents(), NEVER a raw UPDATE against
+         * tblLyricLines.LanguageCode (rule #25). The PUBLIC language reads
+         * (`languages`/`scripts`/`regions`/`variants` + their `*_search`
+         * actions) are untouched by this batch. Gate:
+         * userHasEntitlement('manage_languages') — identical to
+         * manage/languages.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a tblLanguages row
+         * POST body: { code (required), name (required), native_name?,
+         *   text_direction? (ltr|rtl, default ltr), scope? (default
+         *   individual), is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldErrors] = languageAdminValidateFields(
+                (string)($body['code']           ?? ''),
+                (string)($body['name']           ?? ''),
+                (string)($body['native_name']    ?? ''),
+                (string)($body['text_direction'] ?? 'ltr'),
+                (string)($body['scope']          ?? 'individual')
+            );
+            if ($fieldErrors) { sendJson(['error' => 'Validation failed.', 'fields' => $fieldErrors], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            try {
+                /* Check the Code isn't already taken — friendlier than
+                   waiting for the unique-key violation (matches the page). */
+                if (languageAdminCodeExists($db, $fields['code'])) {
+                    sendJson(['error' => 'A language with this code already exists.', 'fields' => ['code' => 'Already in use.']], 400);
+                    break;
+                }
+
+                languageAdminCreate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
+
+                logActivity('api.admin.language.create', 'language', $fields['code'], [
+                    'name' => $fields['name'], 'native_name' => $fields['native'],
+                    'scope' => $fields['scope'], 'text_dir' => $fields['textDir'], 'is_active' => $isActive,
+                ]);
+                sendJson(['ok' => true, 'code' => $fields['code']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.create', 'language', $fields['code'] ?? '', $e);
+                error_log('[admin_language_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a tblLanguages row's Name/NativeName/TextDirection/
+         * Scope/IsActive. Code is the PK — never rewritten (a "rename" is
+         * delete+create, matching the page's read-only Code field in edit
+         * mode).
+         * POST body: { code (required), name (required), native_name?,
+         *   text_direction?, scope?, is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldErrors] = languageAdminValidateFields(
+                (string)($body['code']           ?? ''),
+                (string)($body['name']           ?? ''),
+                (string)($body['native_name']    ?? ''),
+                (string)($body['text_direction'] ?? 'ltr'),
+                (string)($body['scope']          ?? 'individual')
+            );
+            if ($fieldErrors) { sendJson(['error' => 'Validation failed.', 'fields' => $fieldErrors], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            try {
+                /* Capture the before-state for the audit diff. */
+                $before = languageAdminFetch($db, $fields['code']);
+                if (!$before) { sendJson(['error' => 'Language not found.'], 404); break; }
+
+                languageAdminUpdate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
+
+                $after = [
+                    'Name' => $fields['name'], 'NativeName' => $fields['native'],
+                    'TextDirection' => $fields['textDir'], 'Scope' => $fields['scope'],
+                    'IsActive' => $isActive,
+                ];
+                $diff = [];
+                foreach ($after as $k => $v) {
+                    if ((string)($before[$k] ?? '') !== (string)$v) {
+                        $diff[$k] = ['from' => $before[$k] ?? null, 'to' => $v];
+                    }
+                }
+
+                logActivity('api.admin.language.update', 'language', $fields['code'], ['diff' => $diff]);
+                sendJson(['ok' => true, 'code' => $fields['code'], 'changed' => count($diff)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.update', 'language', $fields['code'] ?? '', $e);
+                error_log('[admin_language_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: cheap one-shot IsActive toggle — the table's per-row
+         * on/off switch.
+         * POST body: { code (required), is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_toggle': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db       = getDbMysqli();
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $code     = trim((string)($body['code'] ?? ''));
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+            if ($code === '') { sendJson(['error' => 'Missing code.'], 400); break; }
+
+            try {
+                $touched = languageAdminToggleActive($db, $code, $isActive);
+                if ($touched === 0) {
+                    sendJson(['error' => 'Language not found, or value already matched.'], 404);
+                    break;
+                }
+
+                logActivity('api.admin.language.toggle', 'language', $code, ['is_active' => $isActive]);
+                sendJson(['ok' => true, 'code' => $code, 'is_active' => $isActive]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.toggle', 'language', $code, $e);
+                error_log('[admin_language_toggle] ' . $e->getMessage());
+                sendJson(['error' => 'Could not toggle language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tblLanguages row. In-use (songs/songbooks citing
+         * the code, incl. every `<code>-*` sub-tag) refuses with 409 unless
+         * `force` is sent — mirrors the page's two-step confirm.
+         * POST body: { code (required), force? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db    = getDbMysqli();
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $code  = trim((string)($body['code'] ?? ''));
+            $force = !empty($body['force']);
+            if ($code === '') { sendJson(['error' => 'Missing code.'], 400); break; }
+
+            try {
+                $usage = languageAdminUsageCounts($db, $code);
+                if (!$force && ($usage['songs'] + $usage['songbooks']) > 0) {
+                    sendJson([
+                        'error'          => 'Language is in use.',
+                        'songs'          => $usage['songs'],
+                        'songbooks'      => $usage['songbooks'],
+                        'requires_force' => true,
+                    ], 409);
+                    break;
+                }
+
+                $deleted = languageAdminDelete($db, $code);
+                if ($deleted === 0) { sendJson(['error' => 'Language not found.'], 404); break; }
+
+                logActivity('api.admin.language.delete', 'language', $code, [
+                    'forced' => $force ? 1 : 0, 'songs_at_time' => $usage['songs'], 'sbooks_at_time' => $usage['songbooks'],
+                ]);
+                sendJson(['ok' => true, 'code' => $code]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.delete', 'language', $code, $e);
+                error_log('[admin_language_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remap every occurrence of `from_tag` to `to_tag` across
+         * every derived source (BCP 47 registry plan §5.3). Type-the-count
+         * confirm (#1218 guard shape) via the shared
+         * languageAdminRemapPreflight() glue (rule #22/#35) — the same
+         * 400/404/409 decisions manage/languages.php's remap_tag action
+         * makes. The actual write is languageTagRemap() (unchanged, ONE
+         * core, includes/language_tag_audit.php).
+         * POST body: { from_tag (required), to_tag (required),
+         *   confirm_total (required — must equal the LIVE usage total) }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_remap_tag': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db           = getDbMysqli();
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $fromTag      = trim((string)($body['from_tag'] ?? ''));
+            $toTag        = trim((string)($body['to_tag']   ?? ''));
+            $confirmTotal = $body['confirm_total'] ?? null;
+
+            try {
+                $pre = languageAdminRemapPreflight($db, $fromTag, $toTag, $confirmTotal);
+                if (!$pre['ok']) {
+                    $errBody = ['error' => $pre['error']];
+                    if ($pre['code'] === 409) {
+                        $errBody['live_total']       = $pre['liveTotal'];
+                        $errBody['requires_confirm'] = true;
+                    }
+                    sendJson($errBody, $pre['code']);
+                    break;
+                }
+
+                $result = languageTagRemap($db, $fromTag, $toTag);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+
+                logActivity('api.admin.language.remap_tag', 'language', $fromTag, [
+                    'to' => $toTag, 'per_source' => $result['perSource'],
+                    'songs_touched' => $result['songsTouched'], 'songs_remaining' => $result['songsRemaining'],
+                ]);
+                sendJson([
+                    'ok'              => true,
+                    'from_tag'        => $fromTag,
+                    'to_tag'          => $toTag,
+                    'per_source'      => $result['perSource'],
+                    'songs_touched'   => $result['songsTouched'],
+                    'songs_remaining' => $result['songsRemaining'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.remap_tag', 'language', $fromTag, $e);
+                error_log('[admin_language_remap_tag] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remap language tag.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — EXTERNAL-LINK TYPES + URL PATTERNS (#845/#1748 §5.2,
+         * API-coverage batch 4b-ii A7)
+         *
+         * Mirrors /manage/external-link-types.php's SOLE write action —
+         * `save_type_patterns` (flip a type's IsActive/AppliesTo AND
+         * wholesale-replace its URL patterns in ONE write) — via the shared
+         * core includes/external_link_type_admin.php (rule #22). The page
+         * has no separate type create/delete (types are curated content
+         * shipped with the app, not curator-minted rows), so there is no
+         * second action to add here. Drives tblExternalLinkTypes +
+         * tblExternalLinkPatterns (rule #11/#12). Gate:
+         * userHasEntitlement('manage_external_link_types') — identical to
+         * the page's own gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: save a link type's IsActive/AppliesTo + replace its whole
+         * pattern list.
+         * POST body: { type_id (required), is_active?, applies_to?
+         *   (list<string>), patterns? (list<{host,path?,
+         *   match_subdomains?,priority?,note?,is_active?}>) }
+         * ----------------------------------------------------------------- */
+        case 'admin_external_link_type_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_external_link_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $schemaReady = externalLinkTypeAdminSchemaReady($db);
+            if (!$schemaReady['patterns']) {
+                sendJson(['error' => 'External-link pattern registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $typeId = (int)($body['type_id'] ?? 0);
+            if ($typeId <= 0) { sendJson(['error' => 'Type id is required.'], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            $postedApplies = $body['applies_to'] ?? [];
+            if (!is_array($postedApplies)) { $postedApplies = []; }
+
+            /* Transpose the JSON array-of-objects shape a native client
+               naturally sends into the SAME parallel-array shape
+               externalLinkTypeAdminNormalisePatterns() already accepts
+               (the page's own form-POST shape) — one normaliser, two
+               callers with different wire shapes (rule #22/#35). */
+            $rawPatterns = $body['patterns'] ?? [];
+            if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
+            foreach ($rawPatterns as $p) {
+                if (!is_array($p)) { continue; }
+                $pHosts[]  = $p['host'] ?? '';
+                $pPaths[]  = $p['path'] ?? '';
+                $pSubs[]   = !empty($p['match_subdomains']) ? 1 : 0;
+                $pPrios[]  = $p['priority'] ?? 100;
+                $pNotes[]  = $p['note'] ?? '';
+                $pActive[] = !empty($p['is_active']) ? 1 : 0;
+            }
+
+            try {
+                $existingAppliesTo = externalLinkTypeAdminFetchAppliesTo($db, $typeId);
+                if ($existingAppliesTo === null) { sendJson(['error' => 'Link type not found.'], 404); break; }
+
+                $applies     = externalLinkTypeAdminResolveAppliesTo($postedApplies, $existingAppliesTo);
+                $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
+                $insertCount = externalLinkTypeAdminSave($db, $typeId, $isActive, $applies['value'], $patternRows);
+
+                logActivity('api.admin.external_link_type.save', 'external_link_type', (string)$typeId, [
+                    'is_active' => (bool)$isActive, 'pattern_count' => $insertCount, 'applies_to' => $applies['value'],
+                ]);
+                sendJson([
+                    'ok'                  => true,
+                    'id'                  => $typeId,
+                    'pattern_count'       => $insertCount,
+                    'applies_to'          => $applies['value'],
+                    'applies_to_warning'  => trim($applies['warning']),
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.external_link_type.save', 'external_link_type', (string)$typeId, $e);
+                error_log('[admin_external_link_type_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save external-link type.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — PRINT TEMPLATES CRUD + CUSTOM LAYOUT (#1350/#1767,
+         * API-coverage batch 4b-ii A8)
+         *
+         * Mirrors /manage/print-templates.php's `save`/`clone`/`delete`/
+         * `set_default`/`layout_save`/`layout_delete` POST handlers.
+         * The tblPrintTemplates scalar-row writes go through the shared
+         * core includes/print_template_admin.php (rule #22); block/page-
+         * option VALIDATION stays the ONE rulebook
+         * includes/print_template_schema.php ($BLOCK_SCHEMA/
+         * $SHOWIF_CONDITIONS/$PAGE_OPTION_SCHEMA/ptSanitiseBlocks()/
+         * ptSanitisePageOptions(), also shared with manage/print-pdf.php —
+         * rule #35). The custom full-page layout (`layout_save`/
+         * `layout_delete`) is ALREADY a single shared core —
+         * printCustomLayoutSave()/printCustomLayoutDelete()
+         * (includes/print_custom_layout.php) — called DIRECTLY here, never
+         * re-wrapped: printCustomLayoutSave() runs every upload through
+         * ihymnsSanitizeHtml($raw, 'layout') (rule #39) before it ever
+         * reaches storage. The page's `import` (paste-JSON) action is OUT
+         * OF SCOPE for this batch (.claude/api-coverage-2026-08-28.md §4.3
+         * A8 / §9 Batch 4 propose only these six). Gate:
+         * userHasEntitlement('manage_songbooks') — identical to the page's
+         * own gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create or update a Scope='song' print template.
+         * POST body: { id? (0/absent = create), name (required),
+         *   blocks (required, array — or blocks_json, a JSON string, for
+         *   a form-POST-shaped caller), page_options? (or page_options_json),
+         *   is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id       = (int)($body['id'] ?? 0);
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            [$fields, $fieldError] = printTemplateAdminValidateContent(
+                (string)($body['name'] ?? ''),
+                $body['blocks']       ?? ($body['blocks_json']       ?? ''),
+                $body['page_options'] ?? ($body['page_options_json'] ?? ''),
+                $BLOCK_SCHEMA, $SHOWIF_CONDITIONS, $PAGE_OPTION_SCHEMA
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                if ($id > 0) {
+                    /* UPDATE — scoped to 'song' so this can never touch
+                       another scope's rows. */
+                    $before = printTemplateAdminFetch($db, $id);
+                    if (!$before) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                    printTemplateAdminUpdate($db, $id, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive);
+
+                    logActivity('api.admin.print_template.update', 'print_template', (string)$id, [
+                        'name' => $fields['name'], 'blocks' => $fields['blocksCount'], 'is_active' => (bool)$isActive,
+                    ]);
+                    sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name'], 'blocks' => $fields['blocksCount']]);
+                } else {
+                    /* INSERT — Scope='song', OwnerId NULL (curated),
+                       SortOrder appended to the end of the list. */
+                    $newId = printTemplateAdminCreate($db, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive, (int)$authUser['Id']);
+
+                    logActivity('api.admin.print_template.create', 'print_template', (string)$newId, [
+                        'name' => $fields['name'], 'blocks' => $fields['blocksCount'],
+                    ]);
+                    sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name'], 'blocks' => $fields['blocksCount']], 201);
+                }
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.save', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: clone a template into a fresh independent row (blocks +
+         * page options copied verbatim; the copy starts active, never
+         * default).
+         * POST body: { id (required — the source template) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_clone': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $cloned = printTemplateAdminClone($db, $id, (int)$authUser['Id']);
+                if (!$cloned) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                logActivity('api.admin.print_template.clone', 'print_template', (string)$cloned['id'], [
+                    'source' => $id, 'name' => $cloned['name'],
+                ]);
+                sendJson(['ok' => true, 'id' => $cloned['id'], 'name' => $cloned['name'], 'source_id' => $id], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.clone', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_clone] ' . $e->getMessage());
+                sendJson(['error' => 'Could not clone print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a Scope='song' print template row.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $deleted = printTemplateAdminDelete($db, $id);
+                if ($deleted === 0) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                logActivity('api.admin.print_template.delete', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.delete', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: make ONE template the system default (#1767 J). Clears
+         * IsDefault on every other song template first (a single default
+         * is the invariant) and forces the chosen one active.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_set_default': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                /* Existence check BEFORE the write — printTemplateAdminSetDefault()'s
+                   own affected_rows isn't a reliable existence signal (a
+                   template that's ALREADY the default touches 0 rows on a
+                   re-run — see that function's doc-comment). */
+                if (!printTemplateAdminFetch($db, $id)) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                printTemplateAdminSetDefault($db, $id);
+
+                logActivity('api.admin.print_template.set_default', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.set_default', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_set_default] ' . $e->getMessage());
+                sendJson(['error' => 'Could not set default print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: save (create/replace) a template's custom full-page layout
+         * skin. THE ONE writer is printCustomLayoutSave()
+         * (includes/print_custom_layout.php) — this handler does no
+         * sanitisation/validation of its own; it only forwards the raw
+         * HTML and reports back whatever that ONE function decides
+         * (rule #39 — sanitised through ihymnsSanitizeHtml($raw,'layout')
+         * inside that function before it ever reaches storage).
+         * POST body: { id (required — an existing template), layout_html
+         *   (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_layout_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id      = (int)($body['id'] ?? 0);
+            $rawHtml = (string)($body['layout_html'] ?? '');
+
+            try {
+                $result = printCustomLayoutSave($id, $rawHtml, (int)$authUser['Id']);
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error'] ?? 'Could not save the custom layout.'], 400);
+                    break;
+                }
+
+                logActivity('api.admin.print_template.layout_save', 'print_template', (string)$id, [
+                    'sizeBytes' => $result['sizeBytes'] ?? null,
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'size_bytes' => $result['sizeBytes'] ?? null]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.layout_save', 'print_template', (string)$id, $e);
+                error_log('[admin_print_layout_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save the custom layout.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a template's custom layout (falls back to the
+         * standard document shell). THE ONE writer is
+         * printCustomLayoutDelete() (includes/print_custom_layout.php).
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_layout_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $ok = printCustomLayoutDelete($id);
+                if (!$ok) { sendJson(['error' => 'Could not remove the custom layout.'], 500); break; }
+
+                logActivity('api.admin.print_template.layout_delete', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.layout_delete', 'print_template', (string)$id, $e);
+                error_log('[admin_print_layout_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove the custom layout.'], 500);
             }
             break;
         }

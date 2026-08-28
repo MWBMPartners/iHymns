@@ -25,6 +25,11 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    this page's tick-UI + save handler consume (rule #35 — no page-local
    provider/entity-type list). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+/* API-coverage batch 4b-ii A7 — the save_type_patterns write core. This
+   page's POST handler below calls these SAME functions the new
+   admin_external_link_type_save API action calls — one validation/write
+   core, two thin callers (rule #22/#35). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_type_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -43,19 +48,11 @@ $success = '';
 $db      = getDbMysqli();
 $csrf    = csrfToken();
 
-/* Schema probes */
-$hasTypesSchema    = false;
-$hasPatternsSchema = false;
-try {
-    $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblExternalLinkTypes' LIMIT 1");
-    $hasTypesSchema = $r && $r->fetch_row() !== null;
-    if ($r) $r->close();
-    $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblExternalLinkPatterns' LIMIT 1");
-    $hasPatternsSchema = $r && $r->fetch_row() !== null;
-    if ($r) $r->close();
-} catch (\Throwable $e) {
-    error_log('[external-link-types] schema probe failed: ' . $e->getMessage());
-}
+/* Schema probes — externalLinkTypeAdminSchemaReady() (API-coverage batch
+   4b-ii A7 extraction; byte-identical probe, now shared with the API). */
+$schemaReady       = externalLinkTypeAdminSchemaReady($db);
+$hasTypesSchema    = $schemaReady['types'];
+$hasPatternsSchema = $schemaReady['patterns'];
 
 /* ---- POST actions ---- */
 if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -75,46 +72,19 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    the form ships an `is_active` flag (1/0). */
                 $isActive = !empty($_POST['is_active']) ? 1 : 0;
 
-                /* #1748 §5.2 — AppliesTo tick-UI. Intersect the posted
-                   applies_to[] tokens against the central allow-list
-                   (rule #35's mechanism, not a page-local list) so a
-                   tampered request can't write an arbitrary token, THEN
-                   preserve any token the row already carries that ISN'T
-                   in the const — the legacy 'person' back-compat token
-                   (migrate-musicians-rename.php:76-80) predates this UI
-                   and must survive an edit that doesn't know about it.
-                   An empty resulting set keeps the row's CURRENT value
-                   instead of writing '' — an empty AppliesTo would hide
-                   the type from every editor (§5.2's explicit guard). */
+                /* #1748 §5.2 — AppliesTo tick-UI resolution + pattern
+                   normalisation now live in the shared core
+                   includes/external_link_type_admin.php (API-coverage
+                   batch 4b-ii A7 extraction) — byte-identical logic, so
+                   this page's behaviour is unchanged. */
                 $postedApplies = $_POST['applies_to'] ?? [];
                 if (!is_array($postedApplies)) $postedApplies = [];
-                $postedApplies = array_values(array_intersect(
-                    array_map('strval', $postedApplies),
-                    IHYMNS_LINK_ENTITY_TYPES
-                ));
 
-                $stmt = $db->prepare('SELECT AppliesTo FROM tblExternalLinkTypes WHERE Id = ?');
-                $stmt->bind_param('i', $typeId);
-                $stmt->execute();
-                $curRow = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if (!$curRow) { $error = 'Link type not found.'; break; }
-                $existingTokens = array_values(array_filter(array_map(
-                    'trim', explode(',', (string)$curRow['AppliesTo'])
-                ), static fn(string $t): bool => $t !== ''));
-                $legacyTokens = array_values(array_diff($existingTokens, IHYMNS_LINK_ENTITY_TYPES));
-                $newApplies   = array_values(array_unique(array_merge($postedApplies, $legacyTokens)));
-                $appliesToWarning = '';
-                if ($newApplies) {
-                    $appliesToSave = implode(',', $newApplies);
-                } else {
-                    /* Never write an empty AppliesTo — it would hide this
-                       type from every editor. Keep the row's current
-                       value and surface a warning instead of erroring
-                       the whole save (IsActive + patterns still apply). */
-                    $appliesToSave    = (string)$curRow['AppliesTo'];
-                    $appliesToWarning = ' AppliesTo was left unchanged — untick nothing without ticking something else first.';
-                }
+                $existingAppliesTo = externalLinkTypeAdminFetchAppliesTo($db, $typeId);
+                if ($existingAppliesTo === null) { $error = 'Link type not found.'; break; }
+                $applies = externalLinkTypeAdminResolveAppliesTo($postedApplies, $existingAppliesTo);
+                $appliesToSave    = $applies['value'];
+                $appliesToWarning = $applies['warning'];
 
                 /* Patterns posted as parallel arrays. */
                 $pHosts   = $_POST['pattern_host']     ?? [];
@@ -130,70 +100,17 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 if (!is_array($pNotes))  $pNotes  = [];
                 if (!is_array($pActive)) $pActive = [];
 
-                $db->begin_transaction();
-                try {
-                    /* Update parent type's IsActive flag + AppliesTo
-                       (#1748 §5.2). */
-                    $stmt = $db->prepare('UPDATE tblExternalLinkTypes SET IsActive = ?, AppliesTo = ? WHERE Id = ?');
-                    $stmt->bind_param('isi', $isActive, $appliesToSave, $typeId);
-                    $stmt->execute();
-                    $stmt->close();
+                $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
+                $insertCount = externalLinkTypeAdminSave($db, $typeId, $isActive, $appliesToSave, $patternRows);
 
-                    /* Replace patterns wholesale: delete existing rows
-                       for the type then re-insert from the posted list.
-                       Cheap on the small per-type list sizes we expect
-                       (typically 1–10 patterns per provider). */
-                    $stmt = $db->prepare('DELETE FROM tblExternalLinkPatterns WHERE LinkTypeId = ?');
-                    $stmt->bind_param('i', $typeId);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    $insertCount = 0;
-                    $count = max(count($pHosts), count($pPaths));
-                    $insert = $db->prepare(
-                        'INSERT INTO tblExternalLinkPatterns
-                             (LinkTypeId, Host, PathPrefix, MatchSubdomains, Priority, IsActive, Note)
-                         VALUES (?, ?, NULLIF(?, ""), ?, ?, ?, NULLIF(?, ""))'
-                    );
-                    for ($i = 0; $i < $count; $i++) {
-                        $host = trim((string)($pHosts[$i] ?? ''));
-                        if ($host === '') continue;
-                        /* Strip protocol / leading wildcard / trailing
-                           slash a curator might include by accident. */
-                        $host = preg_replace('#^https?://#i', '', $host);
-                        $host = ltrim((string)$host, '*.');
-                        $host = rtrim((string)$host, '/');
-                        $host = mb_substr($host, 0, 255);
-                        if ($host === '' || strpos($host, '.') === false) continue;
-
-                        $path = trim((string)($pPaths[$i] ?? ''));
-                        if ($path !== '' && $path[0] !== '/') $path = '/' . $path;
-                        $path = mb_substr($path, 0, 255);
-
-                        $sd   = !empty($pSubs[$i])    ? 1 : 0;
-                        $prio = isset($pPrios[$i])    ? max(0, min(65535, (int)$pPrios[$i])) : 100;
-                        $act  = !empty($pActive[$i])  ? 1 : 0;
-                        $note = mb_substr((string)($pNotes[$i] ?? ''), 0, 255);
-
-                        $insert->bind_param('issiiis', $typeId, $host, $path, $sd, $prio, $act, $note);
-                        $insert->execute();
-                        $insertCount++;
-                    }
-                    $insert->close();
-                    $db->commit();
-
-                    if (function_exists('logActivity')) {
-                        logActivity('external_link_type.save_patterns', 'external_link_type', (string)$typeId, [
-                            'is_active'     => (bool)$isActive,
-                            'pattern_count' => $insertCount,
-                            'applies_to'    => $appliesToSave,
-                        ]);
-                    }
-                    $success = "Saved {$insertCount} pattern" . ($insertCount === 1 ? '' : 's') . '.' . $appliesToWarning;
-                } catch (\Throwable $tx) {
-                    $db->rollback();
-                    throw $tx;
+                if (function_exists('logActivity')) {
+                    logActivity('external_link_type.save_patterns', 'external_link_type', (string)$typeId, [
+                        'is_active'     => (bool)$isActive,
+                        'pattern_count' => $insertCount,
+                        'applies_to'    => $appliesToSave,
+                    ]);
                 }
+                $success = "Saved {$insertCount} pattern" . ($insertCount === 1 ? '' : 's') . '.' . $appliesToWarning;
                 break;
             }
         }

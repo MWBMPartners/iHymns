@@ -518,6 +518,37 @@ tags:
       access tier it confers. Mirrors `/manage/licence-types` (both surfaces
       call the SAME shared core in `includes/licence_type_admin.php`). Gated
       on `manage_licence_types`.
+  - name: Admin — Languages
+    description: |
+      BCP 47 language-registry CRUD + junk-tag remap (#681/#736/#738,
+      API-coverage batch 4b-ii A6) — `tblLanguages`. Mirrors
+      `/manage/languages` (both surfaces call the SAME shared core in
+      `includes/language_admin.php`; the remap write itself stays the
+      pre-existing `languageTagRemap()` in `includes/language_tag_audit.php`).
+      Gated on `manage_languages`. Distinct from the PUBLIC
+      `languages`/`scripts`/`regions`/`variants` reads documented
+      elsewhere in this spec, which this batch does not touch.
+  - name: Admin — External Link Types
+    description: |
+      `tblExternalLinkTypes` + `tblExternalLinkPatterns` write surface
+      (#845/#1748 §5.2, API-coverage batch 4b-ii A7) — flip a type's
+      active flag / AppliesTo and replace its URL-matching pattern list in
+      one write. Mirrors `/manage/external-link-types`'s sole write action
+      (both surfaces call the SAME shared core in
+      `includes/external_link_type_admin.php`). No separate type create/
+      delete — types are curated content shipped with the app. Gated on
+      `manage_external_link_types`.
+  - name: Admin — Print Templates
+    description: |
+      `tblPrintTemplates` (Scope='song') scalar-row CRUD + the custom
+      full-page layout skin (#1350/#1767, API-coverage batch 4b-ii A8).
+      Mirrors `/manage/print-templates` (the scalar row via
+      `includes/print_template_admin.php`; the layout via the
+      pre-existing `includes/print_custom_layout.php`, which sanitises
+      every upload through `ihymnsSanitizeHtml($raw,'layout')` before it
+      ever reaches storage). Block/page-option validation stays the ONE
+      rulebook `includes/print_template_schema.php`, also shared with
+      `manage/print-pdf.php`. Gated on `manage_songbooks`.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -12978,6 +13009,666 @@ paths:
           description: Series not found
         "503":
           description: Songbook Series registry not migrated on this environment yet
+
+  # ===========================================================================
+  # ADMIN — LANGUAGES  (#681/#736/#738, API-coverage batch 4b-ii A6)
+  #
+  # CRUD over the BCP 47 language registry (tblLanguages) plus the #1218-
+  # shaped "remap a junk tag" write. The web page /manage/languages and
+  # these JSON twins share ONE core (includes/language_admin.php); the
+  # remap write itself stays the pre-existing ONE core
+  # includes/language_tag_audit.php's languageTagRemap() (its 'line-path'
+  # branch goes through lyricLinesWriteComponents(), never a raw UPDATE
+  # against tblLyricLines.LanguageCode — rule #25). The PUBLIC language
+  # reads (languages/scripts/regions/variants + their *_search actions)
+  # are documented separately, above, and are untouched by this batch.
+  # Gated on the manage_languages entitlement.
+  # ===========================================================================
+  /api.php?action=admin_language_create:
+    post:
+      operationId: adminLanguageCreate
+      tags: [Admin — Languages]
+      summary: Create a tblLanguages row
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_language_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code:            { type: string, maxLength: 35, description: "IETF BCP 47 tag, e.g. en, en-GB, zh-Hans." }
+                name:            { type: string, maxLength: 250 }
+                native_name:     { type: string, maxLength: 250, description: Optional — the picker falls back to name when blank. }
+                text_direction:  { type: string, enum: [ltr, rtl], default: ltr }
+                scope:           { type: string, enum: [individual, macrolanguage, collection, private-use, special], default: individual }
+                is_active:       { type: boolean, default: false }
+      responses:
+        "201":
+          description: Language created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  code: { type: string }
+        "400":
+          description: Validation failed (see the `fields` map), or the code is already taken
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  fields: { type: object, additionalProperties: { type: string } }
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_language_update:
+    post:
+      operationId: adminLanguageUpdate
+      tags: [Admin — Languages]
+      summary: Update a tblLanguages row's Name/NativeName/TextDirection/Scope/IsActive
+      description: |
+        `code` is the primary key and is never rewritten — a "rename" is a
+        delete then a create, matching the admin page's read-only Code
+        field in edit mode.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_language_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code:            { type: string, maxLength: 35 }
+                name:            { type: string, maxLength: 250 }
+                native_name:     { type: string, maxLength: 250 }
+                text_direction:  { type: string, enum: [ltr, rtl], default: ltr }
+                scope:           { type: string, enum: [individual, macrolanguage, collection, private-use, special], default: individual }
+                is_active:       { type: boolean, default: false }
+      responses:
+        "200":
+          description: Language updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  code:    { type: string }
+                  changed: { type: integer, description: Number of fields whose value actually changed. }
+        "400":
+          description: Validation failed (see the `fields` map)
+        "403":
+          description: Admin access required
+        "404":
+          description: Language not found
+
+  /api.php?action=admin_language_toggle:
+    post:
+      operationId: adminLanguageToggle
+      tags: [Admin — Languages]
+      summary: Cheap one-shot IsActive toggle
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_language_toggle] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:      { type: string, maxLength: 35 }
+                is_active: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  code:      { type: string }
+                  is_active: { type: boolean }
+        "400":
+          description: Missing code
+        "403":
+          description: Admin access required
+        "404":
+          description: Language not found, or the value already matched
+
+  /api.php?action=admin_language_delete:
+    post:
+      operationId: adminLanguageDelete
+      tags: [Admin — Languages]
+      summary: Delete a tblLanguages row
+      description: |
+        Refused with **409** when any song or songbook still cites the
+        code (including every `<code>-*` sub-tag), unless `force` is
+        sent — the same two-step confirm the admin page uses.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_language_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:  { type: string, maxLength: 35 }
+                force: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  code: { type: string }
+        "400":
+          description: Missing code
+        "403":
+          description: Admin access required
+        "404":
+          description: Language not found
+        "409":
+          description: Language is still cited by songs/songbooks — resend with force=true
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:          { type: string }
+                  songs:          { type: integer }
+                  songbooks:      { type: integer }
+                  requires_force: { type: boolean, example: true }
+
+  /api.php?action=admin_language_remap_tag:
+    post:
+      operationId: adminLanguageRemapTag
+      tags: [Admin — Languages]
+      summary: Remap every occurrence of a junk/typo language tag to a good one
+      description: |
+        BCP 47 registry plan §5.3 — a type-the-count confirm (the #1218
+        guard shape): the server independently recomputes the LIVE usage
+        total for `from_tag` and rejects with **409** unless
+        `confirm_total` matches it exactly, surfacing the fresh count so
+        the caller can re-confirm. `to_tag` must be a grammatically valid
+        BCP 47 tag. The `tblLyricLines.LanguageCode` ("line-path") half of
+        the remap goes through the normalised lyric-line write path
+        (rule #25) — never a raw UPDATE.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_language_remap_tag] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_tag, to_tag, confirm_total]
+              properties:
+                from_tag:      { type: string }
+                to_tag:        { type: string }
+                confirm_total: { type: integer, description: Must equal the server's LIVE usage total for from_tag. }
+      responses:
+        "200":
+          description: Remapped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:              { type: boolean, example: true }
+                  from_tag:        { type: string }
+                  to_tag:          { type: string }
+                  per_source:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        updated: { type: integer }
+                        skipped: { type: integer }
+                        note:    { type: string, nullable: true }
+                  songs_touched:   { type: integer }
+                  songs_remaining: { type: integer, description: "> 0 means the line-path half hit its per-call batch cap — resend to continue." }
+        "400":
+          description: Missing/identical from_tag+to_tag, or to_tag is not a grammatically valid BCP 47 tag
+        "403":
+          description: Admin access required
+        "404":
+          description: from_tag no longer appears in the live audit scan (already remapped)
+        "409":
+          description: confirm_total does not match the current live usage total
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:             { type: string }
+                  live_total:        { type: integer }
+                  requires_confirm:  { type: boolean, example: true }
+
+  # ===========================================================================
+  # ADMIN — EXTERNAL LINK TYPES  (#845/#1748 §5.2, API-coverage batch 4b-ii A7)
+  #
+  # The tblExternalLinkTypes + tblExternalLinkPatterns write surface (rule
+  # #11/#12) — flip a type's IsActive/AppliesTo and wholesale-replace its
+  # URL-matching patterns in ONE write. The web page
+  # /manage/external-link-types and this JSON twin share ONE core
+  # (includes/external_link_type_admin.php). There is no separate type
+  # create/delete — the registry's *types* are curated content shipped
+  # with the app, not curator-minted rows, so the page (and this API) only
+  # ever edits an EXISTING type. Gated on the manage_external_link_types
+  # entitlement.
+  # ===========================================================================
+  /api.php?action=admin_external_link_type_save:
+    post:
+      operationId: adminExternalLinkTypeSave
+      tags: [Admin — External Link Types]
+      summary: Save a link type's IsActive/AppliesTo and replace its whole URL-pattern list
+      description: |
+        `applies_to` is intersected against the central
+        `IHYMNS_LINK_ENTITY_TYPES` allow-list; any legacy token the row
+        already carries that isn't in that list (e.g. the pre-rename
+        `person`) is preserved automatically. An empty resulting set
+        leaves `AppliesTo` unchanged (never writes an empty value — that
+        would hide the type from every editor) and the response's
+        `applies_to_warning` explains why. `patterns` replaces the type's
+        ENTIRE pattern list — omit it (or send `[]`) to clear every
+        pattern.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_external_link_type_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type_id]
+              properties:
+                type_id:    { type: integer }
+                is_active:  { type: boolean, default: false }
+                applies_to:
+                  type: array
+                  items: { type: string }
+                  description: Subset of song/songbook/musician/work/tune (IHYMNS_LINK_ENTITY_TYPES).
+                patterns:
+                  type: array
+                  items:
+                    type: object
+                    required: [host]
+                    properties:
+                      host:              { type: string, maxLength: 255, description: "Bare hostname, e.g. wikipedia.org — protocol/wildcard/trailing slash are stripped server-side." }
+                      path:              { type: string, maxLength: 255, description: Optional path prefix, e.g. /work/. }
+                      match_subdomains:  { type: boolean, default: false }
+                      priority:          { type: integer, default: 100, minimum: 0, maximum: 65535, description: Lower wins. }
+                      note:              { type: string, maxLength: 255 }
+                      is_active:         { type: boolean, default: false }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                  { type: boolean, example: true }
+                  id:                  { type: integer }
+                  pattern_count:       { type: integer, description: Patterns actually inserted after cleanup/validation. }
+                  applies_to:          { type: string, description: The CSV AppliesTo value actually stored. }
+                  applies_to_warning:  { type: string, description: Non-empty when the posted applies_to would have emptied the field and was ignored. }
+        "400":
+          description: Type id is required
+        "403":
+          description: Admin access required
+        "404":
+          description: Link type not found
+        "503":
+          description: External-link pattern registry not migrated on this environment yet
+
+  # ===========================================================================
+  # ADMIN — PRINT TEMPLATES  (#1350/#1767, API-coverage batch 4b-ii A8)
+  #
+  # tblPrintTemplates (Scope='song') scalar-row CRUD + the #1767 remainder
+  # P7 custom full-page layout skin. The web page /manage/print-templates
+  # and these JSON twins share TWO cores: includes/print_template_admin.php
+  # for the scalar row (save/clone/delete/set_default) and the
+  # PRE-EXISTING includes/print_custom_layout.php for the layout
+  # (layout_save/layout_delete) — the latter already runs every upload
+  # through ihymnsSanitizeHtml($raw,'layout') before it ever reaches
+  # storage (rule #39). Block/page-option validation stays the ONE
+  # rulebook includes/print_template_schema.php, also shared with
+  # manage/print-pdf.php. The page's `import` (paste-JSON) action is out
+  # of scope for this batch. Gated on the manage_songbooks entitlement.
+  # ===========================================================================
+  /api.php?action=admin_print_template_save:
+    post:
+      operationId: adminPrintTemplateSave
+      tags: [Admin — Print Templates]
+      summary: Create or update a Scope='song' print template
+      description: |
+        Omit `id` (or send `0`) to create; a positive `id` updates that
+        row (404 if it doesn't exist, or belongs to a different Scope).
+        `blocks` must decode to a non-empty array of recognised block
+        objects after server-side sanitisation against the shared block
+        schema, or the save is rejected. `page_options` is optional and is
+        similarly sanitised; unrecognised keys are dropped rather than
+        rejected. The persisted JSON is always the RE-ENCODED clean copy,
+        never the raw request body.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_template_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, blocks]
+              properties:
+                id:           { type: integer, description: Omit or 0 to create. }
+                name:         { type: string, maxLength: 120 }
+                blocks:
+                  type: array
+                  items: { type: object }
+                  description: Ordered list of print-block objects (see includes/print_template_schema.php for the allow-list).
+                page_options: { type: object, description: Optional page-wide render options (font size, page size, ink-saver, …). }
+                is_active:    { type: boolean, default: false }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  name:   { type: string }
+                  blocks: { type: integer, description: Count of recognised blocks actually stored. }
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  name:   { type: string }
+                  blocks: { type: integer }
+        "400":
+          description: Missing name, empty/unrecognised blocks list
+        "403":
+          description: Admin access required
+        "404":
+          description: Template not found (update with a bad id)
+        "503":
+          description: Print templates not migrated on this environment yet
+
+  /api.php?action=admin_print_template_clone:
+    post:
+      operationId: adminPrintTemplateClone
+      tags: [Admin — Print Templates]
+      summary: Clone an existing template into a fresh independent row
+      description: |
+        Blocks + page options are copied verbatim; the copy starts
+        active, never default (#1767 Z).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_template_clone] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: The source template's id. }
+      responses:
+        "201":
+          description: Cloned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  id:        { type: integer, description: The new clone's id. }
+                  name:      { type: string, description: "The source name with \" (copy)\" appended." }
+                  source_id: { type: integer }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Source template not found
+        "503":
+          description: Print templates not migrated on this environment yet
+
+  /api.php?action=admin_print_template_delete:
+    post:
+      operationId: adminPrintTemplateDelete
+      tags: [Admin — Print Templates]
+      summary: Delete a Scope='song' print template row
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_template_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Template not found
+        "503":
+          description: Print templates not migrated on this environment yet
+
+  /api.php?action=admin_print_template_set_default:
+    post:
+      operationId: adminPrintTemplateSetDefault
+      tags: [Admin — Print Templates]
+      summary: Make ONE template the system default (#1767 J)
+      description: |
+        A single default is the invariant — this clears `IsDefault` on
+        every other Scope='song' template first, in a transaction, and
+        forces the chosen one active (a hidden default would be
+        pointless).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_template_set_default] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Default set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Template not found
+        "503":
+          description: Print templates not migrated on this environment yet
+
+  /api.php?action=admin_print_layout_save:
+    post:
+      operationId: adminPrintLayoutSave
+      tags: [Admin — Print Templates]
+      summary: Save (create/replace) a template's custom full-page layout skin
+      description: |
+        #1767 remainder P7 (feature E). `layout_html` is sanitised through
+        `ihymnsSanitizeHtml($raw, 'layout')` (rule #39, the richer of the
+        two sanitiser profiles, built specifically for this feature) and
+        MUST contain the literal `{{content}}` token exactly once — that
+        is where the rendered song is injected at print/PDF time. Rejected
+        (400) if the token is absent or appears more than once, or the raw
+        upload exceeds 256 KiB.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_layout_save] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, layout_html]
+              properties:
+                id:          { type: integer, description: An existing template's id. }
+                layout_html: { type: string, description: "Untrusted full-page HTML containing exactly one {{content}} token." }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  id:         { type: integer }
+                  size_bytes: { type: integer, nullable: true, description: Byte size of the SANITISED stored copy. }
+        "400":
+          description: Empty HTML, missing/duplicated {{content}} token, over the 256 KiB cap, or the template doesn't exist yet (must be saved first)
+        "403":
+          description: Admin access required
+        "503":
+          description: Print templates not migrated on this environment yet
+
+  /api.php?action=admin_print_layout_delete:
+    post:
+      operationId: adminPrintLayoutDelete
+      tags: [Admin — Print Templates]
+      summary: Remove a template's custom layout
+      description: |
+        Falls back to the standard document shell. Idempotent — deleting
+        an already-absent layout still returns 200.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_print_layout_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Removed (or already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "503":
+          description: Print templates not migrated on this environment yet
 
   # ===========================================================================
   # ADMIN — LICENCE TYPES  (#459 / #1769 P4)

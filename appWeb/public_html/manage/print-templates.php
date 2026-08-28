@@ -39,6 +39,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    render path (api.php's print_templates action) reads the SAME table via
    this module's separate render-path functions, never HtmlOriginal. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
+/* API-coverage batch 4b-ii A8 — the tblPrintTemplates scalar-row CRUD
+   shared core (save/clone/delete/set_default). This page's POST handlers
+   below call these SAME functions the new admin_print_template_* API
+   actions call — one validation/persist core, two thin callers
+   (rule #22/#35). Deliberately does NOT cover layout_save/layout_delete
+   (already a shared core, print_custom_layout.php, required above) or
+   import (out of scope for this batch — see that file's doc-block). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -62,18 +70,7 @@ $csrf    = csrfToken();
 $JSON_SAFE = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
 
 /* ---- Schema probe (pre-migration safe) ---- */
-$hasSchema = false;
-try {
-    $r = $db->query(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'tblPrintTemplates' LIMIT 1"
-    );
-    $hasSchema = $r && $r->fetch_row() !== null;
-    if ($r) { $r->close(); }
-} catch (\Throwable $e) {
-    error_log('[print-templates] schema probe failed: ' . $e->getMessage());
-}
+$hasSchema = printTemplateAdminTableExists($db); /* API-coverage batch 4b-ii A8 — shared probe */
 
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -88,73 +85,33 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
             case 'save': {
                 $id       = (int)($_POST['id'] ?? 0);
-                $name     = trim((string)($_POST['name'] ?? ''));
-                $name     = mb_substr($name, 0, 120);
                 $isActive = !empty($_POST['is_active']) ? 1 : 0;
 
-                if ($name === '') { $error = 'A template name is required.'; break; }
-
-                /* Decode + sanitise the block list. Must be a non-empty
-                   array of recognised blocks AFTER sanitisation, else
-                   reject (req #2). We persist the RE-ENCODED clean JSON,
-                   never the raw POST string. */
-                $rawBlocks = json_decode((string)($_POST['blocks_json'] ?? ''), true);
-                if (!is_array($rawBlocks) || $rawBlocks === []) {
-                    $error = 'Add at least one block before saving.';
-                    break;
-                }
-                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA, $SHOWIF_CONDITIONS);
-                if ($blocks === []) {
-                    $error = 'None of the submitted blocks were recognised.';
-                    break;
-                }
-                $blocksJson = json_encode($blocks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-                /* Page options decode → sanitise → JSON or NULL. */
-                $rawPageOpts = json_decode((string)($_POST['page_options_json'] ?? ''), true);
-                $pageOpts    = ptSanitisePageOptions($rawPageOpts, $PAGE_OPTION_SCHEMA);
-                $pageOptsJson = $pageOpts !== null
-                    ? json_encode($pageOpts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                    : null; // bound as SQL NULL below
+                [$fields, $fieldError] = printTemplateAdminValidateContent(
+                    (string)($_POST['name'] ?? ''),
+                    (string)($_POST['blocks_json'] ?? ''),
+                    (string)($_POST['page_options_json'] ?? ''),
+                    $BLOCK_SCHEMA, $SHOWIF_CONDITIONS, $PAGE_OPTION_SCHEMA
+                );
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 if ($id > 0) {
                     /* UPDATE — scoped to 'song' so this page can never
                        touch another scope's rows. */
-                    $stmt = $db->prepare(
-                        'UPDATE tblPrintTemplates
-                            SET Name = ?, BlocksJson = ?, PageOptionsJson = ?, IsActive = ?
-                          WHERE Id = ? AND Scope = ?'
-                    );
-                    $scope = 'song';
-                    $stmt->bind_param('sssiis', $name, $blocksJson, $pageOptsJson, $isActive, $id, $scope);
-                    $stmt->execute();
-                    $stmt->close();
+                    printTemplateAdminUpdate($db, $id, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.update', 'print_template', (string)$id, [
-                            'name' => $name, 'blocks' => count($blocks), 'is_active' => (bool)$isActive,
+                            'name' => $fields['name'], 'blocks' => $fields['blocksCount'], 'is_active' => (bool)$isActive,
                         ]);
                     }
                 } else {
                     /* INSERT — Scope='song', OwnerId NULL (curated),
                        SortOrder appended to the end of the list. */
-                    $sortRes  = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
-                    $sortRow  = $sortRes ? $sortRes->fetch_assoc() : null;
-                    if ($sortRes) { $sortRes->close(); }
-                    $sortOrder = (int)($sortRow['n'] ?? 0);
                     $createdBy = (int)($currentUser['id'] ?? 0);
-
-                    $stmt = $db->prepare(
-                        "INSERT INTO tblPrintTemplates
-                            (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
-                         VALUES (?, 'song', NULL, ?, ?, ?, 0, ?, ?)"
-                    );
-                    $stmt->bind_param('sssiii', $name, $blocksJson, $pageOptsJson, $isActive, $sortOrder, $createdBy);
-                    $stmt->execute();
-                    $newId = (int)$db->insert_id;
-                    $stmt->close();
+                    $newId = printTemplateAdminCreate($db, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive, $createdBy);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.create', 'print_template', (string)$newId, [
-                            'name' => $name, 'blocks' => count($blocks),
+                            'name' => $fields['name'], 'blocks' => $fields['blocksCount'],
                         ]);
                     }
                 }
@@ -168,11 +125,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $scope = 'song';
-                    $stmt = $db->prepare('DELETE FROM tblPrintTemplates WHERE Id = ? AND Scope = ?');
-                    $stmt->bind_param('is', $id, $scope);
-                    $stmt->execute();
-                    $stmt->close();
+                    printTemplateAdminDelete($db, $id);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.delete', 'print_template', (string)$id, []);
                     }
@@ -187,33 +140,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'clone': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $src = $db->prepare(
-                        "SELECT Name, BlocksJson, PageOptionsJson FROM tblPrintTemplates
-                          WHERE Id = ? AND Scope = 'song' LIMIT 1"
-                    );
-                    $src->bind_param('i', $id);
-                    $src->execute();
-                    $srcRow = $src->get_result()->fetch_assoc();
-                    $src->close();
-                    if ($srcRow) {
-                        $cloneName = mb_substr(trim((string)$srcRow['Name']) . ' (copy)', 0, 120);
-                        $sortRes   = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
-                        $sortRow   = $sortRes ? $sortRes->fetch_assoc() : null;
-                        if ($sortRes) { $sortRes->close(); }
-                        $sortOrder = (int)($sortRow['n'] ?? 0);
-                        $createdBy = (int)($currentUser['id'] ?? 0);
-                        $ins = $db->prepare(
-                            "INSERT INTO tblPrintTemplates
-                                (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
-                             VALUES (?, 'song', NULL, ?, ?, 1, 0, ?, ?)"
-                        );
-                        $ins->bind_param('sssii', $cloneName, $srcRow['BlocksJson'], $srcRow['PageOptionsJson'], $sortOrder, $createdBy);
-                        $ins->execute();
-                        $newId = (int)$db->insert_id;
-                        $ins->close();
-                        if (function_exists('logActivity')) {
-                            logActivity('print_template.clone', 'print_template', (string)$newId, ['source' => $id, 'name' => $cloneName]);
-                        }
+                    $createdBy = (int)($currentUser['id'] ?? 0);
+                    $cloned = printTemplateAdminClone($db, $id, $createdBy);
+                    if ($cloned && function_exists('logActivity')) {
+                        logActivity('print_template.clone', 'print_template', (string)$cloned['id'], ['source' => $id, 'name' => $cloned['name']]);
                     }
                 }
                 header('Location: /manage/print-templates?cloned=1');
@@ -227,20 +157,9 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'set_default': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $db->begin_transaction();
-                    try {
-                        $db->query("UPDATE tblPrintTemplates SET IsDefault = 0 WHERE Scope = 'song' AND IsDefault = 1");
-                        $s = $db->prepare("UPDATE tblPrintTemplates SET IsDefault = 1, IsActive = 1 WHERE Id = ? AND Scope = 'song'");
-                        $s->bind_param('i', $id);
-                        $s->execute();
-                        $s->close();
-                        $db->commit();
-                        if (function_exists('logActivity')) {
-                            logActivity('print_template.set_default', 'print_template', (string)$id, []);
-                        }
-                    } catch (\Throwable $e) {
-                        $db->rollback();
-                        throw $e;
+                    printTemplateAdminSetDefault($db, $id);
+                    if (function_exists('logActivity')) {
+                        logActivity('print_template.set_default', 'print_template', (string)$id, []);
                     }
                 }
                 header('Location: /manage/print-templates?default_set=1');

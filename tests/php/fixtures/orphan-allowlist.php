@@ -281,6 +281,58 @@ return [
         'admin_songbook_series_update'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s update handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
         'admin_songbook_series_delete'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s delete handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A6) — BCP 47
+           language-registry CRUD + junk-tag remap API parity for
+           manage/languages.php's own create/update/toggle_active/delete/
+           remap_tag POST handlers. Same D1-default-A posture as the
+           families above; every action delegates to the newly-extracted
+           shared includes/language_admin.php core manage/languages.php was
+           ALSO re-pointed at in the same commit (never a fork) — the
+           remap WRITE itself stays the pre-existing ONE
+           includes/language_tag_audit.php languageTagRemap() core, whose
+           'line-path' branch goes through lyricLinesWriteComponents(),
+           never a raw UPDATE against tblLyricLines.LanguageCode (rule
+           #25). The PUBLIC language reads (languages/scripts/regions/
+           variants + their *_search actions) are untouched by this batch
+           and already have first-party callers. */
+        'admin_language_create'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s create handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_update'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s update handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_toggle'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s toggle_active handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_delete'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s delete handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_remap_tag'              => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s remap_tag handler delegates to the SAME shared includes/language_admin.php preflight + the pre-existing includes/language_tag_audit.php languageTagRemap() write core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A7) — external-link
+           type + URL-pattern registry write API parity for
+           manage/external-link-types.php's own sole write action,
+           save_type_patterns. Same D1-default-A posture as the families
+           above; delegates to the newly-extracted shared
+           includes/external_link_type_admin.php core
+           manage/external-link-types.php was ALSO re-pointed at in the
+           same commit (never a fork). No separate type create/delete
+           exists on the page (types are curated content shipped with the
+           app), so there is only this one action for the family. */
+        'admin_external_link_type_save'         => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/external-link-types.php\'s save_type_patterns handler calls the SAME shared includes/external_link_type_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A8) — print-template
+           CRUD + custom full-page layout API parity for
+           manage/print-templates.php's own save/clone/delete/set_default/
+           layout_save/layout_delete POST handlers. Same D1-default-A
+           posture as the families above; the scalar-row actions delegate
+           to the newly-extracted shared includes/print_template_admin.php
+           core manage/print-templates.php was ALSO re-pointed at in the
+           same commit (never a fork); the layout pair delegates to the
+           PRE-EXISTING includes/print_custom_layout.php writer (unchanged,
+           already sanitiser-gated via ihymnsSanitizeHtml($raw,'layout'),
+           rule #39). The page's `import` (paste-JSON) action is
+           deliberately NOT covered by any of these six actions — see
+           includes/print_template_admin.php's doc-block. */
+        'admin_print_template_save'             => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s save handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_clone'            => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s clone handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_delete'           => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s delete handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_set_default'      => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s set_default handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_layout_save'               => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s layout_save handler and this action both delegate to the SAME pre-existing includes/print_custom_layout.php printCustomLayoutSave() (never a fork; already sanitiser-gated, rule #39), so nothing first-party calls the JSON twin yet',
+        'admin_print_layout_delete'             => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s layout_delete handler and this action both delegate to the SAME pre-existing includes/print_custom_layout.php printCustomLayoutDelete() (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *
