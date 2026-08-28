@@ -218,6 +218,31 @@ tmp/
 temp/
 
 # ----------------------------------------------------------------------------
+# Oversized ProPresenter reference exports in _temp/ (#1968)
+#
+# ELI5: these four sample files are too big for GitHub, so we keep them on the
+# developer's own machine instead of in the repo.
+#
+# Detail: GitHub hard-rejects any single file over 100 MB at the pre-receive
+# hook (https://docs.github.com/repositories/working-with-files/managing-large-files/about-large-files-on-github),
+# and warns above 50 MB. These are 813 MB / 364 MB / 117 MB / 82 MB — they are
+# large only because ProPresenter embeds the service's VIDEO and image media
+# inside the .proplaylist / .protheme / .probundle container. As parser
+# fixtures they add nothing over the small samples that ARE tracked beside
+# them (0.1–5.6 MB), which already exercise every element of the format the
+# #1968 importer/exporter round-trips. Keep new media-laden exports out too:
+# add the path here rather than reaching for Git LFS, which would need a paid
+# data pack (free tier is 1 GB) and would bill bandwidth on every clone and
+# every deploy.yml checkout.
+#
+# NB: '[' and ']' are glob character-class metacharacters in .gitignore, hence
+# the backslash escapes on the [Video] filename below.
+/_temp/_ProPresenter Sample Files/2026-08-22 - Baby Dedication.proplaylist
+/_temp/_ProPresenter Sample Files/00 - Announcements - Mill Road.proplaylist
+/_temp/_ProPresenter Sample Files/Mill Rd 2024_theme.protheme
+/_temp/_ProPresenter Sample Files/Here To Stay (Anthem Worship LLUC)\[Video\].probundle
+
+# ----------------------------------------------------------------------------
 # Secrets in appWeb/.auth/ (DB credentials + the secret-encryption master key, #1466)
 # The REAL files (db_credentials.php, secrets_master_key.php) are NEVER committed —
 # the `appWeb/.auth/*` glob ignores everything; only the *.example.php templates and
