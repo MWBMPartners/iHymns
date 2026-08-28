@@ -5115,6 +5115,20 @@ function _bulkImport_parsePro7(string $body): array
  *               every §3.7 warning (skipped groups, translation layers,
  *               unresolved arrangement uuids, artist_credits) so the
  *               curator sees an honest report even on a clean 'ok' import.
+ *               Also carries `song_id`/`title`/`songbook_abbr`/`number` —
+ *               the ATTEMPTED insert's own identity (#1968 PR-3,
+ *               `.proplaylist` import): a playlist's presentation items need
+ *               to know WHICH SongId a given `.pro` entry resolved to so it
+ *               can be placed into a set list's `SongsJson`. Purely
+ *               additive — every existing caller reads named keys off this
+ *               array, never the whole shape, so a new key changes nothing
+ *               for them. On 'skipped' this is the FRESH id that was never
+ *               inserted (`_bulkImport_saveSong()` does not report which
+ *               existing row it matched) — the `.proplaylist` importer
+ *               re-derives the real existing row via
+ *               `_bulkImport_proplaylistResolveSkippedSong()` rather than
+ *               trusting this value on that path; see that function's
+ *               doc-block.
  */
 function _bulkImport_processPro7(string $body, ?string $filenameHint = null): array
 {
@@ -5200,6 +5214,11 @@ function _bulkImport_processPro7(string $body, ?string $filenameHint = null): ar
         'parsed_by_format'       => ['propresenter7' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
         'warnings'               => $parsed['warnings'] ?? [],
+        /* #1968 PR-3 — see this function's doc-block @return note. */
+        'song_id'                => $song['id'] ?? null,
+        'title'                  => $song['title'] ?? '',
+        'songbook_abbr'          => $abbr,
+        'number'                 => $number,
     ];
 }
 
@@ -5379,20 +5398,44 @@ function _bulkImport_probundleFoldInnerSummary(array $agg, string $entryName, ar
  * @param array<string> $mediaNames every one of their names
  * @return array the FINAL summary `_bulkImport_processProbundle()` returns on success
  */
+/**
+ * The human-facing "N media file(s) were not imported" warning line, shared
+ * by `.probundle` (`_bulkImport_probundleFinishSummary()`) AND
+ * `.proplaylist` (`_bulkImport_processProplaylist()`) — both defer media
+ * ingest to a later phase (plan §6 / P4) and both must say so identically
+ * rather than each typing its own prose (rule #22 — one shared helper per
+ * decision; also keeps the two ZIP-container importers' wording in
+ * lockstep, the same "cross-file agreement needs a mechanism" posture rule
+ * #35 asks for). Pure — no DB. Returns `null` when there is nothing to
+ * report (the caller appends only a non-null result).
+ *
+ * @param int               $mediaCount count of non-`.pro` entries seen
+ * @param array<int,string> $mediaNames every one of their names
+ */
+function _bulkImport_pp7MediaDeferredWarning(int $mediaCount, array $mediaNames): ?string
+{
+    if ($mediaCount <= 0) {
+        return null;
+    }
+    // Capped preview list in the human-facing warning line (matches the
+    // "first_errors" capping convention used elsewhere in this file); the
+    // FULL list still rides the structured media_files[] key the caller
+    // returns alongside this, so nothing is lost — only the prose line is
+    // kept scannable.
+    $shown = array_slice($mediaNames, 0, 5);
+    $more  = $mediaCount - count($shown);
+    return "{$mediaCount} media file(s) in the bundle were not imported "
+        . '(media ingest arrives in a later update): '
+        . implode(', ', $shown)
+        . ($more > 0 ? " (+{$more} more)" : '');
+}
+
 function _bulkImport_probundleFinishSummary(array $agg, int $mediaCount, array $mediaNames): array
 {
     $warnings = $agg['warnings'];
-    if ($mediaCount > 0) {
-        // Capped preview list in the human-facing warning line (matches the
-        // "first_errors" capping convention used elsewhere in this file);
-        // the FULL list still rides the structured media_files[] key below,
-        // so nothing is lost — only the prose line is kept scannable.
-        $shown = array_slice($mediaNames, 0, 5);
-        $more  = $mediaCount - count($shown);
-        $warnings[] = "{$mediaCount} media file(s) in the bundle were not imported "
-            . '(media ingest arrives in a later update): '
-            . implode(', ', $shown)
-            . ($more > 0 ? " (+{$more} more)" : '');
+    $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
+    if ($mediaWarning !== null) {
+        $warnings[] = $mediaWarning;
     }
 
     return [
@@ -5501,6 +5544,912 @@ function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = nul
     }
 
     return _bulkImport_probundleFinishSummary($agg, $mediaCount, $mediaNames);
+}
+
+/* ===========================================================================
+ *  ProPresenter 7+ `.proplaylist` import -> ONE iHymns set list (#1968 PR-3,
+ *  plan .claude/propresenter-interop-1968-plan.md §5.1)
+ * ---------------------------------------------------------------------------
+ * ELI5: a `.proplaylist` is a worship leader's whole service order — an
+ * ordered list of songs (and section dividers) — exported from ProPresenter.
+ * This section reads that order, imports every embedded song through the
+ * EXACT SAME single-file pipeline a standalone `.pro` upload uses, and then
+ * builds ONE iHymns set list that puts those songs (and the section
+ * dividers) in the same order the leader had them in.
+ *
+ * DETAILED — layering, mirroring `.probundle`'s own split immediately above:
+ *   - `includes/propresenter7_playlist.php`'s `pp7ReadPlaylistBundle()` does
+ *     the protobuf decode (pure, DB-free) — this section never re-decodes
+ *     anything, only WALKS the plain PHP tree it returns.
+ *   - `_bulkImport_proplaylistBuildPlan()` (and the pure helpers it calls)
+ *     turn that tree into a flat, ORDERED "plan" of {header|placeholder|
+ *     song-embedded|song-unresolved|skipped} entries — 100% pure, no
+ *     database, no ZIP bytes — so the item -> song/header/slot MAPPING
+ *     decision is unit-testable against the three committed real fixtures
+ *     with no MySQL at all (`tests/php/test-pp7-proplaylist-import.php`).
+ *   - `_bulkImport_processProplaylist()` is the thin DB-touching shell: walk
+ *     the plan, import each embedded `.pro` entry via the UNCHANGED
+ *     `_bulkImport_processPro7()` (adds zero new song-writing logic of its
+ *     own, same posture as `_bulkImport_processProbundle()`'s own doc-block),
+ *     resolve a referenced-but-not-embedded presentation against the
+ *     existing catalogue by title, and write ONE `tblUserSetlists` row
+ *     through the SAME sanitisers (`setlistCollabSanitiseSongs()` /
+ *     `setlistTemplateSanitisePlan()` / `setlistTemplateEncodePlan()`) the
+ *     app's own multi-device sync endpoint (`user_setlists_sync` in
+ *     api.php) and collaborative editor (`setlist_collab.php`) already write
+ *     that exact column pair through — CLAUDE.md rule #22: the SHAPE of
+ *     what's valid in `SongsJson`/`SlotsJson` is reused, not reinvented.
+ *
+ * ⚠️ NO EXISTING "CREATE ONE NEW SET LIST" CORE TO CALL INTO. The task brief
+ * (and rule #22) ask to reuse the app's own set-list creation code path
+ * rather than hand-roll a raw INSERT — but the ONLY other writers of this
+ * column pair are (a) `user_setlists_sync`, the multi-device SYNC protocol
+ * in api.php (tombstones, watermarks, resurrection guards, a `localLists[]`
+ * body shape a client sends — not a callable single-row function at all),
+ * and (b) `setlistCollabPerformUpdate()`, which can only UPDATE an
+ * already-existing (UserId, SetlistId) row, never INSERT one. Neither is a
+ * "create ONE new set list, server-side, for a resolved owner" core. So
+ * `_bulkImport_proplaylistMintSetlistId()` + the plain INSERT inside
+ * `_bulkImport_processProplaylist()` below IS the reused shape (the exact
+ * same sanitisers + encoders + column set + gating as the real writers)
+ * with only the missing "mint a fresh id and INSERT" wiring added — not a
+ * second, forked write path for an already-solved problem.
+ *
+ * D2 (plan §12.3, owner decision UNANSWERED — used as directed, flagged for
+ * review): **curator-first**. This import creates SONGS, so it is reached
+ * only from the editor-gated `bulk_import_proplaylist` action (api.php) /
+ * `import_file` format `proplaylist` (api2.php) — exactly like
+ * `bulk_import_pro7`/`bulk_import_probundle` — never from a public surface.
+ * `$userId` (the set list's OWNER) is threaded in from the authenticated
+ * session at the HANDLER, never resolved inside this DB-free-adjacent file.
+ *
+ * ITEM -> SET-LIST MAPPING (plan §5.1, the task brief's explicit contract):
+ *   - `presentation` items -> songs in `SongsJson`, IN ORDER.
+ *   - `header` items -> a header/divider slot in `SlotsJson` (this codebase's
+ *     one service-plan model, `includes/setlist_templates.php` — a slot with
+ *     a `label` and no `songId` IS a divider; there is no separate
+ *     "divider" concept to invent).
+ *   - `placeholder` items -> a spacer slot (same SlotsJson shape, no
+ *     `songId`) — the model supports exactly this, so no warning-only
+ *     fallback is needed for this item type.
+ *   - `cue` / `planning_center` items -> skipped with a warning (out of P3
+ *     scope, named explicitly per plan §5.1 point 4 — never silently
+ *     dropped).
+ *   - Nested playlists/groups -> flattened in order; a NESTED node's OWN
+ *     name becomes a synthetic header (see
+ *     `_bulkImport_proplaylistFlattenItems()`'s doc-block for why only
+ *     nested nodes, never the top-level one, get this treatment).
+ *   - A `presentation` item whose `.pro` is NOT in the bundle (referenced by
+ *     path only) resolves against the EXISTING catalogue by exact
+ *     normalised title (`_bulkImport_proplaylistResolveExistingSong()` —
+ *     CCLI is NOT available for this resolution: a `PlaylistItem.
+ *     Presentation` carries no CCLI field at all, only a document path +
+ *     arrangement — the task brief's "title/CCLI if possible" reduces to
+ *     "title" for exactly this reason, recorded here rather than silently
+ *     dropped) — a hit becomes a normal `SongsJson` entry (with a warning
+ *     naming the fallback); a miss becomes a placeholder slot + warning,
+ *     never a failed import (plan §5.1 point 3's explicit "do NOT fail the
+ *     whole import").
+ *
+ * DE-DUPE (task brief: "so a bundle re-import or a song already present
+ * doesn't mint duplicates"): every embedded `.pro` entry goes through the
+ * SAME `_bulkImport_dedupeMode()` flag every other importer honours — set by
+ * the caller from the posted `dedupeMode`, exactly like `bulk_import_pro7`/
+ * `bulk_import_probundle` (no bespoke dedupe invented here). TWO further
+ * safeguards specific to a playlist:
+ *   (1) the SAME `.pro` ENTRY referenced by more than one playlist item
+ *       (e.g. a chorus reprised later in the service) is imported/resolved
+ *       ONCE and the result is CACHED — `_bulkImport_proplaylistResolveEmbedded()`'s
+ *       `$cache` parameter — so two playlist items pointing at the same
+ *       `Chorus.pro` produce ONE song, referenced twice in `SongsJson`, not
+ *       two duplicate `tblSongs` rows;
+ *   (2) a 'skipped' (title-dedupe) result from `_bulkImport_processPro7()`
+ *       does NOT know which EXISTING SongId it matched (`_bulkImport_saveSong()`
+ *       never reports that) — `_bulkImport_proplaylistResolveSkippedSong()`
+ *       re-resolves the real existing row (by literal SongId first, then by
+ *       the SAME `_bulkImport_findDuplicateCandidates()` title matcher
+ *       `_bulkImport_saveSong()` itself used to decide to skip) so the set
+ *       list still ends up pointing at the REAL pre-existing song, not a
+ *       fresh-but-unused id.
+ *
+ * @see .claude/propresenter-interop-1968-plan.md   §5.1 (import -> set list)
+ * @see includes/propresenter7_playlist.php          pp7ReadPlaylistBundle() — the decoder this builds on
+ * @see includes/setlist_collab.php                  setlistCollabSanitiseSongs() / setlistCollabMaxSongs() — the SongsJson shape + cap, reused not reinvented
+ * @see includes/setlist_templates.php                setlistTemplateSanitisePlan()/EncodePlan()/setlistSlotsColumnReady() — the SlotsJson shape + cap, reused not reinvented
+ * @see tests/php/test-pp7-proplaylist-import.php      real-fixture validation of the pure mapping layer
+ * =========================================================================== */
+
+if (!function_exists('_bulkImport_proplaylistName')) {
+    /**
+     * Derive the imported set list's `Name` (task brief: "= the playlist
+     * name"). Pure — no DB.
+     *
+     * Ladder: the first top-level playlist node's own `name` (the ONLY name
+     * a real `.proplaylist` fixture actually carries for "the service" —
+     * `document.root.name` is the literal, non-user-facing string "PLAYLIST"
+     * on every real fixture seen, per `propresenter7_playlist.php`'s own
+     * "UNCONFIRMED corner #5" note, so it is deliberately never read here) ->
+     * the uploaded filename's stem -> a fixed fallback. Mirrors the
+     * title-fallback ladders every other `_bulkImport_*` parser in this file
+     * already uses (never an empty Name).
+     *
+     * @param array       $document     `pp7ReadPlaylistBundle()['document']`
+     * @param string|null $filenameHint original upload filename
+     */
+    function _bulkImport_proplaylistName(array $document, ?string $filenameHint): string
+    {
+        $top = $document['playlists'][0] ?? null;
+        if (is_array($top)) {
+            $name = trim((string)($top['name'] ?? ''));
+            if ($name !== '') {
+                return mb_substr($name, 0, 200); // tblUserSetlists.Name width (schema.sql)
+            }
+        }
+        if ($filenameHint !== null) {
+            $stem = trim((string)pathinfo($filenameHint, PATHINFO_FILENAME));
+            if ($stem !== '') {
+                return mb_substr($stem, 0, 200);
+            }
+        }
+        return 'Imported Playlist';
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistMatchEntry')) {
+    /**
+     * Resolve a `PlaylistItem.Presentation.documentPath` (the decoder's
+     * `pp7DecodeUrl()` shape — `{absoluteString, localRoot, localPath}`) to
+     * one of the bundle's own `.pro` entry NAMES, by URL-DECODED BASENAME —
+     * the plan §5.1 point 3 rule, byte-verified against the three committed
+     * real `.proplaylist` fixtures during this task. Pure — no DB, no ZIP
+     * bytes (works on entry NAMES only; the caller extracts bytes only for
+     * whichever ONE entry this resolves to).
+     *
+     * Tries `absoluteString` first (a percent-encoded `file://` URL on every
+     * real fixture — `rawurldecode()` undoes the percent-encoding before
+     * `basename()`), then falls back to `localPath` (already a plain
+     * relative path, no decoding needed) — the SAME two-field fallback
+     * order `propresenter7_decode.php`'s own media-ref resolution note
+     * documents for the identical "match by decoded basename" problem one
+     * layer down (`.probundle` media refs, deferred to P4). Matched
+     * case-insensitively (`strcasecmp`) — no real fixture uses mixed case,
+     * but a case-sensitive match would silently fail one that did.
+     *
+     * @param array          $documentPath  `pp7DecodePlaylistItemPresentation()['documentPath']`
+     * @param array<int,string> $proEntryNames `pp7ReadPlaylistBundle()['proEntries']`
+     * @return string|null the matched entry name, or null (referenced but not embedded)
+     */
+    function _bulkImport_proplaylistMatchEntry(array $documentPath, array $proEntryNames): ?string
+    {
+        $candidates = [];
+        if (!empty($documentPath['absoluteString'])) {
+            $candidates[] = (string)$documentPath['absoluteString'];
+        }
+        if (!empty($documentPath['localPath'])) {
+            $candidates[] = (string)$documentPath['localPath'];
+        }
+
+        foreach ($candidates as $raw) {
+            $decoded = rawurldecode($raw);
+            $base    = basename(str_replace('\\', '/', $decoded));
+            if ($base === '') {
+                continue;
+            }
+            foreach ($proEntryNames as $entryName) {
+                if (strcasecmp(basename($entryName), $base) === 0) {
+                    return $entryName;
+                }
+            }
+        }
+        return null;
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistFlattenItems')) {
+    /**
+     * Flatten a `pp7ReadPlaylistBundle()['document']['playlists']`-shaped
+     * tree (an array of `pp7DecodePlaylist()` nodes, each carrying its own
+     * `items[]` AND a possibly-nested `playlists[]`) into ONE ordered list
+     * of `{kind:'header', name:string}` / `{kind:'item', item:array}`
+     * entries — pure, no DB, no ZIP bytes; a deterministic function of the
+     * already-decoded tree.
+     *
+     * ELI5: a playlist can contain FOLDERS of songs, not just a flat list.
+     * This turns the whole folder tree into ONE flat running order, adding a
+     * section-divider line each time it steps INTO a folder, so the folder
+     * boundary isn't silently lost.
+     *
+     * DETAILED — why only `$depth > 0` nodes get a synthetic header: at
+     * `$depth === 0` we are walking `document.playlists[]` itself — per
+     * `propresenter7_playlist.php`'s own "UNCONFIRMED corner #1" note this
+     * is, on every real fixture seen, exactly ONE node (the whole service),
+     * whose OWN name becomes the set list's `Name`
+     * (`_bulkImport_proplaylistName()`) rather than a header INSIDE it — a
+     * set list titled "Sunday Service" does not also need a redundant
+     * "Sunday Service" divider as its very first row. A node reached by
+     * recursing into a PARENT's `playlists[]` (`$depth >= 1` — a genuine
+     * nested folder/group, UNCONFIRMED corner #2, no real fixture exercises
+     * this) IS a real sub-grouping worth naming, so its `name` becomes a
+     * synthetic header line immediately before its own items. An unnamed
+     * nested node (empty/whitespace `name`) contributes no header line —
+     * nothing to show.
+     *
+     * @param array<int,array> $playlists  `pp7DecodePlaylist()`-shaped nodes
+     * @param int              $depth      recursion depth (0 = document's own top-level playlists[])
+     * @return array<int,array{kind:string}> ordered flat list, see above
+     */
+    function _bulkImport_proplaylistFlattenItems(array $playlists, int $depth = 0): array
+    {
+        $flat = [];
+        foreach ($playlists as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            if ($depth > 0) {
+                $nodeName = trim((string)($node['name'] ?? ''));
+                if ($nodeName !== '') {
+                    $flat[] = ['kind' => 'header', 'name' => $nodeName];
+                }
+            }
+            foreach ((array)($node['items'] ?? []) as $item) {
+                if (is_array($item)) {
+                    $flat[] = ['kind' => 'item', 'item' => $item];
+                }
+            }
+            $childPlaylists = (array)($node['playlists'] ?? []);
+            if (!empty($childPlaylists)) {
+                foreach (_bulkImport_proplaylistFlattenItems($childPlaylists, $depth + 1) as $child) {
+                    $flat[] = $child;
+                }
+            }
+        }
+        return $flat;
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistBuildPlan')) {
+    /**
+     * THE pure item -> {song|header|placeholder|skip} MAPPING decision (plan
+     * §5.1, this section's file-level doc-block). Pure — no DB, no ZIP
+     * bytes; takes the already-decoded document tree + the bundle's `.pro`
+     * entry names and returns an ORDERED, flat "plan": one entry per
+     * playlist item (plus a synthetic header per nested folder — see
+     * `_bulkImport_proplaylistFlattenItems()`), each tagged with its `kind`:
+     *
+     *   - `{kind:'header', label}` — a real `header` item OR a synthetic
+     *     nested-folder-name header.
+     *   - `{kind:'placeholder', label}` — a real `placeholder` item.
+     *   - `{kind:'song-embedded', entryName, itemName, arrangementName}` — a
+     *     `presentation` item whose `documentPath` resolved to a `.pro`
+     *     entry actually IN the bundle.
+     *   - `{kind:'song-unresolved', itemName, documentPath}` — a
+     *     `presentation` item whose `.pro` is NOT in the bundle (referenced
+     *     by path only) — the CALLER resolves this against the existing
+     *     catalogue (a DB operation, hence not done here).
+     *   - `{kind:'skipped', itemType, label}` — `cue` / `planning_center` /
+     *     an unrecognised item type / a hidden item — out of P3 scope, or
+     *     the leader had it hidden in ProPresenter. The caller turns this
+     *     into a warning, never a silent drop.
+     *
+     * This is the function `tests/php/test-pp7-proplaylist-import.php`
+     * exercises directly against the three committed real fixtures — no
+     * database, no mocking, just `pp7ReadPlaylistBundle()`'s own output fed
+     * straight in.
+     *
+     * @param array             $document      `pp7ReadPlaylistBundle()['document']`
+     * @param array<int,string> $proEntryNames `pp7ReadPlaylistBundle()['proEntries']`
+     * @return array<int,array{kind:string}>
+     */
+    function _bulkImport_proplaylistBuildPlan(array $document, array $proEntryNames): array
+    {
+        $flat = _bulkImport_proplaylistFlattenItems((array)($document['playlists'] ?? []), 0);
+        $plan = [];
+
+        foreach ($flat as $f) {
+            if ($f['kind'] === 'header') {
+                $plan[] = ['kind' => 'header', 'label' => $f['name']];
+                continue;
+            }
+
+            $item     = $f['item'];
+            $itemName = trim((string)($item['name'] ?? ''));
+
+            /* A leader-hidden item (`is_hidden`) is a real, recognised state
+               — never silently dropped, but never rendered into the set
+               list either; recorded as skipped so a warning names it. No
+               real committed fixture exercises this (all `is_hidden` false)
+               — a defensive, documented branch for a real schema field. */
+            if (!empty($item['isHidden'])) {
+                $plan[] = ['kind' => 'skipped', 'itemType' => 'hidden', 'label' => $itemName];
+                continue;
+            }
+
+            switch ($item['itemType'] ?? 'unknown') {
+                case 'header':
+                    $plan[] = ['kind' => 'header', 'label' => $itemName !== '' ? $itemName : 'Section'];
+                    break;
+
+                case 'placeholder':
+                    $plan[] = ['kind' => 'placeholder', 'label' => $itemName !== '' ? $itemName : 'Placeholder'];
+                    break;
+
+                case 'presentation':
+                    $docPath = (array)($item['presentation']['documentPath'] ?? []);
+                    $matched = _bulkImport_proplaylistMatchEntry($docPath, $proEntryNames);
+                    if ($matched !== null) {
+                        $plan[] = [
+                            'kind'            => 'song-embedded',
+                            'entryName'       => $matched,
+                            'itemName'        => $itemName,
+                            'arrangementName' => $item['presentation']['arrangementName'] ?? null,
+                        ];
+                    } else {
+                        $plan[] = [
+                            'kind'         => 'song-unresolved',
+                            'itemName'     => $itemName,
+                            'documentPath' => $docPath,
+                        ];
+                    }
+                    break;
+
+                case 'cue':
+                case 'planningCenter':
+                default:
+                    /* 'cue' / 'planningCenter' / 'unknown' (a malformed item
+                       with none of the five oneof branches set) — plan §5.1
+                       point 4: named explicitly, skipped, never a crash. */
+                    $plan[] = [
+                        'kind'     => 'skipped',
+                        'itemType' => (string)($item['itemType'] ?? 'unknown'),
+                        'label'    => $itemName,
+                    ];
+                    break;
+            }
+        }
+
+        return $plan;
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistResolveExistingSong')) {
+    /**
+     * Resolve a playlist item's NAME against the EXISTING catalogue by EXACT
+     * normalised title — the fallback for a `presentation` item whose `.pro`
+     * is referenced but not embedded in the bundle (plan §5.1 point 3).
+     *
+     * CCLI is deliberately NOT attempted: `PlaylistItem.Presentation` (see
+     * `propresenter7_playlist.php`'s field table) carries only
+     * `document_path` / `arrangement` / `arrangement_name` — no CCLI field
+     * exists on this message at all, so there is nothing to match on beyond
+     * the item's own display name. Recorded here rather than silently
+     * narrowing the task brief's "title/CCLI if possible" without comment.
+     *
+     * Gated on `searchFoldReady()` (the SAME gate `includes/search_fold.php`
+     * itself uses) rather than a raw `NormalizedTitle` read — an un-migrated
+     * install has neither the column nor its FULLTEXT index, and this
+     * function degrades to "no match" (the caller falls back to a
+     * placeholder + warning) rather than throwing under STRICT mysqli or
+     * scanning the whole `tblSongs` table (rule #17's "never materialise the
+     * whole corpus", applied to a lookup instead of a bulk read).
+     *
+     * Uses `ihymns_normalize_title()` directly — the EXACT fold
+     * `NormalizedTitle` itself is populated with (rule #22: keep the two
+     * normalisers distinct; this is the EXACT dedup fold, not the fuzzy
+     * compare fold `song_similarity.php` owns) — so a stored row and this
+     * lookup can never skew.
+     *
+     * #1694/#1765 VISIBILITY: unlike `_bulkImport_proplaylistResolveSkippedSong()`
+     * below (which must see hidden/disabled rows to correctly re-resolve a
+     * `_bulkImport_saveSong()` dedupe decision that itself sees them), this
+     * function is picking a NEW public-catalogue link to embed in a curator's
+     * imported set list — `songVisibleSql()` (soft-delete) AND
+     * `songServableSql()` (disabled-songbook) are embedded so a playlist
+     * import can never silently link a set list to a soft-deleted song or one
+     * living in a disabled songbook; both degrade to `1=1` un-migrated
+     * (test-song-visibility-guard.php / test-songbook-visibility-guard.php).
+     *
+     * @param \mysqli $db
+     * @param string  $title the playlist item's own display name
+     * @return array{songId:string,title:string,songbookAbbr:string,number:int}|null
+     */
+    function _bulkImport_proplaylistResolveExistingSong(\mysqli $db, string $title): ?array
+    {
+        $title = trim($title);
+        if ($title === '') {
+            return null;
+        }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'search_fold.php';
+        if (!searchFoldReady($db)) {
+            return null;
+        }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
+        $norm = mb_substr(ihymns_normalize_title($title), 0, 500); // matches searchFoldSyncSong()'s own cap
+        if ($norm === '') {
+            return null;
+        }
+        $stmt = $db->prepare(
+            'SELECT SongId, Title, SongbookAbbr, Number FROM tblSongs
+              WHERE NormalizedTitle = ? AND ' . songVisibleSql($db, '') . ' AND ' . songServableSql($db, '') . '
+              LIMIT 1'
+        );
+        $stmt->bind_param('s', $norm);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row === null) {
+            return null;
+        }
+        return [
+            'songId'       => (string)$row['SongId'],
+            'title'        => (string)$row['Title'],
+            'songbookAbbr' => (string)$row['SongbookAbbr'],
+            'number'       => $row['Number'] !== null ? (int)$row['Number'] : 0,
+        ];
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistResolveSkippedSong')) {
+    /**
+     * Re-resolve the REAL existing SongId a 'skipped' `_bulkImport_processPro7()`
+     * call matched — see this section's own file-level doc-block, DE-DUPE
+     * point (2), for why this is needed at all: `_bulkImport_saveSong()`
+     * reports only `'skipped'`, never WHICH row it matched.
+     *
+     * Two-step, mirroring the two ways `_bulkImport_saveSong()` itself can
+     * decide to skip:
+     *   1. Literal SongId already exists (the pre-flight existence check —
+     *      in practice this almost never fires for a `.pro` import, since
+     *      `_bulkImport_nextSongNumberFor()` always allocates a FRESH
+     *      number, but it is the cheap, always-correct check to try first):
+     *      `$attemptedSongId` itself names the existing row.
+     *   2. Title-dedupe (`_bulkImport_dedupeMode() === 'skip-title'`) — the
+     *      realistic path for a `.proplaylist` re-import. Re-runs the
+     *      IDENTICAL matcher `_bulkImport_saveSong()` used
+     *      (`_bulkImport_findDuplicateCandidates()`, same `$db`/
+     *      `$songbookAbbr`/`$title`) and takes its first candidate — the
+     *      same "first non-self match" the saver's own loop would have
+     *      hit. Deterministic given the same inputs on the same connection.
+     *
+     * @return array{songId:string,title:string,songbookAbbr:string,number:int}|null
+     *         null only on a genuine race (the matched row vanished between
+     *         `_bulkImport_saveSong()`'s check and this re-resolve) — the
+     *         caller falls back to the FRESH (unused) id + a warning rather
+     *         than crashing.
+     */
+    function _bulkImport_proplaylistResolveSkippedSong(
+        \mysqli $db,
+        string $songbookAbbr,
+        string $title,
+        string $attemptedSongId
+    ): ?array {
+        if ($attemptedSongId !== '') {
+            /* @deleted-visible: this MUST see the same row _bulkImport_saveSong()'s
+               own pre-flight existence check saw (#1694) — a hidden/soft-deleted
+               row still occupies its SongId, and that check's 'skipped' verdict
+               is exactly what this function is re-resolving. Filtering it out
+               here would disagree with the decision already made. */
+            /* @disabled-visible: mirrors _bulkImport_findDuplicateCandidates()'s
+               own posture immediately below — importer/dedupe matching operates
+               over all songbooks regardless of public disabled state. */
+            $stmt = $db->prepare('SELECT SongId, Title, SongbookAbbr, Number FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $stmt->bind_param('s', $attemptedSongId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($row !== null) {
+                return [
+                    'songId'       => (string)$row['SongId'],
+                    'title'        => (string)$row['Title'],
+                    'songbookAbbr' => (string)$row['SongbookAbbr'],
+                    'number'       => $row['Number'] !== null ? (int)$row['Number'] : 0,
+                ];
+            }
+        }
+        if ($songbookAbbr === '' || $title === '') {
+            return null;
+        }
+        $cands = _bulkImport_findDuplicateCandidates($db, $songbookAbbr, $title);
+        if (empty($cands)) {
+            return null;
+        }
+        $c = $cands[0];
+        return [
+            'songId'       => (string)$c['SongId'],
+            'title'        => (string)$c['Title'],
+            'songbookAbbr' => $songbookAbbr,
+            'number'       => $c['Number'] !== null ? (int)$c['Number'] : 0,
+        ];
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistResolveEmbedded')) {
+    /**
+     * Import (or resolve an already-imported) `.pro` ZIP entry for ONE
+     * `song-embedded` plan entry, via the UNCHANGED `_bulkImport_processPro7()`
+     * — adds zero new song-writing logic (same posture as
+     * `_bulkImport_processProbundle()`'s doc-block). `$cache` is keyed by
+     * ZIP entry name and shared across the whole playlist walk by the caller
+     * (passed by reference) — see this section's DE-DUPE point (1): two
+     * playlist items pointing at the SAME `.pro` entry (a reprised chorus)
+     * hit the cache on the second lookup rather than re-importing.
+     *
+     * @param \mysqli                  $db
+     * @param string                   $bytes             the WHOLE `.proplaylist` ZIP's raw bytes
+     * @param array<string,array>      $zipEntriesByName  `pp7ZipListEntries()` results, keyed by `name`
+     * @param string                   $entryName         the matched `.pro` entry name
+     * @param array<string,array>      $cache             entry-name -> result, BY REFERENCE
+     * @return array{ok:bool,created:int,skipped:int,failed:int,songbooksCreated:array,songbooksExisting:array,warnings:array,error:?string,songRef:?array}
+     */
+    function _bulkImport_proplaylistResolveEmbedded(
+        \mysqli $db,
+        string $bytes,
+        array $zipEntriesByName,
+        string $entryName,
+        array &$cache
+    ): array {
+        if (isset($cache[$entryName])) {
+            return $cache[$entryName];
+        }
+
+        $fail = static function (string $reason): array {
+            return [
+                'ok' => false, 'created' => 0, 'skipped' => 0, 'failed' => 1,
+                'songbooksCreated' => [], 'songbooksExisting' => [], 'warnings' => [],
+                'error' => $reason, 'songRef' => null,
+            ];
+        };
+
+        if (!isset($zipEntriesByName[$entryName])) {
+            return $cache[$entryName] = $fail("entry '{$entryName}' could not be re-located in the bundle");
+        }
+
+        try {
+            $proBytes = pp7ZipReadEntry($bytes, $zipEntriesByName[$entryName]);
+        } catch (\Throwable $e) {
+            return $cache[$entryName] = $fail('could not extract from bundle: ' . $e->getMessage());
+        }
+
+        /* THE reuse point — identical to _bulkImport_processProbundle()'s
+           own single call site: one _bulkImport_processPro7() call per
+           entry, this entry's OWN name as its filenameHint. */
+        $inner = _bulkImport_processPro7($proBytes, $entryName);
+        if (!($inner['ok'] ?? false)) {
+            return $cache[$entryName] = $fail($inner['error'] ?? 'ProPresenter 7+ parse failed');
+        }
+
+        $songId       = (string)($inner['song_id'] ?? '');
+        $title        = (string)($inner['title'] ?? '');
+        $songbookAbbr = (string)($inner['songbook_abbr'] ?? '');
+        $number       = (int)($inner['number'] ?? 0);
+
+        /* DE-DUPE point (2) — see this section's file-level doc-block. */
+        if ((int)($inner['songs_skipped_existing'] ?? 0) === 1) {
+            $resolved = _bulkImport_proplaylistResolveSkippedSong($db, $songbookAbbr, $title, $songId);
+            if ($resolved !== null) {
+                $songId       = $resolved['songId'];
+                $title        = $resolved['title'];
+                $songbookAbbr = $resolved['songbookAbbr'];
+                $number       = $resolved['number'];
+            }
+        }
+
+        $ok = $songId !== '';
+        return $cache[$entryName] = [
+            'ok'                => $ok,
+            'created'           => (int)($inner['songs_created'] ?? 0),
+            'skipped'           => (int)($inner['songs_skipped_existing'] ?? 0),
+            'failed'            => $ok ? (int)($inner['songs_failed'] ?? 0) : 1,
+            'songbooksCreated'  => (array)($inner['songbooks_created'] ?? []),
+            'songbooksExisting' => (array)($inner['songbooks_existing'] ?? []),
+            'warnings'          => (array)($inner['warnings'] ?? []),
+            'error'             => $ok ? null : 'song could not be resolved to a SongId',
+            'songRef'           => $ok
+                ? ['id' => $songId, 'title' => $title, 'songbook' => $songbookAbbr, 'number' => $number]
+                : null,
+        ];
+    }
+}
+
+if (!function_exists('_bulkImport_proplaylistMintSetlistId')) {
+    /**
+     * Mint a fresh, unique `tblUserSetlists.SetlistId` for THIS owner. Same
+     * charset precedent `userSyncSanitiseId()` (`includes/user_sync.php`)
+     * enforces on a client-generated id (`[a-zA-Z0-9_-]`, well under the
+     * `VARCHAR(100)` column) — a `pp-` prefix makes an imported set list's
+     * id visibly distinct from a client-minted one in any future debugging,
+     * without meaning anything structurally. Collision-checked against the
+     * SAME `(UserId, SetlistId)` UNIQUE key the column itself enforces
+     * (`uq_UserSetlist`, schema.sql) — astronomically unlikely with 12 hex
+     * bytes of entropy, checked anyway rather than trusted blindly.
+     */
+    function _bulkImport_proplaylistMintSetlistId(\mysqli $db, int $userId): string
+    {
+        for ($i = 0; $i < 5; $i++) {
+            $candidate = 'pp-' . bin2hex(random_bytes(6));
+            $stmt = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+            $stmt->bind_param('is', $userId, $candidate);
+            $stmt->execute();
+            $exists = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            if (!$exists) {
+                return $candidate;
+            }
+        }
+        // Practically unreachable (5 failed 48-bit-random draws in a row) — a
+        // timestamp suffix guarantees uniqueness rather than looping forever.
+        return 'pp-' . bin2hex(random_bytes(6)) . '-' . time();
+    }
+}
+
+/**
+ * THE DB-touching orchestrator: decode a `.proplaylist`, import every
+ * embedded song, resolve every referenced-but-not-embedded one against the
+ * catalogue, and write ONE `tblUserSetlists` row for `$userId`. See this
+ * section's file-level doc-block for the full design (mapping rules,
+ * de-dupe, why a plain INSERT rather than a forked "create setlist" core).
+ *
+ * Honours `_bulkImport_dryRun()` (#1674) for the SETLIST INSERT itself, on
+ * top of the dry-run awareness `_bulkImport_processPro7()` -> `_bulkImport_
+ * saveSong()` already provide for every song write — under dry-run this
+ * function still computes and returns the REAL would-be summary (song
+ * counts, the resolved plan, `setlists_created`) without executing the
+ * INSERT, mirroring `_bulkImport_saveSong()`'s own "identical decision,
+ * suppressed write" dry-run contract.
+ *
+ * @param int         $userId       the AUTHENTICATED session's user id — the
+ *                                  imported set list's owner. Threaded in by
+ *                                  the caller (never resolved here — this
+ *                                  file has no session access, by design;
+ *                                  see rule #22 / the file's D2 note).
+ * @param string      $bytes        raw bytes of one `.proplaylist` (a ZIP)
+ * @param string|null $filenameHint original upload filename
+ * @return array{ok:bool,error?:string,songbooks_created:array,songbooks_existing:array,
+ *   songs_created:int,songs_skipped_existing:int,songs_failed:int,setlists_created:int,
+ *   setlist:?array,errors:array,warnings:array,media_present:int,media_files:array}
+ * @see .claude/propresenter-interop-1968-plan.md   §5.1
+ * @see tests/php/test-pp7-proplaylist-import.php    real-fixture validation
+ */
+function _bulkImport_processProplaylist(int $userId, string $bytes, ?string $filenameHint = null): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'propresenter7_playlist.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'propresenter7_zip.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'setlist_templates.php';
+
+    $label = ($filenameHint !== null && $filenameHint !== '') ? $filenameHint : 'the uploaded playlist';
+
+    $emptyFail = static function (string $reason, int $mediaCount = 0, array $mediaNames = []): array {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason,
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'setlists_created'       => 0,
+            'setlist'                => null,
+            'errors'                 => [],
+            'warnings'               => [],
+            'media_present'          => $mediaCount,
+            'media_files'            => $mediaNames,
+        ];
+    };
+
+    if ($userId <= 0) {
+        // D2 (§12.3) — curator-first: every caller of this function is
+        // already editor-gated (api.php / api2.php), so a non-positive id
+        // here means a caller forgot to thread the session user, not a
+        // genuine anonymous request slipping through. Refuse cleanly rather
+        // than minting a set list with no real owner.
+        return $emptyFail('No signed-in user to own the imported set list.');
+    }
+
+    try {
+        $bundle = pp7ReadPlaylistBundle($bytes);
+    } catch (\Throwable $e) {
+        return $emptyFail("Could not read {$label} as a ProPresenter playlist: " . $e->getMessage());
+    }
+
+    try {
+        $zipEntries = pp7ZipListEntries($bytes);
+    } catch (\Throwable $e) {
+        // pp7ReadPlaylistBundle() above already proved this ZIP opens (it
+        // uses the SAME reader internally) — this second call exists only
+        // to get full entry dicts (offset/size) for pp7ZipReadEntry() below,
+        // so reaching this catch on real input would mean the reader
+        // disagreed with itself. Never observed; handled anyway rather than
+        // trusted blindly.
+        return $emptyFail("Could not re-read {$label}'s entries: " . $e->getMessage());
+    }
+    $zipEntriesByName = [];
+    foreach ($zipEntries as $e) {
+        $zipEntriesByName[$e['name']] = $e;
+    }
+
+    $document      = $bundle['document'];
+    $proEntryNames = $bundle['proEntries'];
+    $mediaNames    = $bundle['mediaEntries'];
+    $mediaCount    = count($mediaNames);
+
+    $plan         = _bulkImport_proplaylistBuildPlan($document, $proEntryNames);
+    $playlistName = _bulkImport_proplaylistName($document, $filenameHint);
+
+    $db = getDbMysqli();
+
+    $songs             = [];
+    $slots             = [];
+    $warnings          = [];
+    $errors            = [];
+    $songsCreated      = 0;
+    $songsSkipped      = 0;
+    $songsFailed       = 0;
+    $songbooksCreated  = [];
+    $songbooksExisting = [];
+    $cache             = [];
+    $slotSeq           = 0;
+
+    foreach ($plan as $entry) {
+        switch ($entry['kind']) {
+            case 'header':
+                $slots[] = ['id' => 'h' . (++$slotSeq), 'label' => $entry['label'], 'type' => 'other'];
+                break;
+
+            case 'placeholder':
+                $slots[] = ['id' => 'p' . (++$slotSeq), 'label' => $entry['label'], 'type' => 'other'];
+                $warnings[] = "placeholder \"{$entry['label']}\" imported as a spacer slot (no song attached)";
+                break;
+
+            case 'skipped':
+                $itemType = (string)($entry['itemType'] ?? 'unknown');
+                $noun     = $itemType === 'hidden' ? 'hidden item' : "{$itemType} item";
+                $warnings[] = 'skipped ' . $noun
+                    . ($entry['label'] !== '' ? " \"{$entry['label']}\"" : '')
+                    . ' (out of scope for this import)';
+                break;
+
+            case 'song-embedded':
+                $res = _bulkImport_proplaylistResolveEmbedded($db, $bytes, $zipEntriesByName, $entry['entryName'], $cache);
+                $songsCreated += $res['created'];
+                $songsSkipped += $res['skipped'];
+                foreach ($res['songbooksCreated'] as $a) {
+                    $songbooksCreated[$a] = true;
+                }
+                foreach ($res['songbooksExisting'] as $a) {
+                    if (!isset($songbooksCreated[$a])) {
+                        $songbooksExisting[$a] = true;
+                    }
+                }
+                foreach ($res['warnings'] as $w) {
+                    $warnings[] = "{$entry['entryName']}: {$w}";
+                }
+                if ($res['ok']) {
+                    $songs[] = $res['songRef'];
+                } else {
+                    $songsFailed += $res['failed'];
+                    $errors[] = ['entry' => $entry['entryName'], 'error' => $res['error'] ?? 'import failed'];
+                }
+                break;
+
+            case 'song-unresolved':
+                $resolved = _bulkImport_proplaylistResolveExistingSong($db, (string)$entry['itemName']);
+                if ($resolved !== null) {
+                    $songs[] = [
+                        'id'       => $resolved['songId'],
+                        'title'    => $resolved['title'],
+                        'songbook' => $resolved['songbookAbbr'],
+                        'number'   => $resolved['number'],
+                    ];
+                    $warnings[] = "\"{$entry['itemName']}\" referenced a presentation not found in the bundle"
+                        . " — matched to existing song {$resolved['songId']} by title";
+                } else {
+                    $label = $entry['itemName'] !== '' ? $entry['itemName'] : 'Missing song';
+                    $slots[] = [
+                        'id'    => 'u' . (++$slotSeq),
+                        'label' => $label,
+                        'type'  => 'song',
+                        'note'  => 'referenced presentation not found in the bundle',
+                    ];
+                    $warnings[] = "\"{$label}\" referenced a presentation not found in the bundle"
+                        . ' — added as a placeholder (no matching song by title)';
+                }
+                break;
+        }
+    }
+
+    $sanitisedSongs = setlistCollabSanitiseSongs($songs);
+    $rawPlan        = !empty($slots) ? ['templateName' => $playlistName, 'slots' => $slots] : null;
+    $sanitisedPlan  = setlistTemplateSanitisePlan($rawPlan);
+
+    $setlistsCreated = 0;
+    $setlistInfo     = null;
+
+    if (count($sanitisedSongs) > setlistCollabMaxSongs()) {
+        // #1662's anti-truncation posture, applied here: refuse to mint a
+        // silently-shortened set list rather than dropping the tail. The
+        // songs already imported above stay imported — only the SET LIST
+        // itself is skipped.
+        $warnings[] = 'the imported set list would exceed the ' . setlistCollabMaxSongs()
+            . '-song cap and was not created; the songs above were still imported';
+    } elseif (!empty($sanitisedPlan['slots'] ?? []) && setlistTemplateSlotsExceedCap($sanitisedPlan['slots'])) {
+        $warnings[] = 'the imported set list\'s running order would exceed the ' . setlistTemplateMaxSlots()
+            . '-slot cap and was not created; the songs above were still imported';
+    } else {
+        /* Task 1: "Empty playlist -> a clean result (an empty or zero set
+           list, per the app's rules), never a crash" — this branch always
+           runs (even for zero songs + no plan), so an empty playlist gets
+           ONE real, empty, correctly-named set list, matching Task 1's
+           "build ONE iHymns set list" for every import, not just a
+           non-empty one. */
+        $setlistId = _bulkImport_proplaylistMintSetlistId($db, $userId);
+        $songsJson = (string)json_encode($sanitisedSongs, JSON_UNESCAPED_UNICODE);
+        $slotsReady = setlistSlotsColumnReady($db);
+
+        if (!_bulkImport_dryRun()) {
+            if ($slotsReady && $sanitisedPlan !== null) {
+                $slotsJson = setlistTemplateEncodePlan($sanitisedPlan);
+                $ins = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, SlotsJson)
+                     VALUES (?, ?, ?, ?, NOW(), NOW(), ?)'
+                );
+                $ins->bind_param('issss', $userId, $setlistId, $playlistName, $songsJson, $slotsJson);
+            } else {
+                // Un-migrated install (no SlotsJson column) OR nothing to
+                // put in a plan — the base 6-column INSERT every write path
+                // falls back to (mirrors api.php's own $expiryReady/$slotsReady
+                // branch shape for this exact table).
+                $ins = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
+                     VALUES (?, ?, ?, ?, NOW(), NOW())'
+                );
+                $ins->bind_param('isss', $userId, $setlistId, $playlistName, $songsJson);
+            }
+            $ins->execute();
+            $ins->close();
+
+            if (function_exists('logActivity')) {
+                logActivity('setlist.import', 'setlist', $setlistId, [
+                    'source' => 'bulk_import_proplaylist',
+                    'name'   => $playlistName,
+                    'songs'  => count($sanitisedSongs),
+                    'slots'  => count($sanitisedPlan['slots'] ?? []),
+                ]);
+            }
+        }
+
+        $setlistsCreated = 1;
+        $setlistInfo = [
+            'setlistId' => $setlistId,
+            'name'      => $playlistName,
+            'songCount' => count($sanitisedSongs),
+            'slotCount' => count($sanitisedPlan['slots'] ?? []),
+        ];
+    }
+
+    /* Media is never ingested by this import (deferred to plan §6 / P4,
+       exactly like `.probundle`) — never silently dropped either: the SAME
+       shared warning line `.probundle` uses (rule #22/#35 — one wording,
+       not two importers each typing their own prose). */
+    $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
+    if ($mediaWarning !== null) {
+        $warnings[] = $mediaWarning;
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => array_keys($songbooksCreated),
+        'songbooks_existing'     => array_keys($songbooksExisting),
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'setlists_created'       => $setlistsCreated,
+        'setlist'                => $setlistInfo,
+        'errors'                 => $errors,
+        'warnings'               => $warnings,
+        'media_present'          => $mediaCount,
+        'media_files'            => $mediaNames,
+    ];
 }
 
 /* ===========================================================================

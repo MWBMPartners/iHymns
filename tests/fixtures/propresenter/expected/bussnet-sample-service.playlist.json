@@ -1,0 +1,93 @@
+{
+  "document": {
+    "applicationInfo": {
+      "platform": 1,
+      "applicationVersion": null
+    },
+    "type": 1,
+    "root": {
+      "uuid": "d7764c1c-39ff-49ad-ab31-2b64f642f791",
+      "name": "PLAYLIST",
+      "type": 1,
+      "playlists": [
+        {
+          "uuid": "a707da96-a70b-4126-b7b0-646d427dc8af",
+          "name": "Sample Service",
+          "type": 1,
+          "playlists": [],
+          "items": [
+            {
+              "uuid": "65d67212-3d9f-4bcb-b8d1-1a2bdd342b0d",
+              "name": "Opening",
+              "isHidden": false,
+              "itemType": "header",
+              "header": {
+                "hasColor": true,
+                "actionCount": 0
+              },
+              "presentation": null
+            },
+            {
+              "uuid": "097e8277-6671-49e7-b203-efd1a789a645",
+              "name": "Sample Song",
+              "isHidden": false,
+              "itemType": "presentation",
+              "header": null,
+              "presentation": {
+                "documentPath": {
+                  "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Sample%20Song.pro",
+                  "localRoot": null,
+                  "localPath": null
+                },
+                "arrangement": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+                "arrangementName": "normal"
+              }
+            }
+          ]
+        }
+      ],
+      "items": []
+    },
+    "playlists": [
+      {
+        "uuid": "a707da96-a70b-4126-b7b0-646d427dc8af",
+        "name": "Sample Service",
+        "type": 1,
+        "playlists": [],
+        "items": [
+          {
+            "uuid": "65d67212-3d9f-4bcb-b8d1-1a2bdd342b0d",
+            "name": "Opening",
+            "isHidden": false,
+            "itemType": "header",
+            "header": {
+              "hasColor": true,
+              "actionCount": 0
+            },
+            "presentation": null
+          },
+          {
+            "uuid": "097e8277-6671-49e7-b203-efd1a789a645",
+            "name": "Sample Song",
+            "isHidden": false,
+            "itemType": "presentation",
+            "header": null,
+            "presentation": {
+              "documentPath": {
+                "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Sample%20Song.pro",
+                "localRoot": null,
+                "localPath": null
+              },
+              "arrangement": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+              "arrangementName": "normal"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "proEntries": [
+    "Sample Song.pro"
+  ],
+  "mediaEntries": []
+}
