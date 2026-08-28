@@ -1,0 +1,35 @@
+{
+  "document": {
+    "applicationInfo": {
+      "platform": 1,
+      "applicationVersion": "20.0"
+    },
+    "type": 1,
+    "root": {
+      "uuid": "BD3AFF8B-6E7C-4111-A1FF-3C95C3F38993",
+      "name": "PLAYLIST",
+      "type": 0,
+      "playlists": [
+        {
+          "uuid": "56566417-C6C5-43F3-8701-FB3A4DB5381E",
+          "name": "EmptyPlaylist",
+          "type": 0,
+          "playlists": [],
+          "items": []
+        }
+      ],
+      "items": []
+    },
+    "playlists": [
+      {
+        "uuid": "56566417-C6C5-43F3-8701-FB3A4DB5381E",
+        "name": "EmptyPlaylist",
+        "type": 0,
+        "playlists": [],
+        "items": []
+      }
+    ]
+  },
+  "proEntries": [],
+  "mediaEntries": []
+}

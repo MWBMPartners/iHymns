@@ -1,0 +1,144 @@
+{
+  "document": {
+    "applicationInfo": {
+      "platform": 1,
+      "applicationVersion": null
+    },
+    "type": 1,
+    "root": {
+      "uuid": "872e2e4f-cd4e-412b-aea9-cdd7d2450c77",
+      "name": "PLAYLIST",
+      "type": 1,
+      "playlists": [
+        {
+          "uuid": "9f1b59c8-7ac2-4af0-a7b4-d11e27ac168c",
+          "name": "TestPlaylist",
+          "type": 1,
+          "playlists": [],
+          "items": [
+            {
+              "uuid": "220d0563-849b-43a3-9c2f-8b54f7c8d0e7",
+              "name": "Songs",
+              "isHidden": false,
+              "itemType": "header",
+              "header": {
+                "hasColor": true,
+                "actionCount": 0
+              },
+              "presentation": null
+            },
+            {
+              "uuid": "faa94907-7b1c-47d6-abea-1d604bdb3775",
+              "name": "Embedded Song One",
+              "isHidden": false,
+              "itemType": "presentation",
+              "header": null,
+              "presentation": {
+                "documentPath": {
+                  "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Embedded%20Song%20One.pro",
+                  "localRoot": null,
+                  "localPath": null
+                },
+                "arrangement": "11111111-2222-3333-4444-555555555555",
+                "arrangementName": "normal"
+              }
+            },
+            {
+              "uuid": "8e34d8f3-8491-4a65-81e3-c70cddde67de",
+              "name": "Spacer",
+              "isHidden": false,
+              "itemType": "placeholder",
+              "header": null,
+              "presentation": null
+            },
+            {
+              "uuid": "c9c7e0a5-4f78-4976-9135-b624d23d035b",
+              "name": "Embedded Song Two",
+              "isHidden": false,
+              "itemType": "presentation",
+              "header": null,
+              "presentation": {
+                "documentPath": {
+                  "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Embedded%20Song%20Two.pro",
+                  "localRoot": null,
+                  "localPath": null
+                },
+                "arrangement": "66666666-7777-8888-9999-AAAAAAAAAAAA",
+                "arrangementName": "short"
+              }
+            }
+          ]
+        }
+      ],
+      "items": []
+    },
+    "playlists": [
+      {
+        "uuid": "9f1b59c8-7ac2-4af0-a7b4-d11e27ac168c",
+        "name": "TestPlaylist",
+        "type": 1,
+        "playlists": [],
+        "items": [
+          {
+            "uuid": "220d0563-849b-43a3-9c2f-8b54f7c8d0e7",
+            "name": "Songs",
+            "isHidden": false,
+            "itemType": "header",
+            "header": {
+              "hasColor": true,
+              "actionCount": 0
+            },
+            "presentation": null
+          },
+          {
+            "uuid": "faa94907-7b1c-47d6-abea-1d604bdb3775",
+            "name": "Embedded Song One",
+            "isHidden": false,
+            "itemType": "presentation",
+            "header": null,
+            "presentation": {
+              "documentPath": {
+                "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Embedded%20Song%20One.pro",
+                "localRoot": null,
+                "localPath": null
+              },
+              "arrangement": "11111111-2222-3333-4444-555555555555",
+              "arrangementName": "normal"
+            }
+          },
+          {
+            "uuid": "8e34d8f3-8491-4a65-81e3-c70cddde67de",
+            "name": "Spacer",
+            "isHidden": false,
+            "itemType": "placeholder",
+            "header": null,
+            "presentation": null
+          },
+          {
+            "uuid": "c9c7e0a5-4f78-4976-9135-b624d23d035b",
+            "name": "Embedded Song Two",
+            "isHidden": false,
+            "itemType": "presentation",
+            "header": null,
+            "presentation": {
+              "documentPath": {
+                "absoluteString": "file:///Library/Application%20Support/RenewedVision/ProPresenter/Songs/Embedded%20Song%20Two.pro",
+                "localRoot": null,
+                "localPath": null
+              },
+              "arrangement": "66666666-7777-8888-9999-AAAAAAAAAAAA",
+              "arrangementName": "short"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "proEntries": [
+    "Embedded Song One.pro",
+    "Embedded Song Two.pro"
+  ],
+  "mediaEntries": [
+    "media/sample-background.jpg"
+  ]
+}
