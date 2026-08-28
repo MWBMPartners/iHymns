@@ -4586,6 +4586,292 @@ function _bulkImport_pro7RtfMaxFontHalfPts(string $rtf): int
     return $max;
 }
 
+/* ===========================================================================
+ *  ProPresenter 7+ chord import (#1968 P6, folds into #1080)
+ *
+ * ELI5
+ * ----
+ * A PP7 slide's chords are not typed into the lyric text — they are a
+ * separate list of "put chord X starting at character N" records riding
+ * alongside the clean lyric text (`includes/propresenter7_decode.php`'s
+ * `pp7DecodeCue()['slideElementChords']`, one list per slide text element,
+ * decoded from `Graphics.Text.attributes.custom_attributes[]`). This section
+ * turns those character-offset records into the POSITIONED STRING chord
+ * cells iHymns already displays everywhere (`includes/chord_display.php`,
+ * `js/modules/print.js`, the editor's chords textarea) — a chord line like
+ * "G        G7       C   G" sitting above its lyric line.
+ *
+ * The chords flow onto the component as a `chords` array parallel to
+ * `lines`, persisted via the SANCTIONED `lyricLinesWriteComponents()` write
+ * path — never a direct ChordsJson read/write (rule #25), and NEVER a new
+ * SQL table (rule for this feature — it rides the EXISTING parallel array
+ * the ChordPro importer already uses).
+ *
+ * ⚠️ SCOPE NOTE — `chord_pro` (Graphics.Text field 12) is DELIBERATELY NOT
+ * decoded/consulted anywhere in this import path. The plan's §3.1 decoder-
+ * extension bullet list (the concrete build spec) never lists a `chord_pro`
+ * field table; only §3.4's prose separately floats an OPTIONAL enhancement
+ * ("when `chord_pro.enabled && notation ∉ {0}`, append one summary warning
+ * — chords use numbers/numerals/do-re-mi notation"). Chord strings import
+ * VERBATIM regardless — satisfying §3.4's first sentence trivially, since
+ * this code never branches on notation at all — and §5's own fixture bullet
+ * ("`chord_pro{enabled:true}` on one element and absent on another — import
+ * must not care") is exactly this: chord_pro is presentation-only metadata
+ * (§1.3), never content. The notation-specific warning is left for a
+ * follow-up if a real chord-bearing file (owner checklist D4) ever shows a
+ * non-zero notation in practice; nothing in §6's guard list requires it.
+ *
+ * @see .claude/propresenter-chords-plan.md   §2.2 (the mapping decision), §3.3 (this algorithm)
+ * =========================================================================== */
+
+/**
+ * `.claude/propresenter-chords-plan.md` §1.2 flags ONE genuine open question about PP7's own
+ * wire format that this repo cannot resolve without a real chord-bearing ProPresenter export
+ * (owner checklist D4): does a line break ("\n" in the plain text a `CustomAttribute.range`
+ * indexes into) count as 1 UTF-16 code unit in a chord's offset, or as 0? The two independent
+ * reference implementations studied for this feature disagree (chordlib counts it as 1 — the
+ * Cocoa `NSAttributedString.string` convention, adopted here as primary; greyshirtguy's tool
+ * counts it as 0). Isolated behind this ONE named constant (mirrored on the export side by
+ * `propresenter-export.js`'s own `NEWLINE_UNITS`) so flipping the convention after D4 evidence
+ * is a one-line change + fixture regen, never a re-derivation of the bucketing math below.
+ */
+const PP7_CHORD_NEWLINE_UNITS = 1;
+
+/**
+ * Count a UTF-8 string's length in UTF-16 code UNITS — the unit PP7's `IntRange.start`/`.end`
+ * offsets are expressed in (`.claude/propresenter-chords-plan.md` §1.2, both reference
+ * implementations agree). A code point above U+FFFF (e.g. most emoji) is ONE code point but TWO
+ * UTF-16 units (a surrogate pair) — this is the one place that distinction matters on the import
+ * side; everywhere else in this app, chord/line positions are code points (rule #21).
+ *
+ * @param string $s a single line of plain UTF-8 text (never the whole multi-line document —
+ *                   callers add `PP7_CHORD_NEWLINE_UNITS` per line break themselves)
+ */
+function _bulkImport_pro7Utf16Length(string $s): int
+{
+    if ($s === '') {
+        return 0;
+    }
+    $len = 0;
+    foreach (mb_str_split($s, 1, 'UTF-8') as $ch) {
+        $cp = mb_ord($ch, 'UTF-8');
+        $len += ($cp !== false && $cp > 0xFFFF) ? 2 : 1;
+    }
+    return $len;
+}
+
+/**
+ * Convert a UTF-16 code-unit offset WITHIN one line to a CODE-POINT column (rule #21 — this
+ * decoder's protobuf offsets are UTF-16 per the plan §1.2; iHymns' own chord model is
+ * code-point-positioned everywhere else: `chord_display.php`, `print.js`, the editor textarea).
+ *
+ * ELI5: PP7 counts "how far into this line" in a unit that splits emoji into two pieces; iHymns
+ * counts in whole characters. This walks the line one character at a time, adding up PP7's units
+ * as it goes, and stops at the character whose PP7-unit-count matches the target — that
+ * character's position (in whole characters) is the column iHymns wants.
+ *
+ * DETAILED: a target offset that lands MID-SURROGATE-PAIR (only possible from a malformed or
+ * adversarial file — no real UTF-16 writer ever splits a surrogate pair mid-character) clamps to
+ * the code-point boundary BEFORE that character, and reports that it had to clamp, rather than
+ * producing a corrupt column or refusing the whole import (the plan §3.3 point 4's "degrade, not
+ * refuse" posture — mirrors why this decoder never hard-errors the way chordlib's own validator
+ * does). An offset beyond the line's own UTF-16 length (a genuinely OUT-OF-BOUNDS offset, handled
+ * ONE layer up by the caller's overflow clamp — see `_bulkImport_pro7ChordCellsFromRanges()`)
+ * also falls through this same loop and lands at the line's own code-point length, which is
+ * exactly the "anchor at line end" behaviour that case needs too.
+ *
+ * @return array{0:int,1:bool}  [codePointColumn, wasClampedMidSurrogate]
+ */
+function _bulkImport_pro7Utf16OffsetToCodePointColumn(string $line, int $utf16Offset): array
+{
+    if ($utf16Offset <= 0 || $line === '') {
+        return [0, false];
+    }
+    $col  = 0;
+    $unit = 0;
+    foreach (mb_str_split($line, 1, 'UTF-8') as $ch) {
+        if ($unit >= $utf16Offset) {
+            break;
+        }
+        $cp      = mb_ord($ch, 'UTF-8');
+        $chUnits = ($cp !== false && $cp > 0xFFFF) ? 2 : 1;
+        if ($unit + $chUnits > $utf16Offset) {
+            // The target offset lands strictly BETWEEN this code point's two UTF-16 units (a
+            // surrogate pair split mid-character) — clamp to the boundary BEFORE it.
+            return [$col, true];
+        }
+        $unit += $chUnits;
+        $col++;
+    }
+    return [$col, false];
+}
+
+/**
+ * PURE: turn one text element's decoded chord rows into per-line POSITIONED STRING cells
+ * (`.claude/propresenter-chords-plan.md` §3.3 — the range->cell algorithm, steps 1-5). Parallel
+ * to `explode("\n", $plainText)`.
+ *
+ * ALGORITHM (plan §3.3):
+ *   1. Drop rows whose chord symbol is blank once trimmed (both reference implementations do —
+ *      greyshirtguy's own editor even creates transient empty `[]` runs). Collapse INTERIOR
+ *      whitespace in a symbol to nothing — a cell is whitespace-DELIMITED (`ihymns_chord_line_to_string()`
+ *      / the editor's chord textarea both split on whitespace runs), so an embedded space would
+ *      split one chord into two tokens on the next read.
+ *   2. Sort by `start` ascending — the repeated `custom_attributes[]` field's wire order is NOT
+ *      guaranteed to already be `start`-sorted (chordlib input L230; PP itself may reorder on
+ *      re-save).
+ *   3. Bucket each row to the LINE whose `[lineStart, lineStart + utf16len(line))` interval
+ *      contains its `start` — line offsets accumulate as UTF-16 length + `PP7_CHORD_NEWLINE_UNITS`
+ *      per line break (mirrors how the SAME lines were joined by `\par` on the RTF/exporter side).
+ *      A `start` beyond the WHOLE text's end clamps to the last line's very end (never dropped —
+ *      #1080's "never silently drop a chord" clamp philosophy) and collects ONE summary warning.
+ *   4. Convert the in-line UTF-16 offset to a CODE-POINT column (`_bulkImport_pro7Utf16OffsetToCodePointColumn()`);
+ *      build the cell by space-padding out to that column, or inserting a single separating space
+ *      when two chords' columns collide (never silently overwriting/merging two symbols).
+ *   5. `range.end` is IGNORED for placement (plan §1.2 — both reference implementations position
+ *      by `start` alone; `end` merely TILES to the next chord's `start` on write).
+ *
+ * @param string                                    $plainText the SAME text `explode("\n", ...)`
+ *                                                    the caller's line-accumulation already uses
+ * @param list<array{start:int,end:int,chord:string}> $rows    this element's decoded chord rows
+ *                                                    (UNSORTED — see step 2)
+ * @param list<string>                              &$warnings  the parser's shared warnings list
+ *                                                    (mutated — appends at most one overflow-clamp
+ *                                                    warning and one surrogate-clamp warning)
+ * @return list<string> cells parallel to `explode("\n", $plainText)`
+ */
+function _bulkImport_pro7ChordCellsFromRanges(string $plainText, array $rows, array &$warnings): array
+{
+    $clean = [];
+    foreach ($rows as $row) {
+        $sym = trim((string)($row['chord'] ?? ''));
+        if ($sym === '') {
+            continue; // step 1 — drop a blank/whitespace-only chord row
+        }
+        $sym = (string)preg_replace('/\s+/u', '', $sym); // step 1 — a cell is whitespace-delimited
+        $clean[] = ['start' => (int)($row['start'] ?? 0), 'chord' => $sym];
+    }
+    if (empty($clean)) {
+        return [];
+    }
+
+    usort($clean, static fn(array $a, array $b): int => $a['start'] <=> $b['start']); // step 2
+
+    $lines = explode("\n", $plainText);
+    $cells = array_fill(0, count($lines), '');
+
+    $lineStarts = [];
+    $cursor     = 0;
+    foreach ($lines as $k => $line) {
+        $lineStarts[$k] = $cursor;
+        $cursor += _bulkImport_pro7Utf16Length($line) + PP7_CHORD_NEWLINE_UNITS;
+    }
+    $lastIdx       = count($lines) - 1;
+    $totalUtf16Len = $lineStarts[$lastIdx] + _bulkImport_pro7Utf16Length($lines[$lastIdx]);
+
+    $sawOverflow  = false;
+    $sawSurrogate = false;
+
+    foreach ($clean as $row) {
+        $start = $row['start'];
+        if ($start > $totalUtf16Len) {
+            $start       = $totalUtf16Len; // step 3's "beyond text end -> clamp to last line's end"
+            $sawOverflow = true;
+        } elseif ($start < 0) {
+            $start = 0; // defensive — pp7DecodeIntRange() already rejects a negative `start`
+        }
+
+        $lineIdx = $lastIdx;
+        for ($k = 0; $k <= $lastIdx; $k++) {
+            $lineEnd = $lineStarts[$k] + _bulkImport_pro7Utf16Length($lines[$k]);
+            if ($start <= $lineEnd) {
+                $lineIdx = $k;
+                break;
+            }
+        }
+        $inLineOffset = max(0, $start - $lineStarts[$lineIdx]);
+
+        [$col, $wasClamped] = _bulkImport_pro7Utf16OffsetToCodePointColumn($lines[$lineIdx], $inLineOffset);
+        if ($wasClamped) {
+            $sawSurrogate = true;
+        }
+
+        $existingLen = mb_strlen($cells[$lineIdx]);
+        if ($col < $existingLen) {
+            // step 4's collision case — a single separating space, never overwrite/merge.
+            $cells[$lineIdx] .= ' ' . $row['chord'];
+        } else {
+            $cells[$lineIdx] .= str_repeat(' ', $col - $existingLen) . $row['chord'];
+        }
+    }
+
+    if ($sawOverflow) {
+        $warnings[] = 'a chord offset landed beyond the end of the text and was clamped to the last line\'s end';
+    }
+    if ($sawSurrogate) {
+        $warnings[] = 'a chord offset landed mid-character and was clamped to the nearest code-point boundary';
+    }
+
+    return $cells;
+}
+
+/**
+ * Resolve chord placement for ONE cue's chosen element, handling the PR-1 dominant-font filter's
+ * interplay with chord offsets (plan §3.3 "Font-suppression interplay"): a `CustomAttribute.range`
+ * offset indexes the element's FULL attributed text, but `_bulkImport_pro7SelectCueText()`
+ * extracts through `_bulkImport_rtfToText($rtf, $maxFs)`, which may DROP a smaller-font run —
+ * making the emitted (filtered) text SHORTER than what the chord offsets were written against.
+ *
+ * In the overwhelmingly common single-font case, filtered text === unfiltered text and the ranges
+ * bucket directly. When they differ, this aligns the filtered lines to the unfiltered lines by
+ * EXACT CONTENT + ORDER and keeps only the matching lines' cells; if that alignment cannot account
+ * for every filtered line, the chords are DROPPED with one collected warning rather than risking a
+ * mis-anchored chord (plan §3.3: "A wrong chord placement is worse than a reported absence").
+ *
+ * @param string                                      $rtf          the chosen element's rtf_data
+ * @param int                                          $maxFs        the dominant-font cutoff
+ *                                                                    already computed for `$rtf`
+ * @param string                                       $filteredText `_bulkImport_rtfToText($rtf, $maxFs)`
+ *                                                                    — what the caller's `$text` is
+ * @param list<array{start:int,end:int,chord:string}>  $chordRows    this element's decoded chord rows
+ * @param list<string>                                &$warnings     mutated on drop/clamp
+ * @return list<string> cells parallel to `explode("\n", $filteredText)`
+ */
+function _bulkImport_pro7ChordCellsForCue(string $rtf, int $maxFs, string $filteredText, array $chordRows, array &$warnings): array
+{
+    $unfilteredText = _bulkImport_rtfToText($rtf, 0);
+    if ($unfilteredText === $filteredText) {
+        return _bulkImport_pro7ChordCellsFromRanges($filteredText, $chordRows, $warnings);
+    }
+
+    // Filtered != unfiltered — the ranges index the UNFILTERED text (plan §3.3), so bucket
+    // against THAT, then align its lines to the filtered lines by exact content + order.
+    $unfilteredCells = _bulkImport_pro7ChordCellsFromRanges($unfilteredText, $chordRows, $warnings);
+    $unfilteredLines = explode("\n", $unfilteredText);
+    $filteredLines   = explode("\n", $filteredText);
+
+    $aligned = [];
+    $srcIdx  = 0;
+    foreach ($filteredLines as $fLine) {
+        $found = false;
+        while ($srcIdx < count($unfilteredLines)) {
+            if ($unfilteredLines[$srcIdx] === $fLine) {
+                $aligned[] = $unfilteredCells[$srcIdx] ?? '';
+                $srcIdx++;
+                $found = true;
+                break;
+            }
+            $srcIdx++;
+        }
+        if (!$found) {
+            $warnings[] = 'chords present but could not be aligned to the imported text';
+            return [];
+        }
+    }
+
+    return $aligned;
+}
+
 /**
  * Select ONE cue's "lyric" text + count how many of its OTHER elements carry
  * real (non-empty, once RTF-stripped) text — the element-selection rule from
@@ -4634,17 +4920,23 @@ function _bulkImport_pro7RtfMaxFontHalfPts(string $rtf): int
  *                    into ONE summary warning (never per-cue — plan §3.4:
  *                    "P1 imports element 0 only and appends ONE summary
  *                    warning")
- * @return string the selected element's UTF-8 plain text (via
- *                 `_bulkImport_rtfToText()`), or '' when the cue carries no
- *                 usable text at all
+ * @return array{text:string,chordCells:list<string>} `text` is the selected
+ *         element's UTF-8 plain text (via `_bulkImport_rtfToText()`, '' when
+ *         the cue carries no usable text at all); `chordCells` is PARALLEL
+ *         to `explode("\n", text)` — one positioned chord-line STRING cell
+ *         per lyric line ('' when that line carries no chords), built from
+ *         that SAME chosen element's `CustomAttribute` chord rows (#1968 P6
+ *         — never another element's; a translation layer's chords must
+ *         never cross-attach to the chosen lyric text)
  */
-function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount): string
+function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount, array &$warnings): array
 {
-    $rtfList  = $cue['slideRtf'] ?? [];
-    $infoList = $cue['slideElementInfos'] ?? [];
-    $n        = count($rtfList);
+    $rtfList    = $cue['slideRtf'] ?? [];
+    $infoList   = $cue['slideElementInfos'] ?? [];
+    $chordsList = $cue['slideElementChords'] ?? [];
+    $n          = count($rtfList);
     if ($n === 0) {
-        return '';
+        return ['text' => '', 'chordCells' => []];
     }
 
     $chosen = null;
@@ -4663,11 +4955,12 @@ function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount):
         }
     }
     if ($chosen === null) {
-        return '';
+        return ['text' => '', 'chordCells' => []];
     }
 
     $chosenRtf = (string)$rtfList[$chosen];
-    $text      = _bulkImport_rtfToText($chosenRtf, _bulkImport_pro7RtfMaxFontHalfPts($chosenRtf));
+    $maxFs     = _bulkImport_pro7RtfMaxFontHalfPts($chosenRtf);
+    $text      = _bulkImport_rtfToText($chosenRtf, $maxFs);
 
     for ($idx = 0; $idx < $n; $idx++) {
         if ($idx === $chosen) { continue; }
@@ -4678,26 +4971,43 @@ function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount):
         }
     }
 
-    return $text;
+    $chordRows  = (array)($chordsList[$chosen] ?? []);
+    $chordCells = [];
+    if (!empty($chordRows)) {
+        $chordCells = _bulkImport_pro7ChordCellsForCue($chosenRtf, $maxFs, $text, $chordRows, $warnings);
+    }
+
+    return ['text' => $text, 'chordCells' => $chordCells];
 }
 
 /**
- * Append one cue's selected text onto a GROUP's accumulating `$lines` array,
- * using the exact concatenation idiom `_bulkImport_parsePro6()` already
- * uses at L3798-3806 (skip LEADING empty lines; keep interior/trailing ones
- * — the caller does ONE trailing-blank trim pass after every cue in the
- * group has been appended, matching how the exporter chunks one group's
- * lyrics across several slides with `linesPerSlide`).
+ * Append one cue's selected text + its parallel chord cells onto a GROUP's
+ * accumulating `$lines`/`$cells` arrays, using the exact concatenation
+ * idiom `_bulkImport_parsePro6()` already uses at L3798-3806 (skip LEADING
+ * empty lines; keep interior/trailing ones — the caller does ONE trailing-
+ * blank trim pass after every cue in the group has been appended, matching
+ * how the exporter chunks one group's lyrics across several slides with
+ * `linesPerSlide`). `$cells` is kept in LOCKSTEP with `$lines` — every push
+ * (and every caller's later `array_pop()` trim) happens to BOTH arrays
+ * together, so index N of one always corresponds to index N of the other
+ * (#1968 P6 plan §3.2).
  *
- * @param array<int,string> &$lines the group's line accumulator (mutated)
- * @param string             $text  one cue's already-RTF-stripped text
+ * @param array<int,string> &$lines      the group's line accumulator (mutated)
+ * @param string             $text       one cue's already-RTF-stripped text
+ * @param list<string>       $chordCells parallel to `explode("\n", $text)` — this
+ *                                       cue's positioned chord cells (possibly [])
+ * @param array<int,string> &$cells      the group's chord-cell accumulator (mutated,
+ *                                       parallel to `$lines`)
  */
-function _bulkImport_pro7AppendCueLines(array &$lines, string $text): void
+function _bulkImport_pro7AppendCueLines(array &$lines, string $text, array $chordCells, array &$cells): void
 {
-    foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
-        $ln = rtrim($ln);
+    $normalized = explode("\n", str_replace(["\r\n", "\r"], "\n", $text));
+    foreach ($normalized as $i => $ln) {
+        $ln   = rtrim($ln);
+        $cell = (string)($chordCells[$i] ?? '');
         if ($ln !== '' || !empty($lines)) {
             $lines[] = $ln;
+            $cells[] = $cell;
         }
     }
 }
@@ -4934,20 +5244,22 @@ function _bulkImport_parsePro7(string $body): array
             continue;
         }
 
-        $lines = [];
+        $lines  = [];
+        $chords = [];
         foreach ((array)($group['cueIdentifiers'] ?? []) as $cueUuid) {
             if (!isset($cuesByUuid[$cueUuid])) {
                 $warnings[] = "cue {$cueUuid} referenced by group \"{$trimmedName}\" was not found";
                 continue;
             }
-            $text = _bulkImport_pro7SelectCueText($cuesByUuid[$cueUuid], $translationLayerCount);
-            _bulkImport_pro7AppendCueLines($lines, $text);
+            $sel = _bulkImport_pro7SelectCueText($cuesByUuid[$cueUuid], $translationLayerCount, $warnings);
+            _bulkImport_pro7AppendCueLines($lines, $sel['text'], $sel['chordCells'], $chords);
             /* Mark as referenced — whatever remains in $cuesByUuid after
                every group has been walked is step 4's "unreferenced cues". */
             unset($cuesByUuid[$cueUuid]);
         }
         while (!empty($lines) && trim((string)end($lines)) === '') {
             array_pop($lines);
+            array_pop($chords);
         }
         if (empty($lines)) {
             $warnings[] = $trimmedName !== ''
@@ -4958,6 +5270,14 @@ function _bulkImport_parsePro7(string $body): array
 
         $mapped    = _bulkImport_pro7GroupType($groupName);
         $component = ['type' => $mapped['type'], 'number' => $mapped['number'], 'lines' => $lines];
+        /* #1968 P6 — attach `chords` ONLY when at least one cell is non-empty, mirroring
+           _bulkImport_parseChordPro()'s flush gate, so a CHORDLESS import stays byte-identical
+           to today (the non-regression the existing fixtures + test-pp7-parse.php pin, rule #25). */
+        $hasChords = false;
+        foreach ($chords as $c) { if (trim((string)$c) !== '') { $hasChords = true; break; } }
+        if ($hasChords) {
+            $component['chords'] = $chords;
+        }
         if ($mapped['label'] !== null) {
             $component['label'] = $mapped['label'];
         }
@@ -4978,17 +5298,25 @@ function _bulkImport_parsePro7(string $body): array
             if ($uuid === '' || !isset($cuesByUuid[$uuid])) {
                 continue; // referenced by a group, or carries no uuid at all
             }
-            $text  = _bulkImport_pro7SelectCueText($cue, $translationLayerCount);
-            $lines = [];
-            _bulkImport_pro7AppendCueLines($lines, $text);
+            $sel    = _bulkImport_pro7SelectCueText($cue, $translationLayerCount, $warnings);
+            $lines  = [];
+            $chords = [];
+            _bulkImport_pro7AppendCueLines($lines, $sel['text'], $sel['chordCells'], $chords);
             while (!empty($lines) && trim((string)end($lines)) === '') {
                 array_pop($lines);
+                array_pop($chords);
             }
             if (empty($lines)) {
                 continue; // an unreferenced, empty cue contributes nothing
             }
             $vnum++;
-            $components[] = ['type' => 'verse', 'number' => $vnum, 'lines' => $lines];
+            $verseComponent = ['type' => 'verse', 'number' => $vnum, 'lines' => $lines];
+            $hasChords      = false;
+            foreach ($chords as $c) { if (trim((string)$c) !== '') { $hasChords = true; break; } }
+            if ($hasChords) {
+                $verseComponent['chords'] = $chords;
+            }
+            $components[] = $verseComponent;
             $warnings[]   = "cue {$uuid} was not referenced by any group — appended as verse {$vnum}";
         }
     }
