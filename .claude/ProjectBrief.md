@@ -4,6 +4,53 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-28 (ProPresenter interop epic #1968 complete through P6; multi-licence orgs; device management; docs + security + a11y sweep in flight)
+
+Branch `claude/dormant-features-settings-1sdw4t` (the long-running ProPresenter interop
+program branch). Full CI-faithful gate green: **node 82/82, php 219/219**
+(`node tools/run-node-tests.js`, `php tools/run-php-tests.php`).
+
+**Versioning is now TAG-FREE (#1963/#1965)** — the earlier "1.0.0 tag-derived since #1899"
+in the older notes below is SUPERSEDED. The version anchor is the committed `Version.Number`
+in `appWeb/public_html/includes/infoAppVer.php` (MAJOR.MINOR authoritative; deploy injects
+`MAJOR.MINOR.<git rev-list --count HEAD>`). Bump level is decided by the Conventional-Commit
+prefix on the squash-merge subject (`classify-bump.sh`): `feat:`→minor, `!`/`BREAKING CHANGE:`
+→major, everything else→build-only. NO git tags, NO GitHub Releases. Every user-visible `feat:`
+push also adds a plain-language `WHATS-NEW.md` bullet (rule #46, NO internals — security).
+
+**ProPresenter 7+ interoperability program (epic #1968)** — landed on this branch:
+- P0–P1: `.pro` import routing fix + single-song import + golden-fixture harness.
+- P2: `.probundle` import (ZIP64 reader `propresenter7_zip.php` + bundle flow).
+- P3/P3b: `.proplaylist` import↔set-lists + export set-list → `.proplaylist`.
+- P4 (#1976): bundle/playlist media → `tblSongMedia` (`Visibility='admin'`, curator opt-in,
+  dormant behind `pp7_media_ingest_enabled='0'`). Export half (#1979): media embedded into
+  `.probundle` with `ROOT_CURRENT_RESOURCE` URLs (guard `test-pp7-media-export.js`).
+- P6 chords (#1080 fold): PP7 stores chords as positioned `CustomAttribute{range, chord}` over
+  CLEAN RTF — NOT inline `[G]` brackets (premise corrected + proto-verified). Import→per-line
+  positioned cells via the existing `chords` array (rule #25); export→`custom_attributes[]`,
+  `buildRTF()` unchanged (no `[` ever in RTF — mutation-proven premise-guard). Non-circular
+  fixture (protobufjs reflection). Plan `.claude/propresenter-chords-plan.md`.
+- P6 timeline (#1980): DORMANT groundwork — `pp7DecodeTimeline()` reads `Timeline.cues`
+  (field 1, not `cues_v2`), dormant `tblSongPresentationCues` + `pp7_timeline_import_enabled='0'`
+  toggle + gated non-blocking capture. Auto-advance OFF by default. Playback is later work.
+- Owner checklist D4 (blocks "done" not "build"): real chord-bearing + timeline-bearing `.pro`
+  from ProPresenter to settle the newline-unit convention and confirm a real open; deferred C6
+  song-key ↔ `presentation.music` (#1982). Reference sources: `.claude/propresenter-reference-sources.md`.
+
+**Also landed this session's queue:**
+- **#1969** — multiple licences per organisation: shared CRUD core `includes/org_licence_admin.php`
+  (non-destructive sync, registry-driven), tier resolver honours licence expiry. CLOSED.
+- **#1975** — signed-in device management: auto-name from UA ("Chrome on Windows") + per-device
+  rename (`device_rename`, own-only, `validateCsrfRequest`). Open with minor residual.
+- What's-New retrospective 1.1.0 + the markdown_lite wrapped-bullet line-break fix (#1583).
+
+**In flight this session (2026-08-28):** documentation currency sweep (repo `.md`, in-app
+`help.php`, `wiki/*.md`, `api-docs.yaml`, this `.claude/` set — Sonnet implementation agents on
+disjoint file sets), a whole-codebase **security audit** (Fable-5 analysis → `.claude/security-audit-2026-08-28.md`
+→ Sonnet fixes), an **accessibility (WCAG 2.1 AA) audit** (queued behind the security Fable pass),
+and a **GitHub issues/milestones/project sweep**. Model routing (owner-directed): analysis/planning
+= sequential Fable-5; implementation = Sonnet.
+
 ## 📌 Continuation note — 2026-08-25 (BCP 47 language registry — scheduled refresh + live-search picker + unknown-tag curation, BUILD pass done, NOT YET COMMITTED)
 
 Full implementation of `.claude/bcp47-language-registry-plan.md` (M1-M5) on branch

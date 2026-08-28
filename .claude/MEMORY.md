@@ -6,9 +6,17 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-26 (branch `claude/dormant-features-settings-1sdw4t` — offline version-proofing #1962 + tag-free Conventional-Commit versioning #1963→#1965 on alpha)._
+_Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
 
 ## Where things stand
+- **Active branch — `claude/dormant-features-settings-1sdw4t`** (2026-08-28): the ProPresenter 7+
+  interoperability program (epic #1968) — import `.pro`/`.probundle`/`.proplaylist`, export, media
+  ingest into `tblSongMedia`, the **chord round-trip** (positioned `custom_attributes` over CLEAN
+  RTF — NEVER inline `[G]`; premise-guard mutation-proven) and **dormant timeline groundwork**
+  (`tblSongPresentationCues`, `Timeline.cues` field 1 not `cues_v2`, off by default) — full contract
+  = CLAUDE.md rule #47. Plus multi-licence orgs (#1969, `org_licence_admin.php`), device rename/auto-name
+  (#1975). Gate green: node 82/82, php 219/219. Owner checklist D4 (real chord/timeline `.pro`) is the
+  only outstanding validation, non-blocking. NO PR open (owner hasn't asked — same-branch program).
 - **Version:** committed `MAJOR.MINOR` in `includes/infoAppVer.php` (currently **`1.1`**) is the anchor;
   deploy injects `MAJOR.MINOR.<git rev-list --count HEAD>` for display (the PWA SW cache version + every
   `?v=` cache-buster auto-sync off it, #81). Docs that hardcode a version rot within days — point at the
