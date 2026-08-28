@@ -238,12 +238,17 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
- *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|pro7|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
  *     format=auto on a .xml/.opensong upload resolves via the shared XML
  *     auto-router (_bulkImport_processXmlAuto(), #882) — it sniffs
  *     OpenLyrics vs OpenSong and tries the other parser once on a primary
  *     parse failure; the response's top-level `format` echoes back the
  *     format that actually parsed.
+ *     format=auto on a .pro upload resolves via the shared 3-way sniff
+ *     (_bulkImport_sniffProDialect(), epic #1968) — binary -> ProPresenter
+ *     7+ ('pro7'), XML/<RVPresentationDocument> -> a mis-extensioned
+ *     ProPresenter 6 ('pro6'), else -> genuine ChordPro ('chordpro'); 'pro7'
+ *     is also explicitly pickable from the format dropdown.
  *     #1674 — dryRun="1" runs every real pre-flight decision (existence +
  *     title-dedupe) but writes nothing; the response echoes `dry_run` (a
  *     KEY, not prose) so the client can brand the summary as a preview.
@@ -5459,7 +5464,16 @@ try {
                 'pptx'  => 'pptx',
                 'db'    => 'easyworship',
                 'txt'   => 'proclaim',
-                'cho', 'chopro', 'crd', 'chord', 'pro' => 'chordpro',   // #1264 ChordPro
+                'cho', 'chopro', 'crd', 'chord' => 'chordpro',   // #1264 ChordPro
+                /* epic #1968 P0 — '.pro' is genuinely ambiguous (ChordPro's
+                   own docs bless '.pro' too; ProPresenter 7+ also uses it
+                   natively), so it resolves to the internal 'proauto' TARGET
+                   below rather than straight to 'chordpro' — the same
+                   #882/'xmlauto' + #1633/.json precedent this very function
+                   already uses twice. Previously this line silently
+                   mis-routed every real PP7 .pro upload to the ChordPro text
+                   parser (plan §3.1's "the fix" bug report). */
+                'pro'   => 'proauto',
                 default => '',
             };
 
@@ -5483,6 +5497,22 @@ try {
                 if (_bulkImport_looksLikeIHymnsJson($probe)) { $format = 'ihymns'; }
                 $content = $probe;      // reused below — do not re-read the upload
             }
+
+            /* epic #1968 P0/P1 (plan §3.1) — '.pro' resolves to the internal
+               'proauto' target above; content-sniff it here via the ONE
+               shared, AUTHORITATIVE sniff (_bulkImport_sniffProDialect() in
+               includes/song_importers.php — the exact same function the ZIP
+               importer's per-entry router defers to) to tell ProPresenter 7+
+               (binary protobuf), a mis-extensioned ProPresenter 6 export
+               (XML), and genuine ChordPro (plain text) apart. Same #882/
+               #1633 "sniff resolves format=auto; an explicit pick bypasses
+               it" precedent as the two content-sniffs immediately above. */
+            if ($format === 'proauto') {
+                $probe = file_get_contents($tmpPath);
+                if ($probe === false) { ed2_respond(['ok' => false, 'error' => 'Could not read the uploaded file.'], 500); }
+                $format  = _bulkImport_sniffProDialect($probe);
+                $content = $probe;      // reused below — do not re-read the upload
+            }
         }
 
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
@@ -5497,7 +5527,7 @@ try {
            directly in the UI dropdown); 'opensong' is also explicitly
            pickable so an operator can override a sniff that guessed wrong
            (same #1633 precedent as the iHymns-vs-VideoPsalm JSON override). */
-        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
+        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'pro7', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
@@ -5510,6 +5540,7 @@ try {
                     'opensong'   => _bulkImport_processOpenSong($content, $origName),    // #882
                     'xmlauto'    => _bulkImport_processXmlAuto($content, $origName),     // #882
                     'pro6'       => _bulkImport_processPro6($content, $origName),
+                    'pro7'       => _bulkImport_processPro7($content, $origName),        // epic #1968 / #885
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),
                     'freeshow'   => _bulkImport_processFreeShow($content, $origName),
                     'chordpro'   => _bulkImport_processChordPro($content, $origName),   // #1264

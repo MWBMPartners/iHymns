@@ -48,13 +48,24 @@ $formats = [
        same #1633 precedent as the iHymns/VideoPsalm .json pair above). */
     'opensong'    => 'OpenSong (.xml)',
     'pro6'        => 'ProPresenter 6 (.pro6)',
+    /* epic #1968 / #885 — ProPresenter 7+ '.pro' protobuf import. '.pro' is
+       genuinely ambiguous (ChordPro's own docs bless the extension too),
+       which is why the ChordPro label below no longer claims it: `auto`
+       content-sniffs a '.pro' upload (_bulkImport_sniffProDialect()) and
+       routes it to whichever of pro7/pro6/chordpro the bytes actually are;
+       an operator who KNOWS the file is ProPresenter 7+ can also pick this
+       entry explicitly to bypass the sniff. */
+    'pro7'        => 'ProPresenter 7+ (.pro)',
     'freeshow'    => 'FreeShow (.show)',
     'proclaim'    => 'Proclaim (.txt)',
     /* #1264 — ChordPro was already accepted by api2.php's import_file
-       (auto-mapped from .cho/.chopro/.crd/.chord/.pro) but had no dropdown
+       (auto-mapped from .cho/.chopro/.crd/.chord) but had no dropdown
        entry and was excluded from the file picker's `accept` list, so an
-       operator could never actually reach it from this page. */
-    'chordpro'    => 'ChordPro (.cho, .chopro, .crd, .chord, .pro)',
+       operator could never actually reach it from this page. '.pro' moved
+       to the 'pro7' entry above (epic #1968) — a genuine ChordPro '.pro'
+       still imports correctly via `auto`'s content sniff, or by picking
+       ChordPro here explicitly. */
+    'chordpro'    => 'ChordPro (.cho, .chopro, .crd, .chord)',
     'pptx'        => 'PowerPoint (.pptx)',
     'easyworship' => 'EasyWorship (.db)',
 ];

@@ -4047,10 +4047,69 @@ function exportCurrentSong() {
  *
  * Anything else surfaces a "use .json or .zip" toast.
  */
+
+/**
+ * sniffProContent(file) -> Promise<'pro7'|'pro6'|'chordpro'>
+ * ------------------------------------------------------------
+ * Content-sniffs a picked ".pro" upload's first ~4 KB to resolve the
+ * genuine three-way ambiguity between ProPresenter 7+'s binary protobuf, a
+ * mis-extensioned ProPresenter 6 XML export, and real ChordPro text
+ * (epic #1968 plan §3.1). This is a CLIENT-SIDE CONVENIENCE only — the
+ * server re-sniffs the SAME bytes authoritatively
+ * (_bulkImport_sniffProDialect() in includes/song_importers.php), so a
+ * wrong guess here can never corrupt data; it just sends the upload to a
+ * parser that then rejects it, same as picking the wrong format manually.
+ *
+ * Rule (mirrors the server sniff exactly):
+ *   - the sampled bytes decode as valid UTF-8 AND contain no control byte
+ *     outside \t \r \n:
+ *       - starts with '<?xml' (leading whitespace allowed) or contains
+ *         '<RVPresentationDocument' -> 'pro6'
+ *       - else -> 'chordpro'
+ *   - otherwise (invalid UTF-8, or a stray control byte — every real PP7
+ *     protobuf trips this within ~100 bytes) -> 'pro7'
+ *
+ * @param {File} file
+ * @returns {Promise<string>} resolves to 'pro7' | 'pro6' | 'chordpro'
+ * @see .claude/propresenter-interop-1968-plan.md §3.1
+ * @see appWeb/public_html/includes/song_importers.php  _bulkImport_sniffProDialect() — the authoritative server-side twin
+ */
+function sniffProContent(file) {
+    return file.slice(0, 4096).arrayBuffer().then(function (buf) {
+        var bytes = new Uint8Array(buf);
+        var text;
+        try {
+            // fatal:true makes decode() throw on any byte sequence that
+            // isn't valid UTF-8 — the same signal mb_check_encoding() gives
+            // the server-side sniff.
+            text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch (e) {
+            return 'pro7'; // not valid UTF-8 -> binary protobuf
+        }
+        /* Control bytes other than \t(0x09) \r(0x0D) \n(0x0A), or the C1
+           DEL byte (0x7F) — a genuine text file (RTF/XML/ChordPro) never
+           contains these; protobuf's varint/length-delimited encoding
+           produces them constantly. */
+        // eslint-disable-next-line no-control-regex
+        if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(text)) {
+            return 'pro7';
+        }
+        if (/^\s*<\?xml/.test(text) || text.indexOf('<RVPresentationDocument') !== -1) {
+            return 'pro6';
+        }
+        return 'chordpro';
+    });
+}
+
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    /* epic #1968 — .probundle/.proplaylist are forward-wired into the accept
+       list so the file picker doesn't grey them out, but their SERVER
+       handlers (P2/P3) don't exist yet — the change handler below routes
+       them to a "coming in a future update" toast rather than pretending
+       they work. */
+    input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,.probundle,.proplaylist,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -4082,11 +4141,51 @@ function importJSON() {
             /* FreeShow single-song export (#884). A folder of .show files
                exported as a .zip uses the ZIP path above instead. */
             importFreeShow(file);
-        } else if (lower.endsWith('.cho') || lower.endsWith('.chopro') || lower.endsWith('.crd') || lower.endsWith('.chord') || lower.endsWith('.pro')) {
-            /* ChordPro single-song import (#1264) — .cho/.chopro/.crd/.chord/.pro.
+        } else if (lower.endsWith('.cho') || lower.endsWith('.chopro') || lower.endsWith('.crd') || lower.endsWith('.chord')) {
+            /* ChordPro single-song import (#1264) — .cho/.chopro/.crd/.chord.
                Covers WorshipTools' hand-copied-from-Chords-tab export shape +
-               OnSong/OpenSong/SongBeamer interop. (.pro6 is matched earlier.) */
+               OnSong/OpenSong/SongBeamer interop. (.pro6 is matched earlier;
+               bare .pro is handled below — it's genuinely ambiguous with
+               ChordPro's own use of the extension, epic #1968.) */
             importChordPro(file);
+        } else if (lower.endsWith('.pro')) {
+            /* epic #1968 P0/P1 (plan §3.1) — '.pro' is genuinely ambiguous:
+               ChordPro's own documentation blesses the extension too, AND
+               ProPresenter 6/7+ both use it, so routing by extension alone
+               (the pre-#1968 behaviour: every '.pro' went straight to
+               importChordPro()) silently mis-parsed real PP7 files as text.
+               Content-sniff the first ~4 KB instead: binary (no valid UTF-8,
+               or a control byte outside \t\r\n — every real PP7 protobuf
+               trips this within ~100 bytes) -> ProPresenter 7+; clean text
+               starting with '<?xml' or containing '<RVPresentationDocument'
+               -> a mis-extensioned ProPresenter 6 export (imports gracefully
+               instead of erroring); anything else -> genuine ChordPro
+               (unchanged behaviour). This is a CONVENIENCE only — the server
+               re-sniffs the same way and authoritatively (api.php's
+               bulk_import_pro7 case decodes the actual protobuf), so a wrong
+               guess here can never corrupt data. */
+            sniffProContent(file).then(function (kind) {
+                if (kind === 'pro7') {
+                    importProPresenter7(file);
+                } else if (kind === 'pro6') {
+                    importPro6(file);
+                } else {
+                    importChordPro(file);
+                }
+            }).catch(function (err) {
+                try { console.warn('[importJSON] .pro content sniff failed, falling back to ChordPro:', err); } catch (_e) {}
+                importChordPro(file); // sniff itself failed — fall back to prior behaviour
+            });
+        } else if (lower.endsWith('.probundle') || lower.endsWith('.proplaylist')) {
+            /* epic #1968 P2/P3 — bundle + playlist import land in a later
+               update; forward-wired into the accept list (above) so the
+               file picker doesn't grey them out, but no server handler
+               exists yet. Do NOT advertise a path that would 400. */
+            showToast(
+                'ProPresenter ' + (lower.endsWith('.probundle') ? 'bundle (.probundle)' : 'playlist (.proplaylist)') +
+                ' import is coming in a future update.',
+                'info'
+            );
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
             /* Proclaim text/RTF single-song export (#1062). */
             importProclaim(file);
@@ -4106,8 +4205,9 @@ function importJSON() {
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
                 'FreeShow / EasyWorship), an OpenLyrics or OpenSong .xml/.opensong, ' +
-                'a ProPresenter .pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
-                'Proclaim .txt/.rtf, or a ChordPro .cho/.pro/.chopro/.crd/.chord.',
+                'a ProPresenter .pro6 or .pro (6 or 7+ — auto-detected), a FreeShow ' +
+                '.show, an EasyWorship Songs.db, a Proclaim .txt/.rtf, or a ChordPro ' +
+                '.cho/.chopro/.crd/.chord.',
                 'danger'
             );
         }
@@ -4288,6 +4388,25 @@ function importPro6(file) {
         action:     'bulk_import_pro6',
         field:      'pro6',
         consoleTag: 'bulk_import_pro6',
+    });
+}
+
+/**
+ * importProPresenter7(file) — ProPresenter 7+ single-song .pro import
+ * (epic #1968 / #885). A .pro protobuf presentation is one song with no
+ * songbook, so the server files it under a "ProPresenter 7 Import" (PP7)
+ * songbook. Reached only after importJSON()'s change handler content-sniffs
+ * a ".pro" upload (sniffProContent()) and finds binary protobuf bytes — the
+ * SERVER re-sniffs the same way authoritatively, so this wrapper never runs
+ * against a file the server would reject as not-actually-PP7. A folder of
+ * .pro files exported as a .zip goes through importBulkZip() instead (the
+ * ZIP path applies the identical 3-way sniff per entry).
+ */
+function importProPresenter7(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_pro7',
+        field:      'pro7',
+        consoleTag: 'bulk_import_pro7',
     });
 }
 

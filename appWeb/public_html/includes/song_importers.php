@@ -1480,7 +1480,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0, 'freeshow' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0, 'freeshow' => 0, 'propresenter7' => 0, 'chordpro' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -1530,10 +1530,36 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             $kind = 'videopsalm';
         } elseif ($ext === 'pro6') {
             $kind = 'pro6';
+        } elseif ($ext === 'pro') {
+            $kind = 'proauto';
         } elseif ($ext === 'show') {
             $kind = 'freeshow';
         } else {
             continue;
+        }
+
+        /* ProPresenter 7+ routing fix (#1968 P0/P1, plan §3.1) — '.pro' is
+           genuinely ambiguous (ChordPro's own docs bless '.pro' too), so a
+           ZIP entry with this extension is resolved HERE, once, by
+           content-sniffing it via the ONE shared sniff
+           (_bulkImport_sniffProDialect()) — the exact same authority the
+           client (editor.js) and api2.php's import_file 'proauto' target
+           both defer to. Reassigning $kind lets this entry fall straight
+           into whichever per-kind branch below already exists ('pro6', for
+           a mis-extensioned .pro6 export) or is added by this rider ('pro7'
+           / 'chordpro-in-zip') — a folder of mixed .pro dialects imports
+           correctly without the curator sorting them by hand first. */
+        if ($kind === 'proauto') {
+            $proSniffBody = $zip->getFromIndex($i);
+            if ($proSniffBody === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            $kind = _bulkImport_sniffProDialect($proSniffBody);
+            if ($kind === 'chordpro') {
+                $kind = 'chordpro-in-zip'; // avoid colliding with any future bare 'chordpro' kind
+            }
         }
 
         /* VideoPsalm files (#883) carry their own songbook metadata
@@ -1705,6 +1731,126 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                 $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $p6Err];
                 $songsFailed++;
                 $_perBookBump($p6Abbr, $p6Name, 'failed', 'save failed: ' . $p6Err, $name, $p6Number ?: null, 'save');
+            }
+            continue;
+        }
+
+        /* ProPresenter 7+ (epic #1968 / #885): each .pro is one song and
+           carries no songbook. Handle inline (no folder convention, mirrors
+           the .pro6/.show precedent immediately above/below): file under
+           the immediate parent folder's name when present, else a default
+           "ProPresenter 7 Import" (PP7) songbook. Reached only once
+           `_bulkImport_sniffProDialect()` (above) has confirmed the entry's
+           bytes are a genuine PP7 protobuf — a mis-extensioned .pro6 export
+           was already re-routed into the 'pro6' branch above instead. */
+        if ($kind === 'pro7') {
+            $p7body = $zip->getFromIndex($i);
+            if ($p7body === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$p7Parsed, $p7Reason] = _bulkImport_parsePro7($p7body);
+            if ($p7Parsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'ProPresenter 7+ parse failed: ' . $p7Reason];
+                $songsFailed++;
+                continue;
+            }
+            if ($p7Parsed['title'] === '') {
+                $stem = pathinfo($name, PATHINFO_FILENAME);
+                if ($stem !== '') { $p7Parsed['title'] = $stem; }
+            }
+            $p7Segments = explode('/', $name);
+            $p7Folder   = count($p7Segments) >= 2 ? $p7Segments[count($p7Segments) - 2] : '';
+            $p7Name     = $p7Folder !== '' ? $p7Folder : 'ProPresenter 7 Import';
+            $p7Abbr     = $p7Folder !== '' ? _bulkImport_videopsalmAbbrevFromHint($p7Folder, $p7Name) : 'PP7';
+            if ($p7Abbr === 'VP' || $p7Abbr === '') { $p7Abbr = 'PP7'; }
+            if (!isset($songbookSeen[$p7Abbr])) {
+                $state = _bulkImport_upsertSongbook($db, $p7Abbr, $p7Name, null);
+                $songbookSeen[$p7Abbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $p7Abbr; }
+                else                       { $songbooksExisting[] = $p7Abbr; }
+            }
+            if (!isset($songbookCounters[$p7Abbr])) {
+                $songbookCounters[$p7Abbr] = _bulkImport_nextSongNumberFor($db, $p7Abbr);
+            }
+            $p7Number = $songbookCounters[$p7Abbr];
+            $songbookCounters[$p7Abbr] = $p7Number + 1;
+            $p7Song = _bulkImport_assembleSong($p7Parsed, $p7Abbr, $p7Name, $p7Number);
+            [$p7Action, $p7Err] = _bulkImport_saveSong($db, $p7Song);
+            if ($p7Action === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['propresenter7']++;
+                $_perBookBump($p7Abbr, $p7Name, 'created');
+            } elseif ($p7Action === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($p7Abbr, $p7Name, 'skipped');
+                if (isset($p7Song['id']) && $p7Song['id'] !== '') {
+                    $skippedSongIds[] = (string)$p7Song['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $p7Err];
+                $songsFailed++;
+                $_perBookBump($p7Abbr, $p7Name, 'failed', 'save failed: ' . $p7Err, $name, $p7Number ?: null, 'save');
+            }
+            continue;
+        }
+
+        /* Genuine ChordPro found inside a ZIP by the '.pro' three-way sniff
+           above (epic #1968 P0's routing-fix rider — a folder of .pro files
+           now imports correctly regardless of which of the three real
+           dialects each entry actually is). Handle inline exactly like the
+           pro7/pro6/freeshow entries: file under the parent folder name when
+           present, else a default "ChordPro Import" (CHORDPRO) songbook.
+           A .cho/.chopro/.crd/.chord entry is NOT reachable here — this
+           file's ZIP router does not otherwise recognise those extensions,
+           so this branch exists only for the sniffed-as-ChordPro '.pro'
+           case; genuine ChordPro folders still import via the single-file
+           bulk_import_chordpro endpoint per-file today. */
+        if ($kind === 'chordpro-in-zip') {
+            $cpBody = $zip->getFromIndex($i);
+            if ($cpBody === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            $cpSegments = explode('/', $name);
+            $cpFolder   = count($cpSegments) >= 2 ? $cpSegments[count($cpSegments) - 2] : '';
+            $cpName     = $cpFolder !== '' ? $cpFolder : 'ChordPro Import';
+            $cpAbbr     = $cpFolder !== '' ? _bulkImport_videopsalmAbbrevFromHint($cpFolder, $cpName) : 'CHORDPRO';
+            if ($cpAbbr === 'VP' || $cpAbbr === '') { $cpAbbr = 'CHORDPRO'; }
+            if (!isset($songbookSeen[$cpAbbr])) {
+                $state = _bulkImport_upsertSongbook($db, $cpAbbr, $cpName, null);
+                $songbookSeen[$cpAbbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $cpAbbr; }
+                else                       { $songbooksExisting[] = $cpAbbr; }
+            }
+            if (!isset($songbookCounters[$cpAbbr])) {
+                $songbookCounters[$cpAbbr] = _bulkImport_nextSongNumberFor($db, $cpAbbr);
+            }
+            $cpNumber = $songbookCounters[$cpAbbr];
+            $songbookCounters[$cpAbbr] = $cpNumber + 1;
+            [$cpParsed, $cpReason] = _bulkImport_parseChordPro($cpBody, $cpAbbr, $cpName, $cpNumber);
+            if ($cpParsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'ChordPro parse failed: ' . $cpReason];
+                $songsFailed++;
+                continue;
+            }
+            [$cpAction, $cpErr] = _bulkImport_saveSong($db, $cpParsed);
+            if ($cpAction === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['chordpro']++;
+                $_perBookBump($cpAbbr, $cpName, 'created');
+            } elseif ($cpAction === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($cpAbbr, $cpName, 'skipped');
+                if (isset($cpParsed['id']) && $cpParsed['id'] !== '') {
+                    $skippedSongIds[] = (string)$cpParsed['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $cpErr];
+                $songsFailed++;
+                $_perBookBump($cpAbbr, $cpName, 'failed', 'save failed: ' . $cpErr, $name, $cpNumber ?: null, 'save');
             }
             continue;
         }
@@ -4554,6 +4700,76 @@ function _bulkImport_pro7AppendCueLines(array &$lines, string $text): void
             $lines[] = $ln;
         }
     }
+}
+
+/**
+ * The ONE `.pro` content-sniff (#1968 P0/P1, plan §3.1) — `.pro` is
+ * genuinely ambiguous: ChordPro's own documentation blesses the extension,
+ * AND ProPresenter 6/7+ both use it, so routing by extension alone
+ * mis-parses real files as text. This is the SERVER-side, AUTHORITATIVE
+ * sniff — the one thing every client-side guess (editor.js's
+ * `sniffProContent()`) and every server entry point (api2.php's
+ * `import_file` `'proauto'` target, this file's own `_bulkImport_processZip()`
+ * per-entry router) must resolve to before doing any real parsing. A wrong
+ * CLIENT route can never corrupt data because this function re-decides from
+ * the bytes themselves, never trusting the caller's guess.
+ *
+ * ELI5: look at the first few KB of the file. If it's normal readable text
+ * with no weird invisible control characters, it's either an old
+ * ProPresenter 6 XML file or a plain ChordPro song sheet — check for the
+ * XML tag to tell those two apart. If it's NOT readable text (raw binary
+ * bytes, the way a real ProPresenter 7+ file always is), it must be a
+ * ProPresenter 7+ protobuf.
+ *
+ * Rule (plan §3.1, verbatim):
+ *   - decodes as clean UTF-8 text (no NUL/control bytes outside \t\r\n):
+ *       - starts with `<?xml` or contains `<RVPresentationDocument`
+ *         -> ProPresenter 6 ('pro6') — a mis-extensioned .pro6 import still
+ *            works instead of erroring.
+ *       - else -> ChordPro ('chordpro') — unchanged behaviour for genuine
+ *         ChordPro `.pro` uploads.
+ *   - otherwise (invalid UTF-8, or a control byte outside \t\r\n — every
+ *     real PP7 protobuf trips this within ~100 bytes: varint field tags,
+ *     raw float colour components, length-delimited byte slices)
+ *     -> ProPresenter 7+ ('pro7').
+ *
+ * Only the first 4 KB is sniffed — plenty to see the RTF/protobuf
+ * character within any real file, and cheap even on a large upload.
+ *
+ * @param string $body raw bytes of the uploaded `.pro` file (full body or
+ *                      just a lead sample — only the first 4 KB is used)
+ * @return string one of 'pro6' | 'pro7' | 'chordpro'
+ * @see .claude/propresenter-interop-1968-plan.md §3.1
+ * @see appWeb/public_html/manage/editor/editor.js  sniffProContent() — the client-side convenience twin
+ */
+function _bulkImport_sniffProDialect(string $body): string
+{
+    $sample = substr($body, 0, 4096);
+
+    /* mb_check_encoding() rejects any byte sequence that is not valid
+       UTF-8 outright — this alone already catches most real PP7 files
+       (raw binary is very unlikely to happen to be well-formed UTF-8). */
+    $isCleanText = $sample === '' || mb_check_encoding($sample, 'UTF-8');
+
+    /* Belt-and-braces: even when the bytes happen to decode as valid
+       UTF-8, a genuine text file (RTF/XML/ChordPro) never contains a
+       C0 control byte other than \t (0x09) \r (0x0D) \n (0x0A), or the
+       C1 DEL byte (0x7F). Protobuf's varint/length-delimited encoding
+       produces these constantly. */
+    if ($isCleanText && preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $sample) === 1) {
+        $isCleanText = false;
+    }
+
+    if (!$isCleanText) {
+        return 'pro7';
+    }
+
+    $trimmedStart = ltrim($sample);
+    if (str_starts_with($trimmedStart, '<?xml') || str_contains($sample, '<RVPresentationDocument')) {
+        return 'pro6';
+    }
+
+    return 'chordpro';
 }
 
 /**
