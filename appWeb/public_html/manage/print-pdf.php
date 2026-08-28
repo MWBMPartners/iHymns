@@ -38,6 +38,26 @@ declare(strict_types=1);
  * advertised entitlement with its page's own gate) correctly has nothing to
  * check here — this file has no nav entry, because it is not a page.
  *
+ * AUTH — BEARER-THEN-COOKIE (API-coverage C6,
+ * `.claude/api-coverage-2026-08-28.md` §4.1): a native curator app has no
+ * cookie jar, so `_pdfResolveAuthenticatedUser()` below tries an
+ * `Authorization: Bearer <token>` header FIRST — resolved through the ONE
+ * shared verification core, `apiTokenResolveBearerUser()`
+ * (`includes/api_tokens.php`, rule #22 — never a second, forked token
+ * query) — and only when that is absent or doesn't verify falls through to
+ * EXACTLY the pre-existing `isAuthenticated()`/`getCurrentUser()` `/manage/`
+ * cookie-session check, unchanged in every particular. This is the SAME
+ * Bearer-then-cookie ordering `song-media.php`'s `_songMedia_resolveViewer()`
+ * uses, and the SAME shared-core wiring `manage/editor/api2.php`,
+ * `manage/editor/api.php`, and `manage/places-api.php` already use for their
+ * own Bearer support. A Bearer request that resolves to a valid user is
+ * authenticated exactly as a cookie session would be — same $currentUser
+ * shape, same "no additional entitlement" contract above, same everything
+ * downstream. This endpoint's CSRF gate (403, below) is UNCHANGED by this —
+ * it still requires `validateCsrfRequest()` to pass regardless of which auth
+ * path won; a native caller sends `X-Requested-With` like any other
+ * same-origin AJAX writer.
+ *
  * STATUS-CODE CONTRACT (rule #35 — branch on the CODE, never the prose):
  *   200  application/pdf bytes, streamed.
  *   204  `?ping=1` GET only — authenticated AND the engine is available.
@@ -121,6 +141,11 @@ register_shutdown_function(static function (): void {
    the whole-/manage/ fatal→activity-log mirror — isAuthenticated(), getCurrentUser()
    and validateCsrfRequest() all come from here. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* apiTokenResolveBearerUser() — the ONE shared Authorization: Bearer
+   verification core (rule #22), also used by song-media.php's own
+   Bearer-then-cookie resolver and by api2.php / api.php / places-api.php.
+   API-coverage C6, `.claude/api-coverage-2026-08-28.md` §4.1. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'html_sanitizer.php';
 /* $PAGE_OPTION_SCHEMA + ptSanitisePageOptions() — the SAME allow-list
@@ -168,13 +193,56 @@ function _pdfFailJson(int $status, string $message): void
 }
 
 /**
+ * Resolve the caller's identity — Bearer token first (native apps), then the
+ * `/manage/` cookie session — mirroring `song-media.php`'s
+ * `_songMedia_resolveViewer()` two-step ordering, but delegating the Bearer
+ * half to the ONE shared verification core instead of a second, forked
+ * `tblApiTokens` query (rule #22; API-coverage C6, §4.1 — see the file
+ * doc-block's "AUTH" section).
+ *
+ * ELI5: a browser proves who you are with a cookie it sends automatically; a
+ * native app has no cookie jar, so it proves who it is with an explicit
+ * `Authorization: Bearer <token>` header instead. This tries that header
+ * FIRST and, only when it's absent or doesn't verify, falls back to EXACTLY
+ * the pre-existing `isAuthenticated()`/`getCurrentUser()` cookie check this
+ * endpoint always used — so an existing `/manage/` browser request that
+ * carries no `Authorization` header runs through the SAME code path it
+ * always did, byte-identical.
+ *
+ * Side-effect-free (never calls `_pdfFailJson()` / sets a response code) so
+ * both the `?ping=1` probe and the main POST flow below can share it and
+ * decide separately how to react to a miss. Returns the same lowercase-key
+ * shape `getCurrentUser()` returns (`id`/`username`/`display_name`/`role`/
+ * `email`) either way, so every downstream `$currentUser['id']` read is
+ * unaffected by which path authenticated the request.
+ *
+ * @return array{id:int,username:string,display_name:?string,role:string,email:?string}|null
+ * @see appWeb/public_html/song-media.php                          _songMedia_resolveViewer() — the two-step this mirrors
+ * @see appWeb/public_html/includes/api_tokens.php                 apiTokenResolveBearerUser() — the ONE shared core (rule #22)
+ */
+function _pdfResolveAuthenticatedUser(): ?array
+{
+    $bearerUser = apiTokenResolveBearerUser(getDbMysqli());
+    if ($bearerUser !== null) {
+        return $bearerUser;
+    }
+    if (!isAuthenticated()) {
+        return null;
+    }
+    return getCurrentUser();
+}
+
+/**
  * `?ping=1` GET mode — no body either way. Lets a future client decide
  * whether to show a "Download PDF" affordance without hardcoding roles
  * client-side (plan §3.1). Handled FIRST, before the POST-only method gate
- * below, since it is the one legitimate non-POST request shape.
+ * below, since it is the one legitimate non-POST request shape. Auth here is
+ * the SAME Bearer-then-cookie resolution as the main POST flow below, so a
+ * native app's feature-detect probe reflects the SAME identity its real
+ * request would use.
  */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && isset($_GET['ping'])) {
-    if (!isAuthenticated()) {
+    if (_pdfResolveAuthenticatedUser() === null) {
         http_response_code(401);
         exit; // no body — mirrors qr.php's "status only" failure shape
     }
@@ -190,15 +258,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
     _pdfFailJson(405, 'POST required (or GET ?ping=1).');
 }
 
-/* ---- Auth (401) — isAuthenticated()+401 JSON, NOT requireAuth() ----
+/* ---- Auth (401) — Bearer-then-cookie via _pdfResolveAuthenticatedUser(),
+   401 JSON, NOT requireAuth() ----
    requireAuth() 302-redirects to /manage/login, which a JSON/fetch caller
    cannot usefully consume as "unauthenticated" — mirrors the proven
-   manage/places-api.php pattern (isAuthenticated() check → explicit 401 JSON)
-   rather than the redirect-shaped helper most FULL ADMIN PAGES use. */
-if (!isAuthenticated()) {
-    _pdfFailJson(401, 'Authentication required.');
-}
-$currentUser = getCurrentUser();
+   manage/places-api.php pattern (an explicit auth check → 401 JSON) rather
+   than the redirect-shaped helper most FULL ADMIN PAGES use. A Bearer
+   request that resolves to a valid user is authenticated exactly as a
+   cookie session would be (see the file doc-block's "AUTH" section); an
+   invalid/absent Bearer with no cookie session falls through to the SAME
+   401 this endpoint always returned. */
+$currentUser = _pdfResolveAuthenticatedUser();
 if (!$currentUser) {
     _pdfFailJson(401, 'Authentication required.');
 }
