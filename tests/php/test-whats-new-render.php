@@ -119,6 +119,26 @@ ok(
     'a heading between two bullet runs starts a fresh <ul> rather than merging them',
     markdownLiteRender("- a\n## Mid\n- b") === "<ul>\n<li>a</li>\n</ul>\n<h2>Mid</h2>\n<ul>\n<li>b</li>\n</ul>\n"
 );
+/* #1583 What's New line-break bug — WHATS-NEW.md wraps its bullets at ~80
+   columns with 2-space-indented continuation lines. A wrapped continuation
+   must FOLD into the same <li> (space-joined), never flush the list and emit
+   the remainder as a stray de-indented <p>. Two continuation lines exercise
+   the "append to last item" path repeatedly. */
+ok(
+    "a wrapped bullet's continuation lines fold into the same <li> (no stray <p>)",
+    markdownLiteRender("- **Title** — start of a long\n  wrapped bullet that continues\n  over three lines")
+        === "<ul>\n<li><strong>Title</strong> — start of a long wrapped bullet that continues over three lines</li>\n</ul>\n"
+);
+ok(
+    'a wrapped multi-item list keeps each item whole and separate',
+    markdownLiteRender("- one line A\n  cont A\n- two line B\n  cont B")
+        === "<ul>\n<li>one line A cont A</li>\n<li>two line B cont B</li>\n</ul>\n"
+);
+ok(
+    'a blank line after a wrapped bullet still starts a real new paragraph',
+    markdownLiteRender("- bullet\n  wrapped\n\nA real paragraph.")
+        === "<ul>\n<li>bullet wrapped</li>\n</ul>\n<p>A real paragraph.</p>\n"
+);
 ok('an empty string renders as empty output', markdownLiteRender('') === '');
 ok('whitespace-only input renders as empty output', markdownLiteRender("   \n\t\n  ") === '');
 

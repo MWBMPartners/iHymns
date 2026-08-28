@@ -187,6 +187,27 @@ function markdownLiteRender(string $md): string
             continue;
         }
 
+        /* A non-blank, non-bullet, non-heading line while a bullet list is
+           OPEN (and no paragraph is mid-flight) is a LAZY CONTINUATION of the
+           last list item — the wrapped remainder of a hand-wrapped bullet.
+           Join it into that <li> with a space instead of flushing the list
+           and emitting the remainder as a stray, de-indented <p>. This is the
+           #1583 "What's New" line-break bug: WHATS-NEW.md wraps its bullets at
+           ~80 columns with 2-space-indented continuation lines (valid
+           CommonMark a full parser folds into the item; the 2-space indent is
+           already gone by here because $trimmed = trim($line)). Mirrors the
+           paragraph soft-wrap directly below — CommonMark "lazy continuation
+           lines" (https://spec.commonmark.org/0.31.2/#lazy-continuation-line).
+           A blank line or a heading still flushes the list above, so this only
+           ever fires on a genuine wrapped continuation, never merges two
+           logically-separate blocks. Each segment is independently
+           inline-processed then space-joined, exactly as the paragraph path
+           does — the escape-first guarantee is unchanged. */
+        if (!empty($listItems) && empty($paragraph)) {
+            $listItems[count($listItems) - 1] .= ' ' . _markdownLiteInline($trimmed);
+            continue;
+        }
+
         /* Anything else is paragraph text. Consecutive non-blank lines
            join into ONE <p> (a soft-wrap) rather than one <p> per line —
            CHANGELOG.md's entries are long single logical lines and this
