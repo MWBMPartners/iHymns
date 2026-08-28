@@ -33,6 +33,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 /* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary; replaces
    the hardcoded key list below (fallback == today's literal exactly). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_licence_admin.php';  /* #1969 — shared org-licence CRUD core */
 /* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
    Live Follow leader-idle precedence chain (LiveIdleTimeoutMins /
    EnforceIdleTimeout) so this org-admin surface degrades cleanly on an
@@ -239,49 +240,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            /* #1969 — the three per-row handlers delegate to the shared core
+               (includes/org_licence_admin.php). The core validates the type
+               against the registry, normalises the fields, and scopes every
+               write to $orgId (own-only in the WHERE). The org-membership
+               authorisation for $orgId happened earlier in this handler. */
             case 'licence_add': {
-                $licenceType   = (string)($_POST['licence_type']    ?? '');
-                $licenceNumber = trim((string)($_POST['licence_number'] ?? ''));
-                $expiresAt     = trim((string)($_POST['expires_at']  ?? '')) ?: null;
-                $isActive      = !empty($_POST['is_active']) ? 1 : 0;
-                $notes         = trim((string)($_POST['notes']       ?? '')) ?: null;
-                if (!in_array($licenceType, $LICENCE_TYPES, true)) { $error = 'Unknown licence type.'; break; }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationLicences
-                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        LicenceNumber = VALUES(LicenceNumber),
-                        IsActive      = VALUES(IsActive),
-                        ExpiresAt     = VALUES(ExpiresAt),
-                        Notes         = VALUES(Notes)'
-                );
-                $stmt->bind_param('ississ',
-                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
-                $stmt->execute();
-                $stmt->close();
+                $licenceType = (string)($_POST['licence_type'] ?? '');
+                $res = orgLicenceUpsert($db, $orgId, $licenceType, $_POST);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not save the licence.'; break; }
                 logActivity('org_admin.licence_add', 'organisation', (string)$orgId, [
                     'licence_type'   => $licenceType,
-                    'licence_number' => $licenceNumber,
-                    'is_active'      => (bool)$isActive,
+                    'licence_number' => trim((string)($_POST['licence_number'] ?? '')),
+                    'is_active'      => !empty($_POST['is_active']),
                 ]);
                 $success = "Licence '{$licenceType}' saved.";
                 break;
             }
 
             case 'licence_change': {
-                $licenceId     = (int)($_POST['licence_id'] ?? 0);
-                $licenceNumber = trim((string)($_POST['licence_number'] ?? ''));
-                $expiresAt     = trim((string)($_POST['expires_at']  ?? '')) ?: null;
-                $isActive      = !empty($_POST['is_active']) ? 1 : 0;
-                $notes         = trim((string)($_POST['notes']       ?? '')) ?: null;
+                $licenceId = (int)($_POST['licence_id'] ?? 0);
                 if ($licenceId <= 0) { $error = 'Invalid licence row.'; break; }
 
-                /* Belt-and-braces: confirm the licence row actually
-                   belongs to the org we already authorised on. Stops a
-                   crafted POST that mixes a licence_id from one org with
-                   an org_id the user CAN admin. */
+                /* Belt-and-braces existence/ownership check for the user-facing
+                   "does not belong" error (the core's UPDATE is already own-only,
+                   but affected_rows can't tell "not found" from "no change"). */
                 $stmt = $db->prepare(
                     'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
                 );
@@ -291,18 +274,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
                 if (!$owns) { $error = 'Licence row does not belong to that organisation.'; break; }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblOrganisationLicences
-                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                $res = orgLicenceUpdateById($db, $orgId, $licenceId, $_POST);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not update the licence.'; break; }
                 logActivity('org_admin.licence_change', 'organisation', (string)$orgId, [
-                    'licence_id'   => $licenceId,
-                    'licence_number' => $licenceNumber,
-                    'is_active'    => (bool)$isActive,
+                    'licence_id'     => $licenceId,
+                    'licence_number' => trim((string)($_POST['licence_number'] ?? '')),
+                    'is_active'      => !empty($_POST['is_active']),
                 ]);
                 $success = 'Licence updated.';
                 break;
@@ -312,20 +289,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceId = (int)($_POST['licence_id'] ?? 0);
                 if ($licenceId <= 0) { $error = 'Invalid licence row.'; break; }
 
-                /* Same belt-and-braces check as licence_change. */
-                $stmt = $db->prepare(
-                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
-                );
-                $stmt->bind_param('ii', $licenceId, $orgId);
-                $stmt->execute();
-                $owns = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if (!$owns) { $error = 'Licence row does not belong to that organisation.'; break; }
-
-                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
-                $stmt->bind_param('i', $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                $res = orgLicenceDeleteById($db, $orgId, $licenceId);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not remove the licence.'; break; }
+                if (empty($res['deleted'])) { $error = 'Licence row does not belong to that organisation.'; break; }
                 logActivity('org_admin.licence_remove', 'organisation', (string)$orgId, [
                     'licence_id' => $licenceId,
                 ]);
@@ -580,16 +546,8 @@ foreach ($orgs as $o) {
     }
 
     try {
-        $stmt = $db->prepare(
-            'SELECT Id, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes
-               FROM tblOrganisationLicences
-              WHERE OrganisationId = ?
-              ORDER BY LicenceType ASC'
-        );
-        $stmt->bind_param('i', $orgId);
-        $stmt->execute();
-        $orgLicences[$orgId] = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $stmt->close();
+        /* #1969 — read via the shared core (same SELECT, one place). */
+        $orgLicences[$orgId] = orgLicenceList($db, $orgId);
     } catch (\Throwable $_e) {
         /* tblOrganisationLicences may not exist on a pre-migration deployment.
            Fall through to no licences shown. */

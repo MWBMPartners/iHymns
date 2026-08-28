@@ -25,6 +25,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    vocabulary. Replaces the hardcoded $LICENCE_TYPES literal below; degrades to
    LICENCE_TYPES_FALLBACK on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_licence_admin.php';  /* #1969 — shared org-licence CRUD core */
 /* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
    leader-idle precedence chain (LiveIdleTimeoutMins / EnforceIdleTimeout);
    same column-existence-tolerant posture as placeColumnExists() above. */
@@ -271,47 +272,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->close();
                 }
 
-                /* Multi-licence sync (#640). The submitted set replaces the
-                   join-table state. The primary licence_type is also folded
-                   in as one of the rows so the two surfaces stay coherent.
-                   Wrapped in try/catch so a partly-migrated install (no
-                   tblOrganisationLicences) just no-ops the join writes. */
-                try {
-                    $picked = (array)($_POST['additional_licences'] ?? []);
-                    $picked = array_values(array_unique(array_filter(
-                        array_map('strval', $picked),
-                        static fn($k) => $k !== '' && $k !== 'none'
-                    )));
-                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
-                        $picked[] = $licenceType;
-                    }
-                    /* Validate every picked key against the catalogue. */
-                    $picked = array_values(array_intersect($picked, $LICENCE_TYPE_KEYS));
-
-                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
-                    $del->bind_param('i', $id);
-                    $del->execute();
-                    $del->close();
-
-                    if (!empty($picked)) {
-                        $ins = $db->prepare(
-                            'INSERT INTO tblOrganisationLicences
-                                (OrganisationId, LicenceType, LicenceNumber)
-                             VALUES (?, ?, ?)'
-                        );
-                        foreach ($picked as $key) {
-                            /* Carry the primary's number onto the matching
-                               row so the two views agree; other rows
-                               carry NULL until edited individually in a
-                               future per-licence sub-form. */
-                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
-                            $ins->bind_param('iss', $id, $key, $num);
-                            $ins->execute();
-                        }
-                        $ins->close();
-                    }
-                } catch (\Throwable $_e) {
-                    /* tblOrganisationLicences not yet created — silent no-op. */
+                /* #1969 — multi-licence sync via the shared core, NON-
+                   DESTRUCTIVELY (orgLicenceSyncSet keeps every staying row's
+                   number/expiry/active/notes — the old DELETE-all + re-INSERT
+                   here wiped all of that on every save). Only run when the user
+                   may edit licences; a curator without the entitlement must not
+                   be able to change the licence set at all (the primary fields
+                   above are already preserved for them). The per-licence
+                   metadata (number/expiry/active/notes) is edited in the grid
+                   below the form via the `licence_change` action. */
+                if ($canEditOrgLicences) {
+                    $picked = array_map('strval', (array)($_POST['additional_licences'] ?? []));
+                    orgLicenceSyncSet($db, $id, $picked, $licenceType, $licenceNum, true);
                 }
 
                 if ($beforeOrg !== null) {
@@ -333,6 +305,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $success = "Organisation updated.";
+                break;
+            }
+
+            /* #1969 — edit ONE licence row's metadata (number / expiry /
+               active / notes) via the shared core. Which licence TYPES the org
+               holds is managed by the "Additional licences" checkboxes on the
+               update form above; this grid (rendered below the form) edits the
+               details of each held row. `manage_org_licences`-gated. */
+            case 'licence_change': {
+                if (!$canEditOrgLicences) {
+                    $error = 'You do not have permission to edit organisation licences.';
+                    break;
+                }
+                $orgId     = (int)($_POST['id'] ?? $_POST['org_id'] ?? 0);
+                $licenceId = (int)($_POST['licence_id'] ?? 0);
+                if ($orgId <= 0 || $licenceId <= 0) { $error = 'Invalid licence row.'; break; }
+
+                $res = orgLicenceUpdateById($db, $orgId, $licenceId, $_POST);
+                if (!$res['ok']) {
+                    $error = $res['error'] ?? 'Could not update the licence.';
+                    break;
+                }
+                logActivity('admin.organisations.licence_change', 'organisation', (string)$orgId, [
+                    'licence_id' => $licenceId,
+                ]);
+                $success = 'Licence updated.';
                 break;
             }
 
@@ -575,7 +573,8 @@ try {
 $editOrg      = null;
 $editMembers  = [];
 $candidates   = [];
-$editLicences = [];                  /* keys present in tblOrganisationLicences (#640) */
+$editLicences     = [];              /* keys present in tblOrganisationLicences (#640) */
+$editLicencesFull = [];              /* #1969 — the full rows for the per-row metadata grid */
 $multiLicenceTableExists = false;    /* Cached so the listing render can decide quickly */
 $editId = (int)($_GET['edit'] ?? 0);
 if ($editId > 0) {
@@ -586,22 +585,16 @@ if ($editId > 0) {
         $editOrg = $stmt->get_result()->fetch_assoc() ?: null;
         $stmt->close();
 
-        /* Pre-load the multi-licence rows for this org (#640). Wrapped
-           in try/catch so an install without migrate-organisation-
-           licences applied just renders the section empty. */
-        try {
-            $stmt = $db->prepare(
-                'SELECT LicenceType FROM tblOrganisationLicences
-                  WHERE OrganisationId = ? AND IsActive = 1'
-            );
-            $stmt->bind_param('i', $editId);
-            $stmt->execute();
-            $editLicences = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'LicenceType');
-            $stmt->close();
+        /* #1969 — pre-load the multi-licence rows via the shared core (empty on
+           an un-migrated install). `$editLicences` (the checkbox "checked"
+           state) is now every type the org holds — active or not — so a
+           held-but-inactive licence still shows ticked, with its Active flag
+           editable in the grid below; `$editLicencesFull` carries the rows for
+           that grid. */
+        if (orgLicenceTableExists($db)) {
+            $editLicencesFull = orgLicenceList($db, $editId);
+            $editLicences     = array_column($editLicencesFull, 'LicenceType');
             $multiLicenceTableExists = true;
-        } catch (\Throwable $_e) {
-            $editLicences = [];
-            $multiLicenceTableExists = false;
         }
 
         if ($editOrg) {
@@ -970,6 +963,72 @@ $csrf = csrfToken();
                     <i class="bi bi-save me-1"></i>Save settings
                 </button>
             </form>
+
+            <!-- #1969 — per-licence METADATA grid. Which licence TYPES the org
+                 holds is chosen by the "Additional licences" checkboxes in the
+                 Settings form above (synced non-destructively); THIS grid edits
+                 the details of each held licence — number, expiry, active flag,
+                 notes. A SEPARATE form per row (licence_change), sibling to the
+                 Settings form above, because HTML forbids nested forms. Gated on
+                 the manage_org_licences entitlement + the table existing. The
+                 same shared core (includes/org_licence_admin.php) backs the
+                 member self-service editor on /manage/my-organisations. -->
+            <?php if ($multiLicenceTableExists && $canEditOrgLicences && !empty($editLicencesFull)): ?>
+            <div class="card-admin p-3 mb-3">
+                <h3 class="h6 mb-2"><i class="bi bi-award me-2"></i>Licence details</h3>
+                <p class="text-muted small mb-2">Edit the number, expiry, active state and notes for each licence the organisation holds. Add or remove licence <em>types</em> with the “Additional licences” checkboxes in Settings above.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0 small align-middle admin-table-responsive">
+                        <thead><tr>
+                            <th>Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th><th class="text-end"></th>
+                        </tr></thead>
+                        <tbody>
+                        <?php foreach ($editLicencesFull as $l): ?>
+                            <tr>
+                                <td><code><?= htmlspecialchars((string)$l['LicenceType']) ?></code></td>
+                                <td colspan="5">
+                                    <form method="POST" class="d-inline-flex align-items-center gap-1 flex-wrap">
+                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                                        <input type="hidden" name="action" value="licence_change">
+                                        <input type="hidden" name="org_id" value="<?= (int)$editOrg['Id'] ?>">
+                                        <input type="hidden" name="licence_id" value="<?= (int)($l['Id'] ?? 0) ?>">
+                                        <span class="text-muted small" aria-hidden="true">№</span>
+                                        <input type="text" name="licence_number"
+                                               class="form-control form-control-sm py-0"
+                                               value="<?= htmlspecialchars((string)$l['LicenceNumber']) ?>"
+                                               title="Licence number" aria-label="Licence number for the <?= htmlspecialchars((string)$l['LicenceType'], ENT_QUOTES) ?> licence"
+                                               placeholder="Licence number" maxlength="100" style="width: 10rem;">
+                                        <span class="text-muted small" aria-hidden="true">Expires</span>
+                                        <input type="date" name="expires_at"
+                                               class="form-control form-control-sm py-0"
+                                               value="<?= htmlspecialchars(substr((string)($l['ExpiresAt'] ?? ''), 0, 10)) ?>"
+                                               title="Licence expiry date" aria-label="Expiry date for the <?= htmlspecialchars((string)$l['LicenceType'], ENT_QUOTES) ?> licence"
+                                               style="width: 9rem;">
+                                        <div class="form-check form-check-inline mb-0">
+                                            <input class="form-check-input" type="checkbox" name="is_active" value="1"
+                                                   id="lic-active-<?= (int)($l['Id'] ?? 0) ?>"
+                                                   <?= !empty($l['IsActive']) ? 'checked' : '' ?>
+                                                   aria-label="The <?= htmlspecialchars((string)$l['LicenceType'], ENT_QUOTES) ?> licence is active">
+                                            <label class="form-check-label small" for="lic-active-<?= (int)($l['Id'] ?? 0) ?>">active</label>
+                                        </div>
+                                        <input type="text" name="notes"
+                                               class="form-control form-control-sm py-0"
+                                               value="<?= htmlspecialchars((string)($l['Notes'] ?? '')) ?>"
+                                               title="Notes" aria-label="Notes for the <?= htmlspecialchars((string)$l['LicenceType'], ENT_QUOTES) ?> licence"
+                                               placeholder="Notes" maxlength="255" style="width: 11rem;">
+                                        <button type="submit" class="btn btn-sm btn-outline-info py-0 px-2" title="Save"
+                                                aria-label="Save <?= htmlspecialchars((string)$l['LicenceType'], ENT_QUOTES) ?> licence changes">
+                                            <i class="bi bi-check2" aria-hidden="true"></i> Save
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
 
             <!-- #1840 §4.3 — org brand colour (Share Card Option B). A SEPARATE
                  form/action (brand_save) rather than folded into the "Save
