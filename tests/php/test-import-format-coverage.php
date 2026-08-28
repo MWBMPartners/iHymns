@@ -77,6 +77,12 @@ declare(strict_types=1);
  * $formats dropdown → red; (c) truncating the opensong single-file
  * fixture → red; each restored → green.
  *
+ * #1968 PR-3 ADDITION (2026-08-28): the new 'proplaylist' $formatParsers
+ * entry's own check was mutated (`count($plan) > 0` → `count($plan) > 999`,
+ * an impossible threshold for the tiny real fixture) → the "'proplaylist'
+ * fixture parses successfully via its real parser" assertion went RED,
+ * then reverted → green.
+ *
  *   php tests/php/test-import-format-coverage.php
  *
  * Exit status 0 = all pass, 1 = at least one assertion failed.
@@ -458,6 +464,23 @@ $formatParsers = [
         'check'   => static function (string $body): bool {
             [$show] = _bulkImport_parseFreeShow($body);
             return $show !== null;
+        },
+    ],
+    'proplaylist' => [
+        /* epic #1968 PR-3 — reuses the SAME golden-fixture corpus as 'pro7'/
+           'probundle' above (modularity rule; the plan's "no more false
+           positives" mandate applies to a service order exactly as it does
+           to a single presentation — see those two entries' own comments).
+           Checks the pure decode + pure item-mapping core
+           (pp7ReadPlaylistBundle() + _bulkImport_proplaylistBuildPlan()),
+           both DB-free, same posture as every other entry here — never the
+           DB-touching _bulkImport_processProplaylist() orchestrator. */
+        'fixture' => dirname(__DIR__) . '/fixtures/propresenter/bussnet-sample-service.proplaylist',
+        'check'   => static function (string $body): bool {
+            require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/propresenter7_playlist.php';
+            $bundle = pp7ReadPlaylistBundle($body);
+            $plan   = _bulkImport_proplaylistBuildPlan($bundle['document'], $bundle['proEntries']);
+            return count($plan) > 0;
         },
     ],
     'proclaim' => [

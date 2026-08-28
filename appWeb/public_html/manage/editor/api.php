@@ -2564,6 +2564,102 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PROPLAYLIST — ProPresenter 7+ playlist (.proplaylist)
+     * import -> ONE iHymns set list (epic #1968 PR-3,
+     * plan .claude/propresenter-interop-1968-plan.md §5.1).
+     *
+     * POST /manage/editor/api?action=bulk_import_proplaylist
+     *   multipart field "proplaylist" = one .proplaylist ZIP.
+     *
+     * A `.proplaylist` is a ZIP (opened via the SAME tolerant reader
+     * `bulk_import_probundle` uses — real ProPresenter exports share the
+     * broken-EOCD ZIP64 quirk, includes/propresenter7_zip.php) holding one
+     * `data` entry (the service order itself) plus one `.pro` per embedded
+     * song plus whatever media those songs use. `_bulkImport_processProplaylist()`
+     * imports every embedded `.pro` through the EXACT SAME single-file
+     * pipeline `bulk_import_pro7` uses, resolves a referenced-but-not-
+     * embedded song against the existing catalogue by title, and writes ONE
+     * new `tblUserSetlists` row for the IMPORTING CURATOR — D2 (plan §12.3,
+     * owner decision UNANSWERED — used as directed, curator-first, no
+     * public surface this phase): this import CREATES SONGS, so it stays
+     * on the same editor-gated surface as `bulk_import_pro7`/
+     * `bulk_import_probundle`, never a public upload.
+     *
+     * Insert-only for the songs (honours the #1051 dedupeMode flag, exactly
+     * like every other single-file import endpoint); the set list itself is
+     * always a fresh INSERT (a new server-minted SetlistId per import — see
+     * `_bulkImport_proplaylistMintSetlistId()`'s doc-block). $currentUser['id']
+     * (this file's own top-of-file session resolution, L46) is threaded in
+     * as the set list's owner — the ONE place in this whole call chain that
+     * reads the authenticated session, per `_bulkImport_processProplaylist()`'s
+     * own "no session access, by design" doc-block note.
+     *
+     * Same summary shape as bulk_import_probundle, plus `setlists_created`/
+     * `setlist`. No bespoke auth/CSRF gate is added here — this file's
+     * top-of-file session + hasRole('editor') gate (L39-52) and the
+     * file-wide POST validateCsrfRequest() gate (L131-137, rule #29)
+     * already cover every case in this switch, this one included.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_proplaylist':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['proplaylist']) || ($_FILES['proplaylist']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['proplaylist']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "proplaylist" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* Same headroom rationale as bulk_import_probundle immediately
+           above — a `.proplaylist` carries its embedded songs' media
+           alongside them. */
+        $sizeBytes = (int)($_FILES['proplaylist']['size'] ?? 0);
+        if ($sizeBytes > 100 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .proplaylist file exceeds the 100 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['proplaylist']['tmp_name'];
+            $origName = (string)($_FILES['proplaylist']['name'] ?? 'playlist.proplaylist');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $importingUserId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            $summary = _bulkImport_processProplaylist($importingUserId, $body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_proplaylist');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_proplaylist] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_EASYWORSHIP — EasyWorship 6/7 SQLite import (#1058).
      *
      * POST /manage/editor/api?action=bulk_import_easyworship

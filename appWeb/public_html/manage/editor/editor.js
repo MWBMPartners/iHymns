@@ -4105,11 +4105,10 @@ function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
     /* epic #1968 — .probundle imports for real as of P2 (server handler
-       bulk_import_probundle). .proplaylist is still forward-wired into the
-       accept list below so the file picker doesn't grey it out, but its
-       SERVER handler (P3) doesn't exist yet — the change handler routes it
-       to a "coming in a future update" toast rather than pretending it
-       works. */
+       bulk_import_probundle); .proplaylist imports for real as of PR-3
+       (server handler bulk_import_proplaylist, plan §5.1) — both ZIP
+       containers with their own dedicated server handlers, so both are
+       routed straight through with no content sniff. */
     input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,.probundle,.proplaylist,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
@@ -4187,14 +4186,15 @@ function importJSON() {
                phase, plan §6 / P4). */
             importProbundle(file);
         } else if (lower.endsWith('.proplaylist')) {
-            /* epic #1968 P3 — playlist import lands in a later update;
-               forward-wired into the accept list (above) so the file
-               picker doesn't grey it out, but no server handler exists
-               yet. Do NOT advertise a path that would 400. */
-            showToast(
-                'ProPresenter playlist (.proplaylist) import is coming in a future update.',
-                'info'
-            );
+            /* epic #1968 PR-3 (plan §5.1) — a `.proplaylist` is ProPresenter's
+               whole service order: a ZIP holding a service-order document
+               plus one `.pro` per embedded song plus whatever media those
+               songs use. Server handler bulk_import_proplaylist imports
+               every embedded song through the same P1 pipeline and builds
+               ONE iHymns set list in the running order the leader had —
+               unambiguous ZIP container, no content sniff needed (same
+               posture as .probundle immediately above). */
+            importProplaylist(file);
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
             /* Proclaim text/RTF single-song export (#1062). */
             importProclaim(file);
@@ -4322,6 +4322,19 @@ function importSingleFileFormat(file, opts) {
             sx + ' existing.',
             'success'
         );
+        /* epic #1968 PR-3 — a `.proplaylist` import ALSO builds a set list;
+           every other importer never sets this key, so this stays a no-op
+           toast for them (rule #22: one generic summary handler, not a
+           forked one for the one format that returns an extra field). */
+        if (d.setlists_created > 0 && d.setlist && d.setlist.name) {
+            showToast(
+                'Set list "' + d.setlist.name + '" created with ' + d.setlist.songCount +
+                ' song' + (d.setlist.songCount === 1 ? '' : 's') +
+                (d.setlist.slotCount > 0 ? ' and ' + d.setlist.slotCount + ' running-order slot'
+                    + (d.setlist.slotCount === 1 ? '' : 's') : '') + '.',
+                'success'
+            );
+        }
         if (d.songs_failed > 0 || (d.errors && d.errors.length > 0)) {
             showToast(
                 'Note: ' + d.songs_failed + ' song' + (d.songs_failed === 1 ? '' : 's') +
@@ -4435,6 +4448,28 @@ function importProbundle(file) {
         action:     'bulk_import_probundle',
         field:      'probundle',
         consoleTag: 'bulk_import_probundle',
+    });
+}
+
+/**
+ * importProplaylist(file) — ProPresenter 7+ playlist (.proplaylist) import
+ * (epic #1968 PR-3, plan §5.1). A `.proplaylist` is a ZIP holding a service
+ * order plus one `.pro` per embedded song plus whatever media those songs
+ * use; the server (_bulkImport_processProplaylist()) imports every embedded
+ * song through the same single-file P1 pipeline `importProbundle()` uses
+ * AND builds ONE iHymns set list in the leader's own running order —
+ * headers/placeholders become running-order slots, a referenced-but-not-
+ * embedded song resolves against the existing catalogue by title. Mirrors
+ * `importProbundle()` field-for-field; the only difference downstream is
+ * that the server summary also carries `setlists_created`/`setlist`, which
+ * `importSingleFileFormat()`'s generic toast surfaces alongside the usual
+ * song counts (see that function's own doc-comment).
+ */
+function importProplaylist(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_proplaylist',
+        field:      'proplaylist',
+        consoleTag: 'bulk_import_proplaylist',
     });
 }
 

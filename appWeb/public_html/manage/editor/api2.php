@@ -5486,6 +5486,13 @@ try {
                    ChordPro/Pro6 ambiguity), so it maps straight to the
                    'probundle' body format below — no content sniff needed. */
                 'probundle' => 'probundle',
+                /* epic #1968 PR-3 — a `.proplaylist` is the SAME kind of ZIP
+                   container as `.probundle` (unambiguous, no content sniff
+                   needed) but decodes a DIFFERENT top-level message (a
+                   service order, not a single presentation) and produces a
+                   set list rather than (only) songs — see
+                   _bulkImport_processProplaylist()'s own doc-block. */
+                'proplaylist' => 'proplaylist',
                 default => '',
             };
 
@@ -5539,7 +5546,7 @@ try {
            directly in the UI dropdown); 'opensong' is also explicitly
            pickable so an operator can override a sniff that guessed wrong
            (same #1633 precedent as the iHymns-vs-VideoPsalm JSON override). */
-        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'pro7', 'probundle', 'proclaim', 'freeshow', 'chordpro'];
+        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'pro7', 'probundle', 'proplaylist', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
@@ -5554,6 +5561,18 @@ try {
                     'pro6'       => _bulkImport_processPro6($content, $origName),
                     'pro7'       => _bulkImport_processPro7($content, $origName),        // epic #1968 / #885
                     'probundle'  => _bulkImport_processProbundle($content, $origName),   // epic #1968 P2
+                    /* epic #1968 PR-3 — unlike every other arm above, this one
+                       creates a SET LIST, not just song(s), so it needs the
+                       resolved session user id as its owner. $ed2UserId is
+                       resolved once at file scope (this endpoint's own
+                       auth gate, above) — the ONE place this whole call
+                       chain reads the session, per _bulkImport_
+                       processProplaylist()'s own "no session access, by
+                       design" doc-block note. Never null here in practice
+                       (the file-scope guard already 403s an unauthenticated
+                       request before this switch is reached), coerced
+                       defensively rather than assumed. */
+                    'proplaylist' => _bulkImport_processProplaylist((int)($ed2UserId ?? 0), $content, $origName),
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),
                     'freeshow'   => _bulkImport_processFreeShow($content, $origName),
                     'chordpro'   => _bulkImport_processChordPro($content, $origName),   // #1264

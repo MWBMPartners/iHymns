@@ -108,6 +108,16 @@ declare(strict_types=1);
  * Every mutation was reverted immediately after confirming red; the tree
  * this test ships against is unmodified.
  *
+ * #1968 PR-3 ADDENDUM (2026-08-28): the media-warning LINE m4 targets was
+ * extracted verbatim into the shared, pure `_bulkImport_pp7MediaDeferredWarning()`
+ * (`.proplaylist` needs the IDENTICAL wording — rule #22/#35), with
+ * `_bulkImport_probundleFinishSummary()` now a thin caller of it.
+ * Re-mutating the shared helper (`$mediaCount <= 0` -> `$mediaCount < 0`)
+ * was re-run at that time and confirmed BOTH this suite's m4 assertion AND
+ * `test-pp7-proplaylist-import.php`'s own equivalent assertion go RED
+ * together, then reverted — real cross-suite evidence the extraction
+ * removed a duplicate rather than merely relocating one copy of it.
+ *
  *   php tests/php/test-pp7-probundle-import.php
  *
  * Exit 0 = all pass (Part B may SKIP without DB), 1 = at least one failure.

@@ -9,7 +9,7 @@ declare(strict_types=1);
  * by file type, both through the CSRF-guarded v2 API (api2.php) using the SHARED
  * importers (includes/song_importers.php — the same parsers the legacy editor
  * uses):
- *   - single song file (.json/.xml/.pro6/.pro/.probundle/.show/.txt/.pptx/.db) → import_file (sync)
+ *   - single song file (.json/.xml/.pro6/.pro/.probundle/.proplaylist/.show/.txt/.pptx/.db) → import_file (sync)
  *   - .zip of many songs → import_zip (async: fastcgi worker + tblBulkImportJobs),
  *     tracked live by the shared bulk-import-progress.js widget.
  * Import is INSERT-only — existing songs are skipped, never overwritten.
@@ -63,6 +63,15 @@ $formats = [
        needed). Media entries are reported, not imported (media ingest is a
        later phase, plan §6 / P4). */
     'probundle'   => 'ProPresenter 7+ Bundle (.probundle)',
+    /* epic #1968 PR-3 — `.proplaylist` is ProPresenter's whole SERVICE ORDER
+       (a ZIP: the running order + one `.pro` per embedded song + media),
+       distinct from `.probundle` (a flat collection of presentations with
+       no ordering/structure). Importing one creates the embedded songs
+       (same P1 pipeline) AND one iHymns set list in the leader's own
+       running order — see _bulkImport_processProplaylist()'s doc-block
+       (includes/song_importers.php). Unambiguous ZIP container, no content
+       sniff needed, same as `.probundle` immediately above. */
+    'proplaylist' => 'ProPresenter Playlist (.proplaylist)',
     'freeshow'    => 'FreeShow (.show)',
     'proclaim'    => 'Proclaim (.txt)',
     /* #1264 — ChordPro was already accepted by api2.php's import_file
@@ -119,7 +128,7 @@ $formats = [
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label small mb-1" for="imp-file">File</label>
-                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.probundle,.pptx,.db,.zip">
+                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.probundle,.proplaylist,.pptx,.db,.zip">
                 </div>
                 <div class="row g-3">
                     <div class="col-12 col-sm-7">
