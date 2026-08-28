@@ -4889,6 +4889,74 @@ paths:
         "405":
           description: POST method required
 
+  /api.php?action=device_rename:
+    post:
+      operationId: deviceRename
+      tags: [Authentication]
+      summary: Set or clear a friendly name on one of the caller's own devices (#1975)
+      description: |
+        Own-only — the UPDATE's `WHERE UserId = ?` clause means this can never
+        touch another user's token, regardless of what `id` is supplied.
+        Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 60 / hour per user.
+        An empty (or whitespace-only) `name` CLEARS the custom name — the device
+        then falls back to its platform / User-Agent-derived label. The stored
+        value (trimmed, capped to 120 code points) is echoed back as
+        `deviceName` so the client renders exactly what the server kept.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [device_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: The device `id` from `devices_list` (16-char lowercase hex).
+                name:
+                  type: string
+                  maxLength: 120
+                  description: The new display name. Empty or whitespace clears the custom name.
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Renamed. `deviceName` is the stored value (null when cleared).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  deviceName: { type: string, nullable: true }
+        "400":
+          description: Invalid device id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown device (belongs to a different user, or already signed out)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "409":
+          description: Device naming not available (columns not migrated on this server)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   # ===========================================================================
   # USER ACCESS
   # ===========================================================================

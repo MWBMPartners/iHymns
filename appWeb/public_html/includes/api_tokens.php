@@ -112,11 +112,7 @@ function apiTokenDeviceMetaFromBody(mixed $body): array
         $body = [];
     }
 
-    $deviceName = null;
-    if (isset($body['deviceName']) && is_string($body['deviceName'])) {
-        $trimmed = trim($body['deviceName']);
-        $deviceName = $trimmed !== '' ? mb_substr($trimmed, 0, 120) : null;
-    }
+    $deviceName = apiTokenCleanDeviceName($body['deviceName'] ?? null);
 
     $platform = null;
     if (isset($body['platform']) && is_string($body['platform'])) {
@@ -138,13 +134,127 @@ function apiTokenDeviceMetaFromBody(mixed $body): array
 }
 
 /**
+ * Trim + width-cap a client-supplied device name to the column's VARCHAR(120),
+ * or null when it is absent/blank/non-string. PURE — the ONE place a device
+ * name is normalised, shared by the sign-in body parser (above) and the
+ * `device_rename` write path (api.php), so the two can never disagree on what
+ * "" or an over-long name means (rule #35 — a mechanism, not two copies).
+ *
+ * @param mixed $raw
+ * @return ?string A non-empty string ≤120 code points, or null (blank = clear).
+ * @link https://www.php.net/manual/en/function.mb-substr.php
+ */
+function apiTokenCleanDeviceName(mixed $raw): ?string
+{
+    if (!is_string($raw)) {
+        return null;
+    }
+    $trimmed = trim($raw);
+    return $trimmed !== '' ? mb_substr($trimmed, 0, 120) : null;
+}
+
+/**
+ * Derive a FRIENDLY, display-only device label from a browser `User-Agent`
+ * string — e.g. "Chrome on Windows", "Safari on iPhone" — or null when the UA
+ * is not a recognised web browser (a native app with a bespoke UA, a bot, a
+ * script). #1975: this is what stops a fresh WEB sign-in showing as "Unnamed
+ * device" — the label is derived SERVER-SIDE from the request UA at token-issue
+ * time, so it covers every web sign-in path in one place with no client change
+ * and no schema column (the design chosen over a per-sign-in client field,
+ * which would half-ship the moment one of the ~6 mint sites forgot it — rule
+ * #33/#35). PURE (no superglobals) so it is a unit-testable truth table.
+ *
+ * Returns null — rather than guessing "web" — for an UNRECOGNISED UA, so a
+ * native/other client that sent no `platform` is left exactly as it was
+ * (Unnamed) instead of being mislabelled a browser; a native client that sends
+ * its own name/platform overrides this entirely (see apiTokenWebDeviceFallback).
+ *
+ * The browser checks are ORDER-SENSITIVE: Chrome/Edge/Opera/Samsung UAs all
+ * contain the literal "Safari/", and Edge/Opera contain "Chrome/", so the more
+ * specific tokens are tested first. Display-only + escaped on render, so this
+ * is never a security or auth decision — a wrong guess is only a cosmetic label.
+ *
+ * @param string $ua The raw `User-Agent` header.
+ * @return ?string "Browser on OS", "Browser", or null when unrecognised.
+ * @link https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/User-Agent
+ */
+function apiTokenBrowserLabelFromUA(string $ua): ?string
+{
+    if ($ua === '') {
+        return null;
+    }
+
+    /* OS family (best-effort; null when none matches). */
+    $os = null;
+    if (stripos($ua, 'iPhone') !== false)                                     { $os = 'iPhone'; }
+    elseif (stripos($ua, 'iPad') !== false)                                   { $os = 'iPad'; }
+    elseif (stripos($ua, 'Android') !== false)                                { $os = 'Android'; }
+    elseif (stripos($ua, 'CrOS') !== false)                                   { $os = 'ChromeOS'; }
+    elseif (stripos($ua, 'Windows NT') !== false)                             { $os = 'Windows'; }
+    elseif (stripos($ua, 'Mac OS X') !== false || stripos($ua, 'Macintosh') !== false) { $os = 'Mac'; }
+    elseif (stripos($ua, 'Linux') !== false)                                  { $os = 'Linux'; }
+
+    /* Browser (order matters — see the doc-block). */
+    $browser = null;
+    if (stripos($ua, 'Edg/') !== false || stripos($ua, 'EdgiOS') !== false || stripos($ua, 'EdgA') !== false) {
+        $browser = 'Edge';
+    } elseif (stripos($ua, 'OPR/') !== false || stripos($ua, 'Opera') !== false) {
+        $browser = 'Opera';
+    } elseif (stripos($ua, 'SamsungBrowser') !== false) {
+        $browser = 'Samsung Internet';
+    } elseif (stripos($ua, 'Firefox/') !== false || stripos($ua, 'FxiOS') !== false) {
+        $browser = 'Firefox';
+    } elseif (stripos($ua, 'CriOS') !== false || stripos($ua, 'Chrome/') !== false) {
+        $browser = 'Chrome';
+    } elseif (stripos($ua, 'Safari/') !== false) {
+        $browser = 'Safari';
+    }
+
+    if ($browser === null) {
+        return null; /* not a recognised browser → caller must NOT claim 'web' */
+    }
+    return $os !== null ? ($browser . ' on ' . $os) : $browser;
+}
+
+/**
+ * Apply the #1975 web auto-name fallback to a device-metadata pair. When the
+ * client declared NO platform AND the request UA is a recognised browser, fill
+ * in `platform = 'web'` and a friendly name derived from the UA; otherwise
+ * return the inputs unchanged. PURE (UA passed in) so it is unit-testable.
+ *
+ * Precedence: an explicit client `platform` (native app, or a web client that
+ * sent one) is ALWAYS respected — the fallback only ever fills a gap, never
+ * overrides. An unrecognised UA leaves the pair untouched (stays Unnamed rather
+ * than a wrong "web" guess).
+ *
+ * @return array{deviceName:?string,platform:?string}
+ */
+function apiTokenWebDeviceFallback(?string $deviceName, ?string $platform, string $ua): array
+{
+    if ($platform !== null) {
+        return ['deviceName' => $deviceName, 'platform' => $platform];
+    }
+    $label = apiTokenBrowserLabelFromUA($ua);
+    if ($label === null) {
+        return ['deviceName' => $deviceName, 'platform' => null];
+    }
+    return ['deviceName' => $deviceName ?? $label, 'platform' => 'web'];
+}
+
+/**
  * Persist an OPTIONAL device-metadata triple against the token row a
- * sign-in flow (auth_login / auth_apple / completeEmailLogin) JUST
- * inserted. No-ops silently — never throws, never blocks sign-in — both
- * when the columns aren't migrated yet AND when every field was null: a
+ * sign-in flow (auth_login / auth_apple / completeEmailLogin / auth_register)
+ * JUST inserted. No-ops silently — never throws, never blocks sign-in — both
+ * when the columns aren't migrated yet AND when every field is null: a
  * sign-in must NEVER fail because of this best-effort metadata write, which
  * is why every caller invokes this AFTER its own token INSERT has already
  * committed (mirrors how `setAuthTokenCookie()` is called post-insert too).
+ *
+ * #1975: applies the web auto-name fallback (apiTokenWebDeviceFallback) reading
+ * the request `User-Agent` FIRST, so a web sign-in that volunteered nothing is
+ * still stored with `platform='web'` + a friendly name instead of falling
+ * through to "Unnamed device". Doing it here — the ONE function every sign-in
+ * mint funnels through — means no per-mint client change can be forgotten.
  *
  * @param string $tokenHash sha256 hex of the just-minted raw token — the
  *                           SAME value already written to
@@ -152,6 +262,14 @@ function apiTokenDeviceMetaFromBody(mixed $body): array
  */
 function apiTokenDeviceMetaStore(\mysqli $db, string $tokenHash, ?string $deviceName, ?string $platform, ?string $appVersion): void
 {
+    /* #1975 — web auto-name fallback from the request UA, applied BEFORE the
+       all-null short-circuit so a UA-derived web label is not discarded. */
+    $ua = (isset($_SERVER['HTTP_USER_AGENT']) && is_string($_SERVER['HTTP_USER_AGENT']))
+        ? $_SERVER['HTTP_USER_AGENT'] : '';
+    $fb = apiTokenWebDeviceFallback($deviceName, $platform, $ua);
+    $deviceName = $fb['deviceName'];
+    $platform   = $fb['platform'];
+
     if ($deviceName === null && $platform === null && $appVersion === null) {
         return;
     }

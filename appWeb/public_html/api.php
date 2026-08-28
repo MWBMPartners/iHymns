@@ -3178,6 +3178,12 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
+            /* #1975 — device metadata (+ the web auto-name UA fallback inside
+               apiTokenDeviceMetaStore) so a brand-new registration is never
+               listed as "Unnamed device". Best-effort, never blocks sign-up. */
+            $regDeviceMeta = apiTokenDeviceMetaFromBody($body);
+            apiTokenDeviceMetaStore($db, $tokenHash, $regDeviceMeta['deviceName'], $regDeviceMeta['platform'], $regDeviceMeta['appVersion']);
+
             /* Cross-subdomain cookie — keeps sign-in state on every
                *.ihymns.app subdomain and survives iOS ITP longer than
                script-accessible storage (#390). */
@@ -5876,6 +5882,91 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * DEVICE RENAME (#1975) — set/clear a user-chosen friendly name on ONE
+         * of the caller's OWN signed-in devices. Mirrors device_signout's
+         * hardening exactly: POST-only, validateCsrfRequest() (same-origin),
+         * per-USER rate limit, and an UPDATE whose `UserId = ?` sits INSIDE the
+         * WHERE so it can only ever touch the caller's own token row. The
+         * device "id" is the same truncated hash prefix device_signout accepts
+         * — never the raw token, never the full hash. An empty name CLEARS the
+         * custom name (the row falls back to its platform/UA label).
+         * ================================================================= */
+        case 'device_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            /* Per-user rate limit (paired read+record, #1636) — same shape as
+               device_signout. Renaming is cheap but this stops a scripted flood. */
+            $renameIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('device_rename', $renameIp, 60, 3600, true, $userId);
+            recordRateLimitHit('device_rename', rateLimitKey($renameIp, $userId));
+
+            $db = getDbMysqli();
+            if (!apiTokensDeviceMetaColumnsExist($db)) {
+                /* 409, distinguishable by STATUS (rule #35) from a 404 unknown
+                   device — the client shows "naming isn't available here". */
+                sendJson(['error' => 'Device naming is not available on this server.'], 409);
+                break;
+            }
+
+            $deviceId = is_string($body['id'] ?? null) ? strtolower(trim($body['id'])) : '';
+            if (!preg_match('/^[a-f0-9]{' . API_TOKEN_DEVICE_ID_LENGTH . '}$/', $deviceId)) {
+                sendJson(['error' => 'Invalid device id.'], 400);
+                break;
+            }
+
+            /* Shared cleaner (api_tokens.php) — the SAME normalisation the
+               sign-in body parser uses, so "" (clear) and the 120-cap can never
+               diverge between the two write paths. */
+            $newName = apiTokenCleanDeviceName($body['name'] ?? null);
+
+            /* Own-only + existence check up front: the UPDATE's affected_rows is
+               0 both for "not found" AND for "value unchanged", so a prior
+               SELECT is the only way to tell a 404 from a successful no-op. The
+               LIKE prefix is safe — $deviceId is regex-pinned to hex above. */
+            $chk = $db->prepare('SELECT 1 FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%") LIMIT 1');
+            $chk->bind_param('is', $userId, $deviceId);
+            $chk->execute();
+            $exists = $chk->get_result()->num_rows > 0;
+            $chk->close();
+            if (!$exists) {
+                sendJson(['error' => 'Unknown device.'], 404);
+                break;
+            }
+
+            $upd = $db->prepare('UPDATE tblApiTokens SET DeviceName = ? WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
+            $upd->bind_param('sis', $newName, $userId, $deviceId);
+            $upd->execute();
+            $upd->close();
+
+            logActivity('auth.device_rename', 'user', (string)$userId, ['cleared' => ($newName === null)], 'success', $userId);
+
+            /* Echo the STORED value back so the client renders exactly what the
+               server kept (post-trim/cap), and knows whether it cleared. */
+            sendJson(['ok' => true, 'deviceName' => $newName]);
+            break;
+        }
+
+        /* =================================================================
          * APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-token registration
          * ONLY. Entirely DORMANT: nothing in this codebase calls
          * includes/apns.php's apnsSend() yet, and even a future caller that
@@ -8180,7 +8271,12 @@ if ($action !== null) {
             }
 
             /* Mint the standard bearer token — byte-identical machinery to
-               auth_login (api.php ~2216) / auth_apple (api.php ~3286). */
+               auth_login (api.php ~2216) / auth_apple (api.php ~3286).
+               #1975 no-device-meta: this is the DEVICE-CODE pairing flow for
+               limited-input devices (a TV / set-top box), whose request UA is
+               not a browser — the web auto-name fallback would mislabel it, so
+               naming is left to that device's own client sending platform +
+               device name. Guarded by tests/php/test-api-token-device-meta.php. */
             $token       = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
             $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);

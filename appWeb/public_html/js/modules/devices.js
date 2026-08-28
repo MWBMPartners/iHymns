@@ -62,6 +62,12 @@ import { EVT_AUTH_CHANGED } from '../constants.js';
 
 const LIST_ENDPOINT    = '/api?action=devices_list';
 const SIGNOUT_ENDPOINT = '/api?action=device_signout';
+const RENAME_ENDPOINT  = '/api?action=device_rename';
+
+/** The server's DeviceName column is VARCHAR(120); the client cleaner caps to
+ *  the same width so a name that survives here also survives the server's own
+ *  apiTokenCleanDeviceName() unchanged (rule #35 — one width, not two). */
+const DEVICE_NAME_MAX = 120;
 
 /* =========================================================================
  * PURE HELPERS
@@ -226,12 +232,78 @@ export function hasOtherDevices(devices) {
     return devices.filter((d) => d && d.isCurrent !== true).length > 0;
 }
 
+/**
+ * Normalise a typed device name the SAME way the server's
+ * apiTokenCleanDeviceName() does: trim, and cap at the column width. Empty
+ * (after trim) is returned as '' and means "clear the custom name" — the row
+ * then falls back to its platform/UA label. Kept in lock-step with the server
+ * width via DEVICE_NAME_MAX so a name accepted here is never silently truncated
+ * server-side (rule #35).
+ *
+ * @param {string} raw
+ * @returns {string} Trimmed, ≤ DEVICE_NAME_MAX chars. '' = clear.
+ */
+export function cleanDeviceNameInput(raw) {
+    const s = typeof raw === 'string' ? raw.trim() : '';
+    return s.length > DEVICE_NAME_MAX ? s.slice(0, DEVICE_NAME_MAX) : s;
+}
+
+/**
+ * Return a NEW device list with one row's name replaced, so a successful rename
+ * can update local state without a second round trip. `name` of '' clears the
+ * custom name (deviceName → null), mirroring the server. Unknown ids are a
+ * no-op. Extracted so the outcome is assertable without a DOM.
+ *
+ * @param {Array<{id?:string}>} devices
+ * @param {string} id
+ * @param {string} name  Cleaned name; '' clears.
+ * @returns {Array}
+ */
+export function applyRename(devices, id, name) {
+    if (!Array.isArray(devices)) return [];
+    return devices.map((d) =>
+        (d && d.id === id) ? { ...d, deviceName: name === '' ? null : name } : d);
+}
+
+/**
+ * What to tell the user about a failed RENAME, chosen BY HTTP STATUS (rule #35),
+ * mirroring signOutMessageForStatus. A 409 is specific to rename: the server
+ * has the device columns un-migrated, so naming genuinely isn't available here.
+ *
+ * @param {number} status
+ * @param {string} [serverMessage]
+ * @returns {string}
+ */
+export function renameMessageForStatus(status, serverMessage = '') {
+    const msg = typeof serverMessage === 'string' ? serverMessage.trim() : '';
+    switch (status) {
+        case 400:
+            return 'That name could not be used. Please try a different one.';
+        case 401:
+            return 'You are no longer signed in. Sign in again, then retry.';
+        case 403:
+            return 'That request was rejected as cross-origin. Reload the page and try again.';
+        case 404:
+            return 'That device is no longer signed in.';
+        case 409:
+            return 'Renaming devices is not available on this server yet.';
+        case 429:
+            return 'Too many rename attempts. Please wait a while and try again.';
+        default:
+            if (msg !== '') return msg;
+            return 'Could not rename that device (HTTP ' + status + '). Please try again.';
+    }
+}
+
 /* =========================================================================
  * DOM WIRING
  * ========================================================================= */
 
 /** Cached so a re-render after a sign-out does not need a second round trip. */
 let devices = [];
+/** The id of the row currently in inline-rename mode, or null. Exactly one row
+ *  can be edited at a time; re-rendering keys off this. */
+let editingId = null;
 /** Guards against double-binding when the router re-mounts the settings page. */
 let boundCard = null;
 /** The live EVT_AUTH_CHANGED subscription, so a re-mount can replace it rather
@@ -269,8 +341,30 @@ export function bootDevicesCard() {
            around by cloning nodes). Bound to the card, which the router replaces
            wholesale, so it goes away with the fragment. */
         card.querySelector('#devices-list')?.addEventListener('click', (e) => {
-            const btn = e.target instanceof Element ? e.target.closest('[data-device-signout]') : null;
-            if (btn) { onSignOutClick(btn); }
+            if (!(e.target instanceof Element)) return;
+            const signout = e.target.closest('[data-device-signout]');
+            if (signout) { onSignOutClick(signout); return; }
+            const rename = e.target.closest('[data-device-rename]');
+            if (rename) { enterRename(rename.getAttribute('data-device-rename') || ''); return; }
+            const save = e.target.closest('[data-device-rename-save]');
+            if (save) { saveRename(save.getAttribute('data-device-rename-save') || ''); return; }
+            const cancel = e.target.closest('[data-device-rename-cancel]');
+            if (cancel) { cancelRename(); return; }
+        });
+
+        /* Keyboard: Enter saves, Escape cancels — the expected affordance for an
+           inline text field. Bound to the list (which the router discards with
+           the fragment), delegated so a re-render cannot leak listeners. */
+        card.querySelector('#devices-list')?.addEventListener('keydown', (e) => {
+            const input = e.target instanceof Element ? e.target.closest('[data-device-rename-input]') : null;
+            if (!input) return;
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveRename(input.getAttribute('data-device-rename-input') || '');
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelRename();
+            }
         });
 
         /* The card only makes sense signed in, and auth can flip while the page
@@ -395,22 +489,58 @@ function renderRow(device, now) {
     const isCurrent = device?.isCurrent === true;
     const id        = typeof device?.id === 'string' ? device.id : '';
 
+    /* An id-less row (should not happen) can't be signed out or renamed —
+       render it as plain text so nothing dangles a broken control. */
+    if (id === '') {
+        return '<li class="list-group-item px-0"><strong>' + escapeHtml(label) + '</strong></li>';
+    }
+
+    /* ---- inline-rename mode ---------------------------------------------
+       The input is pre-filled with the CUSTOM name (deviceName), not the
+       derived label — renaming edits the stored name, and an auto/blank row
+       starts empty with the current label as its placeholder so the user sees
+       what it is called now. */
+    if (editingId === id) {
+        const custom = typeof device?.deviceName === 'string' ? device.deviceName : '';
+        return '<li class="list-group-item d-flex align-items-center gap-2 px-0"'
+             + ' data-device-row="' + escapeHtml(id) + '">'
+             + '<input type="text" class="form-control form-control-sm flex-grow-1"'
+             + ' data-device-rename-input="' + escapeHtml(id) + '"'
+             + ' value="' + escapeHtml(custom) + '"'
+             + ' maxlength="' + DEVICE_NAME_MAX + '"'
+             + ' placeholder="' + escapeHtml(label) + '"'
+             + ' aria-label="New name for ' + escapeHtml(label) + '">'
+             + '<button type="button" class="btn btn-primary btn-sm flex-shrink-0"'
+             + ' data-device-rename-save="' + escapeHtml(id) + '">Save</button>'
+             + '<button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"'
+             + ' data-device-rename-cancel="' + escapeHtml(id) + '">Cancel</button>'
+             + '</li>';
+    }
+
     const currentBadge = isCurrent
         ? ' <span class="badge text-bg-success align-middle">This device</span>'
         : '';
+
+    /* Rename is available on EVERY row, including the current one — naming
+       "This device" is exactly what makes a mixed list legible. */
+    const renameBtn =
+        '<button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0"'
+        + ' data-device-rename="' + escapeHtml(id) + '"'
+        + ' aria-label="Rename ' + escapeHtml(label) + '">'
+        + '<i class="fa-solid fa-pen me-1" aria-hidden="true"></i>Rename</button>';
 
     /* The current device gets no sign-out button. It would work — the server
        happily revokes the caller's own token — but it is indistinguishable from
        "Sign Out" three inches up the page, and a user who does not realise that
        is left wondering why Settings logged them out. */
-    const action = (isCurrent || id === '')
+    const signOutBtn = isCurrent
         ? ''
         : '<button type="button" class="btn btn-outline-danger btn-sm flex-shrink-0"'
           + ' data-device-signout="' + escapeHtml(id) + '"'
           + ' aria-label="Sign out ' + escapeHtml(label) + '">'
           + '<i class="fa-solid fa-right-from-bracket me-1" aria-hidden="true"></i>Sign out</button>';
 
-    return '<li class="list-group-item d-flex align-items-center gap-3 px-0"'
+    return '<li class="list-group-item d-flex align-items-center gap-2 px-0"'
          + ' data-device-row="' + escapeHtml(id) + '">'
          + '<div class="flex-grow-1">'
          + '<strong>' + escapeHtml(label) + '</strong>' + currentBadge
@@ -418,7 +548,8 @@ function renderRow(device, now) {
              ? '<small class="text-muted d-block">' + escapeHtml(secondary) + '</small>'
              : '')
          + '</div>'
-         + action
+         + renameBtn
+         + signOutBtn
          + '</li>';
 }
 
@@ -486,6 +617,125 @@ async function onSignOutClick(btn) {
         announce(text);
         btn.disabled = false;
     }
+}
+
+/**
+ * Enter inline-rename mode for one row: re-render so that row becomes an input,
+ * then move focus into it and select its text (a rename usually replaces the
+ * whole name). Only one row edits at a time.
+ *
+ * @param {string} id
+ */
+function enterRename(id) {
+    if (id === '') return;
+    editingId = id;
+    clearMessage();
+    renderDevices();
+    const input = document.querySelector('[data-device-rename-input="' + cssEscape(id) + '"]');
+    if (input instanceof HTMLInputElement) { input.focus(); input.select(); }
+}
+
+/**
+ * Leave inline-rename mode without saving, and put focus back on the row's
+ * Rename button so a keyboard user is not dropped to `<body>` (the same
+ * focus-management concern as focusAfterRemoval()).
+ */
+function cancelRename() {
+    const id = editingId;
+    editingId = null;
+    renderDevices();
+    if (id) {
+        const btn = document.querySelector('[data-device-rename="' + cssEscape(id) + '"]');
+        if (btn instanceof HTMLElement) btn.focus();
+    }
+}
+
+/**
+ * Read the edited value, clean it, and POST it. On success update local state
+ * and leave edit mode; on failure keep the field open so the user can correct
+ * it (except a 404, which means the device is gone — reconcile like sign-out).
+ *
+ * @param {string} id
+ */
+async function saveRename(id) {
+    if (id === '' || editingId !== id) return;
+    const input = document.querySelector('[data-device-rename-input="' + cssEscape(id) + '"]');
+    const name  = input instanceof HTMLInputElement ? cleanDeviceNameInput(input.value) : '';
+
+    try {
+        const res = await apiFetch(RENAME_ENDPOINT, {
+            method: 'POST',
+            auth: true,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, name }),
+        });
+
+        if (!res.ok) {
+            let serverMessage = '';
+            let stored = null;
+            try {
+                const data = await res.json();
+                if (data && typeof data.error === 'string') serverMessage = data.error;
+                if (data && typeof data.deviceName !== 'undefined') stored = data.deviceName;
+            } catch (_e) { /* no JSON body */ }
+
+            const text = renameMessageForStatus(res.status, serverMessage);
+            showMessage(text, 'danger');
+            announce(text);
+
+            if (res.status === 404) {
+                /* The token is already gone — drop the row rather than keep an
+                   edit field for a device the server does not have. */
+                devices = withoutDevice(devices, id);
+                editingId = null;
+                renderDevices();
+                focusAfterRemoval();
+            }
+            /* Any other error keeps the field open for a retry; stored is
+               ignored here because the write did not land. */
+            void stored;
+            return;
+        }
+
+        /* Trust the server's echoed value (post-trim/cap), falling back to what
+           we sent if it omitted one. */
+        let stored = name;
+        try {
+            const data = await res.json();
+            if (data && typeof data.deviceName !== 'undefined') {
+                stored = data.deviceName === null ? '' : String(data.deviceName);
+            }
+        } catch (_e) { /* keep the sent value */ }
+
+        devices = applyRename(devices, id, stored);
+        editingId = null;
+        renderDevices();
+        clearMessage();
+        const finalLabel = deviceLabel(devices.find((d) => d && d.id === id) || {});
+        announce('Renamed to ' + finalLabel + '.');
+        window.iHymnsApp?.showToast?.('Device renamed', 'success', 2000);
+        const btn = document.querySelector('[data-device-rename="' + cssEscape(id) + '"]');
+        if (btn instanceof HTMLElement) btn.focus();
+    } catch (_e) {
+        const text = 'Could not reach the server. Check your connection and try again.';
+        showMessage(text, 'danger');
+        announce(text);
+    }
+}
+
+/**
+ * Minimal CSS.escape shim for the truncated-hex device ids we build selectors
+ * from. The ids are already regex-pinned to `[a-f0-9]{16}` server-side, so this
+ * is belt-and-braces: it only ever sees lowercase hex, which needs no escaping,
+ * but going through CSS.escape (where available) keeps the selector correct if
+ * that ever changes.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+function cssEscape(id) {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(id);
+    return String(id).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
 /**
