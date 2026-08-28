@@ -36,13 +36,38 @@ Both source projects are MIT-licensed. Full licence text: see each project's own
 | `bussnet-test.pro` | bussnet | `doc/reference_samples/Test.pro` | 7,779 | `{author:"Autor", artist_credits:"Künstler", song_title:"Titel", publisher:"Herausgeber", copyright_year:1234, song_number:123456789, album:"Album"}` — every field is a German placeholder word ("Titel"="title", "Autor"="author", "Herausgeber"="publisher"); `copyright_year:1234` and `song_number:123456789` are obviously synthetic | 2 arrangements / 4 cue groups / repeated Chorus, full CCLI-block field coverage |
 | `bussnet-media-macro.pro` | bussnet | `doc/reference_samples/TestMitBildernUndMakro.pro` | 1,609 | `{}` — name `"Moderation"`, no © | `ACTION_TYPE_MEDIA` + `ACTION_TYPE_MACRO` actions interleaved with lyric cues |
 | `bussnet-testbild.probundle` | bussnet | `doc/reference_samples/TestBild.probundle` | 1,099 | inner `.pro` (`TestBild.pro`, 767 B) decodes to `{}` — synthetic image-test bundle (`test-background.png`) | `.probundle` layout 1 — media entry named by its **original relative filename** |
-| `bussnet-export-from-pp.probundle` | bussnet | `doc/reference_samples/RestBildExportFromPP.probundle` | 1,207 | inner `.pro` (`TestBild.pro`, 948 B) decodes to `{}` | `.probundle` layout 2 — a genuine **PP-exported** bundle (`Media/sample-media.png`), the broken-ZIP64-EOCD quirk the tolerant reader (P2) must handle |
+| `bussnet-export-from-pp.probundle` | bussnet | `doc/reference_samples/RestBildExportFromPP.probundle` | 1,207 | inner `.pro` (`TestBild.pro`, 948 B) decodes to `{}` | `.probundle` layout 2 — a genuine **PP-exported** bundle (`Media/sample-media.png`). ⚠️ Correction (verified during P2 implementation): despite the name, this small sample does **not** actually carry the broken-ZIP64-EOCD quirk — byte inspection found no ZIP64 EOCD record/locator at all, and `unzip`/`zipfile`/`\ZipArchive` all open it cleanly (see `includes/propresenter7_zip.php`'s file-level doc-block). It's genuine PP7 `.probundle` layout/media-naming coverage, not broken-EOCD coverage — see `synthetic-zip64.probundle` below for that. |
 | `bussnet-testplaylist.proplaylist` | bussnet | `doc/reference_samples/TestPlaylist.proplaylist` | 5,997 | both inner `.pro`s (`Embedded Song One.pro`, `Embedded Song Two.pro`) decode to `{}` | `.proplaylist` container: `data` (PlaylistDocument) + 2 embedded `.pro` + 1 media entry |
 | `bussnet-empty-playlist.proplaylist` | bussnet | `doc/reference_samples/ExamplePlaylists/EmptyPlaylist.proplaylist` | 382 | n/a — no embedded presentation | Playlist edge case: empty playlist, `data` entry only, and itself carries the broken-EOCD quirk (`unzip` needs its "missing 98 bytes" compensation path) |
 | `bussnet-sample-service.proplaylist` | bussnet | `doc/reference_samples/ExamplePlaylists/SampleService.proplaylist` | 2,992 | inner `.pro` (`Sample Song.pro`, decodes to `{}`) | Playlist with a single presentation item — the smallest non-empty playlist shape |
 | `bussnet-amazing-grace.pro` | bussnet | `doc/reference_samples/all-songs/Amazing Grace.pro` | 3,397 | `{}` — PD hymn (Newton), no ©/CCLI in file | More PD structure coverage |
 | `bussnet-doxology.pro` | bussnet | `doc/reference_samples/all-songs/Doxology.pro` | 2,293 | `{}` — PD hymn (Ken), no ©/CCLI in file | More PD structure coverage |
 | `bussnet-stille-nacht.pro` | bussnet | `doc/reference_samples/all-songs/Stille Nacht.pro` | 1,300 | `{}` — PD hymn (Mohr/Gruber), no ©/CCLI in file | More PD structure coverage |
+
+## Synthesised fixtures (not third-party — built from parts already listed above)
+
+Everything above this line is genuine, unmodified third-party output. The file below is
+**different in kind**: it is assembled by an iHymns tool from copyright-safe parts already
+committed in this directory, deliberately reproducing a real ProPresenter defect none of the
+small third-party samples above happen to exhibit (see the correction on
+`bussnet-export-from-pp.probundle`, above).
+
+| Committed name | Built by | Built from | Bytes | Covers |
+|---|---|---|---|---|
+| `synthetic-zip64.probundle` | `tools/pp7-gen-zip64-bundle.js` | `bussnet-test.pro`'s real bytes (STORED) + a synthetic placeholder media entry, both ZIP64-sentineled | 8,431 | **The real broken-ZIP64-EOCD quirk itself** — the central-directory-size field is deliberately overstated by 98 bytes in both the ZIP64 EOCD record and the classic EOCD mirror, the exact, independently-documented magnitude of ProPresenter's own bug (`bussnet/propresenter7-php-lib`'s `Zip64Fixer` + `doc/internal/learnings.md`, arrived at completely independently of this repo). Verified during authoring: PHP `\ZipArchive::open()` returns `ZIPARCHIVE_ER_INCONS` (21) — the same code observed opening the owner's real ~2 MB bundle; Python `zipfile` raises `BadZipFile('Corrupt zip64 end of central directory record')` — the same message `.claude/propresenter-interop-1968-plan.md` §4.1 quotes; `unzip -l` reports "missing 98 bytes… reported length of central directory is 98 bytes too long… Compensating" — the same wording `learnings.md` records for genuine ProPresenter output. `includes/propresenter7_zip.php`'s tolerant reader opens it and decodes the inner `.pro` correctly regardless. |
+
+**Why it exists:** the two genuine third-party `.probundle` fixtures above are both small enough
+(~1.1–1.2 KB) that a compliant writer never actually needed ZIP64 at all — neither one exercises
+the broken-EOCD code path the tolerant reader was built for (confirmed by byte inspection; see the
+correction on `bussnet-export-from-pp.probundle` above). Without this fixture, CI would have zero
+coverage of the actual breaking case — only a hand-built, single-entry synthetic byte string
+inside the test file itself (`tests/php/test-pp7-zip.php` section (f)) exercised the ZIP64
+sentinel-resolution code path, and nothing exercised the "a strict reader rejects this, ours
+doesn't" property end to end. `synthetic-zip64.probundle` closes that gap with a fixture that is
+real-file-shaped (genuine inner `.pro` bytes, real-PP7-export-style absolute media path,
+STORED+ZIP64 throughout) while staying entirely copyright-safe and deterministically regenerable
+(`node tools/pp7-gen-zip64-bundle.js`). See `tests/php/test-pp7-zip.php` section (g) for its
+dedicated test coverage and mutation-proof.
 
 ## Deliberately NOT committed (per the reference-sources triage)
 

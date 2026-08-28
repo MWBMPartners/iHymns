@@ -16425,7 +16425,7 @@ paths:
                 format:
                   type: string
                   default: auto
-                  enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, pro7, proclaim, freeshow, chordpro, pptx, easyworship]
+                  enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, pro7, probundle, proclaim, freeshow, chordpro, pptx, easyworship]
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
                 dryRun:
                   type: string

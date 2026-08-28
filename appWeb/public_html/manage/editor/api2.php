@@ -238,7 +238,7 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
- *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|pro7|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|pro7|probundle|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?, dryRun?) -> { ok, songs_created, ..., dry_run }
  *     format=auto on a .xml/.opensong upload resolves via the shared XML
  *     auto-router (_bulkImport_processXmlAuto(), #882) — it sniffs
  *     OpenLyrics vs OpenSong and tries the other parser once on a primary
@@ -249,6 +249,13 @@ declare(strict_types=1);
  *     7+ ('pro7'), XML/<RVPresentationDocument> -> a mis-extensioned
  *     ProPresenter 6 ('pro6'), else -> genuine ChordPro ('chordpro'); 'pro7'
  *     is also explicitly pickable from the format dropdown.
+ *     format=auto on a .probundle upload resolves straight to 'probundle'
+ *     (epic #1968 P2) — a bundle is unambiguously ProPresenter's own ZIP
+ *     container (no ChordPro/Pro6 ambiguity the way bare .pro has), so no
+ *     content sniff is needed; _bulkImport_processProbundle() imports every
+ *     `.pro` entry it contains and reports any media entries as warnings
+ *     (media ingest is a later phase, plan §6). 'probundle' is also
+ *     explicitly pickable from the format dropdown.
  *     #1674 — dryRun="1" runs every real pre-flight decision (existence +
  *     title-dedupe) but writes nothing; the response echoes `dry_run` (a
  *     KEY, not prose) so the client can brand the summary as a preview.
@@ -5474,6 +5481,11 @@ try {
                    mis-routed every real PP7 .pro upload to the ChordPro text
                    parser (plan §3.1's "the fix" bug report). */
                 'pro'   => 'proauto',
+                /* epic #1968 P2 — a `.probundle` is unambiguously ProPresenter's
+                   own ZIP container (unlike bare `.pro`, it carries no
+                   ChordPro/Pro6 ambiguity), so it maps straight to the
+                   'probundle' body format below — no content sniff needed. */
+                'probundle' => 'probundle',
                 default => '',
             };
 
@@ -5527,7 +5539,7 @@ try {
            directly in the UI dropdown); 'opensong' is also explicitly
            pickable so an operator can override a sniff that guessed wrong
            (same #1633 precedent as the iHymns-vs-VideoPsalm JSON override). */
-        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'pro7', 'proclaim', 'freeshow', 'chordpro'];
+        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'pro7', 'probundle', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
@@ -5541,6 +5553,7 @@ try {
                     'xmlauto'    => _bulkImport_processXmlAuto($content, $origName),     // #882
                     'pro6'       => _bulkImport_processPro6($content, $origName),
                     'pro7'       => _bulkImport_processPro7($content, $origName),        // epic #1968 / #885
+                    'probundle'  => _bulkImport_processProbundle($content, $origName),   // epic #1968 P2
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),
                     'freeshow'   => _bulkImport_processFreeShow($content, $origName),
                     'chordpro'   => _bulkImport_processChordPro($content, $origName),   // #1264

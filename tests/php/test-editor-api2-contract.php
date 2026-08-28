@@ -352,11 +352,11 @@ if (!is_file($v1DispatchFile)) {
         'bulk_import_status'      => ['import_zip_status'],
         'bulk_import_skipped_csv' => ['import_zip_skipped_csv'],
 
-        /* Nine per-format single-file import actions collapsed into ONE
+        /* Ten per-format single-file import actions collapsed into ONE
            generic handler (`import_file`, format=<name> in the request body)
            — verified against api2.php's own doc-block and $bodyFormats/match
-           arms (#882's commit 6 wiring; #1968 added the ninth, pro7), not
-           assumed from the name shape. */
+           arms (#882's commit 6 wiring; #1968 added the ninth, pro7, and the
+           tenth, probundle, P2), not assumed from the name shape. */
         'bulk_import_chordpro'    => ['import_file'],
         'bulk_import_easyworship' => ['import_file'],
         'bulk_import_freeshow'    => ['import_file'],
@@ -364,6 +364,7 @@ if (!is_file($v1DispatchFile)) {
         'bulk_import_pptx'        => ['import_file'],
         'bulk_import_pro6'        => ['import_file'],
         'bulk_import_pro7'        => ['import_file'],   /* epic #1968 / #885 */
+        'bulk_import_probundle'   => ['import_file'],   /* epic #1968 P2 */
         'bulk_import_proclaim'    => ['import_file'],
         'bulk_import_videopsalm'  => ['import_file'],
 

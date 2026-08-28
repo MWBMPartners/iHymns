@@ -2472,6 +2472,98 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PROBUNDLE — ProPresenter 7+ bundle (.probundle) import
+     * (epic #1968 P2, plan .claude/propresenter-interop-1968-plan.md §4.2).
+     * Mirrors the bulk_import_pro7 case immediately above, field-for-field
+     * — the ONE difference is the upload field name, the larger size cap
+     * (a genuine bundle carries media alongside its .pro(s)), and the
+     * processor function.
+     *
+     * POST /manage/editor/api?action=bulk_import_probundle
+     *   multipart field "probundle" = one .probundle ZIP.
+     *
+     * A `.probundle` is a ZIP (opened via the tolerant reader in
+     * includes/propresenter7_zip.php — real ProPresenter exports are
+     * ZIP64 with a broken end-of-central-directory record that
+     * \ZipArchive rejects outright, see that file's doc-block) holding one
+     * or more `.pro` presentations at its ROOT plus whatever media those
+     * presentations reference. _bulkImport_processProbundle() imports
+     * EVERY `.pro` entry through the exact same single-file pipeline a
+     * standalone `.pro` upload already uses (one _bulkImport_processPro7()
+     * call per entry, aggregated) and reports every media filename it saw
+     * — media ingest itself is a later phase (plan §6 / P4), so nothing is
+     * ingested here, but nothing is silently dropped either.
+     *
+     * Insert-only; honours the #1051 dedupeMode flag (threaded through by
+     * the SAME per-song _bulkImport_saveSong() every `.pro` entry reaches).
+     * Same summary shape as bulk_import_pro7, plus media_present/media_files.
+     * No bespoke auth/CSRF gate is added here — this file's top-of-file
+     * session + hasRole('editor') gate (L39-52) and the file-wide POST
+     * validateCsrfRequest() gate (L131-137, rule #29) already cover every
+     * case in this switch, this one included.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_probundle':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['probundle']) || ($_FILES['probundle']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['probundle']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "probundle" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A `.probundle` carries media alongside its `.pro`(s), so it needs
+           real headroom over a bare .pro (10 MiB) — 100 MiB covers a modest
+           set of background images/short clips without opening the door to
+           an unbounded upload; the ZIP reader's own per-entry (25 MiB) and
+           entry-count (4096) caps (includes/propresenter7_zip.php) apply on
+           top of this regardless of what this field-level check allows. */
+        $sizeBytes = (int)($_FILES['probundle']['size'] ?? 0);
+        if ($sizeBytes > 100 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .probundle file exceeds the 100 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['probundle']['tmp_name'];
+            $origName = (string)($_FILES['probundle']['name'] ?? 'bundle.probundle');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processProbundle($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_probundle');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_probundle] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_EASYWORSHIP — EasyWorship 6/7 SQLite import (#1058).
      *
      * POST /manage/editor/api?action=bulk_import_easyworship

@@ -414,6 +414,56 @@ function createFreshExporter(overrides) {
     return freshSandbox.window.iHymnsProPresenter;
 }
 
+/* #1968 P2 §4.3 — the shared `sandbox` above deliberately sets `document`/`URL`
+   undefined so `triggerDownload()` no-ops (see that function's own guard) — fine
+   for filename/count assertions, but proving the .probundle export-LAYOUT fix
+   (root-level .pro entries, no manifest.json) needs the actual ZIP BYTES
+   `exportAllAsBundle()` hands to `triggerDownload()`, which the no-op path never
+   exposes. This builds a fresh exporter instance with a `Blob`/`document`/`URL`
+   stand-in that CAPTURES those bytes instead of discarding them, reusing
+   `createFreshExporter()`'s override mechanism rather than forking a new one. */
+function createBundleCapturingExporter() {
+    let lastBytes = null;
+    class CapturingBlob {
+        constructor(parts) { lastBytes = parts && parts[0]; }
+    }
+    const anchor = { href: '', download: '', click() {} };
+    const freshExporter = createFreshExporter({
+        Blob: CapturingBlob,
+        document: {
+            createElement: () => anchor,
+            body: { appendChild() {}, removeChild() {} }
+        },
+        URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} }
+    });
+    return { exporter: freshExporter, getBytes: () => lastBytes };
+}
+
+/* Walks a ZIP's LOCAL FILE HEADERS (PK\x03\x04) from byte 0 and returns every
+   entry's raw NAME — the same shape/spirit as includes/propresenter7_zip.php's
+   pp7ZipListEntries() (deliberately NOT reusing any iHymns encoder/decoder here:
+   this is an independent, from-the-spec re-derivation, so a bug shared between
+   buildZip() and a shared reader couldn't hide the export-layout regression this
+   test exists to catch). buildZip() (propresenter-export.js SECTION 10) always
+   writes STORED (method 0) entries with the name stored as literal UTF-8 bytes
+   in the local header, immediately after the 30-byte fixed portion — see that
+   function's own field-by-field construction. */
+function listZipEntryNames(bytes) {
+    const buf = Buffer.from(bytes);
+    const names = [];
+    let pos = 0;
+    while (pos + 4 <= buf.length && buf.readUInt32LE(pos) === 0x04034b50) {
+        const method   = buf.readUInt16LE(pos + 8);
+        const compSize = buf.readUInt32LE(pos + 18);
+        const nameLen  = buf.readUInt16LE(pos + 26);
+        const extraLen = buf.readUInt16LE(pos + 28);
+        names.push(buf.toString('utf8', pos + 30, pos + 30 + nameLen));
+        assert.equal(method, 0, 'expected every buildZip() entry to be STORED (method 0)');
+        pos = pos + 30 + nameLen + extraLen + compSize;
+    }
+    return names;
+}
+
 (async function run() {
     /* ---------------------------------------------------------------- */
     console.log('Initialisation:');
@@ -952,6 +1002,75 @@ function createFreshExporter(overrides) {
         assert.equal(result.filename, 'Carol Praise (CP) [Bundle].probundle');
         assert.equal(result.count, 1);
     });
+
+    /* #1968 P2 §4.3 — the export-layout FIX. Real ProPresenter-exported bundles
+       carry their `.pro`(s) at the ZIP ROOT with NO manifest file (the inner
+       `.pro` IS the manifest — see includes/propresenter7_zip.php's doc-block
+       and .claude/propresenter-interop-1968-plan.md §4 for the byte-verified
+       ground truth). This exporter used to invent a "Documents/" + top-level
+       "manifest.json" layout that was never verified against real ProPresenter
+       — exactly the false-positive class this epic exists to kill.
+
+       MUTATION PROOF (performed 2026-08-28 against the real working tree, each
+       mutation applied, this suite re-run and confirmed RED, then reverted via
+       the Edit tool back to the exact original text before moving on — rule #34):
+         m1 — re-prefixed every entry name with 'Documents/' (the old layout) ->
+              the "ROOT, no Documents/ prefix" test went RED (2 of 3 new tests
+              failed: the single-song root check and the multi-song root check).
+         m2 — re-added the 'manifest.json' unshift() (the old invented file) ->
+              3 of the 3 new tests went RED (entry COUNT no longer matched 1/3,
+              so even the root-prefix checks failed downstream of the count
+              assertion).
+       Both mutations were reverted immediately after confirming red; the
+       propresenter-export.js this suite ships against is unmodified. */
+    await test('exportAllAsBundle: .pro entries sit at the bundle ROOT, no "Documents/" prefix', async () => {
+        const { exporter: capturingExporter, getBytes } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        const result = await capturingExporter.exportAllAsBundle(
+            [SAMPLE_SONG],
+            { songbookName: 'Carol Praise', songbookAbbrev: 'CP' }
+        );
+        const zipBytes = getBytes();
+        assert.ok(zipBytes, 'expected exportAllAsBundle() to hand triggerDownload() real ZIP bytes');
+        assert.equal(result.count, 1);
+        const names = listZipEntryNames(zipBytes);
+        assert.equal(names.length, 1, 'expected exactly one entry (the one song, no manifest)');
+        assert.ok(!names[0].includes('/'), `expected the .pro entry name to carry NO '/' at all (sitting at the ZIP root), got '${names[0]}'`);
+        assert.ok(!/^Documents\//.test(names[0]), `expected NO "Documents/" prefix on '${names[0]}' (the pre-#1968 invented layout)`);
+        assert.ok(names[0].endsWith('.pro'), `expected a '.pro' entry, got '${names[0]}'`);
+    });
+
+    await test('exportAllAsBundle: NO manifest.json entry anywhere in the ZIP', async () => {
+        const { exporter: capturingExporter, getBytes } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        await capturingExporter.exportAllAsBundle(
+            [SAMPLE_SONG],
+            { songbookName: 'Carol Praise', songbookAbbrev: 'CP' }
+        );
+        const names = listZipEntryNames(getBytes());
+        assert.ok(!names.includes('manifest.json'), `expected no 'manifest.json' entry, got entries: ${names.join(', ')}`);
+    });
+
+    await test('exportAllAsBundle: a MULTI-song bundle has every .pro at root, one entry per song, no manifest', async () => {
+        const { exporter: capturingExporter, getBytes } = createBundleCapturingExporter();
+        await capturingExporter.init({ protobuf, bundle });
+        const subset = [
+            { songbook: 'CP', number: 1, title: 'Song One',
+              components: [{ type: 'verse', number: 1, lines: ['x'] }] },
+            { songbook: 'CP', number: 2, title: 'Song Two',
+              components: [{ type: 'verse', number: 1, lines: ['x'] }] },
+            { songbook: 'CP', number: 3, title: 'Song Three',
+              components: [{ type: 'verse', number: 1, lines: ['x'] }] }
+        ];
+        await capturingExporter.exportAllAsBundle(subset, { songbookName: 'Carol Praise', songbookAbbrev: 'CP' });
+        const names = listZipEntryNames(getBytes());
+        assert.equal(names.length, 3, `expected exactly 3 entries (one .pro per song, no manifest), got: ${names.join(', ')}`);
+        names.forEach((n) => {
+            assert.ok(!n.includes('/'), `expected '${n}' to carry no '/' (root-level)`);
+            assert.ok(n.endsWith('.pro'), `expected '${n}' to be a .pro entry`);
+        });
+    });
+
     await test('bulk export pads <SongNumber> to the songbook width via songbookSize hint', async () => {
         exporter._internal.resetForTests();
         await exporter.init({ protobuf, bundle });

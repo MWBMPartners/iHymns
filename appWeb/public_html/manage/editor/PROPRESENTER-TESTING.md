@@ -244,10 +244,15 @@ against the schema, and confirms `Presentation.name` and
    - Expected toast while it builds: `Building ProPresenter bundle for
      <ABBR>…`
    - Expected: file `<Songbook Name> (<ABBR>) [Bundle].probundle`
-     downloads, containing a `manifest.json` at the root and a
-     `Documents/` folder with one `.pro` per song in that songbook
-     (verified against `exportAllAsBundle()` in
-     `propresenter-export.js`).
+     downloads, containing one `.pro` per song in that songbook sitting
+     at the ZIP **root** — no `Documents/` folder, no `manifest.json`
+     (#1968 P2 fix: real ProPresenter-exported bundles carry the
+     `.pro`(s) at root with no manifest file at all — the inner
+     `.pro`(s) ARE the manifest; the earlier `Documents/` +
+     `manifest.json` layout this doc used to describe was an invented,
+     never-verified guess. Verified against `exportAllAsBundle()` in
+     `propresenter-export.js` and the byte-inspected real fixtures —
+     see `.claude/propresenter-interop-1968-plan.md` §4).
    - Expected success toast: `Exported N song(s) → <bundle name>`.
 
 There is currently no ZIP bundle option for ProPresenter 7+ in this UI
@@ -442,12 +447,25 @@ code.
   the wire-format for the messages this importer reads is unchanged
   across that whole range — an unrecognised field from a newer
   ProPresenter version is skipped, never an error).
-- **NOT yet supported** (tracked as later phases of epic #1968, not
-  bugs): `.probundle` (ZIP bundle) and `.proplaylist` (playlist
-  export) are accepted by the file picker (forward-wired) but show a
-  "coming in a future update" toast — there is no server handler for
-  either yet. A ZIP containing plain `.pro` files (no bundle manifest)
-  DOES work via the existing ZIP importer.
+- **`.probundle`** (epic #1968 P2) — a ZIP holding one or more `.pro`
+  presentations at its root plus whatever media they reference (see
+  §4.3 above and `.claude/propresenter-interop-1968-plan.md` §4 for
+  the byte-verified layout: `.pro`(s) at ROOT, no manifest file).
+  `includes/propresenter7_zip.php`'s tolerant reader opens it (real
+  ProPresenter exports are ZIP64 with a broken end-of-central-directory
+  record `\ZipArchive` rejects outright — see that file's doc-block),
+  and `_bulkImport_processProbundle()` (`includes/song_importers.php`)
+  imports EVERY `.pro` entry it finds through the exact same
+  `_bulkImport_processPro7()` pipeline §8.0 describes, one call per
+  entry, aggregated into one summary. Media entries are **counted and
+  named in the summary's `warnings[]`/`media_files[]`, never
+  imported** — media ingest is a later phase (plan §6 / P4).
+- **NOT yet supported** (tracked as a later phase of epic #1968, not a
+  bug): `.proplaylist` (playlist export) is accepted by the file
+  picker (forward-wired) but shows a "coming in a future update" toast
+  — there is no server handler for it yet (P3). A ZIP containing plain
+  `.pro` files (no bundle manifest) DOES work via the existing ZIP
+  importer.
 
 ### 8.2 Content-sniff behaviour — why `.pro` needs one at all
 
