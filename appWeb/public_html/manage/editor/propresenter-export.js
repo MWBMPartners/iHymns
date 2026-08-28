@@ -95,6 +95,15 @@
        legible at the call site below. */
     var ACTION_TYPE_PRESENTATION_SLIDE = 11;
 
+    /* #1979 — ACTION_TYPE_MEDIA = 2 + LAYER_TYPE_BACKGROUND = 0 (action.proto /
+       media.proto). Used by buildBackgroundMediaCue() to attach an imported
+       song's background video/image to the exported bundle. Both values were
+       byte-verified against a REAL PP-authored media action: TestBild.pro
+       (bussnet-testbild.probundle) uses `type: ACTION_TYPE_MEDIA`, and the
+       owner's genuine v21.4 "Lyrics Background" video cue omits layer_type (the
+       proto default 0 = BACKGROUND) — so this exporter omits it too. */
+    var ACTION_TYPE_MEDIA = 2;
+
     /* ==================================================================
      *  SECTION 2 — Protobuf root initialisation
      * ==================================================================
@@ -521,7 +530,11 @@
             pso = DEFAULT_EXPORT_OPTIONS.preSlideOrder;
         }
 
-        return { linesPerSlide: lps, preSlideOrder: pso };
+        /* #1979 — pass a resolved background-media descriptor through
+           unchanged (normaliseOptions otherwise whitelists only the two
+           text options above, which would silently drop it). Shape:
+           { filename, kind:'video'|'image', ext } or null/absent. */
+        return { linesPerSlide: lps, preSlideOrder: pso, backgroundMedia: options.backgroundMedia || null };
     }
 
     /* Split a lines array into N-line chunks, dropping trailing empty
@@ -769,6 +782,103 @@
         };
     }
 
+    /* ==================================================================
+     *  #1979 — background-media (P4 export follow-on, issue #1979)
+     * ==================================================================
+     * Embed an imported song's background video/image into a single-song
+     * `.probundle` and reference it from the `.pro`. The media ACTION shape
+     * below was verified field-for-field against a REAL PP-authored media
+     * action (TestBild.pro, bussnet-testbild.probundle) and round-trips
+     * through this repo's own PHP decoder (mediaRefs resolve by basename).
+     * Only PUBLIC media ever reaches here: the public `song_data` read is
+     * visibility-filtered (#1968 P4), so an admin-only row is never exportable
+     * until a curator publishes it. */
+
+    /* The ROOT_CURRENT_RESOURCE URL for a bundled media FILENAME. Matches the
+       real PP media action: `absolute_string` is the BARE filename (NOT the
+       `file://` form buildPlaylistPresentationUrl() uses for a document_path),
+       and `local` carries the portable bundle-relative path. */
+    function buildMediaCurrentResourceUrl(filename) {
+        return {
+            absolute_string: filename,
+            local: { root: URL_LOCAL_ROOT_CURRENT_RESOURCE, path: filename }
+        };
+    }
+
+    /* One "Lyrics Background" cue group + media cue for a background
+       video/image. `bg` = { filename, kind:'video'|'image', ext }. The
+       type-specific mirror (element.video.file.local_url / element.image.
+       file.local_url) carries the SAME CURRENT_RESOURCE URL as element.url —
+       PP needs URL.local on both or it reports "media not found". Returns
+       { cue, group }. */
+    function buildBackgroundMediaCue(bg) {
+        var element = {
+            uuid: uuidMsg(),
+            url: buildMediaCurrentResourceUrl(bg.filename),
+            metadata: { format: bg.ext || '' }
+        };
+        var fileProps = { local_url: buildMediaCurrentResourceUrl(bg.filename) };
+        if (bg.kind === 'video') { element.video = { file: fileProps }; }
+        else { element.image = { file: fileProps }; }
+        var cueUuid = uuidMsg();
+        var cue = {
+            uuid: cueUuid,
+            actions: [{
+                uuid: uuidMsg(),
+                name: bg.filename,
+                isEnabled: true,
+                type: ACTION_TYPE_MEDIA
+                /* media.layer_type omitted = proto default 0 = LAYER_TYPE_BACKGROUND,
+                   matching the owner's real "Lyrics Background" video cue. */
+            }]
+        };
+        cue.actions[0].media = { element: element };
+        return {
+            cue: cue,
+            group: { group: { uuid: uuidMsg(), name: 'Lyrics Background' }, cue_identifiers: [cueUuid] }
+        };
+    }
+
+    /* A ZIP-safe media filename that KEEPS its extension (unlike
+       sanitizeFilename, which the .pro name uses): strip any path separators
+       and control chars, collapse to a basename. */
+    function sanitizeMediaFilename(name) {
+        var base = String(name || 'media').replace(/^.*[\\/]/, '');       // drop any dir prefix
+        base = base.replace(/[\x00-\x1f\x7f"*:<>?|]/g, '').trim();        // ZIP/OS-unsafe chars
+        return base || 'media';
+    }
+
+    /* Derive the media format token (PP `metadata.format`) — the filename's
+       own extension, else a MIME fallback. */
+    function mediaFormatToken(filename, mimeType) {
+        var dot = filename.lastIndexOf('.');
+        if (dot > 0 && dot < filename.length - 1) { return filename.slice(dot + 1).toLowerCase(); }
+        var map = {
+            'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-m4v': 'm4v',
+            'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp'
+        };
+        return map[mimeType] || '';
+    }
+
+    /* Choose ONE background from a song's PUBLIC media: the first video, else
+       the first image (a PP presentation carries one background; multiple is a
+       later refinement). audio/pdf/midi/musicxml are never backgrounds.
+       Returns { source, filename, kind, ext } or null. */
+    function pickBackgroundMedia(song) {
+        var media = (song && Array.isArray(song.media)) ? song.media : [];
+        var video = null, image = null;
+        for (var i = 0; i < media.length; i++) {
+            var m = media[i];
+            if (!m || !m.streamUrl) { continue; }
+            if (m.kind === 'video' && !video) { video = m; }
+            else if (m.kind === 'image' && !image) { image = m; }
+        }
+        var chosen = video || image;
+        if (!chosen) { return null; }
+        var filename = sanitizeMediaFilename(chosen.fileName || (chosen.kind + '.' + (mediaFormatToken('', chosen.mimeType) || 'bin')));
+        return { source: chosen, filename: filename, kind: chosen.kind, ext: mediaFormatToken(filename, chosen.mimeType) };
+    }
+
     function buildPresentationPayload(song, options) {
         if (!song || typeof song !== 'object') {
             throw new Error('buildPresentation: song must be an object');
@@ -855,6 +965,21 @@
             name: 'Default',
             group_identifiers: cue_groups.map(function (cg) { return cg.group.uuid; })
         };
+
+        /* ---- #1979 — background media -------------------------------
+           When a background video/image is provided, PREPEND a "Lyrics
+           Background" cue group + media cue, matching a real PP-authored
+           layout (the owner's genuine v21.4 file carries exactly this
+           group). Built AFTER the arrangement above and NOT added to it —
+           a background is a palette group, never a step in the running
+           order (verified against the owner's file: its arrangement lists
+           only the lyric groups). The media itself is embedded at the
+           bundle ROOT and referenced by ROOT_CURRENT_RESOURCE (§6.2). */
+        if (options.backgroundMedia && options.backgroundMedia.filename) {
+            var bg = buildBackgroundMediaCue(options.backgroundMedia);
+            cues.unshift(bg.cue);
+            cue_groups.unshift(bg.group);
+        }
 
         return {
             uuid: uuidMsg(),
@@ -1223,6 +1348,68 @@
         });
         triggerDownload(bytes, filename, 'application/octet-stream');
         return { filename: filename, size: bytes.length };
+    }
+
+    /* #1979 — fetch a media file's bytes from its same-origin streamUrl
+       (`/song-media/<id>?…`). The row is PUBLIC (the public song_data read is
+       visibility-filtered), so no auth header is needed. Returns a Uint8Array;
+       throws on a non-2xx. */
+    async function fetchMediaBytes(url) {
+        var resp = await fetch(url);
+        if (!resp || !resp.ok) {
+            throw new Error('media fetch failed (HTTP ' + (resp ? resp.status : '?') + ')');
+        }
+        var buf = await resp.arrayBuffer();
+        return new Uint8Array(buf);
+    }
+
+    /**
+     * #1979 — export ONE song as a `.probundle` that embeds its background
+     * media. When the song has a public video/image (see pickBackgroundMedia),
+     * the media bytes are fetched, embedded at the bundle ROOT under a flat
+     * filename, and referenced from the `.pro` via a "Lyrics Background" media
+     * cue (ROOT_CURRENT_RESOURCE). When the song has NO embeddable media — or
+     * the media fetch fails — it degrades to a bare `.pro` (a .probundle with no
+     * media buys nothing, and a lyric export must never fail on a media hiccup).
+     *
+     * @returns {Promise<{mediaIncluded:boolean, filename:string, mediaFilename?:string, mediaError?:string}>}
+     */
+    async function exportSongAsBundle(song, options) {
+        if (!song) { throw new Error('exportSongAsBundle: song argument is required'); }
+        if (!protoRoot) { await init(); }
+        options = options || {};
+
+        var bg = pickBackgroundMedia(song);
+        if (!bg) {
+            var proOnly = await exportSong(song, options);
+            return { mediaIncluded: false, filename: proOnly.filename };
+        }
+
+        var mediaBytes;
+        try {
+            mediaBytes = await fetchMediaBytes(bg.source.streamUrl);
+        } catch (e) {
+            /* Degrade to the bare .pro — the lyrics still export. */
+            var fallback = await exportSong(song, options);
+            return { mediaIncluded: false, filename: fallback.filename, mediaError: (e && e.message) || 'media fetch failed' };
+        }
+
+        var opts = {};
+        for (var k in options) { if (Object.prototype.hasOwnProperty.call(options, k)) { opts[k] = options[k]; } }
+        opts.backgroundMedia = { filename: bg.filename, kind: bg.kind, ext: bg.ext };
+
+        var proBytes = await buildPresentation(song, opts);
+        var proName = buildFilename(song, { extension: '.pro', padNumber: options.padNumber });
+
+        /* Both entries at the ZIP ROOT — the #1968 P2 genuine-bundle layout
+           (.pro + media at root, no Documents/ prefix, no manifest). */
+        var zipBytes = buildZip([
+            { name: bg.filename, bytes: mediaBytes },
+            { name: proName, bytes: proBytes }
+        ]);
+        var bundleName = buildFilename(song, { extension: '.probundle', padNumber: options.padNumber });
+        triggerDownload(zipBytes, bundleName, 'application/zip');
+        return { mediaIncluded: true, filename: bundleName, mediaFilename: bg.filename };
     }
 
     /* Internal: build the per-song .pro byte set + filenames for a
@@ -1788,6 +1975,9 @@
     var api = {
         init: init,
         exportSong: exportSong,
+        /* #1979 — export ONE song as a .probundle that embeds its background
+           media (falls back to a bare .pro when the song has none). */
+        exportSongAsBundle: exportSongAsBundle,
         exportAllAsZip: exportAllAsZip,
         exportAllAsBundle: exportAllAsBundle,
         /* #1968 P3 — set-list export -> .proplaylist. */
@@ -1810,6 +2000,12 @@
             componentLabel: componentLabel,
             buildPresentationPayload: buildPresentationPayload,
             buildCCLIPayload: buildCCLIPayload,
+            /* #1979 — background-media builders, exposed for the wire-shape guard. */
+            buildBackgroundMediaCue: buildBackgroundMediaCue,
+            buildMediaCurrentResourceUrl: buildMediaCurrentResourceUrl,
+            pickBackgroundMedia: pickBackgroundMedia,
+            mediaFormatToken: mediaFormatToken,
+            sanitizeMediaFilename: sanitizeMediaFilename,
             normaliseOptions: normaliseOptions,
             chunkLines: chunkLines,
             getTuneTitle: getTuneTitle,

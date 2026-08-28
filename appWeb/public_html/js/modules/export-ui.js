@@ -248,8 +248,15 @@ export function initSongExport(songId) {
                        (initSongbookExport) already awaits its bundle
                        equivalent. Missing this await let an encode failure
                        become an unhandled promise rejection instead of the
-                       catch block's toast — the user saw nothing at all. */
-                    await window.iHymnsProPresenter.exportSong(data.song, options);
+                       catch block's toast — the user saw nothing at all.
+                       #1979 — export through exportSongAsBundle: when the song
+                       has PUBLIC background video/image it produces a
+                       `.probundle` that embeds the media; otherwise it degrades
+                       to a bare `.pro` (identical to the old exportSong path). */
+                    var ppResult = await window.iHymnsProPresenter.exportSongAsBundle(data.song, options);
+                    if (ppResult && ppResult.mediaIncluded) {
+                        toast('Included background media in the .probundle.', 'success');
+                    }
                     return;
                 }
                 await loadExportLibs();
