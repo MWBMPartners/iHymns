@@ -15548,21 +15548,28 @@ if ($action !== null) {
             $licenceNum  = trim((string)($body['licence_number'] ?? ''));
             $active      = !empty($body['is_active']) ? 1 : 0;
 
-            /* Same primary-licence allowlist organisations.php uses
-               (4 keys with `none` as the "no primary" sentinel). The
-               additional_licences set is validated against this same
-               keylist before INSERT. */
-            $licenceKeys = ['none', 'ihymns_basic', 'ihymns_pro', 'ccli'];
-
+            /* #1969 — the primary licence type + the additional_licences set are
+               now validated against the tblLicenceTypes REGISTRY (rule #9),
+               inside the try below where $db is available. The old hard-coded
+               4-key list here was MISSING `mrl` and `custom`, so this action
+               literally could not record an MRL licence — the headline example
+               in the issue. */
             if ($id <= 0)                                  { sendJson(['error' => 'Organisation id required.'], 400); break; }
             if ($name === '')                              { sendJson(['error' => 'Name is required.'], 400); break; }
             $slug = $slugInput !== '' ? slugifyOrganisationName($slugInput) : slugifyOrganisationName($name);
             if ($slug === '')                              { sendJson(['error' => 'Slug could not be derived — supply one explicitly.'], 400); break; }
-            if (!in_array($licenceType, $licenceKeys, true)) { sendJson(['error' => 'Unknown licence type.'], 400); break; }
             if ($parent === $id)                           { sendJson(['error' => 'An organisation cannot be its own parent.'], 400); break; }
 
             try {
                 $db = getDbMysqli();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* #1969 — validate the primary type against the registry
+                   (allowing the `none` sentinel). */
+                if (!orgLicenceValidateType($db, $licenceType, true)) {
+                    sendJson(['error' => 'Unknown licence type.'], 400);
+                    break;
+                }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
                 $stmt->bind_param('si', $slug, $id);
@@ -15601,44 +15608,16 @@ if ($action !== null) {
                 $stmt->execute();
                 $stmt->close();
 
-                /* Multi-licence sync (#640) — the submitted additional
-                   set REPLACES tblOrganisationLicences for the org; the
-                   primary licence_type is also folded in so the two
-                   surfaces stay coherent. Wrapped in a try/catch so a
-                   pre-migration deployment (no tblOrganisationLicences)
-                   silently no-ops the join writes. */
-                try {
-                    $picked = (array)($body['additional_licences'] ?? []);
-                    $picked = array_values(array_unique(array_filter(
-                        array_map('strval', $picked),
-                        static fn($k) => $k !== '' && $k !== 'none'
-                    )));
-                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
-                        $picked[] = $licenceType;
-                    }
-                    $picked = array_values(array_intersect($picked, $licenceKeys));
-
-                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
-                    $del->bind_param('i', $id);
-                    $del->execute();
-                    $del->close();
-
-                    if (!empty($picked)) {
-                        $ins = $db->prepare(
-                            'INSERT INTO tblOrganisationLicences
-                                (OrganisationId, LicenceType, LicenceNumber)
-                             VALUES (?, ?, ?)'
-                        );
-                        foreach ($picked as $key) {
-                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
-                            $ins->bind_param('iss', $id, $key, $num);
-                            $ins->execute();
-                        }
-                        $ins->close();
-                    }
-                } catch (\Throwable $_e) {
-                    /* tblOrganisationLicences not yet created — silent no-op. */
-                }
+                /* #1969 — multi-licence sync via the shared core. The submitted
+                   `additional_licences` set is reconciled NON-DESTRUCTIVELY
+                   (orgLicenceSyncSet keeps every staying row's number/expiry/
+                   active/notes, inserts only new types, deletes only removed
+                   ones), with the primary folded in. This replaces the old
+                   DELETE-all + re-INSERT that wiped an org's licence metadata on
+                   every save, and it validates each type against the registry
+                   (so `mrl`/`custom` now work). No-ops on an un-migrated install. */
+                $picked = array_map('strval', (array)($body['additional_licences'] ?? []));
+                orgLicenceSyncSet($db, $id, $picked, $licenceType, $licenceNum);
 
                 $afterOrg = [
                     'Name' => $name, 'Slug' => $slug,
@@ -16191,36 +16170,27 @@ if ($action !== null) {
             $isActive      = !empty($body['is_active']) ? 1 : 0;
             $notes         = trim((string)($body['notes']         ?? '')) ?: null;
 
-            /* Same per-row licence-type allowlist /manage/my-organisations
-               uses (5 keys). Distinct from the system-admin update path
-               which uses the 4-key primary set with `none` sentinel. */
-            $licenceKeys = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
-
             if (!userCanActOnOrg($authUser, $orgId)) {
                 sendJson(['error' => 'Not authorised on this organisation.'], 403);
                 break;
             }
-            if (!in_array($licenceType, $licenceKeys, true)) {
-                sendJson(['error' => 'Unknown licence type.'], 400);
-                break;
-            }
 
+            /* #1969 — licence-type validation + persist via the shared core
+               (registry-backed, rule #9 — the old hard-coded 5-key list is
+               gone). orgLicenceUpsert is the SAME INSERT … ON DUPLICATE KEY the
+               web page uses; both surfaces now share it. */
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationLicences
-                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        LicenceNumber = VALUES(LicenceNumber),
-                        IsActive      = VALUES(IsActive),
-                        ExpiresAt     = VALUES(ExpiresAt),
-                        Notes         = VALUES(Notes)'
-                );
-                $stmt->bind_param('ississ',
-                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
-                $stmt->execute();
-                $stmt->close();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+                if (!orgLicenceValidateType($db, $licenceType)) {
+                    sendJson(['error' => 'Unknown licence type.'], 400);
+                    break;
+                }
+                $res = orgLicenceUpsert($db, $orgId, $licenceType, $body);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not save licence.'], 500);
+                    break;
+                }
 
                 logActivity('api.org_admin.licence_add', 'organisation', (string)$orgId, [
                     'licence_type'   => $licenceType,
@@ -16280,6 +16250,11 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* Keep the explicit ownership 404 (the core's UPDATE is already
+                   own-only, but affected_rows can't tell "not found" from "no
+                   change", and this action's contract 404s a foreign row). */
                 $stmt = $db->prepare(
                     'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
                 );
@@ -16292,14 +16267,12 @@ if ($action !== null) {
                     break;
                 }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblOrganisationLicences
-                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                /* #1969 — the metadata UPDATE via the shared core (own-only). */
+                $res = orgLicenceUpdateById($db, $orgId, $licenceId, $body);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not change licence.'], 500);
+                    break;
+                }
 
                 logActivity('api.org_admin.licence_change', 'organisation', (string)$orgId, [
                     'licence_id'     => $licenceId,
@@ -16349,22 +16322,20 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
-                );
-                $stmt->bind_param('ii', $licenceId, $orgId);
-                $stmt->execute();
-                $owns = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if (!$owns) {
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* #1969 — own-only delete via the shared core; `deleted` false
+                   means the row didn't exist / belongs to another org → the
+                   action's 404 contract. */
+                $res = orgLicenceDeleteById($db, $orgId, $licenceId);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not remove licence.'], 500);
+                    break;
+                }
+                if (empty($res['deleted'])) {
                     sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
                     break;
                 }
-
-                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
-                $stmt->bind_param('i', $licenceId);
-                $stmt->execute();
-                $stmt->close();
 
                 logActivity('api.org_admin.licence_remove', 'organisation', (string)$orgId, [
                     'licence_id' => $licenceId,

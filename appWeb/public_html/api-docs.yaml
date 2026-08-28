@@ -9898,9 +9898,11 @@ paths:
       summary: Update an organisation (system-admin)
       description: |
         Mirrors the multi-licence sync from `/manage/organisations`:
-        the submitted `additional_licences` set REPLACES
-        `tblOrganisationLicences` for the org, with `licence_type`
-        folded in so the primary + per-row views stay coherent.
+        the submitted `additional_licences` set is reconciled
+        NON-DESTRUCTIVELY into `tblOrganisationLicences` for the org
+        (#1969 — staying rows keep their number/expiry/active/notes),
+        with `licence_type` folded in so the primary + per-row views
+        stay coherent. Types are validated against the licence registry.
       security:
         - bearerAuth: []
       parameters:
@@ -18753,10 +18755,13 @@ components:
       description: |
         Input for `admin_organisation_update`. Mirrors the system
         admin's update form on `/manage/organisations`.
-        `additional_licences` REPLACES the current
-        `tblOrganisationLicences` set for the org; the primary
-        `licence_type` is folded in automatically so the two
-        surfaces stay coherent.
+        `additional_licences` reconciles the org's
+        `tblOrganisationLicences` set NON-DESTRUCTIVELY (#1969): rows
+        for types that stay keep their number/expiry/active/notes, only
+        genuinely-new types are added and only removed types are
+        deleted; the primary `licence_type` is folded in automatically
+        so the two surfaces stay coherent. Licence types are validated
+        against the `tblLicenceTypes` registry.
       required: [id, name, licence_type]
       properties:
         id:
@@ -18778,8 +18783,11 @@ components:
           type: string
         licence_type:
           type: string
-          enum: [none, ihymns_basic, ihymns_pro, ccli]
+          enum: [none, ccli, mrl, ihymns_basic, ihymns_pro, custom]
           default: none
+          description: |
+            The primary licence type (validated against the
+            `tblLicenceTypes` registry; `none` = no primary).
         licence_number:
           type: string
         is_active:
@@ -18789,10 +18797,10 @@ components:
           type: array
           items:
             type: string
-            enum: [ihymns_basic, ihymns_pro, ccli]
+            enum: [ccli, mrl, ihymns_basic, ihymns_pro, custom]
           description: |
-            Replaces the current `tblOrganisationLicences` set for
-            this org. The primary `licence_type` is folded in
+            Non-destructively reconciles the `tblOrganisationLicences`
+            set for this org (#1969). The primary `licence_type` is folded in
             automatically — no need to repeat it here.
 
     AdminOrgMemberInput:
