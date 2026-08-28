@@ -96,7 +96,8 @@ if (!defined('IHYMNS_TIER_CAPS_DEFINED')) {
         'RequiresCcli'       => ['Needs CCLI',   'Tier requires a valid CCLI licence number', 'column', 0],
         /* NEW code-registered caps go BELOW, storage 'json' — one line, no
            ALTER. Example (commented until needed):
-           'CanRequestSongs' => ['Requests', 'Submit song requests', 'json', 0], */
+           'CanRequestSongs' => ['Requests', 'Submit song requests', 'json', 0]. */
+        'CanPlayVideo'       => ['Video',        'Play video media',                          'json', 0],   /* #1968 P4 */
     ]);
 }
 

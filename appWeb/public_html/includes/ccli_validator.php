@@ -299,6 +299,7 @@ const TIER_ACTION_CAP_MAP = [
     'view_lyrics'      => 'CanViewLyrics',
     'view_copyrighted' => 'CanViewCopyrighted',
     'play_audio'       => 'CanPlayAudio',
+    'play_video'       => 'CanPlayVideo',       /* #1968 P4 */
     'download_midi'    => 'CanDownloadMidi',
     'download_pdf'     => 'CanDownloadPdf',
     'offline_save'     => 'CanOfflineSave',

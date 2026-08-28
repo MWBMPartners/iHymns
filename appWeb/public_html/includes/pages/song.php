@@ -1552,7 +1552,7 @@ foreach ($components as $_c) {
         $songMedia = $song['media'] ?? [];
         if (!empty($songMedia)):
             $mediaByKind = [
-                'audio' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
+                'audio' => [], 'video' => [], 'image' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
             ];
             foreach ($songMedia as $m) {
                 $k = (string)($m['kind'] ?? '');
@@ -1582,6 +1582,46 @@ foreach ($components as $_c) {
                             <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
                         </audio>
                     </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php /* #1968 P4 — video: inline HTML5 player (Range-seekable via the
+                 same 206 streaming endpoint as audio). Only PUBLIC rows reach
+                 here — SongData::_songMediaMap() strips admin-only media
+                 server-side, so publishing a row is what makes it appear
+                 (rule #33). Plain markup, no inline script (CSP untouched, #30). */ ?>
+        <?php if (!empty($mediaByKind['video'])): ?>
+            <div class="song-media-video mb-3">
+                <?php foreach ($mediaByKind['video'] as $m): ?>
+                    <div class="mb-2">
+                        <div class="small text-muted mb-1">
+                            <?= htmlspecialchars($m['fileName']) ?>
+                            <?php if (!empty($m['annotation'])): ?>
+                                — <em><?= htmlspecialchars($m['annotation']) ?></em>
+                            <?php endif; ?>
+                        </div>
+                        <video controls preload="none" class="w-100 rounded"
+                               src="<?= htmlspecialchars($m['streamUrl']) ?>">
+                            Your browser doesn't support the video element.
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
+                        </video>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if (!empty($mediaByKind['image'])): ?>
+            <div class="song-media-image mb-3 d-flex flex-wrap gap-2">
+                <?php foreach ($mediaByKind['image'] as $m): ?>
+                    <figure class="mb-0">
+                        <img loading="lazy" class="rounded" style="max-width: 100%; max-height: 280px;"
+                             src="<?= htmlspecialchars($m['streamUrl']) ?>"
+                             alt="<?= htmlspecialchars(($m['annotation'] ?? '') !== '' ? $m['annotation'] : $m['fileName']) ?>">
+                        <?php if (!empty($m['annotation'])): ?>
+                            <figcaption class="small text-muted mt-1"><?= htmlspecialchars($m['annotation']) ?></figcaption>
+                        <?php endif; ?>
+                    </figure>
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>

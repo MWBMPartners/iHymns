@@ -94,6 +94,7 @@ function accessApplySong(array $song, array $viewer): array
            audio, not MIDI/PDF/offline redistribution). */
         $canViewCopyrighted = !empty($caps['view_copyrighted']) || $presenceCcli;
         $canPlayAudio       = !empty($caps['play_audio'])       || $presenceCcli;
+        $canPlayVideo       = !empty($caps['play_video']);      /* #1968 P4 — no presence OR-grant (a CCLI licence covers audio accompaniment, not video) */
         $canDownloadMidi    = !empty($caps['download_midi']);
         $canDownloadPdf     = !empty($caps['download_pdf']);
         $canOfflineSave     = !empty($caps['offline_save']);
@@ -144,6 +145,7 @@ function accessApplySong(array $song, array $viewer): array
         if (!empty($song['media']) && is_array($song['media'])) {
             $capBool = [
                 'play_audio'    => $canPlayAudio,
+                'play_video'    => $canPlayVideo,   /* #1968 P4 */
                 'download_midi' => $canDownloadMidi,
                 'download_pdf'  => $canDownloadPdf,
             ];

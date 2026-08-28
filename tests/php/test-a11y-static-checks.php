@@ -130,6 +130,15 @@ function a11yDuplicateIds(string $src): array
 function a11yImagesMissingAlt(string $src): array
 {
     $lines = [];
+    // Strip PHP tags first (#1968 P4): an interpolated attribute value (a PHP
+    // short-echo in src) ends with a PHP close tag, whose bare > would otherwise
+    // truncate the non-greedy <img …> match BEFORE a later alt="…" — a false
+    // "no alt", the exact "interpolated close-tag truncates the match" class rule
+    // #34 warns about. Replace each PHP block with only its own newlines so no >
+    // survives inside it AND the byte offsets used for line reporting stay exact.
+    $src = preg_replace_callback('~<\?(?:php|=)?[\s\S]*?\?>~', static function (array $mm): string {
+        return str_repeat("\n", substr_count($mm[0], "\n"));
+    }, $src) ?? $src;
     // A single <img ...> can span multiple lines in this codebase's formatted
     // markup, so match across the whole string (DOTALL-ish via [\s\S]) up to
     // the closing '>', not line-by-line.
@@ -184,6 +193,22 @@ if (a11yImagesMissingAlt($altOkFixture) !== []) {
 $commentFixture = "<!-- an <img src=x> in a comment --><div id=\"real\"></div>";
 if (a11yImagesMissingAlt(a11yStripComments($commentFixture)) !== []) {
     $selfTestFailures[] = 'a11yImagesMissingAlt() flagged an <img> that only existed inside an HTML comment.';
+}
+
+// #1968 P4 — an <img> whose src is a PHP short-echo (a PHP close tag inside the
+// tag) but which DOES carry an alt must NOT be flagged (the truncation removed)...
+$phpOpen = '<' . '?=';
+$phpClose = '?' . '>';
+$altInterpOk = '<img class="c"' . "\n"
+    . '     src="' . $phpOpen . ' h($u) ' . $phpClose . '"' . "\n"
+    . '     alt="' . $phpOpen . ' h($a) ' . $phpClose . '">';
+if (a11yImagesMissingAlt($altInterpOk) !== []) {
+    $selfTestFailures[] = 'a11yImagesMissingAlt() false-flagged an interpolated <img> that HAS alt after a PHP echo in src — the PHP-strip regressed.';
+}
+// ...while an interpolated <img> with NO alt is STILL flagged (no over-strip).
+$altInterpMissing = '<img src="' . $phpOpen . ' h($u) ' . $phpClose . '">';
+if (a11yImagesMissingAlt($altInterpMissing) === []) {
+    $selfTestFailures[] = 'a11yImagesMissingAlt() missed an interpolated <img> with NO alt — the PHP-strip over-stripped the tag.';
 }
 
 if ($selfTestFailures) {

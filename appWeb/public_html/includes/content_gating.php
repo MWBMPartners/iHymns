@@ -90,6 +90,8 @@ function contentGatingMediaKindCap(string $kind): ?string
 {
     switch ($kind) {
         case 'audio':       return 'play_audio';
+        case 'video':       return 'play_video';   /* #1968 P4 — its own cap (CanPlayVideo) */
+        case 'image':       return null;           /* #1968 P4 — a decorative background is not premium; visibility already gates imported ones */
         case 'midi':        return 'download_midi';
         case 'sheet-music': return 'download_pdf';
         case 'musicxml':    return 'download_pdf'; /* notation download = PDF family */
