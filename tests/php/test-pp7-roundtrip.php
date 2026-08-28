@@ -84,6 +84,19 @@ declare(strict_types=1);
  *   - warnings: empty — nothing in this fixture trips a skip/unresolved-group/translation-layer/
  *     artist-credits warning.
  *
+ *   - chords (#1968 P6, commit C4): Verse 1's `chords` cell is a POSITIONED STRING ('G' at column
+ *     0, 'D' at column 20 — mid-word inside "sweet", deliberately NOT over any word start, the
+ *     shape an ARRAY cell structurally cannot represent); the Chorus's cell is an ARRAY (`['C',
+ *     'G']`, word-start aligned by construction). Both round-trip to the EXACT SAME positioned
+ *     strings on the way back in (`_bulkImport_pro7ChordCellsFromRanges()`'s column reconstruction)
+ *     — confirmed, not derived, by actually running the generator + importer once at authoring
+ *     time. Verse 2 carries NO `chords` key on either side — the chordless-component case, proving
+ *     chord capture on ITS SIBLINGS never leaks a `chords` key onto a component that never had any.
+ *     A line with no chords of its own comes back as the EMPTY STRING `''`, never `null` — the same
+ *     convention every OTHER chords-array producer in this codebase uses (`_bulkImport_parseChordPro()`
+ *     et al.) — matching what SAMPLE_SONG's `null` cells (meaning "this JS array slot has nothing")
+ *     become once re-imported into PHP's own per-line string-cell shape.
+ *
  * MUTATION-PROVEN (rule #34), each performed once by hand against the real working tree, this test
  * re-run and confirmed RED, then reverted (`git diff --stat` empty before moving on):
  *   m1 — `includes/song_importers.php`'s `_bulkImport_pro7GroupType()`: temporarily forced the
@@ -253,16 +266,23 @@ if ($parsed !== null) {
                 'type'   => 'verse',
                 'number' => 1,
                 'lines'  => ['Amazing grace how sweet the sound', 'That saved a wretch like me'],
+                // #1968 P6 — STRING cell: 'G' at column 0, 'D' at column 20 (mid-word, "sweet"),
+                // line 1 has no chords of its own ('' — never null, see the file header note).
+                'chords' => ['G                   D', ''],
             ],
             [
                 'type'   => 'chorus',
                 'number' => 0,
                 'lines'  => ['This is the chorus first line', 'This is the chorus second line'],
+                // #1968 P6 — ARRAY cell -> word-start alignment: 'C' at word 0 ("This", col 0),
+                // 'G' at word 1 ("is", col 5).
+                'chords' => ['C    G', ''],
             ],
             [
                 'type'   => 'verse',
                 'number' => 2,
                 'lines'  => ['I once was lost but now am found', 'Was blind but now I see'],
+                // #1968 P6 — deliberately NO `chords` key: the chordless-component case.
             ],
         ],
         'arrangement'  => null,
@@ -270,11 +290,68 @@ if ($parsed !== null) {
     ];
 
     $diff = pp7RoundtripFirstDiffPath($parsed, $expected);
-    ok('round-tripped song matches the known synthetic source'
+    ok('round-tripped song (unchunked) matches the known synthetic source, chords included'
         . ($diff !== null ? " [first diff at {$diff}]" : ''),
         $diff === null);
 } else {
     ok('round-tripped song matches the known synthetic source (skipped — parse failed above)', false);
+}
+
+/* ============================================================================================
+ * (4) #1968 P6 commit C4 — the SAME closure, but CHUNKED (linesPerSlide=1): each component's two
+ *     lines are exported onto TWO SEPARATE ProPresenter slides instead of one, forcing
+ *     chunkParallel() (propresenter-export.js) to slice the chords array per-slide before
+ *     linesChordAttributes() computes offsets — and forcing the IMPORTER to re-assemble those
+ *     two slides' cues back into ONE component (the SAME group-level accumulation
+ *     `_bulkImport_pro7AppendCueLines()` always does). This is the plan §6.2 mutation target
+ *     ("drop the chunk-parallel chords slicing... in a second generator invocation"): if
+ *     chunkParallel() ever mis-sliced (e.g. always handed EVERY line's chords to EVERY slide, or
+ *     dropped the second slide's chords entirely), this section — NOT section (3) above, which
+ *     never exercises chunking at all — is what would catch it. Expected shape is IDENTICAL to
+ *     the unchunked case above (chunking is purely a SLIDE-COUNT concern; group-level line/chord
+ *     accumulation on import is chunk-agnostic) — confirmed by running both invocations at
+ *     authoring time and diffing their imported output byte-for-byte (identical).
+ * ============================================================================================ */
+
+$chunkedOutPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR
+    . 'ihymns-pp7-roundtrip-chunked-' . bin2hex(random_bytes(6)) . '.pro';
+$parsedChunked = null;
+$reasonChunked = null;
+
+if ($failed === 0 || $parsed !== null) {
+    // Only worth attempting if the toolchain (node) already proved reachable above — an
+    // unreachable `node` would otherwise report this section's own failures redundantly.
+    $cmdChunked = escapeshellarg('node') . ' ' . escapeshellarg($generatorScript) . ' '
+        . escapeshellarg($chunkedOutPath) . ' 1 2>&1'; // linesPerSlide=1
+    $cmdChunkedOutputLines = [];
+    $exitCodeChunked = 1;
+    exec($cmdChunked, $cmdChunkedOutputLines, $exitCodeChunked);
+
+    ok('chunked (linesPerSlide=1) generator exits 0 (output: ' . implode(' | ', $cmdChunkedOutputLines) . ')',
+        $exitCodeChunked === 0);
+    ok('chunked generator wrote the fixture .pro file', is_file($chunkedOutPath));
+
+    if ($exitCodeChunked === 0 && is_file($chunkedOutPath)) {
+        $chunkedBody = file_get_contents($chunkedOutPath);
+        ok('chunked .pro is non-empty', $chunkedBody !== false && strlen($chunkedBody) > 0);
+        if ($chunkedBody !== false && strlen($chunkedBody) > 0) {
+            [$parsedChunked, $reasonChunked] = _bulkImport_parsePro7($chunkedBody);
+        }
+    }
+    @unlink($chunkedOutPath);
+}
+
+ok('_bulkImport_parsePro7() parses the CHUNKED fixture successfully'
+    . ($parsedChunked === null ? ' (got failure: ' . ($reasonChunked ?? 'null') . ')' : ''),
+    $parsedChunked !== null);
+
+if ($parsedChunked !== null && $parsed !== null) {
+    $diffChunked = pp7RoundtripFirstDiffPath($parsedChunked, $parsed);
+    ok('CHUNKED round-trip (linesPerSlide=1) produces the EXACT SAME song as the unchunked one — chords survive per-slide slicing + group-level reassembly'
+        . ($diffChunked !== null ? " [first diff at {$diffChunked}]" : ''),
+        $diffChunked === null);
+} else {
+    ok('CHUNKED round-trip matches the unchunked one (skipped — one or both parses failed above)', false);
 }
 
 /* ============================================================================================ */
