@@ -147,6 +147,16 @@ and one agent asked to "find bugs" defaults to whichever lens it thought of firs
 - `README.md` (version badge, features, structure, links), `CHANGELOG.md`
   (per `appWeb/CHANGELOG.md` + the platform changelogs), `DEV_NOTES.md`,
   `PROJECT_STATUS.md`, `Project_Plan.md`.
+- **`WHATS-NEW.md`** — the plain-language, user-facing release notes that feed
+  the in-app `/whats-new` page (house style: `.claude/whats-new-style.md`).
+  **Every push/PR that adds or changes something a *user* can see or do MUST add
+  a `- **Feature** — plain benefit` bullet** under the current
+  `## <MAJOR.MINOR> — <date>` heading (add a new heading when the version bumps —
+  rule #46). NO internals ever (file/table/endpoint names, issue numbers,
+  mechanisms) — that's a security requirement, not just style; those live in
+  `CHANGELOG.md`. Purely internal/dormant/refactor work collapses to nothing
+  here. This is the ONE user-facing doc that goes stale silently, so treat it as
+  part of shipping, not an afterthought.
 - `SECURITY.md` (disclosure policy + security model) and `LICENSING.md`
   (proprietary licence + third-party dependency licences) when security posture
   or dependencies change.

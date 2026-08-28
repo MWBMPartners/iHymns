@@ -10,6 +10,25 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.1.0 — 28 August 2026
+
+- **Bring songs in from ProPresenter** — You can now import songs, bundles and
+  service playlists straight from ProPresenter 7, keeping their verses,
+  choruses, arrangements and copyright details. A ProPresenter service playlist
+  arrives as a ready-made set list.
+- **Your background video travels with a ProPresenter export** — When you send a
+  song that has a background video or image to ProPresenter, that media now goes
+  inside the file, so it's ready to play on the other machine instead of turning
+  up missing.
+- **Name your signed-in devices** — The Signed-in devices list now gives each
+  device a friendly name on its own — like "Chrome on Windows" instead of
+  "Unnamed device" — and you can rename any of them, so it's easy to spot and
+  sign out one you don't recognise.
+- **Record more than one licence for your church** — An organisation can now hold
+  several licences side by side — for example one for the words and a separate
+  one for the music — each with its own number and expiry date, all managed in
+  one place.
+
 ## 1.0.0 — 24 August 2026
 
 - **Search suggestions as you type** — Start typing in the search box and a short
