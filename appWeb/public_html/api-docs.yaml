@@ -16385,7 +16385,7 @@ paths:
     post:
       operationId: editorImportFile
       tags: [Editor API v2]
-      summary: Single-file bulk import (7 legacy song-file formats)
+      summary: Single-file bulk import (11 legacy song-file formats)
       description: |
         POST, `multipart/form-data`, editor role only. Routes the upload to
         the shared parser + universal saver (INSERT-only, skips existing).
@@ -16394,7 +16394,15 @@ paths:
         (#1633); `.xml`/`.opensong` resolve via the shared auto-router
         (#882), which sniffs OpenLyrics vs OpenSong and retries the other
         parser once on a primary parse failure — the response's `format`
-        echoes back whichever actually parsed. Max 25 MB.
+        echoes back whichever actually parsed. `.pro` (epic #1968 / #885)
+        similarly resolves via a content-sniff (`_bulkImport_sniffProDialect()`):
+        binary/protobuf -> genuine ProPresenter 7+ (`pro7`, through
+        21.4-verified), `<RVPresentationDocument>`/`<?xml` -> a
+        mis-extensioned ProPresenter 6 export (`pro6`), else -> genuine
+        ChordPro (`chordpro`) — `.pro` is ambiguous between ChordPro's own
+        convention and ProPresenter, so it can never map to one format by
+        extension alone. `pro7` is also explicitly pickable (operator
+        override), same as `pro6`/`opensong`. Max 25 MB.
 
         `dryRun="1"` (#1674) previews the import: every real pre-flight
         decision (existence check +, when `dedupeMode=skip-title`, the
@@ -16417,7 +16425,7 @@ paths:
                 format:
                   type: string
                   default: auto
-                  enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, proclaim, freeshow, chordpro, pptx, easyworship]
+                  enum: [auto, videopsalm, ihymns, openlp, opensong, pro6, pro7, proclaim, freeshow, chordpro, pptx, easyworship]
                 dedupeMode: { type: string, enum: [off, skip-title], default: "off" }
                 dryRun:
                   type: string

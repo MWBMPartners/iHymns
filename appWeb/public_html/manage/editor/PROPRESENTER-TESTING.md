@@ -1,7 +1,10 @@
-# ProPresenter Export — Testing Guide
+# ProPresenter Export/Import — Testing Guide
 
 Step-by-step scenarios for validating the iHymns ProPresenter 7+ `.pro`
-exporter (issue [#887](https://github.com/MWBMPartners/iHymns/issues/887)).
+**exporter** (issue [#887](https://github.com/MWBMPartners/iHymns/issues/887))
+and **importer** (issue [#885](https://github.com/MWBMPartners/iHymns/issues/885),
+epic [#1968](https://github.com/MWBMPartners/iHymns/issues/1968) — see
+§8). §§1–7 below are export-only; jump straight to §8 for import.
 
 The exporter has three independent layers that each need their own
 verification:
@@ -403,3 +406,147 @@ fields we set.
 When any of those become required, extend
 `buildPresentationPayload()` and add a corresponding test in
 `tests/test-propresenter-export.js`.
+
+---
+
+## 8. Importing `.pro` files INTO iHymns (P1, #885/#1968)
+
+**Direction check, because it is easy to mix up with §5 above:** §5
+("ProPresenter import test") verifies that a `.pro` file iHymns
+*exported* opens cleanly in real ProPresenter — export direction. This
+section is the OTHER direction: a `.pro` file *authored in
+ProPresenter* (or exported by any other tool) being imported INTO
+iHymns as a new song, via the Editor's **Import** flow. The two
+features share the `.pro` file extension and the same vendored proto
+schema; they do not share code otherwise except where noted below.
+
+### 8.0 Architecture in one paragraph
+
+Import is entirely **server-side PHP**, unlike export (which is
+client-side JS + protobufjs). `includes/propresenter7_decode.php` is a
+hand-rolled proto3 wire-walker (`pp7DecodePresentation()`) — chosen
+over shipping a decode-capable protobufjs bundle to the browser because
+the enforcing nonce CSP (#117/#1788) already forces the *export* side
+onto a decode-free static module; see
+`.claude/propresenter-interop-1968-plan.md` §2 for the full
+architecture decision record. `includes/song_importers.php`'s
+`_bulkImport_parsePro7()` turns the decoded presentation into the same
+neutral "song" shape every other iHymns importer (ChordPro, OpenLyrics,
+Pro6, EasyWorship, …) produces, and `_bulkImport_processPro7()` hands
+that to the shared `_bulkImport_saveSong()` — no bespoke persistence
+code.
+
+### 8.1 Supported input
+
+- **File extension:** `.pro` (ProPresenter 7 through 21.4-verified;
+  the wire-format for the messages this importer reads is unchanged
+  across that whole range — an unrecognised field from a newer
+  ProPresenter version is skipped, never an error).
+- **NOT yet supported** (tracked as later phases of epic #1968, not
+  bugs): `.probundle` (ZIP bundle) and `.proplaylist` (playlist
+  export) are accepted by the file picker (forward-wired) but show a
+  "coming in a future update" toast — there is no server handler for
+  either yet. A ZIP containing plain `.pro` files (no bundle manifest)
+  DOES work via the existing ZIP importer.
+
+### 8.2 Content-sniff behaviour — why `.pro` needs one at all
+
+`.pro` is genuinely ambiguous: ChordPro's own format documentation
+blesses the `.pro` extension, and ProPresenter 6 *and* 7+ both use it
+too. Before this fix every `.pro` upload was routed straight to the
+ChordPro text parser (`tests/test-pp7-routing.js` guards the fix
+described here — see that file if this section ever needs re-verifying
+against source).
+
+1. **Client-side (convenience only):** `editor.js`'s file picker reads
+   the first 4096 bytes of a `.pro` upload and sniffs:
+   - Decodes as UTF-8 with no control bytes → text:
+     - Starts with `<?xml` or contains `<RVPresentationDocument` →
+       routed to the **ProPresenter 6** importer (a mis-extensioned
+       `.pro6` now imports gracefully instead of erroring).
+     - Otherwise → routed to the **ChordPro** importer (unchanged
+       behaviour for a genuine ChordPro `.pro` file).
+   - Contains NUL/control bytes or invalid UTF-8 (every real PP7 file
+     trips this almost immediately — protobuf varint lengths, binary
+     float colour fields) → routed to **ProPresenter 7+** import.
+2. **Server-side (authoritative):** `api2.php`'s `import_file`
+   `format=auto` resolver and the ZIP importer's per-entry router both
+   run the SAME sniff again via the one shared
+   `_bulkImport_sniffProDialect()` (`includes/song_importers.php`) —
+   never a second, forked sniff. A spoofed or simply wrong client
+   route cannot corrupt data: the PP7 handler rejects non-protobuf
+   input, and the ChordPro handler rejects binary garbage the same way
+   it always has.
+
+### 8.3 What P1 extracts
+
+| Extracted | From | Notes |
+| --- | --- | --- |
+| **Lyrics** | Each cue's text element `rtf_data`, dual-dialect RTF extraction | Handles BOTH real-world RTF dialects ProPresenter itself writes: Apple "Cocoa RTF" (`\cocoartf…`, soft-return line breaks) from macOS, and `\rtf0`/`\par`/`\csgenericrgb` from Windows PP 7.13+. When a slide carries more than one differently-sized text run merged into the SAME `rtf_data` (a real PP7-Mac export artifact seen on genuine fixtures), only the DOMINANT (largest-font) run is kept as the lyric. |
+| **Section labels** | `cue_groups[].group.name` | Folded to one of the 16 seeded `tblSongPartTypes` slugs via `_bulkImport_pro7GroupType()`; an unrecognised/non-English name still imports — it falls to `refrain` with the raw name preserved as a rule-#45 display `Label` so nothing is silently lost. A name that already equals its own derived "Type Number" form (e.g. "Verse 1" for a verse numbered 1) stores no separate label at all. |
+| **Arrangements** | `selected_arrangement` / `arrangements[]` | Resolved into `tblSongs.ArrangementJson` via the SAME sanitiser every other arrangement source uses. The trivial identity order (natural component order, unchanged) is stored as "no arrangement" rather than noise. |
+| **CCLI metadata** | The `ccli` block | Song title (ladder: CCLI title → presentation name → first lyric line), author → writers (split on `/ & , ;`), publisher + copyright year → the `copyright` field, CCLI song number. |
+
+### 8.4 Known limitations (by design, not bugs)
+
+- **Media, themes, and the timeline are later phases** of epic #1968
+  (P2 bundles, P4 media ingest, P5 theming) — P1 imports lyrics and
+  structure only. A `.pro` with backgrounds/video/audio references
+  imports the text fine; those references are simply not followed.
+- **Small copyright/attribution text runs merged onto the same slide
+  as the lyric are dropped**, not imported as a second line. This is
+  the dominant-font-selection rule from §8.3 working as intended: a
+  ProPresenter-authored slide occasionally carries a tiny sub-dominant
+  text run (e.g. an artifact from how the authoring tool wrote the
+  RTF) glued to the front of the real lyric text with no line break in
+  between — keeping only the larger, dominant run is what makes the
+  real lyric text come through clean instead of prefixed with stray
+  characters.
+- **Translation layers are flagged, not merged.** A slide with more
+  than one text element (a real ProPresenter feature — a translation
+  running underneath the main lyric) only has its FIRST element
+  imported; the rest are counted and surfaced as a warning
+  ("N translation layer(s) present — not imported") on the import
+  summary, never silently dropped with no trace. The eventual home
+  for these is `tblLyricLineTranslations` (per-line, anchored on
+  `tblLyricLines.Id`, rule #21) — tracked as a follow-up issue, not
+  built in P1.
+- Every skip, fallback, or thing-that-couldn't-be-resolved (an unknown
+  section name, an unresolvable arrangement UUID, a `MEDIA`/`MACRO`
+  action with no lyric text, `artist_credits` present but not
+  imported) rides the import summary's `warnings[]` array rather than
+  failing the whole import — check it after any real-file import.
+
+### 8.5 Manual-verification checklist
+
+Automated coverage (`tests/php/test-pp7-decode.php`,
+`test-pp7-parse.php`, `test-pp7-rtf-extract.php`,
+`test-pp7-label-roundtrip.js`, `test-pp7-roundtrip.php`,
+`test-pp7-routing.js` — all auto-collected by
+`tools/run-php-tests.php` / `tools/run-node-tests.js`) validates
+against the real, committed third-party fixtures under
+`tests/fixtures/propresenter/` and the export→import closure. Before
+signing off a change to this code path by hand, additionally import a
+FEW real `.pro` files through the live Editor UI (`/manage/editor/` →
+Import → ProPresenter 7+) and confirm, per file:
+
+- [ ] **Slide/section count** matches what the file shows when opened
+      in ProPresenter itself (or matches the fixture's committed
+      `expected/<name>.song.json` under `tests/fixtures/propresenter/`
+      if you don't have ProPresenter handy).
+- [ ] **Section labels** read correctly (Verse 1, Chorus, Bridge, …) —
+      including any custom/non-English names, which should still
+      import (folded to `refrain` with the original name preserved as
+      the section's Label).
+- [ ] **Lyric text is non-blank** on every section, with no stray
+      leading punctuation (the artifact §8.4 describes) and no merged
+      run-together lines (the dual-dialect RTF fix).
+- [ ] **Arrangement order** in the imported song's arrangement panel
+      matches the order ProPresenter's own Arrangements panel shows
+      for that file (when the file has more than one arrangement, or a
+      genuinely non-trivial running order).
+- [ ] **CCLI panel is populated** — title, author/writers, copyright,
+      and CCLI song number, when the source file carries them.
+- [ ] **The import summary's warnings** (if any) make sense for the
+      file — e.g. a file with a translation layer should say so, not
+      stay silent.
