@@ -71,6 +71,21 @@ const TI_PAT_FROM  = '/COUNT\([^)]*\)[^;]{0,160}\bFROM\s+tblSongTagMap\b/is';
 $coreRel = 'includes/theme_index.php';
 $corePath = $docroot . '/' . $coreRel;
 
+/* ADMIN-scoped exemption (#1969, API-coverage batch 4b-i A3): the tag
+   canonicalisation suggestions' "how many songs currently use this
+   curator tag" count is the SAME deliberately-different question the
+   file header already excuses the WHOLE `manage/` directory for
+   (zero-use tags shown to curators, tblSongTagMap COUNT — NOT the
+   public visible-and-servable theme count `theme_index.php` owns) — it
+   used to live inline in `manage/tags.php` (exempt by directory) and was
+   extracted verbatim into `includes/tag_admin.php` so `manage/tags.php`
+   and the new `admin_tag_canonical_suggestions` API action can share ONE
+   core (rule #22) rather than forking the admin-usage-count query a
+   second time. Named narrowly (not a blanket includes/ exemption) so a
+   FUTURE public-facing theme-count query anywhere else under includes/
+   still fails this guard exactly as before. */
+$adminUsageCountExempt = ['includes/tag_admin.php'];
+
 /* ---- 1. Functional ----------------------------------------------------- */
 $coreRaw = is_readable($corePath) ? (string)file_get_contents($corePath) : '';
 ti($coreRaw !== '', '1.1 includes/theme_index.php exists');
@@ -102,6 +117,7 @@ foreach ($scan as $pf) {
     if (!is_file($pf)) { continue; }
     $rel = str_replace($docroot . '/', '', $pf);
     if ($rel === $coreRel) { continue; }   /* the ONE allowed home */
+    if (in_array($rel, $adminUsageCountExempt, true)) { continue; }   /* see doc-block above */
     $src = tiStrip((string)file_get_contents($pf));
     if (preg_match(TI_PAT_TAGID, $src) || preg_match(TI_PAT_FROM, $src)) {
         $offenders[] = $rel;

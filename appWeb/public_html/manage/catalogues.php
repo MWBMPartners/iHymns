@@ -30,7 +30,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';   /* #1765 — mediaIdentifierPublicationClean(), the ONE validator */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';             /* #1765 — placeColumnExists() */
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the create + marcxml_import actions below */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow() for the marcxml_import action below (create's own call now lives inside catalogueAdminCreate()) */
+/* #1969 API-coverage batch 4b-i (A4) — the catalogue ("Collection") admin
+   CRUD shared cores. The admin_catalogue_* API actions in api.php call
+   these SAME functions this page's `add`/`update`/`delete`/`add_member`/
+   `remove_member` POST handlers call — one validation/write core, two thin
+   callers (rule #22/#35). `marcxml_import` stays page-only (out of scope —
+   see includes/catalogue_admin.php's doc-block); it does NOT delegate here. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'catalogue_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -54,19 +61,9 @@ $slugFor = static function (string $name): string {
     return trim(strtolower($ascii), '-');
 };
 
-/* Schema probe. */
-$hasSchema = false;
-try {
-    $probe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCatalogues' LIMIT 1"
-    );
-    $probe->execute();
-    $hasSchema = $probe->get_result()->fetch_row() !== null;
-    $probe->close();
-} catch (\Throwable $e) {
-    error_log('[catalogues] schema probe failed: ' . $e->getMessage());
-}
+/* Schema probe — delegates to the shared core (rule #22) so the API's
+   admin_catalogue_* 503 gate reads the identical answer. */
+$hasSchema = catalogueAdminTableExists($db);
 
 /* #1765 Feature 3 — ArkId/OpenLibraryWorkId/OpenLibraryEditionId on
    tblCatalogues (migrate-publication-metadata.php Stage 3, three columns in
@@ -74,10 +71,7 @@ try {
    not written" on a pre-migration install). Collections carry no ISBN/ISSN
    (those are a series/songbook concern), so the shared identifier partial is
    rendered with $pifShowIsbnIssn = false below. */
-$hasPubIdCols = $hasSchema
-    && placeColumnExists($db, 'tblCatalogues', 'ArkId')
-    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryWorkId')
-    && placeColumnExists($db, 'tblCatalogues', 'OpenLibraryEditionId');
+$hasPubIdCols = $hasSchema && catalogueAdminPubIdColumnsReady($db);
 
 /* ---- GET ?action=song_search ----
  * JSON typeahead for the "Add a song" picker on the members panel
@@ -183,73 +177,35 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'add': {
-                $title       = trim((string)($_POST['title']       ?? ''));
-                $slugRaw     = trim((string)($_POST['slug']        ?? ''));
-                $description = trim((string)($_POST['description'] ?? '')) ?: null;
-                $visibility  = trim((string)($_POST['visibility']  ?? 'public'));
-                $sortOrder   = (int)($_POST['sort_order'] ?? 0);
-
-                if ($title === '')                                       { $error = 'Title is required.'; break; }
-                if (mb_strlen($title) > 255)                             { $error = 'Title must be 255 characters or fewer.'; break; }
-                if (!in_array($visibility, ['public','curated','admin_only'], true)) {
-                    $error = 'Invalid visibility.'; break;
-                }
-                $slug = $slugRaw !== '' ? $slugFor($slugRaw) : $slugFor($title);
-                if ($slug === '')                                        { $error = 'Slug could not be derived — provide one explicitly.'; break; }
-                if (mb_strlen($slug) > 255)                              { $error = 'Slug must be 255 characters or fewer.'; break; }
-                /* #1181 — optional badge colour (blank = theme default; validated hex). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                [$fields, $fieldError] = catalogueAdminValidateCreateFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* #1765 Feature 3 — publication identifiers, validated via the ONE
                    shared validator (mediaIdentifierPublicationClean); persisted in
                    a schema-tolerant secondary UPDATE after the INSERT below. */
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
-                $stmt = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
-                $stmt->bind_param('s', $slug);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) { $error = "A catalogue with slug '{$slug}' already exists."; break; }
+                if (catalogueAdminSlugTaken($db, $fields['slug'])) {
+                    $error = "A catalogue with slug '{$fields['slug']}' already exists."; break;
+                }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility, Colour)
-                     VALUES (?, ?, ?, ?, ?, ?)'
-                );
-                $stmt->bind_param('sssiss',
-                    $slug, $title, $description, $sortOrder, $visibility, $colour);
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
-                /* #1860 go-live — mint this Collection's permanent IL-id (ILC…). */
-                ilidStampNewRow($db, 'catalogue', $newId);
+                /* catalogueAdminCreate() pairs the INSERT with minting this
+                   Collection's permanent IL-id (ILC…, #1860 go-live). */
+                $newId = catalogueAdminCreate($db, $fields);
 
                 if ($hasPubIdCols) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $newId);
-                    $stmt->execute();
-                    $stmt->close();
+                    catalogueAdminPersistPublicationIds($db, $newId, $pubIds);
                 }
 
                 logActivity('admin.catalogues.add', 'catalogue', (string)$newId, [
-                    'slug' => $slug, 'title' => $title, 'visibility' => $visibility,
+                    'slug' => $fields['slug'], 'title' => $fields['title'], 'visibility' => $fields['visibility'],
                     'publication_ids' => $hasPubIdCols ? array_filter([
-                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
-                        'openlibrary_edition_id' => $olEditionVal,
+                        'ark_id' => $pubIds['ark'], 'openlibrary_work_id' => $pubIds['olWork'],
+                        'openlibrary_edition_id' => $pubIds['olEdition'],
                     ], fn($v) => $v !== null) : null,
                 ]);
-                $success = "Collection '{$title}' created.";
+                $success = "Collection '{$fields['title']}' created.";
                 break;
             }
 
@@ -312,56 +268,28 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             case 'update': {
-                $id          = (int)($_POST['id']          ?? 0);
-                $title       = trim((string)($_POST['title']       ?? ''));
-                $description = trim((string)($_POST['description'] ?? '')) ?: null;
-                $visibility  = trim((string)($_POST['visibility']  ?? 'public'));
-                $sortOrder   = (int)($_POST['sort_order'] ?? 0);
-                if ($id <= 0)                                            { $error = 'Collection id missing.'; break; }
-                if ($title === '')                                       { $error = 'Title is required.'; break; }
-                if (!in_array($visibility, ['public','curated','admin_only'], true)) {
-                    $error = 'Invalid visibility.'; break;
-                }
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id <= 0) { $error = 'Collection id missing.'; break; }
 
-                /* #1181 — optional badge colour (blank = theme default; validated hex). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                [$fields, $fieldError] = catalogueAdminValidateUpdateFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* #1765 Feature 3 — publication identifiers, validated via the ONE
                    shared validator; written in a schema-tolerant secondary UPDATE. */
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $arkVal = $arkClean['value']; $olWorkVal = $olWorkClean['value']; $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblCatalogues
-                        SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?, Colour = ?
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('ssissi', $title, $description, $sortOrder, $visibility, $colour, $id);
-                $stmt->execute();
-                $stmt->close();
+                catalogueAdminUpdate($db, $id, $fields);
 
                 if ($hasPubIdCols) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblCatalogues SET ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssi', $arkVal, $olWorkVal, $olEditionVal, $id);
-                    $stmt->execute();
-                    $stmt->close();
+                    catalogueAdminPersistPublicationIds($db, $id, $pubIds);
                 }
 
                 logActivity('admin.catalogues.update', 'catalogue', (string)$id, [
-                    'title' => $title, 'visibility' => $visibility,
+                    'title' => $fields['title'], 'visibility' => $fields['visibility'],
                     'publication_ids' => $hasPubIdCols ? array_filter([
-                        'ark_id' => $arkVal, 'openlibrary_work_id' => $olWorkVal,
-                        'openlibrary_edition_id' => $olEditionVal,
+                        'ark_id' => $pubIds['ark'], 'openlibrary_work_id' => $pubIds['olWork'],
+                        'openlibrary_edition_id' => $pubIds['olEdition'],
                     ], fn($v) => $v !== null) : null,
                 ]);
                 $success = "Collection updated.";
@@ -371,21 +299,14 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id <= 0) { $error = 'Collection id missing.'; break; }
-                $stmt = $db->prepare('SELECT Title FROM tblCatalogues WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if (!$row) { $error = 'Collection not found.'; break; }
-                $stmt = $db->prepare('DELETE FROM tblCatalogues WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
+                $title = catalogueAdminFetchTitle($db, $id);
+                if ($title === null) { $error = 'Collection not found.'; break; }
+                catalogueAdminDelete($db, $id);
                 /* tblCatalogueSongs cascades via FK ON DELETE CASCADE. */
                 logActivity('admin.catalogues.delete', 'catalogue', (string)$id, [
-                    'title' => $row['Title'],
+                    'title' => $title,
                 ]);
-                $success = "Collection '{$row['Title']}' deleted.";
+                $success = "Collection '{$title}' deleted.";
                 break;
             }
 
@@ -412,41 +333,25 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                    would fall through to tblCatalogueSongs' FK + INSERT
                    IGNORE below and silently affect 0 rows while still
                    reporting the misleading "already in the catalogue"
-                   message — mirrors #1868's groups.php add_member fix. */
-                $stmt = $db->prepare(
-                    'SELECT Title FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '')
-                    /* #1694 — a soft-deleted song must not be addable via a
-                       forged SongId either; matches the song_search picker's
-                       own songVisibleSql() filter above, so a hidden song is
-                       neither offered NOR accepted.
-                       @disabled-visible: admin surface (#1765) — same owner
-                       decision as the song_search handler above: disabled
-                       songbooks stay fully visible/editable in /manage, so
-                       a curator can still add a song from a disabled book
-                       into a Collection; this existence check deliberately
-                       does NOT filter on songServableSql(). */
-                );
-                $stmt->bind_param('s', $songId);
-                $stmt->execute();
-                $foundSong = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if (!$foundSong) { $error = 'That song could not be found — pick one from the search results.'; break; }
+                   message — mirrors #1868's groups.php add_member fix.
+                   #1694 — a soft-deleted song must not be addable via a
+                   forged SongId either (catalogueAdminFindVisibleSongTitle()
+                   uses the same songVisibleSql() filter the song_search
+                   picker uses, so a hidden song is neither offered NOR
+                   accepted). @disabled-visible: admin surface (#1765) —
+                   disabled songbooks stay fully visible/editable in
+                   /manage, so a curator can still add a song from a
+                   disabled book into a Collection. */
+                $songTitle = catalogueAdminFindVisibleSongTitle($db, $songId);
+                if ($songTitle === null) { $error = 'That song could not be found — pick one from the search results.'; break; }
 
                 $userId = (int)($currentUser['id'] ?? 0) ?: null;
-                $stmt = $db->prepare(
-                    'INSERT IGNORE INTO tblCatalogueSongs
-                        (CatalogueId, SongId, AddedBy, AddedAt)
-                     VALUES (?, ?, ?, NOW())'
-                );
-                $stmt->bind_param('isi', $catalogueId, $songId, $userId);
-                $stmt->execute();
-                $added = $stmt->affected_rows > 0;
-                $stmt->close();
+                $added = catalogueAdminAddMember($db, $catalogueId, $songId, $userId);
                 logActivity('admin.catalogues.add_member', 'catalogue', (string)$catalogueId, [
                     'song_id' => $songId, 'added' => $added,
                 ]);
                 $success = $added
-                    ? "Added \"{$foundSong['Title']}\" ({$songId}) to catalogue."
+                    ? "Added \"{$songTitle}\" ({$songId}) to catalogue."
                     : "{$songId} was already in the catalogue.";
                 break;
             }
@@ -457,13 +362,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($catalogueId <= 0 || $songId === '') {
                     $error = 'catalogue_id and song_id required.'; break;
                 }
-                $stmt = $db->prepare(
-                    'DELETE FROM tblCatalogueSongs WHERE CatalogueId = ? AND SongId = ?'
-                );
-                $stmt->bind_param('is', $catalogueId, $songId);
-                $stmt->execute();
-                $removed = $stmt->affected_rows > 0;
-                $stmt->close();
+                $removed = catalogueAdminRemoveMember($db, $catalogueId, $songId);
                 logActivity('admin.catalogues.remove_member', 'catalogue', (string)$catalogueId, [
                     'song_id' => $songId, 'removed' => $removed,
                 ]);

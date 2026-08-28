@@ -233,6 +233,54 @@ return [
            copy of its Environment/ExpiresAt-aware INSERT shape. */
         'admin_notification_send'               => 'deliberate API-first surface #1969 (API-coverage batch 4a, A9); Swagger console consumer; same D1-default-A posture as the families above; manage/notifications.php\'s compose handler + this action both delegate row-writing to the SAME shared includes/notifications.php notifyUser() (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A3) — tag/theme CRUD +
+           merge + canonicalisation-suggestions API parity for
+           manage/tags.php's own create/update/delete/merge POST handlers
+           and its inline canonicalisation-suggestions read. Same
+           D1-default-A posture as the families above; every action
+           delegates to the newly-extracted shared includes/tag_admin.php
+           core manage/tags.php was ALSO re-pointed at in the same commit
+           (never a fork) — the fuzzy scoring itself stays the pre-existing
+           ONE includes/song_similarity.php scorer (#1216/#1222). */
+        'admin_tag_create'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s create handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_update'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s update handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_delete'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s delete handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_merge'                       => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s merge handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_canonical_suggestions'       => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; read-only; manage/tags.php\'s inline canonicalisation-suggestions block was re-pointed at the SAME shared includes/tag_admin.php core this action calls (never a fork; scoring stays the pre-existing includes/song_similarity.php, #1216/#1222), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A4) — catalogue
+           ("Collection") CRUD + membership API parity for
+           manage/catalogues.php's own add/update/delete/add_member/
+           remove_member POST handlers. Same D1-default-A posture as the
+           families above; every action delegates to the newly-extracted
+           shared includes/catalogue_admin.php core manage/catalogues.php
+           was ALSO re-pointed at in the same commit (never a fork).
+           `tblCatalogues`/`tblCatalogueSongs`/the `catalogue` entity type
+           stay `catalogue` internally throughout (rule #24 — the
+           Catalogue→Collection relabel is UI copy only). The page's
+           `marcxml_import` wizard (file-upload) is deliberately NOT
+           covered by any of these five actions — see
+           includes/catalogue_admin.php's doc-block. */
+        'admin_catalogue_create'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s add handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_update'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s update handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_delete'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s delete handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_member_add'            => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s add_member handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_member_remove'         => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s remove_member handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A5) — songbook-series
+           CRUD + membership-reconcile API parity for
+           manage/songbook-series.php's own create/update/delete POST
+           handlers. Same D1-default-A posture as the families above; every
+           action delegates to the newly-extracted shared
+           includes/songbook_series_admin.php core
+           manage/songbook-series.php was ALSO re-pointed at in the same
+           commit (never a fork). The page's `marcxml_import` wizard
+           (file-upload) is deliberately NOT covered by any of these three
+           actions — see includes/songbook_series_admin.php's doc-block. */
+        'admin_songbook_series_create'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s create handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_update'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s update handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_delete'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s delete handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

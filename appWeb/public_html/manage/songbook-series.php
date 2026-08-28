@@ -31,6 +31,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the shape check. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php'; /* placeColumnExists() — generic INFORMATION_SCHEMA column probe (#1765) */
+/* #1969 API-coverage batch 4b-i (A5) — the songbook-series admin CRUD
+   shared cores. The admin_songbook_series_* API actions in api.php call
+   these SAME functions this page's `create`/`update`/`delete` POST
+   handlers call — one validation/write core, two thin callers (rule
+   #22/#35). `marcxml_import` stays page-only (out of scope — see
+   includes/songbook_series_admin.php's doc-block); it does NOT delegate
+   here. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_series_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -65,19 +73,10 @@ $slugFor = static function (string $name): string {
 
 /* Schema probe — if tblSongbookSeries isn't live yet, render a friendly
    "run the migration" page instead of letting every prepared statement
-   blow up. The nav still renders so the curator can navigate away. */
-$hasSchema = false;
-try {
-    $probe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbookSeries' LIMIT 1"
-    );
-    $probe->execute();
-    $hasSchema = $probe->get_result()->fetch_row() !== null;
-    $probe->close();
-} catch (\Throwable $e) {
-    error_log('[songbook-series] schema probe failed: ' . $e->getMessage());
-}
+   blow up. The nav still renders so the curator can navigate away.
+   Delegates to the shared core (rule #22) so the API's
+   admin_songbook_series_* 503 gate reads the identical answer. */
+$hasSchema = songbookSeriesAdminTableExists($db);
 
 /* #1765 Feature 3 — Isbn/Issn/ArkId/OpenLibraryWorkId/OpenLibraryEditionId,
    all five added in one migration stage (migrate-publication-metadata.php
@@ -87,11 +86,7 @@ try {
    whole batch as one unit for rendering purposes is a reasonable
    simplification; it still degrades safely (fields simply don't render,
    handlers simply don't write them) on a pre-migration install. */
-$hasPubIdCols = $hasSchema && placeColumnExists($db, 'tblSongbookSeries', 'Isbn')
-    && placeColumnExists($db, 'tblSongbookSeries', 'Issn')
-    && placeColumnExists($db, 'tblSongbookSeries', 'ArkId')
-    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryWorkId')
-    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryEditionId');
+$hasPubIdCols = $hasSchema && songbookSeriesAdminPubIdColumnsReady($db);
 
 /* ---- GET ?action=songbook_search&q=… (#782 phase C) -------------------
  * JSON typeahead for the edit-modal's "Add a member" input. Returns
@@ -217,22 +212,8 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $name        = trim((string)($_POST['name']        ?? ''));
-                $description = trim((string)($_POST['description'] ?? ''));
-                $slug        = trim((string)($_POST['slug']        ?? ''));
-                if ($name === '') { $error = 'Name is required.'; break; }
-                if ($slug === '') { $slug  = $slugFor($name); }
-                if ($slug === '') { $error = 'Name has no usable slug characters — provide one explicitly.'; break; }
-                /* Cap to schema widths (Name 120, Slug 120, Description 255). */
-                $name        = mb_substr($name, 0, 120);
-                $slug        = mb_substr($slug, 0, 120);
-                $description = mb_substr($description, 0, 255);
-                /* #1181 — optional shared series colour. Blank = theme default;
-                   otherwise a validated #RRGGBB hex (never interpolated). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* #1765 Feature 3 — publication-entity identifiers. Validated
                    via the ONE shared validator, mediaIdentifierPublicationClean()
@@ -240,59 +221,30 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    Written in a schema-tolerant secondary UPDATE after the
                    INSERT below (same pattern as songbooks.php) rather than
                    growing this INSERT's own bind_param() call. */
-                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
-                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
-                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
-                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $isbnVal      = $isbnClean['value'];
-                $issnVal      = $issnClean['value'];
-                $arkVal       = $arkClean['value'];
-                $olWorkVal    = $olWorkClean['value'];
-                $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
                 /* UNIQUE on Slug → check before insert for a friendly error. */
-                $stmt = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
-                $stmt->bind_param('s', $slug);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) { $error = "Slug '{$slug}' already taken — pick another."; break; }
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'])) {
+                    $error = "Slug '{$fields['slug']}' already taken — pick another."; break;
+                }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongbookSeries (Name, Slug, Description, Colour) VALUES (?, ?, ?, ?)'
-                );
-                $stmt->bind_param('ssss', $name, $slug, $description, $colour);
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
+                $newId = songbookSeriesAdminCreate($db, $fields);
 
                 if ($hasPubIdCols) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbookSeries
-                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $newId);
-                    $stmt->execute();
-                    $stmt->close();
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, $pubIds);
                 }
 
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.create', 'songbook_series', (string)$newId, [
-                        'name' => $name, 'slug' => $slug, 'description' => $description,
+                        'name' => $fields['name'], 'slug' => $fields['slug'], 'description' => $fields['description'],
                         'publication_ids' => $hasPubIdCols ? array_filter([
-                            'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
-                            'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                            'isbn' => $pubIds['isbn'], 'issn' => $pubIds['issn'], 'ark_id' => $pubIds['ark'],
+                            'openlibrary_work_id' => $pubIds['olWork'], 'openlibrary_edition_id' => $pubIds['olEdition'],
                         ], fn($v) => $v !== null) : null,
                     ]);
                 }
-                $success = "Series '{$name}' created.";
+                $success = "Series '{$fields['name']}' created.";
                 break;
             }
 
@@ -360,56 +312,25 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
 
             case 'update': {
-                $id          = (int)($_POST['id']          ?? 0);
-                $name        = trim((string)($_POST['name']        ?? ''));
-                $description = trim((string)($_POST['description'] ?? ''));
-                $slug        = trim((string)($_POST['slug']        ?? ''));
-                if ($id <= 0)     { $error = 'Series id is required.'; break; }
-                if ($name === '') { $error = 'Name is required.'; break; }
-                if ($slug === '') { $slug  = $slugFor($name); }
-                if ($slug === '') { $error = 'Name has no usable slug characters — provide one explicitly.'; break; }
-                $name        = mb_substr($name, 0, 120);
-                $slug        = mb_substr($slug, 0, 120);
-                $description = mb_substr($description, 0, 255);
-                /* #1181 — optional shared series colour (blank = theme default). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id <= 0) { $error = 'Series id is required.'; break; }
+
+                [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* Pull the before-row for the audit log + collision check. */
-                $stmt = $db->prepare('SELECT Name, Slug, Description FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $before = $stmt->get_result()->fetch_assoc() ?: null;
-                $stmt->close();
+                $before = songbookSeriesAdminFetch($db, $id);
                 if (!$before) { $error = 'Series not found.'; break; }
 
                 /* Slug uniqueness check (excluding self). */
-                $dup = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ? AND Id <> ?');
-                $dup->bind_param('si', $slug, $id);
-                $dup->execute();
-                $dupExists = $dup->get_result()->fetch_row() !== null;
-                $dup->close();
-                if ($dupExists) { $error = "Slug '{$slug}' already taken by another series."; break; }
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'], $id)) {
+                    $error = "Slug '{$fields['slug']}' already taken by another series."; break;
+                }
 
                 /* #1765 Feature 3 — publication-entity identifiers, same
                    validated-via-shared-helper shape as 'create' above. */
-                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
-                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
-                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
-                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $isbnVal      = $isbnClean['value'];
-                $issnVal      = $issnClean['value'];
-                $arkVal       = $arkClean['value'];
-                $olWorkVal    = $olWorkClean['value'];
-                $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
                 /* Reconcile membership rows. The edit modal posts:
                      member_ids[]            = [12, 47, 99]
@@ -419,93 +340,36 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    field is intentionally not exposed in v1 — the schema
                    carries it for future use; v2 can light up an inline
                    editor if curators ask. */
-                $postedIds = $_POST['member_ids']  ?? [];
-                $postedSrt = $_POST['member_sort'] ?? [];
-                if (!is_array($postedIds)) $postedIds = [];
-                if (!is_array($postedSrt)) $postedSrt = [];
-                $postedIds = array_values(array_unique(array_map('intval', $postedIds)));
-                $postedIds = array_values(array_filter($postedIds, static fn(int $v): bool => $v > 0));
+                [$postedIds, $postedSrt] = songbookSeriesAdminParseMemberPost(
+                    $_POST['member_ids'] ?? [],
+                    $_POST['member_sort'] ?? []
+                );
 
                 $db->begin_transaction();
                 try {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbookSeries
-                            SET Name = ?, Slug = ?, Description = ?, Colour = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('ssssi', $name, $slug, $description, $colour, $id);
-                    $stmt->execute();
-                    $stmt->close();
+                    songbookSeriesAdminUpdate($db, $id, $fields);
 
                     /* #1765 Feature 3 — schema-tolerant secondary UPDATE,
                        same pattern as songbooks.php, inside this same
                        transaction so a downstream failure rolls it back too. */
                     if ($hasPubIdCols) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblSongbookSeries
-                                SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $id);
-                        $stmt->execute();
-                        $stmt->close();
+                        songbookSeriesAdminPersistPublicationIds($db, $id, $pubIds);
                     }
 
-                    /* Step 1: remove rows not in $postedIds. Schema is
-                       composite-PK (SeriesId, SongbookId) so DELETE is
-                       cheap and safe even on a large series. */
-                    if ($postedIds) {
-                        $ph = implode(',', array_fill(0, count($postedIds), '?'));
-                        $sql = "DELETE FROM tblSongbookSeriesMembership
-                                 WHERE SeriesId = ?
-                                   AND SongbookId NOT IN ($ph)";
-                        $stmt = $db->prepare($sql);
-                        $types = 'i' . str_repeat('i', count($postedIds));
-                        $args  = array_merge([$id], $postedIds);
-                        $stmt->bind_param($types, ...$args);
-                        $stmt->execute();
-                        $stmt->close();
-                    } else {
-                        $stmt = $db->prepare(
-                            'DELETE FROM tblSongbookSeriesMembership WHERE SeriesId = ?'
-                        );
-                        $stmt->bind_param('i', $id);
-                        $stmt->execute();
-                        $stmt->close();
-                    }
-
-                    /* Step 2: upsert each posted membership with its
-                       SortOrder. ON DUPLICATE KEY UPDATE keeps the
-                       statement single-shot and idempotent on re-saves. */
-                    if ($postedIds) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblSongbookSeriesMembership
-                                 (SeriesId, SongbookId, SortOrder)
-                             VALUES (?, ?, ?)
-                             ON DUPLICATE KEY UPDATE SortOrder = VALUES(SortOrder)'
-                        );
-                        foreach ($postedIds as $sbId) {
-                            $sortOrder = isset($postedSrt[$sbId])
-                                ? max(0, min(32767, (int)$postedSrt[$sbId]))
-                                : 0;
-                            $stmt->bind_param('iii', $id, $sbId, $sortOrder);
-                            $stmt->execute();
-                        }
-                        $stmt->close();
-                    }
+                    songbookSeriesAdminReplaceMembership($db, $id, $postedIds, $postedSrt);
 
                     $db->commit();
 
                     if (function_exists('logActivity')) {
                         $changed = [];
-                        if ((string)$before['Name']        !== $name)        $changed[] = 'Name';
-                        if ((string)$before['Slug']        !== $slug)        $changed[] = 'Slug';
-                        if ((string)$before['Description'] !== $description) $changed[] = 'Description';
+                        if ((string)$before['Name']        !== $fields['name'])        $changed[] = 'Name';
+                        if ((string)$before['Slug']        !== $fields['slug'])        $changed[] = 'Slug';
+                        if ((string)$before['Description'] !== $fields['description']) $changed[] = 'Description';
                         logActivity('songbook_series.edit', 'songbook_series', (string)$id, [
                             'fields'           => $changed,
                             'before'           => array_intersect_key($before, array_flip($changed)),
                             'after'            => array_intersect_key([
-                                'Name' => $name, 'Slug' => $slug, 'Description' => $description,
+                                'Name' => $fields['name'], 'Slug' => $fields['slug'], 'Description' => $fields['description'],
                             ], array_flip($changed)),
                             'member_count'     => count($postedIds),
                             /* #1765 Feature 3 — logged unconditionally (not diffed
@@ -513,12 +377,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                                own $auditExtras treatment of these same two
                                columns) since $before doesn't carry them. */
                             'publication_ids'  => $hasPubIdCols ? array_filter([
-                                'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
-                                'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                                'isbn' => $pubIds['isbn'], 'issn' => $pubIds['issn'], 'ark_id' => $pubIds['ark'],
+                                'openlibrary_work_id' => $pubIds['olWork'], 'openlibrary_edition_id' => $pubIds['olEdition'],
                             ], fn($v) => $v !== null) : null,
                         ]);
                     }
-                    $success = "Series '{$name}' updated.";
+                    $success = "Series '{$fields['name']}' updated.";
                 } catch (\Throwable $e) {
                     $db->rollback();
                     throw $e;
@@ -532,18 +396,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 /* FK on tblSongbookSeriesMembership is ON DELETE CASCADE
                    so removing the series cleans up its membership rows in
                    the same transaction. */
-                $stmt = $db->prepare('SELECT Name FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
+                $row = songbookSeriesAdminFetch($db, $id);
                 if (!$row) { $error = 'Series not found.'; break; }
                 $oldName = (string)$row['Name'];
 
-                $stmt = $db->prepare('DELETE FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
+                songbookSeriesAdminDelete($db, $id);
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.delete', 'songbook_series', (string)$id, [
                         'name' => $oldName,

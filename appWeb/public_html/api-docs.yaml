@@ -12315,6 +12315,671 @@ paths:
           description: Works registry or medley composition not migrated on this environment yet
 
   # ===========================================================================
+  # ADMIN — TAGS/THEMES  (#770/#1152/#1222, API-coverage batch 4b-i A3)
+  #
+  # CRUD + merge over tblSongTags. The web page /manage/tags and these JSON
+  # twins share ONE core (includes/tag_admin.php). The canonicalisation
+  # suggestions read reuses the ONE fuzzy scorer (includes/song_similarity.php,
+  # #1216/#1222) — never re-forked. Gated on the manage_tags entitlement.
+  # ===========================================================================
+  /api.php?action=admin_tag_create:
+    post:
+      operationId: adminTagCreate
+      tags: [Admin — Tags]
+      summary: Create a tag/theme row
+      description: |
+        Name is Title-Cased and 50-char-capped; the slug is derived from it.
+        `ON DUPLICATE KEY UPDATE` on the underlying insert makes a
+        same-Name re-submit idempotent — it returns the EXISTING row's id
+        rather than erroring.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tag_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string, maxLength: 50 }
+                description: { type: string, maxLength: 255 }
+      responses:
+        "201":
+          description: Tag created (or an existing same-Name row's id, on collision)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Missing name, or the name has no usable slug characters
+        "403":
+          description: Admin access required
+
+  /api.php?action=admin_tag_update:
+    post:
+      operationId: adminTagUpdate
+      tags: [Admin — Tags]
+      summary: Update a tag/theme row's Name/Slug/Description
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tag_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, name]
+              properties:
+                id:          { type: integer }
+                name:        { type: string, maxLength: 50 }
+                description: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: Tag updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Missing id/name, or the name has no usable slug characters
+        "403":
+          description: Admin access required
+        "404":
+          description: Tag not found
+
+  /api.php?action=admin_tag_delete:
+    post:
+      operationId: adminTagDelete
+      tags: [Admin — Tags]
+      summary: Delete a tag/theme row
+      description: |
+        Refused with **409** when the tag is still mapped to any song,
+        unless `force` is sent — the same two-step confirm the admin page
+        uses. Forcing unmaps every song from the tag first, then deletes it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tag_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:    { type: integer }
+                force: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Tag not found
+        "409":
+          description: Tag is still mapped to songs — resend with force=true
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:          { type: string }
+                  songs:          { type: integer, description: How many songs currently carry this tag. }
+                  requires_force: { type: boolean, example: true }
+
+  /api.php?action=admin_tag_merge:
+    post:
+      operationId: adminTagMerge
+      tags: [Admin — Tags]
+      summary: Collapse two tag rows into one (irreversible)
+      description: |
+        Every `tblSongTagMap` row citing `source_id` re-points to
+        `target_id` (a song already carrying both collapses to one
+        mapping); `source_id` is then deleted. Transactional.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tag_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id: { type: integer, description: Merged away (deleted). }
+                target_id: { type: integer, description: Survives. }
+      responses:
+        "200":
+          description: Merged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  source_id:  { type: integer }
+                  target_id:  { type: integer }
+                  repointed:  { type: integer, description: Song mappings repointed from source to target. }
+                  conflicts:  { type: integer, description: Mappings that already existed on target and were dropped from source instead of colliding. }
+        "400":
+          description: Missing or identical source_id/target_id
+        "403":
+          description: Admin access required
+        "404":
+          description: One or both tags not found
+
+  /api.php?action=admin_tag_canonical_suggestions:
+    get:
+      operationId: adminTagCanonicalSuggestions
+      tags: [Admin — Tags]
+      summary: Curator tags whose spelling closely matches a standard CCLI/OpenLyrics theme
+      description: |
+        Read-only. Scored via the shared `includes/song_similarity.php`
+        fuzzy matcher (#1216/#1222) against the seeded
+        `Source = 'ccli-openlyrics'` vocabulary. Curator-confirmed via
+        `admin_tag_merge` (source = the curator variant, target = the
+        standard theme) — this action never writes. Returns an empty list
+        on an environment where the #1152 theme-vocabulary migration
+        hasn't run yet, rather than an error.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tag_canonical_suggestions] }
+      responses:
+        "200":
+          description: Suggestions, highest match score first (capped at 50)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        curId:   { type: integer, description: The curator variant tag's id. }
+                        curName: { type: string }
+                        uses:    { type: integer, description: Songs currently carrying the curator variant. }
+                        stdId:   { type: integer, description: The matched standard theme's id. }
+                        stdName: { type: string }
+                        score:   { type: number, format: float, description: Fuzzy match score, 0.84–1.0. }
+        "403":
+          description: Admin access required
+
+  # ===========================================================================
+  # ADMIN — CATALOGUES / "COLLECTIONS"  (#941/#1765, API-coverage batch 4b-i A4)
+  #
+  # CRUD over tblCatalogues + tblCatalogueSongs membership. The web page
+  # /manage/catalogues (user-facing label "Collections") and these JSON
+  # twins share ONE core (includes/catalogue_admin.php). `tblCatalogues`/
+  # `tblCatalogueSongs`/the `catalogue` entity type stay `catalogue`
+  # INTERNALLY — the Catalogue→Collection relabel is UI copy only (rule
+  # #24). Gated on the manage_songbooks entitlement (same coarse
+  # entitlement the page uses — catalogues are a flavour of catalogue-level
+  # metadata, not a separate domain). The page's `marcxml_import` wizard
+  # (file-upload) is intentionally NOT covered here — see
+  # includes/catalogue_admin.php's doc-block.
+  # ===========================================================================
+  /api.php?action=admin_catalogue_create:
+    post:
+      operationId: adminCatalogueCreate
+      tags: [Admin — Catalogues]
+      summary: Create a catalogue ("Collection") row
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:                   { type: string, maxLength: 255 }
+                slug:                    { type: string, maxLength: 255, description: Optional — derived from title when omitted. }
+                description:             { type: string, nullable: true }
+                visibility:              { type: string, enum: [public, curated, admin_only], default: public }
+                sort_order:              { type: integer, default: 0 }
+                colour:                  { type: string, nullable: true, pattern: "^#[0-9A-Fa-f]{6}$", description: Optional badge colour; blank = theme default. }
+                ark_id:                  { type: string, nullable: true }
+                openlibrary_work_id:     { type: string, nullable: true }
+                openlibrary_edition_id:  { type: string, nullable: true }
+      responses:
+        "201":
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  slug:  { type: string }
+                  title: { type: string }
+        "400":
+          description: Validation error (missing/over-length title, bad visibility, bad slug/colour/identifier shape)
+        "403":
+          description: Admin access required
+        "409":
+          description: Slug already taken by another catalogue
+        "503":
+          description: Collections registry not migrated on this environment yet
+
+  /api.php?action=admin_catalogue_update:
+    post:
+      operationId: adminCatalogueUpdate
+      tags: [Admin — Catalogues]
+      summary: Update a catalogue's scalar fields (never Slug)
+      description: |
+        The Slug is immutable once created — this mirrors the admin page,
+        which never exposed a way to change it either.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, title]
+              properties:
+                id:                      { type: integer }
+                title:                   { type: string }
+                description:             { type: string, nullable: true }
+                visibility:              { type: string, enum: [public, curated, admin_only], default: public }
+                sort_order:              { type: integer, default: 0 }
+                colour:                  { type: string, nullable: true, pattern: "^#[0-9A-Fa-f]{6}$" }
+                ark_id:                  { type: string, nullable: true }
+                openlibrary_work_id:     { type: string, nullable: true }
+                openlibrary_edition_id:  { type: string, nullable: true }
+      responses:
+        "200":
+          description: Collection updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  title: { type: string }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Collection not found
+        "503":
+          description: Collections registry not migrated on this environment yet
+
+  /api.php?action=admin_catalogue_delete:
+    post:
+      operationId: adminCatalogueDelete
+      tags: [Admin — Catalogues]
+      summary: Delete a catalogue row
+      description: |
+        `tblCatalogueSongs` cascades via its `ON DELETE CASCADE` FK — the
+        member songs themselves are never touched.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  title: { type: string }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Collection not found
+        "503":
+          description: Collections registry not migrated on this environment yet
+
+  /api.php?action=admin_catalogue_member_add:
+    post:
+      operationId: adminCatalogueMemberAdd
+      tags: [Admin — Catalogues]
+      summary: Add a song to a catalogue
+      description: |
+        SEARCH-SELECT ONLY (rule #43) — `song_id` MUST name a real,
+        currently-visible `tblSongs` row (#1694/#1765); there is
+        deliberately NO find-or-create fallback (songs are authored in the
+        editor, never minted from here). Idempotent — re-adding an
+        existing member returns `added: false`, not an error.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [catalogue_id, song_id]
+              properties:
+                catalogue_id: { type: integer }
+                song_id:      { type: string }
+      responses:
+        "200":
+          description: Member added (or already present)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:            { type: boolean, example: true }
+                  catalogue_id:  { type: integer }
+                  song_id:       { type: string }
+                  added:         { type: boolean, description: false means the song was already a member. }
+                  title:         { type: string }
+        "400":
+          description: Missing catalogue_id/song_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Song not found (or not currently visible)
+        "503":
+          description: Collections registry not migrated on this environment yet
+
+  /api.php?action=admin_catalogue_member_remove:
+    post:
+      operationId: adminCatalogueMemberRemove
+      tags: [Admin — Catalogues]
+      summary: Remove a song from a catalogue
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [catalogue_id, song_id]
+              properties:
+                catalogue_id: { type: integer }
+                song_id:      { type: string }
+      responses:
+        "200":
+          description: Member removed (or wasn't a member)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:            { type: boolean, example: true }
+                  catalogue_id:  { type: integer }
+                  song_id:       { type: string }
+                  removed:       { type: boolean, description: false means the song wasn't a member. }
+        "400":
+          description: Missing catalogue_id/song_id
+        "403":
+          description: Admin access required
+        "503":
+          description: Collections registry not migrated on this environment yet
+
+  # ===========================================================================
+  # ADMIN — SONGBOOK SERIES  (#782/#1765, API-coverage batch 4b-i A5)
+  #
+  # CRUD over tblSongbookSeries + its tblSongbookSeriesMembership join
+  # table. The web page /manage/songbook-series and these JSON twins share
+  # ONE core (includes/songbook_series_admin.php). Gated on the
+  # manage_songbooks entitlement — same as /manage/songbooks. The page's
+  # `marcxml_import` wizard (file-upload) is intentionally NOT covered
+  # here — see includes/songbook_series_admin.php's doc-block.
+  # ===========================================================================
+  /api.php?action=admin_songbook_series_create:
+    post:
+      operationId: adminSongbookSeriesCreate
+      tags: [Admin — Songbook Series]
+      summary: Create a songbook series row
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_series_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:                    { type: string, maxLength: 120 }
+                slug:                    { type: string, maxLength: 120, description: Optional — derived from name when omitted. }
+                description:             { type: string, maxLength: 255 }
+                colour:                  { type: string, nullable: true, pattern: "^#[0-9A-Fa-f]{6}$", description: Optional shared colour; blank = theme default. }
+                isbn:                    { type: string, nullable: true }
+                issn:                    { type: string, nullable: true }
+                ark_id:                  { type: string, nullable: true }
+                openlibrary_work_id:     { type: string, nullable: true }
+                openlibrary_edition_id:  { type: string, nullable: true }
+      responses:
+        "201":
+          description: Series created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+                  slug: { type: string }
+        "400":
+          description: Validation error (missing/no-slug-derivable name, bad colour/identifier shape)
+        "403":
+          description: Admin access required
+        "409":
+          description: Slug already taken
+        "503":
+          description: Songbook Series registry not migrated on this environment yet
+
+  /api.php?action=admin_songbook_series_update:
+    post:
+      operationId: adminSongbookSeriesUpdate
+      tags: [Admin — Songbook Series]
+      summary: Update a songbook series' scalar fields, optionally reconciling membership
+      description: |
+        Omitting `member_ids` leaves the series' membership untouched (the
+        same contract `admin_publisher_update`'s `aliases` field uses); an
+        explicit array — including `[]` — reconciles membership to
+        EXACTLY that list, removing any member not named and upserting
+        each named member's `sort_order` from `member_sort`. The response
+        always echoes the CURRENT stored member list (rule #35).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_series_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, name]
+              properties:
+                id:                      { type: integer }
+                name:                    { type: string, maxLength: 120 }
+                slug:                    { type: string, maxLength: 120 }
+                description:             { type: string, maxLength: 255 }
+                colour:                  { type: string, nullable: true, pattern: "^#[0-9A-Fa-f]{6}$" }
+                isbn:                    { type: string, nullable: true }
+                issn:                    { type: string, nullable: true }
+                ark_id:                  { type: string, nullable: true }
+                openlibrary_work_id:     { type: string, nullable: true }
+                openlibrary_edition_id:  { type: string, nullable: true }
+                member_ids:
+                  type: array
+                  items: { type: integer }
+                  description: Songbook ids — omit to leave membership unchanged.
+                member_sort:
+                  type: object
+                  additionalProperties: { type: integer }
+                  description: "Map of songbook_id -> sort_order (0-32767); unlisted members default to 0."
+      responses:
+        "200":
+          description: Series updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+                  slug: { type: string }
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songbook_id:  { type: integer }
+                        sort_order:   { type: integer }
+                        abbreviation: { type: string }
+                        name:         { type: string }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Series not found
+        "409":
+          description: Slug already taken by another series
+        "503":
+          description: Songbook Series registry not migrated on this environment yet
+
+  /api.php?action=admin_songbook_series_delete:
+    post:
+      operationId: adminSongbookSeriesDelete
+      tags: [Admin — Songbook Series]
+      summary: Delete a songbook series row
+      description: |
+        `tblSongbookSeriesMembership` cascades via its `ON DELETE CASCADE`
+        FK — the member songbooks themselves are never touched.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_series_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Series not found
+        "503":
+          description: Songbook Series registry not migrated on this environment yet
+
+  # ===========================================================================
   # ADMIN — LICENCE TYPES  (#459 / #1769 P4)
   #
   # CRUD over the licence vocabulary (tblLicenceTypes): the tokens every

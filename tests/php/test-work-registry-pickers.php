@@ -540,6 +540,16 @@ if (!is_readable($cataloguesFile)) {
     exit(1);
 }
 
+/* #1969 API-coverage batch 4b-i (A4) — catalogues.php's add_member handler
+   was re-pointed at includes/catalogue_admin.php's shared core (rule #22),
+   so §H's "verify before write" checks below now follow the delegation one
+   level deep into THIS file rather than finding the raw SQL inline. */
+$catalogueAdminFile = $web . '/includes/catalogue_admin.php';
+if (!is_readable($catalogueAdminFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/catalogue_admin.php at {$catalogueAdminFile}\n");
+    exit(1);
+}
+
 /* #1867 §I — manage/requests.php's admin "Resolved SongId" picker. */
 $requestsFile = $web . '/manage/requests.php';
 if (!is_readable($requestsFile)) {
@@ -567,6 +577,7 @@ $sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
 $groupsRaw         = (string)file_get_contents($groupsFile);
 $publishersRaw     = (string)file_get_contents($publishersFile);
 $cataloguesRaw     = (string)file_get_contents($cataloguesFile);
+$catalogueAdminRaw = (string)file_get_contents($catalogueAdminFile);
 $requestsRaw       = (string)file_get_contents($requestsFile);
 $reqJsRaw          = (string)file_get_contents($reqJsFile);
 $reqPhpRaw         = (string)file_get_contents($reqPhpFile);
@@ -587,6 +598,7 @@ $publishersPhpView = wrpStripPhpComments($publishersRaw);
 $publishersAllView = wrpStripAllComments($publishersRaw);
 $cataloguesPhpView = wrpStripPhpComments($cataloguesRaw);
 $cataloguesAllView = wrpStripAllComments($cataloguesRaw);
+$catalogueAdminPhpView = wrpStripPhpComments($catalogueAdminRaw);
 $requestsPhpView   = wrpStripPhpComments($requestsRaw);
 $requestsAllView   = wrpStripAllComments($requestsRaw);
 /* request-a-song.js is JS, not PHP — token_get_all() is PHP-syntax-specific,
@@ -946,33 +958,59 @@ if ($publishersMergeBlock === '') {
 $cataloguesAddMemberBlock = wrpSliceCaseBlock($cataloguesPhpView, 'add_member');
 
 /* ---- H1: catalogues.php's add_member handler verifies the submitted
-   song_id names a REAL tblSongs row (a SELECT ... FROM tblSongs WHERE
-   SongId = ?) BEFORE the INSERT that writes tblCatalogueSongs — "resolve to
-   a real existing SongId" (#1866's explicit server-side requirement).
-   Position-based (not just presence): a verify-AFTER-the-INSERT would
-   already be too late to matter. Same shape as G1's groups.php check. ---- */
+   song_id names a REAL tblSongs row BEFORE writing tblCatalogueSongs —
+   "resolve to a real existing SongId" (#1866's explicit server-side
+   requirement). #1969 (API-coverage batch 4b-i A4) re-pointed this handler
+   at includes/catalogue_admin.php's shared core (rule #22), so the check
+   now follows the delegation ONE LEVEL DEEP rather than finding the raw SQL
+   inline: (a) the page's add_member case calls
+   catalogueAdminFindVisibleSongTitle( BEFORE catalogueAdminAddMember( —
+   position-based, same "verify-after-write is too late" reasoning as
+   before, just re-anchored on the delegate calls; (b) the delegate
+   functions THEMSELVES are sliced out of catalogue_admin.php and proven to
+   still do the real work — the verify function's body contains a
+   `SELECT ... FROM tblSongs WHERE SongId = ?`, and the write function's
+   body contains the `INSERT IGNORE INTO tblCatalogueSongs`. Same shape as
+   G1's groups.php check, one indirection deeper. ---- */
 if ($cataloguesAddMemberBlock === '') {
     $failures[] = "could not locate case 'add_member': { ... } in manage/catalogues.php (slicer or file shape changed)";
 } else {
-    $selectPos = -1;
-    if (preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $cataloguesAddMemberBlock, $m, PREG_OFFSET_CAPTURE)) {
-        $selectPos = $m[0][1];
-    }
-    $insertPos = strpos($cataloguesAddMemberBlock, 'INSERT IGNORE INTO tblCatalogueSongs');
-    if ($selectPos < 0) {
-        $failures[] = "catalogues.php's add_member handler no longer verifies the submitted song_id against tblSongs before use (#1866, rule #43 — 'the server MUST verify the id exists')";
-    } elseif ($insertPos === false) {
-        $failures[] = "catalogues.php's add_member handler no longer writes INSERT IGNORE INTO tblCatalogueSongs — the write itself is missing";
-    } elseif (!($selectPos < $insertPos)) {
-        $failures[] = "catalogues.php's add_member handler's existence check does not run BEFORE the INSERT that uses the id — a check that runs after the write is too late to prevent it";
+    $verifyCallPos = strpos($cataloguesAddMemberBlock, 'catalogueAdminFindVisibleSongTitle(');
+    $addCallPos    = strpos($cataloguesAddMemberBlock, 'catalogueAdminAddMember(');
+    if ($verifyCallPos === false) {
+        $failures[] = "catalogues.php's add_member handler no longer calls catalogueAdminFindVisibleSongTitle( — the submitted song_id is no longer verified against tblSongs before use (#1866, rule #43 — 'the server MUST verify the id exists')";
+    } elseif ($addCallPos === false) {
+        $failures[] = "catalogues.php's add_member handler no longer calls catalogueAdminAddMember( — the tblCatalogueSongs write itself is missing";
+    } elseif (!($verifyCallPos < $addCallPos)) {
+        $failures[] = "catalogues.php's add_member handler's catalogueAdminFindVisibleSongTitle( call does not run BEFORE catalogueAdminAddMember( — a check that runs after the write is too late to prevent it";
     }
 }
 
-/* ---- H2: catalogues.php's add_member handler never mints a song row —
-   this surface is search-select ONLY, unlike #1864's Tune/Publisher fields
-   which deliberately DO fall back to a create funnel. ---- */
-if ($cataloguesAddMemberBlock !== '' && strpos($cataloguesAddMemberBlock, 'INSERT INTO tblSongs') !== false) {
-    $failures[] = "catalogues.php's add_member handler contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1866's explicit no-create-arm scope; songs are authored in the editor)";
+$catFindVisibleSongTitleFn = wrpSliceFunctionDecl($catalogueAdminPhpView, 'catalogueAdminFindVisibleSongTitle');
+$catAddMemberFn            = wrpSliceFunctionDecl($catalogueAdminPhpView, 'catalogueAdminAddMember');
+if ($catFindVisibleSongTitleFn === '') {
+    $failures[] = 'could not locate function catalogueAdminFindVisibleSongTitle(...) { ... } in includes/catalogue_admin.php (slicer or file shape changed)';
+} elseif (!preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $catFindVisibleSongTitleFn)) {
+    $failures[] = "includes/catalogue_admin.php's catalogueAdminFindVisibleSongTitle() no longer verifies song_id against tblSongs (a SELECT ... FROM tblSongs WHERE SongId = ?) — the delegate call exists but the real check behind it is gone";
+}
+if ($catAddMemberFn === '') {
+    $failures[] = 'could not locate function catalogueAdminAddMember(...) { ... } in includes/catalogue_admin.php (slicer or file shape changed)';
+} elseif (strpos($catAddMemberFn, 'INSERT IGNORE INTO tblCatalogueSongs') === false) {
+    $failures[] = "includes/catalogue_admin.php's catalogueAdminAddMember() no longer writes INSERT IGNORE INTO tblCatalogueSongs — the write itself is missing";
+}
+
+/* ---- H2: neither the add_member handler nor either of its two delegate
+   functions ever mints a song row — this surface is search-select ONLY,
+   unlike #1864's Tune/Publisher fields which deliberately DO fall back to a
+   create funnel. ---- */
+foreach ([
+    'manage/catalogues.php\'s add_member handler' => $cataloguesAddMemberBlock,
+    'includes/catalogue_admin.php\'s catalogueAdminFindVisibleSongTitle()' => $catFindVisibleSongTitleFn,
+    'includes/catalogue_admin.php\'s catalogueAdminAddMember()' => $catAddMemberFn,
+] as $label => $src) {
+    if ($src !== '' && strpos($src, 'INSERT INTO tblSongs') !== false) {
+        $failures[] = "{$label} contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1866's explicit no-create-arm scope; songs are authored in the editor)";
+    }
 }
 
 /* ---- H3: the "Add a song" markup was actually converted from the old

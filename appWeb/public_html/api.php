@@ -317,6 +317,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    rule #22/#45, never a forked medley write. Also pulls in
    identifier_normalize.php (ihymns_canonical_iswc()) transitively. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+/* #1969 API-coverage batch 4b-i (A3/A4/A5) — the tag/catalogue/songbook-series
+   admin CRUD shared cores. The admin_tag_..., admin_catalogue_... and
+   admin_songbook_series_... actions below call these SAME functions
+   manage/tags.php, manage/catalogues.php and manage/songbook-series.php's
+   own POST handlers call — one validation/write core per entity, two thin
+   callers each (rule #22/#35). tag_admin.php also pulls in
+   song_similarity.php (#1216/#1222) transitively for the canonicalisation
+   suggestions read. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tag_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'catalogue_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_series_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -19343,6 +19354,729 @@ if ($action !== null) {
                 logActivityError('api.admin.work.medley_replace', 'work', (string)$medleyId, $e);
                 error_log('[admin_work_medley_replace] ' . $e->getMessage());
                 sendJson(['error' => 'Could not replace medley constituents.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — TAGS/THEMES CRUD + MERGE (#770/#1152/#1222,
+         * API-coverage batch 4b-i A3)
+         *
+         * Mirrors /manage/tags.php's POST handlers exactly, via the shared
+         * core includes/tag_admin.php (rule #22). The similarity SCORING
+         * maths for the canonicalisation suggestions stays the one shared
+         * includes/song_similarity.php scorer (#1216/#1222) — this file
+         * never re-forks it (rule #22's own red-flag list). Gate:
+         * userHasEntitlement('manage_tags') — identical to manage/tags.php's
+         * own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a tag/theme row
+         * POST body: { name (required), description? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = tagAdminValidateFields(
+                (string)($body['name'] ?? ''),
+                (string)($body['description'] ?? '')
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                $newId = tagAdminCreate($db, $fields['name'], $fields['slug'], $fields['description']);
+
+                logActivity('api.admin.tag.create', 'tag', (string)$newId, [
+                    'name' => $fields['name'], 'slug' => $fields['slug'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.create', 'tag', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_tag_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a tag/theme row's Name/Slug/Description
+         * POST body: { id (required), name (required), description? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tag id required.'], 400); break; }
+
+            [$fields, $fieldError] = tagAdminValidateFields(
+                (string)($body['name'] ?? ''),
+                (string)($body['description'] ?? '')
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                $before = tagAdminFetch($db, $id);
+                if (!$before) { sendJson(['error' => 'Tag not found.'], 404); break; }
+
+                tagAdminUpdate($db, $id, $fields['name'], $fields['slug'], $fields['description']);
+
+                $changed = ((string)$before['Name'] !== $fields['name'])
+                    || ((string)$before['Slug'] !== $fields['slug'])
+                    || ((string)$before['Description'] !== $fields['description']);
+
+                logActivity('api.admin.tag.update', 'tag', (string)$id, [
+                    'name' => $fields['name'], 'changed' => $changed,
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.update', 'tag', (string)$id, $e);
+                error_log('[admin_tag_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tag/theme row. In-use (tblSongTagMap > 0) refuses
+         * with 409 unless `force` is sent — mirrors the page's two-step
+         * confirm.
+         * POST body: { id (required), force? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db    = getDbMysqli();
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id    = (int)($body['id'] ?? 0);
+            $force = !empty($body['force']);
+            if ($id <= 0) { sendJson(['error' => 'Tag id required.'], 400); break; }
+
+            $useCount = tagAdminUsageCount($db, $id);
+            if (!$force && $useCount > 0) {
+                sendJson([
+                    'error'          => 'Tag is in use.',
+                    'songs'          => $useCount,
+                    'requires_force' => true,
+                ], 409);
+                break;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $result = tagAdminDelete($db, $id);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                if ($result['deleted'] === 0) { sendJson(['error' => 'Tag not found.'], 404); break; }
+
+                logActivity('api.admin.tag.delete', 'tag', (string)$id, [
+                    'forced' => $force ? 1 : 0, 'mappings' => $result['unmapped'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.delete', 'tag', (string)$id, $e);
+                error_log('[admin_tag_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two tags (source -> target). Irreversible — source
+         * is deleted; every song mapped to source is repointed to target
+         * (a song already carrying both collapses to one mapping).
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db       = getDbMysqli();
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0 || $sourceId === $targetId) {
+                sendJson(['error' => 'source_id and target_id must be different tag ids.'], 400);
+                break;
+            }
+
+            $byId = tagAdminFetchNamesByIds($db, [$sourceId, $targetId]);
+            if (count($byId) !== 2) {
+                sendJson(['error' => 'One or both tags not found.'], 404);
+                break;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $result = tagAdminMerge($db, $sourceId, $targetId);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tag.merge', 'tag', (string)$targetId, [
+                    'source_id'   => $sourceId,
+                    'source_name' => $byId[$sourceId] ?? '',
+                    'target_name' => $byId[$targetId] ?? '',
+                    'repointed'   => $result['repointed'],
+                    'conflicts'   => $result['conflicts'],
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'source_id'  => $sourceId,
+                    'target_id'  => $targetId,
+                    'repointed'  => $result['repointed'],
+                    'conflicts'  => $result['conflicts'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.merge', 'tag', (string)$targetId, $e);
+                error_log('[admin_tag_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge tags.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin (READ): tag canonicalisation suggestions (#1222) — curator
+         * tags whose spelling closely matches a seeded standard CCLI/
+         * OpenLyrics theme, via the ONE shared song_similarity.php scorer.
+         * Never writes; curator confirms via admin_tag_merge. Returns an
+         * empty list (not an error) on an un-migrated install.
+         * GET (no body)
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_canonical_suggestions': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            try {
+                $suggestions = tagAdminCanonicalSuggestions($db);
+                sendJson(['suggestions' => $suggestions]);
+            } catch (\Throwable $e) {
+                error_log('[admin_tag_canonical_suggestions] ' . $e->getMessage());
+                sendJson(['error' => 'Could not compute canonicalisation suggestions.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — CATALOGUES / "COLLECTIONS" CRUD (#941/#1765,
+         * API-coverage batch 4b-i A4)
+         *
+         * Mirrors /manage/catalogues.php's `add`/`update`/`delete`/
+         * `add_member`/`remove_member` POST handlers, via the shared core
+         * includes/catalogue_admin.php (rule #22). `tblCatalogues`/
+         * `tblCatalogueSongs`/the `catalogue` entity-type string stay
+         * `catalogue` INTERNALLY — the Catalogue→Collection relabel is UI
+         * copy only (rule #24). The page's `marcxml_import` wizard is OUT
+         * OF SCOPE (deferred — a file-upload flow, see
+         * includes/catalogue_admin.php's doc-block). Gate:
+         * userHasEntitlement('manage_songbooks') — identical to
+         * manage/catalogues.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a catalogue ("Collection") row
+         * POST body: { title (required), slug?, description?, visibility?
+         *   (public|curated|admin_only, default public), sort_order?,
+         *   colour?, ark_id?, openlibrary_work_id?, openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = catalogueAdminValidateCreateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            if (catalogueAdminSlugTaken($db, $fields['slug'])) {
+                sendJson(['error' => "A catalogue with slug '{$fields['slug']}' already exists."], 409);
+                break;
+            }
+
+            try {
+                /* catalogueAdminCreate() pairs the INSERT with minting this
+                   Collection's permanent IL-id (ILC…, #1860 go-live). */
+                $newId = catalogueAdminCreate($db, $fields);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $newId, $pubIds);
+                }
+
+                logActivity('api.admin.catalogue.create', 'catalogue', (string)$newId, [
+                    'slug' => $fields['slug'], 'title' => $fields['title'], 'visibility' => $fields['visibility'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'slug' => $fields['slug'], 'title' => $fields['title']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.create', 'catalogue', '', $e, ['title' => $fields['title'] ?? '']);
+                error_log('[admin_catalogue_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a catalogue's scalar fields. NEVER touches Slug
+         * (the page's own `update` action never let a curator change it
+         * either — see includes/catalogue_admin.php's doc-block).
+         * POST body: { id (required), title (required), description?,
+         *   visibility?, sort_order?, colour?, ark_id?,
+         *   openlibrary_work_id?, openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Catalogue id required.'], 400); break; }
+
+            [$fields, $fieldError] = catalogueAdminValidateUpdateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            try {
+                $title = catalogueAdminFetchTitle($db, $id);
+                if ($title === null) { sendJson(['error' => 'Catalogue not found.'], 404); break; }
+
+                catalogueAdminUpdate($db, $id, $fields);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $id, $pubIds);
+                }
+
+                logActivity('api.admin.catalogue.update', 'catalogue', (string)$id, [
+                    'title' => $fields['title'], 'visibility' => $fields['visibility'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'title' => $fields['title']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.update', 'catalogue', (string)$id, $e);
+                error_log('[admin_catalogue_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a catalogue row. tblCatalogueSongs cascades via its
+         * FK (ON DELETE CASCADE) — member songs themselves are untouched.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Catalogue id required.'], 400); break; }
+
+            try {
+                $title = catalogueAdminFetchTitle($db, $id);
+                if ($title === null) { sendJson(['error' => 'Catalogue not found.'], 404); break; }
+
+                catalogueAdminDelete($db, $id);
+
+                logActivity('api.admin.catalogue.delete', 'catalogue', (string)$id, ['title' => $title]);
+                sendJson(['ok' => true, 'id' => $id, 'title' => $title]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.delete', 'catalogue', (string)$id, $e);
+                error_log('[admin_catalogue_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a song to a catalogue. SEARCH-SELECT ONLY (rule #43) —
+         * verifies song_id names a REAL, currently-visible tblSongs row
+         * (#1694/#1765) before writing; there is deliberately NO
+         * find-or-create fallback (songs are authored in the editor, never
+         * minted from here). Idempotent (INSERT IGNORE).
+         * POST body: { catalogue_id (required), song_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $catalogueId = (int)($body['catalogue_id'] ?? 0);
+            $songId      = trim((string)($body['song_id'] ?? ''));
+            if ($catalogueId <= 0 || $songId === '') {
+                sendJson(['error' => 'catalogue_id and song_id required.'], 400);
+                break;
+            }
+
+            try {
+                $songTitle = catalogueAdminFindVisibleSongTitle($db, $songId);
+                if ($songTitle === null) { sendJson(['error' => 'That song could not be found.'], 404); break; }
+
+                $added = catalogueAdminAddMember($db, $catalogueId, $songId, (int)$authUser['Id']);
+
+                logActivity('api.admin.catalogue.member_add', 'catalogue', (string)$catalogueId, [
+                    'song_id' => $songId, 'added' => $added,
+                ]);
+                sendJson([
+                    'ok' => true, 'catalogue_id' => $catalogueId, 'song_id' => $songId,
+                    'added' => $added, 'title' => $songTitle,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.member_add', 'catalogue', (string)$catalogueId, $e);
+                error_log('[admin_catalogue_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add song to catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a song from a catalogue.
+         * POST body: { catalogue_id (required), song_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $catalogueId = (int)($body['catalogue_id'] ?? 0);
+            $songId      = trim((string)($body['song_id'] ?? ''));
+            if ($catalogueId <= 0 || $songId === '') {
+                sendJson(['error' => 'catalogue_id and song_id required.'], 400);
+                break;
+            }
+
+            try {
+                $removed = catalogueAdminRemoveMember($db, $catalogueId, $songId);
+
+                logActivity('api.admin.catalogue.member_remove', 'catalogue', (string)$catalogueId, [
+                    'song_id' => $songId, 'removed' => $removed,
+                ]);
+                sendJson(['ok' => true, 'catalogue_id' => $catalogueId, 'song_id' => $songId, 'removed' => $removed]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.member_remove', 'catalogue', (string)$catalogueId, $e);
+                error_log('[admin_catalogue_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove song from catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — SONGBOOK SERIES CRUD (#782/#1765, API-coverage batch
+         * 4b-i A5)
+         *
+         * Mirrors /manage/songbook-series.php's `create`/`update`/`delete`
+         * POST handlers, via the shared core
+         * includes/songbook_series_admin.php (rule #22). The page's
+         * `marcxml_import` wizard is OUT OF SCOPE (deferred — a
+         * file-upload flow, see includes/songbook_series_admin.php's
+         * doc-block). Gate: userHasEntitlement('manage_songbooks') —
+         * identical to manage/songbook-series.php's own page gate (rule
+         * #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook series row
+         * POST body: { name (required), slug?, description?, colour?,
+         *   isbn?, issn?, ark_id?, openlibrary_work_id?,
+         *   openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            if (songbookSeriesAdminSlugTaken($db, $fields['slug'])) {
+                sendJson(['error' => "Slug '{$fields['slug']}' already taken — pick another."], 409);
+                break;
+            }
+
+            try {
+                $newId = songbookSeriesAdminCreate($db, $fields);
+                if (songbookSeriesAdminPubIdColumnsReady($db)) {
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, $pubIds);
+                }
+
+                logActivity('api.admin.songbook_series.create', 'songbook_series', (string)$newId, [
+                    'name' => $fields['name'], 'slug' => $fields['slug'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name'], 'slug' => $fields['slug']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.create', 'songbook_series', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_songbook_series_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a songbook series' scalar fields, optionally
+         * reconciling its membership list. `member_ids` OMITTED means
+         * "leave membership unchanged" (the same contract
+         * admin_publisher_update's `aliases` field already uses); an
+         * explicit array (incl. []) reconciles membership to EXACTLY that
+         * list — mirrors the page's edit-modal reconcile, which always
+         * resubmits the full current list.
+         * POST body: { id (required), name (required), slug?, description?,
+         *   colour?, isbn?, issn?, ark_id?, openlibrary_work_id?,
+         *   openlibrary_edition_id?, member_ids?: [songbook_id],
+         *   member_sort?: {songbook_id: sort_order} }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Series id required.'], 400); break; }
+
+            [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            $hasMembershipUpdate = array_key_exists('member_ids', $body);
+            $postedIds = []; $postedSrt = [];
+            if ($hasMembershipUpdate) {
+                [$postedIds, $postedSrt] = songbookSeriesAdminParseMemberPost(
+                    $body['member_ids'],
+                    $body['member_sort'] ?? []
+                );
+            }
+
+            try {
+                $before = songbookSeriesAdminFetch($db, $id);
+                if (!$before) { sendJson(['error' => 'Series not found.'], 404); break; }
+
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'], $id)) {
+                    sendJson(['error' => "Slug '{$fields['slug']}' already taken by another series."], 409);
+                    break;
+                }
+
+                $hasPubIdCols = songbookSeriesAdminPubIdColumnsReady($db);
+                $db->begin_transaction();
+                try {
+                    songbookSeriesAdminUpdate($db, $id, $fields);
+                    if ($hasPubIdCols) {
+                        songbookSeriesAdminPersistPublicationIds($db, $id, $pubIds);
+                    }
+                    if ($hasMembershipUpdate) {
+                        songbookSeriesAdminReplaceMembership($db, $id, $postedIds, $postedSrt);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Read the CURRENT member list back (rule #35 — reflects
+                   what was actually stored, not what was posted; also the
+                   correct list when membership was left unchanged). */
+                $members = songbookSeriesAdminMembers($db, $id);
+
+                logActivity('api.admin.songbook_series.update', 'songbook_series', (string)$id, [
+                    'name' => $fields['name'], 'membership_updated' => $hasMembershipUpdate,
+                    'member_count' => count($members),
+                ]);
+                sendJson([
+                    'ok'      => true,
+                    'id'      => $id,
+                    'name'    => $fields['name'],
+                    'slug'    => $fields['slug'],
+                    'members' => $members,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.update', 'songbook_series', (string)$id, $e);
+                error_log('[admin_songbook_series_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a songbook series row. tblSongbookSeriesMembership
+         * cascades via its FK (ON DELETE CASCADE) — member songbooks
+         * themselves are untouched.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Series id required.'], 400); break; }
+
+            try {
+                $row = songbookSeriesAdminFetch($db, $id);
+                if (!$row) { sendJson(['error' => 'Series not found.'], 404); break; }
+
+                songbookSeriesAdminDelete($db, $id);
+
+                logActivity('api.admin.songbook_series.delete', 'songbook_series', (string)$id, [
+                    'name' => (string)$row['Name'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => (string)$row['Name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.delete', 'songbook_series', (string)$id, $e);
+                error_log('[admin_songbook_series_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete songbook series.'], 500);
             }
             break;
         }
