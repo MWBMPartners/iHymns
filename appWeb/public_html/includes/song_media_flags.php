@@ -166,11 +166,18 @@ if (!function_exists('songMediaRecomputeFlags')) {
             $hasAudioMedia = false;
             $hasSheetMedia = false;
             if (_songMediaFlagsTableExists($db)) {
+                /* #1968 P4 — an `admin`-only (unpublished) audio row must NOT
+                   flip HasAudio=1 and advertise audio the public page won't
+                   show. The public-visibility filter (probe-gated → '' when the
+                   column is absent) restricts the recompute to PUBLIC rows +
+                   legacy static files, keeping the denorm flags honest. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
+                $visFilter = songMediaVisibilityPublicFilterSql($db);
                 $allMediaKinds = array_values(array_unique(array_merge($kinds['HasAudio'], $kinds['HasSheetMusic'])));
                 if ($allMediaKinds) {
                     $placeholders = implode(',', array_fill(0, count($allMediaKinds), '?'));
                     $stmt = $db->prepare(
-                        "SELECT DISTINCT Kind FROM tblSongMedia WHERE SongId = ? AND Kind IN ({$placeholders})"
+                        "SELECT DISTINCT Kind FROM tblSongMedia WHERE SongId = ? AND Kind IN ({$placeholders}){$visFilter}"
                     );
                     $types  = 's' . str_repeat('s', count($allMediaKinds));
                     $params = array_merge([$songId], $allMediaKinds);

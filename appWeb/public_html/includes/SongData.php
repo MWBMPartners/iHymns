@@ -1501,6 +1501,17 @@ class SongData
         } catch (\Throwable $_e) { /* fall through */ }
         if (!$hasSchema) return [];
 
+        /* #1968 P4 — the ONE media publish-state gate. This map feeds FIVE
+           public emit points (api.php song_detail/song_data/random, the
+           shared-cache page=song fragment, bulk_audio), so the `admin`-only
+           filter is applied UNCONDITIONALLY here rather than per-viewer: a
+           page=song fragment is a shared cache (rule #6/#30), so a
+           viewer-conditional media list would poison it — admin-only media
+           never renders on the public site (curators see it in the editor
+           via the unfiltered media_list). Degrades to '' pre-migration. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
+        $visFilter = songMediaVisibilityPublicFilterSql($this->db);
+
         try {
             /* #1962 — Sha256 joins the SELECT solely to stamp the `&v=`
                cache-buster onto streamUrl below; it is never returned to
@@ -1511,7 +1522,8 @@ class SongData
                               Annotation, SortOrder, Sha256
                          FROM tblSongMedia';
             if ($songIds === null) {
-                $sql  = $select . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
+                $sql  = $select . ' WHERE 1=1' . $visFilter
+                      . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
                 $stmt = $this->db->prepare($sql);
             } else {
                 $songIds = array_values(array_filter(array_unique(array_map(
@@ -1520,7 +1532,7 @@ class SongData
                 ))));
                 if (!$songIds) return [];
                 $ph   = implode(',', array_fill(0, count($songIds), '?'));
-                $sql  = $select . " WHERE SongId IN ($ph)"
+                $sql  = $select . " WHERE SongId IN ($ph)" . $visFilter
                       . ' ORDER BY SongId, Kind ASC, SortOrder ASC, Id ASC';
                 $stmt = $this->db->prepare($sql);
                 $types = str_repeat('s', count($songIds));
@@ -3031,9 +3043,14 @@ class SongData
                         break;
 
                     case 'media':
+                        /* #1968 P4 — same publish-state gate as _songMediaMap();
+                           this is a SECOND, independent SELECT (song_detail
+                           ?include=media, #1099) so it needs the filter too. */
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
                         $rows = $this->_extrasRows(
                             'SELECT Id AS id, Kind AS kind, MimeType AS mimeType, FileName AS fileName, '
-                          . 'SizeBytes AS sizeBytes FROM tblSongMedia WHERE SongId = ? ORDER BY Id',
+                          . 'SizeBytes AS sizeBytes FROM tblSongMedia WHERE SongId = ?'
+                          . songMediaVisibilityPublicFilterSql($this->db) . ' ORDER BY Id',
                             's', [$songId]
                         );
                         if ($rows) { $out['media'] = $rows; }
