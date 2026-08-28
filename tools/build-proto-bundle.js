@@ -67,7 +67,23 @@ const ENTRY_POINTS = [
     'graphicsData.proto',
     'groups.proto',
     'uuid.proto',
-    'ccli.proto'
+    'ccli.proto',
+    /* #1968 P3 — the .proplaylist EXPORT tree (set-list export). Added as its
+       own pair of entry points (not left to ride in only transitively via some
+       other file) for the SAME belt-and-braces reason as the rest of this list:
+       propresenter.proto (rv.data.PlaylistDocument, the top-level message a
+       .proplaylist's `data` ZIP entry holds) transitively imports playlist.proto
+       (rv.data.Playlist / rv.data.PlaylistItem) already, so listing playlist.proto
+       explicitly too is redundant for resolution but keeps this list legible as
+       "every top-level type the exporter touches", matching how cue.proto/
+       action.proto/etc. above are already redundant with presentation.proto's own
+       transitive closure. Every OTHER message either tree needs (URL, UUID, Cue,
+       Action, Header, Presentation item, Color, HotKey, MusicKeyScale,
+       PlanningCenterPlan) resolves automatically via `.proto` `import` statements
+       — protobufjs's Root#load walks them recursively (see resolvePath below) —
+       so nothing else needs a line here. */
+    'propresenter.proto',
+    'playlist.proto'
 ];
 
 async function main() {

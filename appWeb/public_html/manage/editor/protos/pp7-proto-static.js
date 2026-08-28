@@ -13116,6 +13116,1010 @@
                 return Template;
             })();
     
+            data.PlaylistDocument = (function() {
+    
+                var PlaylistDocument = function (properties) {
+                    this.tags = [];
+                    if (properties)
+                        for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                            if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                this[keys[i]] = properties[keys[i]];
+                };
+    
+                PlaylistDocument.prototype.application_info = null;
+                PlaylistDocument.prototype.type = 0;
+                PlaylistDocument.prototype.root_node = null;
+                PlaylistDocument.prototype.tags = $util.emptyArray;
+                PlaylistDocument.prototype.live_video_playlist = null;
+                PlaylistDocument.prototype.downloads_playlist = null;
+    
+                PlaylistDocument.create = function(properties) {
+                    return new PlaylistDocument(properties);
+                };
+    
+                PlaylistDocument.encode = function (message, writer, _depth) {
+                    if (!writer)
+                        writer = $Writer.create();
+                    if (_depth === $undefined)
+                        _depth = 0;
+                    if (_depth > $util.recursionLimit)
+                        throw $Error("max depth exceeded");
+                    if (message.application_info != null && $Object.hasOwnProperty.call(message, "application_info"))
+                        $root.rv.data.ApplicationInfo.encode(message.application_info, writer.uint32(10).fork(), _depth + 1).ldelim();
+                    if (message.type != null && $Object.hasOwnProperty.call(message, "type") && message.type !== 0)
+                        writer.uint32(16).int32(message.type);
+                    if (message.root_node != null && $Object.hasOwnProperty.call(message, "root_node"))
+                        $root.rv.data.Playlist.encode(message.root_node, writer.uint32(26).fork(), _depth + 1).ldelim();
+                    if (message.tags != null && message.tags.length)
+                        for (var i = 0; i < message.tags.length; ++i)
+                            $root.rv.data.Playlist.Tag.encode(message.tags[i], writer.uint32(34).fork(), _depth + 1).ldelim();
+                    if (message.live_video_playlist != null && $Object.hasOwnProperty.call(message, "live_video_playlist"))
+                        $root.rv.data.Playlist.encode(message.live_video_playlist, writer.uint32(42).fork(), _depth + 1).ldelim();
+                    if (message.downloads_playlist != null && $Object.hasOwnProperty.call(message, "downloads_playlist"))
+                        $root.rv.data.Playlist.encode(message.downloads_playlist, writer.uint32(50).fork(), _depth + 1).ldelim();
+                    if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                        for (var i = 0; i < message.$unknowns.length; ++i)
+                            writer.raw(message.$unknowns[i]);
+                    return writer;
+                };
+    
+                PlaylistDocument.getTypeUrl = function(prefix) {
+                    if (prefix === $undefined)
+                        prefix = "type.googleapis.com";
+                    return prefix + "/rv.data.PlaylistDocument";
+                };
+    
+                PlaylistDocument.Type = (function() {
+                    var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                    values[valuesById[0] = "TYPE_UNKNOWN"] = 0;
+                    values[valuesById[1] = "TYPE_PRESENTATION"] = 1;
+                    values[valuesById[2] = "TYPE_MEDIA"] = 2;
+                    values[valuesById[3] = "TYPE_AUDIO"] = 3;
+                    return values;
+                })();
+    
+                return PlaylistDocument;
+            })();
+    
+            data.SettingsDocument = (function() {
+    
+                var SettingsDocument = function (properties) {
+                    this.labels = [];
+                    if (properties)
+                        for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                            if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                this[keys[i]] = properties[keys[i]];
+                };
+    
+                SettingsDocument.prototype.labels = $util.emptyArray;
+    
+                SettingsDocument.create = function(properties) {
+                    return new SettingsDocument(properties);
+                };
+    
+                SettingsDocument.encode = function (message, writer, _depth) {
+                    if (!writer)
+                        writer = $Writer.create();
+                    if (_depth === $undefined)
+                        _depth = 0;
+                    if (_depth > $util.recursionLimit)
+                        throw $Error("max depth exceeded");
+                    if (message.labels != null && message.labels.length)
+                        for (var i = 0; i < message.labels.length; ++i)
+                            $root.rv.data.Action.Label.encode(message.labels[i], writer.uint32(18).fork(), _depth + 1).ldelim();
+                    if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                        for (var i = 0; i < message.$unknowns.length; ++i)
+                            writer.raw(message.$unknowns[i]);
+                    return writer;
+                };
+    
+                SettingsDocument.getTypeUrl = function(prefix) {
+                    if (prefix === $undefined)
+                        prefix = "type.googleapis.com";
+                    return prefix + "/rv.data.SettingsDocument";
+                };
+    
+                return SettingsDocument;
+            })();
+    
+            data.Playlist = (function() {
+    
+                var Playlist = function (properties) {
+                    this.cues = [];
+                    this.children = [];
+                    if (properties)
+                        for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                            if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                this[keys[i]] = properties[keys[i]];
+                };
+    
+                Playlist.prototype.uuid = null;
+                Playlist.prototype.name = "";
+                Playlist.prototype.type = 0;
+                Playlist.prototype.expanded = false;
+                Playlist.prototype.targeted_layer_uuid = null;
+                Playlist.prototype.smart_directory_path = null;
+                Playlist.prototype.hot_key = null;
+                Playlist.prototype.cues = $util.emptyArray;
+                Playlist.prototype.children = $util.emptyArray;
+                Playlist.prototype.timecode_enabled = false;
+                Playlist.prototype.timing = 0;
+                Playlist.prototype.startup_info = null;
+                Playlist.prototype.playlists = null;
+                Playlist.prototype.items = null;
+                Playlist.prototype.smart_directory = null;
+                Playlist.prototype.pco_plan = null;
+    
+                var $oneOfFields;
+    
+                $Object.defineProperty(Playlist.prototype, "ChildrenType", {
+                    get: $util.oneOfGetter($oneOfFields = ["playlists", "items"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+    
+                $Object.defineProperty(Playlist.prototype, "LinkData", {
+                    get: $util.oneOfGetter($oneOfFields = ["smart_directory", "pco_plan"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+    
+                Playlist.create = function(properties) {
+                    return new Playlist(properties);
+                };
+    
+                Playlist.encode = function (message, writer, _depth) {
+                    if (!writer)
+                        writer = $Writer.create();
+                    if (_depth === $undefined)
+                        _depth = 0;
+                    if (_depth > $util.recursionLimit)
+                        throw $Error("max depth exceeded");
+                    if (message.uuid != null && $Object.hasOwnProperty.call(message, "uuid"))
+                        $root.rv.data.UUID.encode(message.uuid, writer.uint32(10).fork(), _depth + 1).ldelim();
+                    if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                        writer.uint32(18).string(message.name);
+                    if (message.type != null && $Object.hasOwnProperty.call(message, "type") && message.type !== 0)
+                        writer.uint32(24).int32(message.type);
+                    if (message.expanded != null && $Object.hasOwnProperty.call(message, "expanded") && message.expanded !== false)
+                        writer.uint32(32).bool(message.expanded);
+                    if (message.targeted_layer_uuid != null && $Object.hasOwnProperty.call(message, "targeted_layer_uuid"))
+                        $root.rv.data.UUID.encode(message.targeted_layer_uuid, writer.uint32(42).fork(), _depth + 1).ldelim();
+                    if (message.smart_directory_path != null && $Object.hasOwnProperty.call(message, "smart_directory_path"))
+                        $root.rv.data.URL.encode(message.smart_directory_path, writer.uint32(50).fork(), _depth + 1).ldelim();
+                    if (message.hot_key != null && $Object.hasOwnProperty.call(message, "hot_key"))
+                        $root.rv.data.HotKey.encode(message.hot_key, writer.uint32(58).fork(), _depth + 1).ldelim();
+                    if (message.cues != null && message.cues.length)
+                        for (var i = 0; i < message.cues.length; ++i)
+                            $root.rv.data.Cue.encode(message.cues[i], writer.uint32(66).fork(), _depth + 1).ldelim();
+                    if (message.children != null && message.children.length)
+                        for (var i = 0; i < message.children.length; ++i)
+                            $root.rv.data.Playlist.encode(message.children[i], writer.uint32(74).fork(), _depth + 1).ldelim();
+                    if (message.timecode_enabled != null && $Object.hasOwnProperty.call(message, "timecode_enabled") && message.timecode_enabled !== false)
+                        writer.uint32(80).bool(message.timecode_enabled);
+                    if (message.timing != null && $Object.hasOwnProperty.call(message, "timing") && message.timing !== 0)
+                        writer.uint32(88).int32(message.timing);
+                    if (message.playlists != null && $Object.hasOwnProperty.call(message, "playlists"))
+                        $root.rv.data.Playlist.PlaylistArray.encode(message.playlists, writer.uint32(98).fork(), _depth + 1).ldelim();
+                    if (message.items != null && $Object.hasOwnProperty.call(message, "items"))
+                        $root.rv.data.Playlist.PlaylistItems.encode(message.items, writer.uint32(106).fork(), _depth + 1).ldelim();
+                    if (message.smart_directory != null && $Object.hasOwnProperty.call(message, "smart_directory"))
+                        $root.rv.data.Playlist.FolderDirectory.encode(message.smart_directory, writer.uint32(114).fork(), _depth + 1).ldelim();
+                    if (message.pco_plan != null && $Object.hasOwnProperty.call(message, "pco_plan"))
+                        $root.rv.data.PlanningCenterPlan.encode(message.pco_plan, writer.uint32(122).fork(), _depth + 1).ldelim();
+                    if (message.startup_info != null && $Object.hasOwnProperty.call(message, "startup_info"))
+                        $root.rv.data.Playlist.StartupInfo.encode(message.startup_info, writer.uint32(130).fork(), _depth + 1).ldelim();
+                    if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                        for (var i = 0; i < message.$unknowns.length; ++i)
+                            writer.raw(message.$unknowns[i]);
+                    return writer;
+                };
+    
+                Playlist.getTypeUrl = function(prefix) {
+                    if (prefix === $undefined)
+                        prefix = "type.googleapis.com";
+                    return prefix + "/rv.data.Playlist";
+                };
+    
+                Playlist.Type = (function() {
+                    var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                    values[valuesById[0] = "TYPE_UNKNOWN"] = 0;
+                    values[valuesById[1] = "TYPE_PLAYLIST"] = 1;
+                    values[valuesById[2] = "TYPE_GROUP"] = 2;
+                    values[valuesById[3] = "TYPE_SMART"] = 3;
+                    values[valuesById[4] = "TYPE_ROOT"] = 4;
+                    return values;
+                })();
+    
+                Playlist.TimingType = (function() {
+                    var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                    values[valuesById[0] = "TIMING_TYPE_NONE"] = 0;
+                    values[valuesById[1] = "TIMING_TYPE_TIMECODE"] = 1;
+                    values[valuesById[2] = "TIMING_TYPE_TIME_OF_DAY"] = 2;
+                    return values;
+                })();
+    
+                Playlist.PlaylistArray = (function() {
+    
+                    var PlaylistArray = function (properties) {
+                        this.playlists = [];
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    PlaylistArray.prototype.playlists = $util.emptyArray;
+    
+                    PlaylistArray.create = function(properties) {
+                        return new PlaylistArray(properties);
+                    };
+    
+                    PlaylistArray.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.playlists != null && message.playlists.length)
+                            for (var i = 0; i < message.playlists.length; ++i)
+                                $root.rv.data.Playlist.encode(message.playlists[i], writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    PlaylistArray.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.Playlist.PlaylistArray";
+                    };
+    
+                    return PlaylistArray;
+                })();
+    
+                Playlist.PlaylistItems = (function() {
+    
+                    var PlaylistItems = function (properties) {
+                        this.items = [];
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    PlaylistItems.prototype.items = $util.emptyArray;
+    
+                    PlaylistItems.create = function(properties) {
+                        return new PlaylistItems(properties);
+                    };
+    
+                    PlaylistItems.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.items != null && message.items.length)
+                            for (var i = 0; i < message.items.length; ++i)
+                                $root.rv.data.PlaylistItem.encode(message.items[i], writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    PlaylistItems.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.Playlist.PlaylistItems";
+                    };
+    
+                    return PlaylistItems;
+                })();
+    
+                Playlist.FolderDirectory = (function() {
+    
+                    var FolderDirectory = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    FolderDirectory.prototype.smart_directory = null;
+                    FolderDirectory.prototype.import_behavior = 0;
+    
+                    FolderDirectory.create = function(properties) {
+                        return new FolderDirectory(properties);
+                    };
+    
+                    FolderDirectory.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.smart_directory != null && $Object.hasOwnProperty.call(message, "smart_directory"))
+                            $root.rv.data.URL.encode(message.smart_directory, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.import_behavior != null && $Object.hasOwnProperty.call(message, "import_behavior") && message.import_behavior !== 0)
+                            writer.uint32(16).int32(message.import_behavior);
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    FolderDirectory.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.Playlist.FolderDirectory";
+                    };
+    
+                    FolderDirectory.ImportBehavior = (function() {
+                        var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                        values[valuesById[0] = "IMPORT_BEHAVIOR_BACKGROUND"] = 0;
+                        values[valuesById[1] = "IMPORT_BEHAVIOR_FOREGROUND"] = 1;
+                        return values;
+                    })();
+    
+                    return FolderDirectory;
+                })();
+    
+                Playlist.Tag = (function() {
+    
+                    var Tag = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    Tag.prototype.color = null;
+                    Tag.prototype.name = "";
+                    Tag.prototype.uuid = null;
+    
+                    Tag.create = function(properties) {
+                        return new Tag(properties);
+                    };
+    
+                    Tag.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.color != null && $Object.hasOwnProperty.call(message, "color"))
+                            $root.rv.data.Color.encode(message.color, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                            writer.uint32(18).string(message.name);
+                        if (message.uuid != null && $Object.hasOwnProperty.call(message, "uuid"))
+                            $root.rv.data.UUID.encode(message.uuid, writer.uint32(26).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    Tag.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.Playlist.Tag";
+                    };
+    
+                    return Tag;
+                })();
+    
+                Playlist.StartupInfo = (function() {
+    
+                    var StartupInfo = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    StartupInfo.prototype.trigger_on_startup = false;
+    
+                    StartupInfo.create = function(properties) {
+                        return new StartupInfo(properties);
+                    };
+    
+                    StartupInfo.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.trigger_on_startup != null && $Object.hasOwnProperty.call(message, "trigger_on_startup") && message.trigger_on_startup !== false)
+                            writer.uint32(8).bool(message.trigger_on_startup);
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    StartupInfo.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.Playlist.StartupInfo";
+                    };
+    
+                    return StartupInfo;
+                })();
+    
+                return Playlist;
+            })();
+    
+            data.PlaylistItem = (function() {
+    
+                var PlaylistItem = function (properties) {
+                    this.tags = [];
+                    if (properties)
+                        for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                            if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                this[keys[i]] = properties[keys[i]];
+                };
+    
+                PlaylistItem.prototype.uuid = null;
+                PlaylistItem.prototype.name = "";
+                PlaylistItem.prototype.tags = $util.emptyArray;
+                PlaylistItem.prototype.is_hidden = false;
+                PlaylistItem.prototype.header = null;
+                PlaylistItem.prototype.presentation = null;
+                PlaylistItem.prototype.cue = null;
+                PlaylistItem.prototype.planning_center = null;
+                PlaylistItem.prototype.placeholder = null;
+    
+                var $oneOfFields;
+    
+                $Object.defineProperty(PlaylistItem.prototype, "ItemType", {
+                    get: $util.oneOfGetter($oneOfFields = ["header", "presentation", "cue", "planning_center", "placeholder"]),
+                    set: $util.oneOfSetter($oneOfFields)
+                });
+    
+                PlaylistItem.create = function(properties) {
+                    return new PlaylistItem(properties);
+                };
+    
+                PlaylistItem.encode = function (message, writer, _depth) {
+                    if (!writer)
+                        writer = $Writer.create();
+                    if (_depth === $undefined)
+                        _depth = 0;
+                    if (_depth > $util.recursionLimit)
+                        throw $Error("max depth exceeded");
+                    if (message.uuid != null && $Object.hasOwnProperty.call(message, "uuid"))
+                        $root.rv.data.UUID.encode(message.uuid, writer.uint32(10).fork(), _depth + 1).ldelim();
+                    if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                        writer.uint32(18).string(message.name);
+                    if (message.header != null && $Object.hasOwnProperty.call(message, "header"))
+                        $root.rv.data.PlaylistItem.Header.encode(message.header, writer.uint32(26).fork(), _depth + 1).ldelim();
+                    if (message.presentation != null && $Object.hasOwnProperty.call(message, "presentation"))
+                        $root.rv.data.PlaylistItem.Presentation.encode(message.presentation, writer.uint32(34).fork(), _depth + 1).ldelim();
+                    if (message.cue != null && $Object.hasOwnProperty.call(message, "cue"))
+                        $root.rv.data.Cue.encode(message.cue, writer.uint32(42).fork(), _depth + 1).ldelim();
+                    if (message.planning_center != null && $Object.hasOwnProperty.call(message, "planning_center"))
+                        $root.rv.data.PlaylistItem.PlanningCenter.encode(message.planning_center, writer.uint32(50).fork(), _depth + 1).ldelim();
+                    if (message.tags != null && message.tags.length)
+                        for (var i = 0; i < message.tags.length; ++i)
+                            $root.rv.data.UUID.encode(message.tags[i], writer.uint32(58).fork(), _depth + 1).ldelim();
+                    if (message.placeholder != null && $Object.hasOwnProperty.call(message, "placeholder"))
+                        $root.rv.data.PlaylistItem.Placeholder.encode(message.placeholder, writer.uint32(66).fork(), _depth + 1).ldelim();
+                    if (message.is_hidden != null && $Object.hasOwnProperty.call(message, "is_hidden") && message.is_hidden !== false)
+                        writer.uint32(72).bool(message.is_hidden);
+                    if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                        for (var i = 0; i < message.$unknowns.length; ++i)
+                            writer.raw(message.$unknowns[i]);
+                    return writer;
+                };
+    
+                PlaylistItem.getTypeUrl = function(prefix) {
+                    if (prefix === $undefined)
+                        prefix = "type.googleapis.com";
+                    return prefix + "/rv.data.PlaylistItem";
+                };
+    
+                PlaylistItem.Header = (function() {
+    
+                    var Header = function (properties) {
+                        this.actions = [];
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    Header.prototype.color = null;
+                    Header.prototype.actions = $util.emptyArray;
+    
+                    Header.create = function(properties) {
+                        return new Header(properties);
+                    };
+    
+                    Header.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.color != null && $Object.hasOwnProperty.call(message, "color"))
+                            $root.rv.data.Color.encode(message.color, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.actions != null && message.actions.length)
+                            for (var i = 0; i < message.actions.length; ++i)
+                                $root.rv.data.Action.encode(message.actions[i], writer.uint32(18).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    Header.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.PlaylistItem.Header";
+                    };
+    
+                    return Header;
+                })();
+    
+                PlaylistItem.Presentation = (function() {
+    
+                    var Presentation = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    Presentation.prototype.document_path = null;
+                    Presentation.prototype.arrangement = null;
+                    Presentation.prototype.content_destination = 0;
+                    Presentation.prototype.user_music_key = null;
+                    Presentation.prototype.arrangement_name = "";
+    
+                    Presentation.create = function(properties) {
+                        return new Presentation(properties);
+                    };
+    
+                    Presentation.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.document_path != null && $Object.hasOwnProperty.call(message, "document_path"))
+                            $root.rv.data.URL.encode(message.document_path, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.arrangement != null && $Object.hasOwnProperty.call(message, "arrangement"))
+                            $root.rv.data.UUID.encode(message.arrangement, writer.uint32(18).fork(), _depth + 1).ldelim();
+                        if (message.content_destination != null && $Object.hasOwnProperty.call(message, "content_destination") && message.content_destination !== 0)
+                            writer.uint32(24).int32(message.content_destination);
+                        if (message.user_music_key != null && $Object.hasOwnProperty.call(message, "user_music_key"))
+                            $root.rv.data.MusicKeyScale.encode(message.user_music_key, writer.uint32(34).fork(), _depth + 1).ldelim();
+                        if (message.arrangement_name != null && $Object.hasOwnProperty.call(message, "arrangement_name") && message.arrangement_name !== "")
+                            writer.uint32(42).string(message.arrangement_name);
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    Presentation.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.PlaylistItem.Presentation";
+                    };
+    
+                    Presentation.ContentDestination = (function() {
+                        var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                        values[valuesById[0] = "CONTENT_DESTINATION_GLOBAL"] = 0;
+                        values[valuesById[1] = "CONTENT_DESTINATION_ANNOUNCEMENTS"] = 1;
+                        return values;
+                    })();
+    
+                    return Presentation;
+                })();
+    
+                PlaylistItem.PlanningCenter = (function() {
+    
+                    var PlanningCenter = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    PlanningCenter.prototype.item = null;
+                    PlanningCenter.prototype.linked_data = null;
+    
+                    PlanningCenter.create = function(properties) {
+                        return new PlanningCenter(properties);
+                    };
+    
+                    PlanningCenter.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.item != null && $Object.hasOwnProperty.call(message, "item"))
+                            $root.rv.data.PlanningCenterPlan.PlanItem.encode(message.item, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.linked_data != null && $Object.hasOwnProperty.call(message, "linked_data"))
+                            $root.rv.data.PlaylistItem.encode(message.linked_data, writer.uint32(18).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    PlanningCenter.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.PlaylistItem.PlanningCenter";
+                    };
+    
+                    return PlanningCenter;
+                })();
+    
+                PlaylistItem.Placeholder = (function() {
+    
+                    var Placeholder = function (properties) {
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    Placeholder.prototype.linked_data = null;
+    
+                    Placeholder.create = function(properties) {
+                        return new Placeholder(properties);
+                    };
+    
+                    Placeholder.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.linked_data != null && $Object.hasOwnProperty.call(message, "linked_data"))
+                            $root.rv.data.PlaylistItem.encode(message.linked_data, writer.uint32(10).fork(), _depth + 1).ldelim();
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    Placeholder.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.PlaylistItem.Placeholder";
+                    };
+    
+                    return Placeholder;
+                })();
+    
+                return PlaylistItem;
+            })();
+    
+            data.PlanningCenterPlan = (function() {
+    
+                var PlanningCenterPlan = function (properties) {
+                    if (properties)
+                        for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                            if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                this[keys[i]] = properties[keys[i]];
+                };
+    
+                PlanningCenterPlan.prototype.plan_id_num = 0;
+                PlanningCenterPlan.prototype.parent_id_num = 0;
+                PlanningCenterPlan.prototype.series_title = "";
+                PlanningCenterPlan.prototype.plan_title = "";
+                PlanningCenterPlan.prototype.date_list = "";
+                PlanningCenterPlan.prototype.created_date = null;
+                PlanningCenterPlan.prototype.update_date = null;
+                PlanningCenterPlan.prototype.last_update_check_date = null;
+                PlanningCenterPlan.prototype.plan_id_str = "";
+                PlanningCenterPlan.prototype.parent_id_str = "";
+    
+                PlanningCenterPlan.create = function(properties) {
+                    return new PlanningCenterPlan(properties);
+                };
+    
+                PlanningCenterPlan.encode = function (message, writer, _depth) {
+                    if (!writer)
+                        writer = $Writer.create();
+                    if (_depth === $undefined)
+                        _depth = 0;
+                    if (_depth > $util.recursionLimit)
+                        throw $Error("max depth exceeded");
+                    if (message.plan_id_num != null && $Object.hasOwnProperty.call(message, "plan_id_num") && message.plan_id_num !== 0)
+                        writer.uint32(8).uint32(message.plan_id_num);
+                    if (message.parent_id_num != null && $Object.hasOwnProperty.call(message, "parent_id_num") && message.parent_id_num !== 0)
+                        writer.uint32(16).uint32(message.parent_id_num);
+                    if (message.series_title != null && $Object.hasOwnProperty.call(message, "series_title") && message.series_title !== "")
+                        writer.uint32(26).string(message.series_title);
+                    if (message.plan_title != null && $Object.hasOwnProperty.call(message, "plan_title") && message.plan_title !== "")
+                        writer.uint32(34).string(message.plan_title);
+                    if (message.date_list != null && $Object.hasOwnProperty.call(message, "date_list") && message.date_list !== "")
+                        writer.uint32(42).string(message.date_list);
+                    if (message.created_date != null && $Object.hasOwnProperty.call(message, "created_date"))
+                        $root.rv.data.Timestamp.encode(message.created_date, writer.uint32(50).fork(), _depth + 1).ldelim();
+                    if (message.update_date != null && $Object.hasOwnProperty.call(message, "update_date"))
+                        $root.rv.data.Timestamp.encode(message.update_date, writer.uint32(58).fork(), _depth + 1).ldelim();
+                    if (message.last_update_check_date != null && $Object.hasOwnProperty.call(message, "last_update_check_date"))
+                        $root.rv.data.Timestamp.encode(message.last_update_check_date, writer.uint32(66).fork(), _depth + 1).ldelim();
+                    if (message.plan_id_str != null && $Object.hasOwnProperty.call(message, "plan_id_str") && message.plan_id_str !== "")
+                        writer.uint32(74).string(message.plan_id_str);
+                    if (message.parent_id_str != null && $Object.hasOwnProperty.call(message, "parent_id_str") && message.parent_id_str !== "")
+                        writer.uint32(82).string(message.parent_id_str);
+                    if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                        for (var i = 0; i < message.$unknowns.length; ++i)
+                            writer.raw(message.$unknowns[i]);
+                    return writer;
+                };
+    
+                PlanningCenterPlan.getTypeUrl = function(prefix) {
+                    if (prefix === $undefined)
+                        prefix = "type.googleapis.com";
+                    return prefix + "/rv.data.PlanningCenterPlan";
+                };
+    
+                PlanningCenterPlan.PlanItem = (function() {
+    
+                    var PlanItem = function (properties) {
+                        this.attachments = [];
+                        if (properties)
+                            for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                    this[keys[i]] = properties[keys[i]];
+                    };
+    
+                    PlanItem.prototype.item_type = 0;
+                    PlanItem.prototype.pco_id_num = 0;
+                    PlanItem.prototype.service_id_num = 0;
+                    PlanItem.prototype.parent_id_num = 0;
+                    PlanItem.prototype.name = "";
+                    PlanItem.prototype.attachments = $util.emptyArray;
+                    PlanItem.prototype.update_date = null;
+                    PlanItem.prototype.linked_song = null;
+                    PlanItem.prototype.pco_id_str = "";
+                    PlanItem.prototype.service_id_str = "";
+                    PlanItem.prototype.parent_id_str = "";
+    
+                    PlanItem.create = function(properties) {
+                        return new PlanItem(properties);
+                    };
+    
+                    PlanItem.encode = function (message, writer, _depth) {
+                        if (!writer)
+                            writer = $Writer.create();
+                        if (_depth === $undefined)
+                            _depth = 0;
+                        if (_depth > $util.recursionLimit)
+                            throw $Error("max depth exceeded");
+                        if (message.item_type != null && $Object.hasOwnProperty.call(message, "item_type") && message.item_type !== 0)
+                            writer.uint32(8).int32(message.item_type);
+                        if (message.pco_id_num != null && $Object.hasOwnProperty.call(message, "pco_id_num") && message.pco_id_num !== 0)
+                            writer.uint32(16).uint32(message.pco_id_num);
+                        if (message.service_id_num != null && $Object.hasOwnProperty.call(message, "service_id_num") && message.service_id_num !== 0)
+                            writer.uint32(24).uint32(message.service_id_num);
+                        if (message.parent_id_num != null && $Object.hasOwnProperty.call(message, "parent_id_num") && message.parent_id_num !== 0)
+                            writer.uint32(32).uint32(message.parent_id_num);
+                        if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                            writer.uint32(42).string(message.name);
+                        if (message.attachments != null && message.attachments.length)
+                            for (var i = 0; i < message.attachments.length; ++i)
+                                $root.rv.data.PlanningCenterPlan.PlanItem.Attachment.encode(message.attachments[i], writer.uint32(50).fork(), _depth + 1).ldelim();
+                        if (message.update_date != null && $Object.hasOwnProperty.call(message, "update_date"))
+                            $root.rv.data.Timestamp.encode(message.update_date, writer.uint32(58).fork(), _depth + 1).ldelim();
+                        if (message.linked_song != null && $Object.hasOwnProperty.call(message, "linked_song"))
+                            $root.rv.data.PlanningCenterPlan.PlanItem.SongItem.encode(message.linked_song, writer.uint32(66).fork(), _depth + 1).ldelim();
+                        if (message.pco_id_str != null && $Object.hasOwnProperty.call(message, "pco_id_str") && message.pco_id_str !== "")
+                            writer.uint32(74).string(message.pco_id_str);
+                        if (message.service_id_str != null && $Object.hasOwnProperty.call(message, "service_id_str") && message.service_id_str !== "")
+                            writer.uint32(82).string(message.service_id_str);
+                        if (message.parent_id_str != null && $Object.hasOwnProperty.call(message, "parent_id_str") && message.parent_id_str !== "")
+                            writer.uint32(90).string(message.parent_id_str);
+                        if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                            for (var i = 0; i < message.$unknowns.length; ++i)
+                                writer.raw(message.$unknowns[i]);
+                        return writer;
+                    };
+    
+                    PlanItem.getTypeUrl = function(prefix) {
+                        if (prefix === $undefined)
+                            prefix = "type.googleapis.com";
+                        return prefix + "/rv.data.PlanningCenterPlan.PlanItem";
+                    };
+    
+                    PlanItem.PlanItemType = (function() {
+                        var valuesById = $Object.create(null), values = $Object.create(valuesById);
+                        values[valuesById[0] = "PLAN_ITEM_TYPE_ITEM"] = 0;
+                        values[valuesById[1] = "PLAN_ITEM_TYPE_SONG"] = 1;
+                        values[valuesById[2] = "PLAN_ITEM_TYPE_MEDIA"] = 2;
+                        values[valuesById[3] = "PLAN_ITEM_TYPE_HEADER"] = 3;
+                        return values;
+                    })();
+    
+                    PlanItem.Attachment = (function() {
+    
+                        var Attachment = function (properties) {
+                            if (properties)
+                                for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                        this[keys[i]] = properties[keys[i]];
+                        };
+    
+                        Attachment.prototype.name = "";
+                        Attachment.prototype.url = null;
+                        Attachment.prototype.created_date = null;
+                        Attachment.prototype.linked_path = null;
+                        Attachment.prototype.pco_id_num = 0;
+                        Attachment.prototype.needs_update = false;
+                        Attachment.prototype.update_date = null;
+                        Attachment.prototype.pco_id_str = "";
+    
+                        Attachment.create = function(properties) {
+                            return new Attachment(properties);
+                        };
+    
+                        Attachment.encode = function (message, writer, _depth) {
+                            if (!writer)
+                                writer = $Writer.create();
+                            if (_depth === $undefined)
+                                _depth = 0;
+                            if (_depth > $util.recursionLimit)
+                                throw $Error("max depth exceeded");
+                            if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                                writer.uint32(10).string(message.name);
+                            if (message.url != null && $Object.hasOwnProperty.call(message, "url"))
+                                $root.rv.data.URL.encode(message.url, writer.uint32(18).fork(), _depth + 1).ldelim();
+                            if (message.created_date != null && $Object.hasOwnProperty.call(message, "created_date"))
+                                $root.rv.data.Timestamp.encode(message.created_date, writer.uint32(26).fork(), _depth + 1).ldelim();
+                            if (message.linked_path != null && $Object.hasOwnProperty.call(message, "linked_path"))
+                                $root.rv.data.URL.encode(message.linked_path, writer.uint32(34).fork(), _depth + 1).ldelim();
+                            if (message.pco_id_num != null && $Object.hasOwnProperty.call(message, "pco_id_num") && message.pco_id_num !== 0)
+                                writer.uint32(40).uint32(message.pco_id_num);
+                            if (message.needs_update != null && $Object.hasOwnProperty.call(message, "needs_update") && message.needs_update !== false)
+                                writer.uint32(48).bool(message.needs_update);
+                            if (message.update_date != null && $Object.hasOwnProperty.call(message, "update_date"))
+                                $root.rv.data.Timestamp.encode(message.update_date, writer.uint32(58).fork(), _depth + 1).ldelim();
+                            if (message.pco_id_str != null && $Object.hasOwnProperty.call(message, "pco_id_str") && message.pco_id_str !== "")
+                                writer.uint32(66).string(message.pco_id_str);
+                            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                                for (var i = 0; i < message.$unknowns.length; ++i)
+                                    writer.raw(message.$unknowns[i]);
+                            return writer;
+                        };
+    
+                        Attachment.getTypeUrl = function(prefix) {
+                            if (prefix === $undefined)
+                                prefix = "type.googleapis.com";
+                            return prefix + "/rv.data.PlanningCenterPlan.PlanItem.Attachment";
+                        };
+    
+                        return Attachment;
+                    })();
+    
+                    PlanItem.SongItem = (function() {
+    
+                        var SongItem = function (properties) {
+                            if (properties)
+                                for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                        this[keys[i]] = properties[keys[i]];
+                        };
+    
+                        SongItem.prototype.pco_id_num = 0;
+                        SongItem.prototype.arrangement_id_num = 0;
+                        SongItem.prototype.ccli = null;
+                        SongItem.prototype.sequence = null;
+                        SongItem.prototype.pco_id_str = "";
+                        SongItem.prototype.arrangement_id_str = "";
+    
+                        SongItem.create = function(properties) {
+                            return new SongItem(properties);
+                        };
+    
+                        SongItem.encode = function (message, writer, _depth) {
+                            if (!writer)
+                                writer = $Writer.create();
+                            if (_depth === $undefined)
+                                _depth = 0;
+                            if (_depth > $util.recursionLimit)
+                                throw $Error("max depth exceeded");
+                            if (message.pco_id_num != null && $Object.hasOwnProperty.call(message, "pco_id_num") && message.pco_id_num !== 0)
+                                writer.uint32(8).uint32(message.pco_id_num);
+                            if (message.arrangement_id_num != null && $Object.hasOwnProperty.call(message, "arrangement_id_num") && message.arrangement_id_num !== 0)
+                                writer.uint32(16).uint32(message.arrangement_id_num);
+                            if (message.ccli != null && $Object.hasOwnProperty.call(message, "ccli"))
+                                $root.rv.data.Presentation.CCLI.encode(message.ccli, writer.uint32(26).fork(), _depth + 1).ldelim();
+                            if (message.sequence != null && $Object.hasOwnProperty.call(message, "sequence"))
+                                $root.rv.data.PlanningCenterPlan.PlanItem.SongItem.Sequence.encode(message.sequence, writer.uint32(34).fork(), _depth + 1).ldelim();
+                            if (message.pco_id_str != null && $Object.hasOwnProperty.call(message, "pco_id_str") && message.pco_id_str !== "")
+                                writer.uint32(42).string(message.pco_id_str);
+                            if (message.arrangement_id_str != null && $Object.hasOwnProperty.call(message, "arrangement_id_str") && message.arrangement_id_str !== "")
+                                writer.uint32(50).string(message.arrangement_id_str);
+                            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                                for (var i = 0; i < message.$unknowns.length; ++i)
+                                    writer.raw(message.$unknowns[i]);
+                            return writer;
+                        };
+    
+                        SongItem.getTypeUrl = function(prefix) {
+                            if (prefix === $undefined)
+                                prefix = "type.googleapis.com";
+                            return prefix + "/rv.data.PlanningCenterPlan.PlanItem.SongItem";
+                        };
+    
+                        SongItem.Sequence = (function() {
+    
+                            var Sequence = function (properties) {
+                                this.group_names = [];
+                                if (properties)
+                                    for (var keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                                        if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                                            this[keys[i]] = properties[keys[i]];
+                            };
+    
+                            Sequence.prototype.pco_id_num = 0;
+                            Sequence.prototype.name = "";
+                            Sequence.prototype.group_names = $util.emptyArray;
+                            Sequence.prototype.pco_id_str = "";
+    
+                            Sequence.create = function(properties) {
+                                return new Sequence(properties);
+                            };
+    
+                            Sequence.encode = function (message, writer, _depth) {
+                                if (!writer)
+                                    writer = $Writer.create();
+                                if (_depth === $undefined)
+                                    _depth = 0;
+                                if (_depth > $util.recursionLimit)
+                                    throw $Error("max depth exceeded");
+                                if (message.pco_id_num != null && $Object.hasOwnProperty.call(message, "pco_id_num") && message.pco_id_num !== 0)
+                                    writer.uint32(8).uint32(message.pco_id_num);
+                                if (message.name != null && $Object.hasOwnProperty.call(message, "name") && message.name !== "")
+                                    writer.uint32(18).string(message.name);
+                                if (message.group_names != null && message.group_names.length)
+                                    for (var i = 0; i < message.group_names.length; ++i)
+                                        writer.uint32(26).string(message.group_names[i]);
+                                if (message.pco_id_str != null && $Object.hasOwnProperty.call(message, "pco_id_str") && message.pco_id_str !== "")
+                                    writer.uint32(34).string(message.pco_id_str);
+                                if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                                    for (var i = 0; i < message.$unknowns.length; ++i)
+                                        writer.raw(message.$unknowns[i]);
+                                return writer;
+                            };
+    
+                            Sequence.getTypeUrl = function(prefix) {
+                                if (prefix === $undefined)
+                                    prefix = "type.googleapis.com";
+                                return prefix + "/rv.data.PlanningCenterPlan.PlanItem.SongItem.Sequence";
+                            };
+    
+                            return Sequence;
+                        })();
+    
+                        return SongItem;
+                    })();
+    
+                    return PlanItem;
+                })();
+    
+                return PlanningCenterPlan;
+            })();
+    
             return data;
         })();
     
