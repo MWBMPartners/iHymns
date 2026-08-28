@@ -9,7 +9,7 @@ declare(strict_types=1);
  * by file type, both through the CSRF-guarded v2 API (api2.php) using the SHARED
  * importers (includes/song_importers.php — the same parsers the legacy editor
  * uses):
- *   - single song file (.json/.xml/.pro6/.show/.txt/.pptx/.db) → import_file (sync)
+ *   - single song file (.json/.xml/.pro6/.pro/.probundle/.show/.txt/.pptx/.db) → import_file (sync)
  *   - .zip of many songs → import_zip (async: fastcgi worker + tblBulkImportJobs),
  *     tracked live by the shared bulk-import-progress.js widget.
  * Import is INSERT-only — existing songs are skipped, never overwritten.
@@ -56,6 +56,13 @@ $formats = [
        an operator who KNOWS the file is ProPresenter 7+ can also pick this
        entry explicitly to bypass the sniff. */
     'pro7'        => 'ProPresenter 7+ (.pro)',
+    /* epic #1968 P2 — `.probundle` is ProPresenter's own ZIP container (one
+       or more `.pro` presentations + media at the root); unlike bare `.pro`
+       it carries no ambiguity with another format, so `auto` maps it
+       straight to this entry via the `.probundle` extension (no sniff
+       needed). Media entries are reported, not imported (media ingest is a
+       later phase, plan §6 / P4). */
+    'probundle'   => 'ProPresenter 7+ Bundle (.probundle)',
     'freeshow'    => 'FreeShow (.show)',
     'proclaim'    => 'Proclaim (.txt)',
     /* #1264 — ChordPro was already accepted by api2.php's import_file
@@ -112,7 +119,7 @@ $formats = [
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label small mb-1" for="imp-file">File</label>
-                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.pptx,.db,.zip">
+                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.probundle,.pptx,.db,.zip">
                 </div>
                 <div class="row g-3">
                     <div class="col-12 col-sm-7">

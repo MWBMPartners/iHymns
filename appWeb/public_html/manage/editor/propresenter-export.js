@@ -1294,47 +1294,40 @@
         return { filename: zipName, size: zipBytes.length, count: files.length };
     }
 
-    /* Bulk export → ProPresenter `.probundle`. The bundle format is a
-       ZIP with the `.probundle` extension, conventionally laid out
-       with documents under `Documents/` and a top-level
-       `manifest.json` describing the contents. We follow that layout
-       so a curator can also unzip and inspect the contents with any
-       standard ZIP tool, and so ProPresenter's existing import path
-       (which scans for `.pro` files inside) can find them.
+    /* Bulk export → ProPresenter `.probundle`.
+       #1968 P2 (plan §4.3) — CORRECTED LAYOUT. This function used to invent
+       a layout (documents re-prefixed under "Documents/", plus a top-level
+       "manifest.json") with an honest "known unknowns" comment admitting
+       the schema was guessed and never verified against a real bundle.
+       During #1968's ground-truth pass the owner's own genuine v21.4
+       `.probundle` export was byte-inspected, and several third-party
+       fixtures were cross-checked the same way (see
+       .claude/propresenter-interop-1968-plan.md §4 and
+       includes/propresenter7_zip.php's doc-block): a REAL bundle has its
+       `.pro`(s) sitting at the ZIP ROOT, with NO manifest file at all — the
+       inner `.pro`(s) ARE the manifest. "Documents/" + "manifest.json" was
+       therefore a WRONG invented layout this whole time (never verified in
+       real ProPresenter, exactly the class of false positive this epic
+       exists to kill — see the plan's header). Fixed here: every `.pro`
+       entry sits at the bundle root (no prefix), and no manifest.json is
+       written. The shared ZIP writer (buildZip()) and per-song filename
+       logic (buildBulkFiles()) are UNCHANGED — this is purely an entry
+       LAYOUT fix.
 
        Notes / known unknowns:
        - We don't bundle media (backgrounds, videos, audio) — iHymns
          doesn't have any. ProPresenter will fall back to the receiving
-         template's media references when the bundle is opened.
-       - The exact manifest schema is not publicly documented; the
-         file is intentionally minimal. ProPresenter ignores unknown
-         keys and treats the bundle as a folder of documents. */
+         template's media references when the bundle is opened. */
     async function exportAllAsBundle(songs, options) {
         options = options || {};
         var files = await buildBulkFiles(songs, options);
 
-        /* Re-prefix every entry under "Documents/" so the bundle has
-           the conventional layout. */
+        /* #1968 P2 (plan §4.3) — .pro entries sit at the bundle ROOT, exactly
+           as buildBulkFiles() named them; no "Documents/" prefix, no
+           manifest.json. See the doc-comment above for the byte-verified
+           ground truth this replaces. */
         var bundleEntries = files.map(function (f) {
-            return { name: 'Documents/' + f.name, bytes: f.bytes };
-        });
-
-        /* Minimal manifest — purely informational; ProPresenter does
-           not require a specific schema for `.probundle` import. */
-        var manifest = {
-            generator: 'iHymns Song Editor',
-            generatedAt: new Date().toISOString(),
-            schema: 'rv.data.Presentation (Proto 7.16)',
-            songbook: options.songbookAbbrev || null,
-            songbookName: options.songbookName || null,
-            documentCount: files.length,
-            documents: files.map(function (f) {
-                return { path: 'Documents/' + f.name, bytes: f.bytes.length };
-            })
-        };
-        bundleEntries.unshift({
-            name: 'manifest.json',
-            bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2))
+            return { name: f.name, bytes: f.bytes };
         });
 
         var zipBytes = buildZip(bundleEntries);

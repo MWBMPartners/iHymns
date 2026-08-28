@@ -1,12 +1,14 @@
 /**
- * tests/test-pp7-routing.js — ProPresenter 7+ `.pro` routing guard
- * (epic #1968 / #885, PR-1 routing piece)
+ * tests/test-pp7-routing.js — ProPresenter 7+ `.pro` / `.probundle` routing
+ * guard (epic #1968 / #885, PR-1 `.pro` routing + PR-2 `.probundle` routing)
  *
  * PURPOSE
  * ELI5: makes sure a `.pro` file picked up anywhere in the editor actually
  * gets a chance to be recognised as a real ProPresenter 7+ file, instead of
  * being silently treated as a plain ChordPro text file the way it always
- * used to be.
+ * used to be — and, since P2, that a `.probundle` upload reaches its own
+ * real importer rather than the "coming in a future update" toast every
+ * `.probundle`/`.proplaylist` upload used to show before P2 landed.
  *
  * DETAIL
  * `.pro` is genuinely ambiguous — ChordPro's own documentation blesses the
@@ -48,9 +50,18 @@
  * router resolves a `.pro` entry through the SAME shared sniff rather than
  * silently skipping it or mis-routing it to ChordPro.
  *
+ * `.probundle` (epic #1968 P2, plan §4.2) needs NO content sniff — unlike
+ * bare `.pro` it is unambiguously ProPresenter's own ZIP container — so its
+ * wiring is simpler and checked separately: editor.js's `.probundle` branch
+ * (now SPLIT from `.proplaylist`, which still shows the P3-not-landed toast)
+ * calls a real `importProbundle()` wrapper; api2.php's extension map/
+ * `$bodyFormats`/match arm route `'probundle'` straight to
+ * `_bulkImport_processProbundle()`; api.php has a `case
+ * 'bulk_import_probundle':`; import2.php's accept list + dropdown carry it.
+ *
  * MUTATION PROOF (performed 2026-08-28 against the real working tree, each
  * mutation applied, this test re-run and confirmed RED, then reverted with
- * `git diff` empty against the pre-mutation file before moving on — the
+ * the Edit tool back to the exact original text before moving on — the
  * rule #34 discipline: a guard's first green run means nothing until it has
  * been proven able to fail):
  *   m1 — editor.js: restored the OLD lumped condition
@@ -63,6 +74,22 @@
  *        check (c1) went RED.
  *   m4 — editor.js: deleted the `.probundle`/`.proplaylist` accept entries →
  *        check (d2) went RED (forward-wiring coverage).
+ *   m5 — editor.js: reverted the `.probundle` branch to its pre-P2 shape
+ *        (lumped back into ONE `else if` with `.proplaylist`, both showing
+ *        the "coming in a future update" toast, no `importProbundle(file)`
+ *        call anywhere) → 6 of the (a') checks went RED — the dedicated-
+ *        .probundle-branch check, the importProbundle() dispatch check, the
+ *        "no toast on .probundle" check, the dedicated-.proplaylist-branch
+ *        check, the "toast on .proplaylist" check, AND the "no importer
+ *        call in .proplaylist" check, since the lumped shape's single
+ *        combined branch matches neither bounding regex cleanly.
+ *   m6 — api.php: deleted the `case 'bulk_import_probundle':` block entirely
+ *        → 5 checks went RED: "api.php has case 'bulk_import_probundle':"
+ *        and the four checks bounded by it (body found, calls the
+ *        processor, reads the field, no bespoke gate).
+ *   m7 — api2.php: changed `'probundle' => 'probundle'` to
+ *        `'probundle' => 'chordpro'` in the extension map → the (b5)
+ *        "routes 'probundle' -> 'probundle'" check went RED.
  * Every mutation was reverted immediately after confirming red; the tree
  * this test ships against is unmodified.
  *
@@ -179,6 +206,48 @@ check('editor.js .pro branch dispatches to importPro6 on a pro6 sniff result',
     !!proBranch && /importPro6\(file\)/.test(proBranch[1]));
 
 /* ---------------------------------------------------------------------
+ * (a') editor.js — .probundle routes to a REAL importer, .proplaylist still
+ *      shows the "coming in a future update" toast (epic #1968 P2 landed
+ *      bundle import; P3/playlist has not). '.probundle' is unambiguously
+ *      ProPresenter's own ZIP container (unlike bare '.pro' it needs no
+ *      content sniff), so its branch must call importProbundle(file)
+ *      directly — never the toast, and never lumped into the .proplaylist
+ *      branch the way both extensions used to share one `else if` before
+ *      P2 landed.
+ * ------------------------------------------------------------------- */
+
+const probundleBranch = editorJs.match(/else if\s*\(\s*lower\.endsWith\('\.probundle'\)\s*\)\s*\{([\s\S]*?)\n\s*\}\s*else if\s*\(\s*lower\.endsWith\('\.proplaylist'\)/);
+check('editor.js has a dedicated .probundle branch, SEPARATE from .proplaylist', !!probundleBranch);
+check('editor.js .probundle branch calls importProbundle(file)',
+    !!probundleBranch && /importProbundle\(file\)/.test(probundleBranch[1]),
+    probundleBranch ? probundleBranch[1] : '(branch not found)');
+check('editor.js .probundle branch does NOT show the "coming in a future update" toast (the pre-P2 shape)',
+    !!probundleBranch && !/coming in a future update/.test(probundleBranch[1]),
+    probundleBranch ? probundleBranch[1] : '(branch not found)');
+
+/* .proplaylist (P3, not yet landed) must STILL show the toast — this guards
+   against .probundle's fix accidentally also giving .proplaylist a working
+   importer it doesn't have yet, which would 400 on every real upload. */
+const proplaylistBranch = editorJs.match(/else if\s*\(\s*lower\.endsWith\('\.proplaylist'\)\s*\)\s*\{([\s\S]*?)\n\s*\}\s*else if\s*\(\s*lower\.endsWith\('\.rtf'\)/);
+check('editor.js has a dedicated .proplaylist branch, SEPARATE from .probundle', !!proplaylistBranch);
+check('editor.js .proplaylist branch still shows the "coming in a future update" toast (P3 not yet landed)',
+    !!proplaylistBranch && /coming in a future update/.test(proplaylistBranch[1]),
+    proplaylistBranch ? proplaylistBranch[1] : '(branch not found)');
+check('editor.js .proplaylist branch does NOT call an importer function (no server handler exists yet)',
+    !!proplaylistBranch && !/import[A-Za-z]*\(file\)/.test(proplaylistBranch[1]),
+    proplaylistBranch ? proplaylistBranch[1] : '(branch not found)');
+
+/* (a'2) importProbundle() wrapper exists and posts to the right action/field,
+   matching the api.php case + api2.php format wiring checked below. */
+const importProbundleFn = editorJs.match(/function\s+importProbundle\s*\([^)]*\)\s*\{([\s\S]*?)\n\}/);
+check('editor.js defines importProbundle()', !!importProbundleFn);
+check("importProbundle() posts action:'bulk_import_probundle', field:'probundle'",
+    !!importProbundleFn
+        && /action:\s*'bulk_import_probundle'/.test(importProbundleFn[1])
+        && /field:\s*'probundle'/.test(importProbundleFn[1]),
+    importProbundleFn ? importProbundleFn[1] : '(function not found)');
+
+/* ---------------------------------------------------------------------
  * (b) api2.php — server-side auto-router
  * ------------------------------------------------------------------- */
 
@@ -213,6 +282,17 @@ check("api2.php \$bodyFormats includes 'pro7'",
 check("api2.php import_file dispatches 'pro7' -> _bulkImport_processPro7()",
     /'pro7'\s*=>\s*_bulkImport_processPro7\(/.test(api2Php));
 
+/* (b5) '.probundle' (epic #1968 P2) — unlike bare '.pro', a bundle needs NO
+   content sniff (it's unambiguously ProPresenter's own ZIP container), so
+   'probundle' maps straight to itself in the extension map, is wired into
+   $bodyFormats, and dispatches to _bulkImport_processProbundle(). */
+check("api2.php extension map routes 'probundle' -> 'probundle'",
+    /'probundle'\s*=>\s*'probundle'/.test(api2Php));
+check("api2.php \$bodyFormats includes 'probundle'",
+    /\$bodyFormats\s*=\s*\[[^\]]*'probundle'[^\]]*\]/.test(api2Php));
+check("api2.php import_file dispatches 'probundle' -> _bulkImport_processProbundle()",
+    /'probundle'\s*=>\s*_bulkImport_processProbundle\(/.test(api2Php));
+
 /* ---------------------------------------------------------------------
  * (c) api.php — the new server handler
  * ------------------------------------------------------------------- */
@@ -241,6 +321,22 @@ check('api.php bulk_import_pro7 case does NOT add its own validateCsrfRequest()/
         && !/hasRole\s*\(/.test(pro7Case[1]),
     pro7Case ? pro7Case[1] : '(case not found)');
 
+/* (c') api.php — bulk_import_probundle (epic #1968 P2), mirroring the
+   bulk_import_pro7 checks immediately above. */
+check("api.php has case 'bulk_import_probundle':", /case\s+'bulk_import_probundle'\s*:/.test(apiPhp));
+
+const probundleCase = apiPhp.match(/case\s+'bulk_import_probundle'\s*:([\s\S]*?)\n\s*case\s+'/);
+check('api.php bulk_import_probundle case body found (bounded by the next case)', !!probundleCase);
+check('api.php bulk_import_probundle case calls _bulkImport_processProbundle()',
+    !!probundleCase && /_bulkImport_processProbundle\s*\(/.test(probundleCase[1]));
+check("api.php bulk_import_probundle case reads the 'probundle' upload field",
+    !!probundleCase && /\$_FILES\['probundle'\]/.test(probundleCase[1]));
+check('api.php bulk_import_probundle case does NOT add its own validateCsrfRequest()/hasRole() call',
+    !!probundleCase
+        && !/validateCsrfRequest\s*\(/.test(probundleCase[1])
+        && !/hasRole\s*\(/.test(probundleCase[1]),
+    probundleCase ? probundleCase[1] : '(case not found)');
+
 /* ---------------------------------------------------------------------
  * (d) accept lists + import2.php dropdown
  * ------------------------------------------------------------------- */
@@ -255,7 +351,7 @@ check('editor.js file-picker accept list found', !!acceptListMatch);
 check('editor.js file-picker accept list carries .pro',
     !!acceptListMatch && /(^|,)\.pro(,|$)/.test(acceptListMatch[1]),
     acceptListMatch ? acceptListMatch[1] : '(accept list not found)');
-check('editor.js file-picker accept list carries .probundle and .proplaylist (forward-wired)',
+check('editor.js file-picker accept list carries .probundle (P2, working) and .proplaylist (P3, forward-wired only)',
     !!acceptListMatch && /(^|,)\.probundle(,|$)/.test(acceptListMatch[1]) && /(^|,)\.proplaylist(,|$)/.test(acceptListMatch[1]),
     acceptListMatch ? acceptListMatch[1] : '(accept list not found)');
 
@@ -269,6 +365,12 @@ check("import2.php's ChordPro dropdown label no longer claims bare .pro",
         const m = import2Php.match(/'chordpro'\s*=>\s*'ChordPro \(([^)]*)\)'/);
         return !!m && !/(^|[^\w.])\.pro([^\w6]|$)/.test(m[1]);
     })());
+
+/* (d') import2.php — .probundle (epic #1968 P2). */
+check('import2.php <input accept> carries .probundle',
+    /accept="[^"]*\.probundle[,"]/.test(import2Php));
+check("import2.php format dropdown has an explicit 'probundle' entry",
+    /'probundle'\s*=>\s*'ProPresenter 7\+ Bundle/.test(import2Php));
 
 /* ---------------------------------------------------------------------
  * ZIP path rider — includes/song_importers.php

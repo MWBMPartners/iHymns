@@ -4104,11 +4104,12 @@ function sniffProContent(file) {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    /* epic #1968 — .probundle/.proplaylist are forward-wired into the accept
-       list so the file picker doesn't grey them out, but their SERVER
-       handlers (P2/P3) don't exist yet — the change handler below routes
-       them to a "coming in a future update" toast rather than pretending
-       they work. */
+    /* epic #1968 — .probundle imports for real as of P2 (server handler
+       bulk_import_probundle). .proplaylist is still forward-wired into the
+       accept list below so the file picker doesn't grey it out, but its
+       SERVER handler (P3) doesn't exist yet — the change handler routes it
+       to a "coming in a future update" toast rather than pretending it
+       works. */
     input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,.probundle,.proplaylist,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
@@ -4176,14 +4177,22 @@ function importJSON() {
                 try { console.warn('[importJSON] .pro content sniff failed, falling back to ChordPro:', err); } catch (_e) {}
                 importChordPro(file); // sniff itself failed — fall back to prior behaviour
             });
-        } else if (lower.endsWith('.probundle') || lower.endsWith('.proplaylist')) {
-            /* epic #1968 P2/P3 — bundle + playlist import land in a later
-               update; forward-wired into the accept list (above) so the
-               file picker doesn't grey them out, but no server handler
-               exists yet. Do NOT advertise a path that would 400. */
+        } else if (lower.endsWith('.probundle')) {
+            /* epic #1968 P2 — ProPresenter 7+ bundle import (plan §4.2). A
+               `.probundle` is unambiguously ProPresenter's own ZIP
+               container (unlike bare `.pro`, no ChordPro/Pro6 sniff is
+               needed), so this uploads straight away — the server extracts
+               every `.pro` entry through the same P1 pipeline and reports
+               any media entries as warnings (media ingest is a later
+               phase, plan §6 / P4). */
+            importProbundle(file);
+        } else if (lower.endsWith('.proplaylist')) {
+            /* epic #1968 P3 — playlist import lands in a later update;
+               forward-wired into the accept list (above) so the file
+               picker doesn't grey it out, but no server handler exists
+               yet. Do NOT advertise a path that would 400. */
             showToast(
-                'ProPresenter ' + (lower.endsWith('.probundle') ? 'bundle (.probundle)' : 'playlist (.proplaylist)') +
-                ' import is coming in a future update.',
+                'ProPresenter playlist (.proplaylist) import is coming in a future update.',
                 'info'
             );
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
@@ -4407,6 +4416,25 @@ function importProPresenter7(file) {
         action:     'bulk_import_pro7',
         field:      'pro7',
         consoleTag: 'bulk_import_pro7',
+    });
+}
+
+/**
+ * importProbundle(file) — ProPresenter 7+ bundle (.probundle) import (epic
+ * #1968 P2). A `.probundle` is a ZIP holding one or more `.pro`
+ * presentations at its root plus whatever media they reference; the server
+ * (_bulkImport_processProbundle()) imports every `.pro` entry through the
+ * same single-file P1 pipeline and reports any media entries as warnings —
+ * media ingest itself is a later phase (plan §6 / P4), so nothing is
+ * ingested yet, but nothing is silently dropped either. Unlike bare `.pro`,
+ * a `.probundle` carries no ambiguity with another format, so importJSON()
+ * routes it here directly with no content sniff.
+ */
+function importProbundle(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_probundle',
+        field:      'probundle',
+        consoleTag: 'bulk_import_probundle',
     });
 }
 

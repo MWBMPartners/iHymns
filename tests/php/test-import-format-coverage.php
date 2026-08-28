@@ -426,6 +426,32 @@ $formatParsers = [
             return $parsed !== null;
         },
     ],
+    'probundle' => [
+        /* epic #1968 P2 — reuses the SAME golden-fixture corpus as 'pro7'
+           above, one level up: tests/fixtures/propresenter/synthetic-zip64.probundle
+           is a ZIP container built by tools/pp7-gen-zip64-bundle.js (to exercise
+           the real, byte-verified ZIP64-sentinel quirk real ProPresenter exports
+           carry — see includes/propresenter7_zip.php's doc-block), but its INNER
+           `.pro` entry is BYTE-IDENTICAL to the genuine third-party
+           bussnet-test.pro fixture (proven in tests/php/test-pp7-zip.php's own
+           "byte-identical to the committed bussnet-test.pro source" assertion) —
+           so the SONG CONTENT this check parses is real, only the outer ZIP
+           shell is synthesised to hit the ZIP64 code path deliberately. Checks
+           the pure entry-classifier + pure .pro parser directly (both DB-free,
+           same as every other entry here) rather than the DB-touching
+           _bulkImport_processProbundle() orchestrator, which this file's other
+           entries have no equivalent of touching either. */
+        'fixture' => dirname(__DIR__) . '/fixtures/propresenter/synthetic-zip64.probundle',
+        'check'   => static function (string $body): bool {
+            require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/propresenter7_zip.php';
+            $entries = pp7ZipListEntries($body);
+            $classified = _bulkImport_probundleClassifyEntries($entries);
+            if (count($classified['pro']) < 1) { return false; }
+            $proBytes = pp7ZipReadEntry($body, $classified['pro'][0]);
+            [$parsed] = _bulkImport_parsePro7($proBytes);
+            return $parsed !== null;
+        },
+    ],
     'freeshow' => [
         /* Reuses the existing FreeShow parser-test fixture directory. */
         'fixture' => $fixtureDir . '/freeshow/simple-song.show',

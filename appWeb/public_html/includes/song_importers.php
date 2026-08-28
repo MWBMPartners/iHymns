@@ -5204,6 +5204,306 @@ function _bulkImport_processPro7(string $body, ?string $filenameHint = null): ar
 }
 
 /* ===========================================================================
+ *  ProPresenter 7+ `.probundle` import (#1968 PR-2, epic #885's "bundle
+ *  support follows" rider)
+ * ---------------------------------------------------------------------------
+ * ELI5: a `.probundle` is ProPresenter's "everything in one file" export —
+ * a ZIP (opened via the tolerant `pp7ZipListEntries()`/`pp7ZipReadEntry()`
+ * reader in `includes/propresenter7_zip.php`, NEVER `\ZipArchive` — see that
+ * file's doc-block for the byte-verified reason a real PP7 export needs a
+ * reader that never touches the central directory) holding one or more
+ * `.pro` presentations at its ROOT plus whatever media (images/video/audio)
+ * those presentations reference. `.claude/propresenter-interop-1968-plan.md`
+ * §4 records the byte-verified layout facts this section relies on: NO
+ * manifest file exists in a genuine bundle — the inner `.pro`(s) ARE the
+ * manifest.
+ *
+ * DETAILED — this is a thin ORCHESTRATOR, not a second importer: it adds
+ * ZERO new song-writing logic of its own (same modularity posture as
+ * `_bulkImport_parsePro7()`'s doc-block above). List entries -> partition
+ * `.pro` vs media vs directory-placeholder entries -> hand EVERY `.pro`
+ * entry to the EXACT SAME single-file pipeline a standalone `.pro` upload
+ * already uses (`_bulkImport_processPro7()`, one call per entry) -> union
+ * the per-entry summaries into one aggregate, mirroring how
+ * `_bulkImport_processPptx()` above aggregates several songs parsed out of
+ * ONE uploaded file (rule #22 — reuse the existing multi-song-per-upload
+ * shape rather than inventing a new one).
+ *
+ * Media is DEFERRED to Phase 4 (plan §6 — "ingest & store", a genuinely
+ * separate piece of work: MIME-sniffed validation, `tblSongMedia` kind
+ * registry additions, gating). This function therefore NEVER calls
+ * `pp7ZipReadEntry()` on a media entry — only its name + declared
+ * (uncompressed) size from `pp7ZipListEntries()`'s own bookkeeping are ever
+ * touched — but "deferred" must never mean "invisible": every media
+ * filename survives into both a `warnings[]` note (the curator-facing
+ * summary channel every other importer in this file uses for non-fatal
+ * issues) and the summary's own `media_present`/`media_files` keys, so a
+ * curator can see exactly what a bundle contained even though only its
+ * `.pro` entries were imported.
+ *
+ * @param string      $bytes        raw bytes of one `.probundle` (a ZIP)
+ * @param string|null $filenameHint original upload filename of the BUNDLE
+ *                                  itself — used only when there is no
+ *                                  per-entry context yet (the ZIP could not
+ *                                  be read at all, or it contained no `.pro`
+ *                                  entry). Once the archive walk reaches a
+ *                                  real `.pro` entry, THAT entry's own name
+ *                                  (not this bundle-level hint) is what gets
+ *                                  passed to `_bulkImport_processPro7()` as
+ *                                  ITS filenameHint — the entry's own name is
+ *                                  the meaningful one for that song's
+ *                                  bracket-abbreviation override / title
+ *                                  fallback / per-song error label, exactly
+ *                                  as it would be if that one `.pro` had
+ *                                  been uploaded standalone.
+ * @return array same summary shape as `_bulkImport_processPro7()`, PLUS
+ *               `media_present` (int — count of non-`.pro` entries seen) and
+ *               `media_files` (array<string> — every one of their names) so
+ *               nothing the bundle carried is invisible even though only
+ *               `.pro` entries are imported (plan §4.2; media ingest is P4,
+ *               plan §6).
+ * @see .claude/propresenter-interop-1968-plan.md   §4.1 (the tolerant reader), §4.2 (this import flow), §6 (the deferred media phase)
+ * @see includes/propresenter7_zip.php               pp7ZipListEntries()/pp7ZipReadEntry() — the reader this builds on
+ * @see tests/php/test-pp7-probundle-import.php       real-fixture validation
+ * =========================================================================== */
+
+/**
+ * Pure entry classifier for `_bulkImport_processProbundle()` — split out
+ * (rather than left inline) specifically so it is independently unit-
+ * testable with NO database connection at all, mirroring
+ * `_bulkImport_parsePro7()`'s own "pure, DB-free" split from its DB-touching
+ * sibling `_bulkImport_processPro7()` just above it. Takes the raw entry
+ * list `pp7ZipListEntries()` returns and sorts every entry into exactly one
+ * of two buckets:
+ *   - `'pro'`   — a ProPresenter presentation (name ends `.pro`, matched
+ *                 case-insensitively on the last 4 bytes rather than
+ *                 `pathinfo()`'s extension parser, to mirror the plan's
+ *                 plain-English "whose name ends `.pro`" literally — no
+ *                 real fixture uses mixed case, but a case-sensitive match
+ *                 would silently mis-bucket one that did);
+ *   - `'media'` — everything else with real content.
+ * A directory placeholder some ZIP writers emit for path completeness
+ * (name ends `/`, always zero bytes) is neither a song nor media and is
+ * silently dropped from both buckets — it carries no importable content
+ * either way.
+ *
+ * @param array<int,array{name:string,method:int,size:int,csize:int,offset:int}> $entries
+ *        the exact shape `pp7ZipListEntries()` returns
+ * @return array{pro: array<int,array>, media: array<int,array>}
+ * @see includes/propresenter7_zip.php   pp7ZipListEntries() — the producer of $entries
+ */
+function _bulkImport_probundleClassifyEntries(array $entries): array
+{
+    $pro   = [];
+    $media = [];
+    foreach ($entries as $entry) {
+        $name = $entry['name'] ?? '';
+        if ($name === '' || substr($name, -1) === '/') {
+            continue; // directory placeholder — not a real file
+        }
+        if (strtolower(substr($name, -4)) === '.pro') {
+            $pro[] = $entry;
+        } else {
+            $media[] = $entry;
+        }
+    }
+    return ['pro' => $pro, 'media' => $media];
+}
+
+/**
+ * Pure per-entry aggregation step for `_bulkImport_processProbundle()`'s
+ * `.pro` loop — folds ONE inner `_bulkImport_processPro7()`-shaped result
+ * into the running aggregate, with NO database access of its own. Split out
+ * for the SAME independent-testability reason as
+ * `_bulkImport_probundleClassifyEntries()` above: the summing/unioning logic
+ * is real business logic worth proving correct (and mutation-testing, rule
+ * #34) on its own, with a hand-built `$inner` array standing in for a real
+ * `_bulkImport_processPro7()` return — no ZIP bytes, no protobuf, no
+ * database required to exercise it.
+ *
+ * @param array{songbooksCreated:array<string,true>,songbooksExisting:array<string,true>,songsCreated:int,songsSkipped:int,songsFailed:int,errors:array,warnings:array} $agg running aggregate (see `_bulkImport_processProbundle()`'s initial value)
+ * @param string $entryName the `.pro` entry's own name (warnings are prefixed with it — see below)
+ * @param array  $inner     one `_bulkImport_processPro7()`-shaped result (success OR `['ok'=>false,'error'=>…]` failure)
+ * @return array the updated `$agg`, same shape as the input
+ */
+function _bulkImport_probundleFoldInnerSummary(array $agg, string $entryName, array $inner): array
+{
+    if (!($inner['ok'] ?? false)) {
+        $agg['songsFailed']++;
+        $agg['errors'][] = ['entry' => $entryName, 'error' => $inner['error'] ?? 'ProPresenter 7+ parse failed'];
+        return $agg;
+    }
+
+    foreach ($inner['songbooks_created'] as $a) {
+        $agg['songbooksCreated'][$a] = true;
+    }
+    foreach ($inner['songbooks_existing'] as $a) {
+        /* Sets (not lists) so the SAME abbreviation reported 'created' by
+           the FIRST `.pro` entry and 'existing' by every later entry in the
+           same bundle (the normal case — every song in a `.probundle` files
+           under the one "ProPresenter 7 Import" songbook unless an entry's
+           own filename carries a bracket-abbreviation override) collapses
+           to ONE final classification rather than appearing in both output
+           lists. */
+        if (!isset($agg['songbooksCreated'][$a])) {
+            $agg['songbooksExisting'][$a] = true;
+        }
+    }
+    $agg['songsCreated'] += (int)($inner['songs_created'] ?? 0);
+    $agg['songsSkipped'] += (int)($inner['songs_skipped_existing'] ?? 0);
+    $agg['songsFailed']  += (int)($inner['songs_failed'] ?? 0);
+    foreach ($inner['errors'] as $e) {
+        $agg['errors'][] = $e;
+    }
+    // Prefixed with the entry name so a multi-.pro bundle's warnings (e.g.
+    // "N translation layer(s) present") stay attributable to WHICH
+    // presentation they came from, same as the errors[] entries
+    // _bulkImport_processPro7() itself already labels via filenameHint.
+    foreach ((array)($inner['warnings'] ?? []) as $w) {
+        $agg['warnings'][] = "{$entryName}: {$w}";
+    }
+    return $agg;
+}
+
+/**
+ * Pure "finish and shape the summary" step for `_bulkImport_processProbundle()`
+ * — appends the media-deferred warning (plan §4.2/§6 — "never silently
+ * drop") when the bundle carried any media, and assembles the FINAL summary
+ * array from the running aggregate + media counts. Split out for the same
+ * DB-free-testability reason as its two siblings above: a hand-built `$agg`
+ * (no real ZIP, no real DB) is enough to prove the media-warning wording and
+ * the final shape are both correct.
+ *
+ * @param array $agg        the aggregate `_bulkImport_probundleFoldInnerSummary()` built up
+ * @param int   $mediaCount count of non-`.pro` entries in the bundle
+ * @param array<string> $mediaNames every one of their names
+ * @return array the FINAL summary `_bulkImport_processProbundle()` returns on success
+ */
+function _bulkImport_probundleFinishSummary(array $agg, int $mediaCount, array $mediaNames): array
+{
+    $warnings = $agg['warnings'];
+    if ($mediaCount > 0) {
+        // Capped preview list in the human-facing warning line (matches the
+        // "first_errors" capping convention used elsewhere in this file);
+        // the FULL list still rides the structured media_files[] key below,
+        // so nothing is lost — only the prose line is kept scannable.
+        $shown = array_slice($mediaNames, 0, 5);
+        $more  = $mediaCount - count($shown);
+        $warnings[] = "{$mediaCount} media file(s) in the bundle were not imported "
+            . '(media ingest arrives in a later update): '
+            . implode(', ', $shown)
+            . ($more > 0 ? " (+{$more} more)" : '');
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => array_keys($agg['songbooksCreated']),
+        'songbooks_existing'     => array_keys($agg['songbooksExisting']),
+        'songs_created'          => $agg['songsCreated'],
+        'songs_skipped_existing' => $agg['songsSkipped'],
+        'songs_failed'           => $agg['songsFailed'],
+        'parsed_by_format'       => ['propresenter7' => $agg['songsCreated'] + $agg['songsSkipped']],
+        'errors'                 => $agg['errors'],
+        'warnings'               => $warnings,
+        'media_present'          => $mediaCount,
+        'media_files'            => $mediaNames,
+    ];
+}
+
+function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = null): array
+{
+    /* @disabled-visible: importer / batch system path (#1765) — operates over all
+       songbooks regardless of public disabled state */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'propresenter7_zip.php';
+
+    $bundleLabel = ($filenameHint !== null && $filenameHint !== '') ? $filenameHint : 'the uploaded bundle';
+
+    /* Shared shape for every "nothing was imported" outcome (a malformed ZIP,
+       or a genuine ZIP with zero `.pro` entries) — same field set
+       `_bulkImport_processPro7()` returns on failure, so every caller
+       (api.php / api2.php) can treat both processors identically. Media
+       counts still ride along even on a total failure — plan §4.2's "never
+       silently drop" contract applies whether or not any song imported. */
+    $emptyFail = static function (string $reason, int $mediaCount = 0, array $mediaNames = []): array {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason,
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['propresenter7' => 0],
+            'errors'                 => [],
+            'warnings'               => [],
+            'media_present'          => $mediaCount,
+            'media_files'            => $mediaNames,
+        ];
+    };
+
+    try {
+        $entries = pp7ZipListEntries($bytes);
+    } catch (\Throwable $e) {
+        // A ZIP that the tolerant reader itself can't walk at all (truncated
+        // upload, genuinely not a ZIP, …) — never a crash, per plan §4.2's
+        // "A bundle with zero .pro -> a clean fail, not a crash" contract
+        // (this is the same contract's other trigger: no readable entries
+        // at all, rather than zero .pro entries among readable ones).
+        return $emptyFail("Could not read {$bundleLabel} as a ProPresenter bundle: " . $e->getMessage());
+    }
+
+    $classified = _bulkImport_probundleClassifyEntries($entries);
+    $proEntries   = $classified['pro'];
+    $mediaEntries = $classified['media'];
+
+    $mediaCount = count($mediaEntries);
+    $mediaNames = array_map(static fn(array $e): string => $e['name'], $mediaEntries);
+
+    if (empty($proEntries)) {
+        return $emptyFail("No ProPresenter presentation found in {$bundleLabel}.", $mediaCount, $mediaNames);
+    }
+
+    $agg = [
+        'songbooksCreated'  => [],
+        'songbooksExisting' => [],
+        'songsCreated'      => 0,
+        'songsSkipped'      => 0,
+        'songsFailed'       => 0,
+        'errors'            => [],
+        'warnings'          => [],
+    ];
+
+    foreach ($proEntries as $entry) {
+        $name = $entry['name'];
+
+        /* Plan §4.2: "Non-root .pro entries (none observed in real bundles)
+           are imported the same with a warning." Root = the entry's OWN
+           name carries no '/' at all (it sits at the archive's top level). */
+        if (strpos($name, '/') !== false) {
+            $agg['warnings'][] = "'{$name}' is not at the bundle root — imported anyway";
+        }
+
+        try {
+            $proBytes = pp7ZipReadEntry($bytes, $entry);
+        } catch (\Throwable $e) {
+            $agg['songsFailed']++;
+            $agg['errors'][] = ['entry' => $name, 'error' => 'could not extract from bundle: ' . $e->getMessage()];
+            continue;
+        }
+
+        /* THE reuse point: the exact single-file P1 pipeline, one call per
+           `.pro` entry, this entry's OWN name as ITS filenameHint (see this
+           function's own doc-block @param note for why). Adds no new save
+           logic of its own — every write still lands via
+           `_bulkImport_saveSong()` -> `lyricLinesWriteComponents()`. */
+        $inner = _bulkImport_processPro7($proBytes, $name);
+        $agg   = _bulkImport_probundleFoldInnerSummary($agg, $name, $inner);
+    }
+
+    return _bulkImport_probundleFinishSummary($agg, $mediaCount, $mediaNames);
+}
+
+/* ===========================================================================
  *  EasyWorship import (#1058)
  * ---------------------------------------------------------------------------
  * EasyWorship 6/7 stores its library in SQLite. The song metadata lives in
