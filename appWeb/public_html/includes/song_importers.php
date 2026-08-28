@@ -4857,9 +4857,12 @@ function _bulkImport_sniffProDialect(string $body): string
  * @param string $body raw bytes of one `.pro` file
  * @return array{0: ?array, 1: ?string}  [parsed, errorReason] — parsed carries
  *         {title, songbookName:'', entry:0, language:'', ccli, copyright,
- *         writers[], components[], arrangement:?int[], warnings[]}
+ *         writers[], components[], arrangement:?int[], warnings[],
+ *         mediaRefs?:array, timeline?:array{duration:?float,loop:bool,cues:array}}
+ *         (`mediaRefs`/`timeline` are SPARSE — present only when non-empty)
  * @see .claude/propresenter-interop-1968-plan.md   §3.3 (the walk), §3.4 (element selection), §3.5 (label mapping)
  * @see includes/propresenter7_decode.php           pp7DecodePresentation() — the decoder this builds on
+ * @see includes/pp7_timeline.php                    pp7TimelineStore() — the (dormant/gated) DB write side
  * @see tests/php/test-pp7-parse.php                 real-fixture validation
  */
 function _bulkImport_parsePro7(string $body): array
@@ -5115,6 +5118,24 @@ function _bulkImport_parsePro7(string $body): array
     if (!empty($mediaRefs)) {
         $result['mediaRefs'] = $mediaRefs;
     }
+
+    /* #1968 dormant groundwork — carry the decoder's captured auto-advance timeline through
+       (owner steer 2026-08-28: capture on import, OFF by default via a toggle, played back
+       later). Emitted SPARSELY (the rule-#45 sparse-key precedent, same posture as mediaRefs
+       immediately above): every real committed fixture decodes SOME `timeline` submessage —
+       ProPresenter appears to always write a placeholder one (duration=300, zero cues) even
+       on a song with no real auto-advance schedule — so gating on mere non-null presence would
+       put a content-free `timeline` key on every parsed song. The key is present only when
+       there is at least one actual cue to capture; the only consumer (the ingest step's
+       pp7TimelineStore() call, itself gated on the pp7_timeline_import_enabled toggle) has
+       nothing to store for an empty/placeholder timeline anyway. Carried through UNCHANGED
+       (pp7DecodeTimeline()'s own {duration,loop,cues:[{triggerSeconds,cueUuid,name}]} shape) —
+       this function does no timeline INTERPRETATION, only decode + sparse carry-through; DB
+       storage happens one layer up, in the bundle/playlist ingest step. */
+    if ($decoded['timeline'] !== null && !empty($decoded['timeline']['cues'])) {
+        $result['timeline'] = $decoded['timeline'];
+    }
+
     return [$result, null];
 }
 
@@ -5262,6 +5283,37 @@ function _bulkImport_processPro7(string $body, ?string $filenameHint = null, boo
                 . 'export a .probundle from ProPresenter to bring the media across.';
         }
     }
+
+    /* #1968 dormant groundwork — capture the auto-advance timeline (owner steer 2026-08-28:
+       capture on import, OFF by default via a toggle, played back later). Placed HERE, not
+       deferred to the bundle/playlist orchestrators the way media ingest is (see
+       _bulkImport_pp7IngestMedia()'s call sites), because — unlike media — a timeline needs
+       NO container bytes to resolve: everything pp7TimelineStore() needs (the DB handle, the
+       just-created SongId, the decoded timeline) is already in scope right here, for every
+       pathway that funnels through this ONE shared single-file pipeline (bare `.pro` upload,
+       `.probundle` per-entry, `.proplaylist` embedded song alike — rule #22, no duplicated
+       call site in each of the three outer processors).
+       Only on a genuine 'create': _bulkImport_saveSong()'s own doc-block warns that on
+       'skipped' (a re-imported duplicate) $song['id'] is a FRESH id that was NEVER inserted,
+       not the real pre-existing row — storing against it would either silently attach the
+       timeline to a nonexistent SongId (the FK rejects it, caught below, a no-op) or, worse,
+       corrupt data on a future SongId reuse. Capturing on re-import of a duplicate is future
+       work; this task's scope is dormant capture on fresh import.
+       NON-BLOCKING: wrapped in its OWN try/catch (pp7TimelineStore() already guards itself
+       internally too — this is defence in depth) so a timeline hiccup can never fail the
+       surrounding song import, exactly like the media ingest call above. VERIFIED NO-OP by
+       construction while the toggle is at its shipped '0' default: pp7TimelineStore()'s own
+       first gate check (pp7TimelineImportEnabled()) returns 0 before touching the database at
+       all. */
+    if ($action === 'create' && !empty($parsed['timeline']) && ($song['id'] ?? '') !== '') {
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'pp7_timeline.php';
+            pp7TimelineStore($db, (string)$song['id'], '', $parsed['timeline']);
+        } catch (\Throwable $_e) {
+            // Non-blocking: a timeline-capture hiccup never fails the song import.
+        }
+    }
+
     return $summary;
 }
 

@@ -114,5 +114,16 @@
             "localRoot": 10,
             "localPath": "Media/Assets/Here to Stay (Acoustic) – Anthem Worship.mp4"
         }
-    ]
+    ],
+    "timeline": {
+        "duration": 300.0,
+        "loop": false,
+        "cues": [
+            {
+                "triggerSeconds": 0.619806180334395,
+                "cueUuid": "",
+                "name": "Here to Stay (Acoustic) – Anthem Worship.mp4"
+            }
+        ]
+    }
 }
