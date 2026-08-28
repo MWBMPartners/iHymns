@@ -357,12 +357,21 @@ function pp7DecTestCapitalizationAttribute(int $start, int $end, int $capValue):
 // --- pp7DecodeIntRange() -------------------------------------------------------------------
 ok('pp7DecodeIntRange(): a normal {start,end} pair decodes both fields',
     pp7DecodeIntRange(pp7DecTestIntRange(5, 9), 0) === ['start' => 5, 'end' => 9]);
-ok('pp7DecodeIntRange(): start=0 (column 0, the very first character) decodes correctly',
+ok('pp7DecodeIntRange(): start=0 written EXPLICITLY as a literal zero byte decodes correctly',
     pp7DecodeIntRange(pp7DecTestIntRange(0, 3), 0) === ['start' => 0, 'end' => 3]);
-ok('pp7DecodeIntRange(): a start-only range defaults `end` to `start` (never to 0)',
-    pp7DecodeIntRange(pp7DecTestVarintField(1, 4), 0) === ['start' => 4, 'end' => 4]);
-ok('pp7DecodeIntRange(): a range with no `start` field at all decodes to null',
-    pp7DecodeIntRange(pp7DecTestVarintField(2, 9), 0) === null);
+// #1968 P6 CORRECTNESS FIX (found empirically against this feature's own synthetic fixture,
+// see pp7DecodeIntRange()'s doc-block): proto3 NEVER writes a plain scalar field that holds its
+// own type's default value (0 for int32) — a genuine, real-world `IntRange{start:0, end:21}`
+// (a chord at the very first character of a line — the single most common chord position)
+// therefore encodes with `start` COMPLETELY ABSENT from the wire, indistinguishable from "start
+// was never set at all". Treating that absence as malformed (an earlier version of this
+// function did) SILENTLY DROPS every column-0 chord. This is THE regression-proof row.
+ok('pp7DecodeIntRange(): `start` OMITTED from the wire (only `end` present — protobuf\'s implicit-default omission for a genuine start=0) decodes to start=0, NOT null',
+    pp7DecodeIntRange(pp7DecTestVarintField(2, 9), 0) === ['start' => 0, 'end' => 9]);
+ok('pp7DecodeIntRange(): `end` likewise omitted (only `start` present) decodes to end=0 (never used for placement anyway — plan §1.2)',
+    pp7DecodeIntRange(pp7DecTestVarintField(1, 4), 0) === ['start' => 4, 'end' => 0]);
+ok('pp7DecodeIntRange(): BOTH omitted (a genuinely empty IntRange submessage) decodes to {0,0}, not null',
+    pp7DecodeIntRange('', 0) === ['start' => 0, 'end' => 0]);
 ok('pp7DecodeIntRange(): a negative `start` (plan §3.1 point 1 — "negative => treat row invalid") decodes to null',
     pp7DecodeIntRange(pp7DecTestIntRange(-1, 5), 0) === null);
 
@@ -375,6 +384,16 @@ ok('pp7DecodeCustomAttribute(): a NON-chord attribute (capitalization branch) de
     pp7DecodeCustomAttribute(pp7DecTestCapitalizationAttribute(0, 4, 1), 0) === null);
 ok('pp7DecodeCustomAttribute(): a chord field with no `range` at all decodes to null',
     pp7DecodeCustomAttribute(pp7DecTestStrField(7, 'C'), 0) === null);
+// The end-to-end regression proof: a chord genuinely at column 0, encoded the way a REAL proto3
+// writer would (start OMITTED — a hand-rolled builder that always writes both fields, like
+// pp7DecTestChordAttribute() above, could never have caught this; this row deliberately builds
+// the range with ONLY `end` on the wire, exactly like protobufjs's own encoder would for
+// `{start:0, end:5}`).
+ok('pp7DecodeCustomAttribute(): a chord at column 0 (start OMITTED from the wire, matching a real proto3 encoder) still decodes with start=0',
+    pp7DecodeCustomAttribute(
+        pp7DecTestMsgField(1, pp7DecTestVarintField(2, 5)) . pp7DecTestStrField(7, 'G'),
+        0
+    ) === ['start' => 0, 'end' => 5, 'chord' => 'G']);
 
 // --- pp7DecodeTextAttributesChords() -------------------------------------------------------
 $mixedAttrs = pp7DecTestMsgField(13, pp7DecTestChordAttribute(0, 3, 'G'))

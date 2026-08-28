@@ -584,20 +584,38 @@ if (!function_exists('pp7Int32FromVarint')) {
 
 if (!function_exists('pp7DecodeIntRange')) {
     /**
-     * rv.data.IntRange{start=1,end=2} → {start:int,end:int}, or NULL when malformed — no
-     * `start` field at all, or either bound decodes negative (#1968 P6 §3.1 point 1: "negative ⇒
-     * treat row invalid" rather than trusting a corrupt/adversarial offset). `end` defaults to
-     * `start` when absent (a degenerate but well-formed zero-width range), never to 0 (which
-     * would silently claim "covers nothing from the very start of the text" instead of "covers
-     * nothing from wherever this attribute starts").
+     * rv.data.IntRange{start=1,end=2} → {start:int,end:int}, or NULL only when either bound
+     * decodes NEGATIVE (#1968 P6 §3.1 point 1: "negative ⇒ treat row invalid" rather than
+     * trusting a corrupt/adversarial offset).
+     *
+     * ⚠️ CORRECTNESS FIX (found empirically, NOT by reading the spec — this repo's own #1 rule
+     * for this epic in action): an EARLIER version of this function treated an absent `start`
+     * field as MALFORMED ("no `start` field at all ⇒ null"). That is WRONG, and would have
+     * silently DROPPED every chord positioned at UTF-16 offset 0 — proto3's "implicit field
+     * presence" means a plain (non-`oneof`) scalar field explicitly set to its OWN type's
+     * default value (0 for int32) is NEVER written to the wire at all
+     * (https://protobuf.dev/programming-guides/field_presence/#presence-in-proto3-apis) — so a
+     * genuine `IntRange{start:0, end:21}` (the single most common chord position — "the very
+     * first character of a line") encodes with ONLY field 2 present; field 1 (`start`) is
+     * indistinguishable on the wire from never having been set. Both reference implementations
+     * this feature is built from sidestep this entirely: they read a start-less IntRange as its
+     * language's own int32 DEFAULT (Rust `0`, C# `0`), never treating absence-of-`start` as an
+     * error — this decoder now does the same. Caught by hand-decoding this file's OWN synthetic
+     * chord fixture (`tools/pp7-gen-chord-fixture.js`) during authoring: a chord deliberately
+     * placed at column 0 vanished from the imported cell entirely until this fix landed.
+     *
+     * `start`/`end` therefore both default to 0 when their field never appears on the wire —
+     * `end` defaulting to 0 (not to `$start`) matters ONLY for a caller that reads `end`, which
+     * `_bulkImport_pro7ChordCellsFromRanges()` (the one PHP consumer) deliberately never does
+     * (plan §1.2/§3.3 point 5 — `end` is ignored for placement, at most sanity-checked).
      *
      * @see PP7_FIELDS_INT_RANGE
      * @see .claude/propresenter-chords-plan.md   §1.2 — range semantics (start anchors, end tiles/is ignored on read)
      */
     function pp7DecodeIntRange(string $buf, int $depth): ?array
     {
-        $start = null;
-        $end   = null;
+        $start = 0;
+        $end   = 0;
         foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
             if ($wireType !== 0) {
                 continue;
@@ -608,10 +626,10 @@ if (!function_exists('pp7DecodeIntRange')) {
                 $end = pp7Int32FromVarint((int)$value);
             }
         }
-        if ($start === null || $start < 0 || ($end !== null && $end < 0)) {
+        if ($start < 0 || $end < 0) {
             return null;
         }
-        return ['start' => $start, 'end' => $end ?? $start];
+        return ['start' => $start, 'end' => $end];
     }
 }
 
