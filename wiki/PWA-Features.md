@@ -32,7 +32,7 @@
   - Component pool: click to add components (V1, C, B, PC1, etc.)
   - Arrangement strip: drag-and-drop to reorder, click to remove
   - Live lyrics preview of the custom arrangement
-  - 12 component types with colour-coded short tags
+  - 11 component types with colour-coded short tags (plus `refrain` as a display alias of Chorus)
 - **Share setlists** — generate shareable links with optional arrangements
 - **Import shared setlists** — import from shared links
 - **Cross-device sync** — merge local and server setlists when logged in

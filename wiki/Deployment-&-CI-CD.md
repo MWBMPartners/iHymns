@@ -32,12 +32,12 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 
 | Workflow | File | Purpose |
 |---|---|---|
-| Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch (see pipeline below) |
-| Version Bump | `version-bump.yml` | Auto-bumps `infoAppVer.php`'s semver `Version.Number` via conventional commits on push to `alpha`/`beta`, keeps `api-docs.yaml`'s `info.version` in lockstep (a dedicated step + a CI guard), and rolls the CHANGELOG's `## [unreleased] — alpha` section into the new version heading |
+| Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch, **plus** the tag-free version-anchor bump (see Versioning below) |
 | Changelog | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commit messages on push to `beta` |
-| Release | `release.yml` | Creates a GitHub Release with a tagged version |
+| Release | `release.yml` | ⚠️ **Dormant / manual-only** (#1965) — creates a GitHub Release for a `v*` tag, but nothing in the automated pipeline pushes a tag any more; it fires only if a human pushes one by hand or runs it via `workflow_dispatch` |
 | CI Lint & Validation | `test.yml` | Runs linting + the PHP/JS unit test suites |
 | Lint Workflows | `lint.yml` | Lints the workflow YAML files themselves on any change under `.github/workflows/` |
+| Language Registry Refresh | `language-registry-refresh.yml` | Scheduled monthly: refreshes the git-tracked BCP 47/IANA/CLDR snapshot files and re-pokes the keyed `/language-registry-refresh` endpoint to re-import them (dormant until an admin has run the registry's own setup card once) |
 | Apple CI | `apple.yml` | Builds + runs Swift tests on push to the Apple integration branch |
 | Apple Deploy | `apple-deploy.yml` | Signs and ships an Apple build on push to `alpha`/`beta`/`main` touching `appApple/**` |
 | Apple macOS DMG | `apple-dmg.yml` | Manual/tag-triggered: builds and attaches a signed macOS DMG to a release |
@@ -62,9 +62,22 @@ Triggered on push to `alpha`, `beta`, or `main`; SFTP mirroring via `lftp`. The 
 
 Other deploy behaviour:
 - `.env-channel` file injected by CI for server-side environment detection
-- **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy.
+- **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy. Shown as its own row in Settings → About (the commit-SHA row is separately labelled "Commit").
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
+
+### Versioning pipeline (tag-free, #1963 → #1965)
+
+`deploy.yml` (not a separate `version-bump.yml`, which is retired) also owns the version bump, on every push to `alpha`:
+
+1. It resolves the committed `MAJOR.MINOR` anchor from `includes/infoAppVer.php`'s `Version.Number` line.
+2. `.github/workflows/scripts/classify-bump.sh` reads the commits since that line last changed and classifies them by Conventional-Commit prefix: `feat:` → **minor**, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → **major**, everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject) → **build-only** (the safe default — a mislabelled commit under-bumps rather than over-bumps).
+3. On a minor/major signal, the workflow edits `Version.Number` in place and commits it back to the branch as a normal push (`[skip ci]`, worktree-isolated so the build-count arithmetic stays intact) — **never a git tag**.
+4. The build number (`git rev-list --count HEAD`) is injected on every deploy regardless of whether the anchor moved.
+
+`beta`/`main` display their own committed anchor as content is promoted onto them — no tag reachability is needed. `release.yml` is dormant (see the workflow table above); it is **not** dispatched anywhere in this pipeline. CI guard: `tests/test-versioning-pipeline.js` (tag-free assertions + the classifier's producer/consumer format-string lockstep) and `tests/test-bump-classifier.js` (the classifier truth table).
+
+**Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` (the source for the in-app `/whats-new` page) — never internals, never file/table/endpoint names.
 
 ---
 
@@ -161,4 +174,4 @@ The CI pipeline injects a `.env-channel` file during deployment, allowing server
 | Beta | `beta` |
 | Production | `main` |
 
-Alpha builds display a commit date timestamp (yyyymmddhhmmss) in the footer for deploy tracking.
+The app footer shows the current semver (`v<MAJOR.MINOR.BUILD>`, tapping through to `/whats-new`); the per-commit build number (`git rev-list --count HEAD`) is shown separately in Settings → About, not in the footer.

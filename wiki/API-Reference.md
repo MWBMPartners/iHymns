@@ -59,7 +59,7 @@ A not-found or removed entity (`song`, `songbook`, `person`, `work`, `tag`) answ
 
 ## Action families
 
-`api.php` exposes **218** public `?action=...` endpoints (306 documented OpenAPI paths total across all four dispatchers, including the editor APIs and the page routes above — verified via `tests/php/lib/dispatch_parser.php`, the same tokenising parser `test-openapi-actions-exist.php` uses). Hand-maintaining an itemised list of all of them here duplicates the project's own OpenAPI spec and drifts out of sync with it (the modularity rule this wiki otherwise enforces everywhere else). Instead:
+`api.php` exposes **224** public `?action=...` endpoints (325+ documented OpenAPI paths total, including the editor APIs and the page routes above — the action count is verified directly via `tests/php/lib/dispatch_parser.php`, the same tokenising parser `test-openapi-actions-exist.php` uses; both figures grow steadily as new features land, so treat them as orientation, not a pinned contract). Hand-maintaining an itemised list of all of them here duplicates the project's own OpenAPI spec and drifts out of sync with it (the modularity rule this wiki otherwise enforces everywhere else). Instead:
 
 > **The complete, always-current reference is `appWeb/public_html/api-docs.yaml`** (OpenAPI 3.0), rendered with interactive Try-it-out at **`/manage/api-docs`** (Swagger UI, requires the `view_api_docs` entitlement).
 
@@ -76,6 +76,7 @@ The table below is an orientation map — one row per family, with a couple of r
 | **Service Mode** | Venue/organisation-based broadcast with rotating join codes and section-level (not just song-level) sync. See [[Live Follow & Service Mode]]. | `service_session_start`, `service_broadcast`, `service_join` |
 | **Service driver** (#1770) | Key-authed external control — a presentation app drives the current song through the same broadcast core. | `service_drive`, `service_driver_key_mint`, `service_driver_key_list`, `service_driver_key_revoke` |
 | **Print usage** (#1767) | CCLI copies-made bookkeeping for the print / Download-PDF path — resolves the org's licence server-side. | `print_usage_context`, `print_usage_log` |
+| **ProPresenter interop** (epic #1968) | Editor-side bulk import of `.pro`/`.probundle`/`.proplaylist` and single-song/set-list export to the same formats; a media row's admin/public publish toggle. Documented on the editor API surface, not `api.php`. | `bulk_import_pro7`, `bulk_import_probundle`, `bulk_import_proplaylist`, `media_set_visibility` |
 | **Licence types (admin)** (#1769) | CRUD over the `tblLicenceTypes` vocabulary; thin wrappers over the shared licence-type core. | `admin_licence_type_create`, `admin_licence_type_update`, `admin_licence_type_toggle`, `admin_licence_type_delete` |
 | **Admin** | User/group management, activity log, content moderation, exports — all require admin+ role or the matching entitlement. | `admin_users`, `admin_activity_log`, `admin_export` |
 | **Telemetry** | `client_error_report` (#1582) — anonymous, rate-limited, privacy-scrubbed browser-crash beacon feeding `tblActivityLog` (`client.jserror`). Not consent-gated analytics. | `client_error_report` |

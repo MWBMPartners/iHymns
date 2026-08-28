@@ -75,11 +75,10 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 
 | Range | Meaning |
 |---|---|
-| `v0.x.x` | Phase 1 pre-release (current) |
-| `v1.x.x` | Phase 1 stable |
+| `v1.x.x` | Phase 1 stable (current) |
 | `v2.x.x` | Phase 2 (iLyrics dB integration) |
 
-Auto-bumped via conventional commits on push to `beta` (single source of truth). Alpha builds display commit date timestamp in footer.
+Versioning is **tag-free** (#1963 → #1965). The authoritative `MAJOR.MINOR` is committed in `includes/infoAppVer.php`; `deploy.yml` classifies the Conventional-Commit prefixes on each alpha push (`feat:` → minor bump, `feat!:`/`BREAKING CHANGE:` → major bump, everything else → build-only) and, on a clear signal, commits the new `MAJOR.MINOR` back to the branch — never a git tag. The displayed **build number** is `git rev-list --count HEAD`, shown alongside the version in Settings → About. See [[Development Setup]] § Versioning and [[Deployment & CI-CD]] for the full pipeline.
 
 ---
 
