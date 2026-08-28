@@ -569,6 +569,20 @@ field-for-field before calling it done. (D1 note: only `Visibility='public'` med
 when the exporting curator is the audience, i.e. the editor-side bundle export — is offered for
 embedding; the export UI decision rides the later phase, the wire shape above is unchanged.)
 
+> **✅ LANDED (#1979, 2026-08-28).** `exportSongAsBundle()` in `propresenter-export.js` implements
+> exactly this: `pickBackgroundMedia()` (first public video, else image) → fetch bytes from the
+> same-origin `streamUrl` → ZIP root under a flat filename → `buildBackgroundMediaCue()` emits the
+> `URL{absolute_string:<filename>, local:{root:12, path:<filename>}}` shape on BOTH `element.url`
+> and the `video|image.file.local_url` mirror, inside a palette-only "Lyrics Background" cue group
+> (NOT in the arrangement). No media / a fetch failure degrades to a bare `.pro`. The single-song
+> export-ui path now awaits `exportSongAsBundle()`. **Non-circular validation:** the wire shape is
+> asserted field-for-field against the media action decoded from the REAL `bussnet-testbild.probundle`
+> (`tests/test-pp7-media-export.js`, 5 mutations proven red). The owner's real video files use
+> machine-absolute roots (`ROOT_USER_HOME`/`ROOT_USER_DOWNLOADS`, media left in place); TestBild —
+> the portable embedded-at-root case — uses `ROOT_CURRENT_RESOURCE`, which is why it is the correct
+> anchor. No encoder regen was needed (the static encoder already carried these types from PR-3).
+> D4 (a real PP *open* of a media-bearing export) stays an owner-checklist item, non-blocking.
+
 ### 6.3 The serving gate — every public `tblSongMedia` surface, enumerated and closed
 
 **The rule-#28 lesson applied:** stripping a payload hides an affordance; it does not protect a
@@ -925,7 +939,7 @@ one PR, commits ordered fixtures-and-safeguards-before-feature (the program's st
 4. `feat(importers): probundle/proplaylist media ingest core (resolve→sniff→store admin) + video/image kinds + ZIP input-cap fix + ingest tests`
 5. `feat(editor): media tab video/image blocks + visibility badge/toggle + media_set_visibility endpoint`
 6. `feat(pwa): song-page video/image render blocks + play_video tier cap registration (dormant)`
-7. ~~`feat(export): portable CURRENT_RESOURCE media URLs in the bundle exporter`~~ — **DEFERRED to follow-on #1979** (2026-08-28). The plan's own §6.2 scopes the export UI to "a later phase," and validating a media-bearing export needs a REAL ProPresenter to open it (owner checklist D4, §10). Shipping an un-triggered wire-shape helper with no UI/data source would be dead code AND the circular same-schema round-trip the owner's #1 rule bans — so the import loop (commits 1–6) landed fully real-file-validated, and export is tracked separately.
+7. ~~`feat(export): portable CURRENT_RESOURCE media URLs in the bundle exporter`~~ — **DEFERRED to follow-on #1979, then DELIVERED there (2026-08-28).** The plan's own §6.2 scoped the export UI to "a later phase," and validating a media-bearing export needs a REAL ProPresenter to open it (owner checklist D4, §10). It was deferred out of PR-4 so the import loop (commits 1–6) could land fully real-file-validated on its own. #1979 then delivered it **non-circularly**: the emitted media action is asserted field-for-field against the media action decoded from the genuine `bussnet-testbild.probundle` (a real bundle exported FROM PP), so the anchor is a real file, not a self-consistent round-trip. See §6.2's "✅ LANDED" note. D4 (a real PP open) stays a non-blocking owner-checklist item.
 8. `docs: media scenarios; wiki + CHANGELOG; issue close-outs`  ← now commit 7 (the final commit of PR-4)
 
 Owner verify (§10 checklist grows two rows): a real PP import of our media-bearing exported
