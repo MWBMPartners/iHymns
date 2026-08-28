@@ -4645,4 +4645,30 @@ return [
             return !$present;
         },
     ],
+
+    /* #1968 P4 — the per-row media publish-state column. Additive + dormant:
+       DEFAULT 'public' stamps every existing row, so the serving gate the P4
+       read-path adds (commit 3) is a verified no-op for all current content
+       until ingest lands AND the owner flips pp7_media_ingest_enabled. Safe to
+       run early on any env — the column alone changes nothing. */
+    'song-media-visibility' => [
+        'script' => 'migrate-song-media-visibility.php',
+        'card' => [
+            'title'  => 'Song media visibility (#1968 P4)',
+            'body'   => 'Adds <code>tblSongMedia.Visibility</code>'
+                      . ' (<code>VARCHAR(20) NOT NULL DEFAULT &lsquo;public&rsquo;</code>)'
+                      . ' — the per-row publish state ProPresenter media ingest'
+                      . ' needs so imported bundle media can land curator-only'
+                      . ' (<code>admin</code>) and be served publicly only when a'
+                      . ' curator publishes it (owner decision D1). Growable,'
+                      . ' app-validated vocabulary (VARCHAR not ENUM, rule #20 —'
+                      . ' <code>org</code>/<code>pending</code> are reserved).'
+                      . ' Additive, idempotent, a verified no-op for all existing'
+                      . ' rows (every one is stamped <code>public</code>).',
+            'button' => 'Run Song Media Visibility Migration',
+        ],
+        /* Single-column probe (rule #19): pending until the column exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongMedia', 'Visibility'),
+    ],
 ];

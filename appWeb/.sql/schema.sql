@@ -3122,6 +3122,7 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     Content         MEDIUMBLOB   NULL,
     StoragePath     VARCHAR(255) NULL,
     Annotation      VARCHAR(255) NULL,
+    Visibility      VARCHAR(20)  NOT NULL DEFAULT 'public' COMMENT 'Publish state (#1968 P4): public | admin. App-validated via IHYMNS_SONG_MEDIA_VISIBILITIES in includes/song_media_visibility.php; VARCHAR not ENUM (rule #20 — org / pending are reserved future values, each a one-line map addition, never an ALTER). admin = curator-only: stripped from every public list emit and denied bytes at song-media.php; imported ProPresenter media lands admin until a curator publishes it (owner decision D1).',
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
     UploadedBy      INT UNSIGNED NULL,
     UploadedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
