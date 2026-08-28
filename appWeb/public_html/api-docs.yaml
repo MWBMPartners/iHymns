@@ -2154,6 +2154,174 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api.php?action=tune:
+    get:
+      operationId: getTune
+      tags: [Songs]
+      summary: Get one Tune (registry row + songs that use it) as JSON
+      description: |
+        JSON twin of the public `?page=tune&slug=…` HTML page — both call
+        the SAME `tuneResolveDisplayData()` (#1969, rule #22), not a forked
+        read. Resolves through the SAME ladder the page uses: an exact
+        `tblTunes.Slug` match, a PHP name-fold over every `tblTunes.Name`,
+        an alias fold (`tblTuneAliases`), and — when nothing in the #1090
+        registry matches — the pre-registry heuristic fold over distinct
+        `tblSongs.TuneName`. Returns the tune's own details (when a
+        registry row exists — `registered: true`), every song that uses
+        it, its composer/arranger/harmoniser/source credits, tunes sharing
+        its metre, and its external links.
+
+        `id` is an API-only direct-lookup mode (a numeric `tblTunes.Id`)
+        the HTML page itself never uses — it bypasses the slug ladder
+        entirely, for a native "tap a tune id" flow. Give `slug` OR `id`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [tune] }
+        - name: slug
+          in: query
+          required: false
+          description: Tune slug. Takes priority over `id` when both are sent.
+          schema: { type: string, example: hyfrydol }
+        - name: id
+          in: query
+          required: false
+          description: Numeric `tblTunes.Id`. API-only direct lookup — bypasses the slug ladder.
+          schema: { type: string, example: "17" }
+      responses:
+        "200":
+          description: The tune (registered or heuristic-only), its songs, credits, meter siblings, and links
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tune:
+                    type: object
+                    properties:
+                      id:                  { type: integer, nullable: true, description: "null when no tblTunes registry row exists (heuristic-only match)." }
+                      name:                { type: string }
+                      slug:                { type: string }
+                      subtitle:            { type: string, nullable: true }
+                      disambiguation:      { type: string, nullable: true }
+                      meterCode:           { type: string, nullable: true }
+                      musicBrainzWorkMbid: { type: string, nullable: true }
+                      hymnaryTuneId:       { type: string, nullable: true }
+                      notes:               { type: string, nullable: true }
+                      registered:          { type: boolean, description: "true when a tblTunes registry row was found (any of the a/b/c ladder rungs); false on the pre-registry TuneName heuristic fallback." }
+                  totalSongs: { type: integer }
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songId:       { type: string }
+                        number:       { type: integer, nullable: true }
+                        title:        { type: string }
+                        songbook:     { type: string }
+                        songbookName: { type: string }
+                        language:     { type: string, nullable: true }
+                  credits:
+                    type: object
+                    description: "Role (composer/arranger/harmoniser/source) => array of {Role,Name,MusicianSlug}. Empty on the heuristic path (no TuneId to key on)."
+                  meterSiblings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        slug: { type: string }
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        slug:      { type: string }
+                        name:      { type: string }
+                        category:  { type: string }
+                        iconClass: { type: string }
+                        url:       { type: string }
+                        note:      { type: string }
+                        verified:  { type: boolean }
+                        sortOrder: { type: integer }
+        "400":
+          description: Neither a `slug` nor an `id` was supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: No matching tune (registered or heuristic) for that slug/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api.php?action=publisher_detail:
+    get:
+      operationId: getPublisherDetail
+      tags: [Songs]
+      summary: Get one Publisher (who they are + the songbooks they published) as JSON
+      description: |
+        JSON twin of the public `?page=publisher&slug=…` HTML page — both
+        call the SAME `publisherResolveDisplayData()` (#1969, rule #22),
+        not a forked read. Resolves exact-slug -> name-fold -> alias-fold
+        (rule #37), the SAME ladder `/manage/publishers`' picker and every
+        other publisher-link consumer honour.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [publisher_detail] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: hope-publishing-company }
+      responses:
+        "200":
+          description: The publisher, its parent (if any), known aliases, and the songbooks it published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  publisher:
+                    type: object
+                    properties:
+                      id:             { type: integer }
+                      name:           { type: string }
+                      slug:           { type: string }
+                      kind:           { type: string, description: "One of IHYMNS_PUBLISHER_KINDS (publisher_helpers.php), e.g. company/person/imprint/society/other." }
+                      subtitle:       { type: string, nullable: true }
+                      disambiguation: { type: string, nullable: true }
+                      ipi:            { type: string, nullable: true }
+                      isni:           { type: string, nullable: true }
+                      cityName:       { type: string, nullable: true }
+                      notes:          { type: string, nullable: true }
+                      parent:
+                        type: object
+                        nullable: true
+                        properties:
+                          id:   { type: integer }
+                          name: { type: string }
+                          slug: { type: string }
+                      aliases:
+                        type: array
+                        items: { type: string }
+                  songbooks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        abbreviation: { type: string }
+                        name:         { type: string }
+                        role:         { type: string, description: "One of IHYMNS_PUBLISHER_ROLES, e.g. publisher/co-publisher/distributor/imprint/administrator/printer." }
+        "400":
+          description: No `slug` was supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: No matching publisher (or the publisher registry isn't migrated on this install)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   # ===========================================================================
   # LANGUAGES
   # ===========================================================================
@@ -10301,6 +10469,164 @@ paths:
           description: Not authorised on this organisation
         "404":
           description: Licence row does not belong to that organisation
+
+  /api.php?action=org_venues:
+    get:
+      operationId: orgVenues
+      tags: [Org-admin]
+      summary: Venue + service-schedule discovery for organisations the caller administers
+      description: |
+        Lists every organisation the caller administers (`admin`/`owner`
+        on `tblOrganisationMembers`, via the same `userIsOrgAdminOf()`
+        lookup `service_session_start` uses — or, for `global_admin`/
+        `admin` roles, every active organisation, mirroring
+        `/manage/venues`'s own wider `manage_organisations` gate), each
+        with its venues and each venue's recurring service schedules.
+        Read-only twin of `manage/venues.php`'s "load for render" step —
+        the SAME `includes/venue_admin.php` query core, not a forked read
+        (rule #22). No venue/schedule CRUD here (O4 in the API-coverage
+        plan tracks that, pending a separate owner gating decision).
+
+        Returns `{organisations: []}` (never an error) on an un-migrated
+        install (`tblOrgVenues`/`tblOrgServiceSchedules` absent) or when
+        the caller administers no organisation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_venues] }
+      responses:
+        "200":
+          description: The caller's organisations, each with its venues and their service schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organisations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:   { type: integer }
+                        name: { type: string }
+                        venues:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:           { type: integer }
+                              name:         { type: string }
+                              addressLine:  { type: string, nullable: true }
+                              city:         { type: string, nullable: true }
+                              postcode:     { type: string, nullable: true }
+                              countryCode:  { type: string, nullable: true }
+                              latitude:     { type: number, nullable: true }
+                              longitude:    { type: number, nullable: true }
+                              radiusMetres: { type: integer, nullable: true }
+                              timeZone:     { type: string }
+                              isActive:     { type: boolean }
+                              schedules:
+                                type: array
+                                items:
+                                  type: object
+                                  properties:
+                                    id:             { type: integer }
+                                    title:          { type: string }
+                                    dayOfWeek:      { type: integer, description: "ISO-8601 day-of-week, 1 (Monday) – 7 (Sunday)." }
+                                    startTime:      { type: string, example: "10:00:00" }
+                                    durationMins:   { type: integer }
+                                    recurrenceKind: { type: string, description: "weekly / fortnightly / monthly_nth / one_off (app-validated VARCHAR, rule #20)." }
+                                    timeZone:       { type: string, description: "The schedule's own TimeZone, falling back to its venue's TimeZone when unset." }
+                                    isActive:       { type: boolean }
+        "401":
+          description: Not authenticated
+
+  /api.php?action=org_ccli_report:
+    get:
+      operationId: orgCcliReport
+      tags: [Org-admin]
+      summary: My organisation's CCLI usage report (printed copies + projected uses)
+      description: |
+        Per-song CCLI usage rows for ONE organisation the caller
+        administers, for their annual CCLI licence return. JSON twin of
+        `manage/my-ccli-report.php` — the SAME gate and the SAME shared
+        core (`includes/ccli_report.php`'s `ccliReportOrgRows()` /
+        `ccliReportResolveOrgScope()` / `ccliReportWindow()`), not a
+        re-implementation (rule #22).
+
+        ⚠ Deliberately has NO `admin`/`global_admin` bypass — mirrors
+        `manage/my-ccli-report.php`'s own doc-block: scope is derived
+        SOLELY from `userIsOrgAdminOf()`. A system admin's "see every
+        org" need is served by the separate system-wide report surface,
+        never this action. `view_count` is always `0` — a page view
+        cannot be attributed to an organisation (`tblSongHistory` has no
+        `OrgId`); see `includes/ccli_report.php`'s doc-block (decision O3).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [org_ccli_report] }
+        - name: org_id
+          in: query
+          required: false
+          description: One of the caller's administered organisations. Defaults to the first when omitted — a per-licence report is always one org at a time.
+          schema: { type: string, example: "12" }
+        - name: from
+          in: query
+          required: false
+          description: Y-m-d, inclusive. Defaults to 30 days before `to`.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          description: Y-m-d, inclusive. Defaults to today.
+          schema: { type: string, format: date }
+        - name: show_all
+          in: query
+          required: false
+          description: Include songs with no CCLI number when truthy.
+          schema: { type: string, example: "1" }
+      responses:
+        "200":
+          description: The org's usage rows for the resolved date window
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgId:              { type: integer }
+                  orgName:            { type: string }
+                  ccliLicenceNumbers:
+                    type: array
+                    items: { type: string }
+                  from:    { type: string, format: date }
+                  to:      { type: string, format: date }
+                  showAll: { type: boolean }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        song_id:        { type: string }
+                        title:          { type: string }
+                        songbook:       { type: string }
+                        number:         { type: integer, nullable: true }
+                        ccli:           { type: string }
+                        copyright:      { type: string }
+                        view_count:     { type: integer, description: "Always 0 — see the org report's O3 decision above." }
+                        printed_copies: { type: integer }
+                        projected_uses: { type: integer }
+        "401":
+          description: Not authenticated
+        "403":
+          description: The `view_org_ccli_report` entitlement is missing, the caller administers no organisation, or the requested `org_id` isn't one they administer
+        "500":
+          description: The report query failed (logged server-side)
 
   # ===========================================================================
   # ADMIN — MUSICIANS  (#719 PR 2d, #545; renamed from "Credit People" by #1741 P2-B)

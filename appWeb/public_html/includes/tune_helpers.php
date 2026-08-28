@@ -451,3 +451,467 @@ function ihymns_meter_normalize(string $code): string
     $joined = implode('.', $digitRuns);
     return $doubled ? $joined . 'D' : $joined;
 }
+
+/**
+ * #1969 (API-coverage batch 1, C3) — cheap, per-request, per-table
+ * INFORMATION_SCHEMA existence probe, generalised by table name. RE-HOMED
+ * verbatim from `includes/pages/tune.php`'s local `_tuneTableExists()`
+ * (the works.php:86-96 idiom) so `tuneResolveDisplayData()` below and the
+ * page can share ONE copy instead of the page defining its own private
+ * function a second caller could not reach (rule #22).
+ *
+ * ELI5: "does this table exist on this install yet?" — migrations are
+ * web-run, not auto-applied, so a table this file wants to read might not
+ * exist yet even though it's in schema.sql (rule #19).
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-tables-table.html
+ */
+if (!function_exists('_tuneTableExists')) {
+    function _tuneTableExists(\mysqli $db, string $table): bool
+    {
+        try {
+            $probe = $db->prepare(
+                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
+            );
+            $probe->bind_param('s', $table);
+            $probe->execute();
+            $exists = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            return $exists;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+}
+
+/**
+ * #1969 (API-coverage batch 1, C3) — the ONE tune-resolution + song-list +
+ * enrichment read core, extracted verbatim from `includes/pages/tune.php`
+ * (the #1741 P4c build) so the public `/tune/<slug>` HTML page and the new
+ * `?action=tune` JSON endpoint (api.php) share ONE read path instead of the
+ * API forking a second copy of a resolution ladder this involved (rule #22).
+ *
+ * ELI5
+ * ----
+ * "Here's a tune slug (or, for the API only, a numeric registry id) — give
+ * me back everything the /tune page shows: the tune's own details, every
+ * song that uses it, its composer/arranger credits, tunes that share its
+ * metre, and its external links."
+ *
+ * DETAILED — BEHAVIOUR IS BYTE-IDENTICAL TO THE PRE-EXTRACTION PAGE WHEN
+ * CALLED WITH `$tuneId = null` (the page's own call site always does this)
+ * ----------------------------------------------------------------------------
+ * The lookup ladder — (a) exact `tblTunes.Slug`, (b) PHP name-fold over
+ * every `tblTunes.Name`, (c) the same fold over `tblTuneAliases`, (d) the
+ * pre-#1090 heuristic fold over distinct `tblSongs.TuneName` — the IL-id
+ * ('ILT…') dual-addressing pre-step, the meter-siblings lookup, the credits
+ * query and the external-links query are all moved here UNCHANGED; see
+ * `includes/pages/tune.php`'s own (much longer) doc-block for the full
+ * rationale behind each rung, which is not repeated here to avoid the two
+ * copies drifting (rule #35).
+ *
+ * `$tuneId`, when given (a numeric `tblTunes.Id`), is an ADDITIVE lookup
+ * mode the page never uses: it short-circuits straight to an exact-id row
+ * fetch and skips the slug ladder entirely — the native "tap a tune id"
+ * flow the API's C3 spec asks for (mirrors `work`/`musician`'s
+ * slug-or-id shape). A miss on `$tuneId` returns a null tune (no fallback to
+ * the heuristic ladder — there is no slug to fold against).
+ *
+ * @param \mysqli  $db
+ * @param string   $rawSlug Raw (un-normalised) slug — normalised internally
+ *                          exactly as the page did (`strtolower`+non-alnum
+ *                          fold). May be '' when `$tuneId` is given instead.
+ * @param int|null $tuneId  Optional numeric `tblTunes.Id` — API-only direct
+ *                          lookup, bypassing the slug ladder. `null`
+ *                          (default) reproduces the page's exact behaviour.
+ * @return array{
+ *   slug: string,
+ *   tune: array|null,
+ *   canonicalTune: string,
+ *   tuneRows: array,
+ *   tuneRowsByBook: array,
+ *   tuneTotalSongs: int,
+ *   tuneCreditsByRole: array,
+ *   tuneMeterSiblings: array,
+ *   tuneLinks: array,
+ * }
+ * @link appWeb/public_html/includes/pages/tune.php  the page this was extracted from (P4c build spec + full rationale)
+ * @see #1969
+ */
+function tuneResolveDisplayData(\mysqli $db, string $rawSlug, ?int $tuneId = null): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';    /* songVisibleSql() */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_visibility.php'; /* songServableSql() */
+
+    $tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9\-]+/', '-', $rawSlug) ?? '', '-'));
+
+    /* #1860 Phase 4 — dual-addressing pre-step, ahead of rung (a) exact-slug
+       below: an IL internal id ('ILT…') resolves to the registry's real
+       Slug and $tuneSlug is replaced with it, so every rung after this one
+       sees a canonical value exactly as if the curator had typed the real
+       slug. Only meaningful for the slug path — an explicit numeric
+       $tuneId already names an exact row, so this pre-step is skipped
+       entirely when $tuneId is given (matches the page, which never passes
+       one). A miss (not an IL id, the column doesn't exist yet, or no row
+       carries it) leaves $tuneSlug UNCHANGED. try/catch-swallowed +
+       column-probe-gated so this can never throw on an un-migrated
+       install (the #1228 lesson). */
+    if ($tuneId === null && $tuneSlug !== '') {
+        try {
+            if (!function_exists('ilidParse')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+            }
+            $_ilParsed = ilidParse($tuneSlug);
+            if ($_ilParsed !== null && $_ilParsed['entityType'] === 'tune') {
+                $_ilColProbe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTunes' AND COLUMN_NAME = 'IlId' LIMIT 1"
+                );
+                $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
+                if ($_ilColProbe) { $_ilColProbe->free(); }
+                if ($_ilColExists) {
+                    $_ilStmt = $db->prepare('SELECT Slug FROM tblTunes WHERE IlId = ? LIMIT 1');
+                    $_ilStmt->bind_param('s', $_ilParsed['canonical']);
+                    $_ilStmt->execute();
+                    $_ilRow = $_ilStmt->get_result()->fetch_assoc();
+                    $_ilStmt->close();
+                    if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
+                        $tuneSlug = (string)$_ilRow['Slug'];
+                    }
+                }
+            }
+        } catch (\Throwable $_ilE) {
+            // dormant-by-design — fall through to the heuristic ladder unchanged
+        }
+    }
+
+    $tune              = null;   /* tblTunes row (registry path) — stays null on the heuristic path */
+    $canonicalTune     = '';     /* display name, either registry Name or the heuristic TuneName */
+    $tuneRows          = [];
+    $tuneRowsByBook    = [];
+    $tuneTotalSongs    = 0;
+    $tuneCreditsByRole = [];  /* Role => [ {Name, MusicianSlug}, … ] */
+    $tuneMeterSiblings = [];
+    $tuneLinks         = [];
+
+    if ($tuneSlug !== '' || $tuneId !== null) {
+        $tdb = $db;
+
+        /* Step 1 — probe: does the #1090 tblTunes registry exist at all on
+           this install? */
+        $hasTuneRegistry = false;
+        try {
+            $hasTuneRegistry = tuneTunesTableExists($tdb);
+        } catch (\Throwable $e) {
+            error_log('[tuneResolveDisplayData] registry probe failed: ' . $e->getMessage());
+        }
+
+        if ($hasTuneRegistry) {
+            /* Subtitle/Disambiguation shipped in the #1741 P1 enrichment pass,
+               SEPARATELY from the #1090 tblTunes table itself — an install can
+               have tblTunes without these two columns. */
+            $tuneExtraCols = [];
+            try {
+                $stmt = $tdb->prepare(
+                    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTunes'
+                        AND COLUMN_NAME IN ('Subtitle', 'Disambiguation')"
+                );
+                $stmt->execute();
+                $tuneExtraCols = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'COLUMN_NAME');
+                $stmt->close();
+            } catch (\Throwable $e) {
+                error_log('[tuneResolveDisplayData] extra-column probe failed: ' . $e->getMessage());
+            }
+            $tuneExtraSelect =
+                  (in_array('Subtitle', $tuneExtraCols, true) ? ', Subtitle' : ', NULL AS Subtitle')
+                . (in_array('Disambiguation', $tuneExtraCols, true) ? ', Disambiguation' : ', NULL AS Disambiguation');
+            /* Hardcoded constant column names only (rule #5's carve-out) — the
+               present-set driving which half of the ternary fires comes from
+               the INFORMATION_SCHEMA probe above, never from request input. */
+            $tuneRowSelect = "Id, Name, Slug{$tuneExtraSelect}, MeterCode, MusicBrainzWorkMBID, HymnaryTuneId, Notes";
+
+            if ($tuneId !== null) {
+                /* API-only direct-id lookup (native "tap a tune id" flow) —
+                   the page never passes $tuneId, so this branch is new
+                   surface, not a change to the page's own path. */
+                try {
+                    $stmt = $tdb->prepare("SELECT {$tuneRowSelect} FROM tblTunes WHERE Id = ? LIMIT 1");
+                    $stmt->bind_param('i', $tuneId);
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_assoc();
+                    $stmt->close();
+                    if ($row) {
+                        $tune = $row;
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[tuneResolveDisplayData] id lookup failed: ' . $e->getMessage());
+                }
+            } else {
+                /* (a) Exact slug match — the #1090 backfill's own fold
+                   (migrate-tunes-entity.php::_migTunes_slugify()). Cheapest and
+                   most common hit once curators/imports have run. */
+                try {
+                    $stmt = $tdb->prepare("SELECT {$tuneRowSelect} FROM tblTunes WHERE Slug = ? LIMIT 1");
+                    $stmt->bind_param('s', $tuneSlug);
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_assoc();
+                    $stmt->close();
+                    if ($row) {
+                        $tune = $row;
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[tuneResolveDisplayData] slug lookup failed: ' . $e->getMessage());
+                }
+
+                /* (b) PHP name-fold match over every tblTunes.Name — the EXACT
+                   fold song.php uses to build the /tune/<slug> href in the
+                   first place (rule #33). */
+                if ($tune === null) {
+                    try {
+                        $stmt = $tdb->prepare('SELECT Id, Name FROM tblTunes');
+                        $stmt->execute();
+                        $allTuneNames = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $matchId = null;
+                        foreach ($allTuneNames as $r) {
+                            $candidate = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', (string)$r['Name']), '-'));
+                            if ($candidate === $tuneSlug) {
+                                $matchId = (int)$r['Id'];
+                                break;
+                            }
+                        }
+                        if ($matchId !== null) {
+                            $stmt = $tdb->prepare("SELECT {$tuneRowSelect} FROM tblTunes WHERE Id = ? LIMIT 1");
+                            $stmt->bind_param('i', $matchId);
+                            $stmt->execute();
+                            $row = $stmt->get_result()->fetch_assoc();
+                            $stmt->close();
+                            if ($row) {
+                                $tune = $row;
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        error_log('[tuneResolveDisplayData] name-fold lookup failed: ' . $e->getMessage());
+                    }
+                }
+
+                /* (c) Alias fold — tblTuneAliases (#1090) is the spelling-variant
+                   mechanism; same PHP fold, over alternate names, resolved back
+                   to the canonical tune. */
+                if ($tune === null && _tuneTableExists($tdb, 'tblTuneAliases')) {
+                    try {
+                        $stmt = $tdb->prepare(
+                            'SELECT a.Name AS Alias, t.Id AS TuneId
+                               FROM tblTuneAliases a
+                               JOIN tblTunes t ON t.Id = a.TuneId'
+                        );
+                        $stmt->execute();
+                        $allAliases = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                        $stmt->close();
+                        $matchId = null;
+                        foreach ($allAliases as $r) {
+                            $candidate = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', (string)$r['Alias']), '-'));
+                            if ($candidate === $tuneSlug) {
+                                $matchId = (int)$r['TuneId'];
+                                break;
+                            }
+                        }
+                        if ($matchId !== null) {
+                            $stmt = $tdb->prepare("SELECT {$tuneRowSelect} FROM tblTunes WHERE Id = ? LIMIT 1");
+                            $stmt->bind_param('i', $matchId);
+                            $stmt->execute();
+                            $row = $stmt->get_result()->fetch_assoc();
+                            $stmt->close();
+                            if ($row) {
+                                $tune = $row;
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        error_log('[tuneResolveDisplayData] alias lookup failed: ' . $e->getMessage());
+                    }
+                }
+            }
+        }
+
+        if ($tune !== null) {
+            $canonicalTune = (string)$tune['Name'];
+        } elseif ($tuneSlug !== '') {
+            /* (d) tune-registry-fallback — the ORIGINAL pre-P4c heuristic,
+               kept byte-for-byte: PHP-fold every distinct tblSongs.TuneName
+               and match the URL slug. Only meaningful when we have a slug to
+               match against — an id-only lookup has nothing to fold. */
+            try {
+                $stmt = $tdb->prepare(
+                    "SELECT DISTINCT TuneName
+                       FROM tblSongs
+                      WHERE TuneName IS NOT NULL AND TuneName <> ''
+                        AND " . songVisibleSql($tdb, '') . "
+                        AND " . songServableSql($tdb, '')
+                );   /* #1694/#1765 — a tune carried only by hidden songs, or only
+                        by songs in a disabled songbook, does not resolve */
+                $stmt->execute();
+                $allTunes = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'TuneName');
+                $stmt->close();
+
+                foreach ($allTunes as $name) {
+                    $candidate = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', (string)$name), '-'));
+                    if ($candidate === $tuneSlug) {
+                        $canonicalTune = (string)$name;
+                        break;
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log('[tuneResolveDisplayData] heuristic lookup failed: ' . $e->getMessage());
+            }
+        }
+
+        /* Step 3 — song list. Registry path widens the match to `TuneId OR
+           TuneName` because the #1090 backfill links TuneId only ONCE, at
+           backfill time. Heuristic path is unchanged: TuneName alone. */
+        if ($canonicalTune !== '') {
+            try {
+                if ($tune !== null) {
+                    $stmt = $tdb->prepare(
+                        "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
+                           FROM tblSongs s
+                           LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                          WHERE (s.TuneId = ? OR s.TuneName = ?) AND " . songVisibleSql($tdb, 's') . "
+                            AND " . songServableSql($tdb, 's') . "
+                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
+                    );   /* #1694/#1765 visible songs only, in a non-disabled songbook */
+                    $tuneIdForRows = (int)$tune['Id'];
+                    $stmt->bind_param('is', $tuneIdForRows, $canonicalTune);
+                } else {
+                    $stmt = $tdb->prepare(
+                        "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
+                           FROM tblSongs s
+                           LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                          WHERE s.TuneName = ? AND " . songVisibleSql($tdb, 's') . "
+                            AND " . songServableSql($tdb, 's') . "
+                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
+                    );   /* #1694/#1765 visible songs only, in a non-disabled songbook */
+                    $stmt->bind_param('s', $canonicalTune);
+                }
+                $stmt->execute();
+                $tuneRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $tuneTotalSongs = count($tuneRows);
+                foreach ($tuneRows as $r) {
+                    $abbr = (string)$r['SongbookAbbr'];
+                    if (!isset($tuneRowsByBook[$abbr])) {
+                        $tuneRowsByBook[$abbr] = [
+                            'name' => (string)$r['SongbookName'],
+                            'rows' => [],
+                        ];
+                    }
+                    $tuneRowsByBook[$abbr]['rows'][] = $r;
+                }
+            } catch (\Throwable $e) {
+                error_log('[tuneResolveDisplayData] song list lookup failed: ' . $e->getMessage());
+            }
+        }
+
+        /* Step 4 — everything below is registry-only enrichment: skipped
+           entirely on the heuristic path ($tune === null), since there is no
+           TuneId to key any of it on. */
+        if ($tune !== null) {
+            $tuneIdForEnrichment = (int)$tune['Id'];
+
+            /* Credits card — composer/arranger/harmoniser/source, grouped,
+               ordered via the shared IHYMNS_TUNE_CREDIT_ROLES const. */
+            if (_tuneTableExists($tdb, 'tblTuneCredits')) {
+                try {
+                    $roleFieldList = implode(', ', array_map(
+                        static fn($r) => "'" . $r . "'",
+                        array_keys(IHYMNS_TUNE_CREDIT_ROLES)
+                    ));
+                    $stmt = $tdb->prepare(
+                        "SELECT c.Role, c.Name, m.Slug AS MusicianSlug
+                           FROM tblTuneCredits c
+                           LEFT JOIN tblMusicians m ON m.Id = c.MusicianId
+                          WHERE c.TuneId = ?
+                          ORDER BY FIELD(c.Role, {$roleFieldList}),
+                                   c.SortOrder, c.Id"
+                    );
+                    $stmt->bind_param('i', $tuneIdForEnrichment);
+                    $stmt->execute();
+                    $creditRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                    foreach ($creditRows as $c) {
+                        $role = (string)$c['Role'];
+                        if (!isset($tuneCreditsByRole[$role])) {
+                            $tuneCreditsByRole[$role] = [];
+                        }
+                        $tuneCreditsByRole[$role][] = $c;
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[tuneResolveDisplayData] credits lookup failed: ' . $e->getMessage());
+                }
+            }
+
+            /* "Tunes with this meter" — exact-match v1 (rides idx_Meter). */
+            if (!empty($tune['MeterCode'])) {
+                try {
+                    $stmt = $tdb->prepare(
+                        'SELECT Name, Slug FROM tblTunes WHERE MeterCode = ? AND Id <> ? ORDER BY Name LIMIT 100'
+                    );
+                    $meterCode = (string)$tune['MeterCode'];
+                    $stmt->bind_param('si', $meterCode, $tuneIdForEnrichment);
+                    $stmt->execute();
+                    $tuneMeterSiblings = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                    $stmt->close();
+                } catch (\Throwable $e) {
+                    error_log('[tuneResolveDisplayData] meter-siblings lookup failed: ' . $e->getMessage());
+                }
+            }
+
+            /* External links — getWork()'s query shape retargeted at TuneId. */
+            if (_tuneTableExists($tdb, 'tblTuneExternalLinks')) {
+                try {
+                    $stmt = $tdb->prepare(
+                        "SELECT t.Slug, t.Name, t.Category, t.IconClass,
+                                el.Url, el.Note, el.Verified, el.SortOrder
+                           FROM tblTuneExternalLinks el
+                           JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                          WHERE el.TuneId = ?
+                            AND COALESCE(t.IsActive, 1) = 1
+                          ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC"
+                    );
+                    $stmt->bind_param('i', $tuneIdForEnrichment);
+                    $stmt->execute();
+                    $lres = $stmt->get_result();
+                    while ($lrow = $lres->fetch_assoc()) {
+                        $tuneLinks[] = [
+                            'slug'      => (string)$lrow['Slug'],
+                            'name'      => (string)$lrow['Name'],
+                            'category'  => (string)$lrow['Category'],
+                            'iconClass' => (string)($lrow['IconClass'] ?? ''),
+                            'url'       => (string)$lrow['Url'],
+                            'note'      => (string)($lrow['Note'] ?? ''),
+                            'verified'  => (bool)$lrow['Verified'],
+                            'sortOrder' => (int)$lrow['SortOrder'],
+                        ];
+                    }
+                    $stmt->close();
+                } catch (\Throwable $e) {
+                    error_log('[tuneResolveDisplayData] external links lookup failed: ' . $e->getMessage());
+                }
+            }
+        }
+    }
+
+    return [
+        'slug'              => $tuneSlug,
+        'tune'              => $tune,
+        'canonicalTune'     => $canonicalTune,
+        'tuneRows'          => $tuneRows,
+        'tuneRowsByBook'    => $tuneRowsByBook,
+        'tuneTotalSongs'    => $tuneTotalSongs,
+        'tuneCreditsByRole' => $tuneCreditsByRole,
+        'tuneMeterSiblings' => $tuneMeterSiblings,
+        'tuneLinks'         => $tuneLinks,
+    ];
+}

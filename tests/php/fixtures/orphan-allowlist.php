@@ -158,6 +158,21 @@ return [
         'org_admin_member_add'                  => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'org_admin_member_remove'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'org_admin_member_role_change'          => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1969 (API-coverage plan §4.1 C5, batch 1) — JSON twin of
+           manage/my-ccli-report.php, delegating to the SAME shared
+           includes/ccli_report.php core (rule #22) that page already uses.
+           Same D1-default-A posture as the admin_musician / admin_tier /
+           admin_tune / admin_licence_type families immediately above:
+           deliberate API-first surface, documented in api-docs.yaml,
+           reachable from the Swagger try-it-out console — the web page
+           does its own direct DB work via the shared core, so nothing
+           first-party calls the JSON twin yet. (Its C2/C3/C4 batch-1
+           siblings — org_venues/tune/publisher_detail — are NOT listed
+           here: this guard's own doc-comment-URL chain rule already
+           credits them a caller via the `?action=…` mentions in this same
+           commit's doc-blocks, so adding them would trip the "stale
+           allowlist entry" self-cleaning check instead.) */
+        'org_ccli_report'                       => 'deliberate API-first surface #1969 (API-coverage batch 1 C5); Swagger console consumer; same D1-default-A posture as the admin_musician / admin_tier / admin_tune / admin_licence_type families; manage/my-ccli-report.php does its own direct DB work via the SAME shared includes/ccli_report.php core (never a fork), so nothing first-party calls the JSON twin yet',
 
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).

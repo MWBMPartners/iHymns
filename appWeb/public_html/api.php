@@ -1738,6 +1738,66 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Get one Tune (#940/#1741, API-coverage batch 1 C3) — the
+         * registry row (when curated) plus every song that uses it, its
+         * composer/arranger/harmoniser/source credits, tunes sharing its
+         * metre, and its external links. JSON twin of the public
+         * `?page=tune&slug=…` HTML page — both call the SAME
+         * `tuneResolveDisplayData()` (includes/tune_helpers.php), not a
+         * forked read (rule #22). Naming/shape parallels `work` above.
+         * Parameters: slug (or id) — required, one of the two. `id` is an
+         * API-only direct-lookup mode the HTML page never uses (mirrors
+         * `work`/`musician`'s slug-or-id shape).
+         * ----------------------------------------------------------------- */
+        case 'tune':
+            enforceReadRateLimitKeyed('tune', 120);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+            $tuneReqSlug  = isset($_GET['slug']) ? trim((string)$_GET['slug']) : '';
+            $tuneReqIdRaw = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+            if ($tuneReqSlug === '' && $tuneReqIdRaw === '') {
+                sendJson(['error' => 'A tune slug or id is required.'], 400);
+                break;
+            }
+            $tuneReqId = ($tuneReqIdRaw !== '' && ctype_digit($tuneReqIdRaw)) ? (int)$tuneReqIdRaw : null;
+            $tuneResolved = tuneResolveDisplayData(getDbMysqli(), $tuneReqSlug, $tuneReqId);
+            if ($tuneResolved['tune'] === null && $tuneResolved['canonicalTune'] === '') {
+                sendJson(['error' => 'Tune not found.'], 404);
+                break;
+            }
+            $tuneOut = $tuneResolved['tune'];
+            sendJson([
+                'tune' => [
+                    'id'                 => $tuneOut !== null ? (int)$tuneOut['Id'] : null,
+                    'name'               => $tuneResolved['canonicalTune'],
+                    'slug'               => $tuneResolved['slug'],
+                    'subtitle'           => $tuneOut['Subtitle'] ?? null,
+                    'disambiguation'     => $tuneOut['Disambiguation'] ?? null,
+                    'meterCode'          => $tuneOut['MeterCode'] ?? null,
+                    'musicBrainzWorkMbid' => $tuneOut['MusicBrainzWorkMBID'] ?? null,
+                    'hymnaryTuneId'      => $tuneOut['HymnaryTuneId'] ?? null,
+                    'notes'              => $tuneOut['Notes'] ?? null,
+                    'registered'         => $tuneOut !== null,
+                ],
+                'totalSongs' => $tuneResolved['tuneTotalSongs'],
+                'songs'      => array_map(static function (array $r): array {
+                    return [
+                        'songId'      => (string)$r['SongId'],
+                        'number'      => $r['Number'] !== null ? (int)$r['Number'] : null,
+                        'title'       => (string)$r['Title'],
+                        'songbook'    => (string)$r['SongbookAbbr'],
+                        'songbookName' => (string)($r['SongbookName'] ?? ''),
+                        'language'    => $r['Language'] ?? null,
+                    ];
+                }, $tuneResolved['tuneRows']),
+                'credits'       => $tuneResolved['tuneCreditsByRole'],
+                'meterSiblings' => array_map(static function (array $r): array {
+                    return ['name' => (string)$r['Name'], 'slug' => (string)$r['Slug']];
+                }, $tuneResolved['tuneMeterSiblings']),
+                'links' => $tuneResolved['tuneLinks'],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Get one musician (#1443/#1444) — a tblMusicians row's
          * bio/lifespan/external links plus every song they're credited on,
          * grouped by role (writer/composer/arranger/adaptor/translator/
@@ -1782,6 +1842,59 @@ if ($action !== null) {
             } else {
                 sendJson([($_isLegacyPersonAction ? 'person' : 'musician') => $person]);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get one Publisher (#93/#1765, API-coverage batch 1 C4) — who
+         * they are (company/person/imprint), their parent publisher, and
+         * the songbooks they published. JSON twin of the public
+         * `?page=publisher&slug=…` HTML page — both call the SAME
+         * `publisherResolveDisplayData()` (includes/publisher_helpers.php),
+         * resolving exact-slug -> name-fold -> alias-fold (rule #37), not a
+         * forked read (rule #22).
+         * Parameters: slug — required.
+         * ----------------------------------------------------------------- */
+        case 'publisher_detail':
+            enforceReadRateLimitKeyed('publisher_detail', 120);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+            $pubReqSlug = isset($_GET['slug']) ? trim((string)$_GET['slug']) : '';
+            if ($pubReqSlug === '') {
+                sendJson(['error' => 'A publisher slug is required.'], 400);
+                break;
+            }
+            $pubResolved = publisherResolveDisplayData(getDbMysqli(), $pubReqSlug);
+            $pubRow = $pubResolved['publisher'];
+            if ($pubRow === null) {
+                sendJson(['error' => 'Publisher not found.'], 404);
+                break;
+            }
+            sendJson([
+                'publisher' => [
+                    'id'             => (int)$pubRow['Id'],
+                    'name'           => (string)$pubRow['Name'],
+                    'slug'           => (string)$pubRow['Slug'],
+                    'kind'           => (string)$pubRow['Kind'],
+                    'subtitle'       => $pubRow['Subtitle'] ?? null,
+                    'disambiguation' => $pubRow['Disambiguation'] ?? null,
+                    'ipi'            => $pubRow['Ipi'] ?? null,
+                    'isni'           => $pubRow['Isni'] ?? null,
+                    'cityName'       => $pubRow['CityName'] ?? null,
+                    'notes'          => $pubRow['Notes'] ?? null,
+                    'parent'         => $pubResolved['parentPublisher'] !== null ? [
+                        'id'   => (int)$pubResolved['parentPublisher']['Id'],
+                        'name' => (string)$pubResolved['parentPublisher']['Name'],
+                        'slug' => (string)$pubResolved['parentPublisher']['Slug'],
+                    ] : null,
+                    'aliases' => array_values($pubResolved['aliases']),
+                ],
+                'songbooks' => array_map(static function (array $b): array {
+                    return [
+                        'abbreviation' => (string)$b['Abbreviation'],
+                        'name'         => (string)$b['Name'],
+                        'role'         => (string)$b['Role'],
+                    ];
+                }, $pubResolved['books']),
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -16349,6 +16462,245 @@ if ($action !== null) {
                 error_log('[org_admin_licence_remove] ' . $e->getMessage());
                 sendJson(['error' => 'Could not remove licence.'], 500);
             }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: venue + service-schedule DISCOVERY (#1325/#1969,
+         * API-coverage batch 1 C2). Lists every organisation the caller
+         * administers (or, for global_admin/admin, every active org — the
+         * SAME "sees every org" allowance `manage/venues.php` itself has,
+         * since it is gated on the wider `manage_organisations`
+         * entitlement), each with its venues and each venue's recurring
+         * service schedules. Read-only twin of the gate
+         * `service_session_start` uses (a caller who can start a service
+         * at a venue can also discover which venues/schedules exist).
+         *
+         * The read queries are the shared includes/venue_admin.php core —
+         * the SAME functions `manage/venues.php` was re-pointed at in this
+         * same change (rule #22); this action is additive, no venue CRUD.
+         * ----------------------------------------------------------------- */
+        case 'org_venues': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $role       = (string)($authUser['Role'] ?? '');
+            $userId     = (int)$authUser['Id'];
+            $isSuperOrg = ($role === 'global_admin' || $role === 'admin');
+
+            $db = getDbMysqli();
+            if (!venueAdminTablesExist($db)) {
+                /* Un-migrated install — dormant-degrading, same posture as
+                   manage/venues.php's own $schemaReady guard (rule #19). */
+                sendJson(['organisations' => []]);
+                break;
+            }
+
+            if ($isSuperOrg) {
+                $orgRes = $db->query('SELECT Id, Name FROM tblOrganisations WHERE IsActive = 1 ORDER BY Name ASC');
+                $orgPairs = $orgRes ? $orgRes->fetch_all(MYSQLI_ASSOC) : [];
+            } else {
+                $adminOrgIds = userIsOrgAdminOf($userId);
+                if ($adminOrgIds === []) {
+                    sendJson(['organisations' => []]);
+                    break;
+                }
+                /* Constant-count placeholder string from the admin-org id
+                   list (rule #5 — mirrors service-lead.php's own shape). */
+                $ph    = implode(',', array_fill(0, count($adminOrgIds), '?'));
+                $types = str_repeat('i', count($adminOrgIds));
+                $stmt  = $db->prepare("SELECT Id, Name FROM tblOrganisations WHERE Id IN ($ph) AND IsActive = 1 ORDER BY Name ASC");
+                $stmt->bind_param($types, ...$adminOrgIds);
+                $stmt->execute();
+                $orgPairs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+            }
+
+            $orgsOut = [];
+            foreach ($orgPairs as $o) {
+                $oid = (int)$o['Id'];
+                $venuesOut = [];
+                foreach (venueAdminListForOrg($db, $oid) as $v) {
+                    $schedules = venueAdminSchedulesForVenue($db, (int)$v['Id'], (string)($v['TimeZone'] ?? 'UTC'));
+                    $venuesOut[] = [
+                        'id'           => (int)$v['Id'],
+                        'name'         => (string)$v['Name'],
+                        'addressLine'  => $v['AddressLine'] ?? null,
+                        'city'         => $v['City'] ?? null,
+                        'postcode'     => $v['Postcode'] ?? null,
+                        'countryCode'  => $v['CountryCode'] ?? null,
+                        'latitude'     => $v['Latitude'] !== null ? (float)$v['Latitude'] : null,
+                        'longitude'    => $v['Longitude'] !== null ? (float)$v['Longitude'] : null,
+                        'radiusMetres' => $v['RadiusMetres'] !== null ? (int)$v['RadiusMetres'] : null,
+                        'timeZone'     => (string)$v['TimeZone'],
+                        'isActive'     => (bool)$v['IsActive'],
+                        'schedules'    => array_map(static function (array $s): array {
+                            return [
+                                'id'             => (int)$s['Id'],
+                                'title'          => (string)$s['Title'],
+                                'dayOfWeek'      => (int)($s['DayOfWeek'] ?? 0),
+                                'startTime'      => (string)$s['StartTime'],
+                                'durationMins'   => (int)$s['DurationMins'],
+                                'recurrenceKind' => (string)$s['RecurrenceKind'],
+                                'timeZone'       => (string)$s['_EffTz'],
+                                'isActive'       => (bool)$s['IsActive'],
+                            ];
+                        }, $schedules),
+                    ];
+                }
+                $orgsOut[] = [
+                    'id'     => $oid,
+                    'name'   => (string)$o['Name'],
+                    'venues' => $venuesOut,
+                ];
+            }
+
+            sendJson(['organisations' => $orgsOut]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: MY organisation's CCLI usage report (#1861/#1969,
+         * API-coverage batch 1 C5). Per-song printed-copy/projected-use
+         * rows for the caller's own organisation, for their annual CCLI
+         * licence return. JSON twin of `manage/my-ccli-report.php` —
+         * SAME gate, SAME shared core (`includes/ccli_report.php`,
+         * `ccliReportOrgRows()`/`ccliReportResolveOrgScope()`/
+         * `ccliReportWindow()`), never a re-implementation (rule #22).
+         *
+         * ⚠ Gate deliberately has NO admin/global_admin bypass — mirrors
+         * manage/my-ccli-report.php's own doc-block: a system admin's
+         * "see every org" need is served by the separate system-wide
+         * `admin_*` surface, never this one. The structural isolation
+         * lives in ccliReportOrgRows() itself (refuses an empty org-id
+         * list) — see includes/ccli_report.php's doc-block.
+         *
+         * Parameters: org_id (optional — defaults to the caller's first
+         * administered org when omitted, same as the page), from/to
+         * (Y-m-d, optional — default last 30 days), show_all (optional —
+         * include songs without a CCLI number).
+         * ----------------------------------------------------------------- */
+        case 'org_ccli_report': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli_report.php';
+
+            if (!userHasEntitlement('view_org_ccli_report', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_org_ccli_report entitlement is required.'], 403);
+                break;
+            }
+
+            $userId = (int)$authUser['Id'];
+            /* THE membership lookup — the ONLY source of scope, exactly as
+               manage/my-ccli-report.php. Never widened by a role check. */
+            $allowedOrgIds = userIsOrgAdminOf($userId);
+            if ($allowedOrgIds === []) {
+                sendJson(['error' => 'You don\'t hold an admin or owner role on any organisation.'], 403);
+                break;
+            }
+
+            /* A non-scalar org_id[] is a malformed/forged request — treat
+               it as an invalid explicit selection (denied), same posture
+               as the page (rule: fail-closed, never a raw array into the
+               resolver's ?string parameter under strict_types). */
+            $rawOrg = $_GET['org_id'] ?? null;
+            $scope = is_array($rawOrg)
+                ? ['orgIds' => [], 'denied' => true]
+                : ccliReportResolveOrgScope($rawOrg, $allowedOrgIds);
+            if ($scope['denied']) {
+                sendJson(['error' => 'That organisation is not one you administer.'], 403);
+                break;
+            }
+            $orgIds = $scope['orgIds'];
+            $orgId  = $orgIds[0]; // always exactly one — a per-licence report is always one org at a time
+
+            $db = getDbMysqli();
+
+            $orgName = 'Organisation #' . $orgId;
+            try {
+                $stmt = $db->prepare('SELECT Name FROM tblOrganisations WHERE Id = ? LIMIT 1');
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                $orgRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($orgRow && (string)($orgRow['Name'] ?? '') !== '') {
+                    $orgName = (string)$orgRow['Name'];
+                }
+            } catch (\Throwable $_e) {
+                // keep the "Organisation #N" fallback — never fatal over a display name
+            }
+
+            /* Active CCLI licence number(s), for the filing reference — the
+               SAME two-store read shape (#640 join table, legacy column
+               pair fallback) as manage/my-ccli-report.php. */
+            $ccliLicenceNumbers = [];
+            try {
+                $stmt = $db->prepare(
+                    "SELECT LicenceNumber FROM tblOrganisationLicences
+                      WHERE OrganisationId = ? AND LicenceType = 'ccli' AND IsActive = 1"
+                );
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $licRow) {
+                    $num = trim((string)($licRow['LicenceNumber'] ?? ''));
+                    if ($num !== '') {
+                        $ccliLicenceNumbers[] = $num;
+                    }
+                }
+                $stmt->close();
+            } catch (\Throwable $_e) {
+                // tblOrganisationLicences absent on an un-migrated install — fall through
+            }
+            if ($ccliLicenceNumbers === []) {
+                try {
+                    $stmt = $db->prepare('SELECT LicenceType, LicenceNumber FROM tblOrganisations WHERE Id = ? LIMIT 1');
+                    $stmt->bind_param('i', $orgId);
+                    $stmt->execute();
+                    $legacy = $stmt->get_result()->fetch_assoc();
+                    $stmt->close();
+                    if ($legacy && (string)($legacy['LicenceType'] ?? '') === 'ccli') {
+                        $num = trim((string)($legacy['LicenceNumber'] ?? ''));
+                        if ($num !== '') {
+                            $ccliLicenceNumbers[] = $num;
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    // ignore — response just carries an empty licence list
+                }
+            }
+
+            $window   = ccliReportWindow($_GET);
+            $fromDate = $window['from'];
+            $toDate   = $window['to'];
+            $showAll  = $window['showAll'];
+
+            try {
+                $rows = ccliReportOrgRows($db, $orgIds, $fromDate, $toDate, $showAll);
+            } catch (\Throwable $e) {
+                error_log('[api.org_ccli_report] query failed: ' . $e->getMessage());
+                logActivityError('api.org_ccli_report.load', 'organisation', (string)$orgId, $e, [
+                    'from' => $fromDate, 'to' => $toDate, 'show_all' => $showAll,
+                ]);
+                sendJson(['error' => 'The report is temporarily unavailable — the failure has been logged.'], 500);
+                break;
+            }
+
+            sendJson([
+                'orgId'              => $orgId,
+                'orgName'            => $orgName,
+                'ccliLicenceNumbers' => $ccliLicenceNumbers,
+                'from'               => $fromDate,
+                'to'                 => $toDate,
+                'showAll'            => $showAll,
+                'rows'               => $rows,
+            ]);
             break;
         }
 

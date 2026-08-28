@@ -32,6 +32,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #1969 — the read half (table-existence probe, venue list, schedule list +
+   RecurrenceData decode / effective-tz resolution) now lives in the shared
+   includes/venue_admin.php core, reused by the new ?action=org_venues API
+   endpoint (rule #22). This page's own POST write handlers are unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -66,30 +71,13 @@ $NTH_LABELS = [1 => 'first', 2 => 'second', 3 => 'third', 4 => 'fourth', 5 => 'f
    source — https://www.php.net/manual/en/datetimezone.listidentifiers.php). */
 $TZ_LIST = \DateTimeZone::listIdentifiers();
 
-/**
- * Schema-presence guard. Migrations are NOT auto-applied on deploy, so the
- * tables may not exist on this env yet ("it's in schema.sql" ≠ "it exists" —
- * CLAUDE.md red flag). Probe INFORMATION_SCHEMA so a missing table renders a
- * themed "run the migration" card instead of white-screening under STRICT.
- */
-function _venuesTableExists(\mysqli $db, string $t): bool
-{
-    try {
-        $stmt = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
-        );
-        $stmt->bind_param('s', $t);
-        $stmt->execute();
-        $exists = $stmt->get_result()->fetch_row() !== null;
-        $stmt->close();
-        return $exists;
-    } catch (\Throwable $e) {
-        error_log('[manage/venues.php] table probe failed: ' . $e->getMessage());
-        return false;
-    }
-}
-$schemaReady = _venuesTableExists($db, 'tblOrgVenues') && _venuesTableExists($db, 'tblOrgServiceSchedules');
+/* Schema-presence guard. Migrations are NOT auto-applied on deploy, so the
+   tables may not exist on this env yet ("it's in schema.sql" ≠ "it exists" —
+   CLAUDE.md red flag). Probe INFORMATION_SCHEMA so a missing table renders a
+   themed "run the migration" card instead of white-screening under STRICT.
+   #1969 — now the shared venueAdminTablesExist() (includes/venue_admin.php),
+   reused by the ?action=org_venues API action (rule #22). */
+$schemaReady = venueAdminTablesExist($db);
 
 /**
  * Build a human "Every Sunday at 10:00 (90 min) · Europe/London" summary.
@@ -453,15 +441,9 @@ if ($schemaReady) {
         if ($selectedOrgId <= 0 && $orgs) { $selectedOrgId = (int)$orgs[0]['Id']; }
 
         if ($selectedOrgId > 0) {
-            $stmt = $db->prepare(
-                'SELECT Id, OrgId, Name, AddressLine, City, Postcode, CountryCode,
-                        Latitude, Longitude, RadiusMetres, TimeZone, IsActive
-                   FROM tblOrgVenues WHERE OrgId = ? ORDER BY SortOrder ASC, Name ASC'
-            );
-            $stmt->bind_param('i', $selectedOrgId);
-            $stmt->execute();
-            $venues = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
+            /* #1969 — shared core (includes/venue_admin.php); same columns,
+               same ORDER BY, reused by the ?action=org_venues API action. */
+            $venues = venueAdminListForOrg($db, $selectedOrgId);
         }
 
         // Confirm the selected venue belongs to the selected org, then load its schedules.
@@ -470,22 +452,10 @@ if ($schemaReady) {
             if ((int)$v['Id'] === $selectedVenueId) { $selectedVenue = $v; break; }
         }
         if ($selectedVenue) {
-            $stmt = $db->prepare(
-                'SELECT Id, VenueId, Title, DayOfWeek, StartTime, DurationMins,
-                        RecurrenceKind, RecurrenceData, TimeZone, IsActive
-                   FROM tblOrgServiceSchedules WHERE VenueId = ?
-                  ORDER BY DayOfWeek ASC, StartTime ASC'
-            );
-            $stmt->bind_param('i', $selectedVenueId);
-            $stmt->execute();
-            $schedules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-            // Decode RecurrenceData + resolve effective tz once per row.
-            foreach ($schedules as &$s) {
-                $s['_rd']     = json_decode((string)($s['RecurrenceData'] ?? ''), true) ?: [];
-                $s['_EffTz']  = ($s['TimeZone'] ?? null) ?: ($selectedVenue['TimeZone'] ?? 'UTC');
-            }
-            unset($s);
+            /* #1969 — shared core; decodes RecurrenceData + resolves the
+               effective timezone identically to the pre-extraction inline
+               loop below (byte-identical: `TimeZone ?? $fallbackTz`). */
+            $schedules = venueAdminSchedulesForVenue($db, $selectedVenueId, (string)($selectedVenue['TimeZone'] ?? 'UTC'));
         } else {
             $selectedVenueId = 0;
         }
