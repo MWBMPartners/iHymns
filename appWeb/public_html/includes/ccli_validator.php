@@ -209,13 +209,21 @@ function resolveEffectiveTier(int $userId): string
             UNION
             /* Multi-licence join table (#640). Each org along the
                chain may carry any number of additional active
-               licences here. */
+               licences here.
+               #1969 — honour ExpiresAt so an EXPIRED org licence stops
+               conferring a tier, matching getUserEffectiveLicences()
+               (includes/licences.php branch f), which already filters it.
+               Before this the two gates disagreed: the CCLI gate treated an
+               expired licence as invalid while the tier resolver still bumped
+               the tier from it — so an expiry set in the org-licence UI was
+               only half-honoured. NULL ExpiresAt = never expires. */
             SELECT DISTINCT ol.LicenceType
               FROM org_chain c
               JOIN tblOrganisationLicences ol ON ol.OrganisationId = c.Id
              WHERE c.IsActive = 1
                AND ol.IsActive = 1
                AND ol.LicenceType <> 'none'
+               AND (ol.ExpiresAt IS NULL OR ol.ExpiresAt > NOW())
         ) AS uniq_licences
     ";
     try {
