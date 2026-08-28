@@ -4723,7 +4723,8 @@ function _bulkImport_pro7AppendCueLines(array &$lines, string $text): void
  *
  * Rule (plan §3.1, verbatim):
  *   - decodes as clean UTF-8 text (no NUL/control bytes outside \t\r\n):
- *       - starts with `<?xml` or contains `<RVPresentationDocument`
+ *       - starts with an XML prolog (the "xml" processing instruction)
+ *         or contains an <RVPresentationDocument element
  *         -> ProPresenter 6 ('pro6') — a mis-extensioned .pro6 import still
  *            works instead of erroring.
  *       - else -> ChordPro ('chordpro') — unchanged behaviour for genuine
