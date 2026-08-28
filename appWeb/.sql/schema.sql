@@ -3138,6 +3138,31 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ProPresenter auto-advance timeline capture (#1968 dormant groundwork). Entirely inert
+-- until tblAppSettings.pp7_timeline_import_enabled='1' AND a (not-yet-built) playback UI
+-- exists — see appWeb/.sql/migrate-pp7-timeline-groundwork.php for the full rationale.
+CREATE TABLE IF NOT EXISTS tblSongPresentationCues (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)   NOT NULL COMMENT 'FK to tblSongs.SongId — the song this captured auto-advance timeline belongs to.',
+    ArrangementName VARCHAR(100)  NOT NULL DEFAULT '' COMMENT 'Multiplicity discriminator (#1968): a song may carry several imported arrangements/timelines; empty string = the default/primary timeline. Part of the (SongId, ArrangementName, SortOrder) uniqueness key so re-importing the same arrangement is idempotent.',
+    SortOrder       INT UNSIGNED  NOT NULL COMMENT 'Ordinal position of this cue within its (SongId, ArrangementName) timeline, 0-based — the order ProPresenter played the cues in.',
+    TriggerSeconds  DECIMAL(12,4) NOT NULL COMMENT 'Auto-advance trigger time in seconds from the start of the timeline (ProPresenter Timeline.Cue.trigger_time). DECIMAL, not FLOAT/DOUBLE, for exact stored precision — no float rounding drift across re-reads.',
+    SourceCueUuid   CHAR(36)      NULL COMMENT 'The source ProPresenter cue UUID (Timeline.Cue.cue_id), when the cue carried one — for later mapping to an iHymns tblSongComponents row. NULL for a media-triggering timeline entry (the cue_id/action oneof took the action branch instead).',
+    ComponentId     INT UNSIGNED  NULL COMMENT 'The mapped iHymns tblSongComponents.Id, once mapping exists. NULL until the mapping/playback work (deliberately not built by this dormant-groundwork task) is fleshed out later — no FK yet, by design.',
+    CueName         VARCHAR(100)  NULL COMMENT 'The source cue name as ProPresenter labelled it, e.g. "Cue 2" — display/debugging aid only, not authoritative for anything.',
+    Source          VARCHAR(30)   NOT NULL DEFAULT 'propresenter' COMMENT 'Provenance vocabulary (today: propresenter). VARCHAR, not ENUM, per rule #20 — a future non-ProPresenter timeline source needs one new value, never an ALTER.',
+    CreatedAt       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_song_arr_sort (SongId, ArrangementName, SortOrder),
+    INDEX idx_SongId (SongId),
+
+    CONSTRAINT fk_pres_cues_song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='ProPresenter auto-advance timeline capture (#1968 dormant groundwork) — one row per captured (song, arrangement, position) cue. Entirely inert until tblAppSettings.pp7_timeline_import_enabled=1 AND the (not-yet-built) playback UI exists.';
+
+
 -- ============================================================================
 -- FAMILY: WORKS (#840) — the composition above the songs
 --

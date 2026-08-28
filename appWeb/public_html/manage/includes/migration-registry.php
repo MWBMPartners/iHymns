@@ -4671,4 +4671,32 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_columnExists($db, 'tblSongMedia', 'Visibility'),
     ],
+
+    /* #1968 — ProPresenter auto-advance timeline capture: DORMANT groundwork.
+       Owner steer: build the schema now, keep usage OFF by default with a
+       toggle, flesh out playback later. Additive-only: a new table nothing
+       yet writes to, plus a settings row defaulting '0' that nothing yet
+       reads a non-default value from — a verified no-op for every existing
+       install until BOTH the capture code and the toggle are flipped. */
+    'pp7-timeline-groundwork' => [
+        'script' => 'migrate-pp7-timeline-groundwork.php',
+        'card' => [
+            'title'  => 'ProPresenter timeline groundwork (#1968)',
+            'body'   => 'Creates <code>tblSongPresentationCues</code> — one row per'
+                      . ' captured (song, arrangement, position) auto-advance cue'
+                      . ' decoded from an imported ProPresenter'
+                      . ' <code>Presentation.timeline</code> — and seeds the dormant'
+                      . ' <code>tblAppSettings.pp7_timeline_import_enabled</code>'
+                      . ' toggle at <code>&lsquo;0&rsquo;</code> (off). No playback'
+                      . ' or auto-advance UI exists yet — this migration only adds'
+                      . ' the storage + toggle for that later work. Additive,'
+                      . ' idempotent, a verified no-op until the toggle is flipped'
+                      . ' AND the capture code path is wired in (both land in this'
+                      . ' same PR, but stay inert without the toggle).',
+            'button' => 'Run ProPresenter Timeline Groundwork Migration',
+        ],
+        /* Single-table probe (rule #19): pending until the table exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSongPresentationCues'),
+    ],
 ];
