@@ -196,6 +196,43 @@ return [
         'org_admin_logo_set_active'             => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_toggle handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
         'org_admin_brand_update'                => 'deliberate API-first surface #1969 (API-coverage batch 3, O3); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s brand_save handler calls the SAME shared includes/organisation_validation.php normaliser (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* #1969 (API-coverage plan §4.3, batch 4a, A1) — publisher-registry
+           CRUD parity for manage/publishers.php's own create/update/delete/
+           merge POST handlers. Same D1-default-A posture as the
+           admin_tune_* / admin_licence_type_* families above: deliberate
+           API-first surface, documented in api-docs.yaml, reachable from
+           the Swagger try-it-out console; the web page does its own direct
+           DB work via the SAME shared includes/publisher_admin.php cores
+           (never a fork — rule #37 named this the future admin_publisher_*
+           API), so nothing first-party calls the JSON twins yet. */
+        'admin_publisher_create'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s create handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_update'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s update handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_delete'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s delete handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_merge'                 => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s merge handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4a, A2) — Work-registry CRUD
+           + medley-composition API parity for manage/works.php's own
+           create/update/delete handlers and its constituent-list
+           reconcile. Same D1-default-A posture as the families above; the
+           medley action delegates entirely to the cycle-guarded
+           workMedley*() core (includes/work_admin.php, rule #45), never
+           forked. The page's own #1741 P4b extra-field / external-link /
+           song-membership handling stays page-only for now (see the
+           "Admin — Works" api-docs.yaml tag), so it is not part of what
+           these four actions cover. */
+        'admin_work_create'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s create handler writes the same core tblWorks columns (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_update'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s update handler writes the same core tblWorks columns (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_delete'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s delete handler is the same DELETE (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_medley_replace'             => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the families above; delegates to the SAME shared workMedleyReplace() core (includes/work_admin.php, rule #45) manage/works.php\'s update action already calls, so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4a, A9) — admin
+           notification-broadcast API parity for manage/notifications.php's
+           own 'compose' POST handler. Same D1-default-A posture as the
+           families above; the row write delegates to the ONE shared
+           notifyUser() (includes/notifications.php, #1638), never a second
+           copy of its Environment/ExpiresAt-aware INSERT shape. */
+        'admin_notification_send'               => 'deliberate API-first surface #1969 (API-coverage batch 4a, A9); Swagger console consumer; same D1-default-A posture as the families above; manage/notifications.php\'s compose handler + this action both delegate row-writing to the SAME shared includes/notifications.php notifyUser() (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

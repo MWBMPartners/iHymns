@@ -330,6 +330,15 @@ tags:
     description: Push-notification subscription endpoints
   - name: Notifications
     description: In-app notification delivery (#289) — list, mark read, header-bell badge count
+  - name: Admin — Notifications
+    description: |
+      Admin broadcast surface (#289/#813/#1238, API-coverage batch 4a A9).
+      JSON twin of `/manage/notifications`'s compose form — audience
+      targeting (single user / role / every signed-in user), optional
+      environment scope + expiry. The actual row write delegates to the
+      one shared writer, `notifyUser()` (`includes/notifications.php`,
+      #1638). Web Push broadcast and single-notification delete stay
+      page-only for now — not requested for this batch.
   - name: Organisations
     description: Multi-tenant organisation membership and administration
   - name: Content Access
@@ -479,6 +488,29 @@ tags:
       nothing for the two to drift on). External-link editing is
       page-only for now — these four actions cover scalar fields,
       aliases, credits, merge and delete.
+  - name: Admin — Publishers
+    description: |
+      Publisher-registry CRUD (#93/#1765, API-coverage batch 4a A1) —
+      `tblPublishers` + its aliases child table. Mirrors `/manage/publishers`
+      (both surfaces call the SAME shared cores in
+      `includes/publisher_admin.php`, so there is nothing for the two to
+      drift on — rule #37 named this the future `admin_publisher_*` API).
+      External-link editing is page-only for now, the same scoping
+      **Admin — Tunes** already applies to tune external links.
+  - name: Admin — Works
+    description: |
+      Work-registry CRUD + medley composition (#840/#1860 Phase 5,
+      API-coverage batch 4a A2) — `tblWorks`' core scalar fields
+      (title/slug/ISWC/notes/parent) plus the ordered `tblWorkComponents`
+      constituent list, the latter delegating entirely to the
+      cycle-guarded `workMedley*()` family in `includes/work_admin.php`
+      (rule #45 — never forked). The #1741 P4b "extra" fields (subtitle /
+      CCLI / BOWI / tune name / copyright / MusicBrainz Work MBID),
+      `OriginCity`, external links, and song-membership (`tblWorkSongs`)
+      reconciliation are page-only for now — `/manage/works` covers them
+      inline; song⇄work linking from the SONG side already has its own
+      API path (`manage/editor/api2.php`'s `song_work_set` /
+      `song_work_autolink`, #1860 Phase 3).
   - name: Admin — Licence Types
     description: |
       Licence-vocabulary CRUD (#459 / #1769 P4) — `tblLicenceTypes`: the
@@ -9657,6 +9689,20 @@ paths:
                       type: boolean
                       default: false
                       description: When renaming, also UPDATE tblSongs.SongbookAbbr to the new value.
+                    is_disabled:
+                      type: boolean
+                      nullable: true
+                      description: |
+                        API-coverage batch 4a A12 — reversible disable/enable
+                        (#1765 Feature 1; mirrors `/manage/songbooks`'s
+                        `toggle_disable` action, folded into this existing
+                        handler rather than a new one). A disabled book is
+                        hidden from every public read but stays fully
+                        visible/editable here. PRESENCE-based, unlike every
+                        other field on this endpoint: the KEY must be posted
+                        to touch the column at all — omitting it leaves the
+                        current disabled state completely untouched (never
+                        silently re-enables a book the caller isn't managing).
       responses:
         "200":
           description: Songbook updated
@@ -9673,6 +9719,10 @@ paths:
                     items: { type: string }
                     description: Names of columns that actually changed value (Activity-Log diff key set).
                   songs_renamed:  { type: boolean }
+                  is_disabled:
+                    type: boolean
+                    nullable: true
+                    description: The value just written when the request posted `is_disabled`; `null` when it didn't (the server never fabricates a value it didn't just read/write).
         "400":
           description: Validation error (missing id, missing name, bad colour, bad BCP 47 tag, bad new abbreviation)
         "403":
@@ -9680,7 +9730,11 @@ paths:
         "404":
           description: Songbook id not found
         "409":
-          description: Target new_abbreviation is already in use by another row
+          description: |
+            Target new_abbreviation is already in use by another row, OR
+            (A12) `is_disabled` was posted but the publication-metadata
+            migration adding `tblSongbooks.IsDisabled` hasn't run on this
+            environment yet.
 
   /api.php?action=admin_songbook_delete:
     post:
@@ -11847,6 +11901,420 @@ paths:
           description: Tune not found
 
   # ===========================================================================
+  # ADMIN — PUBLISHERS REGISTRY  (#93/#1765, API-coverage batch 4a A1)
+  #
+  # CRUD over tblPublishers + its aliases child table. The web page
+  # /manage/publishers and these JSON twins share ONE core
+  # (includes/publisher_admin.php). Gated on manage_publishers.
+  # ===========================================================================
+  /api.php?action=admin_publisher_create:
+    post:
+      operationId: adminPublisherCreate
+      tags: [Admin — Publishers]
+      summary: Add a publisher registry row (with optional aliases)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_publisher_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminPublisherInput"
+      responses:
+        "201":
+          description: Publisher added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (missing name, bad slug shape, unrecognised kind)
+        "403":
+          description: Admin access required
+        "409":
+          description: IPI or ISNI already used by another publisher
+        "503":
+          description: Publishers registry not migrated on this environment yet
+
+  /api.php?action=admin_publisher_update:
+    post:
+      operationId: adminPublisherUpdate
+      tags: [Admin — Publishers]
+      summary: Update a publisher's scalar fields + optionally replace aliases
+      description: |
+        Renaming cascades the free-text `tblSongbooks.Publisher` denorm
+        mirror on this publisher's LINKED books (never a book that merely
+        shares the old name under a different publisher). Omitting
+        `aliases` from the body leaves the existing list unchanged;
+        posting an empty array clears it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_publisher_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminPublisherInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Publisher updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Publisher not found
+        "409":
+          description: IPI or ISNI already used by another publisher
+        "503":
+          description: Publishers registry not migrated on this environment yet
+
+  /api.php?action=admin_publisher_delete:
+    post:
+      operationId: adminPublisherDelete
+      tags: [Admin — Publishers]
+      summary: Delete a publisher registry row
+      description: |
+        `tblSongbookPublishers` / `tblPublisherAliases` /
+        `tblPublisherExternalLinks` FKs are `ON DELETE CASCADE`;
+        `tblPublishers.ParentId` is `ON DELETE SET NULL` (children become
+        top-level) — needs no `force` flag, the same posture as
+        `admin_tune_delete`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_publisher_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Publisher deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  name:         { type: string }
+                  usage_count:  { type: integer, description: Songbook links + child publishers + aliases + external links that referenced this publisher at delete time. }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Publisher not found
+        "503":
+          description: Publishers registry not migrated on this environment yet
+
+  /api.php?action=admin_publisher_merge:
+    post:
+      operationId: adminPublisherMerge
+      tags: [Admin — Publishers]
+      summary: Collapse two publisher registry rows into one
+      description: |
+        Every `tblSongbookPublishers` row citing `source_id` re-points to
+        `target_id`; the free-text `tblSongbooks.Publisher` denorm mirror
+        updates in the same statement; Source's child publishers,
+        aliases and external links move to Target; Source's own name
+        becomes a new alias of Target so old `/publisher/<source-slug>`
+        links keep resolving; Source is then deleted. Transactional.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_publisher_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id: { type: integer, description: Merged away (deleted). }
+                target_id: { type: integer, description: Survives. }
+      responses:
+        "200":
+          description: Merged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                  { type: boolean, example: true }
+                  source_id:           { type: integer }
+                  target_id:           { type: integer }
+                  books_repointed:     { type: integer }
+                  children_repointed:  { type: integer }
+                  aliases_moved:       { type: integer }
+                  links_moved:         { type: integer }
+        "400":
+          description: Missing or identical source_id/target_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Source or target publisher not found
+        "503":
+          description: Publishers registry not migrated on this environment yet
+
+  # ===========================================================================
+  # ADMIN — WORKS + MEDLEY COMPOSITION  (#840/#1860 Phase 5, API-coverage
+  # batch 4a A2)
+  #
+  # CRUD over tblWorks' core scalar fields, plus the ordered medley
+  # constituent list (tblWorkComponents). See the "Admin — Works" tag
+  # description above for exactly which fields are IN vs page-only.
+  # Gated on manage_works.
+  # ===========================================================================
+  /api.php?action=admin_work_create:
+    post:
+      operationId: adminWorkCreate
+      tags: [Admin — Works]
+      summary: Create a Work registry row (core scalar fields only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminWorkInput"
+      responses:
+        "201":
+          description: Work created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  title: { type: string }
+                  slug:  { type: string }
+                  iswc:  { type: string }
+        "400":
+          description: Validation error (missing title, unusable slug, bad ISWC shape, unknown parent_id)
+        "403":
+          description: Admin access required
+        "409":
+          description: Slug or ISWC already used by another Work
+        "503":
+          description: Works registry not migrated on this environment yet
+
+  /api.php?action=admin_work_update:
+    post:
+      operationId: adminWorkUpdate
+      tags: [Admin — Works]
+      summary: Update a Work's core scalar fields
+      description: |
+        `parent_id` is cycle-checked against the `ParentWorkId` self-FK
+        chain — refused with `409` rather than corrupting the tree.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminWorkInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Work updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  title: { type: string }
+                  slug:  { type: string }
+                  iswc:  { type: string }
+        "400":
+          description: Validation error, missing id, or unknown parent_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Work not found
+        "409":
+          description: Slug/ISWC already used by another Work, or the parent_id would create a cycle
+        "503":
+          description: Works registry not migrated on this environment yet
+
+  /api.php?action=admin_work_delete:
+    post:
+      operationId: adminWorkDelete
+      tags: [Admin — Works]
+      summary: Delete a Work registry row
+      description: |
+        `tblWorkSongs` / `tblWorkExternalLinks` / `tblWorkComponents`
+        (both `MedleyWorkId` and `ComponentWorkId`) FKs are
+        `ON DELETE CASCADE`; `tblWorks.ParentWorkId` is `ON DELETE SET
+        NULL` (child Works orphan rather than cascade-delete).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Work deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  title: { type: string }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Work not found
+        "503":
+          description: Works registry not migrated on this environment yet
+
+  /api.php?action=admin_work_medley_replace:
+    post:
+      operationId: adminWorkMedleyReplace
+      tags: [Admin — Works]
+      summary: Replace a medley Work's entire ordered constituent list
+      description: |
+        DELETE-then-reinsert via the ONE cycle-guarded write core,
+        `workMedleyReplace()` (`includes/work_admin.php`), built out of
+        `workMedleyAttach()` — self-link, unknown-work and containment-cycle
+        guards live there (rule #45), never re-forked in this endpoint.
+        Posting an empty `constituents` array is a valid, deliberate
+        "clear the medley" edit. An invalid row (missing/self-link/unknown
+        work/would-cycle) is silently skipped rather than failing the
+        whole call — the response's `constituents` list is always the
+        STORED truth, read back after the write.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_medley_replace] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: integer
+                  description: The medley Work's tblWorks.Id
+                constituents:
+                  type: array
+                  items:
+                    type: object
+                    required: [work_id]
+                    properties:
+                      work_id:    { type: integer }
+                      sort_order: { type: integer, default: 0 }
+                      note:       { type: string, nullable: true, maxLength: 255 }
+      responses:
+        "200":
+          description: Constituent list replaced — echoes the STORED list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  id:        { type: integer }
+                  inserted:  { type: integer, description: Rows actually inserted (invalid/refused rows are skipped, not counted). }
+                  constituents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        workId:    { type: integer }
+                        title:     { type: string }
+                        slug:      { type: string }
+                        sortOrder: { type: integer }
+                        note:      { type: string, nullable: true }
+        "400":
+          description: Missing id, or constituents is not an array
+        "403":
+          description: Admin access required
+        "404":
+          description: Work not found
+        "503":
+          description: Works registry or medley composition not migrated on this environment yet
+
+  # ===========================================================================
   # ADMIN — LICENCE TYPES  (#459 / #1769 P4)
   #
   # CRUD over the licence vocabulary (tblLicenceTypes): the tokens every
@@ -13160,6 +13628,87 @@ paths:
         "405":
           description: Wrong HTTP method (POST required)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # ADMIN — NOTIFICATION BROADCAST  (#289/#813/#1238, API-coverage batch 4a A9)
+  # ===========================================================================
+
+  /api.php?action=admin_notification_send:
+    post:
+      operationId: adminNotificationSend
+      tags: [Admin — Notifications]
+      summary: Broadcast an in-app notification to a user, a role, or every signed-in user
+      description: |
+        JSON twin of `/manage/notifications`'s compose form. Recipient
+        resolution mirrors the page's own SQL; the row write delegates
+        to the ONE shared writer, `notifyUser()`
+        (`includes/notifications.php`) — called once per resolved
+        recipient. Capped at 5,000 recipients per call (mirrors the
+        page's own `NOTIFY_BROADCAST_MAX`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_notification_send] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [audience, title, body]
+              properties:
+                audience:
+                  type: string
+                  enum: [user, role, all]
+                target_user:
+                  type: string
+                  description: Required when audience=user. Matched by username, email, or numeric id.
+                target_role:
+                  type: string
+                  enum: [user, editor, admin, global_admin]
+                  description: Required when audience=role.
+                title:
+                  type: string
+                  maxLength: 255
+                body:
+                  type: string
+                  maxLength: 2000
+                action_url:
+                  type: string
+                  nullable: true
+                  description: "A /-rooted local path or an https:// URL. Anything else is rejected — never a javascript: or data: URI."
+                type:
+                  type: string
+                  enum: [announcement, maintenance, release, info]
+                  default: announcement
+                  description: An unrecognised value silently falls back to "announcement" (mirrors the page's own behaviour) rather than a 400.
+                environment:
+                  type: string
+                  enum: ["", alpha, beta, production]
+                  description: Omit or "" to show on every environment. Ignored (all environments) on an install where the #1238 scope columns haven't migrated.
+                expires_at:
+                  type: string
+                  nullable: true
+                  description: Any PHP strtotime()-parseable date/time in the future. Omit or "" to never expire.
+      responses:
+        "200":
+          description: Broadcast sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  recipients: { type: integer, description: Count of recipients notifyUser() actually wrote a row for. }
+        "400":
+          description: Validation error (missing/oversized title or body, bad action_url shape, missing target_user/target_role, invalid environment/expiry, or no active recipients matched)
+        "403":
+          description: Admin access required
+        "404":
+          description: "audience=user: no user matched target_user"
 
   # ===========================================================================
   # USER PREFERENCES + ACCOUNT
@@ -20083,6 +20632,97 @@ components:
           items:
             $ref: "#/components/schemas/AdminTuneCredit"
           description: Full replacement list, same omit-to-leave-unchanged posture as `aliases`.
+
+    AdminPublisherInput:
+      type: object
+      description: |
+        Shared input for `admin_publisher_create` and
+        `admin_publisher_update` (#93/#1765, API-coverage batch 4a A1).
+        Mirrors `manage/publishers.php`'s POST field names exactly — both
+        surfaces validate via the SAME `publisherAdminValidateFields()`
+        (`includes/publisher_admin.php`).
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        slug:
+          type: string
+          pattern: '^[a-z0-9-]{1,120}$'
+          description: Optional — auto-derived from `name` when omitted. A colliding slug is auto-suffixed (`-2`, `-3`, …), never rejected.
+        kind:
+          type: string
+          description: A key of IHYMNS_PUBLISHER_KINDS (includes/publisher_helpers.php), e.g. "company" or "person". Defaults to "company".
+        subtitle:
+          type: string
+          maxLength: 255
+          nullable: true
+        disambiguation:
+          type: string
+          maxLength: 255
+          nullable: true
+        ipi:
+          type: string
+          maxLength: 20
+          nullable: true
+        isni:
+          type: string
+          maxLength: 20
+          nullable: true
+        city_name:
+          type: string
+          maxLength: 255
+          nullable: true
+        city_id:
+          type: integer
+          nullable: true
+          description: Optional tblPlaces.Id. Ignored (stored NULL) when it doesn't resolve to a real row.
+        musician_id:
+          type: integer
+          nullable: true
+          description: Optional tblMusicians.Id to link a person-publisher to a registry row. Ignored (stored NULL) when it doesn't resolve to a real row.
+        parent_id:
+          type: integer
+          nullable: true
+          description: Optional tblPublishers.Id for imprint/catalogue grouping. Ignored (stored NULL) when it doesn't resolve, or would create a cycle.
+        notes:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+          default: true
+        aliases:
+          type: array
+          items: { type: string }
+          description: Full replacement list — an empty array clears all aliases. On admin_publisher_update, omitting this key entirely leaves the existing alias list unchanged.
+
+    AdminWorkInput:
+      type: object
+      description: |
+        Shared input for `admin_work_create` and `admin_work_update`
+        (#840/#1860 Phase 5, API-coverage batch 4a A2). Covers the CORE
+        scalar fields only — see the "Admin — Works" tag description for
+        which fields stay page-only in `/manage/works` for now.
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        slug:
+          type: string
+          maxLength: 80
+          description: Optional — auto-derived from `title` when omitted. A degenerate (all-punctuation/non-ASCII) title with no explicit slug is a 400, not an auto-fallback.
+        iswc:
+          type: string
+          nullable: true
+          description: 'Shape T-345.246.800-1 (validated via ihymns_canonical_iswc()); the check digit is not recomputed.'
+        notes:
+          type: string
+          nullable: true
+        parent_id:
+          type: integer
+          nullable: true
+          description: tblWorks.Id this Work is-a-variant-of (ParentWorkId self-FK, NOT the medley "contains" relationship). Must exist and must not create a cycle.
 
     AdminLicenceTypeInput:
       type: object

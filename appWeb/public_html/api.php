@@ -304,6 +304,19 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_admin.php';
+/* #93/#1765, API-coverage batch 4a (A1) — the publisher admin CRUD shared
+   cores. The admin_publisher_* actions below call these SAME functions
+   manage/publishers.php's POST handlers call — rule #22/#35, exactly the
+   tune_admin.php precedent immediately above. Also pulls in
+   publisher_helpers.php (IHYMNS_PUBLISHER_KINDS, slug fold) transitively. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_admin.php';
+/* #1860 Phase 5 / API-coverage batch 4a (A2) — the Work-identity +
+   medley-composition shared cores. The admin_work_* actions below call
+   workSlugify()/workSlugEnsureUnique() for the scalar CRUD and the
+   cycle-guarded workMedley*() family for the ordered constituent list —
+   rule #22/#45, never a forked medley write. Also pulls in
+   identifier_normalize.php (ihymns_canonical_iswc()) transitively. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -13429,6 +13442,188 @@ if ($action !== null) {
             break;
 
         /* =================================================================
+         * ADMIN — NOTIFICATION BROADCAST (#289/#813/#1238,
+         * API-coverage batch 4a A9)
+         *
+         * JSON twin of /manage/notifications.php's 'compose' POST handler
+         * — audience targeting (single user / role / every signed-in
+         * user), plus the #1238 optional environment scope + expiry.
+         * Recipient resolution mirrors the page's own SQL exactly (neither
+         * is extracted into a shared core — page-local since #813). The
+         * actual row write DOES delegate to the ONE shared writer,
+         * notifyUser() (includes/notifications.php, required at the top
+         * of this file, #1638) — called once per recipient rather than
+         * re-forking its Environment/ExpiresAt-aware-vs-plain INSERT
+         * branching. This trades the page's own prepare-once/execute-many
+         * fan-out loop (a DELIBERATE, documented #1638 exception to
+         * notifyUser() for that page's specific performance need) for
+         * reusing the one write path — acceptable at this cap (5,000).
+         * Web Push broadcast (push_generate_keys/push_send/push_test) and
+         * single-row delete are OUT OF SCOPE for this batch: not
+         * requested, and a different concern (bytes over a transport, not
+         * an in-app notification row).
+         *
+         * Gate: userHasEntitlement('manage_notifications') — identical to
+         * manage/notifications.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: broadcast an in-app notification
+         * POST body: { audience: 'user'|'role'|'all', target_user?,
+         *   target_role?, title (required), body (required), action_url?,
+         *   type? (default 'announcement'), environment? ('alpha'|'beta'|
+         *   'production'; omit/'' = all environments), expires_at?
+         *   (parseable date/time; omit/'' = never expires) }
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_send': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $audience    = (string)($body['audience'] ?? '');
+            $userQuery   = trim((string)($body['target_user'] ?? ''));
+            $roleTarget  = (string)($body['target_role'] ?? '');
+            $title       = trim((string)($body['title'] ?? ''));
+            $noteBody    = trim((string)($body['body'] ?? ''));
+            $actionUrl   = trim((string)($body['action_url'] ?? ''));
+            $type        = trim((string)($body['type'] ?? 'announcement'));
+            $environment = (string)($body['environment'] ?? '');
+            $expiresAtIn = trim((string)($body['expires_at'] ?? ''));
+
+            if ($title === '' || mb_strlen($title) > 255) {
+                sendJson(['error' => 'Title is required and must be ≤ 255 characters.'], 400);
+                break;
+            }
+            if ($noteBody === '') {
+                sendJson(['error' => 'Body is required.'], 400);
+                break;
+            }
+            if (mb_strlen($noteBody) > 2000) {
+                sendJson(['error' => 'Body must be ≤ 2000 characters.'], 400);
+                break;
+            }
+            if ($actionUrl !== ''
+                && !preg_match('#^/[^/]#', $actionUrl)
+                && !preg_match('#^https://#i', $actionUrl)) {
+                sendJson(['error' => 'Action URL must be a /-rooted local path or an https:// URL.'], 400);
+                break;
+            }
+            if (!in_array($audience, ['user', 'role', 'all'], true)) {
+                sendJson(['error' => 'Pick an audience (user, role, or all).'], 400);
+                break;
+            }
+            $allowedTypes = ['announcement', 'maintenance', 'release', 'info'];
+            if (!in_array($type, $allowedTypes, true)) {
+                $type = 'announcement';
+            }
+            if (!in_array($environment, ['', 'alpha', 'beta', 'production'], true)) {
+                sendJson(['error' => 'Invalid environment scope.'], 400);
+                break;
+            }
+            $expiresAtSql = null;
+            if ($expiresAtIn !== '') {
+                $expTs = strtotime($expiresAtIn);
+                if ($expTs === false) {
+                    sendJson(['error' => 'Expiry date/time is not valid.'], 400);
+                    break;
+                }
+                if ($expTs <= time()) {
+                    sendJson(['error' => 'Expiry must be in the future.'], 400);
+                    break;
+                }
+                $expiresAtSql = date('Y-m-d H:i:s', $expTs);
+            }
+
+            /* Broadcast batch size cap — mirrors manage/notifications.php's
+               own NOTIFY_BROADCAST_MAX (#813; that constant is page-local,
+               not exported, so this is a second literal of the SAME value
+               rather than a shared reference — kept in sync by inspection). */
+            $broadcastMax = 5000;
+
+            $recipients = [];
+            if ($audience === 'user') {
+                if ($userQuery === '') { sendJson(['error' => 'Pick a target user.'], 400); break; }
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers
+                      WHERE Username = ? OR Email = ? OR Id = ?
+                      LIMIT 1'
+                );
+                $idCandidate = ctype_digit($userQuery) ? (int)$userQuery : 0;
+                $stmt->bind_param('ssi', $userQuery, $userQuery, $idCandidate);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$row) { sendJson(['error' => 'No user matched "' . $userQuery . '".'], 404); break; }
+                $recipients = [(int)$row['Id']];
+            } elseif ($audience === 'role') {
+                $allowedRoles = ['user', 'editor', 'admin', 'global_admin'];
+                if (!in_array($roleTarget, $allowedRoles, true)) {
+                    sendJson(['error' => 'Pick a target role.'], 400);
+                    break;
+                }
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers
+                      WHERE Role = ? AND COALESCE(IsActive, 1) = 1
+                      LIMIT ' . $broadcastMax
+                );
+                $stmt->bind_param('s', $roleTarget);
+                $stmt->execute();
+                $recipients = array_map(static fn($r) => (int)$r['Id'], $stmt->get_result()->fetch_all(MYSQLI_ASSOC));
+                $stmt->close();
+            } else { // 'all'
+                $res = $db->query(
+                    'SELECT Id FROM tblUsers WHERE COALESCE(IsActive, 1) = 1 LIMIT ' . $broadcastMax
+                );
+                $recipients = $res ? array_map(static fn($r) => (int)$r['Id'], $res->fetch_all(MYSQLI_ASSOC)) : [];
+                if ($res) { $res->close(); }
+            }
+            if (empty($recipients)) {
+                sendJson(['error' => 'No active recipients matched the audience.'], 400);
+                break;
+            }
+
+            try {
+                /* The ONE shared writer (includes/notifications.php) — it
+                   already handles the Environment/ExpiresAt-aware vs plain
+                   INSERT shape (notificationsHasScopeColumns()), the
+                   action-URL allow-list, and the mb_substr column-width
+                   clipping. Never a second copy of that branching here
+                   (rule #22). */
+                $count = 0;
+                foreach ($recipients as $uid) {
+                    if (notifyUser($db, $uid, $type, $title, $noteBody, $actionUrl, $environment, $expiresAtSql)) {
+                        $count++;
+                    }
+                }
+
+                logActivity('api.admin.notification.send', 'notification', '', [
+                    'audience'    => $audience,
+                    'target_role' => $audience === 'role' ? $roleTarget : null,
+                    'target_user' => $audience === 'user' ? $userQuery : null,
+                    'title'       => mb_substr($title, 0, 100),
+                    'recipients'  => $count,
+                    'type'        => $type,
+                ]);
+
+                sendJson(['ok' => true, 'recipients' => $count]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.send', 'notification', '', $e, ['title' => $title]);
+                error_log('[admin_notification_send] ' . $e->getMessage());
+                sendJson(['error' => 'Could not send notification.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
          * SONGBOOKS — admin CRUD parity (#719 PR 2a)
          *
          * Mirrors the web-admin POST handlers in /manage/songbooks.php so
@@ -13696,6 +13891,18 @@ if ($action !== null) {
             $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
             $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
             $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+            /* #1765/A12 (API-coverage batch 4a) — reversible per-row
+               disable/enable, extending this EXISTING handler rather than
+               adding a new action (mirrors manage/songbooks.php's
+               'toggle_disable', delegated through the SAME
+               songbookDisableReady() gate that page's own $hasDisableCol
+               probe checks, includes/songbook_visibility.php). PRESENCE-
+               based, unlike every other field on this endpoint: the key
+               must be explicitly posted to touch the column at all — an
+               absent key leaves IsDisabled completely untouched (never
+               silently re-enables a book a caller wasn't managing). */
+            $hasIsDisabledKey = array_key_exists('is_disabled', $body);
+            $isDisabled       = $hasIsDisabledKey ? (!empty($body['is_disabled']) ? 1 : 0) : null;
 
             if ($name === '') {
                 sendJson(['error' => 'Name is required.'], 400);
@@ -13708,6 +13915,18 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+
+                /* A12 — the column may not exist yet (migrations are
+                   web-run, never auto-applied). Silently ignoring an
+                   EXPLICIT caller request would be the rule #30 silent-
+                   no-op class, so this is a hard 409 rather than a quiet
+                   skip; a caller who never mentions is_disabled is
+                   completely unaffected (rule #19 degrade-gracefully). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
+                if ($hasIsDisabledKey && !songbookDisableReady($db)) {
+                    sendJson(['error' => 'Disable/enable is not available yet — the publication-metadata migration has not been run on this install.'], 409);
+                    break;
+                }
 
                 /* Capture the full before-row for diff-aware audit logs (#535).
                    Match the web admin's SELECT shape exactly so the diff key set
@@ -13734,6 +13953,23 @@ if ($action !== null) {
                 if ($oldAbbr === '') {
                     sendJson(['error' => 'Songbook not found.'], 404);
                     break;
+                }
+
+                /* A12 — separate SELECT (never folded into the fixed
+                   23-column $existing query above): that query runs
+                   UNCONDITIONALLY on every call, including on an
+                   un-migrated install with no IsDisabled column, and
+                   mysqli's STRICT reporting throws on an unknown column
+                   (rule #9) — so this only ever runs once the presence
+                   check above has already confirmed the column exists. */
+                $oldIsDisabled = null;
+                if ($hasIsDisabledKey) {
+                    $disStmt = $db->prepare('SELECT IsDisabled FROM tblSongbooks WHERE Id = ?');
+                    $disStmt->bind_param('i', $id);
+                    $disStmt->execute();
+                    $disRow = $disStmt->get_result()->fetch_assoc();
+                    $disStmt->close();
+                    $oldIsDisabled = $disRow !== null ? (int)$disRow['IsDisabled'] : 0;
                 }
 
                 $abbrChanged = $newAbbr !== '' && $newAbbr !== $oldAbbr;
@@ -13797,6 +14033,18 @@ if ($action !== null) {
                             $stmt->close();
                         }
                     }
+
+                    /* A12 — separate UPDATE, same "only when the key was
+                       posted" gate as the fetch above; mirrors the
+                       abbreviation rename immediately above (also a
+                       separate, conditional UPDATE inside this same
+                       transaction). */
+                    if ($hasIsDisabledKey) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET IsDisabled = ? WHERE Id = ?');
+                        $stmt->bind_param('ii', $isDisabled, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -13831,6 +14079,16 @@ if ($action !== null) {
                     'Lccn'              => $lccn,
                     'LcClass'           => $lcClass,
                 ];
+                /* A12 — only enter the diff when the key was actually
+                   posted; $beforeRow has no 'IsDisabled' entry otherwise,
+                   so the loop below's array_key_exists($beforeRow) guard
+                   would skip an unconditionally-added 'IsDisabled' anyway,
+                   but injecting it conditionally keeps $beforeRow/$afterRow
+                   symmetric rather than relying on that guard silently. */
+                if ($hasIsDisabledKey) {
+                    $beforeRow['IsDisabled'] = $oldIsDisabled;
+                    $afterRow['IsDisabled']  = $isDisabled;
+                }
                 $changed = [];
                 foreach ($afterRow as $k => $v) {
                     if (!array_key_exists($k, $beforeRow ?? [])) continue;
@@ -13853,6 +14111,11 @@ if ($action !== null) {
                     'abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
                     'fields_changed' => $changed,
                     'songs_renamed'  => $alsoRename && $abbrChanged,
+                    /* A12 — the SERVER's truth (rule #35): the value just
+                       written when the caller posted the key, `null` when
+                       they didn't touch it (never fabricated from a value
+                       this call never read). */
+                    'is_disabled'    => $hasIsDisabledKey ? (bool)$isDisabled : null,
                 ]);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.songbook.edit', 'songbook', (string)$id, $e);
@@ -18393,6 +18656,693 @@ if ($action !== null) {
                 logActivityError('api.admin.tune.delete', 'tune', (string)$id, $e);
                 error_log('[admin_tune_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete tune.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — PUBLISHERS REGISTRY (#93/#1765, API-coverage batch 4a A1)
+         *
+         * Mirrors /manage/publishers.php's POST handlers. Every mutating
+         * endpoint calls the SAME shared cores in includes/publisher_admin.php
+         * that page uses (rule #22/#35 — nothing to drift), the exact
+         * admin_tune_* precedent immediately above — rule #37 literally
+         * anticipated "the future admin_publisher_* API".
+         *
+         * Gate: userHasEntitlement('manage_publishers') — identical to
+         * manage/publishers.php's own page gate (rule #1587).
+         *
+         * Activity-log verb prefix is `api.admin.publisher.*`. HTTP status
+         * IS the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness conflict, 503 registry not migrated yet,
+         * 200/201 ok.
+         *
+         * `aliases`: an array REPLACES the full list (empty array clears
+         * it); OMITTING the key leaves the existing list unchanged on
+         * update — the same contract admin_tune_update's aliases/credits
+         * already use. The page does not expose alias add/remove as
+         * separate actions (they are folded into create/update's
+         * `alias_names[]` field), so there is no separate
+         * admin_publisher_alias_add/remove here either. External-link
+         * editing stays PAGE-ONLY for now, the same scoping admin_tune_*
+         * already applies to tune external links.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new publisher registry row
+         * POST body: { name (required), slug?, kind?, subtitle?,
+         *   disambiguation?, ipi?, isni?, city_name?, city_id?, musician_id?,
+         *   parent_id?, notes?, is_active?, aliases?: [string] }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = publisherAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $uniqError = publisherAdminCheckUniqueness($db, $fields, null);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $rawAliases = $body['aliases'] ?? [];
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : [];
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    /* publisherAdminCreate() pairs the bare INSERT with the
+                       scalar-fields UPDATE and mints the ILP… id — see
+                       manage/publishers.php's `create` action for the
+                       identical call. */
+                    $newId = publisherAdminCreate($db, $fields, $gates);
+                    if ($gates['hasAliases'] && $aliasNames) {
+                        publisherAdminReplaceAliases($db, $newId, $aliasNames, $fields['name']);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.create', 'publisher', (string)$newId, [
+                    'name'        => $fields['name'],
+                    'kind'        => $fields['kind'],
+                    'alias_count' => count($aliasNames),
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.create', 'publisher', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_publisher_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing publisher registry row (scalar fields +
+         * optionally replace aliases). Renaming cascades the free-text
+         * tblSongbooks.Publisher denorm mirror on this publisher's linked
+         * books (publisherAdminRenameCascade()) — the tune TuneName-cascade
+         * equivalent, no separate rename action needed.
+         * POST body: { id (required), name, slug?, kind?, subtitle?,
+         *   disambiguation?, ipi?, isni?, city_name?, city_id?, musician_id?,
+         *   parent_id?, notes?, is_active?, aliases?: [string] }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Publisher id required.'], 400); break; }
+
+            [$fields, $fieldError] = publisherAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $uniqError = publisherAdminCheckUniqueness($db, $fields, $id);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $stmt = $db->prepare('SELECT Name FROM tblPublishers WHERE Id = ?');
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $before = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$before) { sendJson(['error' => 'Publisher not found.'], 404); break; }
+            $oldName = (string)$before['Name'];
+
+            /* null (key absent) means "leave the alias list unchanged" —
+               the admin_tune_update contract; an explicit array (incl. []
+               to clear) replaces it. */
+            $rawAliases = $body['aliases'] ?? null;
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : null;
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    publisherAdminPersistFields($db, $id, $fields, $gates);
+                    publisherAdminRenameCascade($db, $id, $oldName, $fields['name'], $gates);
+                    if ($gates['hasAliases'] && $aliasNames !== null) {
+                        publisherAdminReplaceAliases($db, $id, $aliasNames, $fields['name']);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.update', 'publisher', (string)$id, [
+                    'name'    => $fields['name'],
+                    'renamed' => $oldName !== $fields['name'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.update', 'publisher', (string)$id, $e);
+                error_log('[admin_publisher_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a publisher registry row. tblSongbookPublishers /
+         * tblPublisherAliases / tblPublisherExternalLinks FKs are ON DELETE
+         * CASCADE; tblPublishers.ParentId is ON DELETE SET NULL (children
+         * become top-level) — so this needs no force gate, the same
+         * posture as admin_tune_delete.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Publisher id required.'], 400); break; }
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $usage = publisherAdminUsageCounts($db, $id, $gates);
+                $name  = publisherAdminDelete($db, $id);
+                if ($name === null) { sendJson(['error' => 'Publisher not found.'], 404); break; }
+
+                logActivity('api.admin.publisher.delete', 'publisher', (string)$id, [
+                    'name'  => $name,
+                    'usage' => $usage,
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'id'          => $id,
+                    'name'        => $name,
+                    'usage_count' => $usage['songbookCount'] + $usage['childCount'] + $usage['aliasCount'] + $usage['linkCount'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.delete', 'publisher', (string)$id, $e);
+                error_log('[admin_publisher_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two publisher registry rows (source -> target)
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different publishers.'], 400);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblPublishers WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $foundIds = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+                $stmt->close();
+                if (!in_array($sourceId, $foundIds, true)) { sendJson(['error' => 'Source publisher not found.'], 404); break; }
+                if (!in_array($targetId, $foundIds, true)) { sendJson(['error' => 'Target publisher not found.'], 404); break; }
+
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    $result = publisherAdminMerge($db, $sourceId, $targetId, $gates);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.merge', 'publisher', (string)$targetId, [
+                    'source'             => $result['source'],
+                    'target'             => $result['target'],
+                    'books_repointed'    => $result['booksRepointed'],
+                    'children_repointed' => $result['childrenRepointed'],
+                    'aliases_moved'      => $result['aliasesMoved'],
+                    'links_moved'        => $result['linksMoved'],
+                ]);
+
+                sendJson([
+                    'ok'                 => true,
+                    'source_id'          => $sourceId,
+                    'target_id'          => $targetId,
+                    'books_repointed'    => $result['booksRepointed'],
+                    'children_repointed' => $result['childrenRepointed'],
+                    'aliases_moved'      => $result['aliasesMoved'],
+                    'links_moved'        => $result['linksMoved'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.merge', 'publisher', (string)$targetId, $e);
+                error_log('[admin_publisher_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge publishers.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — WORKS + MEDLEY COMPOSITION (#840/#1860 Phase 5,
+         * API-coverage batch 4a A2)
+         *
+         * Mirrors /manage/works.php's POST handlers for the CORE registry
+         * row (title/slug/ISWC/notes/parent) plus the medley constituent
+         * list. Gate: userHasEntitlement('manage_works') — identical to
+         * manage/works.php's own page gate (rule #1587).
+         *
+         * SCOPE (deliberate — mirrors admin_tune_*'s "external links stay
+         * page-only for now"): the #1741 P4b "extra" scalar fields
+         * (subtitle/CCLI/BOWI/tune name/first-published-year/copyright
+         * years+holder/MusicBrainz Work MBID), OriginCity, external links,
+         * and song-membership (tblWorkSongs) reconciliation are PAGE-ONLY
+         * for now — none of those are extracted into a shared core today
+         * (they live as page-local closures/probes in manage/works.php,
+         * never exported), and song<->work linking already has its own API
+         * path from the SONG side (api2's song_work_set /
+         * song_work_autolink, #1860 Phase 3). Porting the full page-local
+         * closure set is left for a follow-up once a genuine native
+         * consumer needs it, rather than re-typing ~150 lines of that
+         * page's own validation as a second copy (rule #22).
+         *
+         * Medley composition (`tblWorkComponents`) is a SEPARATE action,
+         * admin_work_medley_replace, delegating entirely to the
+         * cycle-guarded workMedley*() core (rule #45 — NEVER forked here).
+         *
+         * Activity-log verb prefix is `api.admin.work.*`. HTTP status IS
+         * the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness/cycle conflict, 503 table(s) not migrated
+         * yet, 200/201 ok.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a new Work registry row
+         * POST body: { title (required), slug?, iswc?, notes?, parent_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $title  = trim((string)($body['title'] ?? ''));
+            $slugIn = trim((string)($body['slug']  ?? ''));
+            $iswcIn = trim((string)($body['iswc']  ?? ''));
+            $notes  = trim((string)($body['notes'] ?? ''));
+            $parent = (int)($body['parent_id'] ?? 0);
+
+            if ($title === '') { sendJson(['error' => 'Title is required.'], 400); break; }
+            $slug = $slugIn !== '' ? $slugIn : workSlugify($title);
+            if ($slug === '') { sendJson(['error' => 'Title has no usable slug characters — provide one explicitly.'], 400); break; }
+            $iswc = ihymns_canonical_iswc($iswcIn);
+            if ($iswc === null) { sendJson(['error' => 'ISWC must look like T-345.246.800-1 (10 digits).'], 400); break; }
+            $title = mb_substr($title, 0, 255);
+            $slug  = mb_substr($slug,  0, 80);
+            $notes = mb_substr($notes, 0, 65000);
+
+            $parentBind = $parent > 0 ? $parent : null;
+            if ($parentBind !== null && !workExists($db, $parentBind)) {
+                sendJson(['error' => 'Parent work not found.'], 400);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Slug = ?');
+                $stmt->bind_param('s', $slug);
+                $stmt->execute();
+                $slugTaken = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($slugTaken) { sendJson(['error' => "Slug '{$slug}' already taken."], 409); break; }
+
+                if ($iswc !== '') {
+                    $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ?');
+                    $stmt->bind_param('s', $iswc);
+                    $stmt->execute();
+                    $iswcTaken = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' is already on another Work."], 409); break; }
+                }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblWorks (ParentWorkId, Iswc, Title, Slug, Notes)
+                     VALUES (?, NULLIF(?, ""), ?, ?, NULLIF(?, ""))'
+                );
+                $stmt->bind_param('issss', $parentBind, $iswc, $title, $slug, $notes);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                /* #1860 go-live — mint this Work's permanent IL-id (ILW…),
+                   the same funnel manage/works.php's create action uses. */
+                ilidStampNewRow($db, 'work', $newId);
+
+                logActivity('api.admin.work.create', 'work', (string)$newId, [
+                    'title'     => $title,
+                    'slug'      => $slug,
+                    'iswc'      => $iswc,
+                    'parent_id' => $parentBind,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.create', 'work', '', $e, ['title' => $title]);
+                error_log('[admin_work_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a Work's core scalar fields (title/slug/ISWC/notes/
+         * parent). Cycle-checked against the ParentWorkId self-FK chain —
+         * mirrors manage/works.php's own $cycleSafe closure byte-for-byte
+         * (no shared core exists for this walk; contrast the
+         * tblWorkComponents medley guard below, which DOES have one:
+         * workMedleyWouldCycle()).
+         * POST body: { id (required), title (required), slug?, iswc?,
+         *   notes?, parent_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id     = (int)($body['id'] ?? 0);
+            $title  = trim((string)($body['title'] ?? ''));
+            $slugIn = trim((string)($body['slug']  ?? ''));
+            $iswcIn = trim((string)($body['iswc']  ?? ''));
+            $notes  = trim((string)($body['notes'] ?? ''));
+            $parent = (int)($body['parent_id'] ?? 0);
+
+            if ($id <= 0)       { sendJson(['error' => 'Work id required.'], 400); break; }
+            if ($title === '')  { sendJson(['error' => 'Title is required.'], 400); break; }
+            $slug = $slugIn !== '' ? $slugIn : workSlugify($title);
+            if ($slug === '') { sendJson(['error' => 'Title has no usable slug characters.'], 400); break; }
+            $iswc = ihymns_canonical_iswc($iswcIn);
+            if ($iswc === null) { sendJson(['error' => 'ISWC must look like T-345.246.800-1.'], 400); break; }
+            $title = mb_substr($title, 0, 255);
+            $slug  = mb_substr($slug,  0, 80);
+            $notes = mb_substr($notes, 0, 65000);
+
+            if (!workExists($db, $id)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            $parentBind = $parent > 0 ? $parent : null;
+            if ($parentBind !== null && !workExists($db, $parentBind)) {
+                sendJson(['error' => 'Parent work not found.'], 400);
+                break;
+            }
+
+            $workCycleSafe = static function (int $workId, ?int $candidateParent) use ($db): bool {
+                if ($candidateParent === null) return true;
+                if ($candidateParent === $workId) return false;
+                $cur = $candidateParent;
+                $maxDepth = 64;
+                while ($cur !== null && $maxDepth-- > 0) {
+                    if ($cur === $workId) return false;
+                    $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
+                    $stmt->bind_param('i', $cur);
+                    $stmt->execute();
+                    $row = $stmt->get_result()->fetch_assoc();
+                    $stmt->close();
+                    if (!$row) return true;
+                    $cur = $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null;
+                }
+                return false;
+            };
+            if (!$workCycleSafe($id, $parentBind)) {
+                sendJson(['error' => 'Cannot set that parent — it would create a cycle.'], 409);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Slug = ? AND Id <> ?');
+                $stmt->bind_param('si', $slug, $id);
+                $stmt->execute();
+                $slugTaken = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($slugTaken) { sendJson(['error' => "Slug '{$slug}' already taken by another Work."], 409); break; }
+
+                if ($iswc !== '') {
+                    $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? AND Id <> ?');
+                    $stmt->bind_param('si', $iswc, $id);
+                    $stmt->execute();
+                    $iswcTaken = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' already on another Work."], 409); break; }
+                }
+
+                $stmt = $db->prepare(
+                    'UPDATE tblWorks
+                        SET ParentWorkId = ?, Iswc = NULLIF(?, ""),
+                            Title = ?, Slug = ?, Notes = NULLIF(?, "")
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('issssi', $parentBind, $iswc, $title, $slug, $notes, $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.work.update', 'work', (string)$id, [
+                    'title'     => $title,
+                    'slug'      => $slug,
+                    'iswc'      => $iswc,
+                    'parent_id' => $parentBind,
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.update', 'work', (string)$id, $e);
+                error_log('[admin_work_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a Work registry row.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+
+            try {
+                $stmt = $db->prepare('SELECT Title FROM tblWorks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $before = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$before) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+                /* Cascade rules (mirrors manage/works.php's delete action):
+                   - tblWorkSongs FK ON DELETE CASCADE -> memberships dropped.
+                   - tblWorkExternalLinks FK ON DELETE CASCADE -> links dropped.
+                   - tblWorkComponents.MedleyWorkId/ComponentWorkId FKs are
+                     BOTH ON DELETE CASCADE (schema.sql) -> this Work's
+                     medley membership in EITHER direction drops too.
+                   - tblWorks.ParentWorkId self-FK ON DELETE SET NULL ->
+                     child Works orphan rather than cascade-delete. */
+                $stmt = $db->prepare('DELETE FROM tblWorks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.work.delete', 'work', (string)$id, [
+                    'title' => (string)$before['Title'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'title' => (string)$before['Title']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.delete', 'work', (string)$id, $e);
+                error_log('[admin_work_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a medley Work's ENTIRE constituent list. Ordered,
+         * curator-authoritative — DELETE-then-reinsert via the ONE
+         * cycle-guarded write core, workMedleyReplace() (includes/
+         * work_admin.php), itself built out of workMedleyAttach() (rule
+         * #45 — self-link / exists / cycle guards live there, NEVER
+         * re-forked here). Posting an empty `constituents` array is a
+         * valid, deliberate "clear the medley" edit — mirrors
+         * manage/works.php's own reconcile.
+         * POST body: { id (required — the medley Work's id),
+         *   constituents: [{ work_id (required), sort_order?, note? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_medley_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $medleyId = (int)($body['id'] ?? 0);
+            if ($medleyId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $medleyId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            if (!workMedleyReady($db)) {
+                sendJson(['error' => 'Medley composition is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $rawRows = $body['constituents'] ?? [];
+            if (!is_array($rawRows)) { sendJson(['error' => 'constituents must be an array.'], 400); break; }
+
+            $rows = [];
+            foreach ($rawRows as $r) {
+                if (!is_array($r)) { continue; }
+                $rows[] = [
+                    'workId'    => (int)($r['work_id'] ?? 0),
+                    'sortOrder' => (int)($r['sort_order'] ?? 0),
+                    'note'      => isset($r['note']) ? (string)$r['note'] : null,
+                ];
+            }
+
+            try {
+                /* workMedleyReplace() itself skips + error_logs any invalid
+                   row (missing/self-link/unknown/would-cycle) rather than
+                   throwing — a single bad row must not cost the caller the
+                   whole save. Read the STORED list back afterwards (rule
+                   #35 — the response reflects what was actually written,
+                   not what was posted). */
+                $inserted     = workMedleyReplace($db, $medleyId, $rows);
+                $constituents = workMedleyConstituents($db, $medleyId);
+
+                logActivity('api.admin.work.medley_replace', 'work', (string)$medleyId, [
+                    'requested' => count($rows),
+                    'inserted'  => $inserted,
+                    'stored'    => count($constituents),
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $medleyId,
+                    'inserted'     => $inserted,
+                    'constituents' => $constituents,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.medley_replace', 'work', (string)$medleyId, $e);
+                error_log('[admin_work_medley_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace medley constituents.'], 500);
             }
             break;
         }
