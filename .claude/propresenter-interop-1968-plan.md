@@ -477,43 +477,85 @@ is dormant, rule #28).
 
 ## 6. P4 — media ingest (owner decision: ingest & store, linked to the song)
 
-**Facts:** media = an `ACTION_TYPE_MEDIA` action on a cue carrying `media.element.url`
-(`absolute_string` = percent-encoded `file://` URL; `local.path` = home-relative; the same values
-mirrored under `media.element.video.file.local_url`). ZIP entry name == absolute path with scheme
-stripped + percent-decoded. Three observed entry layouts (external-media absolute path;
-in-library `Media/x.png` where exact string match is unreliable BY DESIGN; portable
-`CURRENT_RESOURCE` flat form) → **resolve by url-decoded basename, fallback longest-suffix of
-`local.path`** — the rule that covers all three. Bundles with zero media are valid.
+> **Two locked owner decisions govern this phase.** (1) *Ingest & store* — bundle media becomes
+> `tblSongMedia` rows linked to the song (locked at program kickoff). (2) **D1 = "admin-only,
+> per-song opt-in"** (locked 2026-08-28, §12.3): imported media is visible to curators/admins
+> immediately but **NOT served publicly until a curator opts that song's media in**. The earlier
+> sketch of a *global* "withhold video/image kinds from public" filter is SUPERSEDED — the model is
+> now a real per-media-row **publish state**, an always-active serving gate, and a curator opt-in
+> UI. D3 is also locked: **lyric-sanitised derivative fixtures** (§6.6).
+>
+> **What P2/P3 already shipped that this extends** (verified in source, not assumed):
+> `_bulkImport_processProbundle()` classifies entries via the pure
+> `_bulkImport_probundleClassifyEntries()` (`.pro` vs media vs directory placeholders) and reports
+> media through the shared `_bulkImport_pp7MediaDeferredWarning()` + `media_present`/`media_files`
+> summary keys (song_importers.php ~L5290–5555); `_bulkImport_processProplaylist()` does the same
+> (~L6434) and already threads `$userId`, the raw `$bytes` and a `$zipEntriesByName` index
+> (~L6256–6270); `_bulkImport_processPro7()` returns `song_id` (~L5133); the decoder already
+> surfaces per-cue `mediaRefs` `{absoluteString, localRoot, localPath}`
+> (propresenter7_decode.php ~L824–854) — but `_bulkImport_parsePro7()` currently **drops** them.
+>
+> **Format facts (ground truth §2):** media = an `ACTION_TYPE_MEDIA` action on a cue carrying
+> `media.element.url` (`absolute_string` = percent-encoded `file://` URL; `local.path` =
+> home-relative; the same values mirrored under `media.element.video.file.local_url`). ZIP entry
+> name == absolute path with scheme stripped + percent-decoded. Three observed entry layouts
+> (external-media absolute path; in-library `Media/x.png` where exact string match is unreliable
+> BY DESIGN; portable `CURRENT_RESOURCE` flat form) → **resolve by url-decoded basename, fallback
+> longest-suffix of `local.path`**. Bundles with zero media are valid.
 
-### 6.1 Import
+### 6.1 The publish-state model — `tblSongMedia.Visibility` (one column, one vocabulary)
 
-Extend `bulk_import_probundle` (P2 handler): after each inner `.pro` imports, walk its
-`mediaRefs`, resolve each to a bundle entry, then:
-1. Read bytes via the entry's lazy `read` closure (P2 deliberately deferred materialisation).
-2. `SongMediaStorage::validateUpload`-equivalent on bytes: finfo MIME sniff (never the extension),
-   size caps, kind derivation: video/* → NEW kind `'video'`; image/* → NEW kind `'image'`;
-   audio/* → existing `'audio'`.
-3. Registry additions in `SongMediaStorage` (all app-level — **no DDL**: `Kind` is
-   `VARCHAR(20)` app-validated, widened from ENUM in #1090 for exactly this): `'video'`,`'image'`
-   → `FS_KINDS` (filesystem backend; videos exceed MEDIUMBLOB), `ALLOWED_MIMES` (video/mp4,
-   video/quicktime, video/webm; image/jpeg, image/png, image/webp), `SIZE_CAPS` (video 200 MiB,
-   image 10 MiB — owner-confirmable defaults, decision D1 §12.3).
-4. INSERT via the `media_upload` case's exact idiom (api2.php L5123-5163): SortOrder append,
-   `ilidStampNewRow`, `ed2_touchRevision`, `songMediaRecomputeFlags` (derives HasAudio/HasSheetMusic
-   only — video/image don't flip flags; verify the fold ignores unknown kinds rather than throwing),
-   `logActivity('song-media.upload', …, source: bulk_import_probundle)`. Dedupe by `Sha256` per
-   song+kind (the indexed column exists) so a re-import doesn't double-store.
-   `Annotation = 'ProPresenter import: <original basename>'`.
-5. Gating (rule #28): `contentGatingMediaAllowed($kind,…)` routes through the ONE resolver
-   (`accessMediaAllowed`) — register the new kinds in the resolver's kind→cap mapping
-   (verify exact map location in `access_resolver.php` during implementation), defaulting to the
-   most conservative existing media cap; MUST remain a verified no-op while
-   `content_gating_enabled='0'` (rule #28 A). Serving: `song-media.php` streams by row;
-   `streamRange` already handles FS media (audio precedent) — confirm range headers for video.
-6. Copyright/size design: imported backgrounds are frequently **licensed motion loops** — storage
-   is the owner-locked decision; *exposure* default is decision D1 (§12.3, recommended:
-   admin-surface visible immediately, public serving of `video`/`image` kinds withheld until the
-   owner opts in — a one-line kind filter at the public media-list emit).
+**The schema:** one additive column on `tblSongMedia`:
+
+```sql
+Visibility VARCHAR(20) NOT NULL DEFAULT 'public'
+  COMMENT 'Publish state (#1968 P4): public | admin (app-validated via
+  IHYMNS_SONG_MEDIA_VISIBILITIES in includes/song_media_visibility.php; VARCHAR
+  not ENUM per rule #20 — org / pending are reserved future values, each a one-line
+  map addition, never an ALTER). admin = curator-only: stripped from every public
+  list emit and denied bytes at song-media.php; imported ProPresenter media lands
+  admin until a curator publishes it (owner decision D1).'
+```
+
+No new index — every consumer filters by `SongId` first (`idx_song_kind` covers it); the
+visibility predicate is residual over a handful of rows per song. Existing rows: the
+`ALTER … NOT NULL DEFAULT 'public'` stamps every current row `'public'`, so every read that adds
+the filter matches exactly the rows it matched before — the **verified-no-op** property for all
+current content (proven in §6.7 G1e). Rule #44 justification: the column is acted on by the serve
+decision every request — not a vanity field.
+
+**The vocabulary** lives ONCE in a NEW `includes/song_media_visibility.php` (house pattern =
+`song_media_flags.php`: function-based, direct-access-guarded, memoised probe):
+`IHYMNS_SONG_MEDIA_VISIBILITIES = ['public' => 'Public', 'admin' => 'Admin only']` — VARCHAR +
+app-validation, never ENUM (rule #20). The forward-looking stress ("what would force a second
+migration?"): `org` (org-members-only media) and `pending` (a review queue) are each ONE map line
+plus serve-rule code — the VARCHAR absorbs them with zero DDL. Anything unknown at read time is
+treated as NOT public (fail closed on the serve axis for unknown states — the licensing-safe
+direction; the opposite of the gating module's fail-open, deliberately, because here the row was
+explicitly marked non-public by a writer that knew the vocabulary).
+
+**Rejected alternatives** (each with its real cost):
+- *A separate moderation table* (`tblSongMediaModeration`): a JOIN on every hot public media read
+  for ONE attribute with no history requirement; the #1090 `Kind` precedent already blessed
+  row-attribute VARCHAR vocabularies on this exact table. Overkill.
+- *The tier-caps registry* (`TIER_CAPS`): the **wrong axis**. A cap answers "may this VIEWER'S TIER
+  use this KIND of media" — per-viewer × per-kind. The publish state is a per-ROW editorial fact
+  about one file, independent of who is asking. Forcing it into caps means inventing a fake tier or
+  a fake kind, and — fatal — caps only act when `content_gating_enabled='1'` (rule #28A), while D1
+  must hold on every live env **with gating off**. The two systems compose instead: visibility
+  decides *whether the row exists publicly at all*; tier caps then decide *whether this viewer's
+  tier may use its kind* (§6.5's `play_video` cap).
+- *`tblContentRestrictions` / `checkContentAccess()`*: gates the whole SONG (entity grain), is
+  presence/licence-oriented, and rule #8 bans per-surface forks of it. Wrong grain.
+
+**The migration** — `appWeb/.sql/migrate-song-media-visibility.php` (model:
+`migrate-work-bowi.php`): existence-guarded `ALTER TABLE tblSongMedia ADD COLUMN Visibility …`,
+`@migration-adds tblSongMedia.Visibility` doctag, additive + idempotent, **no docroot include
+paths** (rule #41 — it needs none). `schema.sql`'s tblSongMedia block gains the byte-identical
+column line incl. COMMENT (rule #19; `test-schema-coverage.php` enforces the sync). ONE
+`migration-registry.php` entry — probe
+`static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongMedia', 'Visibility')` — from
+which the four setup-database facets derive.
 
 ### 6.2 Export (the portable form)
 
@@ -523,7 +565,373 @@ the bundle exporter): write the media entry at ZIP root under its flat filename 
 BOTH the `Media.url` and the type-specific `…video.file.local_url` mirror (research: the mirrored
 FileProperties URL must be kept in sync; `URL.local` is MANDATORY — PP shows "media not found"
 without it). Verify the emitted message shape against `TestBild.probundle`'s decoded media message
-field-for-field before calling it done.
+field-for-field before calling it done. (D1 note: only `Visibility='public'` media — or any media
+when the exporting curator is the audience, i.e. the editor-side bundle export — is offered for
+embedding; the export UI decision rides the later phase, the wire shape above is unchanged.)
+
+### 6.3 The serving gate — every public `tblSongMedia` surface, enumerated and closed
+
+**The rule-#28 lesson applied:** stripping a payload hides an affordance; it does not protect a
+file. So the gate exists at BOTH grains — the list emit (SQL filter) and the bytes (a per-row PHP
+decision) — and both resolve through ONE helper file so they cannot diverge (rule #35).
+
+**The ONE helper file** — `includes/song_media_visibility.php`:
+- `songMediaVisibilityColumnExists(\mysqli $db): bool` — memoised INFORMATION_SCHEMA probe
+  (STRICT-safe on un-migrated installs, the `_songMediaFlagsTableExists()` shape).
+- `songMediaVisibilityPublicFilterSql(\mysqli $db, string $alias = ''): string` — returns
+  `" AND {$alias}Visibility = 'public'"` when the column exists, `''` otherwise. The LIST gate.
+- `songMediaVisibilitySelectFragment(\mysqli $db): string` — `', Visibility'` or `''` (the
+  `SongData::_songbookDisplayAbbrSelect()` precedent) for fixed-column SELECTs.
+- `songMediaVisibilityRowAllowed(?string $rowVisibility, ?string $viewerRole): bool` — PURE. NULL /
+  `''` / `'public'` → true; anything else → `$viewerRole !== null &&
+  userHasEntitlement('edit_songs', $viewerRole)`. The BYTES gate.
+- `songMediaVisibilityIsValid(string $v): bool` — the write-side vocabulary check.
+
+**Invariant (stated + tested):** this gate is **ALWAYS ACTIVE** — deliberately NOT behind
+`content_gating_enabled` (D1 must hold on every live env today) — but is a **no-op for `public`
+rows** (every existing row) and on an **un-migrated install** (the filter degrades to `''`).
+Degradation is safe because the WRITER refuses to mint non-public rows on an un-migrated install
+(§6.4 step 1) — the read gate and the write gate degrade **in lockstep**, the same shape as rule
+#25's `lyricLinesMirrorPresent`/`lyricLinesSyncReady` pairing.
+
+**Every public surface, derived from the tree** (`grep -rn "FROM tblSongMedia"` outside
+`manage/`; §6.7 G1 re-derives this list in CI so it cannot silently grow a hole):
+
+1. **`SongData::_songMediaMap()`** (SongData.php ~L1510) — ONE WHERE clause here closes FIVE emit
+   points at once, because it feeds: `_fetchSongRow()`'s `$row['media']` (~L4592) → api.php
+   `song_detail`/`song_data` (L1208–1209), `random` (L1096), AND the **shared-cache**
+   `includes/pages/song.php` fragment (~L1552); the `hasAudio`/`hasSheetMusic` overrides at
+   L4594–4599; and `getAudioMediaStreamUrls()` (~L1586) → api.php **`bulk_audio`**'s #1962
+   registry append (L2261). The shared-cache constraint is WHY the filter is unconditional
+   server-side rather than viewer-conditional: `page=song` is a `$_cacheablePages` fragment (rule
+   #6/#30), so a per-viewer media list would poison the shared cache — **admin-only media never
+   renders on the public site, even for a signed-in admin; curators see it in the editor** (§6.5).
+2. **`SongData::getSongDetailExtras()`'s `'media'` block** (L3033–3040) — the
+   `song_detail?include=media` native emit (#1099) is a SECOND, independent SELECT (it *replaces*
+   `$song['media']` when requested) — it gets the same
+   `songMediaVisibilityPublicFilterSql()` fragment.
+3. **`song-media.php` — the BYTES.** The row SELECT (~L191) gains
+   `songMediaVisibilitySelectFragment()`; the gate runs **after** the tier gate (L256) and
+   **before** `enforceReadRateLimitKeyed` and the conditional-GET block — the file's own doc
+   already establishes that a 304 must never leak past an access check (L321–323). Deny answers
+   **404 with no body** — never 403 — so an admin-only row is indistinguishable from an absent one
+   (the `org-logo.php` posture). The curator allowance: `_songMedia_resolveUserId()` grows into
+   `_songMedia_resolveViewer(): array{userId: ?int, role: ?string}` — Bearer header first
+   (unchanged), then the host-wide **`ihymns_auth` cookie** (`^[a-f0-9]{64}$`, the same
+   tblApiTokens lookup, now also selecting `u.Role`). Load-bearing fact verified in source: BOTH
+   sign-in surfaces mint that cookie — the main app (`auth_cookie.php:96`) AND `/manage/login`
+   (`attemptLogin()` → mint, manage/includes/auth.php ~L667, #1377) — while the `/manage` PHP
+   session cookie is `path=/manage/` (auth.php ~L161) and **never reaches this route**. So both
+   editor media UIs' existing `/song-media/<id>` preview links (media-tab.js L213; v1 editor
+   index.php ~L1372) keep working for every signed-in curator with zero client change.
+4. **`songMediaRecomputeFlags()`** (song_media_flags.php L160) — not a byte/list leak, but an
+   honesty hole: an admin-only *audio* row would flip `tblSongs.HasAudio=1` and advertise audio
+   the public page won't show. Its `tblSongMedia` SELECT (L172) gains the same public-filter
+   fragment (probe-gated), so the derived flags reflect PUBLIC rows + legacy static files only.
+   Separately verified: `video`/`image` can never flip flags at all — `songMediaFlagKinds()` lists
+   only `audio|midi` → HasAudio, `sheet-music` → HasSheetMusic, and the SELECT's
+   `Kind IN (…)` never even fetches other kinds (no throw, no flip; §6.7 G1d pins this).
+
+**Verified non-surfaces** (each checked in source, listed so review doesn't re-hunt):
+`audio-media.php` streams legacy static `/data/audio/<SongId>.mp3` files — no `tblSongMedia`
+read; `songbook_export`/`getSongs()` attach NO media rows (`_songMediaMap` has exactly two
+callers); `og-image.php` renders lyric lines only; `service-worker.js.php` caches only URLs the
+gated endpoints hand it (an unpublish does not purge a client's already-cached bytes — same
+accepted semantics as a delete); `song_relocate.php` re-keys `SongId` (visibility travels with the
+row through merges); `ilyrics_id.php` is the id registry. **Admin surfaces stay deliberately
+unfiltered** — api2 `media_list` (L5069) and legacy `song_media_list` (api.php L3300) are the
+curator view behind the editor session gate; both gain the probe-gated `Visibility` select so the
+UI can badge rows (§6.5).
+
+**Cross-channel rollout hazard (the rule-#26 leak class, handled by mechanism not memory):** the
+three docroots share ONE MySQL but run three code vintages (alpha/beta/main). An admin-only row
+written via alpha would be emitted publicly by main's *older* code, which has no filter at all.
+The mechanism: media ingest is **dormant behind
+`tblAppSettings.pp7_media_ingest_enabled` (default `'0'`)** — §6.4 step 1 — which the owner flips
+ONCE after this PR has been promoted to `main` (so every channel that can *read* a media row
+carries the filter before any channel can *write* an `admin` one). Until then P4 lands fully
+inert: the P2/P3 deferred-warning behaviour continues byte-identically. (Sub-decision D-P4-3;
+running the migration card early is harmless — the column alone changes nothing.)
+
+### 6.4 The ingest flow — extend `bulk_import_probundle` + `_bulkImport_processProplaylist`
+
+**Pre-requisite cap fix (real bug, found during this planning pass — file the issue):**
+api.php's `bulk_import_probundle` case accepts uploads up to **100 MiB** (L2531–2537), but
+`pp7ZipListEntries()` throws when the input buffer exceeds `PP7_ZIP_MAX_INPUT_BYTES` = **25 MiB**
+(propresenter7_zip.php L134/L275) — today a 25–100 MiB bundle uploads fine, then fails with
+"input exceeds the 25 MiB cap" (the case's own comment mis-describes the constant as per-entry).
+Fix inside P4: raise `PP7_ZIP_MAX_INPUT_BYTES` to 100 MiB (aligned with the upload cap;
+`PP7_ZIP_MAX_ENTRY_BYTES` is defined as the same constant and follows). Memory note: the reader
+is whole-buffer by design, so peak ≈ bundle + one entry + one staged copy ≈ 3× ≈ 300 MiB —
+verify against the host's `memory_limit` during implementation; the constants are deliberately
+one-line-tunable if the host affords less (D-P4-2).
+
+**Kind registry additions** (`SongMediaStorage` — app-level only, NO DDL: `Kind` is `VARCHAR(20)`,
+widened from ENUM in #1090 for exactly this):
+- `FS_KINDS` += `'video'`, `'image'` (both filesystem: motion loops are tens of MiB; splitting
+  backends within one feature buys nothing — the class doc-block's "rebalance without touching
+  consumer code" escape hatch stays available).
+- `ALLOWED_MIMES`: `video` → `video/mp4→mp4, video/quicktime→mov, video/webm→webm,
+  video/x-m4v→m4v`; `image` → `image/jpeg→jpg, image/png→png, image/webp→webp`. Tight on purpose;
+  a new type is a one-line addition.
+- `SIZE_CAPS`: `video` 100 MiB (= the bundle upload cap — a video that can't arrive can't need a
+  bigger cap), `image` 10 MiB (D-P4-2). `kindLabel()`: `'video' => 'Video'`, `'image' => 'Image'`.
+- `gating_rules.php`'s `GATING_DROPPABLE_MEDIA_KINDS` gains `'video' => 'Video',
+  'image' => 'Image'` so admin-defined drop rules can name them (one line each, mirrors the map's
+  own doc contract).
+
+**Parse exposure:** `_bulkImport_parsePro7()` gains a **sparse** `'mediaRefs'` key (present only
+when non-empty — the rule-#45 sparse-`label` precedent, so only the media-bearing fixtures'
+expected JSONs change, not all 13): the decoder's per-cue `mediaRefs` flattened in cue order,
+deduped on the `{absoluteString, localRoot, localPath}` triple. `_bulkImport_processPro7()`
+carries it up as a sparse `media_refs` summary key (the `song_id` precedent — every caller reads
+named keys). Changed expected files are REGENERATED with `tools/pp7-gen-expected.js` and
+hand-reviewed line-by-line before commit (the §8.2 discipline; note the shipped tool name is
+`pp7-gen-*.js`, not the plan's older `pp7-make-*` working title).
+
+**Resolution — a NEW pure function** (unit-tested DB-free, §6.7 G2):
+`_bulkImport_pp7ResolveMediaRef(array $ref, array $mediaEntriesByBasename): ?array` implements the
+ground-truth rule: `absoluteString` → strip `file://` → `rawurldecode()` → `basename()` → look up
+in an index of media entries keyed by `rawurldecode(basename(entryName))`. Multiple candidates →
+prefer the entry whose full decoded name is the longest suffix of the decoded absolute path;
+fallback: longest-suffix match of `local.path`; still ambiguous or unmatched → **null** (warn,
+skip — never guess: attaching the WRONG media to a song is precisely the false-positive class the
+owner's rule bans). This one rule covers all three observed entry layouts.
+
+**The ONE ingest core** (bundle + playlist share it — rule #22):
+`_bulkImport_pp7IngestMedia(\mysqli $db, string $songId, array $mediaRefs, string $bundleBytes,
+array $mediaEntriesByName, ?int $userId, array &$warnings): array{ingested:int, duplicate:int,
+unresolved:int, skipped:int}`:
+
+1. **Dormancy gate:** require `getAppSetting('pp7_media_ingest_enabled','0') === '1'` AND
+   `songMediaVisibilityColumnExists($db)`. Either false → return zeros; the caller keeps emitting
+   TODAY's `_bulkImport_pp7MediaDeferredWarning()` line verbatim (truthful — media was seen, not
+   imported). **Fail CLOSED by construction**: a row that cannot be stored `admin` is never stored
+   at all — the opposite branch (store public "for now") is the D1 violation.
+2. Resolve each ref (above); unresolved → warning naming the ref, counted.
+3. `pp7ZipReadEntry()` → bytes (already size-capped by the reader).
+4. **Validate on the BYTES via the EXISTING path, not a second one** (the rule-#42 "second
+   upload-validation path" red flag): write bytes to a `tmpfile()` and call
+   `SongMediaStorage::validateUpload($tmpPath, $kind, $size)` unchanged — finfo sniff, size cap,
+   MIME allow-list. Kind is derived FROM the sniffed MIME first
+   (`video/*`→`video`, `image/*`→`image`, `audio/*`→`audio`; anything else → warn + skip), then
+   validateUpload cross-checks the specific type.
+5. **Dedupe by content:** `sha256` of the bytes; an existing `(SongId, Kind, Sha256)` row → skip,
+   counted `duplicate` (re-importing the same bundle — including over a dedupe-'skipped' song —
+   never double-stores; `idx_sha256` exists).
+6. **INSERT via the `media_upload` idiom** (api2.php L5135–5168 copied faithfully): transaction;
+   `SortOrder` = max+1 per `(SongId, Kind)`; **`Visibility` bound to the `'admin'` vocabulary
+   value** (the column list built with the select-fragment helper's write twin so the INSERT is
+   probe-safe — though step 1 already guarantees the column exists);
+   `Annotation = 'ProPresenter import: <basename>'` (curator-editable later, the existing
+   `media_update` path); `UploadedBy = $userId` (nullable); `ilidStampNewRow($db, 'document',
+   $newId)`; commit; staged-FS-orphan unlink on any failure (the existing catch shape).
+7. **POST-COMMIT `songMediaRecomputeFlags($db, $songId)`** — REQUIRED, not optional:
+   `tests/php/test-editor2-metadata-1862.php` derives `tblSongMedia` writer files from the tree
+   and will fail `song_importers.php` the moment it gains an `INSERT INTO tblSongMedia` without
+   this reference (the mechanism already exists; this plan just refuses to fight it). Harmless
+   here: video/image are outside the flag-kind map, and an admin-only audio row is excluded by the
+   recompute's new public filter (§6.3.4).
+8. `logActivity('song-media.upload', 'song', $songId, [... , 'source' =>
+   'bulk_import_probundle'|'bulk_import_proplaylist', 'visibility' => 'admin'])`. Deliberately NO
+   `ed2_touchRevision()` — it is api2-local, and the import's own revision row from
+   `_bulkImport_saveSong()` already marks the song touched.
+
+**Wiring — three call sites:**
+- `_bulkImport_processProbundle()` gains an optional `?int $userId = null` third parameter
+  (api.php threads the session user; api2 threads `$ed2UserId` — both call sites are additive).
+  After each inner `.pro` import with `$inner['ok']` and a usable `song_id`, call the core with
+  that entry's `media_refs` + the classifier's `$mediaEntries` (indexed by decoded basename once,
+  up front). On a dedupe-'skipped' song the summary's `song_id` is the never-inserted fresh id —
+  reuse `_bulkImport_proplaylistResolveSkippedSong()`'s re-derivation (its doc-block exists for
+  exactly this) before attaching; unresolvable → skip media for that entry with a warning.
+- `_bulkImport_processProplaylist()` already holds everything (`$userId`, `$bytes`,
+  `$zipEntriesByName`, `$bundle['mediaEntries']`); the per-item embedded-resolve path calls the
+  same core per resolved song. Its `$cache` already collapses a `.pro` referenced by two playlist
+  items into one import — media ingest keys off the same cache entry so a twice-referenced song
+  ingests its media once.
+- **Bare `.pro` uploads** (`bulk_import_pro7`): a lone `.pro` can carry `mediaRefs` with no
+  container to resolve against (the owner's real `Here To Stay …[Video].pro`). Emit ONE summary
+  warning: "N media reference(s) are not embedded in a .pro file — export a .probundle from
+  ProPresenter to bring the media." Never an error.
+
+**Summary shape:** when the core ran, the deferred-media warning is REPLACED by real counts —
+additive keys `media_ingested`, `media_duplicate`, `media_unresolved` beside the existing
+`media_present`/`media_files`, plus per-file `warnings[]` lines (tests assert warning KINDS,
+never prose — rule #35).
+
+### 6.5 The curator opt-in UI + the visibility write endpoint
+
+**The editor2 Media tab is the ONE curator surface** (media-tab.js — found, not forked):
+- `KIND_ORDER`/`KIND_META` gain `video` (icon `bi-film`, accept `video/*`, cap 100 MiB) and
+  `image` (`bi-image`, `image/*`, 10 MiB). Without this the ingested rows are INVISIBLE — the tab
+  renders only listed kinds (`mediaByKind()` filters; the rule-#33 half-ship). This also gives
+  curators direct video/image upload for free via the existing upload row.
+- `media_list` / `ed2_mediaRowShape()` emit `visibility` (probe-gated `Visibility` select;
+  `'public'` when the column is absent). `buildFileRow()` renders an "Admin only" badge
+  (`warning-subtle` tokens, the #1223 badge conventions) + a **Publish / Unpublish** toggle per
+  row, and each kind block gets a "Publish all N" convenience button when it holds >1 admin rows
+  (D-P4-1's per-song convenience without a second data model).
+- The PHP↔JS kind/cap agreement (KIND_META's own comment says "mirrors
+  SongMediaStorage::SIZE_CAPS" — a rule-#35 keep-in-sync comment) finally gets its mechanism:
+  §6.7 G1c parses both files and asserts the lockstep, retro-covering the existing four kinds too.
+
+**The write endpoint** — api2 `case 'media_set_visibility'` (POST JSON `{mediaId, visibility}`):
+validates against `songMediaVisibilityIsValid()` (the ONE vocabulary — never an inline list);
+**503** when the column is un-migrated (the `media_upload` 503 precedent; status is the contract,
+rule #35); resolves the row's SongId (the `media_update` shape), UPDATEs, logs
+`logActivity('song-media.visibility', 'song', $songId, ['media_id', 'visibility'])`. **Gates come
+free and are sufficient**: api2's file-wide session + editor gate and the top-of-file
+`X-Requested-With` `validateCsrfRequest()` POST gate (rule #29) cover the case — and no NEW
+entitlement is minted, deliberately: a curator who can `media_upload` instantly-public media today
+gains no new exposure class by publishing imported media (rule #44's discipline applied to
+entitlements; state this in the PR so review doesn't hunt for a missing gate).
+
+**The legacy v1 editor** (`js/modules/song-media-editor.js` + `song_media_list`): read-only
+"Admin only" badge only (probe-gated Visibility select on the v1 list). The WRITE control stays
+v2-only — v1 is the surface being retired and a second write client doubles the contract for no
+user (D-P4-4, trivially reversible).
+
+**The public song page must honour the publish** (rule #33 — the toggle is a contract): the
+fragment's media section (`includes/pages/song.php` ~L1552) currently renders only the four
+original kinds (`$mediaByKind` fixed keys). Add `video` (a `<video controls preload="none">` per
+row, `src=streamUrl`) and `image` (an `<img loading="lazy">` per row) blocks — plain markup, no
+inline script, CSP untouched (rule #30). Tier-cap wiring for the new kinds, dormant under rule
+#28A: `contentGatingMediaKindCap()` gains `'video' => 'play_video'` backed by the canonical
+one-line extension path — `TIER_CAPS` `'CanPlayVideo' => ['Video', 'Play video media', 'json', 0]`
+(access_tier_validation.php L86) + `TIER_ACTION_CAP_MAP` `'play_video' => 'CanPlayVideo'`
+(ccli_validator.php L298) + one `$capBool` line each in `accessApplySong()` (access_resolver.php
+L145) and `songPageGatingDecide()` (song_page_gating.php L134); `'image'` maps to **null** (no
+tier cap — a decorative background is not premium content; visibility already gates the imported
+ones; D-P4-7). All of it a verified no-op while `content_gating_enabled='0'`.
+
+### 6.6 D3 fixtures — lyric-sanitised derivatives of the owner's v21.4 samples (DECIDED)
+
+The owner chose §12.3 D3 option (b): commit **sanitised derivatives**, generated by a committed
+tool so the fixtures are reproducible from the originals (which live in `_temp/` on alpha and are
+NOT themselves committed under tests/).
+
+**The tool** — `tools/pp7-sanitise-fixture.js` (node; protobufjs reflection over the vendored
+`proto-bundle.json`, `keepCase: true` — tooling context, no CSP):
+- **`.pro` mode:** decode; for every `cue → …text.rtf_data`, rewrite ONLY the visible text runs
+  with dummy lines (`Sanitised line N`, one per original line, cycling) while preserving the RTF
+  header bytes VERBATIM — `\cocoartf<ver>`/`\rtf0` dialect markers, fonttbl, colortbl, and the
+  Cocoa `\`+newline soft returns — so the dialect coverage survives. `application_info`, uuids,
+  arrangements, cue_groups, group names (`Verse N (SDAH)`, `Tag`), CCLI metadata and `mediaRefs`
+  are preserved untouched (facts, not lyrics). Re-encode via reflection. **Honest limitation,
+  stated in the tool + README:** a re-encoded file's field ordering is protobufjs's, not
+  ProPresenter's writer's — these fixtures carry v21.4 *schema + vocabulary + media-ref* coverage;
+  raw-PP-writer byte realism (incl. the broken-EOCD quirk) stays covered by the untouched
+  MIT fixtures (`bussnet-export-from-pp.probundle` et al.).
+- **`.probundle` mode:** walk entries with the same tolerant-reader logic, keep every entry NAME
+  byte-identical (the absolute-path media entry name IS the resolution coverage), sanitise the
+  inner `.pro` as above, and replace each media entry's bytes with the committed
+  `tests/fixtures/propresenter/assets/tiny.mp4` — a real ~20 KB single-black-frame MP4 generated
+  once with ffmpeg, because ingest validation runs finfo on the bytes and a hand-typed fake that
+  finfo rejects would silently test nothing (rule #34's under-report clause). **Verify during
+  implementation that PHP finfo sniffs it `video/mp4`**; if the host's magic DB says otherwise,
+  regenerate the stub until it does — the fixture must exercise the REAL accept path. Emit a
+  clean stored ZIP.
+
+**Fixtures produced** (committed under `tests/fixtures/propresenter/`, each with
+`expected/<name>.decode.json` + `.song.json` + a NEW `.media.json` recording every
+`{ref → resolved entry name | null}` outcome):
+
+| Fixture | ≈ size | Unique coverage |
+|---|---|---|
+| `owner-v21-002-sdah-sanitised.pro` | < 80 KB | v21.4, `Verse N (SDAH)` + `Tag` vocabulary, 3 named arrangements |
+| `owner-v21-001-media-sanitised.probundle` | < 50 KB | **THE media fixture**: root `.pro` + absolute-path media entry + per-cue `ACTION_TYPE_MEDIA` ref that resolves |
+| `owner-v21-heretostay-video-sanitised.pro` | < 60 KB | `mediaRefs` with NO container — the warn-only path |
+| `owner-v18-heretostay-sanitised.pro` | < 60 KB | v18 provenance spread (optional; cheap) |
+| `assets/tiny.mp4` | ~20 KB | the reusable finfo-sniffable dummy media |
+
+README.md + LICENSE-NOTES gain a section: owner-derived, lyrics removed by
+`tools/pp7-sanitise-fixture.js`, source samples named (alpha `_temp/`, commit `2642f28`).
+
+### 6.7 Guards (tree-derived + mutation-proven, rule #34)
+
+**G1 — `tests/php/test-song-media-visibility.php`** (the surface guard):
+- (a) Derive every file under `appWeb/public_html` **excluding `manage/`** whose comment-stripped
+  source contains `FROM tblSongMedia`; assert each SELECT site calls
+  `songMediaVisibilityPublicFilterSql(` or `songMediaVisibilityRowAllowed(` (the two blessed
+  mechanisms). Floor ≥ 3 files (SongData.php, song-media.php, song_media_flags.php) — the vacuity
+  check.
+- (b) `song_importers.php`'s media INSERT block references the `'admin'` vocabulary constant and
+  the dormancy gate (`pp7_media_ingest_enabled`) — imported media cannot land public.
+- (c) PHP↔JS lockstep (the org-logo check-(g) pattern): parse `SongMediaStorage`'s
+  FS_KINDS/DB_KINDS/SIZE_CAPS and media-tab.js's KIND_ORDER/KIND_META; assert every server kind
+  has a client block and the caps agree.
+- (d) Functional: include `song_media_flags.php`; assert `video`/`image` appear in NEITHER
+  `songMediaFlagKinds()` list (they must never flip HasAudio/HasSheetMusic).
+- (e) Functional no-op proof: `songMediaVisibilityRowAllowed(null, null)` /
+  `('', null)` / `('public', null)` all true (anonymous keeps every existing row);
+  `('admin', null)` false; `('admin', '<editor role>')` true via a stubbed entitlement map; the
+  filter/select fragments return `''` when the probe says the column is absent.
+- Mutations (recorded in the doc-block): delete the filter call from `_songMediaMap` → (a) red;
+  flip the importer's stored value to `'public'` → (b) red; drop `'video'` from KIND_META → (c)
+  red; add `'video'` to `songMediaFlagKinds()['HasAudio']` → (d) red.
+
+**G2 — `tests/php/test-pp7-media-ingest.php`** (pure, DB-free): the
+`_bulkImport_pp7ResolveMediaRef()` truth table over the three real layouts — rows lifted from the
+committed fixtures (`owner-v21-001-media-sanitised.probundle`'s absolute-path ref;
+`bussnet-testbild.probundle`; a hand-built `CURRENT_RESOURCE` flat form and a `Media/x.png`
+in-library form), percent-decoding (`Music%20Notes.mp4` → `Music Notes.mp4`), the
+ambiguous-two-candidates → longest-suffix rule, and unmatched → null. Plus the MIME→kind
+derivation fold and the sparse-`mediaRefs` parse exposure (media-bearing fixtures carry the key,
+others don't — asserted against the regenerated expected JSONs). Mutations: break the
+`rawurldecode` → red; make ambiguity guess-first-match → red.
+
+**G3 — existing guards that extend automatically** (state, don't duplicate):
+`test-editor2-metadata-1862.php` tree-derives `tblSongMedia` writer files — `song_importers.php`
+joins the set and MUST reference `songMediaRecomputeFlags(` or CI fails with no edit to the guard;
+`test-pp7-probundle-import.php`/`test-pp7-parse.php` glob the fixture tree, so the new sanitised
+fixtures need their expected JSONs or fail (the §8.3a coverage floor rises with them);
+`test-schema-coverage.php` + `test-migration-registry.php` enforce §6.1's migration discipline;
+`test-editor-api2-contract.php` gains the `media_set_visibility` rows.
+
+### 6.8 Sub-decisions (defaulted per the CLAUDE.md protocol — each trivially changeable), risks, issues
+
+| # | Decision | Default taken + why | Cost of the alternative |
+|---|---|---|---|
+| D-P4-1 | Visibility grain | **Per-media-row** `Visibility` + a per-kind "Publish all" UI convenience. A per-song flag can't express "publish the image, hold the licensed motion loop", and the row column costs the same migration. | Per-song = coarser, same DDL cost, less honest |
+| D-P4-2 | Size caps | video 100 MiB (= bundle upload cap, = raised ZIP input cap), image 10 MiB. One-line constants. | Larger needs `memory_limit` verification on the host first |
+| D-P4-3 | Rollout gate | `pp7_media_ingest_enabled` app setting, default `'0'`; owner flips once after `main` carries this PR. Mechanism, not memory, against the shared-DB cross-channel leak (§6.3). | No gate = a real window where main's old code serves `admin` rows publicly |
+| D-P4-4 | Opt-in UI home | editor2 media tab (write) + v1 badge (read-only). | Duplicating the write control into the retiring v1 editor |
+| D-P4-5 | Transcoding / thumbnails / poster frames | **Out of scope** — bytes are stored + streamed as-is; `streamRange` already serves FS media with Range support (verify `<video>` seek behaves against it during implementation). | A media pipeline this program doesn't need yet |
+| D-P4-6 | Public rendering of published video/image | **In scope** (the fragment blocks, §6.5) — without it, "Publish" changes nothing visible, the rule-#33 dead toggle. | Deferring = shipping a toggle that does nothing a user can see |
+| D-P4-7 | Tier caps for new kinds | `video` → new one-line json cap `CanPlayVideo`; `image` → no cap (null). Dormant under rule #28A either way. | Reusing `play_audio` for video muddles the registry's semantics |
+
+**Risks:** memory peak on 100 MiB bundles (whole-buffer reader ×3 — measure before raising caps
+further); finfo variance across shared-hosting magic DBs (mitigated: both `video/mp4` and
+`video/quicktime` allow-listed; the tiny.mp4 fixture exercises the real sniff in CI);
+ambiguous basenames in exotic bundles (resolved: never guess, warn + skip); the SW's cached bytes
+surviving an unpublish (accepted, matches delete semantics); the cross-channel window (closed by
+D-P4-3).
+
+**Issues to file at P4 kickoff** (standing-tasks §2 — beyond §12.2's list): (1) retrospective —
+the 25 MiB `PP7_ZIP_MAX_INPUT_BYTES` vs 100 MiB probundle upload cap mismatch (a 25–100 MiB
+bundle fails after upload today; fixed inside P4); (2) update the P4 feature issue with D1's
+locked answer + this design; (3) a `for consideration` note: exposing `Visibility` on the future
+native admin API when one exists.
+
+### 6.9 PR-4 commit breakdown
+
+`feat(media): ingest .probundle media into tblSongMedia with admin-only visibility (#1968 P4)` —
+one PR, commits ordered fixtures-and-safeguards-before-feature (the program's standing order):
+
+1. `test: sanitiser tool + owner-derived sanitised fixtures (.pro/.probundle) + tiny.mp4 + expected JSONs`
+2. `feat(sql): tblSongMedia.Visibility column — migration + schema.sql mirror + registry card (dormant)`
+3. `feat(includes): song_media_visibility helpers + public-surface filter + song-media.php byte gate + surface guard` (the gate lands BEFORE anything can write an `admin` row)
+4. `feat(importers): probundle/proplaylist media ingest core (resolve→sniff→store admin) + video/image kinds + ZIP input-cap fix + ingest tests`
+5. `feat(editor): media tab video/image blocks + visibility badge/toggle + media_set_visibility endpoint`
+6. `feat(pwa): song-page video/image render blocks + play_video tier cap registration (dormant)`
+7. `feat(export): portable CURRENT_RESOURCE media URLs in the bundle exporter (§6.2 shape, fixture-verified)`
+8. `docs: PROPRESENTER-TESTING.md media scenarios; wiki + CHANGELOG; issue close-outs`
+
+Owner verify (§10 checklist grows two rows): a real PP import of our media-bearing exported
+bundle, and a curator walk-through — import the 001 bundle on alpha, see the admin-only badge,
+confirm the public song page shows nothing, publish, confirm the video renders. Non-blocking for
+merge; the flip of `pp7_media_ingest_enabled` waits for `main` promotion (D-P4-3).
 
 ---
 
@@ -676,13 +1084,17 @@ performed mutations in each test's doc-block, the `test-component-label-sites.js
   `bulk_import_pro7`, the revision row's NewData); the app would act on nothing a column
   collects.
 
-**P4: still no DDL.** `tblSongMedia.Kind` is `VARCHAR(20)` app-validated (#1090 widened it from
-ENUM for precisely "new media kinds need no ALTER" — rule #20 already paid this cost). New kinds
-= map lines in `SongMediaStorage` (§6.1.3) + the schema.sql **COMMENT** on the Kind column updated
-to name `video | image` (comment-only edit; no structural change, but rule #19's byte-mirroring
-discipline means the comment edit lands in schema.sql alone — verify `test-schema-coverage.php`
-is comment-tolerant before assuming; if it demands migration parity for comment edits, ship a
-no-op comment-sync migration per its established pattern — check during implementation).
+**P4: ONE additive column** — SUPERSEDES this section's earlier "P4: still no DDL" claim, which
+predated the D1 lock (admin-only per-song opt-in needs a real publish state, §6.1):
+`tblSongMedia.Visibility VARCHAR(20) NOT NULL DEFAULT 'public'` via
+`migrate-song-media-visibility.php` + the byte-identical schema.sql mirror + ONE
+migration-registry entry with a real `columnExists` probe (rule #19), vocabulary app-validated in
+`includes/song_media_visibility.php` (rule #20 — `org`/`pending` reserved as map lines, never an
+ALTER). The KINDS half stays no-DDL exactly as before: `tblSongMedia.Kind` is `VARCHAR(20)`
+app-validated (#1090 widened it from ENUM for precisely "new media kinds need no ALTER") — new
+kinds = map lines in `SongMediaStorage` (§6.4) + the schema.sql **COMMENT** on the Kind column
+updated to name `video | image` (that comment edit rides the same Visibility migration's
+schema.sql touch, so no separate comment-sync question arises).
 
 **P5/P6: none** (template styling is localStorage per #888; `.proTheme` unscheduled).
 
@@ -789,6 +1201,9 @@ The **one residual** that only a human with Windows ProPresenter can close:
    (rule #28), reversible per song.
 5. **Need back:** "a, b or c."
 
+> **DECIDED 2026-08-28: (b)** — refined to a per-media-row `tblSongMedia.Visibility` publish
+> state (`admin` on import, curator toggles to `public`); full design in §6.1/§6.3/§6.5.
+
 **D2 — `.proplaylist` import audience** *(blocks nothing; P3 only)*
 1. **Decision:** curator-only surface (editor import page → set list in the curator's account)
    first, or also a public end-user upload?
@@ -810,6 +1225,10 @@ The **one residual** that only a human with Windows ProPresenter can close:
    (lose v21.4/`(SDAH)`/`Tag` coverage in CI).
 4. **Recommendation: (a)**, with (b) as the fallback if the repo ever opens.
 5. **Need back:** "a, b or c."
+
+> **DECIDED 2026-08-28: (b)** — lyric-sanitised derivatives via the committed
+> `tools/pp7-sanitise-fixture.js` generator (structure + dialect markers preserved, media
+> replaced with a tiny real MP4); fixture set + tool spec in §6.6.
 
 **D4 — real-ProPresenter verification of the P2 bundle-layout fix + P3 playlist export**
 *(non-blocking, but the export changes stay "fixture-verified only" until done)* — run the §10.3
@@ -839,9 +1258,10 @@ titles per rule #46 (`feat:` on P1–P5 PRs — they must bump the minor).
 tests; import handler + set-list write; static-module rebuild with playlist entries +
 `arrangement_name=5` adoption; client export; docs; UNCONFIRMED flags).
 
-**PR-4 — `feat(media): ingest .probundle media into tblSongMedia`** — P4 (kind registry additions;
-resolve/extract/store; gating registration + dormancy verify; portable-URL export form; docs;
-implements D1's answer).
+**PR-4 — `feat(media): ingest .probundle media into tblSongMedia with admin-only visibility`** —
+P4 (Visibility schema + always-active serving gate; ingest core; kind registry additions; curator
+opt-in UI; portable-URL export form; sanitised fixtures; docs — the full commit order is §6.9;
+implements D1's locked answer).
 
 **PR-5 — `feat(export): ProPresenter theming tiers + .pro-as-template (#888)`** — P5.
 
