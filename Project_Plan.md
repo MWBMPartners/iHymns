@@ -178,11 +178,11 @@ iHymns/
 ├── .claude/                    # Claude context, memory, project brief
 ├── .github/                    # GitHub Actions CI/CD workflows
 │   └── workflows/
-│       ├── deploy.yml          # SFTP deployment (beta → live)
-│       ├── promotion-deploy-bridge.yml # RELEASE bump at beta→main promotion (#1899)
+│       ├── deploy.yml          # SFTP deployment; also classifies + bumps the tag-free version anchor on alpha (#1963/#1965)
+│       ├── promotion-deploy-bridge.yml # Fires the deploy when a promotion PR merges to beta/main (#1007)
 │       ├── changelog.yml       # Auto-generate changelog
-│       ├── release.yml         # GitHub Releases from tags
-│       └── test.yml            # Lint & validation checks (14 workflows total)
+│       ├── release.yml         # Dormant — manual-tag-only GitHub Releases (#1965)
+│       └── test.yml            # Lint & validation checks (15 workflows total)
 ├── .SourceSongData/            # Raw song text files (source of truth)
 │   ├── Carol Praise [CP]/
 │   ├── Junior Praise [JP]/
@@ -274,15 +274,14 @@ iHymns/
 7. Credentials via GitHub Secrets (`SFTP_HOST`, `SFTP_KEY`, etc.)
 6. `vars.SFTP_ENABLED` kill switch for deployment
 
-### Version Numbering (Tag-Derived, #1899)
+### Version Numbering (Tag-Free, #1963 → #1965 — supersedes the earlier tag-derived #1899 scheme)
 
-- Version stored in `appWeb/public_html/includes/infoAppVer.php`; tag-derived `MAJOR.RELEASE.BUILD` scheme, baseline **`v1.0.0`**:
-  - **MAJOR** — hand-edited in `infoAppVer.php` (rare; a deliberate product-identity bump). *Note:* the major digit **no longer encodes a data-source phase** — the old "`v1.x` = local-JSON phase, `v2.x` = iLyrics dB phase" scheme is dead, because reads went DB-direct with epic #1010 (there is no local-JSON phase to be in).
-  - **RELEASE** — automated at the beta→main promotion by `promotion-deploy-bridge.yml`
-  - **BUILD** — the monotonic per-commit git commit count (`git rev-list --count HEAD`), `NULL` on an undeployed checkout
-- Build metadata (commit SHA, date, URL) injected at deploy time
-- Git tags (`v1.0.0`) trigger GitHub Releases via `release.yml`
-- *(historical)* the old `feat/`-driven minor auto-bump on push to `beta` (`version-bump.yml`) is retired
+- Version stored in `appWeb/public_html/includes/infoAppVer.php`; the **committed `MAJOR.MINOR`** (currently `1.1`) is the authoritative anchor — no git tags, no GitHub Releases:
+  - **MAJOR.MINOR** — committed directly in `infoAppVer.php`. *Note:* the major digit **no longer encodes a data-source phase** — the old "`v1.x` = local-JSON phase, `v2.x` = iLyrics dB phase" scheme is dead, because reads went DB-direct with epic #1010 (there is no local-JSON phase to be in).
+  - **BUILD** (the patch digit at deploy) — the monotonic per-commit git commit count (`git rev-list --count HEAD`), injected by `deploy.yml` on every deploy; `NULL` on an undeployed checkout.
+- On `alpha`, a Conventional-Commit prefix on the squash-merge subject decides whether `deploy.yml` bumps `MAJOR.MINOR`: `feat:` → minor, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → major, everything else → build-number-only. A bump is committed straight back to the file (`[skip ci]`, a normal branch push, never a tag).
+- Build metadata (commit SHA, date, URL) injected at deploy time, same mechanism.
+- `release.yml` is now **dormant** (fires only on a human-pushed `v*` tag or manual dispatch — nothing in the pipeline pushes one); the old `feat/`-driven minor auto-bump on push to `beta` (`version-bump.yml`) is retired, as is the earlier tag-derived `promotion-deploy-bridge.yml` tag-minting step it superseded.
 
 ### Modular Architecture Principles
 
@@ -450,7 +449,7 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ## 🗓 Milestones & Roadmap
 
-> **Live completion status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).** The Phase-ONE checklists below are the *original* scoping plan; in reality Milestones 1–3 and 6 (Web PWA core + enhanced, Song Editor) are complete and shipped, Apple (4–5) is Phase 1 + Phase 2 code-complete but unreleased, and Android (7) is a scaffold in progress. The app is at **v1.0.0** (tag-derived scheme, #1899).
+> **Live completion status is tracked in [PROJECT_STATUS.md](PROJECT_STATUS.md).** The Phase-ONE checklists below are the *original* scoping plan; in reality Milestones 1–3 and 6 (Web PWA core + enhanced, Song Editor) are complete and shipped, Apple (4–5) is Phase 1 + Phase 2 code-complete but unreleased, and Android (7) is a scaffold in progress. The app is at **v1.1.0** (tag-free, Conventional-Commit-driven scheme, #1963 → #1965).
 
 ### Milestone 1: Project Setup & Data Pipeline ✅
 - [x] Analyse existing repo and song data
@@ -539,5 +538,5 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ---
 
-*Last updated: 2026-08-24*
-*Version: 0.1.0-planning (this planning document's own version; the app is at v1.0.0 — see PROJECT_STATUS.md)*
+*Last updated: 2026-08-28*
+*Version: 0.1.0-planning (this planning document's own version; the app is at v1.1.0 — see PROJECT_STATUS.md)*

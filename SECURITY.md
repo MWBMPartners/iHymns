@@ -259,7 +259,18 @@ These are enforced conventions; new code must follow them (see
   the bytes (not the client type) against an allow-list and store by SHA-256.
 - **Secrets** — DB credentials, keys and tokens live outside the web root
   (`appWeb/.auth/`, `appWeb/private_html/`) and are never committed. CI scans for
-  committed secrets.
+  committed secrets. **Application-runtime secrets stored in the database**
+  (e.g. the Sign-in-with-Apple `.p8` key, email-provider credentials) go through
+  a dedicated **encrypt-at-rest** engine (`includes/secret_crypto.php`, #1466) —
+  each flagged value is stored as a self-describing
+  `enc:v1:<alg>:<keyid>:<nonce>:<ciphertext+tag>` envelope (libsodium
+  `crypto_secretbox`, AES-256-GCM fallback), with the master key held on the
+  filesystem outside every docroot (never in the database itself), so
+  disclosure needs **two** separate primitives — a DB read *and* a filesystem
+  read. The engine and its readers are **readers-first** and roll out in
+  phases; a secret stays legacy plaintext (a verified no-op) until an operator
+  provisions the master key on all three docroots and runs the one-shot
+  encrypt-in-place migration — see `DEV_NOTES.md`'s operator runbook.
 - **CI/CD workflow hardening** — GitHub Actions `run:` steps never interpolate
   attacker-controllable text (e.g. a commit message) via `${{ }}` directly into
   the shell script body, since that pastes the raw text into the script before

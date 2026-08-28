@@ -11,16 +11,16 @@
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
 | 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 48 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1936 — see GitHub for live open/closed counts |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1979 — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
 | 🛠 Admin Portal | ✅ Active | 48 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748); Operations gained the outbound Webhooks surface (#1909) |
-| 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge (the minor-auto-bumping `version-bump.yml` was retired at #1899; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline) |
+| 🚀 CI/CD Pipeline | ✅ Complete | 15 workflows: deploy, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, language-registry-refresh, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge. Versioning is now **tag-free** (#1963/#1965): `deploy.yml` itself classifies + bumps the committed `MAJOR.MINOR` anchor on `alpha`; `release.yml` is dormant (manual-tag-only) and `promotion-deploy-bridge.yml` is back to being just the beta/main deploy bridge, no longer a tag minter |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
 
-> **Merging now:** the `claude/ilyrics-identity-work-model` branch is about to merge to `alpha`. Its `[unreleased]` set (see `CHANGELOG.md`) includes the whole iLyrics identity / Work-model epic (#1860), medley composition (#1907), org-logo screen surfaces (#1840), print templates (#1767), the gating model review (#1590 / #1769), plus this session's newest work: the live `/search` quick-jump typeahead (#1936), full songbook names in list rows (#1531), theme-aware admin surfaces (#1713, 94 hardcoded `bg-dark` utilities removed), field-level revision blame + per-field revert (#1122), outbound partner webhooks (#1909), the searchable `/themes` A–Z index (#1148), the account-security pack (#1027 / #947 / #340), the Wave 3 perf pack (#1920 / #1921 / #1571), the set-list sync-correctness cluster (#1662 / #1675 / #1660 / #1802), and PublicId parity + CI hygiene (#1744 / #1891 / #1892).
+> **Recently merged (v1.0.0 → v1.1.0):** the `claude/ilyrics-identity-work-model` branch merged to `alpha` as **v1.0.0** (#1937), carrying the whole iLyrics identity / Work-model epic (#1860), medley composition (#1907), org-logo screen surfaces (#1840), print templates (#1767), the gating model review (#1590 / #1769), the live `/search` quick-jump typeahead (#1936), full songbook names in list rows (#1531), theme-aware admin surfaces (#1713), field-level revision blame + per-field revert (#1122), outbound partner webhooks (#1909), the searchable `/themes` A–Z index (#1148), the account-security pack (#1027 / #947 / #340), the Wave 3 perf pack (#1920 / #1921 / #1571), the set-list sync-correctness cluster (#1662 / #1675 / #1660 / #1802), and PublicId parity + CI hygiene (#1744 / #1891 / #1892). Since then, a retrospective **v1.1.0** bump covers the dormant-features audit (#1955), tag-free versioning (#1963/#1965), the ProPresenter 7+ interoperability epic (#1968 — import/export of `.pro`/`.probundle`/`.proplaylist`, media embedding, chord round-trip, dormant timeline groundwork), multi-licence organisations (#1969), and signed-in device auto-naming + rename (#1975). See the highlights sections below for detail.
 
 ---
 
@@ -44,7 +44,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ### Infrastructure ✅
 
-14 GitHub Actions workflows: SFTP deployment, tag-derived version promotion (`promotion-deploy-bridge.yml`, #1899), changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, Dependabot security-fix backport to the release branches, and the two monthly maintenance sweeps. (The old minor-auto-bumping `version-bump.yml` was retired at #1899.)
+15 GitHub Actions workflows: SFTP deployment (`deploy.yml`, which now also classifies + bumps the tag-free version anchor on alpha, #1963/#1965), the beta/main deploy bridge (`promotion-deploy-bridge.yml`), changelog generation, a now-dormant manual-tag-only GitHub Releases workflow, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, Dependabot security-fix backport to the release branches, the monthly BCP 47 language-registry refresh, and the two monthly maintenance sweeps. (The old minor-auto-bumping `version-bump.yml` was retired at #1899; the tag-derived scheme #1899 introduced was itself retired in favour of the tag-free scheme at #1963/#1965.)
 
 ### 2026-05 catalogue & platform work ✅ (highlights)
 
@@ -130,6 +130,15 @@ The consolidated 214-commit branch (one PR, `#89`/`#91`). Version bumped **0.410
 - **Catalogue-index conditional revalidation** (#1921) — `?action=songs_index` now supports `If-None-Match` → **304 with no body**, skipping the ~14.5k-row query entirely on a hit, keyed on a version-signal ETag (corpus content + API contract version + deploy build + schema shape — never a hash of the payload). The service worker gained the matching client half (`networkFirstRevalidated()`) so the PWA actually sends the validator — without it the server-side half would have been invisible to its own primary consumer, since that route's existing `cache: 'no-store'` fetch (kept for an unrelated, still-needed reason) also meant no `If-None-Match` was ever attached.
 - **Songbook-export rate-bucket split + large-export consent/progress** (#1571 safe subset) — `songbook_export` now has its own read-rate-limit budget, split from the one it shared with the offline-sync bulk endpoints, so a curator's export and a device's background sync no longer contend for the same counter. Every export surface now asks before building a 500+ song export and shows coarse progress while the ProPresenter bundle builds, cooperatively yielding so the page stays responsive. The full chunked-fetch re-architecture for Mission-Praise-scale exports remains an open owner decision (#1571).
 
+### 2026-08 (late) highlights ✅ — v1.0.0 baseline → v1.1.0 (dormant-features audit, tag-free versioning, ProPresenter interop, org licences, device naming)
+
+- **v1.0.0 baseline** (#1937) — the `claude/ilyrics-identity-work-model` branch (200+ commits) merged to `alpha`, closing the epics listed in the "Recently merged" note above.
+- **Dormant-features audit** (#1955) — four silent-failure fixes plus a CAPTCHA provider-outage fallback and BCP 47 language-registry work (scheduled refresh, a live-search subtag picker, unknown-tag curation).
+- **Tag-free, Conventional-Commit-driven versioning** (#1963 → #1965) — replaced the tag-derived `MAJOR.RELEASE.BUILD` scheme (#1899) entirely. The version anchor is now the **committed `MAJOR.MINOR`** in `infoAppVer.php`, bumped by `deploy.yml` itself on `alpha` from a Conventional-Commit classifier (`classify-bump.sh`) — no git tags, no GitHub Releases. `release.yml` is now dormant (manual-tag-only); `promotion-deploy-bridge.yml` reverted to being purely the beta/main SFTP-deploy bridge.
+- **ProPresenter 7+ interoperability** (epic #1968) — the Song Editor now imports a genuine ProPresenter `.pro` file, a `.probundle` (multiple presentations + media), and a `.proplaylist` service order (arriving as a ready-made set list); export gained a matching `.proplaylist` direction and, for `.probundle`, embedded background media and a positioned-custom-attribute chord round-trip (not inline `[G]` brackets — confirmed against real ProPresenter files, not just a self-consistent round-trip). Dormant groundwork was also laid to capture a presentation's auto-advance timeline for later playback work. Every decoder/encoder pass is cross-validated against real, independently-produced ProPresenter files (protobufjs reflection + genuine third-party fixtures), the epic's own anti-false-positive rule.
+- **Multiple licences per organisation** (#1969) — a church can record several licences at once (CCLI for the lyrics, an MRL for the music, …), each with its own number/expiry/active flag. The storage and member self-service editor already existed; this added the **global-admin** editor and fixed two data-integrity bugs (a whole-licence-set wipe on every save; an unenforced expiry in the tier resolver) via one new shared core, `includes/org_licence_admin.php`.
+- **Signed-in devices — auto-naming + rename** (#1975) — the web Signed-in Devices list previously showed every entry as "Unnamed device"; the server now derives a friendly label ("Chrome on Windows") from the browser at sign-in, and a device can be renamed in place.
+
 ---
 
 ## 📌 Next Milestones
@@ -170,10 +179,10 @@ container doesn't have.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1936 — see GitHub for live open/closed counts
-- **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 1.0.0 Alpha (authoritative: `includes/infoAppVer.php`) — tag-derived `MAJOR.RELEASE.BUILD` scheme (#1899): MAJOR hand-edited (rare), RELEASE automated at the beta→main promotion, BUILD = the monotonic per-commit git commit count (`Version.Build.Number`, deploy-injected; `NULL` on an undeployed checkout). The old minor-auto-bumping `version-bump.yml` is retired
-- **CI/CD**: 14 GitHub Actions workflows live
+- **GitHub Issues**: highest issue now #1979 — see GitHub for live open/closed counts
+- **Phase**: ONE (local-catalogue / DB-direct; pre Phase-TWO iLyrics dB API integration)
+- **Version**: 1.1.0 Alpha (authoritative: `includes/infoAppVer.php`) — **tag-free**, Conventional-Commit-driven scheme (#1963 → #1965, supersedes the retired tag-derived #1899 scheme): the committed `MAJOR.MINOR` is the anchor, bumped by `deploy.yml` on `alpha` from a commit-message classifier; BUILD = the monotonic per-commit git commit count (`Version.Build.Number`, deploy-injected; `NULL` on an undeployed checkout). No git tags, no GitHub Releases
+- **CI/CD**: 15 GitHub Actions workflows live
 
 ---
 
@@ -190,4 +199,4 @@ container doesn't have.
 
 ---
 
-Last updated: 2026-08-24
+Last updated: 2026-08-28

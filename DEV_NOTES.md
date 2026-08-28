@@ -11,6 +11,7 @@
 - [Architecture Decisions](#-architecture-decisions)
 - [Deployment Architecture](#-deployment-architecture)
 - [Development Environment](#-development-environment)
+- [Test Suites](#-test-suites)
 - [Commit Message Conventions](#-commit-message-conventions)
 - [Auto-Merge for Alpha PRs](#-auto-merge-for-alpha-prs)
 - [Gating Registry — adding a gateable feature (#1352)](#-gating-registry--adding-a-gateable-feature-1352)
@@ -585,6 +586,45 @@ contract in CLAUDE.md rule #45. Before touching medley/component-metadata code, 
   enumerates every deriver render site and asserts each reads `.label` (it already caught a `preview-tab.js`
   gap the typed sweep missed, rule #33).
 
+### ProPresenter 7+ interoperability (epic #1968) — the shared modules you MUST reuse, not re-fork
+
+Import: `includes/propresenter7_decode.php` (a hand-rolled, server-side proto3 wire-walker — not a
+browser decoder, since the export side is already forced onto an eval-free static protobuf module by
+the enforcing nonce CSP, #1788) + `includes/propresenter7_zip.php` (a tolerant ZIP64 scanner — genuine
+PP7 `.probundle` files are ZIP64 with an inconsistent end-of-central-directory that PHP `ZipArchive`
+rejects outright, so the reader walks local file headers directly) + `includes/propresenter7_playlist.php`
+(`.proplaylist` decode, reusing the same wire-walker). All three funnel into `_bulkImport_processPro7()`
+/ `_bulkImport_processProbundle()` / `_bulkImport_processProplaylist()` in `includes/song_importers.php`
+— the ONE import pipeline every `.pro`/`.probundle`/`.proplaylist` path uses (also where the dormant
+timeline-capture hook and the media-visibility ingest hook attach). Export is
+`manage/editor/propresenter-export.js`'s static protobuf encoder; `buildRTF()` never carries a chord
+symbol (chords are positioned `custom_attributes[]`, not `[G]` brackets — rule #45's "display-only"
+discipline extended to a new axis). **Anti-false-positive rule for this whole epic:** no decoder or
+encoder change ships validated only against its own round-trip — every guard cross-checks against an
+independently-implemented decoder (protobufjs reflection) and/or a real, third-party ProPresenter file
+(`tests/fixtures/propresenter/`, sources + licences recorded in `.claude/propresenter-reference-sources.md`).
+Full plan: `.claude/propresenter-interop-1968-plan.md`.
+
+### Organisation-licence core (#1969) — the shared module you MUST reuse, not re-fork
+
+`includes/org_licence_admin.php` — validate / list / upsert / update / delete, plus a
+**non-destructive** set-reconcile (never a delete-all-then-reinsert, which had been silently wiping
+every licence's number/expiry/notes on every save). The global-admin editor on `/manage/organisations`,
+the member self-service editor on `/manage/my-organisations`, and both native-app API actions all
+delegate to this one core (rule #22) — a church can hold several licences at once (CCLI for the
+lyrics, an MRL for the music, an iHymns plan, …), and the tier resolver (`ccli_validator.php`) honours
+each licence's `ExpiresAt`. No schema change — `tblOrganisationLicences` already existed.
+
+### Device auto-naming (#1975) — the one funnel
+
+`apiTokenDeviceMetaStore()` (and its pure helpers `apiTokenBrowserLabelFromUA()` /
+`apiTokenWebDeviceFallback()`) is the ONE place a web sign-in derives a friendly device name from the
+request `User-Agent` — every web auth path (`auth_login`, `auth_apple`, email-login, registration)
+funnels through it, so a new sign-in path never needs its own naming logic. It only fills in
+`platform='web'` + a name when the client sent no platform and the UA is a recognised browser; an
+explicit platform (a native app) is always left alone. Rename is `device_rename` (own-only, CSRF-gated,
+rate-limited) — never a raw `UPDATE tblApiTokens` from a page.
+
 ---
 
 ## 🚀 Deployment Architecture
@@ -617,12 +657,15 @@ contract in CLAUDE.md rule #45. Before touching medley/component-metadata code, 
 
 ### Version Numbering
 
-**Tag-derived scheme (#1899).** The DEPLOYED version is `MAJOR.RELEASE.BUILD`:
-- **MAJOR** — hand-edited in `appWeb/public_html/includes/infoAppVer.php` (rare — a product-identity decision; also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z`). Baseline reset to `1.0.0`.
-- **RELEASE** (minor) — the minor of the latest production `v*` tag; a `vMAJOR.RELEASE.0` tag is cut automatically at each **beta→main promotion** by `promotion-deploy-bridge.yml` (RELEASE = the previous tag's minor + 1).
-- **BUILD** (patch) — the git commit count (`git rev-list --count HEAD`), a monotonic per-commit id.
-- `deploy.yml` injects RELEASE + BUILD at deploy time (the same no-commit-back sed as the SHA/date); an untagged checkout deploys the committed `infoAppVer.php` value unchanged.
-- The old conventional-commit auto-bumper (`version-bump.yml`) that ballooned the minor to 5250 is **RETIRED**; `api-docs.yaml`'s `info.version` stays in lockstep with the committed semver via a CI guard (`test-openapi-actions-exist.php`). Pushed `v*` tags trigger `release.yml` (GitHub Release + notes).
+**Tag-free, Conventional-Commit-driven scheme (#1963 → #1965, superseding the earlier tag-derived #1899 scheme).** iHymns deploys **direct via SFTP** and cuts **NO git tags and NO GitHub Releases**. The version anchor is the **committed `Version.Number`** (`MAJOR.MINOR`, e.g. `1.1`) in `appWeb/public_html/includes/infoAppVer.php`:
+- **MAJOR.MINOR** — the authoritative anchor, committed straight in the file (also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z` — the patch digit is a placeholder the build count overwrites at deploy).
+- **BUILD** (the patch digit at deploy time) — `git rev-list --count HEAD`, a monotonic per-commit id. `deploy.yml` injects `MAJOR.MINOR.<build count>` for display on **every** deploy, no gate — the build number is surfaced in the public footer, Settings → About, and the admin footer.
+- **The bump level is decided by Conventional-Commit prefixes on the squash-merge subject**, via `.github/workflows/scripts/classify-bump.sh` (truth-tabled by `tests/test-bump-classifier.js`): `feat:` → **minor**, `feat!:` / `fix!:` / any `!` / a line-anchored `BREAKING CHANGE:` → **major**, everything else (`fix:`/`chore:`/`docs:`/`refactor:`/`perf:`/`style:`/`test:`/`ci:`/unrecognised) → **build-only** (the safe default — a mislabelled push under-bumps, never over-bumps).
+- On `alpha`, when the classifier finds a minor/major among the commits since the last change to the committed `Version.Number` line, `deploy.yml` edits that line and commits it back with `[skip ci]` — a normal branch push, **never a tag**. beta/main simply display whatever `MAJOR.MINOR` travels with the promoted commits (no tag reachability needed — a squash-merged promotion PR carries the file bytes regardless of how it was merged).
+- **`release.yml` is now DORMANT** — it only fires on a human-pushed `v*` tag (which nothing in the pipeline does any more) or `workflow_dispatch`; `promotion-deploy-bridge.yml` reverted to being purely the #1007 beta/main SFTP-deploy bridge (it no longer mints a tag or dispatches `release.yml`).
+- The load-bearing convention this depends on: **title every PR / squash-merge with a Conventional-Commit prefix.** A feature merged without `feat:` simply won't bump the minor (safe, but a miss); title non-features `fix:`/`chore:`/`refactor:`/`ci:`/`docs:` so they never wrongly bump it.
+- `api-docs.yaml`'s `info.version` stays in lockstep with the committed semver via a CI guard (`test-openapi-actions-exist.php`). CI guard for the whole pipeline: `tests/test-versioning-pipeline.js` (tree-derived, mutation-proven) asserts no `git tag`/`refs/tags`/release dispatch survives.
+- **Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` under the current `## <MAJOR.MINOR> — <date>` heading (house style `.claude/whats-new-style.md`) — that file, not `CHANGELOG.md`, feeds the in-app `/whats-new` page.
 
 **Build Number.** Alongside the human-facing semver, `infoAppVer.php`'s
 `Application.Version.Build.Number` carries a **monotonic per-commit build id** —
@@ -644,13 +687,13 @@ the build number is NOT part of that lockstep, since it has no equivalent field 
 
 ### CI/CD Workflow Inventory
 
-14 YAML workflows in `.github/workflows/` (there is also a non-workflow `scripts/` subdirectory alongside them):
+15 YAML workflows in `.github/workflows/` (there is also a non-workflow `scripts/` subdirectory alongside them):
 
 | Workflow | Purpose |
 | --- | --- |
-| `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583) and media excludes (#1584) |
+| `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583), media excludes (#1584), build-info injection, and — since #1963/#1965 — the tag-free version classify-and-bump step on `alpha` |
 | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
-| `release.yml` | Creates a GitHub Release + extracts notes when a `v*` tag is pushed |
+| `release.yml` | **Dormant** since #1965 — only fires on a human-pushed `v*` tag or manual `workflow_dispatch`; nothing in the automated pipeline pushes a tag any more |
 | `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |
 | `lint.yml` | Lints the workflow YAML files themselves with `actionlint` |
 | `apple.yml` | Apple CI — SwiftLint, package tests, build (no signing) |
@@ -658,9 +701,11 @@ the build number is NOT part of that lockstep, since it has no equivalent field 
 | `apple-dmg.yml` | Builds a signed + notarized macOS `.dmg` as a GitHub Release asset (a distribution channel separate from the App Store) |
 | `auto-merge-alpha.yml` | Enables GitHub's native auto-merge on any PR whose base branch is `alpha` |
 | `build-android.yml` | Builds/distributes the Android app (Play Store, Amazon Appstore/Fire OS, direct APK) |
+| `dependabot-security-backport.yml` | Backports a Dependabot security-fix PR merged to `alpha` onto `beta`/`main` so a CVE fix doesn't wait for the next full promotion |
+| `language-registry-refresh.yml` | Monthly BCP 47 / IANA language-subtag + CLDR refresh — a snapshot-sync leg that commits changed registry files to `alpha`, and an independent DB-refresh leg that pokes a keyed endpoint to re-run the import against the live shared DB |
 | `maintenance-ha-integrity-audit.yml` | Monthly cross-source integrity audit (#699 Phase C) against the Spanish "Himnario Adventista" (HA) songbook |
 | `maintenance-issues-sweep.yml` | Monthly sweep that closes GitHub issues referenced by `closes #N` in commits merged to `alpha` but never auto-closed (GitHub only auto-closes on the default branch) |
-| `promotion-deploy-bridge.yml` | On a merged beta→main promotion PR, cuts the `vMAJOR.RELEASE.0` release tag, then dispatches deploy + `release.yml` + the CHANGELOG rollover (`scripts/roll-changelog.py`) (#1899) |
+| `promotion-deploy-bridge.yml` | Fires the SFTP deploy when a promotion PR is merged into `beta` or `main` (GitHub suppresses the `push` event a `GITHUB_TOKEN` merge produces, #1007). Since #1963 this is its **whole** job again — it no longer mints a release tag or dispatches `release.yml`; that moved to `deploy.yml` running on `alpha` |
 
 ---
 
@@ -709,6 +754,47 @@ npm run build:web
 - Stylelint
 - PHP Intelephense
 - Swift (for Apple development)
+
+---
+
+## 🧪 Test Suites
+
+Two glob-driven runners are the **one** list of "which tests exist" for their language — CI calls
+these scripts directly, so a new test file cannot silently be added without being run (the disease
+this fixed: `npm test` and CI's node step once hardcoded two *different* file lists, so 15 of 22 node
+suites ran in neither; the PHP side had the identical problem, with 8 files never invoked in CI at
+all, including a 48-assertion login brute-force suite):
+
+```bash
+# JavaScript / Node test suites — tests/*.js, non-recursive
+node tools/run-node-tests.js      # same as `npm test`
+npm test
+
+# PHP test suites — tests/php/*.php, non-recursive (fixtures/ is data, excluded by construction)
+php tools/run-php-tests.php
+
+# Fast syntax-only checks (no test logic)
+npm run test:php                  # find appWeb -name '*.php' -exec php -l {} \;
+npm run test:js                   # find appWeb -name '*.js' -exec node --check {} \;
+
+# Everything CI runs
+npm run test:all                  # npm test && npm run test:php && npm run test:js
+```
+
+As of this pass: **82 node suites** (`tests/*.js`) and **219 PHP suites** (`tests/php/*.php`), all
+passing. Both counts grow steadily — check `ls tests/*.js | wc -l` / `ls tests/php/*.php | wc -l` for
+the live count rather than trusting a number in prose.
+
+Both runners exit non-zero on any failing suite, so they compose in a shell `&&` chain (as
+`test:all` does) or a CI job step. Almost every suite in this repo is **mutation-proven** (CLAUDE.md
+rule #34) — written by deliberately breaking the thing it guards, confirming the test goes red, then
+reverting — and **tree-derived** rather than a hand-typed file list, so a guard cannot go quietly
+stale the way a hardcoded enumeration does (rule #34's whole point, and the reason these two runner
+scripts exist in the first place).
+
+There is also a Playwright browser-smoke layer (`npm run test:browser`), and two narrower
+composition scripts (`npm run test:export` — just the ProPresenter/export suites) for fast iteration
+on one feature area without the full run.
 
 ---
 
@@ -765,7 +851,7 @@ The installer will:
 
 1. Test the connection before writing anything
 2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
-3. Create all tables from `schema.sql` (142 `CREATE TABLE` statements; idempotent — safe to re-run)
+3. Create all tables from `schema.sql` (160 `CREATE TABLE` statements; idempotent — safe to re-run)
 4. Seed default data: user groups, 14 languages, 5 access tiers, app settings
 
 > **Manual setup:** Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php`, edit it, then re-run the installer.
@@ -1898,4 +1984,4 @@ Full feature detail is in `CHANGELOG.md`'s `[unreleased]` section — the notes 
 > deployment-secrets and store-submission sections above describe the intended
 > CI/CD pipeline for when it ships.
 
-Last updated: 2026-08-24
+Last updated: 2026-08-28

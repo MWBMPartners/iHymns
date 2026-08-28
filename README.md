@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 1.0.0 Alpha](https://img.shields.io/badge/Version-1.0.0%20Alpha-orange.svg)](#environments)
+[![Version: 1.1.0 Alpha](https://img.shields.io/badge/Version-1.1.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.0.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.1.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
@@ -61,6 +61,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Transpose** — shift song key up / down (persisted per song); where a curator has recorded a song's original key, tempo and time signature (#298), the song page shows it and Transpose names the key you've transposed *into*.
 - **Setlist templates & service plans** (#301) — save a setlist's running order as a reusable template and apply it to start a new setlist with labelled rows (song and non-song) ready to fill in; templates are owner-editable only.
 - **Export & Present** (#1565–#1570) — the Export ▾ menu on every song and songbook page downloads the song in 8 worship-software formats (OpenSong, OpenLyrics / OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, ChordPro); Present opens a full-screen one-stanza view.
+- **ProPresenter 7+ import/export, both directions** (epic #1968) — the Song Editor imports a genuine ProPresenter `.pro` file, a `.probundle` (one or more presentations plus media), or a `.proplaylist` service order (arriving as a ready-made set list); export back to `.probundle` round-trips chords (positioned custom-attributes, not inline brackets) and, where the song has a public background video or image, embeds that media so the file plays on the receiving machine without anything missing. Every decoder/encoder is cross-validated against real, independently-produced ProPresenter files, not just its own round-trip.
 - **Print templates & PDF** (#1767) — print a song or set list through a curator-designed template; signed-in users also get **Download PDF** (server-rendered — a whole set list becomes one file) and, where the org holds a CCLI licence, a copies-count prompt logged to the CCLI report with an enforced footer notice.
 - **Organisation logos** (#1830, extended #1840) — a church uploads its logo (SVG or PNG, in any of ten brand-guide shapes — primary, combined, wide, stacked, symbol-only, name-only, alternative, single-colour, light-on-dark, app icon), optionally with light/dark theme-paired versions of each, from **Manage → Organisations**; a print template's **Logo** block prints the best available shape automatically or a specific one a curator chooses. The branding now also shows up in the app header (signed-in members), as a corner-bug on the Service-Projection screen (operator-toggleable), and — with a new per-org **brand colour** — as a coloured band on a shared set-list's social-preview picture. SVG uploads pass through a dedicated hardened sanitiser before storage.
 - **Live Follow** (#1268 / #1798) — any signed-in user taps **Go Live** on a song and shares a six-character code; others follow along on their own devices, no account needed. A host declares a session length (30 min / 1 h / 2 h / until ended) and can **Extend** it live; an org admin can extend a member's session on their behalf. Distinct from Service Mode (below), which is venue / organisation-based.
@@ -130,9 +131,9 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Magic-link sign-in** — primary auth path (email + 6-digit code); password sign-in available as a fallback (#395).
 - **Cross-subdomain cookie** — `HttpOnly`, `SameSite=Lax`, `Secure` auth cookie on `.ihymns.app` with 30-day sliding expiry survives iOS ITP (#390).
 - **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin. Song deletion (`delete_songs`, Editor+) is now a recoverable soft delete (#1694/#1695, epic #1692) — deleted songs are hidden from every read surface but listed with **Restore** at `/manage/deleted-songs`; the old cascade delete survives only as the separate, irreversible **Purge** action, gated by its own `purge_songs` entitlement and reachable only from the deleted state.
-- **Signed-in devices** (#1409 / #1511) — Settings → Account & Profile lists every device signed in to your account and lets you sign out any other one remotely.
+- **Signed-in devices** (#1409 / #1511, auto-naming + rename #1975) — Settings → Account & Profile lists every device signed in to your account and lets you sign out any other one remotely. Each device gets a friendly auto-derived name ("Chrome on Windows", "Safari on iPhone") from its browser at sign-in time, and you can rename any of them.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
-- **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
+- **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640). An organisation can hold **several licences side by side** (e.g. CCLI for the lyrics, an MRL for the music), each with its own number, expiry and active flag, managed at `/manage/my-organisations` (member self-service) or `/manage/organisations` (global admin) through one shared core (#1969).
 - **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
 - **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page, and (#1388) additionally applies a tier-cap gate to the media bytes themselves — not just the affordance — mirrored across `/song-media/<id>`, the offline `bulk_audio` manifest, and `songbook_export`. Still entirely dormant until `content_gating_enabled='1'`.
 
@@ -229,7 +230,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning 159 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 160 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 
@@ -294,7 +295,7 @@ For shared hosting:
 
 Deployment is automated via GitHub Actions (SFTP). See `DEV_NOTES.md` for full deployment architecture.
 
-Versioning is a **tag-derived `MAJOR.RELEASE.BUILD` scheme** (`infoAppVer.php`'s `Version.Number`, baseline `v1.0.0`, #1899): MAJOR is hand-edited (rare), RELEASE is automated at the beta→main promotion by `promotion-deploy-bridge.yml`, and BUILD is a monotonic **per-commit build number** (`git rev-list --count HEAD`, injected at deploy alongside the existing SHA/date; `NULL` on a local, un-deployed checkout). The old minor-auto-bumping `version-bump.yml` is retired.
+Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965 — supersedes the earlier tag-derived scheme): the version anchor is the **committed `MAJOR.MINOR`** in `infoAppVer.php`'s `Version.Number` (currently `1.1`), and `deploy.yml` injects `MAJOR.MINOR.<git rev-list --count HEAD>` for display on every deploy — no git tags, no GitHub Releases. On `alpha`, a Conventional-Commit prefix on the squash-merge subject decides the bump: `feat:` → minor, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → major, everything else → build-number-only; `deploy.yml` then commits the bumped `MAJOR.MINOR` straight back (`[skip ci]`, a normal branch push, never a tag). See `DEV_NOTES.md` for the full pipeline.
 
 ---
 
@@ -303,7 +304,7 @@ Versioning is a **tag-derived `MAJOR.RELEASE.BUILD` scheme** (`infoAppVer.php`'s
 ```text
 iHymns/
 ├── .claude/              Claude AI context, ProjectBrief.md, project-rules.md
-├── .github/workflows/    CI/CD: deploy, release, changelog (14 workflows)
+├── .github/workflows/    CI/CD: deploy, changelog, test/lint, Apple/Android (15 workflows)
 ├── .SourceSongData/      Raw song text files (source of truth)
 ├── tools/                Build tools & song-data parser
 ├── data/                 Generated song data (songs.json, schema)
