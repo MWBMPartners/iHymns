@@ -81,6 +81,20 @@ const ENTRY_POINTS = [
     'presentation.proto', 'cue.proto', 'action.proto', 'slide.proto',
     'presentationSlide.proto', 'graphicsData.proto', 'groups.proto',
     'uuid.proto', 'ccli.proto',
+    /* #1968 P3 — .proplaylist EXPORT (set-list export). Adds encode/create for
+       rv.data.PlaylistDocument (propresenter.proto) + rv.data.Playlist /
+       rv.data.PlaylistItem (playlist.proto, transitively imported by
+       propresenter.proto but listed explicitly for the same belt-and-braces
+       reason as every other entry above). Every dependency message (URL, UUID,
+       Cue, Action, Color, HotKey, MusicKeyScale, PlanningCenterPlan, …) resolves
+       via the .proto `import` graph automatically — see build-proto-bundle.js's
+       matching comment, kept in lockstep with this list by design (both files
+       must stay in sync; see this file's own header doc-block). This module
+       stays ENCODE-ONLY (`--no-decode` below, unchanged) — the .proplaylist
+       IMPORT side already has its own independent PHP wire decoder
+       (includes/propresenter7_playlist.php, #1968 P3 landed in #1973); nothing
+       about this regen adds decode capability to the browser. */
+    'propresenter.proto', 'playlist.proto',
 ];
 
 function generateBareStatic() {

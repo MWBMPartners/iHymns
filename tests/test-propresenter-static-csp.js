@@ -91,7 +91,13 @@ function loadExporter(sb) {
 }
 
 /* Load the STATIC module into a sandbox; it reads the sandbox `protobuf` and
-   sets `iHymnsPP7Proto`. The IIFE targets `self`||`this`; provide `self`. */
+   sets `iHymnsPP7Proto`. The IIFE targets `self`||`this`; provide `self`.
+   #1968 P3 — the existence check now ALSO requires rv.data.PlaylistDocument
+   (added by regenerating tools/build-proto-static.js's ENTRY_POINTS to
+   include propresenter.proto/playlist.proto): this guard is exactly where a
+   FUTURE regen that accidentally dropped one of the two top-level types
+   would be caught, so both are asserted here rather than only the one this
+   test happened to be written against originally. */
 function loadStatic(sb) {
     sb.self = sb;
     vm.runInContext(staticSrc, sb, { filename: STATIC_PATH });
@@ -99,7 +105,23 @@ function loadStatic(sb) {
     if (!root || !root.rv || !root.rv.data || !root.rv.data.Presentation) {
         throw new Error('static module did not publish iHymnsPP7Proto.rv.data.Presentation');
     }
+    if (!root.rv.data.PlaylistDocument) {
+        throw new Error('static module did not publish iHymnsPP7Proto.rv.data.PlaylistDocument (#1968 P3)');
+    }
     return root.rv.data.Presentation;
+}
+
+/* #1968 P3 — sibling to loadStatic() above, for the NEW rv.data.PlaylistDocument
+   type. A separate function (rather than overloading loadStatic()'s return)
+   so existing Presentation-only call sites are untouched. */
+function loadStaticPlaylistDocument(sb) {
+    sb.self = sb;
+    vm.runInContext(staticSrc, sb, { filename: STATIC_PATH });
+    const root = sb.self.iHymnsPP7Proto || sb.iHymnsPP7Proto;
+    if (!root || !root.rv || !root.rv.data || !root.rv.data.PlaylistDocument) {
+        throw new Error('static module did not publish iHymnsPP7Proto.rv.data.PlaylistDocument');
+    }
+    return root.rv.data.PlaylistDocument;
 }
 
 async function main() {
@@ -187,6 +209,91 @@ async function main() {
         });
         const bytes = await ex2.buildPresentation(SAMPLE_SONG, {});
         assert.ok(bytes && bytes.length > 0, 'exporter static path produced no bytes');
+    });
+
+    /* ==================================================================
+     * #1968 P3 — rv.data.PlaylistDocument (the .proplaylist EXPORT
+     * addition): the SAME byte-identical + CSP-safe proof this file already
+     * runs for rv.data.Presentation, repeated for the NEW top-level message
+     * type tools/build-proto-bundle.js / tools/build-proto-static.js now
+     * also generate encode/create/verify for (propresenter.proto +
+     * playlist.proto added to both files' ENTRY_POINTS). This is the
+     * concrete "confirm the regen covers PlaylistDocument too" proof the
+     * task brief asked for, distinct from the Presentation-byte-identity
+     * tests above (which prove the regen did NOT perturb the EXISTING
+     * message — this proves the NEW message works at all, under the same
+     * CSP constraints). */
+    const SAMPLE_PLAYLIST_DOCUMENT = {
+        type: 1, // PlaylistDocument.Type.TYPE_PRESENTATION
+        root_node: {
+            name: 'PLAYLIST',
+            type: 1, // Playlist.Type.TYPE_PLAYLIST (see propresenter-export.js's
+                     // PLAYLIST_TYPE_PLAYLIST doc-block for why not TYPE_ROOT)
+            playlists: { playlists: [{
+                name: 'Test Playlist',
+                type: 1,
+                items: { items: [
+                    { name: 'Welcome', header: {} },
+                    {
+                        name: 'Song One',
+                        presentation: {
+                            document_path: {
+                                absolute_string: 'file:///song.pro',
+                                local: { root: 12, path: 'song.pro' } // ROOT_CURRENT_RESOURCE
+                            },
+                            arrangement: { string: '11111111-2222-3333-4444-555555555555' },
+                            arrangement_name: 'Default' // #1968 P3 field 5 — see playlist.proto:116
+                        }
+                    }
+                ] }
+            }] }
+        }
+    };
+
+    const reflectionPlaylistDocument = protobuf.Root.fromJSON(bundle).lookupType('rv.data.PlaylistDocument');
+    const staticPlaylistDocument = loadStaticPlaylistDocument(makeSandbox());
+
+    let bytesPlaylistReflection, bytesPlaylistStatic;
+
+    await test('PlaylistDocument: reflection encoder produces bytes (baseline)', () => {
+        bytesPlaylistReflection = Buffer.from(reflectionPlaylistDocument.encode(SAMPLE_PLAYLIST_DOCUMENT).finish());
+        assert.ok(bytesPlaylistReflection.length > 0, 'reflection output empty');
+    });
+
+    await test('PlaylistDocument: static encoder produces bytes', () => {
+        bytesPlaylistStatic = Buffer.from(staticPlaylistDocument.encode(SAMPLE_PLAYLIST_DOCUMENT).finish());
+        assert.ok(bytesPlaylistStatic.length > 0, 'static output empty');
+    });
+
+    await test('PlaylistDocument: STATIC output is BYTE-IDENTICAL to reflection output', () => {
+        assert.equal(bytesPlaylistStatic.length, bytesPlaylistReflection.length,
+            `length differs: static=${bytesPlaylistStatic.length} reflection=${bytesPlaylistReflection.length}`);
+        assert.equal(Buffer.compare(bytesPlaylistStatic, bytesPlaylistReflection), 0,
+            'PlaylistDocument static and reflection wire bytes differ');
+    });
+
+    await test('PlaylistDocument: the static output round-trips back through the reflection decoder', () => {
+        const decoded = reflectionPlaylistDocument.decode(bytesPlaylistStatic);
+        const obj = reflectionPlaylistDocument.toObject(decoded, { defaults: false });
+        assert.ok(obj && obj.root_node && obj.root_node.playlists
+            && obj.root_node.playlists.playlists.length === 1,
+            'decoded PlaylistDocument has no root_node.playlists');
+        const item = obj.root_node.playlists.playlists[0].items.items[1];
+        assert.equal(item.presentation.arrangement_name, 'Default',
+            'the NEW field 5 (arrangement_name, #1968 P3) did not round-trip');
+    });
+
+    await test('PlaylistDocument: static .encode() still runs with Function + eval POISONED (CSP simulation)', () => {
+        const poison = () => { throw new Error('CSP: unsafe-eval blocked'); };
+        const sbCsp = makeSandbox();
+        const PD = loadStaticPlaylistDocument(sbCsp);
+        sbCsp.Function = poison;
+        sbCsp.eval = poison;
+        sbCsp.__PD = PD; sbCsp.__payload = SAMPLE_PLAYLIST_DOCUMENT; sbCsp.__out = null;
+        vm.runInContext('__out = __PD.encode(__payload).finish();', sbCsp, { filename: 'csp-encode-playlist' });
+        assert.ok(sbCsp.__out && sbCsp.__out.length > 0, 'static PlaylistDocument encode produced no bytes under CSP');
+        assert.equal(Buffer.compare(Buffer.from(sbCsp.__out), bytesPlaylistStatic), 0,
+            'static PlaylistDocument encode under CSP differs from normal static encode');
     });
 
     console.log(`\n${pass} passed, ${fail} failed`);

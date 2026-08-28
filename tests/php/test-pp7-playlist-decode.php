@@ -312,12 +312,16 @@ if ($decoderSrc === false) {
     ok('at least 20 field entries were lockstep-checked against the vendored .proto source (checked ' . $totalEntries . ')',
         $totalEntries >= 20);
 
-    // Exactly ONE entry is deliberately uncited (arrangement_name, field 5 — see this decoder's
-    // file doc-block "UNCONFIRMED corner #4"). If this ever drifts to 0, someone added a
-    // citation that doesn't exist (a false claim); if it grows, an unrelated entry lost its
-    // legitimate citation by accident.
-    ok('exactly 1 field-table entry is deliberately uncited (arrangement_name — no vendored line to cite; found ' . $skippedNoCitation . ')',
-        $skippedNoCitation === 1);
+    // Was exactly ONE deliberately-uncited entry (arrangement_name, field 5 — see this decoder's
+    // file doc-block "UNCONFIRMED corner #4") from P3-IMPORT until #1968 P3-EXPORT added the
+    // field to the vendored playlist.proto (line 116) so the EXPORT-side encoder could emit it —
+    // at which point `arrangement_name`'s table entry picked up a real citation like every other
+    // field, retiring the exception rather than merely moving it. The floor is therefore 0 now.
+    // If this ever rises above 0, either a NEW deliberate exception was added without updating
+    // this comment, or an existing citation was accidentally dropped (a genuine lockstep miss the
+    // section (b) per-entry checks above did not already catch some other way).
+    ok('every field-table entry now carries a real .proto citation (0 deliberately uncited; found ' . $skippedNoCitation . ')',
+        $skippedNoCitation === 0);
 }
 
 /* ============================================================================================ */

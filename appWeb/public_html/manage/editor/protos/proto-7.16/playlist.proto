@@ -103,6 +103,17 @@ message PlaylistItem {
     }
     ContentDestination content_destination = 3;
     rv.data.MusicKeyScale user_music_key = 4;
+    // #1968 P3 (epic) — Pro19+ addition, absent from the ORIGINAL vendored 7.16
+    // schema (greyshirtguy/ProPresenter7-Proto). Adopted here as a wire-compatible
+    // proto3 field ADDITION (never a renumbering) because every real committed
+    // .proplaylist fixture actually carries it on the wire (verified during the
+    // .claude/propresenter-interop-1968-plan.md §5 ground-truth pass; see
+    // includes/propresenter7_playlist.php's "UNCONFIRMED corner #4" doc-block,
+    // which already reads this field tolerantly by number even without a proto
+    // declaration). Declaring it here lets the EXPORT-side static/reflection
+    // encoders emit it via the normal schema-verified path instead of a second,
+    // hand-rolled bytes-splice.
+    string arrangement_name = 5;
 
   }
   message PlanningCenter {

@@ -3999,6 +3999,520 @@
                 }
               }
             },
+            "PlanningCenterPlan": {
+              "fields": {
+                "created_date": {
+                  "id": 6,
+                  "type": "rv.data.Timestamp"
+                },
+                "date_list": {
+                  "id": 5,
+                  "type": "string"
+                },
+                "last_update_check_date": {
+                  "id": 8,
+                  "type": "rv.data.Timestamp"
+                },
+                "parent_id_num": {
+                  "id": 2,
+                  "type": "uint32"
+                },
+                "parent_id_str": {
+                  "id": 10,
+                  "type": "string"
+                },
+                "plan_id_num": {
+                  "id": 1,
+                  "type": "uint32"
+                },
+                "plan_id_str": {
+                  "id": 9,
+                  "type": "string"
+                },
+                "plan_title": {
+                  "id": 4,
+                  "type": "string"
+                },
+                "series_title": {
+                  "id": 3,
+                  "type": "string"
+                },
+                "update_date": {
+                  "id": 7,
+                  "type": "rv.data.Timestamp"
+                }
+              },
+              "nested": {
+                "PlanItem": {
+                  "fields": {
+                    "attachments": {
+                      "id": 6,
+                      "rule": "repeated",
+                      "type": "rv.data.PlanningCenterPlan.PlanItem.Attachment"
+                    },
+                    "item_type": {
+                      "id": 1,
+                      "type": "PlanItemType"
+                    },
+                    "linked_song": {
+                      "id": 8,
+                      "type": "rv.data.PlanningCenterPlan.PlanItem.SongItem"
+                    },
+                    "name": {
+                      "id": 5,
+                      "type": "string"
+                    },
+                    "parent_id_num": {
+                      "id": 4,
+                      "type": "uint32"
+                    },
+                    "parent_id_str": {
+                      "id": 11,
+                      "type": "string"
+                    },
+                    "pco_id_num": {
+                      "id": 2,
+                      "type": "uint32"
+                    },
+                    "pco_id_str": {
+                      "id": 9,
+                      "type": "string"
+                    },
+                    "service_id_num": {
+                      "id": 3,
+                      "type": "uint32"
+                    },
+                    "service_id_str": {
+                      "id": 10,
+                      "type": "string"
+                    },
+                    "update_date": {
+                      "id": 7,
+                      "type": "rv.data.Timestamp"
+                    }
+                  },
+                  "nested": {
+                    "Attachment": {
+                      "fields": {
+                        "created_date": {
+                          "id": 3,
+                          "type": "rv.data.Timestamp"
+                        },
+                        "linked_path": {
+                          "id": 4,
+                          "type": "rv.data.URL"
+                        },
+                        "name": {
+                          "id": 1,
+                          "type": "string"
+                        },
+                        "needs_update": {
+                          "id": 6,
+                          "type": "bool"
+                        },
+                        "pco_id_num": {
+                          "id": 5,
+                          "type": "uint32"
+                        },
+                        "pco_id_str": {
+                          "id": 8,
+                          "type": "string"
+                        },
+                        "update_date": {
+                          "id": 7,
+                          "type": "rv.data.Timestamp"
+                        },
+                        "url": {
+                          "id": 2,
+                          "type": "rv.data.URL"
+                        }
+                      }
+                    },
+                    "PlanItemType": {
+                      "values": {
+                        "PLAN_ITEM_TYPE_HEADER": 3,
+                        "PLAN_ITEM_TYPE_ITEM": 0,
+                        "PLAN_ITEM_TYPE_MEDIA": 2,
+                        "PLAN_ITEM_TYPE_SONG": 1
+                      }
+                    },
+                    "SongItem": {
+                      "fields": {
+                        "arrangement_id_num": {
+                          "id": 2,
+                          "type": "uint32"
+                        },
+                        "arrangement_id_str": {
+                          "id": 6,
+                          "type": "string"
+                        },
+                        "ccli": {
+                          "id": 3,
+                          "type": "rv.data.Presentation.CCLI"
+                        },
+                        "pco_id_num": {
+                          "id": 1,
+                          "type": "uint32"
+                        },
+                        "pco_id_str": {
+                          "id": 5,
+                          "type": "string"
+                        },
+                        "sequence": {
+                          "id": 4,
+                          "type": "rv.data.PlanningCenterPlan.PlanItem.SongItem.Sequence"
+                        }
+                      },
+                      "nested": {
+                        "Sequence": {
+                          "fields": {
+                            "group_names": {
+                              "id": 3,
+                              "rule": "repeated",
+                              "type": "string"
+                            },
+                            "name": {
+                              "id": 2,
+                              "type": "string"
+                            },
+                            "pco_id_num": {
+                              "id": 1,
+                              "type": "uint32"
+                            },
+                            "pco_id_str": {
+                              "id": 4,
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Playlist": {
+              "fields": {
+                "children": {
+                  "id": 9,
+                  "rule": "repeated",
+                  "type": "rv.data.Playlist"
+                },
+                "cues": {
+                  "id": 8,
+                  "rule": "repeated",
+                  "type": "rv.data.Cue"
+                },
+                "expanded": {
+                  "id": 4,
+                  "type": "bool"
+                },
+                "hot_key": {
+                  "id": 7,
+                  "type": "rv.data.HotKey"
+                },
+                "items": {
+                  "id": 13,
+                  "type": "rv.data.Playlist.PlaylistItems"
+                },
+                "name": {
+                  "id": 2,
+                  "type": "string"
+                },
+                "pco_plan": {
+                  "id": 15,
+                  "type": "rv.data.PlanningCenterPlan"
+                },
+                "playlists": {
+                  "id": 12,
+                  "type": "rv.data.Playlist.PlaylistArray"
+                },
+                "smart_directory": {
+                  "id": 14,
+                  "type": "rv.data.Playlist.FolderDirectory"
+                },
+                "smart_directory_path": {
+                  "id": 6,
+                  "type": "rv.data.URL"
+                },
+                "startup_info": {
+                  "id": 16,
+                  "type": "rv.data.Playlist.StartupInfo"
+                },
+                "targeted_layer_uuid": {
+                  "id": 5,
+                  "type": "rv.data.UUID"
+                },
+                "timecode_enabled": {
+                  "id": 10,
+                  "type": "bool"
+                },
+                "timing": {
+                  "id": 11,
+                  "type": "TimingType"
+                },
+                "type": {
+                  "id": 3,
+                  "type": "Type"
+                },
+                "uuid": {
+                  "id": 1,
+                  "type": "rv.data.UUID"
+                }
+              },
+              "nested": {
+                "FolderDirectory": {
+                  "fields": {
+                    "import_behavior": {
+                      "id": 2,
+                      "type": "ImportBehavior"
+                    },
+                    "smart_directory": {
+                      "id": 1,
+                      "type": "rv.data.URL"
+                    }
+                  },
+                  "nested": {
+                    "ImportBehavior": {
+                      "values": {
+                        "IMPORT_BEHAVIOR_BACKGROUND": 0,
+                        "IMPORT_BEHAVIOR_FOREGROUND": 1
+                      }
+                    }
+                  }
+                },
+                "PlaylistArray": {
+                  "fields": {
+                    "playlists": {
+                      "id": 1,
+                      "rule": "repeated",
+                      "type": "rv.data.Playlist"
+                    }
+                  }
+                },
+                "PlaylistItems": {
+                  "fields": {
+                    "items": {
+                      "id": 1,
+                      "rule": "repeated",
+                      "type": "rv.data.PlaylistItem"
+                    }
+                  }
+                },
+                "StartupInfo": {
+                  "fields": {
+                    "trigger_on_startup": {
+                      "id": 1,
+                      "type": "bool"
+                    }
+                  }
+                },
+                "Tag": {
+                  "fields": {
+                    "color": {
+                      "id": 1,
+                      "type": "rv.data.Color"
+                    },
+                    "name": {
+                      "id": 2,
+                      "type": "string"
+                    },
+                    "uuid": {
+                      "id": 3,
+                      "type": "rv.data.UUID"
+                    }
+                  }
+                },
+                "TimingType": {
+                  "values": {
+                    "TIMING_TYPE_NONE": 0,
+                    "TIMING_TYPE_TIMECODE": 1,
+                    "TIMING_TYPE_TIME_OF_DAY": 2
+                  }
+                },
+                "Type": {
+                  "values": {
+                    "TYPE_GROUP": 2,
+                    "TYPE_PLAYLIST": 1,
+                    "TYPE_ROOT": 4,
+                    "TYPE_SMART": 3,
+                    "TYPE_UNKNOWN": 0
+                  }
+                }
+              },
+              "oneofs": {
+                "ChildrenType": {
+                  "oneof": [
+                    "playlists",
+                    "items"
+                  ]
+                },
+                "LinkData": {
+                  "oneof": [
+                    "smart_directory",
+                    "pco_plan"
+                  ]
+                }
+              }
+            },
+            "PlaylistDocument": {
+              "fields": {
+                "application_info": {
+                  "id": 1,
+                  "type": "rv.data.ApplicationInfo"
+                },
+                "downloads_playlist": {
+                  "id": 6,
+                  "type": "rv.data.Playlist"
+                },
+                "live_video_playlist": {
+                  "id": 5,
+                  "type": "rv.data.Playlist"
+                },
+                "root_node": {
+                  "id": 3,
+                  "type": "rv.data.Playlist"
+                },
+                "tags": {
+                  "id": 4,
+                  "rule": "repeated",
+                  "type": "rv.data.Playlist.Tag"
+                },
+                "type": {
+                  "id": 2,
+                  "type": "Type"
+                }
+              },
+              "nested": {
+                "Type": {
+                  "values": {
+                    "TYPE_AUDIO": 3,
+                    "TYPE_MEDIA": 2,
+                    "TYPE_PRESENTATION": 1,
+                    "TYPE_UNKNOWN": 0
+                  }
+                }
+              }
+            },
+            "PlaylistItem": {
+              "fields": {
+                "cue": {
+                  "id": 5,
+                  "type": "rv.data.Cue"
+                },
+                "header": {
+                  "id": 3,
+                  "type": "rv.data.PlaylistItem.Header"
+                },
+                "is_hidden": {
+                  "id": 9,
+                  "type": "bool"
+                },
+                "name": {
+                  "id": 2,
+                  "type": "string"
+                },
+                "placeholder": {
+                  "id": 8,
+                  "type": "rv.data.PlaylistItem.Placeholder"
+                },
+                "planning_center": {
+                  "id": 6,
+                  "type": "rv.data.PlaylistItem.PlanningCenter"
+                },
+                "presentation": {
+                  "id": 4,
+                  "type": "rv.data.PlaylistItem.Presentation"
+                },
+                "tags": {
+                  "id": 7,
+                  "rule": "repeated",
+                  "type": "rv.data.UUID"
+                },
+                "uuid": {
+                  "id": 1,
+                  "type": "rv.data.UUID"
+                }
+              },
+              "nested": {
+                "Header": {
+                  "fields": {
+                    "actions": {
+                      "id": 2,
+                      "rule": "repeated",
+                      "type": "rv.data.Action"
+                    },
+                    "color": {
+                      "id": 1,
+                      "type": "rv.data.Color"
+                    }
+                  }
+                },
+                "Placeholder": {
+                  "fields": {
+                    "linked_data": {
+                      "id": 1,
+                      "type": "rv.data.PlaylistItem"
+                    }
+                  }
+                },
+                "PlanningCenter": {
+                  "fields": {
+                    "item": {
+                      "id": 1,
+                      "type": "rv.data.PlanningCenterPlan.PlanItem"
+                    },
+                    "linked_data": {
+                      "id": 2,
+                      "type": "rv.data.PlaylistItem"
+                    }
+                  }
+                },
+                "Presentation": {
+                  "fields": {
+                    "arrangement": {
+                      "id": 2,
+                      "type": "rv.data.UUID"
+                    },
+                    "arrangement_name": {
+                      "id": 5,
+                      "type": "string"
+                    },
+                    "content_destination": {
+                      "id": 3,
+                      "type": "ContentDestination"
+                    },
+                    "document_path": {
+                      "id": 1,
+                      "type": "rv.data.URL"
+                    },
+                    "user_music_key": {
+                      "id": 4,
+                      "type": "rv.data.MusicKeyScale"
+                    }
+                  },
+                  "nested": {
+                    "ContentDestination": {
+                      "values": {
+                        "CONTENT_DESTINATION_ANNOUNCEMENTS": 1,
+                        "CONTENT_DESTINATION_GLOBAL": 0
+                      }
+                    }
+                  }
+                }
+              },
+              "oneofs": {
+                "ItemType": {
+                  "oneof": [
+                    "header",
+                    "presentation",
+                    "cue",
+                    "planning_center",
+                    "placeholder"
+                  ]
+                }
+              }
+            },
             "Presentation": {
               "fields": {
                 "application_info": {
@@ -4388,6 +4902,15 @@
                 "transition": {
                   "id": 2,
                   "type": "rv.data.Transition"
+                }
+              }
+            },
+            "SettingsDocument": {
+              "fields": {
+                "labels": {
+                  "id": 2,
+                  "rule": "repeated",
+                  "type": "rv.data.Action.Label"
                 }
               }
             },

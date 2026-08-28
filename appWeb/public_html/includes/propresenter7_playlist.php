@@ -84,25 +84,33 @@ declare(strict_types=1);
  *      This decoder reads BOTH and merges their entries into the SAME output `playlists[]` array,
  *      in wire order, rather than guessing which one is "the real one" — see `pp7DecodePlaylist()`'s
  *      own doc-block.
- *   4. **`PlaylistItem.Presentation.arrangement_name` (field 5).** ABSENT from the vendored
- *      `appWeb/public_html/manage/editor/protos/proto-7.16/playlist.proto` (its `Presentation`
- *      message stops at field 4, `user_music_key`) — confirmed by re-reading that exact file
- *      during this task, not assumed from the plan's prose. It IS present in a newer copy of the
- *      same schema (`bussnet/propresenter7-php-lib`'s own vendored `proto/playlist.proto`, which
+ *   4. **`PlaylistItem.Presentation.arrangement_name` (field 5).** ⚠️ **RESOLVED during #1968 P3
+ *      EXPORT** (`.claude/propresenter-interop-1968-plan.md` §5.2, "ADOPT: add the field to
+ *      playlist.proto additively and rebuild the bundle + static module; wire-compatible") — it
+ *      was ABSENT from the vendored `appWeb/public_html/manage/editor/protos/proto-7.16/
+ *      playlist.proto` at P3-IMPORT time (this decoder's own original authoring pass, confirmed
+ *      by re-reading that exact file, not assumed from the plan's prose; its `Presentation`
+ *      message stopped at field 4, `user_music_key`) but IS present in a newer copy of the same
+ *      schema (`bussnet/propresenter7-php-lib`'s own vendored `proto/playlist.proto`, which
  *      declares `string arrangement_name = 5;` on the identical message — a wire-compatible
  *      proto3 field ADDITION, never a renumbering), matching the plan's "Pro19+, may be absent in
- *      older files" note. ⚠️ **CORRECTION, verified during this task**: this field is NOT merely
+ *      older files" note. ⚠️ **CORRECTION, verified during P3-IMPORT**: this field is NOT merely
  *      theoretical — all THREE real presentation items across the three committed fixtures
- *      actually carry it on the wire (`"normal"` on two, `"short"` on one). Because the vendored
- *      7.16 schema doesn't declare field 5, a naive protobufjs decode against it silently drops
- *      the value as an "unknown field" (invisible via `toObject()`) — this file's own cross-
- *      validation test patches the field onto its independent protobufjs schema in-memory
- *      specifically so the comparison is genuine (see `tools/pp7-gen-playlist-expected.js`'s
- *      "A SECOND, smaller deviation" doc-block section). This decoder reads field 5 as a plain
- *      string unconditionally — the same "reads a known-but-unconfirmed field tolerantly" posture
- *      the rest of this codebase already applies to every ProPresenter schema corner (file-level
- *      doc-block of `propresenter7_decode.php`: "a future ProPresenter version keeps decoding
- *      cleanly").
+ *      actually carry it on the wire (`"normal"` on two, `"short"` on one). At P3-IMPORT time the
+ *      vendored 7.16 schema didn't declare field 5, so a naive protobufjs decode against it
+ *      silently dropped the value as an "unknown field" (invisible via `toObject()`) — this
+ *      file's own cross-validation test patched the field onto its independent protobufjs schema
+ *      in-memory specifically so the comparison was genuine (see `tools/pp7-gen-playlist-
+ *      expected.js`'s "A SECOND, smaller deviation" doc-block section, kept for its historical
+ *      record even though the patch is no longer the only route to the value). This decoder reads
+ *      field 5 as a plain string unconditionally, unchanged by the P3-EXPORT addition — the same
+ *      "reads a known field tolerantly regardless of whether the local vendored copy has caught
+ *      up" posture the rest of this codebase already applies to every ProPresenter schema corner
+ *      (file-level doc-block of `propresenter7_decode.php`: "a future ProPresenter version keeps
+ *      decoding cleanly"). Since P3-EXPORT (`appWeb/public_html/manage/editor/protos/
+ *      proto-7.16/playlist.proto:116`), the vendored schema now declares it too — see
+ *      `PP7_FIELDS_PLAYLIST_ITEM_PRESENTATION['arrangement_name']` below, now cited like every
+ *      other field in its table.
  *   5. **`root_node.type`.** The plan's prose describes the root as `TYPE_ROOT`. All three real
  *      fixtures actually encode it as `TYPE_PLAYLIST` (`bussnet-testplaylist`/`-sample-service`)
  *      OR leave the field entirely unset, i.e. the proto3 zero value (`bussnet-empty-playlist`) —
@@ -120,11 +128,16 @@ declare(strict_types=1);
  * against that exact file during this task (see the "= [0-9];" greps run at authoring time — not
  * copied from the plan's prose). `tests/php/test-pp7-playlist-decode.php` re-checks every one of
  * these citations against the live vendored file, mirroring `test-pp7-decode.php`'s lockstep
- * guard for the `.pro` decoder (plan §11.3's mechanism, applied here to a second file). The ONE
- * deliberate exception is `PP7_FIELDS_PLAYLIST_ITEM_PRESENTATION['arrangement_name']` (field 5,
- * UNCONFIRMED corner #4 above) — its trailing comment intentionally does NOT match the
- * `file.proto:line` citation shape (there is no such line to cite in the vendored 7.16 schema),
- * so the lockstep guard correctly skips it rather than failing on a citation that cannot exist.
+ * guard for the `.pro` decoder (plan §11.3's mechanism, applied here to a second file). ⚠️ Until
+ * #1968 P3-EXPORT, `PP7_FIELDS_PLAYLIST_ITEM_PRESENTATION['arrangement_name']` (field 5,
+ * UNCONFIRMED corner #4 above) was the ONE deliberate exception — its trailing comment
+ * intentionally did NOT match the `file.proto:line` citation shape, because there was no such
+ * line to cite in the vendored 7.16 schema at the time, so the lockstep guard correctly skipped
+ * it rather than failing on a citation that could not exist. P3-EXPORT added the field to the
+ * vendored schema (playlist.proto:116) so its entry below now carries a real citation like every
+ * other field — the exception is retired, not just relocated, and
+ * `tests/php/test-pp7-playlist-decode.php`'s own "deliberately uncited" floor moved from 1 to 0
+ * to match.
  *
  * @see https://protobuf.dev/programming-guides/encoding/                     protobuf wire format
  * @see .claude/propresenter-interop-1968-plan.md                              §5 (this file's design brief), §11.3 (the lockstep-guard mechanism, applied here to a second file)
@@ -228,12 +241,15 @@ if (!defined('IHYMNS_PP7_PLAYLIST_FIELDS_DEFINED')) {
      *  (field 3, an enum) and `user_music_key` (field 4, an rv.data.MusicKeyScale message) are
      *  real schema fields but not part of this decoder's contract — left undecoded (unknown to
      *  this table, skipped by wire type, same as any other field this decoder doesn't need).
-     *  `arrangement_name` (field 5) is UNCONFIRMED corner #4 — see the file doc-block for why its
-     *  trailing comment deliberately does not carry a `file.proto:line` citation. */
+     *  `arrangement_name` (field 5) is UNCONFIRMED corner #4 — genuinely absent from the vendored
+     *  schema at THIS decoder's original (P3-IMPORT) authoring time, hence read tolerantly by
+     *  number rather than by any schema declaration; #1968 P3-EXPORT subsequently added it to the
+     *  vendored playlist.proto (a wire-compatible proto3 addition, needed so the EXPORT-side
+     *  encoder can emit it), so it now carries a real citation like every other entry here. */
     define('PP7_FIELDS_PLAYLIST_ITEM_PRESENTATION', [
         'document_path'    => 1, // playlist.proto:98
         'arrangement'      => 2, // playlist.proto:99
-        'arrangement_name' => 5, // Pro19+ addition, absent from the vendored proto-7.16 schema — see UNCONFIRMED corner #4 in this file's doc-block
+        'arrangement_name' => 5, // playlist.proto:116 (Pro19+ addition; absent when this decoder was first authored — UNCONFIRMED corner #4 — adopted into the vendored schema by #1968 P3-EXPORT)
     ]);
 }
 

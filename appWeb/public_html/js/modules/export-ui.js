@@ -72,7 +72,10 @@ function loadExportLibs() {
 
 /* ProPresenter 7+ (.pro, #887) is a separate exporter (window.iHymnsProPresenter)
    that encodes a binary protobuf, so it needs protobufjs loaded + init() first —
-   unlike the format-export.js formats. Single-song only (no exportSongbook).
+   unlike the format-export.js formats. Single-song / whole-songbook here, PLUS
+   (#1968 P3) set-list export — js/modules/setlist.js imports THIS function
+   rather than re-implementing the same three-script load sequence a second
+   time (modularity rule, .claude/CLAUDE.md).
 
    #1788 — load order matters: protobuf.min.js (the runtime) → pp7-proto-static.js
    (the CSP-safe precompiled schema, `pbjs -t static`, which reads the global
@@ -81,7 +84,7 @@ function loadExportLibs() {
    static schema is what makes PP7 export work under the enforcing nonce CSP —
    the reflection path (`Root.fromJSON` + lazy codegen) is refused by #117. */
 let _pp7Promise = null;
-function loadPP7() {
+export function loadPP7() {
     if (_pp7Promise) { return _pp7Promise; }
     _pp7Promise = loadScript('/manage/editor/vendor/protobuf.min.js')
         .then(() => loadScript('/manage/editor/protos/pp7-proto-static.js'))
