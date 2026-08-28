@@ -272,9 +272,42 @@ if (!defined('IHYMNS_PP7_FIELDS_DEFINED')) {
 
     /** rv.data.Graphics.Text (nested in graphicsData.proto). `rtf_data` is the lyric text,
      *  dual-dialect RTF (Mac `\cocoartf…` / Windows `\rtf0…` — see the plan §3.6; extracting
-     *  plain text from it is the IMPORTER's job, not this file's). */
+     *  plain text from it is the IMPORTER's job, not this file's). `attributes` is where
+     *  positioned CHORDS live (#1968 P6 — `.claude/propresenter-chords-plan.md` §1.1: PP7 does
+     *  NOT store chords as inline `[G]` brackets in `rtf_data`, which stays clean; chords are
+     *  `CustomAttribute{range,chord}` rows inside `attributes.custom_attributes[]`). */
     define('PP7_FIELDS_GRAPHICS_TEXT', [
-        'rtf_data' => 5, // graphicsData.proto:208
+        'attributes' => 3, // graphicsData.proto:206
+        'rtf_data'   => 5, // graphicsData.proto:208
+    ]);
+
+    /** rv.data.Graphics.Text.Attributes (nested in graphicsData.proto). This decoder reads only
+     *  ONE field of the many real ones this message carries (font, capitalization, underline,
+     *  kerning, …, none of which iHymns' chord-only P6 scope needs) — `custom_attributes`, the
+     *  repeated field positioned chords ride inside (#1968 P6). */
+    define('PP7_FIELDS_TEXT_ATTRIBUTES', [
+        'custom_attributes' => 13, // graphicsData.proto:293
+    ]);
+
+    /** rv.data.Graphics.Text.Attributes.CustomAttribute (nested in graphicsData.proto) — a
+     *  positioned per-character-range text attribute. Its `Attribute` `oneof` has NINE branches
+     *  (capitalization, original_font_size, font_scale_factor, text_gradient_fill,
+     *  should_preserve_foreground_color, chord, cut_out_fill, media_fill, background_effect); this
+     *  decoder only ever cares whether the `chord` branch (field 7) was selected — every other
+     *  branch is a real, legitimate custom attribute that is simply not a chord, and is skipped
+     *  (#1968 P6 §1.1, mirrors greyshirtguy's `AttributeCase == Chord` read-path filter). */
+    define('PP7_FIELDS_CUSTOM_ATTRIBUTE', [
+        'range' => 1, // graphicsData.proto:382
+        'chord' => 7, // graphicsData.proto:396
+    ]);
+
+    /** rv.data.IntRange (intRange.proto) — the positioned-attribute span every CustomAttribute
+     *  (not just `chord`) carries. `start` anchors the attribute; `end` TILES to the next
+     *  attribute's `start` (or text end) on write and is IGNORED by every known reader on import
+     *  (#1968 P6 §1.2 — both reference implementations position by `start` alone). */
+    define('PP7_FIELDS_INT_RANGE', [
+        'start' => 1, // intRange.proto:7
+        'end'   => 2, // intRange.proto:8
     ]);
 
     /** rv.data.Media (graphicsData.proto, top-level despite living in that file). */
@@ -518,6 +551,132 @@ if (!function_exists('pp7DecodeUuid')) {
             }
         }
         return '';
+    }
+}
+
+if (!function_exists('pp7Int32FromVarint')) {
+    /**
+     * Interpret a raw varint-decoded value as proto3's SIGNED int32 (two's-complement,
+     * sign-extended to 64 bits on the wire for a negative value —
+     * https://protobuf.dev/programming-guides/encoding/#signed-ints).
+     *
+     * ELI5: a varint is normally just "the number", but a NEGATIVE int32 is written as a much
+     * longer (10-byte) varint whose bit pattern is the number's 64-bit two's-complement form —
+     * this unpacks that back into an ordinary (possibly negative) PHP int.
+     *
+     * DETAILED: none of this decoder's OTHER int32/uint32 fields (platform, copyright_year,
+     * song_number, …) have ever needed this — they are never legitimately negative in a real
+     * file, so `(int)$value` (the raw unsigned reading) has always been fine. `IntRange.start`/
+     * `.end` (#1968 P6) is the first field where a caller must be able to tell a genuine
+     * negative apart from "a very large positive number", in order to reject a malformed or
+     * adversarial chord offset (`.claude/propresenter-chords-plan.md` §3.1 point 1: "negative ⇒
+     * treat row invalid") rather than silently treating it as some huge positive column.
+     *
+     * @param int $raw the unsigned value pp7ReadVarint() returned for this field
+     * @return int the same value reinterpreted as a signed 32-bit integer
+     */
+    function pp7Int32FromVarint(int $raw): int
+    {
+        $low32 = $raw & 0xFFFFFFFF;
+        return $low32 >= 0x80000000 ? $low32 - 0x100000000 : $low32;
+    }
+}
+
+if (!function_exists('pp7DecodeIntRange')) {
+    /**
+     * rv.data.IntRange{start=1,end=2} → {start:int,end:int}, or NULL when malformed — no
+     * `start` field at all, or either bound decodes negative (#1968 P6 §3.1 point 1: "negative ⇒
+     * treat row invalid" rather than trusting a corrupt/adversarial offset). `end` defaults to
+     * `start` when absent (a degenerate but well-formed zero-width range), never to 0 (which
+     * would silently claim "covers nothing from the very start of the text" instead of "covers
+     * nothing from wherever this attribute starts").
+     *
+     * @see PP7_FIELDS_INT_RANGE
+     * @see .claude/propresenter-chords-plan.md   §1.2 — range semantics (start anchors, end tiles/is ignored on read)
+     */
+    function pp7DecodeIntRange(string $buf, int $depth): ?array
+    {
+        $start = null;
+        $end   = null;
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($wireType !== 0) {
+                continue;
+            }
+            if ($fieldNumber === PP7_FIELDS_INT_RANGE['start']) {
+                $start = pp7Int32FromVarint((int)$value);
+            } elseif ($fieldNumber === PP7_FIELDS_INT_RANGE['end']) {
+                $end = pp7Int32FromVarint((int)$value);
+            }
+        }
+        if ($start === null || $start < 0 || ($end !== null && $end < 0)) {
+            return null;
+        }
+        return ['start' => $start, 'end' => $end ?? $start];
+    }
+}
+
+if (!function_exists('pp7DecodeCustomAttribute')) {
+    /**
+     * rv.data.Graphics.Text.Attributes.CustomAttribute → {start:int,end:int,chord:string}, or
+     * NULL when this attribute is not a chord row at all — either its `Attribute` `oneof` picked
+     * a DIFFERENT branch (capitalization/font-scale/gradient-fill/… — real, legitimate attributes
+     * this decoder has no use for) or it carries no valid `range` (#1968 P6 §1.1/§3.1).
+     *
+     * ELI5: a slide's text can carry all sorts of positioned styling — this only cares about the
+     * ones that are actually "put chord X starting at character N", and quietly ignores every
+     * other kind, exactly the way greyshirtguy's own real, PP7-validated chord-editor tool does
+     * (`AttributeCase == Chord`, MainWindow.xaml.cs L233-242 — see the plan's §1.1 citations).
+     *
+     * DETAILED: `chord` is a `oneof` member, so proto3's "never emit the default" rule does NOT
+     * apply to it — even an explicitly-set EMPTY chord string (`chord: ""`) is written to the
+     * wire (it has to be, to record which oneof branch won), so `$chord === null` (this field was
+     * never present at all) is the correct "not a chord row" test, not `$chord === ''`. An empty
+     * (or whitespace-only) chord SYMBOL is a real possibility this function still returns —
+     * dropping it is the IMPORTER's job (`_bulkImport_pro7ChordCellsFromRanges()`'s own empty-row
+     * filter), not this pure decode step's.
+     *
+     * @see PP7_FIELDS_CUSTOM_ATTRIBUTE
+     */
+    function pp7DecodeCustomAttribute(string $buf, int $depth): ?array
+    {
+        $range = null;
+        $chord = null; // null = the oneof never selected the `chord` branch at all
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_CUSTOM_ATTRIBUTE['range'] && $wireType === 2) {
+                $range = pp7DecodeIntRange((string)$value, $depth + 1);
+            } elseif ($fieldNumber === PP7_FIELDS_CUSTOM_ATTRIBUTE['chord'] && $wireType === 2) {
+                $chord = (string)$value;
+            }
+        }
+        if ($chord === null || $range === null) {
+            return null;
+        }
+        return ['start' => $range['start'], 'end' => $range['end'], 'chord' => $chord];
+    }
+}
+
+if (!function_exists('pp7DecodeTextAttributesChords')) {
+    /**
+     * rv.data.Graphics.Text.Attributes → the list of `pp7DecodeCustomAttribute()` rows that ARE
+     * chords, in wire order (NOT necessarily `start`-sorted — real PP7 output and both reference
+     * implementations agree a reader must sort itself; see the plan §1.2/§3.3 point 2). Every
+     * non-chord `custom_attributes[]` entry is already filtered out one layer down.
+     *
+     * @return list<array{start:int,end:int,chord:string}>
+     * @see PP7_FIELDS_TEXT_ATTRIBUTES
+     */
+    function pp7DecodeTextAttributesChords(string $buf, int $depth): array
+    {
+        $out = [];
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_TEXT_ATTRIBUTES['custom_attributes'] && $wireType === 2) {
+                $row = pp7DecodeCustomAttribute((string)$value, $depth + 1);
+                if ($row !== null) {
+                    $out[] = $row;
+                }
+            }
+        }
+        return $out;
     }
 }
 
@@ -846,6 +1005,30 @@ if (!function_exists('pp7DecodeGraphicsText')) {
     }
 }
 
+if (!function_exists('pp7DecodeGraphicsTextChords')) {
+    /**
+     * rv.data.Graphics.Text → the chord `CustomAttribute` rows on ITS OWN `attributes` field, or
+     * `[]` when this text carries none (the overwhelming majority — every one of this epic's 12
+     * real chordless samples). Deliberately a SEPARATE walk of the same submessage bytes
+     * `pp7DecodeGraphicsText()` (rtf_data) already reads, rather than widening that function's
+     * return type — `pp7DecodeGraphicsText()`/`pp7DecodeGraphicsElementRtf()` keep their EXACT
+     * pre-#1968-P6 signatures so no existing caller (or the field-table lockstep guard) has to
+     * change (#1968 P6 plan §3.1: "keep signatures stable for existing callers"). Re-walking a
+     * few hundred bytes twice is negligible against the 25 MiB import cap.
+     *
+     * @return list<array{start:int,end:int,chord:string}>
+     */
+    function pp7DecodeGraphicsTextChords(string $buf, int $depth): array
+    {
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_GRAPHICS_TEXT['attributes'] && $wireType === 2) {
+                return pp7DecodeTextAttributesChords((string)$value, $depth + 1);
+            }
+        }
+        return [];
+    }
+}
+
 if (!function_exists('pp7DecodeGraphicsElementRtf')) {
     /** rv.data.Graphics.Element → the rtf_data of its `text` sub-field, or '' when this
      *  element carries no text (e.g. a background shape/image element). */
@@ -860,26 +1043,45 @@ if (!function_exists('pp7DecodeGraphicsElementRtf')) {
     }
 }
 
+if (!function_exists('pp7DecodeGraphicsElementChords')) {
+    /** rv.data.Graphics.Element → its `text` sub-field's chord rows (pp7DecodeGraphicsTextChords()),
+     *  or `[]` for a non-text element. The chord-side sibling of pp7DecodeGraphicsElementRtf()
+     *  (#1968 P6) — see that function's/pp7DecodeGraphicsTextChords()'s doc-blocks for why this is
+     *  a parallel walk rather than a widened return type. */
+    function pp7DecodeGraphicsElementChords(string $buf, int $depth): array
+    {
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_GRAPHICS_ELEMENT['text'] && $wireType === 2) {
+                return pp7DecodeGraphicsTextChords((string)$value, $depth + 1);
+            }
+        }
+        return [];
+    }
+}
+
 if (!function_exists('pp7DecodeSlideElement')) {
     /**
-     * rv.data.Slide.Element → {info:int, rtf:string}. Returns EVERY element on the slide
-     * (not just text elements) with its raw `info` bitmask + its rtf_data (empty string for a
-     * non-text element) — selecting which element is the real lyric text (bit 2 = IS_TEXT_ELEMENT,
-     * translation-layer elements beyond the first, …) is the importer's job (plan §3.4), not
-     * this decoder's.
+     * rv.data.Slide.Element → {info:int, rtf:string, chords:list}. Returns EVERY element on the
+     * slide (not just text elements) with its raw `info` bitmask, its rtf_data (empty string for
+     * a non-text element) and its chord `CustomAttribute` rows (`[]` for a non-text element or a
+     * text element with none — #1968 P6, additive key) — selecting which element is the real
+     * lyric text (bit 2 = IS_TEXT_ELEMENT, translation-layer elements beyond the first, …) is the
+     * importer's job (plan §3.4), not this decoder's.
      */
     function pp7DecodeSlideElement(string $buf, int $depth): array
     {
         $info = 0;
         $rtf = '';
+        $chords = [];
         foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
             if ($fieldNumber === PP7_FIELDS_SLIDE_ELEMENT['info'] && $wireType === 0) {
                 $info = (int)$value;
             } elseif ($fieldNumber === PP7_FIELDS_SLIDE_ELEMENT['element'] && $wireType === 2) {
                 $rtf = pp7DecodeGraphicsElementRtf((string)$value, $depth + 1);
+                $chords = pp7DecodeGraphicsElementChords((string)$value, $depth + 1);
             }
         }
-        return ['info' => $info, 'rtf' => $rtf];
+        return ['info' => $info, 'rtf' => $rtf, 'chords' => $chords];
     }
 }
 
@@ -961,16 +1163,18 @@ if (!function_exists('pp7DecodeAction')) {
 
 if (!function_exists('pp7DecodeCue')) {
     /**
-     * rv.data.Cue → {uuid, slideRtf:[string,...], slideElementInfos:[int,...], mediaRefs:[array,...]}
-     * (the §2.1 per-cue shape). `slideRtf`/`slideElementInfos` are parallel arrays — index N of
-     * one corresponds to index N of the other — flattened across every PRESENTATION_SLIDE
-     * action on this cue (in practice there is exactly one).
+     * rv.data.Cue → {uuid, slideRtf:[string,...], slideElementInfos:[int,...],
+     * slideElementChords:[list,...], mediaRefs:[array,...]} (the §2.1 per-cue shape, extended
+     * additively by #1968 P6). `slideRtf`/`slideElementInfos`/`slideElementChords` are THREE
+     * parallel arrays — index N of one corresponds to index N of the others — flattened across
+     * every PRESENTATION_SLIDE action on this cue (in practice there is exactly one).
      */
     function pp7DecodeCue(string $buf, int $depth): array
     {
         $uuid = '';
         $slideRtf = [];
         $slideElementInfos = [];
+        $slideElementChords = [];
         $mediaRefs = [];
         foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
             if ($fieldNumber === PP7_FIELDS_CUE['uuid'] && $wireType === 2) {
@@ -981,6 +1185,7 @@ if (!function_exists('pp7DecodeCue')) {
                     foreach ($action['elements'] as $el) {
                         $slideRtf[] = $el['rtf'];
                         $slideElementInfos[] = $el['info'];
+                        $slideElementChords[] = $el['chords'] ?? [];
                     }
                 } elseif ($action['kind'] === 'media' && $action['media'] !== null) {
                     $mediaRefs[] = $action['media'];
@@ -988,10 +1193,11 @@ if (!function_exists('pp7DecodeCue')) {
             }
         }
         return [
-            'uuid'              => $uuid,
-            'slideRtf'          => $slideRtf,
-            'slideElementInfos' => $slideElementInfos,
-            'mediaRefs'         => $mediaRefs,
+            'uuid'               => $uuid,
+            'slideRtf'           => $slideRtf,
+            'slideElementInfos'  => $slideElementInfos,
+            'slideElementChords' => $slideElementChords,
+            'mediaRefs'          => $mediaRefs,
         ];
     }
 }
@@ -1016,7 +1222,7 @@ if (!function_exists('pp7DecodePresentation')) {
      *   selectedArrangement: ?string,
      *   arrangements: array<int,array{uuid:string,name:string,groupIdentifiers:array<int,string>}>,
      *   cueGroups: array<int,array{groupUuid:string,groupName:string,cueIdentifiers:array<int,string>}>,
-     *   cues: array<int,array{uuid:string,slideRtf:array<int,string>,slideElementInfos:array<int,int>,mediaRefs:array<int,array>}>,
+     *   cues: array<int,array{uuid:string,slideRtf:array<int,string>,slideElementInfos:array<int,int>,slideElementChords:array<int,array<int,array{start:int,end:int,chord:string}>>,mediaRefs:array<int,array>}>,
      *   ccli: array{author:string,artistCredits:string,songTitle:string,publisher:string,copyrightYear:?int,songNumber:?int},
      *   timeline: ?array{duration:?float,loop:bool,cues:array<int,array{triggerSeconds:float,cueUuid:string,name:string}>},
      *   hasTimeline: bool, hasChordChart: bool

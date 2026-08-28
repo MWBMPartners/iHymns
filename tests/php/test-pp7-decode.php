@@ -281,6 +281,137 @@ if ($decoderSrc === false) {
         $totalEntries >= 40);
 }
 
+/* ============================================================================================
+ * (c) CHORD CUSTOM-ATTRIBUTE DECODE — synthetic unit rows (#1968 P6, plan §3.1)
+ * ============================================================================================
+ * All 12 real fixtures under tests/fixtures/propresenter/ are chord-FREE (the plan's §5 finding —
+ * no real chord-bearing sample exists yet; see the plan's "owner checklist D4"), so section (a)
+ * above cannot exercise a single custom_attributes[] row. These rows instead hand-build minimal
+ * synthetic `rv.data.Graphics.Text.Attributes` bytes (same hand-rolled tag/varint/length-delimited
+ * helpers as this file's sibling test-pp7-parse.php §(b) — NOT protobufjs, NOT this repo's own
+ * exporter, so this is not the circular same-schema round-trip the owner's #1 rule forbids) and
+ * assert the NEW pp7DecodeIntRange()/pp7DecodeCustomAttribute()/pp7DecodeTextAttributesChords()
+ * decode exactly what their own field-number tables (lockstep-checked in section (b) above) say
+ * they should.
+ */
+
+echo "\n-- (c) chord custom-attribute decode — synthetic unit rows (#1968 P6) --\n";
+
+function pp7DecTestVarint(int $v): string
+{
+    if ($v < 0) {
+        /* A negative int32 is protobuf-encoded as the FULL 10-byte sign-extended 64-bit
+           two's-complement varint (protobuf's signed-int-via-int64 convention —
+           https://protobuf.dev/programming-guides/encoding/#signed-ints); a plain "shift until
+           zero" loop (the positive-value branch below) NEVER terminates for a negative PHP int,
+           because `>>` is an ARITHMETIC shift that keeps re-filling the top bit with 1 forever.
+           PHP ints are already 64-bit two's complement, so this walks exactly 9 groups of 7 bits
+           off that bit pattern plus a 10th byte carrying bit 63 alone (mirrors pp7ReadVarint()'s
+           own 10-byte cap and its OR-accumulation, which is exactly what makes this round-trip —
+           empirically verified against the real pp7ReadVarint()/pp7Int32FromVarint() below, not
+           merely asserted). */
+        $out = '';
+        for ($i = 0; $i < 9; $i++) {
+            $out .= chr(($v & 0x7F) | 0x80);
+            $v >>= 7;
+        }
+        $out .= chr($v & 0x01); // the 10th byte: only bit 63 of the original 64-bit value remains
+        return $out;
+    }
+    $out = '';
+    while (true) {
+        $byte = $v & 0x7F;
+        $v >>= 7;
+        if ($v !== 0) {
+            $out .= chr($byte | 0x80);
+        } else {
+            $out .= chr($byte);
+            break;
+        }
+    }
+    return $out;
+}
+function pp7DecTestTag(int $field, int $wireType): string { return pp7DecTestVarint(($field << 3) | $wireType); }
+function pp7DecTestLenDelim(string $bytes): string { return pp7DecTestVarint(strlen($bytes)) . $bytes; }
+function pp7DecTestStrField(int $field, string $s): string { return pp7DecTestTag($field, 2) . pp7DecTestLenDelim($s); }
+function pp7DecTestMsgField(int $field, string $sub): string { return pp7DecTestTag($field, 2) . pp7DecTestLenDelim($sub); }
+function pp7DecTestVarintField(int $field, int $v): string { return pp7DecTestTag($field, 0) . pp7DecTestVarint($v); }
+
+// rv.data.IntRange{start=1,end=2}
+function pp7DecTestIntRange(int $start, int $end): string
+{
+    return pp7DecTestVarintField(1, $start) . pp7DecTestVarintField(2, $end);
+}
+// rv.data.Graphics.Text.Attributes.CustomAttribute{range=1, chord=7 (oneof)}
+function pp7DecTestChordAttribute(int $start, int $end, string $chord): string
+{
+    return pp7DecTestMsgField(1, pp7DecTestIntRange($start, $end)) . pp7DecTestStrField(7, $chord);
+}
+// A NON-chord CustomAttribute: the oneof selects `capitalization` (field 2, varint) instead —
+// pp7DecodeCustomAttribute() must return null for this row (§1.1's "skip every other oneof branch").
+function pp7DecTestCapitalizationAttribute(int $start, int $end, int $capValue): string
+{
+    return pp7DecTestMsgField(1, pp7DecTestIntRange($start, $end)) . pp7DecTestVarintField(2, $capValue);
+}
+
+// --- pp7DecodeIntRange() -------------------------------------------------------------------
+ok('pp7DecodeIntRange(): a normal {start,end} pair decodes both fields',
+    pp7DecodeIntRange(pp7DecTestIntRange(5, 9), 0) === ['start' => 5, 'end' => 9]);
+ok('pp7DecodeIntRange(): start=0 (column 0, the very first character) decodes correctly',
+    pp7DecodeIntRange(pp7DecTestIntRange(0, 3), 0) === ['start' => 0, 'end' => 3]);
+ok('pp7DecodeIntRange(): a start-only range defaults `end` to `start` (never to 0)',
+    pp7DecodeIntRange(pp7DecTestVarintField(1, 4), 0) === ['start' => 4, 'end' => 4]);
+ok('pp7DecodeIntRange(): a range with no `start` field at all decodes to null',
+    pp7DecodeIntRange(pp7DecTestVarintField(2, 9), 0) === null);
+ok('pp7DecodeIntRange(): a negative `start` (plan §3.1 point 1 — "negative => treat row invalid") decodes to null',
+    pp7DecodeIntRange(pp7DecTestIntRange(-1, 5), 0) === null);
+
+// --- pp7DecodeCustomAttribute() ------------------------------------------------------------
+ok('pp7DecodeCustomAttribute(): a chord row decodes {start,end,chord}',
+    pp7DecodeCustomAttribute(pp7DecTestChordAttribute(2, 5, 'G'), 0) === ['start' => 2, 'end' => 5, 'chord' => 'G']);
+ok('pp7DecodeCustomAttribute(): an EXPLICITLY EMPTY chord string still decodes (oneof presence, not value, selects the branch)',
+    pp7DecodeCustomAttribute(pp7DecTestChordAttribute(0, 1, ''), 0) === ['start' => 0, 'end' => 1, 'chord' => '']);
+ok('pp7DecodeCustomAttribute(): a NON-chord attribute (capitalization branch) decodes to null — the oneof filter',
+    pp7DecodeCustomAttribute(pp7DecTestCapitalizationAttribute(0, 4, 1), 0) === null);
+ok('pp7DecodeCustomAttribute(): a chord field with no `range` at all decodes to null',
+    pp7DecodeCustomAttribute(pp7DecTestStrField(7, 'C'), 0) === null);
+
+// --- pp7DecodeTextAttributesChords() -------------------------------------------------------
+$mixedAttrs = pp7DecTestMsgField(13, pp7DecTestChordAttribute(0, 3, 'G'))
+    . pp7DecTestMsgField(13, pp7DecTestCapitalizationAttribute(3, 8, 1)) // skipped — not a chord
+    . pp7DecTestMsgField(13, pp7DecTestChordAttribute(8, 12, 'C'));
+$chordRows = pp7DecodeTextAttributesChords($mixedAttrs, 0);
+ok('pp7DecodeTextAttributesChords(): returns ONLY the chord rows, skipping the interleaved non-chord attribute',
+    $chordRows === [
+        ['start' => 0, 'end' => 3, 'chord' => 'G'],
+        ['start' => 8, 'end' => 12, 'chord' => 'C'],
+    ]);
+
+// --- End-to-end through pp7DecodeGraphicsText() -> pp7DecodeGraphicsTextChords() ----------
+// rv.data.Graphics.Text{attributes=3, rtf_data=5} — proves the chord walk reaches all the way
+// down from the SAME submessage bytes rtf_data is read from, independently (#1968 P6 §3.1: two
+// separate walks of the one Graphics.Text buffer, not a widened pp7DecodeGraphicsText() return).
+$graphicsTextBytes = pp7DecTestMsgField(3, $mixedAttrs) . pp7DecTestStrField(5, 'plain rtf bytes');
+ok('pp7DecodeGraphicsText(): rtf_data is unaffected by the sibling attributes field (signature/behaviour stability)',
+    pp7DecodeGraphicsText($graphicsTextBytes, 0) === 'plain rtf bytes');
+ok('pp7DecodeGraphicsTextChords(): reaches the same Graphics.Text bytes and returns the chord rows',
+    pp7DecodeGraphicsTextChords($graphicsTextBytes, 0) === $chordRows);
+
+// --- pp7Int32FromVarint() (the signed-int32 helper IntRange relies on) --------------------
+// A negative int32's WIRE form is its 64-bit two's-complement bit pattern (protobuf's signed-int
+// encoding, https://protobuf.dev/programming-guides/encoding/#signed-ints) — which is exactly
+// what a native PHP negative int ALREADY is (PHP ints are 64-bit two's complement), so passing
+// pp7ReadVarint()'s raw reading straight through as a PHP int and re-deriving the low 32 bits is
+// the correct simulation of "the value pp7ReadVarint() would have handed back for that wire form".
+ok('pp7Int32FromVarint(): a small positive value round-trips unchanged',
+    pp7Int32FromVarint(42) === 42);
+ok('pp7Int32FromVarint(): -1\'s 64-bit two\'s-complement bit pattern decodes back to -1',
+    pp7Int32FromVarint(-1) === -1);
+ok('pp7Int32FromVarint(): the largest positive int32 (0x7FFFFFFF) stays positive',
+    pp7Int32FromVarint(0x7FFFFFFF) === 0x7FFFFFFF);
+ok('pp7Int32FromVarint(): the smallest negative int32 (-2147483648, wire form 0xFFFFFFFF80000000) round-trips',
+    pp7Int32FromVarint(-2147483648) === -2147483648);
+
 /* ============================================================================================ */
 
 echo "\n{$passed} passed, {$failed} failed\n";
