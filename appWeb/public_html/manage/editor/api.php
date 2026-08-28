@@ -139,6 +139,60 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
 
 $action = $_GET['action'] ?? '';
 
+/**
+ * GET-safe READ actions — mirrors api2.php's ED2_GET_SAFE_ACTIONS gate
+ * (CONFIRMED-Low finding, security review 2026-08-28). The CSRF check just
+ * above ran only inside `if (... === 'POST')`, but the action switch below
+ * executes on ANY method — so an action with no per-case method guard of
+ * its own would reach its handler on a plain cross-site GET / top-level
+ * navigation (the `ihymns_auth` cookie is SameSite=Lax, so isAuthenticated()
+ * still adopts it). In THIS file almost every write case already carries
+ * its own `if ($_SERVER['REQUEST_METHOD'] !== 'POST')` guard (add_song_link,
+ * bulk_tag, restore_revision, every bulk_import_*, the song_media_* actions,
+ * delete_song, and save_song via editorSaveSongCore()'s own check) — but
+ * that is a per-instance pattern, not a mechanism: a future case added
+ * without its own inline guard reopens this exact class silently. This
+ * blanket gate makes POST the default for every action, so a missing
+ * per-case guard degrades to "the action doesn't work over GET", never to
+ * "the action is CSRF-forgeable".
+ *
+ * Built the same two ways as api2.php's list (see that file's doc-block for
+ * the full method): (a) the case body performs NO state change (no INSERT/
+ * UPDATE/DELETE/REPLACE, no logActivity()/logActivityError() write, no file
+ * write); (b) the client reaches the action via GET — editor.js's plain
+ * `fetch()` call sites, index.php's inline `<a href>` triggers for the two
+ * server-generated downloads, and the `poll_url`/`skipped_csv_url` links
+ * api.php itself hands back from bulk_import_zip / bulk_import_status.
+ * `user_search`, `org_search` and `song_media_list` are pure reads by (a)
+ * but have NO live caller reaching THIS file any more (their callers moved
+ * to api2.php, or never existed) — left off the list and therefore
+ * POST-required, per this fix's own resolution for "the client never GETs
+ * it": nothing currently calls them, so nothing breaks, and re-adding one
+ * to the allow-list needs a live GET call site re-verified first. `save`
+ * is dead code (always 410) with no caller either way — same treatment.
+ *
+ * `songbook_export`'s catch block calls logActivityError() on a failed
+ * export, which is itself a logActivity() write (an audit-log INSERT) —
+ * technically at odds with (a)'s letter. Included anyway: it is a
+ * diagnostics-only side effect on an exceptional path (not song data), it
+ * has a live GET caller (index.php's Songbooks export), and forcing it to
+ * POST would break that feature for no CSRF-relevant gain — an attacker
+ * gains nothing by forging an audit-log row about their own failed read.
+ */
+const IHYMNS_EDITOR_API_GET_SAFE_ACTIONS = [
+    'songbook_export', 'load_index', 'load_song',
+    'get_song_links', 'suggest_song_links',
+    'song_tags', 'tag_search', 'credit_search',
+    'list_revisions',
+    'easyworship_export', 'bulk_import_status', 'bulk_import_skipped_csv',
+];
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST'
+    && !in_array($action, IHYMNS_EDITOR_API_GET_SAFE_ACTIONS, true)) {
+    http_response_code(405);
+    echo json_encode(['error' => 'POST required for this action.']);
+    exit;
+}
+
 switch ($action) {
 
     /* -----------------------------------------------------------------

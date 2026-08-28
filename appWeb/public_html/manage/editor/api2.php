@@ -558,6 +558,54 @@ if ($method === 'POST') {
     }
 }
 
+/**
+ * GET-safe READ actions — the ONLY actions this endpoint will dispatch on a
+ * non-POST request (CONFIRMED-Low finding, security review 2026-08-28: the
+ * CSRF check just above ran only inside `if ($method === 'POST')`, but the
+ * action switch below executed on ANY method, so a state-changing action
+ * (e.g. `create_song`) reached via a plain cross-site GET/top-level
+ * navigation bypassed the X-Requested-With check entirely — the
+ * `ihymns_auth` cookie is SameSite=Lax, so isAuthenticated() still adopted
+ * it on a cross-site navigation. Secure-by-default fix: every action NOT on
+ * this allow-list now requires POST, closing the class rather than patching
+ * one action.
+ *
+ * ELI5: most of what this file does is "look something up" (safe on any
+ * method) or "change something" (must prove it came from our own page).
+ * This is the list of "look something up" actions; everything else now has
+ * to arrive as a POST so the CSRF check above actually runs.
+ *
+ * HOW THIS LIST WAS BUILT — two independent checks, intersected (never
+ * guessed): (a) the case body performs NO state change — no INSERT/UPDATE/
+ * DELETE/REPLACE, no logActivity() write, no file write — purely SELECT /
+ * compute / respond; (b) the ONLY client(s) that call the action do so with
+ * a GET request — v2/api-client.js's getJson() helper, plus the three
+ * out-of-editor GET call sites (renderEntityPicker.js for user_search /
+ * org_search, export.js for easyworship_export, bulk-import-progress.js for
+ * import_zip_status). Every action below satisfied BOTH checks; nothing
+ * satisfied only one (see tests/php/test-editor-api-write-method.php for
+ * the guard this backs, and the fix's PR description for the full
+ * per-action evidence table).
+ *
+ * Adding a new action here without re-doing BOTH checks reopens this exact
+ * bug for that action — never add to this list on handler-shape alone (a
+ * SELECT-only case is still wrong here if some client ever POSTs it) or on
+ * client-usage alone (a client calling GET proves nothing if the handler
+ * writes).
+ */
+const ED2_GET_SAFE_ACTIONS = [
+    'load_song', 'load_index',
+    'song_copyright_holders', 'tag_list', 'tag_search', 'tune_search',
+    'publisher_search', 'work_search', 'song_links', 'song_link_suggestions',
+    'song_external_ids', 'song_alt_titles', 'media_list',
+    'import_zip_status', 'import_zip_skipped_csv',
+    'credit_search', 'user_search', 'org_search', 'easyworship_export',
+    'revision_list', 'revision_snapshots', 'revision_get',
+];
+if ($method !== 'POST' && !in_array($action, ED2_GET_SAFE_ACTIONS, true)) {
+    ed2_respond(['ok' => false, 'error' => 'POST required for this action.'], 405);
+}
+
 /* ------------------------------------------------------------- Constants --- */
 
 /** Credit role -> child table. The only valid roles; anything else 400s. */
