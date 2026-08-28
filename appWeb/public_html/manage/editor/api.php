@@ -34,16 +34,39 @@ declare(strict_types=1);
  * ========================================================================= */
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* apiTokenResolveBearerUser() — the shared Authorization: Bearer verification
+   core (includes/api_tokens.php; `.claude/api-coverage-2026-08-28.md` §3 X1),
+   the SAME function manage/editor/api2.php's seam delegates to (rule #22 —
+   one verification core, not a second one forked per file). auth.php only
+   loads this file lazily inside one of its own functions, so it is required
+   unconditionally here (require_once dedupes either way). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
-/* Verify authentication and editor+ role — return 401/403 JSON for AJAX */
-if (!isAuthenticated()) {
-    header('Content-Type: application/json; charset=UTF-8');
-    http_response_code(401);
-    echo json_encode(['error' => 'Authentication required.']);
-    exit;
+/* Verify authentication and editor+ role — return 401/403 JSON for AJAX.
+ *
+ * BEARER-THEN-COOKIE (`.claude/api-coverage-2026-08-28.md` §3 X1 — native
+ * curator apps have no cookie jar): a Bearer token is tried FIRST and
+ * entirely independently of the cookie/session path below — on a miss (no
+ * header, malformed, expired, unknown, inactive user) apiTokenResolveBearerUser()
+ * returns null and control falls through to EXACTLY the pre-existing
+ * isAuthenticated()/getCurrentUser() cookie check, unchanged in every
+ * particular, so an existing web-editor request that carries no
+ * Authorization header runs through the SAME code path it always did.
+ * $edLegacyBearerAuthed is read by the CSRF gate further down. */
+$edLegacyBearerUser   = apiTokenResolveBearerUser(getDbMysqli());
+$edLegacyBearerAuthed = ($edLegacyBearerUser !== null);
+if ($edLegacyBearerAuthed) {
+    $currentUser = $edLegacyBearerUser;
+} else {
+    if (!isAuthenticated()) {
+        header('Content-Type: application/json; charset=UTF-8');
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required.']);
+        exit;
+    }
+    $currentUser = getCurrentUser();
 }
-
-$currentUser = getCurrentUser();
 if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(403);
@@ -128,8 +151,17 @@ header('Cache-Control: no-cache, no-store, must-revalidate');
 
 /* CSRF: every state-changing POST must be a same-origin request (security sweep).
    validateCsrfRequest (auth.php) accepts a valid token OR the X-Requested-With
-   same-origin signal — robust + never stale. GET reads are unaffected. */
+   same-origin signal — robust + never stale. GET reads are unaffected.
+   BEARER EXEMPTION (`.claude/api-coverage-2026-08-28.md` §3 X1): a
+   Bearer-authenticated POST carries no ambient browser credential at all —
+   the Authorization header is an explicit, out-of-band value a cross-site
+   page cannot attach to a forged request (unlike a cookie, which the
+   browser attaches automatically), so it is CSRF-immune BY CONSTRUCTION,
+   the same way a hand-typed API key on curl is. validateCsrfRequest() is
+   therefore skipped entirely for a Bearer-authed request ($edLegacyBearerAuthed
+   === true, set by the guard above) — it only ever runs for the COOKIE path. */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && !$edLegacyBearerAuthed
     && !validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(403);

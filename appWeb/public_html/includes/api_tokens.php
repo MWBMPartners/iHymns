@@ -297,3 +297,84 @@ function apiTokenDeviceId(string $tokenHash): string
 {
     return substr($tokenHash, 0, API_TOKEN_DEVICE_ID_LENGTH);
 }
+
+/**
+ * Resolve an `Authorization: Bearer <token>` header (native curator apps —
+ * `.claude/api-coverage-2026-08-28.md` §3 X1/X3, Batch 2) into a user row,
+ * or null when no Bearer header is present or the token doesn't verify.
+ *
+ * ELI5: the /manage/ web pages prove who you are with a browser cookie; a
+ * native app has no cookie jar, so it proves who it is with a bearer token
+ * instead — this is the ONE function that checks what such a token means,
+ * so every endpoint that wants to accept one calls this instead of
+ * re-typing the query.
+ *
+ * DETAILED — THE ONE VERIFICATION CORE (CLAUDE.md rule #22): mirrors the
+ * PUBLIC `api.php`'s `getAuthBearerToken()` regex (`/^Bearer\s+([a-f0-9]{64})$/i`,
+ * header OR `REDIRECT_HTTP_AUTHORIZATION` for CGI/FastCGI setups that don't
+ * forward `Authorization` under its own name) and `getAuthenticatedUser()`'s
+ * verification query — SAME table (`tblApiTokens` JOINed to `tblUsers`), SAME
+ * sha256-hash-then-compare, SAME `ExpiresAt > now` + `IsActive = 1` checks.
+ * `api.php` is a dispatcher script that routes on `$_GET['action']` the
+ * instant it is loaded, so nothing may `require` it as a library to reuse
+ * that logic directly — this function is the shared extraction every OTHER
+ * Bearer-capable endpoint (`manage/editor/api2.php`, the legacy
+ * `manage/editor/api.php`, `manage/places-api.php`) delegates to instead of
+ * each forking its own copy of the same SQL, which is exactly the "shared
+ * module" the modularity rule (CLAUDE.md, top of file) requires once a
+ * second consumer appears.
+ *
+ * Returned in the SAME lowercase-key shape `manage/includes/auth.php`'s
+ * `getCurrentUser()` returns (`id`/`username`/`display_name`/`role`/
+ * `email`), so a caller can drop the result straight into `$currentUser` and
+ * every `hasRole()`/`userHasEntitlement()` call downstream keeps working
+ * completely unchanged regardless of which auth path populated it.
+ *
+ * Deliberately STATELESS — does not touch `$_SESSION` (unlike the cookie
+ * path's `adoptApiTokenSession()`) and does not slide the token's expiry
+ * (unlike `getAuthenticatedUser()`'s own `slideAuthTokenExpiry()`, which
+ * lives in the dispatcher for the same "not a library" reason above): a
+ * Bearer request must never mutate ambient state a concurrent
+ * cookie-authenticated request on the same server process could observe. A
+ * Bearer client's token still gets its expiry slid whenever it calls the
+ * public `api.php` (sign-in, song reads, …), which every such client
+ * already does — so this is a scope-minimal omission, not a functional gap.
+ *
+ * @param \mysqli $db An already-open connection (getDbMysqli()).
+ * @return array{id:int,username:string,display_name:?string,role:string,email:?string}|null
+ * @link https://www.php.net/manual/en/function.hash-equals.php  (token compare pattern this mirrors — sha256 lookup, not a per-request hash_equals, matching getAuthenticatedUser()'s own approach)
+ */
+function apiTokenResolveBearerUser(\mysqli $db): ?array
+{
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    if (!preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $hdr, $m)) {
+        return null;
+    }
+    $token = $m[1];
+
+    try {
+        $hashedToken = hash('sha256', $token);
+        $now = gmdate('Y-m-d H:i:s');
+        $stmt = $db->prepare(
+            'SELECT u.Id AS id, u.Username AS username, u.DisplayName AS display_name,
+                    u.Role AS role, u.Email AS email
+               FROM tblApiTokens t
+               JOIN tblUsers u ON u.Id = t.UserId
+              WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1
+              LIMIT 1'
+        );
+        $stmt->bind_param('ss', $hashedToken, $now);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[api_tokens/resolveBearerUser] ' . $e->getMessage());
+        return null;
+    }
+
+    if (!$row) {
+        return null;
+    }
+    $row['id'] = (int)$row['id'];
+    return $row;
+}
