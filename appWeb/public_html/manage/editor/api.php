@@ -2385,6 +2385,93 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PRO7 — single ProPresenter 7+ (.pro) song import
+     * (epic #1968 / #885, plan .claude/propresenter-interop-1968-plan.md §3.2).
+     *
+     * POST /manage/editor/api?action=bulk_import_pro7
+     *   multipart field "pro7" = one .pro protobuf document.
+     *
+     * A .pro presentation is one song; it carries no songbook, so the song
+     * is filed under a single "ProPresenter 7 Import" (PP7) songbook. Slide
+     * text is a dual-dialect RTF blob inside the protobuf — decoded +
+     * flattened by the parser (_bulkImport_parsePro7(), which itself sits on
+     * the pure wire-walker in includes/propresenter7_decode.php). A ZIP of
+     * .pro files goes through bulk_import_zip (handled inline there via the
+     * three-way content sniff, _bulkImport_sniffProDialect()).
+     *
+     * '.pro' is genuinely ambiguous with ChordPro's own use of the same
+     * extension — the CLIENT (editor.js) content-sniffs before choosing this
+     * action vs. bulk_import_chordpro vs. bulk_import_pro6, but that sniff is
+     * only a convenience: _bulkImport_parsePro7() below re-decodes the
+     * protobuf itself and rejects anything that isn't one, so a spoofed or
+     * simply wrong client route can never corrupt data (plan §3.1's "the
+     * server re-sniffs authoritatively" contract).
+     *
+     * Insert-only; honours the #1051 dedupeMode flag. Same summary shape as
+     * the other single-file import endpoints. No bespoke auth/CSRF gate is
+     * added here — this file's top-of-file session + hasRole('editor') gate
+     * (L39-52) and the file-wide POST validateCsrfRequest() gate (L131-137,
+     * rule #29) already cover every case in this switch, this one included.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_pro7':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['pro7']) || ($_FILES['pro7']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['pro7']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "pro7" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A real .pro protobuf is 1-30 KB (plan §8.1's fixture corpus); 10 MiB
+           is ~300x headroom over the largest real sample while still refusing
+           anything wildly oversized. */
+        $sizeBytes = (int)($_FILES['pro7']['size'] ?? 0);
+        if ($sizeBytes > 10 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .pro file exceeds the 10 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['pro7']['tmp_name'];
+            $origName = (string)($_FILES['pro7']['name'] ?? 'song.pro');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processPro7($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_pro7');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_pro7] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_EASYWORSHIP — EasyWorship 6/7 SQLite import (#1058).
      *
      * POST /manage/editor/api?action=bulk_import_easyworship

@@ -53,7 +53,12 @@ declare(strict_types=1);
  * directories from their own parser tests (test-videopsalm-parser.php,
  * fixtures/freeshow/, fixtures/opensong/) — reused here rather than
  * duplicated, per the modularity rule (CLAUDE.md: "if a shared module/asset
- * already exists, reuse it — do not duplicate").
+ * already exists, reuse it — do not duplicate"). pro7 (epic #1968 / #885)
+ * likewise reuses the golden REAL-fixture corpus at
+ * tests/fixtures/propresenter/ rather than a fabricated fixtures/single-file/
+ * fixture — that plan's owner mandate is "no more false positives", so every
+ * `.pro` byte used to prove the decoder correct must come from a genuine
+ * third-party ProPresenter export, never one typed by hand.
  *
  * pptx and easyworship are NAMED, NARROW exemptions from the
  * fixture-parses-clean check: both are path/archive-based (a .pptx is a zip
@@ -401,6 +406,23 @@ $formatParsers = [
         'fixture' => $fixtureDir . '/single-file/pro6.pro6',
         'check'   => static function (string $body): bool {
             [$parsed] = _bulkImport_parsePro6($body);
+            return $parsed !== null;
+        },
+    ],
+    'pro7' => [
+        /* epic #1968 / #885 — reuses the golden-fixture corpus at
+           tests/fixtures/propresenter/ (modularity rule) rather than a NEW
+           fixtures/single-file/pro7.pro: the plan's "no more false
+           positives" mandate (§0) requires every .pro fixture used to prove
+           the decoder/parser correct be a REAL third-party ProPresenter
+           export, never a hand-fabricated one — that corpus, with its own
+           committed expected/*.json + dedicated tests/php/test-pp7-*.php
+           suite, IS that real corpus. Duplicating a fake one here just to
+           have a fixtures/single-file/ entry would be the exact anti-
+           pattern the plan exists to prevent. */
+        'fixture' => dirname(__DIR__) . '/fixtures/propresenter/v7-at-the-cross-mac.pro',
+        'check'   => static function (string $body): bool {
+            [$parsed] = _bulkImport_parsePro7($body);
             return $parsed !== null;
         },
     ],

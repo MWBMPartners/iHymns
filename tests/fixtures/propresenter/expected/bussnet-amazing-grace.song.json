@@ -1,0 +1,31 @@
+{
+    "title": "Amazing Grace",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "",
+    "writers": [],
+    "components": [
+        {
+            "type": "verse",
+            "number": 1,
+            "lines": [
+                "Amazing grace how sweet the sound",
+                "That saved a wretch like me",
+                "I once was lost but now am found",
+                "Was blind but now I see"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 2,
+            "lines": [
+                "'Twas grace that taught my heart to fear",
+                "And grace my fears relieved"
+            ]
+        }
+    ],
+    "arrangement": null,
+    "warnings": []
+}

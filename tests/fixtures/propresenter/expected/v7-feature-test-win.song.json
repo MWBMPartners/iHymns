@@ -1,0 +1,26 @@
+{
+    "title": "Feature Test",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "",
+    "writers": [],
+    "components": [
+        {
+            "type": "refrain",
+            "number": 0,
+            "lines": [
+                "two",
+                "",
+                "Lower 3rd text"
+            ]
+        }
+    ],
+    "arrangement": null,
+    "warnings": [
+        "group \"Tag\" had no lyric text — skipped",
+        "2 translation layer(s) present — not imported (see the per-line-translations follow-up, plan §3.4)",
+        "selected_arrangement did not resolve to an arrangement — falling back to natural order"
+    ]
+}
