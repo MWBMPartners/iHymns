@@ -1203,7 +1203,16 @@ function renderComponents(song) {
         chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
         chordsArea.value = componentChordsToText(comp);
         chordsArea.addEventListener('input', function () {
-            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.trim(); });
+            /* #1968 P6 (commit C5) — RIGHT-trim only, never l.trim(). A stored chord cell is a
+               POSITIONED STRING (#299/#1094/chord_display.php's canonical display semantic, now
+               also PP7's own import/export shape, plan §2.2) — its LEADING whitespace is the
+               chord's column, not incidental padding. `l.trim()` silently destroyed that column
+               on every keystroke: typing/editing a PP7-imported line whose first chord sits at
+               column 12 (e.g. "            G") would save back as "G" (column 0), quietly
+               corrupting the positioned cell the moment a curator so much as opened this box.
+               Trailing whitespace IS still incidental (nothing renders past the last chord) and
+               stays stripped, matching every other per-line trim in this codebase. */
+            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.replace(/\s+$/, ''); });
             markModified(song.id);
         });
         chordsToggle.addEventListener('click', function () {

@@ -566,7 +566,18 @@ export function mountStructureTab(container, opts) {
         chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
         chordsArea.value = componentChordsToText(comp);
         chordsArea.addEventListener('input', () => {
-            const rows = chordsArea.value.split('\n').map((l) => l.trim());
+            /* #1968 P6 (commit C5) — RIGHT-trim only, never l.trim(). Mirrors the identical fix
+               in v1's editor.js (manage/editor/editor.js) — this is v2's OWN independent copy of
+               the same chords textarea (#1627 item 1 above says so explicitly: "mirrors v1's card
+               layout order"), so it carried the SAME bug: a stored chord cell is a POSITIONED
+               STRING (#299/#1094, and — since #1968 P6 — PP7's own import/export shape, plan
+               §2.2), so `l.trim()` silently destroyed a PP7-imported chord's leading column the
+               moment a curator touched this box. A right-trim-only transform still correctly
+               collapses an all-whitespace line to '' (every character IS trailing whitespace),
+               so the CLEAR-SEMANTICS logic two lines below (`rows.some((r) => r !== '')`) is
+               unaffected — only a line with a REAL leading gap before its first chord changes
+               behaviour, from corrupted to preserved. */
+            const rows = chordsArea.value.split('\n').map((l) => l.replace(/\s+$/, ''));
             /* CLEAR-SEMANTICS TRAP, opposite direction from the per-line
                language one in enrichment-panel.js: component_upsert PRESERVES
                the stored chords when the `chords` key is absent/null
