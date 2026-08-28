@@ -145,7 +145,34 @@ if (!defined('IHYMNS_PP7_FIELDS_DEFINED')) {
         'cue_groups'           => 12, // presentation.proto:29
         'cues'                 => 13, // presentation.proto:30
         'ccli'                 => 14, // presentation.proto:31
-        'timeline'             => 17, // presentation.proto:33  (presence-only: hasTimeline)
+        'timeline'             => 17, // presentation.proto:33
+    ]);
+
+    /**
+     * rv.data.Presentation.Timeline (nested in presentation.proto) — the auto-advance schedule
+     * (#1968 dormant groundwork). Only `cues`, `duration` and `loop` are read.
+     *
+     * ⚠️ `cues_v2` (field 11, `presentation.proto:78`) is DELIBERATELY not tabled/decoded here —
+     * see `pp7DecodeTimeline()`'s doc-block for the real-file evidence that it is NOT an
+     * alternate/preferred copy of `cues`: on real multi-cue ProPresenter exports it is a superset
+     * carrying `ACTION_TYPE_CLEAR_GROUP`/`ACTION_TYPE_CLEAR` automation entries (trigger_time
+     * frequently 0, no cue_id) interleaved with cue duplicates. `cues` (field 1) alone is the
+     * clean slide auto-advance schedule this feature captures.
+     */
+    define('PP7_FIELDS_TIMELINE', [
+        'cues'     => 1, // presentation.proto:72
+        'duration' => 5, // presentation.proto:73
+        'loop'     => 6, // presentation.proto:74
+    ]);
+
+    /** rv.data.Presentation.Timeline.Cue (nested in presentation.proto). `trigger_time` is wire
+     *  type 1 (fixed64/double — unpacked little-endian via `unpack('e', ...)`). `cue_id` and
+     *  `action` (not tabled — out of scope) are a `oneof`; a media-triggering cue (no `cue_id`)
+     *  decodes to an empty `cueUuid`, per this feature's §1 contract. */
+    define('PP7_FIELDS_TIMELINE_CUE', [
+        'trigger_time' => 1, // presentation.proto:81
+        'cue_id'       => 2, // presentation.proto:84
+        'name'         => 3, // presentation.proto:82
     ]);
 
     /** rv.data.Presentation.Arrangement (nested in presentation.proto). */
@@ -641,6 +668,119 @@ if (!function_exists('pp7DecodeCueGroup')) {
     }
 }
 
+if (!function_exists('pp7DecodeTimelineCue')) {
+    /**
+     * rv.data.Presentation.Timeline.Cue → {triggerSeconds:float, cueUuid:string, name:string}
+     * (#1968 dormant groundwork — captures the ProPresenter auto-advance schedule for later,
+     * still-inert, playback work; see `includes/pp7_timeline.php`/`tblSongPresentationCues`).
+     *
+     * ELI5: one entry on the auto-advance timeline — "at this many seconds in, jump to this
+     * slide" (or, for a media-triggering entry, "at this many seconds in, do this action" — see
+     * `cueUuid` below).
+     *
+     * DETAILED: `trigger_time` (field 1) is wire type 1 (fixed64/double) — `_pp7Walk()` hands
+     * back its raw 8 bytes verbatim for a wire-type-1 field (see `pp7WireWalk()`'s doc-block), so
+     * this function is the one place in the decoder that actually unpacks a double: little-endian
+     * via `unpack('e', ...)` (PHP's "double, machine byte order" format code — verified
+     * little-endian on this codebase's target platforms; protobuf fixed64 is always
+     * little-endian on the wire regardless of host, so this is not a portability risk). `cue_id`
+     * (field 2) and `action` (field 4, NOT decoded — out of this feature's scope) are a `oneof`:
+     * a genuine slide-advance entry carries `cue_id` (unwrapped via `pp7DecodeUuid()`); a
+     * media-triggering entry (real example: `owner-v21-heretostay-video-sanitised.pro`'s single
+     * timeline cue) carries `action` instead and no `cue_id` at all, which this function
+     * represents honestly as `cueUuid: ''` rather than guessing — mapping such an entry to an
+     * iHymns component (if ever wanted) is deliberately deferred, matching the dormant
+     * `tblSongPresentationCues.ComponentId` column staying NULL until that later work exists.
+     *
+     * @see PP7_FIELDS_TIMELINE_CUE
+     * @see .claude/CLAUDE.md rule #21 — line-anchored enrichment pattern this groundwork mirrors
+     *      (a future mapping step, not built here, would anchor a Cue on `tblLyricLines.Id`/
+     *      `tblSongComponents.Id` the same way translations/annotations already do)
+     */
+    function pp7DecodeTimelineCue(string $buf, int $depth): array
+    {
+        $triggerSeconds = 0.0;
+        $cueUuid = '';
+        $name = '';
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_TIMELINE_CUE['trigger_time'] && $wireType === 1) {
+                // wire type 1 (64-bit fixed) always yields exactly 8 raw bytes from pp7WireWalk()
+                // (bounds-checked there); the strlen guard is defensive belt-and-braces, not a
+                // path any well-formed input can miss.
+                $raw = (string)$value;
+                if (strlen($raw) === 8) {
+                    $unpacked = unpack('e', $raw);
+                    if ($unpacked !== false && isset($unpacked[1])) {
+                        $triggerSeconds = (float)$unpacked[1];
+                    }
+                }
+            } elseif ($fieldNumber === PP7_FIELDS_TIMELINE_CUE['cue_id'] && $wireType === 2) {
+                $cueUuid = pp7DecodeUuid((string)$value, $depth + 1);
+            } elseif ($fieldNumber === PP7_FIELDS_TIMELINE_CUE['name'] && $wireType === 2) {
+                $name = (string)$value;
+            }
+        }
+        return ['triggerSeconds' => $triggerSeconds, 'cueUuid' => $cueUuid, 'name' => $name];
+    }
+}
+
+if (!function_exists('pp7DecodeTimeline')) {
+    /**
+     * rv.data.Presentation.Timeline → {duration:?float, loop:bool, cues:array<int,array>}
+     * (#1968 dormant groundwork — see `pp7DecodeTimelineCue()` for the per-cue shape).
+     *
+     * ELI5: hands back "does this song auto-advance, for how long, does it loop, and — if so —
+     * the ordered list of (time, slide) jumps" so a later (still not built) playback feature can
+     * drive the presenter along with a backing video/track without a human clicking "next".
+     *
+     * ⚠️ FIELD-SEMANTICS FINDING (do not "fix" this back — see `tools/pp7-gen-timeline-fixture.js`
+     * for the fuller write-up and the mutation-proof fixture, `test-pp7-timeline.php` for the
+     * guard): this decoder reads ONLY `cues` (field 1) — `cues_v2` (field 11) is intentionally
+     * never consulted. An earlier draft of this feature's spec called for preferring `cues_v2`
+     * when present, reasoning it was a newer/richer copy of the same schedule. Independently
+     * decoding two real multi-cue ProPresenter exports (both "Rescuer (Good News)" variants)
+     * during implementation disproved that: `cues_v2` on those files is a SUPERSET carrying
+     * `ACTION_TYPE_CLEAR_GROUP`/`ACTION_TYPE_CLEAR` automation entries ("Clear All"/"Clear Slide",
+     * `trigger_time` frequently 0, no `cue_id`) interleaved with duplicates of the real
+     * slide-advance cues — reading it as "the" schedule would have captured automation actions as
+     * if they were auto-advance triggers, exactly the false-positive class this epic's owner rule
+     * forbids. The one real fixture where the two fields happen to agree
+     * (`owner-v21-heretostay-video-sanitised.pro`, one entry, byte-identical in both) is the
+     * degenerate case that let the wrong rule look correct in limited testing. `cues` (field 1)
+     * alone is the clean schedule; it is never merged with or overridden by `cues_v2`.
+     *
+     * @param string $buf   the Timeline submessage's raw bytes (Presentation field 17's value)
+     * @param int    $depth current submessage nesting depth (passed to `_pp7Walk()`)
+     * @return array{duration:?float, loop:bool, cues:array<int,array{triggerSeconds:float,cueUuid:string,name:string}>}
+     * @see PP7_FIELDS_TIMELINE
+     * @see includes/pp7_timeline.php   pp7TimelineStore() — the (also dormant/gated) DB write side
+     */
+    function pp7DecodeTimeline(string $buf, int $depth): array
+    {
+        $duration = null;
+        $loop = false;
+        $cues = [];
+        foreach (_pp7Walk($buf, $depth) as [$fieldNumber, $wireType, $value]) {
+            if ($fieldNumber === PP7_FIELDS_TIMELINE['duration'] && $wireType === 1) {
+                $raw = (string)$value;
+                if (strlen($raw) === 8) {
+                    $unpacked = unpack('e', $raw);
+                    if ($unpacked !== false && isset($unpacked[1])) {
+                        $duration = (float)$unpacked[1];
+                    }
+                }
+            } elseif ($fieldNumber === PP7_FIELDS_TIMELINE['loop'] && $wireType === 0) {
+                $loop = ((int)$value) !== 0;
+            } elseif ($fieldNumber === PP7_FIELDS_TIMELINE['cues'] && $wireType === 2) {
+                $cues[] = pp7DecodeTimelineCue((string)$value, $depth + 1);
+            }
+            // field 11 (cues_v2) and every other unlisted field: skipped by design — see the
+            // "FIELD-SEMANTICS FINDING" note above for why cues_v2 specifically is never read.
+        }
+        return ['duration' => $duration, 'loop' => $loop, 'cues' => $cues];
+    }
+}
+
 if (!function_exists('pp7DecodeUrl')) {
     /** rv.data.URL → {absoluteString:?string, localRoot:?int, localPath:?string}. */
     function pp7DecodeUrl(string $buf, int $depth): array
@@ -878,6 +1018,7 @@ if (!function_exists('pp7DecodePresentation')) {
      *   cueGroups: array<int,array{groupUuid:string,groupName:string,cueIdentifiers:array<int,string>}>,
      *   cues: array<int,array{uuid:string,slideRtf:array<int,string>,slideElementInfos:array<int,int>,mediaRefs:array<int,array>}>,
      *   ccli: array{author:string,artistCredits:string,songTitle:string,publisher:string,copyrightYear:?int,songNumber:?int},
+     *   timeline: ?array{duration:?float,loop:bool,cues:array<int,array{triggerSeconds:float,cueUuid:string,name:string}>},
      *   hasTimeline: bool, hasChordChart: bool
      * }
      * @throws \InvalidArgumentException on malformed input, over the 25 MiB cap, or on
@@ -907,6 +1048,7 @@ if (!function_exists('pp7DecodePresentation')) {
                 'author' => '', 'artistCredits' => '', 'songTitle' => '', 'publisher' => '',
                 'copyrightYear' => null, 'songNumber' => null,
             ],
+            'timeline'            => null,
             'hasTimeline'         => false,
             'hasChordChart'       => false,
         ];
@@ -948,8 +1090,12 @@ if (!function_exists('pp7DecodePresentation')) {
                     if ($wireType === 2) { $out['ccli'] = pp7DecodeCcli((string)$value, 1); }
                     break;
                 case PP7_FIELDS_PRESENTATION['timeline']:
-                    // Presence-only (rv.data.Presentation.Timeline submessage) — P6 fodder.
-                    if ($wireType === 2) { $out['hasTimeline'] = true; }
+                    // #1968 dormant groundwork: fully decode the auto-advance schedule (was
+                    // presence-only, "P6 fodder", before this task) — see pp7DecodeTimeline().
+                    if ($wireType === 2) {
+                        $out['timeline'] = pp7DecodeTimeline((string)$value, 1);
+                        $out['hasTimeline'] = true;
+                    }
                     break;
                 default:
                     // Unknown field number — skip by design (forward-compat with newer
