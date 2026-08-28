@@ -94,29 +94,37 @@ info:
     - **Service Mode** (congregation Live-Follow, #1323/#1335) — the
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
-    One non-action route exists: the gated media stream `GET /song-media/<id>`
-    (#853, `<id>` = `tblSongMedia.Id`). As of **#1860** `<id>` also accepts
-    the media row's permanent internal id (`ILD` + up to 10 digits, no
-    separator) — resolved to the numeric `Id` before either gate below runs,
-    gated on `tblSongMedia.IlId` existing; a non-IL / un-migrated `<id>` falls
-    through to the plain `(int)` cast unchanged. Access is evaluated via **two gates**,
-    both `403` on denial: (1) the entity gate, `checkContentAccess('song',
-    <parent SongId>, …)` — an anonymous request degrades gracefully (gating
-    applies as anonymous, never a hard `401`); and (2) as of **#1388**, a
-    tier-capability gate, `contentGatingMediaAllowed($kind, $userId,
-    $presenceToken)`, which stops a caller whose tier lacks the matching cap
-    (`play_audio` / `download_midi` / `download_pdf`) from fetching the bytes
-    directly even if the link were never shown to them. The tier gate's `403`
-    body is deliberately generic ("Access restricted: gated content.") so it
-    never discloses which tier would be sufficient. Both gates are **no-ops**
+    Four non-action, non-page routes exist — each its own top-level PHP file,
+    not dispatched through either `api.php` switch (see the **Media** tag).
+    Three are plain anonymous image streams with per-action path items below:
+    `GET /qr.php` (server-generated QR codes, CueRCode-backed), `GET
+    /org-logo.php` (an organisation's uploaded logo), and `GET /og-image.php`
+    (the dynamic Open Graph share-preview PNG). The fourth, the gated media
+    stream `GET /song-media/<id>` (#853, `<id>` = `tblSongMedia.Id`), is
+    access-controlled rather than plain-public and is documented here in
+    prose only, not yet as a path item below (#1472 — the `Media` tag was
+    removed as declared-but-unused when this paragraph was its only
+    documentation; it has since been re-added, but the per-action breakout
+    for this ONE gated route remains future work). As of **#1860** `<id>`
+    also accepts the media row's permanent internal id (`ILD` + up to 10
+    digits, no separator) — resolved to the numeric `Id` before either gate
+    below runs, gated on `tblSongMedia.IlId` existing; a non-IL / un-migrated
+    `<id>` falls through to the plain `(int)` cast unchanged. Access is
+    evaluated via **two gates**, both `403` on denial: (1) the entity gate,
+    `checkContentAccess('song', <parent SongId>, …)` — an anonymous request
+    degrades gracefully (gating applies as anonymous, never a hard `401`);
+    and (2) as of **#1388**, a tier-capability gate,
+    `contentGatingMediaAllowed($kind, $userId, $presenceToken)`, which stops
+    a caller whose tier lacks the matching cap (`play_audio` /
+    `download_midi` / `download_pdf`) from fetching the bytes directly even
+    if the link were never shown to them. The tier gate's `403` body is
+    deliberately generic ("Access restricted: gated content.") so it never
+    discloses which tier would be sufficient. Both gates are **no-ops**
     while `content_gating_enabled='0'` (the default on every live env today),
     so this route is byte-identical to its pre-#1388 behaviour until an
     operator flips the flag. Supports HTTP `Range` / `206 Partial Content` for
     seekable audio. Kinds: `audio` (streamed inline), `sheet-music` (PDF),
-    `midi`, `musicxml` (the last three served as downloads). **Not yet a
-    documented path below** (#1472 — the `Media` tag was removed from the tag
-    list as declared-but-unused; this paragraph is its only documentation
-    until a path is added).
+    `midi`, `musicxml` (the last three served as downloads).
 
     ## Authentication
 
@@ -340,6 +348,17 @@ tags:
       alternate-format bulk exports (CSV / XML / JSON / OpenSong /
       VideoPsalm) live under `?action=admin_export` (Admin — Maintenance
       tag) — see that tag's #1472 note.
+  - name: Media
+    description: |
+      Standalone, non-`action`/non-`page` image-streaming endpoints — each
+      is its own top-level PHP file (not routed through `api.php`'s
+      switches) and is deliberately anonymous: a QR code, an organisation
+      logo, and a social share-preview image are all public-by-design
+      artifacts meant to be embedded directly (`<img src="…">`) or shared.
+      `GET /song-media/<id>` (the gated audio/MIDI/sheet-music stream,
+      #853) is the one member of this family that is access-gated and is
+      documented in prose only, in this file's top-level `description`
+      (search "song-media") — not as a path item here, pending #1472.
   - name: Admin
     description: Administrative endpoints for user, group, and content management
   - name: Admin — Restrictions
@@ -17415,6 +17434,186 @@ paths:
         "400":
           description: songIds missing/empty, or more than 300 songIds
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # MEDIA — standalone top-level image-streaming files (not `?action=`/
+  # `?page=` routed through api.php). See the **Media** tag description
+  # above for why `/song-media/<id>` is not a path item here yet.
+  # ===========================================================================
+
+  /qr.php:
+    get:
+      operationId: qrImage
+      tags: [Media]
+      summary: Server-generated QR code image (CueRCode-backed, rule #38)
+      description: |
+        The ONE same-origin QR image source for the whole app (owner
+        directive 2026-08-05). Every surface that needs a QR code — the
+        #1767 R print-template `qr` block and the #1339 Service-Projection
+        join QR — embeds a plain `<img src="/qr.php?data=…">`; there is no
+        client-side QR-encoding library anywhere in the codebase.
+
+        Server-side, `includes/cuercode_client.php` calls the CueRCode REST
+        API (`X-API-Key` auth) and streams the returned image bytes back;
+        the key never reaches a browser. A fixed `(data,size,format,ecc)`
+        tuple is immutable — the CueRCode call is cache-first
+        (`cuercodeGenerateCached()`), and a hit never round-trips to
+        CueRCode at all.
+
+        Anonymous, rate-limited (`enforceReadRateLimitKeyed('qr', 240)` —
+        240/min, fail-open). Responds **503 with no body** when CueRCode
+        isn't configured (no `cuercode_api_key` setting) or unreachable —
+        the consuming `<img>` then fails to load and the caller's
+        always-visible typed code/URL text is the fallback; there is no
+        error JSON to parse.
+      parameters:
+        - name: data
+          in: query
+          required: true
+          description: The text/URL to encode. Server-side max length 1024 chars (`CUERCODE_MAX_PAYLOAD_LEN`); empty or over-length is 400.
+          schema: { type: string, maxLength: 1024 }
+        - name: size
+          in: query
+          required: false
+          description: Pixel size, clamped server-side to [100, 1000].
+          schema: { type: integer, minimum: 100, maximum: 1000, default: 512 }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [svg, png], default: svg }
+        - name: ecc
+          in: query
+          required: false
+          description: Error-correction level. Invalid values silently fall back to the default.
+          schema: { type: string, enum: [L, M, Q, H], default: M }
+      responses:
+        "200":
+          description: The QR image bytes, `Cache-Control public, max-age=31536000, immutable`.
+          content:
+            image/svg+xml: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        "400":
+          description: Missing or over-length `data` (no body)
+        "503":
+          description: CueRCode not configured or unreachable (no body) — caller degrades to the text/URL fallback
+
+  /org-logo.php:
+    get:
+      operationId: orgLogoImage
+      tags: [Media]
+      summary: Organisation logo image stream (#1830 / #1840)
+      description: |
+        The ONE public byte-stream source for an organisation's uploaded
+        logo. Every consumer — the admin card's own preview, the print
+        `logo` block, the PDF renderer's inlining, the app-header co-brand
+        emblem, the Service-Projection corner bug, the OG-image branded
+        share card — points a plain `<img src="/org-logo.php?…">` here;
+        nothing ever inlines the stored SVG/PNG markup or bytes directly
+        into a page (rule #42). Reads `ContentSanitised` ONLY, via
+        `orgLogoFetchServeRow()` — never the untouched `ContentOriginal`
+        upload.
+
+        Anonymous (a logo is public branding an org wants shown on printed
+        handouts) and rate-limited (`enforceReadRateLimitKeyed('org-logo',
+        240)` — 240/min, fail-open). `404` is DELIBERATELY returned both
+        when the `tblOrganisationLogos` table isn't migrated yet and when
+        the org simply has no logo for that `(org, kind[, variant])` —
+        indistinguishable to a caller, and with no placeholder image (an
+        absent `<img>` renders as absence rather than a broken box on a
+        printed handout).
+
+        Conditional GET via `ETag` (the row's `Sha256`, quoted). Hard
+        `immutable` caching applies ONLY when the caller's `v` matches (or
+        is a hex prefix of) that Sha256 — the cache-busting token every
+        emitting surface appends; otherwise a shorter `max-age=3600`
+        applies, since a logo (unlike a fixed-payload QR) is mutable.
+      parameters:
+        - name: org
+          in: query
+          required: true
+          description: Organisation id (`tblOrganisations.Id`).
+          schema: { type: integer, minimum: 1 }
+        - name: kind
+          in: query
+          required: true
+          description: One of `IHYMNS_ORG_LOGO_KINDS`'s keys (`includes/org_logo_helpers.php`), in ladder order.
+          schema:
+            type: string
+            enum: [primary, full, horizontal, stacked, emblem, logotype, secondary, monochrome, reversed, favicon]
+        - name: variant
+          in: query
+          required: false
+          description: Theme-paired rendition of the same kind (#1840). `light`/`dark` are dormant until an org uploads them; `default` always resolves the original single upload.
+          schema: { type: string, enum: [default, light, dark], default: default }
+        - name: v
+          in: query
+          required: false
+          description: Cache-busting version token — the logo row's `Sha256` (or a prefix of it). Enables hard `immutable` caching when it matches; omitted or stale, the response still serves (short `max-age=3600`) rather than failing.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The logo bytes (`image/svg+xml` or `image/png`), `Content-Disposition inline`.
+          content:
+            image/svg+xml: { schema: { type: string, format: binary } }
+            image/png: { schema: { type: string, format: binary } }
+        "304":
+          description: Not Modified (conditional GET `If-None-Match` hit)
+        "400":
+          description: Missing/invalid `org`, `kind`, or `variant` (no body)
+        "404":
+          description: Table not migrated, or no active logo for this (org, kind[, variant]) — deliberately indistinguishable, no body, no placeholder image
+        "503":
+          description: Database unreachable (no body)
+
+  /og-image.php:
+    get:
+      operationId: ogImage
+      tags: [Media]
+      summary: Dynamic Open Graph share-preview image (PNG, 1200×630)
+      description: |
+        Generates the social-sharing preview image unfurled by iMessage,
+        Facebook, Twitter/X, LinkedIn, Slack, Discord, WhatsApp, Telegram,
+        Pinterest, and Android share sheets when an iHymns link is shared.
+        All critical content is centred within a ~630×630 "safe zone" so
+        iMessage's square centre-crop still shows the key information.
+
+        Exactly one of `song` / `songbook` / `setlist` selects the mode
+        (checked in that order); none selected (or resolution failing —
+        unknown id, DB error, un-migrated schema) renders the generic
+        app-branding image rather than an error. `setlist` accepts either
+        a legacy 8-hex share id or a long capability token (#1791) and, when
+        the owner's `ShowSharerName` consent + organisation branding
+        (`BrandColor` / logo) resolve, renders a branded band (#1840 §7) —
+        purely additive; an unbranded/anonymous share still renders its
+        card exactly as before.
+
+        Anonymous, rate-limited (`enforceReadRateLimitKeyed('og_image',
+        240)` — 240/min, fail-open). Cached 24h. Every resolution failure
+        is caught and logged server-side, then falls through to the
+        generic image — this endpoint effectively never 4xx's.
+      parameters:
+        - name: song
+          in: query
+          required: false
+          description: A `SongId` or opaque `PublicId` permalink. Selects song mode when it resolves.
+          schema: { type: string, example: CP-1 }
+        - name: songbook
+          in: query
+          required: false
+          description: A songbook `Abbreviation` (letters only). Selects songbook mode when `song` is absent and it resolves.
+          schema: { type: string, example: CP }
+        - name: setlist
+          in: query
+          required: false
+          description: A shared set-list share id (legacy 8-hex, or a long #1791 capability token). Selects setlist mode when `song`/`songbook` are absent and it resolves to a live share.
+          schema: { type: string }
+      responses:
+        "200":
+          description: PNG image, 1200×630, `Cache-Control public, max-age=86400`
+          content:
+            image/png: { schema: { type: string, format: binary } }
+        "500":
+          description: GD canvas allocation failed (no body) — not a normal-operation path
 
 # =============================================================================
 # COMPONENTS
