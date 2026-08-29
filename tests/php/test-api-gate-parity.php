@@ -294,6 +294,11 @@ $GATED = [
     'admin_group_delete'                   => ['manage_user_groups', 'groups'],
     'admin_group_member_add'               => ['manage_user_groups', 'groups'],
     'admin_group_member_remove'            => ['manage_user_groups', 'groups'],
+    /* #1996 — admin_organisation_create is a NEW action (not a swap of a
+       pre-existing bare-role check), added alongside the other nine
+       admin_organisation_* siblings already in this list, gated on the
+       SAME manage_organisations key from day one. */
+    'admin_organisation_create'            => ['manage_organisations', 'organisations'],
     'admin_organisation_update'            => ['manage_organisations', 'organisations'],
     'admin_organisation_delete'            => ['manage_organisations', 'organisations'],
     'admin_organisation_member_add'        => ['manage_organisations', 'organisations'],

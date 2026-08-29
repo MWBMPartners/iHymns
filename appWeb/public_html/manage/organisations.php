@@ -26,6 +26,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    LICENCE_TYPES_FALLBACK on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_licence_admin.php';  /* #1969 — shared org-licence CRUD core */
+/* #1996 — the shared organisation CREATE core (mirrors #1993's
+   songbook_admin.php): orgAdminValidateCreate()/orgAdminCreate()/
+   orgAdminApplyLicenceRows()/orgAdminMemberAdd(), reused by this page's
+   `create`/`add_member` cases, the new guided wizard's
+   `wizard_create_organisation` case below, and the new
+   admin_organisation_create API twin (rule #22). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_admin.php';
 /* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
    leader-idle precedence chain (LiveIdleTimeoutMins / EnforceIdleTimeout);
    same column-existence-tolerant posture as placeColumnExists() above. */
@@ -83,81 +90,201 @@ $slugify      = fn(string $s): string => slugifyOrganisationName($s);
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = (string)($_POST['action'] ?? '');
+
+    /* #1996 — the guided "New Organisation + licence" wizard's JSON-in/
+       JSON-out AJAX branch. Lives BEFORE the classic-form dispatch below
+       and gates on validateCsrfRequest() (same-origin X-Requested-With,
+       rule #29) — NOT the legacy form's baked validateCsrf() token — the
+       SAME shape manage/external-link-types.php's `wizard_create_type`
+       branch uses (rule #22): this page's whole POST handler is NOT
+       already validateCsrfRequest()-gated (unlike songbooks.php's
+       `wizard_create_songbook`, an ordinary case inside a switch whose
+       WHOLE handler already gates on validateCsrfRequest()), so the
+       wizard needs its own same-origin check here, ahead of the classic
+       forms' validateCsrf() gate below. The classic manual-form/edit-form
+       POSTs further down are UNCHANGED and still gate on validateCsrf()
+       alone. */
+    if ($action === 'wizard_create_organisation') {
+        header('Content-Type: application/json; charset=UTF-8');
+        if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+            http_response_code(403);
+            echo json_encode(['error' => 'CSRF check failed — please retry.']);
+            exit;
+        }
+
+        try {
+            /* #1986 finer gate — $canEditOrgLicences was already resolved
+               once, above the POST-handling block (page-level, ~L63), the
+               SAME variable the manual create/update forms already use.
+               Passed straight into orgAdminValidateCreate(), which forces
+               the PRIMARY licence_type/number to 'none'/'' when false —
+               see includes/organisation_admin.php's "THE #1986 FINER GATE"
+               doc-block. The licence STEP being absent from the wizard's
+               own DOM (organisations.php ~L63's $canEditOrgLicences also
+               gates step 2's markup, below) is UX only; this server-side
+               force is the actual gate — a crafted POST cannot bypass it. */
+            [$fields, $err, $errStatus, $errField] = orgAdminValidateCreate($db, $_POST, $canEditOrgLicences);
+            if ($err !== null) {
+                http_response_code($errStatus);
+                echo json_encode(['error' => $err, 'field' => $errField]);
+                exit;
+            }
+
+            try {
+                $created = orgAdminCreate($db, $fields);
+            } catch (OrgAdminDuplicateSlugException $e) {
+                http_response_code(409);
+                echo json_encode(['error' => $e->getMessage(), 'field' => 'slug']);
+                exit;
+            }
+            /* The freshly-minted id is the ONLY organisation id this branch
+               ever touches — it is never read from the request (IDOR is
+               structurally impossible: there is no $_POST['org_id'] read
+               anywhere in this case body). */
+            $newOrgId = $created['id'];
+
+            logActivity('org.create', 'organisation', (string)$newOrgId, [
+                'name'           => $fields['name'],
+                'slug'           => $fields['slug'],
+                'parent_org_id'  => $fields['parent'],
+                'licence_type'   => $fields['licenceType'],
+                'is_active'      => (bool)$fields['active'],
+                'via'            => 'wizard',
+            ]);
+
+            /* Additional licence rows (#1969 multi) — wizard/API-only step,
+               the manual "Add an organisation" form has no fields for this.
+               #1986 finer gate, resolved explicitly here (mirrors the
+               admin_organisation_create API twin below) — never called
+               without checking $canEditOrgLicences immediately first. A
+               caller without the entitlement gets zero rows applied,
+               regardless of what the request body carries. Post-create
+               failures here are REPORTED (per-row {type,ok,error}), never
+               rolled back — the org itself already committed (songbooks
+               wizard precedent). */
+            $licenceResults = [];
+            if ($canEditOrgLicences) {
+                /* Deliberately DISTINCT key names from the singular
+                   `licence_type`/`licence_number` orgAdminValidateCreate()
+                   just read above (the PRIMARY licence) — `licence_type=A`
+                   and `licence_type[]=B` collide onto the SAME $_POST key
+                   in PHP's form-urlencoded parser (the later array-notation
+                   entries silently clobber the scalar into an array),
+                   which would both corrupt the primary and throw an
+                   "Array to string conversion" inside Validate(). Verified
+                   against a live parse_str() probe before this shape was
+                   chosen — see this commit's report. */
+                $lTypes  = (array)($_POST['licence_row_type']        ?? []);
+                $lNums   = (array)($_POST['licence_row_number']      ?? []);
+                $lExps   = (array)($_POST['licence_row_expires_at']  ?? []);
+                $lActive = (array)($_POST['licence_row_active']      ?? []);
+                $lNotes  = (array)($_POST['licence_row_notes']       ?? []);
+                $licenceRows = [];
+                foreach ($lTypes as $i => $t) {
+                    $t = trim((string)$t);
+                    if ($t === '' || $t === 'none') { continue; }
+                    $licenceRows[] = [
+                        'licence_type'   => $t,
+                        'licence_number' => (string)($lNums[$i]   ?? ''),
+                        'expires_at'     => (string)($lExps[$i]   ?? ''),
+                        'is_active'      => !empty($lActive[$i]) ? 1 : 0,
+                        'notes'          => (string)($lNotes[$i]  ?? ''),
+                    ];
+                }
+                if ($licenceRows) {
+                    $licenceResults = orgAdminApplyLicenceRows($db, $newOrgId, $licenceRows);
+                }
+            }
+
+            /* Members (optional) — each row validated: role must be a real
+               ORG_MEMBER_ROLES value, and the user id must name a real,
+               ACTIVE tblUsers row (never trust a client-claimed picker id —
+               the picker's own resolved-pick guard is UX only). Failures
+               are reported per-row, never fatal to the whole request. */
+            $memberResults = [];
+            $mUserIds = (array)($_POST['member_user_id'] ?? []);
+            $mRoles   = (array)($_POST['member_role']    ?? []);
+            foreach ($mUserIds as $i => $rawUserId) {
+                $memberUserId = (int)$rawUserId;
+                $memberRole   = (string)($mRoles[$i] ?? 'member');
+                if ($memberUserId <= 0) { continue; }
+                if (!in_array($memberRole, $MEMBER_ROLES, true)) {
+                    $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'Unknown member role.'];
+                    continue;
+                }
+                $uStmt = $db->prepare('SELECT DisplayName, Username FROM tblUsers WHERE Id = ? AND IsActive = 1');
+                $uStmt->bind_param('i', $memberUserId);
+                $uStmt->execute();
+                $uRow = $uStmt->get_result()->fetch_assoc();
+                $uStmt->close();
+                if (!$uRow) {
+                    $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'User not found or inactive.'];
+                    continue;
+                }
+                orgAdminMemberAdd($db, $newOrgId, $memberUserId, $memberRole);
+                logActivity('org.member_add', 'organisation', (string)$newOrgId, [
+                    'user_id' => $memberUserId, 'role' => $memberRole, 'via' => 'wizard',
+                ]);
+                $memberResults[] = [
+                    'userId' => $memberUserId, 'ok' => true,
+                    'label'  => $uRow['DisplayName'] ?: $uRow['Username'],
+                ];
+            }
+
+            echo json_encode([
+                'ok'       => true,
+                'id'       => $newOrgId,
+                'slug'     => $fields['slug'],
+                'name'     => $fields['name'],
+                'licences' => $licenceResults,
+                'members'  => $memberResults,
+            ]);
+        } catch (\Throwable $e) {
+            error_log('[organisations wizard_create_organisation] ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Could not create organisation.']);
+        }
+        exit;
+    }
+
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
     }
 
-    $action = (string)($_POST['action'] ?? '');
     try {
         switch ($action) {
             case 'create': {
-                $name        = trim((string)($_POST['name']         ?? ''));
-                $slugInput   = trim((string)($_POST['slug']         ?? ''));
-                $parent      = (int)($_POST['parent_org_id']        ?? 0);
-                $desc        = trim((string)($_POST['description']  ?? ''));
-                $licenceType = (string)($_POST['licence_type']      ?? 'none');
-                $licenceNum  = trim((string)($_POST['licence_number'] ?? ''));
-                $active      = !empty($_POST['is_active']) ? 1 : 0;
-                /* Places adoption — physical address. */
-                $physicalCity   = trim((string)($_POST['physical_city']    ?? '')) ?: null;
-                $physicalCityId = (int)($_POST['physical_city_id'] ?? 0) ?: null;
-
-                if ($name === '') { $error = 'Name is required.'; break; }
-                $slug = $slugInput !== '' ? $slugify($slugInput) : $slugify($name);
-                if ($slug === '') { $error = 'Slug could not be derived — supply one explicitly.'; break; }
-                /* See the note on the update branch. A new organisation has no
-                   previous licence to preserve, so the un-permitted case is the
-                   unlicensed default rather than a carried-over value. */
-                if (!$canEditOrgLicences) {
-                    $licenceType = 'none';
-                    $licenceNum  = '';
+                /* #1996 (rule #22) — re-pointed onto the SAME
+                   orgAdminValidateCreate()/orgAdminCreate() core the new
+                   `wizard_create_organisation` branch above and the new
+                   admin_organisation_create API twin call — the field
+                   parsing, the #1986 finer-gate force, the registry check,
+                   the slug pre-check and the INSERT + PhysicalCity UPDATE
+                   are all byte-identical to the pre-#1996 inline version;
+                   only the SQL's home moved (includes/organisation_admin.php). */
+                [$fields, $err, $errStatus, $errField] = orgAdminValidateCreate($db, $_POST, $canEditOrgLicences);
+                if ($err !== null) {
+                    $error = $err;
+                    break;
                 }
-                if (!in_array($licenceType, $LICENCE_TYPE_KEYS, true)) { $error = 'Unknown licence type.'; break; }
-
-                $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ?');
-                $stmt->bind_param('s', $slug);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) { $error = 'That slug is already in use.'; break; }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisations
-                        (Name, Slug, ParentOrgId, Description, LicenceType, LicenceNumber, IsActive)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* Types: Name(s), Slug(s), ParentOrgId(i nullable),
-                   Description(s), LicenceType(s), LicenceNumber(s), IsActive(i).
-                   mysqli passes NULL correctly when bound variable is null. */
-                $parentOrNull = $parent ?: null;
-                $stmt->bind_param(
-                    'ssisssi',
-                    $name, $slug, $parentOrNull, $desc, $licenceType, $licenceNum, $active
-                );
-                $stmt->execute();
-                $newOrgId = (int)$db->insert_id;
-                $stmt->close();
-                /* Place columns — schema-tolerant separate UPDATE. */
-                if (placeColumnExists($db, 'tblOrganisations', 'PhysicalCityId')) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblOrganisations
-                            SET PhysicalCity = ?, PhysicalCityId = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sii', $physicalCity, $physicalCityId, $newOrgId);
-                    $stmt->execute();
-                    $stmt->close();
+                try {
+                    $created = orgAdminCreate($db, $fields);
+                } catch (OrgAdminDuplicateSlugException $e) {
+                    $error = $e->getMessage();
+                    break;
                 }
+                $newOrgId = $created['id'];
                 logActivity('org.create', 'organisation', (string)$newOrgId, [
-                    'name'           => $name,
-                    'slug'           => $slug,
-                    'parent_org_id'  => $parent ?: null,
-                    'licence_type'   => $licenceType,
-                    'is_active'      => (bool)$active,
+                    'name'           => $fields['name'],
+                    'slug'           => $fields['slug'],
+                    'parent_org_id'  => $fields['parent'],
+                    'licence_type'   => $fields['licenceType'],
+                    'is_active'      => (bool)$fields['active'],
                 ]);
-                $success = "Organisation '{$name}' created.";
+                $success = "Organisation '{$fields['name']}' created.";
                 break;
             }
 
@@ -377,14 +504,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($orgId <= 0 || $userId <= 0) { $error = 'Invalid request.'; break; }
                 if (!in_array($role, $MEMBER_ROLES, true)) { $error = 'Unknown member role.'; break; }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
-                     VALUES (?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
-                );
-                $stmt->bind_param('iis', $userId, $orgId, $role);
-                $stmt->execute();
-                $stmt->close();
+                /* #1996 (rule #22) — re-pointed onto the SAME
+                   orgAdminMemberAdd() core the API's
+                   admin_organisation_member_add action now also calls;
+                   byte-identical 3-column upsert. */
+                orgAdminMemberAdd($db, $orgId, $userId, $role);
                 logActivity('org.member_add', 'organisation', (string)$orgId, [
                     'user_id' => $userId,
                     'role'    => $role,
@@ -632,6 +756,35 @@ if ($editId > 0) {
 }
 
 $csrf = csrfToken();
+
+/* #1996 — guided "New Organisation + licence" wizard seed data + the
+   cache-busted import path for the shared stepper module (js/modules/
+   admin-wizard.js, #1992) — same filemtime-as-version-query pattern
+   head-libs.php uses for every other admin JS load, and the SAME shape
+   external-link-types.php (#1992) / songbooks.php (#1993) / venues.php
+   (#1995) already use. */
+$_adminWizardPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'admin-wizard.js';
+$adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizardPath) : '1';
+/* Seeded slug set for the wizard's live availability check — same
+   shape/purpose as songbooks.php's window._iHymnsSongbookWizard.abbrs
+   seed: derived from the SAME $orgs this page already fetched, never a
+   second query. The server (orgAdminValidateCreate()'s own uniqueness
+   pre-check + the INSERT's own UNIQUE-key race guard) stays authoritative
+   either way — this is a same-page nicety, not the source of truth. */
+$wizardSlugs = array_column($orgs, 'Slug');
+/* Licence-type options for the wizard's repeatable Licences step,
+   EXCLUDING the 'none' sentinel (a row in this step IS a real licence —
+   'none' has no meaning as a repeatable row; the picker step is simply
+   omitted/left empty for "no licence"). Same registry $LICENCE_TYPES
+   already built above (page ~L76), just filtered. */
+$wizardLicenceTypes = array_filter($LICENCE_TYPES, static fn(string $k): bool => $k !== 'none', ARRAY_FILTER_USE_KEY);
+/* #1969 — whether the multi-licence join table exists on THIS install
+   (independent of whether any org happens to have rows in it yet, unlike
+   $multiLicenceTableExists above which is only ever set inside the
+   edit-mode branch). Un-migrated installs degrade the wizard's Licences
+   step to a single primary type+number row with no "add another" control —
+   additional rows would only ever no-op against orgLicenceUpsert(). */
+$wizardLicenceTableReady = orgLicenceTableExists($db);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -648,11 +801,23 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-building me-2"></i>Organisations</h1>
-        <p class="text-secondary small mb-4">
-            Add and edit organisations (churches and groups), manage who belongs to each one,
-            and keep their licence details up to date.
-        </p>
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+            <div>
+                <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-building me-2"></i>Organisations</h1>
+                <p class="text-secondary small mb-0">
+                    Add and edit organisations (churches and groups), manage who belongs to each one,
+                    and keep their licence details up to date.
+                </p>
+            </div>
+            <?php /* #1996 — the guided-wizard trigger, list view only (the manual
+                     "Add an organisation" form below is likewise only shown when
+                     !$editOrg). */ ?>
+            <?php if (!$editOrg): ?>
+                <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#orgWizardModal">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>New organisation (guided)
+                </button>
+            <?php endif; ?>
+        </div>
 
         <?php if ($success): ?>
             <div class="alert alert-success py-2"><?= htmlspecialchars($success) ?></div>
@@ -1208,6 +1373,648 @@ $csrf = csrfToken();
             });
         })();
     </script>
+
+    <?php /* =========================================================================
+             #1996 — guided "New Organisation + licence" wizard: the Bootstrap-modal
+             markup, the seed data, and the wizard's own wiring. Built on the shared
+             stepper (js/modules/admin-wizard.js, #1992) — mirrors
+             manage/external-link-types.php's (#1992) / manage/songbooks.php's
+             (#1993) wizard shape for the server round-trip (ONE page JSON action,
+             `wizard_create_organisation`, does the org create + licence rows +
+             member rows server-side — unlike venues.php's #1995 wizard, which
+             client-orchestrates three PRE-EXISTING api.php actions; here the
+             capability is brand-new, so it lives behind ONE new endpoint, per
+             rule #22's "extract first"). Additive only — the manual "Add an
+             organisation" form + the multi-licence grid + the member-management
+             forms above are byte-identical, untouched by this block. Every
+             wizard input is id-prefixed `orgwiz-*` and carries NO `name=`
+             attribute (rule #43 shape) — the JS below assembles the POST body
+             itself, so a wizard field can never accidentally get swept up by
+             the classic forms' own submits. */ ?>
+    <script>
+        /* Seed data for the wizard — derived from what this page-load already
+           fetched/computed server-side (rule: never a second query from JS).
+           JSON_HEX_* flags mirror every other admin-wizard seed's emit shape
+           (songbooks.php / external-link-types.php) so this blob sits safely
+           inside an inline <script>. */
+        window._iHymnsOrgWizard = {
+            csrf: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+            slugs: <?= json_encode(array_values($wizardSlugs), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+            canEditOrgLicences: <?= $canEditOrgLicences ? 'true' : 'false' ?>,
+            licenceTableReady: <?= $wizardLicenceTableReady ? 'true' : 'false' ?>,
+            licenceTypes: <?= json_encode(array_map(
+                static fn(string $k, array $info): array => ['key' => $k, 'label' => $info['label']],
+                array_keys($wizardLicenceTypes), array_values($wizardLicenceTypes)
+            ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+            memberRoles: <?= json_encode(array_values($MEMBER_ROLES), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>
+        };
+    </script>
+
+    <div class="modal fade" id="orgWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content" id="orgWizardRoot">
+                <div class="modal-header">
+                    <h2 class="modal-title h5 mb-0">New organisation — guided</h2>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="orgwiz-steps-wrap">
+                        <div data-wiz-progress class="mb-3"></div>
+
+                        <!-- Step — Organisation -->
+                        <section data-wiz-step data-wiz-label="Organisation">
+                            <h3 data-wiz-heading class="h6 mb-3">1. The organisation</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="row g-3 mb-2">
+                                <div class="col-sm-7">
+                                    <label class="form-label" for="orgwiz-name">Name</label>
+                                    <input type="text" class="form-control" id="orgwiz-name" maxlength="255" placeholder="e.g. Grace Community Church">
+                                </div>
+                                <div class="col-sm-5">
+                                    <label class="form-label" for="orgwiz-slug">Slug</label>
+                                    <input type="text" class="form-control" id="orgwiz-slug" maxlength="100" autocomplete="off">
+                                    <div class="form-text small" id="orgwiz-slug-status">Derived from the name — edit it if you'd rather choose your own.</div>
+                                </div>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label" for="orgwiz-parent">Parent organisation <span class="text-muted">(optional)</span></label>
+                                <select class="form-select" id="orgwiz-parent">
+                                    <option value="">— None —</option>
+                                    <?php foreach ($orgs as $o): ?>
+                                        <option value="<?= (int)$o['Id'] ?>"><?= htmlspecialchars($o['Name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label" for="orgwiz-description">Description <span class="text-muted">(optional)</span></label>
+                                <input type="text" class="form-control" id="orgwiz-description" maxlength="500">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="orgwiz-physical-city">Physical city <span class="text-muted">(optional)</span></label>
+                                <input type="text" class="form-control" id="orgwiz-physical-city" autocomplete="off" placeholder="Start typing — e.g. Brisbane, Queensland">
+                                <input type="hidden" id="orgwiz-physical-city-id" value="">
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="orgwiz-active" checked>
+                                <label class="form-check-label" for="orgwiz-active">Active</label>
+                            </div>
+                        </section>
+
+                        <!-- Step — Licences (ONLY rendered when the caller holds
+                             manage_org_licences — the #1986 finer gate; the
+                             SERVER independently forces licence_type='none' when
+                             this entitlement is absent, so this DOM omission is
+                             UX only, never the actual gate — see
+                             includes/organisation_admin.php's doc-block). -->
+                        <?php if ($canEditOrgLicences): ?>
+                        <section data-wiz-step data-wiz-label="Licences" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">2. Licences <span class="text-muted small">(optional)</span></h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <p class="text-secondary small">
+                                The first licence you add becomes the organisation's primary licence. You can hold
+                                several at once — e.g. CCLI for lyrics and MRL for musical notation.
+                            </p>
+                            <?php if (!$wizardLicenceTableReady): ?>
+                                <div class="alert alert-secondary small mb-3">
+                                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i>Only a single primary licence
+                                    is available on this environment yet — the multi-licence table isn't migrated.
+                                </div>
+                            <?php endif; ?>
+                            <div class="vstack gap-2" id="orgwiz-licence-rows"></div>
+                            <?php if ($wizardLicenceTableReady): ?>
+                                <button type="button" class="btn btn-outline-info btn-sm mt-2" id="orgwiz-add-licence">
+                                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add licence
+                                </button>
+                            <?php endif; ?>
+                        </section>
+                        <?php endif; ?>
+
+                        <!-- Step — Members (optional) -->
+                        <section data-wiz-step data-wiz-label="Members" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3"><?= $canEditOrgLicences ? '3' : '2' ?>. Members <span class="text-muted small">(optional)</span></h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <p class="text-secondary small">
+                                Add existing iHymns users as members now, or skip this and add them later from the
+                                organisation's settings page.
+                            </p>
+                            <div class="vstack gap-2" id="orgwiz-member-rows"></div>
+                            <button type="button" class="btn btn-outline-info btn-sm mt-2" id="orgwiz-add-member">
+                                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add member
+                            </button>
+                        </section>
+
+                        <!-- Step — Review -->
+                        <section data-wiz-step data-wiz-label="Review" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3"><?= $canEditOrgLicences ? '4' : '3' ?>. Review &amp; create</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <dl class="row small mb-0" id="orgwiz-review-summary"></dl>
+                        </section>
+                    </div>
+
+                    <div id="orgwiz-done" hidden>
+                        <h3 tabindex="-1" id="orgwiz-done-heading" class="h6 mb-3">Organisation created</h3>
+                        <div id="orgwiz-done-body" class="small"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-amber" data-wiz-next>Next</button>
+                    <button type="button" class="btn btn-amber" id="orgwiz-done-close" data-bs-dismiss="modal" hidden>Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+    /* #1996 — guided "New Organisation + licence" wizard wiring, built on the
+       shared stepper (js/modules/admin-wizard.js). Domain logic only — the
+       framework itself knows nothing about organisations (module doc-block).
+       Transport is a single fetch() to this page's own new JSON action
+       (`wizard_create_organisation`), mirroring external-link-types.php's
+       `wizard_create_type` shape — a bare fetch + X-Requested-With, since
+       this page's whole POST handler is NOT already validateCsrfRequest()-
+       gated (unlike songbooks.php). */
+    import { createWizard } from '/js/modules/admin-wizard.js?v=<?= htmlspecialchars($adminWizardVer, ENT_QUOTES) ?>';
+
+    (function () {
+        'use strict';
+        const modalEl = document.getElementById('orgWizardModal');
+        if (!modalEl) { return; }
+
+        const seed = window._iHymnsOrgWizard || {};
+        const csrfToken = seed.csrf || '';
+        const seededSlugs = Array.isArray(seed.slugs) ? seed.slugs : [];
+        const canEditOrgLicences = !!seed.canEditOrgLicences;
+        const licenceTableReady = !!seed.licenceTableReady;
+        const licenceTypes = Array.isArray(seed.licenceTypes) ? seed.licenceTypes : [];
+        const memberRoles = Array.isArray(seed.memberRoles) && seed.memberRoles.length ? seed.memberRoles : ['member'];
+
+        /* Step indices — DERIVED at boot from which steps the SERVER chose to
+           render (the Licences step is entirely absent from the DOM when
+           !canEditOrgLicences), never hardcoded, so validateStep()/
+           onStepChange()/showStepError() below stay correct either way. */
+        const STEP_ORG = 0;
+        const STEP_LIC = canEditOrgLicences ? 1 : -1;
+        const STEP_MEM = canEditOrgLicences ? 2 : 1;
+        const STEP_REVIEW = canEditOrgLicences ? 3 : 2;
+        const LAST_STEP = STEP_REVIEW;
+
+        const stepsWrap  = document.getElementById('orgwiz-steps-wrap');
+        const doneEl     = document.getElementById('orgwiz-done');
+        const doneBodyEl = document.getElementById('orgwiz-done-body');
+        const nextBtn    = modalEl.querySelector('[data-wiz-next]');
+        const backBtn    = modalEl.querySelector('[data-wiz-back]');
+        const doneCloseBtn = document.getElementById('orgwiz-done-close');
+
+        const nameInput   = document.getElementById('orgwiz-name');
+        const slugInput   = document.getElementById('orgwiz-slug');
+        const slugStatusEl = document.getElementById('orgwiz-slug-status');
+        const parentSelect = document.getElementById('orgwiz-parent');
+        const descInput   = document.getElementById('orgwiz-description');
+        const placeInput  = document.getElementById('orgwiz-physical-city');
+        const placeIdInput = document.getElementById('orgwiz-physical-city-id');
+        const activeEl    = document.getElementById('orgwiz-active');
+
+        const licenceRowsEl = document.getElementById('orgwiz-licence-rows');
+        const addLicenceBtn = document.getElementById('orgwiz-add-licence');
+        const memberRowsEl  = document.getElementById('orgwiz-member-rows');
+        const addMemberBtn  = document.getElementById('orgwiz-add-member');
+
+        const reviewSummary = document.getElementById('orgwiz-review-summary');
+
+        let slugManuallyEdited = false;
+        let licenceRowSeq = 0;
+        let memberRowSeq = 0;
+        const state = { orgId: 0 };
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function slugify(s) {
+            return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100);
+        }
+
+        /* ---- Name -> Slug auto-derive + live uniqueness (mirrors
+           songbooks.php's abbrValidate()/checkAbbr() shape — the seeded set
+           is a same-page nicety, the server stays authoritative either
+           way). ---- */
+        function checkSlug() {
+            const v = slugInput.value.trim();
+            if (!slugStatusEl) { return { ok: v !== '' }; }
+            if (v === '') {
+                slugStatusEl.textContent = 'Derived from the name — edit it if you\'d rather choose your own.';
+                slugStatusEl.className = 'form-text small';
+                return { ok: false, message: 'Slug is required.' };
+            }
+            if (!/^[a-z0-9-]+$/.test(v)) {
+                slugStatusEl.textContent = '❌ Lowercase letters, numbers and hyphens only.';
+                slugStatusEl.className = 'form-text small text-danger';
+                return { ok: false, message: 'Slug must be lowercase letters, digits or hyphens.' };
+            }
+            if (seededSlugs.some((s) => String(s).toLowerCase() === v)) {
+                slugStatusEl.textContent = '❌ That slug is already in use.';
+                slugStatusEl.className = 'form-text small text-danger';
+                return { ok: false, message: 'That slug is already in use — pick another.' };
+            }
+            slugStatusEl.textContent = '✅ Available.';
+            slugStatusEl.className = 'form-text small text-success';
+            return { ok: true };
+        }
+        nameInput.addEventListener('input', function () {
+            if (!slugManuallyEdited) {
+                slugInput.value = slugify(nameInput.value);
+                checkSlug();
+            }
+        });
+        slugInput.addEventListener('input', function () {
+            slugManuallyEdited = true;
+            checkSlug();
+        });
+
+        /* ---- location typeahead — the SAME shared module + attach shape
+           the manual create/edit forms below already use; place-search.js is
+           already loaded on this page, never re-loaded here. ---- */
+        if (window.iHymnsPlaceSearch && placeInput && placeIdInput) {
+            window.iHymnsPlaceSearch.attach(placeInput, { hiddenIdInput: placeIdInput });
+        }
+
+        /* ---- Licences: repeatable rows (#1969 multi shape), mirroring
+           external-link-types.php's addPatternRow()/readPatternRows() shape.
+           When the multi-licence table isn't migrated, exactly ONE row is
+           ever rendered, with no expiry/active/notes fields and no
+           add/remove controls (the "single primary type+number only"
+           degrade). ---- */
+        function licenceTypeOptionsHtml(selected) {
+            let html = '<option value="">— Select a licence —</option>';
+            licenceTypes.forEach(function (t) {
+                html += '<option value="' + escapeHtml(t.key) + '"' + (t.key === selected ? ' selected' : '') + '>' + escapeHtml(t.label) + '</option>';
+            });
+            return html;
+        }
+        function addLicenceRow() {
+            licenceRowSeq += 1;
+            const row = document.createElement('div');
+            row.className = 'card bg-secondary-subtle border-secondary';
+            row.setAttribute('data-wiz-licence-row', String(licenceRowSeq));
+            if (licenceTableReady) {
+                row.innerHTML =
+                  '<div class="card-body py-2">' +
+                    '<div class="row g-2 align-items-center">' +
+                      '<div class="col-md-4"><label class="form-label small mb-0" aria-hidden="true">Type</label>' +
+                        '<select class="form-select form-select-sm" data-wiz-lic-type>' + licenceTypeOptionsHtml('') + '</select></div>' +
+                      '<div class="col-md-3"><label class="form-label small mb-0" aria-hidden="true">Number</label>' +
+                        '<input type="text" class="form-control form-control-sm" data-wiz-lic-number maxlength="100" placeholder="Licence number"></div>' +
+                      '<div class="col-md-3"><label class="form-label small mb-0" aria-hidden="true">Expires</label>' +
+                        '<input type="date" class="form-control form-control-sm" data-wiz-lic-expires></div>' +
+                      '<div class="col-md-2 d-flex align-items-center gap-1 mt-3">' +
+                        '<div class="form-check small mb-0"><input class="form-check-input" type="checkbox" data-wiz-lic-active checked><label class="form-check-label" aria-hidden="true">Active</label></div>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="row g-2 mt-1">' +
+                      '<div class="col-md-9"><input type="text" class="form-control form-control-sm" data-wiz-lic-notes maxlength="255" placeholder="Notes (optional)"></div>' +
+                      '<div class="col-md-3 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-lic-remove><i aria-hidden="true" class="bi bi-x-lg"></i> Remove</button></div>' +
+                    '</div>' +
+                  '</div>';
+                row.querySelector('[data-wiz-lic-remove]').addEventListener('click', function () { row.remove(); });
+            } else {
+                row.innerHTML =
+                  '<div class="card-body py-2">' +
+                    '<div class="row g-2 align-items-center">' +
+                      '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">Type</label>' +
+                        '<select class="form-select form-select-sm" data-wiz-lic-type>' + licenceTypeOptionsHtml('') + '</select></div>' +
+                      '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">Number</label>' +
+                        '<input type="text" class="form-control form-control-sm" data-wiz-lic-number maxlength="100" placeholder="Licence number"></div>' +
+                    '</div>' +
+                  '</div>';
+            }
+            licenceRowsEl.appendChild(row);
+            return row;
+        }
+        function readLicenceRows() {
+            return Array.from(licenceRowsEl.querySelectorAll('[data-wiz-licence-row]')).map(function (row) {
+                const typeEl = row.querySelector('[data-wiz-lic-type]');
+                const numberEl = row.querySelector('[data-wiz-lic-number]');
+                const expiresEl = row.querySelector('[data-wiz-lic-expires]');
+                const activeEl2 = row.querySelector('[data-wiz-lic-active]');
+                const notesEl = row.querySelector('[data-wiz-lic-notes]');
+                return {
+                    type: typeEl ? typeEl.value : '',
+                    number: numberEl ? numberEl.value.trim() : '',
+                    expiresAt: expiresEl ? expiresEl.value : '',
+                    active: activeEl2 ? activeEl2.checked : true,
+                    notes: notesEl ? notesEl.value.trim() : '',
+                };
+            }).filter(function (r) { return r.type !== ''; });
+        }
+        if (canEditOrgLicences) {
+            if (addLicenceBtn) { addLicenceBtn.addEventListener('click', function () { addLicenceRow(); }); }
+            if (!licenceTableReady) { addLicenceRow(); } /* the one always-present degraded row */
+        }
+
+        /* ---- Members: repeatable rows, each a resolved-user picker (SAME
+           api2 user_search endpoint + resolved-pick guard as groups.php's
+           own Add-a-member picker, rule #43) + a role select. ---- */
+        function memberRoleOptionsHtml() {
+            let html = '';
+            memberRoles.forEach(function (r) {
+                html += '<option value="' + escapeHtml(r) + '"' + (r === 'member' ? ' selected' : '') + '>' + escapeHtml(r) + '</option>';
+            });
+            return html;
+        }
+        function addMemberRow() {
+            memberRowSeq += 1;
+            const row = document.createElement('div');
+            row.className = 'card bg-secondary-subtle border-secondary';
+            row.setAttribute('data-wiz-member-row', String(memberRowSeq));
+            row.innerHTML =
+              '<div class="card-body py-2">' +
+                '<div class="row g-2 align-items-center">' +
+                  '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">User</label>' +
+                    '<input type="text" class="form-control form-control-sm" data-wiz-mem-name autocomplete="off" placeholder="Start typing a name or username…"></div>' +
+                  '<div class="col-md-4"><label class="form-label small mb-0" aria-hidden="true">Role</label>' +
+                    '<select class="form-select form-select-sm" data-wiz-mem-role>' + memberRoleOptionsHtml() + '</select></div>' +
+                  '<div class="col-md-2 text-end mt-3"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-mem-remove aria-label="Remove this member row"><i aria-hidden="true" class="bi bi-x-lg"></i></button></div>' +
+                '</div>' +
+              '</div>';
+            const nameEl = row.querySelector('[data-wiz-mem-name]');
+            const hiddenId = document.createElement('input');
+            hiddenId.type = 'hidden';
+            hiddenId.setAttribute('data-wiz-mem-id', '');
+            row.appendChild(hiddenId);
+            if (window.iHymnsPlaceSearch && nameEl) {
+                window.iHymnsPlaceSearch.attach(nameEl, {
+                    hiddenIdInput: hiddenId,
+                    minChars: 2,
+                    pickMode: 'value',
+                    noun: { singular: 'user', plural: 'users' },
+                    searchUrl: (q) => '/manage/editor/api2?action=user_search&q=' + encodeURIComponent(q) + '&limit=10',
+                    parseResults: (d) => (d.suggestions || []).map((s) => ({ id: s.id, display_name: s.label, hint: s.hint || '' })),
+                });
+            }
+            row.querySelector('[data-wiz-mem-remove]').addEventListener('click', function () { row.remove(); });
+            memberRowsEl.appendChild(row);
+            return row;
+        }
+        if (addMemberBtn) { addMemberBtn.addEventListener('click', function () { addMemberRow(); }); }
+        function readMemberRows() {
+            return Array.from(memberRowsEl.querySelectorAll('[data-wiz-member-row]')).map(function (row) {
+                const nameEl = row.querySelector('[data-wiz-mem-name]');
+                const idEl = row.querySelector('[data-wiz-mem-id]');
+                const roleEl = row.querySelector('[data-wiz-mem-role]');
+                return {
+                    typed: nameEl ? nameEl.value.trim() : '',
+                    userId: idEl && idEl.value ? parseInt(idEl.value, 10) : 0,
+                    role: roleEl ? roleEl.value : 'member',
+                };
+            });
+        }
+
+        /* ---- review ---- */
+        function updateReview() {
+            if (!reviewSummary) { return; }
+            const parentLabel = parentSelect && parentSelect.selectedOptions[0] ? parentSelect.selectedOptions[0].textContent : '— None —';
+            let rows = '';
+            rows += '<dt class="col-sm-4">Name</dt><dd class="col-sm-8">' + escapeHtml(nameInput.value.trim()) + '</dd>';
+            rows += '<dt class="col-sm-4">Slug</dt><dd class="col-sm-8"><code>' + escapeHtml(slugInput.value.trim()) + '</code></dd>';
+            rows += '<dt class="col-sm-4">Parent</dt><dd class="col-sm-8">' + escapeHtml(parentLabel) + '</dd>';
+            rows += '<dt class="col-sm-4">Active</dt><dd class="col-sm-8">' + (activeEl.checked ? 'Yes' : 'No') + '</dd>';
+            if (canEditOrgLicences) {
+                const lic = readLicenceRows();
+                rows += '<dt class="col-sm-4">Licences</dt><dd class="col-sm-8">' +
+                    (lic.length ? escapeHtml(lic.map((r) => r.type).join(', ')) : 'None') + '</dd>';
+            }
+            const mem = readMemberRows().filter((m) => m.userId > 0);
+            rows += '<dt class="col-sm-4">Members</dt><dd class="col-sm-8">' + (mem.length ? mem.length + ' to add' : 'None') + '</dd>';
+            reviewSummary.innerHTML = rows;
+        }
+
+        function showStepError(index, message) {
+            const panes = modalEl.querySelectorAll('[data-wiz-step]');
+            const pane = panes[index];
+            if (!pane) { return; }
+            const alertEl = pane.querySelector('[data-wiz-alert]');
+            if (alertEl) {
+                alertEl.hidden = false;
+                alertEl.textContent = message;
+                alertEl.focus();
+            }
+        }
+        function clearAllStepAlerts() {
+            modalEl.querySelectorAll('[data-wiz-alert]').forEach(function (el) { el.hidden = true; el.textContent = ''; });
+        }
+
+        /* ---- the wizard itself ------------------------------------------ */
+        const wizard = createWizard(modalEl, {
+            host: 'bootstrap-modal',
+            validateStep: function (index) {
+                if (index === STEP_ORG) {
+                    if (!nameInput.value.trim()) {
+                        return { ok: false, message: 'Name is required.', focus: nameInput };
+                    }
+                    if (!slugInput.value.trim()) { slugInput.value = slugify(nameInput.value); }
+                    const slugResult = checkSlug();
+                    if (!slugResult.ok) {
+                        return { ok: false, message: slugResult.message || 'Fix the slug before continuing.', focus: slugInput };
+                    }
+                    return true;
+                }
+                if (index === STEP_LIC) {
+                    const rows = readLicenceRows();
+                    const types = rows.map((r) => r.type);
+                    const dupes = types.some((t, i) => types.indexOf(t) !== i);
+                    if (dupes) {
+                        return { ok: false, message: 'Each licence row must be a different type.' };
+                    }
+                    return true;
+                }
+                if (index === STEP_MEM) {
+                    const rows = readMemberRows();
+                    for (const r of rows) {
+                        if (r.typed !== '' && r.userId <= 0) {
+                            return { ok: false, message: 'Pick a user from the search results for every row (or remove it).' };
+                        }
+                    }
+                    const ids = rows.filter((r) => r.userId > 0).map((r) => r.userId);
+                    if (ids.some((id, i) => ids.indexOf(id) !== i)) {
+                        return { ok: false, message: 'The same user is listed more than once.' };
+                    }
+                    return true;
+                }
+                if (index === STEP_REVIEW) {
+                    updateReview();
+                    return true;
+                }
+                return true;
+            },
+            onStepChange: function (from, to) {
+                if (nextBtn) { nextBtn.textContent = (to === LAST_STEP) ? 'Create organisation' : 'Next'; }
+                if (to === LAST_STEP) { updateReview(); }
+            },
+            onFinish: save,
+        });
+
+        const FIELD_TO_STEP = { name: STEP_ORG, slug: STEP_ORG, licence_type: (STEP_LIC >= 0 ? STEP_LIC : STEP_ORG) };
+
+        function collectFormBody() {
+            const body = new URLSearchParams();
+            body.set('action', 'wizard_create_organisation');
+            body.set('csrf_token', csrfToken);
+            body.set('name', nameInput.value.trim());
+            body.set('slug', slugInput.value.trim());
+            if (parentSelect.value) { body.set('parent_org_id', parentSelect.value); }
+            body.set('description', descInput.value.trim());
+            body.set('is_active', activeEl.checked ? '1' : '');
+            if (placeInput.value.trim()) { body.set('physical_city', placeInput.value.trim()); }
+            if (placeIdInput.value) { body.set('physical_city_id', placeIdInput.value); }
+
+            if (canEditOrgLicences) {
+                const licRows = readLicenceRows();
+                if (licRows.length > 0) {
+                    body.set('licence_type', licRows[0].type);
+                    body.set('licence_number', licRows[0].number);
+                }
+                /* Distinct `licence_row_*[]` key names — see the matching
+                   server-side comment in the wizard_create_organisation
+                   branch for why these must NOT be `licence_type[]` /
+                   `licence_number[]` (PHP would collide those onto the
+                   SAME $_POST key as the singular primary fields set
+                   above). */
+                licRows.forEach(function (r) {
+                    body.append('licence_row_type[]', r.type);
+                    body.append('licence_row_number[]', r.number);
+                    body.append('licence_row_expires_at[]', r.expiresAt);
+                    body.append('licence_row_active[]', r.active ? '1' : '');
+                    body.append('licence_row_notes[]', r.notes);
+                });
+            }
+
+            readMemberRows().filter((m) => m.userId > 0).forEach(function (m) {
+                body.append('member_user_id[]', String(m.userId));
+                body.append('member_role[]', m.role);
+            });
+
+            return body;
+        }
+
+        function showDonePane(data) {
+            if (stepsWrap) { stepsWrap.hidden = true; }
+            if (doneEl) { doneEl.hidden = false; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = true; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = false; }
+
+            let html = '<p><i aria-hidden="true" class="bi bi-check-circle-fill text-success me-1"></i>Organisation <strong>'
+                + escapeHtml(data.name) + '</strong> was created.</p>';
+
+            const licences = Array.isArray(data.licences) ? data.licences : [];
+            if (licences.length) {
+                html += '<p class="mb-1">Licences:</p><ul class="mb-2">';
+                licences.forEach(function (l) {
+                    html += '<li>' + (l.ok
+                        ? '<i aria-hidden="true" class="bi bi-check-circle text-success me-1"></i>' + escapeHtml(l.type) + ' saved.'
+                        : '<i aria-hidden="true" class="bi bi-exclamation-triangle text-warning me-1"></i>' + escapeHtml(l.type) + ' — ' + escapeHtml(l.error || 'could not be saved.')) + '</li>';
+                });
+                html += '</ul>';
+            }
+
+            const members = Array.isArray(data.members) ? data.members : [];
+            if (members.length) {
+                html += '<p class="mb-1">Members:</p><ul class="mb-2">';
+                members.forEach(function (m) {
+                    html += '<li>' + (m.ok
+                        ? '<i aria-hidden="true" class="bi bi-check-circle text-success me-1"></i>' + escapeHtml(m.label || ('#' + m.userId)) + ' added.'
+                        : '<i aria-hidden="true" class="bi bi-exclamation-triangle text-warning me-1"></i>' + '#' + escapeHtml(m.userId) + ' — ' + escapeHtml(m.error || 'could not be added.')) + '</li>';
+                });
+                html += '</ul>';
+            }
+
+            html += '<p class="mb-0"><a href="/manage/organisations?edit=' + encodeURIComponent(data.id) + '">Open organisation settings</a> '
+                + 'to add more licences, members, or a logo.</p>';
+
+            if (doneBodyEl) { doneBodyEl.innerHTML = html; }
+            const heading = document.getElementById('orgwiz-done-heading');
+            if (heading) { heading.focus(); }
+        }
+
+        function routeSaveError(status, message, field) {
+            if (status === 409) {
+                wizard.goTo(STEP_ORG);
+                showStepError(STEP_ORG, message);
+                return;
+            }
+            if (status === 400 && field && FIELD_TO_STEP[field] !== undefined) {
+                const step = FIELD_TO_STEP[field];
+                wizard.goTo(step);
+                showStepError(step, message);
+                return;
+            }
+            window.alert(message);
+        }
+
+        function save() {
+            if (nextBtn) { nextBtn.disabled = true; }
+            clearAllStepAlerts();
+            fetch(window.location.pathname, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: collectFormBody(),
+            }).then(function (res) {
+                return res.json().then(function (data) { return { status: res.status, data: data }; })
+                    .catch(function () { return { status: res.status, data: null }; });
+            }).then(function (result) {
+                if (result.data && result.data.ok) {
+                    state.orgId = result.data.id;
+                    showDonePane(result.data);
+                    return;
+                }
+                const message = (result.data && result.data.error) || 'Could not create organisation — please retry.';
+                const field = result.data && result.data.field;
+                routeSaveError(result.status, message, field);
+            }).catch(function () {
+                window.alert('Could not reach the server. Please try again.');
+            }).finally(function () {
+                if (nextBtn) { nextBtn.disabled = false; }
+            });
+        }
+
+        /* Reset to a clean slate every time the modal is opened again —
+           including collapsing the DONE pane back to the stepper, and
+           reloading the page if a create actually succeeded this session
+           (so the freshly-minted organisation shows up in the list below,
+           which was rendered server-side before this modal ever opened). */
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            const shouldReload = state.orgId > 0;
+            clearAllStepAlerts();
+            nameInput.value = '';
+            slugInput.value = '';
+            slugManuallyEdited = false;
+            if (slugStatusEl) {
+                slugStatusEl.textContent = 'Derived from the name — edit it if you\'d rather choose your own.';
+                slugStatusEl.className = 'form-text small';
+            }
+            parentSelect.value = '';
+            descInput.value = '';
+            placeInput.value = '';
+            placeIdInput.value = '';
+            activeEl.checked = true;
+            licenceRowsEl.innerHTML = '';
+            if (canEditOrgLicences && !licenceTableReady) { addLicenceRow(); }
+            memberRowsEl.innerHTML = '';
+            state.orgId = 0;
+            if (stepsWrap) { stepsWrap.hidden = false; }
+            if (doneEl) { doneEl.hidden = true; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = false; nextBtn.textContent = 'Next'; nextBtn.disabled = false; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = true; }
+            wizard.goTo(0);
+            if (shouldReload) { window.location.reload(); }
+        });
+    })();
+    </script>
+    <?php /* #1996 — guided "New Organisation + licence" wizard: modal + wiring. END */ ?>
 
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
 </body>

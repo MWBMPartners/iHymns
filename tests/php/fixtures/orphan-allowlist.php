@@ -111,6 +111,15 @@ return [
         'admin_licence_type_toggle'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_licence_type_update'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_migrations_status'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1996 — the system-admin CREATE twin of manage/organisations.php's
+           `create` case + its new guided wizard. The WEB surfaces (manual
+           form + wizard) both go through /manage/organisations's own
+           `create`/`wizard_create_organisation` handlers, which call the
+           SAME shared core (includes/organisation_admin.php) directly —
+           they do NOT call this API action, same "one endpoint, two
+           audiences (native app / Swagger)" posture as its five
+           admin_organisation_* siblings immediately below. */
+        'admin_organisation_create'             => 'deliberate API-first surface #1996; native-app/Swagger console consumer; same D1-default-A posture as its admin_organisation_* siblings',
         'admin_organisation_delete'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_add'         => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_remove'      => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',

@@ -12,6 +12,12 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.1.0 — 28 August 2026
 
+- **A guided setup helper for new organisations** — Setting up a brand-new
+  organisation is now a short, friendly, step-by-step walkthrough: give it a
+  name, add its licence details, and invite its first members, all in one
+  guided flow — with a summary at the end showing exactly what was created.
+  The familiar form is still there if you'd rather fill everything in
+  yourself.
 - **A guided setup helper for live services** — Organisation admins can now
   set up a venue and its regular service time in a few friendly steps, with
   plain-language help explaining the two ways to go live: a quick, no-setup

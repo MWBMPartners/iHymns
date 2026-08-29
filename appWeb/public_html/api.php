@@ -16574,6 +16574,156 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * Admin: create an organisation (system-admin — #1996)
+         * POST body: {
+         *   name, slug?, parent_org_id?, description?, is_active?,
+         *   physical_city?, physical_city_id?,
+         *   licence_type?, licence_number?,
+         *   licences?: [{licence_type, licence_number?, expires_at?, is_active?, notes?}],
+         *   members?: [{user_id, member_role?}]
+         * }
+         * The native-app twin of manage/organisations.php's `create` case
+         * AND its new guided wizard's `wizard_create_organisation` JSON
+         * action — all THREE delegate to the SAME
+         * orgAdminValidateCreate()/orgAdminCreate() core
+         * (includes/organisation_admin.php, rule #22). DISTINCT from the
+         * pre-existing `organisation_create` action above: that one is the
+         * CONSUMER self-service endpoint (any authenticated user, auto-
+         * suffix-dedups the slug, drops licence/active/city entirely,
+         * inserts the caller as owner) — a deliberately different product,
+         * untouched here. No per-action validateCsrfRequest() — same as
+         * every other admin_organisation_* sibling in this family; the
+         * file's global X-Requested-With POST gate (top of file, ~L445)
+         * already covers every POST to this endpoint.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            /* Gate parity (rule #1587) — the SAME entitlement key
+               manage/organisations.php gates the WHOLE page on, matching
+               admin_organisation_update immediately above. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* #1986 finer gate — resolved ONCE, up front, exactly like
+               admin_organisation_update's own $canEditOrgLicences above.
+               Threaded into orgAdminValidateCreate() (forces the PRIMARY
+               licence_type/number to 'none'/'' when false) and re-checked
+               explicitly again immediately below, before ANY
+               orgAdminApplyLicenceRows() call for the repeatable licence
+               rows — a caller with manage_organisations but not
+               manage_org_licences must not be able to set licences via
+               this endpoint either. */
+            $canEditOrgLicences = userHasEntitlement('manage_org_licences', $authUser['Role'] ?? null);
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . '/includes/organisation_admin.php';
+
+                [$fields, $err, $status, $errField] = orgAdminValidateCreate($db, $body, $canEditOrgLicences);
+                if ($err !== null) {
+                    sendJson(['error' => $err, 'field' => $errField], $status);
+                    break;
+                }
+
+                try {
+                    $created = orgAdminCreate($db, $fields);
+                } catch (OrgAdminDuplicateSlugException $e) {
+                    sendJson(['error' => $e->getMessage(), 'field' => 'slug'], 409);
+                    break;
+                }
+                $newOrgId = $created['id'];
+
+                logActivity('api.admin.organisation.create', 'organisation', (string)$newOrgId, [
+                    'name'           => $fields['name'],
+                    'slug'           => $fields['slug'],
+                    'parent_org_id'  => $fields['parent'],
+                    'licence_type'   => $fields['licenceType'],
+                    'is_active'      => (bool)$fields['active'],
+                ]);
+
+                /* Additional licence rows — same #1986 finer-gate discipline
+                   as manage/organisations.php's wizard branch: never called
+                   without checking $canEditOrgLicences immediately first.
+                   Post-create failures are REPORTED per-row, never rolled
+                   back — the org itself already committed. */
+                $licenceResults = [];
+                if ($canEditOrgLicences) {
+                    $rawLicences = is_array($body['licences'] ?? null) ? $body['licences'] : [];
+                    $licenceRows = [];
+                    foreach ($rawLicences as $row) {
+                        if (!is_array($row)) { continue; }
+                        $t = trim((string)($row['licence_type'] ?? ''));
+                        if ($t === '' || $t === 'none') { continue; }
+                        $licenceRows[] = [
+                            'licence_type'   => $t,
+                            'licence_number' => (string)($row['licence_number'] ?? ''),
+                            'expires_at'     => (string)($row['expires_at']     ?? ''),
+                            'is_active'      => !empty($row['is_active']) ? 1 : 0,
+                            'notes'          => (string)($row['notes']         ?? ''),
+                        ];
+                    }
+                    if ($licenceRows) {
+                        $licenceResults = orgAdminApplyLicenceRows($db, $newOrgId, $licenceRows);
+                    }
+                }
+
+                /* Members — each row validated: role must be a real
+                   ORG_MEMBER_ROLES value, and the user id must name a real,
+                   ACTIVE tblUsers row (never trust a client-claimed id). */
+                $memberResults = [];
+                $rawMembers = is_array($body['members'] ?? null) ? $body['members'] : [];
+                foreach ($rawMembers as $m) {
+                    if (!is_array($m)) { continue; }
+                    $memberUserId = (int)($m['user_id'] ?? 0);
+                    $memberRole   = (string)($m['member_role'] ?? 'member');
+                    if ($memberUserId <= 0) { continue; }
+                    if (!in_array($memberRole, ORG_MEMBER_ROLES, true)) {
+                        $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'Unknown member role.'];
+                        continue;
+                    }
+                    $uStmt = $db->prepare('SELECT DisplayName, Username FROM tblUsers WHERE Id = ? AND IsActive = 1');
+                    $uStmt->bind_param('i', $memberUserId);
+                    $uStmt->execute();
+                    $uRow = $uStmt->get_result()->fetch_assoc();
+                    $uStmt->close();
+                    if (!$uRow) {
+                        $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'User not found or inactive.'];
+                        continue;
+                    }
+                    orgAdminMemberAdd($db, $newOrgId, $memberUserId, $memberRole);
+                    logActivity('api.admin.organisation.member_add', 'organisation', (string)$newOrgId, [
+                        'user_id' => $memberUserId, 'role' => $memberRole, 'via' => 'admin_organisation_create',
+                    ]);
+                    $memberResults[] = [
+                        'userId' => $memberUserId, 'ok' => true,
+                        'label'  => $uRow['DisplayName'] ?: $uRow['Username'],
+                    ];
+                }
+
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $newOrgId,
+                    'slug'     => $fields['slug'],
+                    'name'     => $fields['name'],
+                    'licences' => $licenceResults,
+                    'members'  => $memberResults,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.create', 'organisation', '', $e);
+                error_log('[admin_organisation_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Admin: delete an organisation
          * POST body: { id }
          * Refuses with 422 if any member is still listed OR any sub-org
@@ -16699,14 +16849,12 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
-                     VALUES (?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
-                );
-                $stmt->bind_param('iis', $userId, $orgId, $role);
-                $stmt->execute();
-                $stmt->close();
+                /* #1996 (rule #22) — re-pointed onto the SAME
+                   orgAdminMemberAdd() core manage/organisations.php's
+                   `add_member` case now also calls; byte-identical
+                   3-column upsert. */
+                require_once __DIR__ . '/includes/organisation_admin.php';
+                orgAdminMemberAdd($db, $orgId, $userId, $role);
 
                 logActivity('api.admin.organisation.member_add', 'organisation', (string)$orgId, [
                     'user_id' => $userId,

@@ -10449,11 +10449,97 @@ paths:
           description: Org list with member counts + licence tier
 
   # ===========================================================================
-  # ADMIN — ORGANISATIONS  (#719 PR 2c)
-  # System-admin CRUD parity with /manage/organisations. The existing
-  # organisation_create endpoint covers the create case; these complete
-  # the update / delete / member curation surface.
+  # ADMIN — ORGANISATIONS  (#719 PR 2c; admin_organisation_create added #1996)
+  # System-admin CRUD parity with /manage/organisations. admin_organisation_create
+  # is the SYSTEM-ADMIN create twin (distinct from the pre-existing
+  # `organisation_create` endpoint above, which is the CONSUMER self-service
+  # "create my own org" action — any authenticated user, auto-suffix-dedups
+  # the slug, drops licence/active/city, inserts the caller as owner; a
+  # deliberately different product, untouched by #1996).
   # ===========================================================================
+
+  /api.php?action=admin_organisation_create:
+    post:
+      operationId: adminOrganisationCreate
+      tags: [Admin — Organisations]
+      summary: Create an organisation (system-admin)
+      description: |
+        The native-app twin of `/manage/organisations`'s `create` case AND
+        its guided "New Organisation + licence" wizard's
+        `wizard_create_organisation` JSON action — all THREE delegate to
+        the SAME shared core (`orgAdminValidateCreate()`/`…Create()`,
+        `includes/organisation_admin.php`, #1996, rule #22). Optionally
+        attaches one or more licence rows (`licences[]`, #1969 — the
+        FIRST becomes the organisation's primary
+        `LicenceType`/`LicenceNumber`) and one or more members
+        (`members[]`) in the same call. A caller without the
+        `manage_org_licences` entitlement has `licence_type`/
+        `licence_number` FORCED to `none`/empty and `licences[]` is
+        silently ignored entirely — the #1986 finer gate, resolved
+        server-side, never trusted from the client.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_organisation_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOrganisationCreateInput"
+      responses:
+        "201":
+          description: Organisation created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer, description: New tblOrganisations.Id, example: 42 }
+                  slug: { type: string }
+                  name: { type: string }
+                  licences:
+                    type: array
+                    description: Per-row outcome of the optional `licences[]` input, in submitted order.
+                    items:
+                      type: object
+                      properties:
+                        type:  { type: string }
+                        ok:    { type: boolean }
+                        error: { type: string, nullable: true }
+                  members:
+                    type: array
+                    description: Per-row outcome of the optional `members[]` input, in submitted order.
+                    items:
+                      type: object
+                      properties:
+                        userId: { type: integer }
+                        ok:     { type: boolean }
+                        label:  { type: string, description: DisplayName/Username of the added member (present only when ok is true) }
+                        error:  { type: string, nullable: true }
+        "400":
+          description: Validation error (missing name, slug could not be derived, unknown licence_type)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  field:
+                    type: string
+                    nullable: true
+                    description: |
+                      Which input the error is about — `name`/`slug`/`licence_type` —
+                      so a client can route feedback to the right field/step
+                      without matching `error`'s prose (rule #35).
+        "403":
+          description: Admin access required (manage_organisations entitlement)
+        "409":
+          description: Slug already in use
 
   /api.php?action=admin_organisation_update:
     post:
@@ -24116,6 +24202,87 @@ components:
     # -------------------------------------------------------------------------
     # Organisation write-input shapes (#719 PR 2c)
     # -------------------------------------------------------------------------
+
+    AdminOrganisationCreateInput:
+      type: object
+      description: |
+        Input for `admin_organisation_create` (#1996). Shared shape with
+        `/manage/organisations`'s `create` case and its guided wizard's
+        `wizard_create_organisation` JSON action — all three delegate to
+        `includes/organisation_admin.php`'s `orgAdminValidateCreate()`/
+        `…Create()` (rule #22).
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        slug:
+          type: string
+          description: |
+            Optional override. When omitted the API derives one from
+            `name` via the same lowercase + non-alphanum-→hyphen
+            transform `/manage/organisations` uses.
+        parent_org_id:
+          type: integer
+          nullable: true
+        description:
+          type: string
+        physical_city:
+          type: string
+          nullable: true
+        physical_city_id:
+          type: integer
+          nullable: true
+          description: Ignored on an install pre-dating the places-adoption migration.
+        licence_type:
+          type: string
+          enum: [none, ccli, mrl, ihymns_basic, ihymns_pro, custom]
+          default: none
+          description: |
+            The primary licence type. FORCED to `none` server-side when
+            the caller lacks `manage_org_licences` (#1986), regardless of
+            what is posted here.
+        licence_number:
+          type: string
+        is_active:
+          type: boolean
+          default: false
+        licences:
+          type: array
+          description: |
+            Optional additional licence rows (#1969) — applied via the
+            SAME `orgLicenceUpsert()` core the org-licence CRUD family
+            uses. The FIRST entry (submission order) also becomes the
+            primary `licence_type`/`licence_number` above if those were
+            left at their defaults. Silently ignored in full (no rows
+            applied) when the caller lacks `manage_org_licences`.
+          items:
+            type: object
+            required: [licence_type]
+            properties:
+              licence_type:
+                type: string
+                enum: [ccli, mrl, ihymns_basic, ihymns_pro, custom]
+              licence_number: { type: string }
+              expires_at:     { type: string, format: date, nullable: true }
+              is_active:      { type: boolean, default: true }
+              notes:          { type: string, nullable: true }
+        members:
+          type: array
+          description: |
+            Optional members to add to the freshly-created organisation.
+            Each `user_id` must name a real, active `tblUsers` row —
+            verified server-side, never trusted from the client.
+          items:
+            type: object
+            required: [user_id]
+            properties:
+              user_id:
+                type: integer
+              member_role:
+                type: string
+                enum: [member, admin, owner]
+                default: member
 
     AdminOrganisationUpdateInput:
       type: object

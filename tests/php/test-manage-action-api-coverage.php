@@ -781,7 +781,16 @@ $MAPPING = [
            that org's own admin), exactly the "one endpoint, two audiences"
            the plan's §4.2 note under O2/O3 calls for. */
         'brand_save'         => 'api:org_admin_brand_update',
-        'create'             => 'api:organisation_create',
+        /* #1996 — FIXED: this used to point at `organisation_create`, but
+           that is the CONSUMER self-service endpoint (any authenticated
+           user, auto-suffix-dedups the slug, drops licence/active/city,
+           inserts the caller as owner) — a materially different product
+           from this page's system-admin `create` case, mapped to the WRONG
+           API action. The real system-admin twin, `admin_organisation_create`,
+           did not exist until #1996 added it (rule #22 — same shared core
+           as this case and the new guided wizard's
+           `wizard_create_organisation` JSON action, mapped right below). */
+        'create'             => 'api:admin_organisation_create',
         'delete'             => 'api:admin_organisation_delete',
         'licence_change'     => 'api:org_admin_licence_change',
         'logo_remove'        => 'api:org_admin_logo_delete',
@@ -790,6 +799,15 @@ $MAPPING = [
         'remove_member'      => 'api:admin_organisation_member_remove',
         'update'             => 'api:admin_organisation_update',
         'update_member_role' => 'api:admin_organisation_member_role_change',
+        /* #1996 — the guided "New Organisation + licence" wizard's JSON-
+           in/JSON-out branch (checked BEFORE the classic-form dispatch —
+           see the case's own CSRF note). Delegates to the SAME
+           orgAdminValidateCreate()/…Create() core (includes/
+           organisation_admin.php, rule #22) `create` above and the API
+           twin both call — two client shapes for the ONE server
+           capability, the #1992 external-link-types `wizard_create_type` /
+           #1993 songbooks `wizard_create_songbook` precedent. */
+        'wizard_create_organisation' => 'api:admin_organisation_create',
     ],
 
     /* places-api.php — X3: made Bearer-capable ON ITSELF rather than
