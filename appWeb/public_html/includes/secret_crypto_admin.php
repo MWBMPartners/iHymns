@@ -750,6 +750,14 @@ function secretEncryptInPlace(\mysqli $db, callable $audit): array
             $audit('secret.encrypt_inplace', $key, ['keyid' => secretActiveKeyId()]);
         }
 
+        /* #1989 — also rewrap TABLE-HELD secrets (tblWebhookSubscriptions.Secret/
+           SecretPrevious) BEFORE the cutover flag is written below, so
+           "flag_set means EVERYTHING in the DB is ciphertext" (this function's
+           own contract, see the doc-block above) stays true of the ONE
+           table-held recoverable secret too, not just the tblAppSettings rows
+           the loop above covers. */
+        _secretAdminRewrapTableSecrets($db, 'encrypt', $audit, $result);
+
         /* Ensure the sentinel exists (it may already, from an earlier
            canary check) — the migration itself is a legitimate moment to
            mint it if somehow no docroot has yet. */
@@ -790,11 +798,377 @@ function _secretAdminEnvelopeKeyid(string $stored): ?string
     return $p === null ? null : $p[1]; // [alg, keyid, nonce, ciphertext] — keyid is index 1.
 }
 
+/* =========================================================================
+ * TABLE-HELD SECRET REWRAP (#1989).
+ * ELI5: `secretSettingKeys()` above only knows about the 8-ish secrets that
+ * live as ROWS in `tblAppSettings`. There is exactly one OTHER recoverable
+ * secret in this database that isn't one of those rows: the outbound-webhook
+ * HMAC signing secret, which lives as a COLUMN on `tblWebhookSubscriptions`
+ * (`Secret`/`SecretPrevious` — see `includes/webhooks.php`'s
+ * `webhookSecretForStorage()`/`webhookSecretReveal()`). Every OTHER
+ * table-held credential in this codebase (API keys, driver keys, tokens) is
+ * a SHA-256 HASH, not a recoverable secret, so this machinery can never
+ * apply to them — signing an outgoing request is the one case that needs
+ * the plaintext back. `secretEncryptInPlace()`/`secretRotateReencrypt()`
+ * never touched this column before #1989, so a pre-cutover install could
+ * carry a permanently-plaintext webhook secret even after the settings-side
+ * migration ran, and a master-key rotation could never move it to the new
+ * key (`.claude/webhooks-1909-design.md` §7.2's "known gap", §A.14).
+ * WHY THIS LIVES HERE, NOT `webhooks.php` (design intent, mirrors the module
+ * banner above): this file is deliberately kept free of `webhooks.php`'s DB
+ * dependencies — `webhookSchemaReady()` there memoizes IGNORING its `$db`
+ * argument and checks THREE tables, the wrong shape for a single-table,
+ * repeatable-in-tests probe — so `_secretAdminTableExists()` below is a
+ * small, self-contained, un-memoized sibling instead of a `require_once`.
+ * ========================================================================= */
+
+/**
+ * Registry of TABLE-HELD recoverable secrets — the #1989 sibling of
+ * `secretSettingKeys()` (which governs `tblAppSettings` ROWS only). ONE entry
+ * today. Mirrors the `TIER_CAPS` registry shape (rule #28): a future second
+ * table-held secret is one more array line here, never a second hand-rolled
+ * walker.
+ *
+ * ELI5: "besides the password-shaped settings, there's also exactly one more
+ * secret hiding in an ordinary table column — and here's precisely where."
+ * WHY a registry, not a hardcoded query inline in the walker: both
+ * `_secretAdminRewrapTableSecrets()` (below) and the migration idempotency
+ * check (`secretTableSecretInventory()`) need the SAME table/pk/column facts;
+ * a registry keeps them from drifting apart, and lets a CI guard byte-match
+ * the values against `schema.sql` (rule #35 — `tests/php/test-secret-crypto-
+ * rewrap.php`).
+ *
+ * @return array<int,array{table:string,pk:string,columns:array<int,string>}>
+ */
+function secretTableSecretColumns(): array
+{
+    return [
+        ['table' => 'tblWebhookSubscriptions', 'pk' => 'Id', 'columns' => ['Secret', 'SecretPrevious']],
+    ];
+}
+
+/**
+ * Does $table exist on this install? INFORMATION_SCHEMA.TABLES probe,
+ * fail-safe → false on any error. Deliberately UN-MEMOIZED (see the section
+ * banner above for why this doesn't reuse `webhookSchemaReady()`/
+ * `_apiKeyTableExists()`'s static-cache shape) — this file's own CI guard
+ * exercises a scratch table across several assertions in one PHP process,
+ * and a stale cached answer from an earlier assertion would be exactly the
+ * wrong thing to trust there.
+ * @internal
+ *
+ * ELI5: "is the table even there yet?" — so an un-migrated docroot's rewrap
+ * walk quietly does nothing (zero queries against a table that doesn't
+ * exist) instead of throwing under `MYSQLI_REPORT_STRICT`.
+ */
+function _secretAdminTableExists(\mysqli $db, string $table): bool
+{
+    try {
+        $stmt = $db->prepare(
+            'SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?'
+        );
+        $stmt->bind_param('s', $table);
+        $stmt->execute();
+        $n = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        return $n > 0;
+    } catch (\Throwable $e) {
+        return false;
+    }
+}
+
+/**
+ * PURE decision: what should happen to ONE table-held secret's stored value,
+ * given the operation mode? Never touches a database, never encrypts or
+ * decrypts anything — purely "what's the right action" — so a CI guard can
+ * exhaustively TRUTH-TABLE every cell instead of trusting a live-DB test to
+ * happen to seed every case.
+ *
+ * ELI5: "given what's sitting in the column right now, and whether we're
+ * doing the one-time 'encrypt everything' job or the 'rotate to a new key'
+ * job, what's the ONE right thing to do?" — leave it alone (already correct,
+ * or nothing there), or actually rewrite it.
+ *
+ * ⚠️ THE #1 LOAD-BEARING DECISION IN THIS FEATURE. The single most dangerous
+ * mistake this feature could make is treating an ALREADY-ENVELOPED value as
+ * if it still needed encrypting — a double-encrypt produces a VALID enc:v1
+ * envelope whose PLAINTEXT is the *inner* envelope string, so `secretDecrypt()`
+ * hands "enc:v1:…" back as the signing secret, `webhookSecretReveal()` passes
+ * that straight to the HMAC, and every outgoing delivery from that moment on
+ * is signed with the WRONG key — silently, with no error anywhere, and
+ * unrecoverable except by tracking down the original plaintext out of band.
+ * The `'encrypt'` branch below is deliberately byte-identical in spirit to
+ * the existing settings-loop guards it mirrors: `secretEncryptInPlace()`'s
+ * `secretIsEncrypted($raw)` skip (~line 743) and `secretRotateReencrypt()`'s
+ * `!secretIsEncrypted($raw)` skip (~line 851). Extracting the decision into
+ * its own pure function means that identity can be asserted ONCE, exhaustively,
+ * by `tests/php/test-secret-crypto-rewrap.php`'s truth table — not trusted by
+ * eye across two independent call sites.
+ *
+ * mode 'encrypt' (secretEncryptInPlace()'s job — plaintext ⇒ ciphertext):
+ *   - null / ''                → 'skip_empty'      nothing to encrypt
+ *   - already enc:v1 enveloped → 'skip_enveloped'  THE double-encrypt guard
+ *   - anything else (plaintext)→ 'encrypt'
+ *
+ * mode 'rotate' (secretRotateReencrypt()'s job — move ciphertext to the active key):
+ *   - null / ''                       → 'skip_empty'    nothing to rotate
+ *   - not an enc:v1 envelope          → 'skip_plaintext' out of scope here —
+ *                                        that row belongs to the encrypt-in-
+ *                                        place job instead (D.1 makes it
+ *                                        re-runnable so it eventually is)
+ *   - envelope keyid === $activeKeyId → 'skip_current'  already current
+ *   - envelope under an older keyid   → 'rewrap'
+ *
+ * A malformed `enc:v1:junk` value still carries the `enc:` prefix, so
+ * `secretIsEncrypted()` reports it enveloped: mode 'encrypt' correctly
+ * `skip_enveloped`s it (never double-encrypts garbage); mode 'rotate' returns
+ * `'rewrap'` (its keyid can't be parsed, so it can't equal `$activeKeyId`) and
+ * the WALKER (not this pure function) discovers on the actual decrypt attempt
+ * that it can't be recovered, reclassifying it `undecryptable` — see
+ * `_secretAdminRewrapTableSecrets()` below.
+ *
+ * @param ?string $stored      The raw column value (NOT decrypted).
+ * @param string  $mode        'encrypt' or 'rotate'.
+ * @param ?string $activeKeyId `secretActiveKeyId()` — only consulted in 'rotate' mode.
+ * @return string One of: 'skip_empty'|'skip_enveloped'|'skip_plaintext'|'skip_current'|'encrypt'|'rewrap'
+ */
+function secretTableRewrapDecision(?string $stored, string $mode, ?string $activeKeyId): string
+{
+    if ($stored === null || $stored === '') {
+        return 'skip_empty';
+    }
+    if ($mode === 'rotate') {
+        if (!secretIsEncrypted($stored)) {
+            return 'skip_plaintext';
+        }
+        return (_secretAdminEnvelopeKeyid($stored) === $activeKeyId) ? 'skip_current' : 'rewrap';
+    }
+    /* mode 'encrypt' (secretEncryptInPlace()'s job — the only other caller). */
+    return secretIsEncrypted($stored) ? 'skip_enveloped' : 'encrypt';
+}
+
+/**
+ * THE shared table-secret rewrap walker — called by BOTH
+ * `secretEncryptInPlace()` ($mode='encrypt') and `secretRotateReencrypt()`
+ * ($mode='rotate'). Runs INSIDE the CALLER's already-open transaction — this
+ * function never begins or commits one itself, so a table-secret failure
+ * rolls back atomically together with every settings-row change the caller
+ * already made in the same pass (partial-run safety: rows+settings+flag are
+ * all-or-nothing).
+ *
+ * ELI5: walks every row of every table in `secretTableSecretColumns()`
+ * (today: just the one webhook-subscriptions table), and for each of its
+ * registered columns, asks `secretTableRewrapDecision()` "what should happen
+ * here?" and does exactly that — skip it, encrypt it, or rewrap it under the
+ * new key — folding the outcome into the SAME `$result` arrays
+ * (`encrypted`/`rewrapped`/`skipped`/`undecryptable`) the settings loop
+ * already fills. Rule #35: one shape, no second consumer to keep in
+ * lockstep — every existing consumer (the migration script's counts, the
+ * admin panel's rendered labels) picks up webhook rows automatically with
+ * nothing new to learn.
+ *
+ * WHY `FOR UPDATE`: the identical read-modify-write race
+ * `_secretAdminRawSetting($db, $key, true)` above already guards against
+ * (#1466 review finding 3) — this function reads each row, decides in PHP,
+ * and writes back inside the SAME transaction; a concurrent edit of a
+ * subscription's secret must either land before this transaction starts or
+ * block until it commits.
+ *
+ * WHY the table/pk/column names in the SQL below come from
+ * `secretTableSecretColumns()` ALONE, never request input: those identifiers
+ * are HARDCODED PHP-source constants (repo rule #5's carve-out) —
+ * `tests/php/test-secret-crypto-rewrap.php` pins the registry's values
+ * against `schema.sql` byte-for-byte so a rename on one side is caught
+ * immediately (rule #35).
+ *
+ * A fully-current table (every row already under the active key, or
+ * everything already enveloped in 'encrypt' mode) makes ZERO writes — the
+ * same verified-no-op discipline the settings loop already keeps.
+ *
+ * @param \mysqli  $db     Already inside the CALLER's transaction.
+ * @param string   $mode   'encrypt' or 'rotate' — see secretTableRewrapDecision().
+ * @param callable $audit  The SAME `$audit('event', 'label', [detail])` callback the caller already uses.
+ * @param array    $result &-modified in place — the caller's OWN result array; this function only appends
+ *                          to `encrypted`/`rewrapped`/`skipped`/`undecryptable`, never replaces it.
+ */
+function _secretAdminRewrapTableSecrets(\mysqli $db, string $mode, callable $audit, array &$result): void
+{
+    $activeKeyId = secretActiveKeyId();
+
+    foreach (secretTableSecretColumns() as $entry) {
+        $table = $entry['table'];
+        $pk = $entry['pk'];
+        $columns = $entry['columns'];
+
+        if (!_secretAdminTableExists($db, $table)) {
+            continue; // un-migrated install — zero queries, a clean natural no-op
+        }
+
+        /* Table/pk/columns are drawn EXCLUSIVELY from the hardcoded registry
+           above (rule #5 carve-out) — never request input. FOR UPDATE locks
+           every row for the rest of THIS transaction (see the doc-block WHY
+           above); the table is tiny (per-host subscription cap), so a
+           whole-table lock for the transaction's short duration is fine. */
+        $colList = implode(', ', $columns);
+        $rows = $db->query("SELECT {$pk}, {$colList} FROM {$table} ORDER BY {$pk} FOR UPDATE");
+        if (!($rows instanceof \mysqli_result)) {
+            continue;
+        }
+
+        while (($row = $rows->fetch_assoc()) !== null) {
+            $rowId = (int)$row[$pk];
+            $changed = []; // column => new value to WRITE (only columns that actually change)
+
+            foreach ($columns as $col) {
+                $stored = $row[$col] === null ? null : (string)$row[$col];
+                $label = "{$table}#{$rowId}.{$col}"; // names only — NEVER the value — see repo rule #6
+
+                switch (secretTableRewrapDecision($stored, $mode, $activeKeyId)) {
+                    case 'skip_empty':
+                        /* Nothing there — not worth a skip label, mirroring
+                           secretEncryptInPlace()'s settings loop (which only
+                           labels a skip that had a real value to leave alone). */
+                        break;
+
+                    case 'skip_enveloped':
+                    case 'skip_plaintext':
+                    case 'skip_current':
+                        $result['skipped'][] = $label;
+                        break;
+
+                    case 'encrypt':
+                        $changed[$col] = secretEncrypt($stored);
+                        $result['encrypted'][] = $label;
+                        $audit('secret.encrypt_inplace', $label, [
+                            'keyid' => $activeKeyId,
+                            'table' => $table,
+                            'row_id' => $rowId,
+                            'column' => $col,
+                        ]);
+                        break;
+
+                    case 'rewrap':
+                        $fromKeyId = _secretAdminEnvelopeKeyid($stored);
+                        $plain = secretDecrypt($stored);
+                        if ($plain === null) {
+                            /* The key for $fromKeyId isn't loaded here, or the
+                               envelope is malformed/tampered — skip-not-abort,
+                               mirroring secretRotateReencrypt()'s settings-loop
+                               undecryptable path exactly (do NOT hold the rest
+                               of the rotation hostage on one bad row). */
+                            $result['undecryptable'][] = $label;
+                            $audit('secret.rotate_skip_undecryptable', $label, [
+                                'from_keyid' => $fromKeyId,
+                                'table' => $table,
+                                'row_id' => $rowId,
+                                'column' => $col,
+                            ]);
+                            break;
+                        }
+                        $changed[$col] = secretEncrypt($plain);
+                        $result['rewrapped'][] = $label;
+                        $audit('secret.rotate_decrypt', $label, [
+                            'from_keyid' => $fromKeyId,
+                            'to_keyid' => $activeKeyId,
+                            'table' => $table,
+                            'row_id' => $rowId,
+                            'column' => $col,
+                        ]);
+                        break;
+                }
+            }
+
+            if ($changed === []) {
+                continue; // this row was already fully current — zero writes
+            }
+
+            $setList = implode(', ', array_map(static fn(string $c): string => "{$c} = ?", array_keys($changed)));
+            $stmt = $db->prepare("UPDATE {$table} SET {$setList} WHERE {$pk} = ?");
+            $params = array_values($changed);
+            $params[] = $rowId;
+            $stmt->bind_param(str_repeat('s', count($changed)) . 'i', ...$params);
+            $stmt->execute();
+            $stmt->close();
+        }
+    }
+}
+
+/**
+ * Inventory of the TABLE-HELD secrets — the #1989 sibling of
+ * `secretInventory()` (which covers `tblAppSettings` rows only; left
+ * UNTOUCHED — it's a panel-render contract other code already destructures,
+ * so this is a genuinely separate shape rather than an incompatible reshape
+ * of an existing one). For each column in `secretTableSecretColumns()`,
+ * classify every row's stored value:
+ *   'encrypted' = non-empty and secretIsEncrypted()
+ *   'legacy'    = non-empty and NOT enveloped (plaintext at rest)
+ *   'empty'     = null / '' (nothing to encrypt)
+ * Returns ['present'=>bool, 'encrypted'=>int, 'legacy'=>int, 'empty'=>int, 'rows'=>int].
+ * `present=false` (every count 0) when NONE of the registry's tables exist
+ * yet on this install. NEVER throws (status helper, mirrors secretInventory()'s
+ * own contract).
+ *
+ * ELI5: the webhook-table twin of the "N encrypted / M plaintext" report card
+ * `secretInventory()` already produces for the settings rows — this is what
+ * lets the encrypt-in-place migration (D.1) know there's STILL a plaintext
+ * webhook secret sitting in the table even after the settings side is fully
+ * done, so it doesn't refuse to re-run just because the cutover flag is
+ * already set.
+ *
+ * @return array{present:bool,encrypted:int,legacy:int,empty:int,rows:int}
+ */
+function secretTableSecretInventory(\mysqli $db): array
+{
+    $out = ['present' => false, 'encrypted' => 0, 'legacy' => 0, 'empty' => 0, 'rows' => 0];
+    try {
+        foreach (secretTableSecretColumns() as $entry) {
+            $table = $entry['table'];
+            $pk = $entry['pk'];
+            $columns = $entry['columns'];
+
+            if (!_secretAdminTableExists($db, $table)) {
+                continue; // un-migrated — contributes nothing to this entry
+            }
+            $out['present'] = true;
+
+            $colList = implode(', ', $columns);
+            $rows = $db->query("SELECT {$pk}, {$colList} FROM {$table}");
+            if (!($rows instanceof \mysqli_result)) {
+                continue;
+            }
+            while (($row = $rows->fetch_assoc()) !== null) {
+                foreach ($columns as $col) {
+                    $out['rows']++;
+                    $val = $row[$col];
+                    if ($val === null || $val === '') {
+                        $out['empty']++;
+                    } elseif (secretIsEncrypted((string)$val)) {
+                        $out['encrypted']++;
+                    } else {
+                        $out['legacy']++;
+                    }
+                }
+            }
+        }
+        return $out;
+    } catch (\Throwable $e) {
+        /* DB hiccup — degrade to "nothing to see", the safe read for a
+           status helper that must never throw. */
+        return ['present' => false, 'encrypted' => 0, 'legacy' => 0, 'empty' => 0, 'rows' => 0];
+    }
+}
+
 /**
  * ROTATE / RE-ENCRYPT (the hardened high-value endpoint). For each secret key
  * whose stored value is an enc: envelope NOT already under the active keyid,
- * DECRYPT it (via secretDecrypt, which tries all loaded keys) and RE-ENCRYPT
- * under the active keyid, then UPDATE. Also re-wraps the sentinel.
+ * DECRYPT it (via secretDecrypt, which reads the envelope's OWN keyid — see
+ * `_secretCryptoParseEnvelope()` — and uses ONLY that specific key, never
+ * every loaded key) and RE-ENCRYPT under the active keyid, then UPDATE. Also
+ * re-wraps the sentinel, and — since #1989 — every TABLE-HELD secret
+ * registered in `secretTableSecretColumns()` (currently
+ * `tblWebhookSubscriptions.Secret`/`SecretPrevious`) via the shared
+ * `_secretAdminRewrapTableSecrets()` walker.
  * Transactional (begin/commit; rollback+re-throw on error).
  * $audit is called ONCE PER KEY DECRYPTED: $audit('secret.rotate_decrypt', $key,
  *   ['from_keyid'=>$oldKeyid, 'to_keyid'=>secretActiveKeyId()]) — NEVER the value.
@@ -899,6 +1273,11 @@ function secretRotateReencrypt(\mysqli $db, callable $audit): array
                rather than us fabricating a new one under a plaintext this
                docroot invented. */
         }
+
+        /* #1989 — also rotate TABLE-HELD secrets (tblWebhookSubscriptions.Secret/
+           SecretPrevious) in the SAME pass, folding into the SAME $result
+           arrays as the settings loop above (rule #35 — one shape). */
+        _secretAdminRewrapTableSecrets($db, 'rotate', $audit, $result);
 
         $db->commit();
         return $result;

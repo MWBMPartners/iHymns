@@ -526,11 +526,19 @@ adds what an **attacker-controlled** target demands:
 - Never logged: `LastError`/`AttemptLogJson` carry status + curl error class only;
   the activity log records subscription ids, never secrets (the
   `activity_log.php` PRIVACY contract).
-- Known gap, accepted + recorded: `secretRotateReencrypt()` re-wraps only
-  tblAppSettings — a **master-key** rotation leaves webhook secrets under the old
-  keyid until touched. Safe while the old keyid is retained in the keyset (decrypt
-  reads the keyid from the envelope); a follow-up "re-wrap table secrets" card is
-  filed at implementation time (§A.14).
+- **Closed by #1989**: `secretEncryptInPlace()`/`secretRotateReencrypt()` (both in
+  `includes/secret_crypto_admin.php`) now also re-wrap this TABLE-held secret —
+  `tblWebhookSubscriptions.Secret`/`.SecretPrevious` — via the shared registry
+  (`secretTableSecretColumns()`) + walker (`_secretAdminRewrapTableSecrets()`), which
+  run INSIDE the same transaction as the `tblAppSettings` loop and fold into the
+  identical `encrypted`/`rewrapped`/`skipped`/`undecryptable` result shape (rule #35 —
+  no second consumer to keep in sync; the existing admin-panel render and the
+  encrypt-in-place migration's report both pick up webhook rows automatically). The
+  double-encryption hazard this previously left open (a stray re-wrap of an
+  already-enveloped value would nest an envelope, corrupting the signing secret
+  silently) is closed by routing the "already encrypted?" decision through the PURE
+  `secretTableRewrapDecision()`, exhaustively truth-tabled by
+  `tests/php/test-secret-crypto-rewrap.php`. Was previously the accepted gap below (§A.14).
 
 ### 7.3 Endpoint verification handshake
 
@@ -724,7 +732,7 @@ loopback stub) → soak: verify sign/retry/dead-letter/re-drive → beta → pro
 | A.11 | **Replay** against the receiver | `t` inside the signed string + documented 300s tolerance (§7.1) |
 | A.12 | **Cross-channel leak** — alpha test events hitting a production partner | `Channel` on all three tables, filtered in EVERY fan-out/claim/list query (rule #26's prod-stale lesson); channel in the envelope so receivers can assert |
 | A.13 | **DB bloat** — unbounded ledger/delivery growth | `ExpiresAt` stamped at insert (30d); pruned by the drain pass + `cleanup.php`; caps per pass |
-| A.14 | **Master-key rotation strands table secrets** | Envelope carries keyid; old keys retained during overlap; follow-up "re-wrap table-held secrets" card filed at implementation (§7.2) |
+| A.14 | **Master-key rotation strands table secrets** — CLOSED #1989 | Envelope carries keyid; old keys retained during overlap; `secretEncryptInPlace()`/`secretRotateReencrypt()` now re-wrap `tblWebhookSubscriptions.Secret`/`.SecretPrevious` too via the shared `_secretAdminRewrapTableSecrets()` walker (§7.2) |
 | A.15 | **Drain-key leak** | Key grants only "spend our own budget faster"; rate-limited; regenerable on the configuration card; hash_equals compare |
 | A.16 | **Loop** — subscription pointed at our own API | Self-host block list (§6.5.5) |
 
