@@ -517,7 +517,6 @@ $webhookMintingFns = ['webhookSubscriptionCreate', 'webhookSubscriptionRotateSec
 $webhookNonMintingFns = [
     'webhookSubscriptionUpdate', 'webhookSubscriptionSetStatus', 'webhookSendVerification',
     'webhookEnqueueForSubscription', 'webhookSubscriptionDelete', 'webhookDeliveryRedrive',
-    'webhookSubscriptionRevealSecret',
 ];
 foreach (array_merge($webhookMintingFns, $webhookNonMintingFns) as $fn) {
     $fnBody = functionBodyFor($webhookCoreSrc, $fn);
@@ -529,15 +528,18 @@ foreach (array_merge($webhookMintingFns, $webhookNonMintingFns) as $fn) {
         ok("{$fn}() (NOT a minting function) does NOT call webhookMintSecret(", !$callsMint);
     }
 }
-/* webhookSubscriptionRevealSecret() specifically: still exists (page-only,
-   untouched), does NOT mint (it reveals the EXISTING stored secret via
-   webhookSecretReveal(), never webhookMintSecret()), and (per F2 above) is
-   simply never called from api.php. */
-$revealFnBody = functionBodyFor($webhookCoreSrc, 'webhookSubscriptionRevealSecret');
-ok('webhookSubscriptionRevealSecret() still exists in includes/webhook_admin.php (untouched, page-only — this batch did not delete it, only declined to expose it over the API)',
-    $revealFnBody !== null);
-ok('webhookSubscriptionRevealSecret() calls webhookSecretReveal( (reveals the EXISTING secret, distinct from minting a new one)',
-    caseBodyContains($revealFnBody, 'webhookSecretReveal('));
+/* webhookSubscriptionRevealSecret() specifically: #1987 RETIRED this
+   function outright (the reveal-existing-secret leak it backed — the last
+   one tree-wide — rather than merely declining to expose it over the API,
+   which is what this batch originally did). It must no longer exist in
+   includes/webhook_admin.php at all; the standing show-once guard,
+   tests/php/test-webhook-secret-show-once.php, is what now proves this
+   tree-wide (function absence + every webhookSecretReveal( call site's
+   enclosing function is signing/verification-only), so this single
+   existence check only needs to confirm the deletion, not re-derive the
+   whole discipline. */
+ok('webhookSubscriptionRevealSecret() no longer exists in includes/webhook_admin.php (#1987 retired the reveal-existing-secret leak)',
+    functionBodyFor($webhookCoreSrc, 'webhookSubscriptionRevealSecret') === null);
 
 /* =========================================================================
  * G. EXTRACTION VERIFICATION (A18 only — A19's page needed no extraction,

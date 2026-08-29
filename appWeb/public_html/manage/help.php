@@ -2182,7 +2182,7 @@ foreach ($sections as $s) {
                     <ul>
                         <li><strong>Add a subscription</strong> &mdash; give it a label, the partner's <code>https://</code> URL, and tick which events it wants (a single event, a whole family like <em>every song event</em>, or everything).</li>
                         <li><strong>Verify it.</strong> A new or URL-changed subscription starts <em>pending</em> and receives nothing until it passes a one-off <strong>verification</strong>: we send a signed challenge, and the endpoint must echo it back. This proves the partner really controls that URL &mdash; so a subscription can't be pointed at some unsuspecting third party and then used to spray it with traffic.</li>
-                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once on create; you can <em>Reveal</em> it (logged) or <em>Rotate</em> it &mdash; rotation keeps the old secret valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
+                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once &mdash; on create, and again if you <em>Rotate</em> it. There is no way to look it up again after that; lost it? <em>Rotate</em> mints a new one and keeps the old one valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
                     </ul>
                     <h3 class="h6">Delivery, retries and dead-letters</h3>
                     <p>

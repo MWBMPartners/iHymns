@@ -590,12 +590,11 @@ tags:
       batch 6a A19, owner decision Q5 — `.claude/api-coverage-2026-08-28.md`
       §4.3). Mirrors `/manage/webhooks`'s action set — create / update /
       verify / pause / resume / rotate the signing secret / send a test
-      delivery / delete / re-drive a failed delivery — EXCEPT
-      `reveal_secret`, which is deliberately NOT exposed here (see below).
-      Both surfaces call the SAME shared core, the pre-existing
-      `includes/webhook_admin.php` (manage/webhooks.php already delegated
-      to it; this batch only added the API twin, no extraction needed).
-      Gated on `manage_webhooks` for every action.
+      delivery / delete / re-drive a failed delivery. Both surfaces call
+      the SAME shared core, the pre-existing `includes/webhook_admin.php`
+      (manage/webhooks.php already delegated to it; this batch only added
+      the API twin, no extraction needed). Gated on `manage_webhooks` for
+      every action.
 
       **⚠️ Show-once secret discipline**: the signing secret is generated
       server-side and appears in the JSON response ONLY from
@@ -604,9 +603,14 @@ tags:
       keeps signing for a 24h grace window, dual-signed, so a partner can
       roll over without a hard cutover). Every other action in this tag
       returns metadata only, NEVER key material. `/manage/webhooks`'s own
-      `reveal_secret` action — which reads the CURRENT secret back out for
-      an admin who lost it — is intentionally NOT ported to this API: it
-      stays a web-only, session-authenticated, admin-eyes-on action.
+      `reveal_secret` action — which used to read the CURRENT secret back
+      out for an admin who lost it — was **retired entirely** (#1987): no
+      API surface ever carried it (so this is not a response-schema
+      change), and the web page no longer has it either. The signing
+      secret is now shown client-side ONLY at the moment it is minted —
+      create or rotate — never recoverable after that. An admin who loses
+      it rotates the subscription's secret instead (the same 24h
+      dual-signing grace above covers the swap).
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event

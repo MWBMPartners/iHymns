@@ -9,8 +9,8 @@ declare(strict_types=1);
  * HTTP message to this partner's URL whenever a song changes / a songbook
  * changes / a set-list is shared / a service starts or ends". It lists the
  * partners already registered, lets you create/edit one, prove the partner's
- * endpoint is really theirs (Verify), pause/resume delivery, roll or reveal
- * the signing secret, fire a one-off test message, and see (and retry) the
+ * endpoint is really theirs (Verify), pause/resume delivery, rotate the
+ * signing secret, fire a one-off test message, and see (and retry) the
  * recent delivery attempts.
  *
  * DETAIL:
@@ -105,8 +105,8 @@ $csrfHidden = '<input type="hidden" name="csrf_token" value="' . htmlspecialchar
  * the admin action it is merely recording. Entity type is always the literal
  * 'webhook' string per this feature's audit convention — the entity id
  * distinguishes WHICH subscription (or, for a re-drive, which delivery).
- * $details must NEVER contain the plaintext secret — secret.rotate and
- * secret.reveal below deliberately log nothing but the id.
+ * $details must NEVER contain the plaintext secret — secret.rotate below
+ * deliberately logs nothing but the id.
  */
 $logWebhook = static function (string $verb, string $entityId, array $details): void {
     if (function_exists('logActivity')) {
@@ -421,21 +421,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 break;
             }
 
-            case 'reveal_secret': {
-                $id = (int)($_POST['id'] ?? 0);
-                if ($id <= 0) { $flash = ['type' => 'danger', 'message' => 'Invalid subscription id.']; break; }
-                $row    = webhookSubscriptionGet($db, $id);
-                $secret = webhookSubscriptionRevealSecret($db, $id);
-                if ($secret !== null) {
-                    $flash = ['type' => 'success', 'message' => 'Current signing secret revealed below.'];
-                    $revealSecret = ['label' => $row ? (string)$row['Label'] : ('#' . $id), 'secret' => $secret];
-                    $logWebhook('secret.reveal', (string)$id, []);   /* NEVER the secret itself */
-                } else {
-                    $flash = ['type' => 'danger', 'message' => 'Could not reveal the secret — subscription not found.'];
-                }
-                break;
-            }
-
             case 'send_test': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id <= 0) { $flash = ['type' => 'danger', 'message' => 'Invalid subscription id.']; break; }
@@ -539,7 +524,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             songbook changes, a set-list is shared, a service starts or ends.
             Each subscription must prove it controls its endpoint (Verify)
             before it receives anything, and its signing secret is shown in
-            full only <strong>once</strong>.
+            full only <strong>once</strong>. Lost the secret? Rotate it —
+            the previous secret keeps signing for 24 hours.
         </p>
     </div>
 
@@ -674,12 +660,6 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 </form>
                                 <form method="post" action="/manage/webhooks" class="d-inline">
                                     <?= $csrfHidden ?>
-                                    <input type="hidden" name="action" value="reveal_secret">
-                                    <input type="hidden" name="id" value="<?= $sid ?>">
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary">Reveal secret</button>
-                                </form>
-                                <form method="post" action="/manage/webhooks" class="d-inline">
-                                    <?= $csrfHidden ?>
                                     <input type="hidden" name="action" value="send_test">
                                     <input type="hidden" name="id" value="<?= $sid ?>">
                                     <button type="submit" class="btn btn-sm btn-outline-info">Send test</button>
@@ -798,7 +778,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     'use strict';
     /* One-shot secret copy-to-clipboard — mirrors api-keys.php's keyResultCopy
        button. Guarded on element existence since it only renders right after
-       a create/rotate/reveal action. */
+       a create/rotate action. */
     var copyBtn = document.getElementById('whSecretCopyBtn');
     if (copyBtn) {
         copyBtn.addEventListener('click', function () {

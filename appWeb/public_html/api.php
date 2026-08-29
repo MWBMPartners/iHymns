@@ -23189,8 +23189,9 @@ if ($action !== null) {
          * functions in the whole file capable of returning `rawKey`) and
          * `includes/webhook_admin.php` (A19, pre-existing — manage/
          * webhooks.php already delegated to it, so no extraction was
-         * needed; this batch only adds the API twin, never touches
-         * webhookSubscriptionRevealSecret() from here).
+         * needed; this batch only adds the API twin. The web page's
+         * reveal-existing-secret path was later retired entirely (#1987) —
+         * plaintext is shown once, at create/rotate only, page and API alike).
          * ================================================================= */
 
         /* -----------------------------------------------------------------

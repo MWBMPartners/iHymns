@@ -926,10 +926,6 @@ $MAPPING = [
         'pause'         => 'api:admin_webhook_pause',
         'redrive'       => 'api:admin_webhook_redrive',
         'resume'        => 'api:admin_webhook_resume',
-        /* Show-once secret discipline (batch6a, owner condition Q5) — a
-           reveal of an EXISTING secret is deliberately never ported to the
-           API, only mint/rotate (which return the secret exactly once). */
-        'reveal_secret' => 'web_only:show-once-secret',
         'rotate_secret' => 'api:admin_webhook_rotate_secret',
         'send_test'     => 'api:admin_webhook_send_test',
         'update'        => 'api:admin_webhook_update',

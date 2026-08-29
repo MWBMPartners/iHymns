@@ -8,9 +8,20 @@ declare(strict_types=1);
  * ELI5: the shared "business logic" behind the /manage/webhooks page — create a
  * subscription (validate the URL is safe + public, mint a signing secret), verify
  * the endpoint really is the partner's (a signed challenge it must echo back),
- * rotate/reveal the secret, pause/resume, send a test, and re-drive a failed
+ * rotate the secret, pause/resume, send a test, and re-drive a failed
  * delivery. The page is just forms; ALL of this lives here so a future partner
  * API can reuse the exact same core (rule #22 / design §8.3).
+ *
+ * #1987: there is deliberately no "reveal an existing secret" function here
+ * any more — an admin who lost the secret rotates it instead (24h dual-
+ * signing grace keeps the partner integration working through the swap).
+ * webhookSecretReveal() in includes/webhooks.php still exists — it is the
+ * decrypt seam the SIGNING path (webhookSendVerification() here, and
+ * _webhookAttemptDelivery() in webhooks.php) depends on to compute the
+ * outgoing HMAC. That is not this regression: a signing secret is
+ * necessarily stored recoverably (it cannot be hashed, unlike an API key),
+ * so decrypting it to SIGN a request is fine — decrypting it to hand back
+ * to an admin in a response was the leak #1987 retires.
  *
  * DETAIL:
  * -------
@@ -276,18 +287,6 @@ function webhookSubscriptionRotateSecret(\mysqli $db, int $id): array
     $stmt->execute();
     $stmt->close();
     return ['ok' => true, 'secret' => $newPlain];
-}
-
-/** ELI5: reveal a subscription's current secret in clear text (entitlement-gated
- *  + activity-logged by the caller). WHY: we necessarily store it recoverably to
- *  sign, so hiding it would be theatre (design §7.2). */
-function webhookSubscriptionRevealSecret(\mysqli $db, int $id): ?string
-{
-    $row = webhookSubscriptionGet($db, $id);
-    if ($row === null) {
-        return null;
-    }
-    return webhookSecretReveal((string)$row['Secret']);
 }
 
 /** ELI5: permanently delete a subscription (its deliveries CASCADE away). */
