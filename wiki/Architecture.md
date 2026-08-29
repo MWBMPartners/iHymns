@@ -145,6 +145,22 @@ A new manage-page action that lands without a mapping entry fails the guard outr
 
 **Scale, as last measured:** `api.php` dispatches **312** public `?action=` cases (up from 223 before this program) and `api2.php` **66** — both counts verified live by `tests/php/lib/dispatch_parser.php`, the same tokeniser the coverage guard and `test-openapi-actions-exist.php` use, so treat any number here as orientation rather than a pinned contract.
 
+### Guided-wizard framework (#1992 family)
+
+`js/modules/admin-wizard.js` (`createWizard(rootEl, opts)`) is the **one reusable multi-step "wizard" stepper** for `/manage/*` admin pages — the same shape every "set up a new thing in N small screens, Next/Back, a progress trail" flow needs, built once instead of per-feature. It knows how to show one step at a time, move focus correctly when the step changes (WCAG 2.4.3), block advancing until the current step validates, and render the progress trail; it carries **zero domain knowledge** of any one wizard. Steps are **derived from the DOM** (`[data-wiz-step]` elements, in document order), never a JS-side list that the markup could drift out of sync with (rule #35 — the same drift class #1581's event-name bug was). A host supplies field markup, its own `validateStep`/save logic, and a modal to put it in — `opts.host` is either `'bootstrap-modal'` (the host page's own Bootstrap Modal instance supplies the focus trap; every current consumer uses this) or `'overlay'` (the module lazily pulls in `js/utils/dialog-a11y.js`'s `openModalDialog()` for pages with no Bootstrap modal already on screen).
+
+Five guided wizards consume this ONE engine, each additive with the page's pre-existing manual path left fully intact:
+
+| Wizard | Page | Steps |
+| --- | --- | --- |
+| Add provider (guided) | `manage/external-link-types.php` | Name → sample-URL pattern suggestion + live test → review |
+| New songbook (guided) | `manage/songbooks.php` | Identity → permanent short code (live uniqueness + digit warning) → optional details → review |
+| Live Service setup (guided) | `manage/venues.php` | Live-session mode (Quick Live Follow vs. Service Mode) → venue → service time → optional presentation-app key → review |
+| New organisation (guided) | `manage/organisations.php` | Organisation details → licences (optional, finer-gated) → members (optional) → review |
+| Guided (New Song) | Editor2 (`manage/editor/editor2.php`) | Songbook → number (live availability) → title + alt-titles → seed verse/chorus → create + open |
+
+Each wizard is pure client orchestration over the page's **existing** write actions (rule #22) — no wizard introduces a parallel save path; the External Link, Songbook and Organisation wizards each gained one new `admin_*_create` API twin so the guided flow and a native caller reach the identical validate/create core the page's own manual form already used (see [[API Reference]]). The four list pages (External Link Types, Songbooks, Venues, Organisations) additionally render a shared **"Get started" empty-state launcher** (`manage/includes/wizard-empty-state.php`) in place of a bare empty list — an icon, one line of explanation, and a button that opens the exact same wizard modal the page's header button opens (same `data-bs-target`, so it's a second trigger on one modal, never a second implementation). `tests/php/test-wizard-empty-state.php` and the per-wizard PHP guards (`test-songbook-wizard.php`, `test-service-setup-wizard.php`, …) keep the markup contract and modal wiring honest.
+
 ### Data Flow
 
 Every runtime read is **live MySQL** — this is the single biggest architectural fact about the current codebase (the DB-direct rewrite, epic #1010, June 2026). `songs.json` is a **one-time migration input**, not a runtime file, and nothing ships it to a client:

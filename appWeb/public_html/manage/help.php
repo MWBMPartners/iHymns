@@ -685,6 +685,10 @@ foreach ($sections as $s) {
                             puts it back. Permanent removal is a separate, deliberately harder step on
                             that page. Deleting is available to editors and above.</li>
                     </ul>
+                    <h3 class="h6">Creating a new song</h3>
+                    <p>
+                        The <strong>Guided</strong> toolbar button walks you through adding a song one small step at a time — pick the songbook, check the number is free, add a title (plus any other names it's known by), start with a simple verse/chorus shape, then open it in the editor to keep going. Prefer the plain <strong>New</strong> button? It still asks for just a songbook and a title and drops you straight into an empty song.
+                    </p>
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
@@ -995,6 +999,10 @@ foreach ($sections as $s) {
                         <dt>Online links — Official website / Internet Archive / Wikipedia</dt><dd>Free-text URLs. Used as outbound references on the songbook detail page so users can verify the source.</dd>
                         <dt>Authority identifiers — WikiData ID, OCLC, OCN, LCP, ISBN, ARK, ISNI, VIAF, LCCN, LC Class</dt><dd>Standard cataloguing identifiers from major library and authority systems. All optional. Useful for cross-referencing and de-duplicating against external catalogues.</dd>
                     </dl>
+                    <h3 class="h6">Guided songbook creation</h3>
+                    <p>
+                        The <strong>New songbook (guided)</strong> button walks you through setting up a songbook one step at a time — name, then the short code (checked live so it can't clash with an existing one, with a friendly nudge if you pick a code that's mostly digits), then the optional extra details, ending with a review before you create it. Prefer the classic single form? It's still right there above the list.
+                    </p>
                     <h3 class="h6">Renaming an abbreviation</h3>
                     <p>
                         The abbreviation is what every song references, so renaming is opt-in: you must tick the <strong>"Also rename song references"</strong> checkbox to cascade the rename to every song that uses it. Without that checkbox, songs keep the old abbreviation and orphan from the renamed songbook.
@@ -1546,6 +1554,10 @@ foreach ($sections as $s) {
                         <dt>Licence type / number</dt><dd><code>none</code>, <code>ihymns_basic</code>, <code>ihymns_pro</code>, or <code>ccli</code>. CCLI requires a licence number for audit.</dd>
                         <dt>Active flag</dt><dd>Inactive orgs are kept in the database but their licence stops counting toward members.</dd>
                     </dl>
+                    <h3 class="h6">Guided organisation setup</h3>
+                    <p>
+                        The <strong>New organisation (guided)</strong> button takes you through setting one up in order — the organisation's own details first, then any licences it holds (you can add more than one, e.g. separate licences for lyrics and for musical notation), then its first members — with a review step before anything is created. Licences only appear as a step for curators allowed to manage them; everyone else can still add members. The classic form below does the same job in one screen if you prefer that.
+                    </p>
                     <h3 class="h6">Membership</h3>
                     <p>Two-pane picker, same shape as User Groups. Each member also gets a sub-role: <em>member</em> (no extra perms), <em>admin</em> (can manage other members), or <em>owner</em> (full control of the org).</p>
                     <h3 class="h6">Logo</h3>
@@ -1643,6 +1655,10 @@ foreach ($sections as $s) {
                     <h3 class="h6">Service times</h3>
                     <p>
                         Each venue can have several recurring service times (e.g. Sunday 10:00am, Wednesday 7:00pm), each with a title, day of week, start time and duration &mdash; or a one-off occurrence for a special service that doesn't repeat.
+                    </p>
+                    <h3 class="h6">Guided live-session setup</h3>
+                    <p>
+                        The <strong>Live Service setup (guided)</strong> button is the friendliest way in: it first explains the difference between a one-off <strong>Quick Live Follow</strong> session (no setup, start from any song) and a full <strong>Service Mode</strong> venue-wide join code, then walks you through the venue, its regular service time, and an optional presentation-app connection, ending with a review before anything is created. Prefer setting things up field by field yourself? The forms further down this page do exactly the same job.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Venues + service times are useful org metadata on their own, even if you never turn on Service Mode. Setting them up doesn't switch anything else on.
