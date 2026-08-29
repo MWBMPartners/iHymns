@@ -19,6 +19,13 @@ with none of the behind-the-scenes technical detail.
   a built-in "test the connection" check before you're done, so you know
   straight away whether it's actually working. The full settings screen is
   still there if you'd rather set it up yourself.
+- **A guided walkthrough for getting a brand-new install running** — Setting
+  up iHymns for the first time is now a short, friendly, step-by-step guide
+  instead of one long checklist: connect the database, bring it up to date,
+  see what starter content is already included, optionally connect a few
+  extra services, and finish with a plain "yes, everything's ready" check —
+  each step explained in everyday language along the way. The detailed
+  setup page is still there if you'd rather do it yourself.
 
 ## 1.1.0 — 28 August 2026
 

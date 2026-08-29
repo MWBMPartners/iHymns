@@ -118,6 +118,18 @@ if (is_file($secretAdminFile)) {
     require_once $secretAdminFile;
 }
 
+/* #2005 — the "Guided setup" empty-state launcher (below) reuses the SHARED
+   #1999 partial rather than hand-rolling its own "get started" card
+   (CLAUDE.md's modularity rule — reuse, don't fork). Same defensive
+   `is_file()` load as the secret-admin block just above: this dashboard
+   must still render on a docroot that received a lagging deploy without
+   this file yet, and `ihymns_wizard_empty_state` is only ever CALLED
+   further down behind its own `function_exists()` check. */
+$wizardEmptyStateFile = __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
+if (is_file($wizardEmptyStateFile)) {
+    require_once $wizardEmptyStateFile;
+}
+
 /* =========================================================================
  * SAVE CREDENTIALS (POST) — writes appWeb/.auth/db_credentials.php
  * ========================================================================= */
@@ -2431,6 +2443,24 @@ if ($hasCredentials && defined('DB_HOST')) {
         </span>
     </p>
 
+    <?php /* #2005 — "Guided setup" header trigger. ELI5: a friendlier front
+             door onto this same page — it opens a step-by-step walkthrough
+             that presses the SAME buttons found further down, in a sensible
+             order, one at a time. Detailed: `data-bs-target="#setupWizardModal"`
+             is the literal Bootstrap hook the standing guard
+             tests/php/test-wizard-empty-state.php checks against the REAL
+             `id="setupWizardModal"` modal element rendered later on this
+             same page (see that element's own comment for why the modal
+             shell lives HERE and not in the required step-panes partial).
+             Always rendered — the wizard's own Step 1 is precisely "get a
+             working database connection", so it must work even before one
+             exists (mirrors the empty-state launcher just below). */ ?>
+    <div class="mb-3">
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#setupWizardModal">
+            <i class="bi bi-magic me-1" aria-hidden="true"></i>Guided setup
+        </button>
+    </div>
+
     <?php if ($credSuccess !== ''): ?>
         <div class="alert alert-success"><?= htmlspecialchars($credSuccess) ?></div>
     <?php endif; ?>
@@ -2443,7 +2473,37 @@ if ($hasCredentials && defined('DB_HOST')) {
         $showCredForm = !$hasCredentials
             || (isset($_GET['reconfigure']) && $_GET['reconfigure'] === '1')
             || $credError !== '';
+
+        /* #2005 — a render-only deep link (rule #33: honour it or don't
+           emit it — this page does both). `?wizard=verify` is the ONLY
+           value ever read; anything else (missing, mistyped, or an old
+           bookmark) leaves the wizard closed on page load exactly like
+           today. This is NOT a dispatched `$action` — it never reaches the
+           per-action entitlement gate above or the migration-runner
+           dispatch below, so it adds no new server action (the standing
+           API-coverage guard's mapping for setup-database.php stays
+           unchanged; tests/php/test-setup-wizard.php confirms this). */
+        $wizardOpenStep = (($_GET['wizard'] ?? '') === 'verify') ? 'verify' : '';
     ?>
+
+    <?php if (($isInitialSetup || !$hasCredentials) && function_exists('ihymns_wizard_empty_state')): ?>
+        <?php /* #2005 — first-run discoverability (#1999 pattern): a
+                 prominent "Get started" card above the credentials form
+                 itself, reusing the SAME shared partial the other four
+                 guided wizards already use rather than a bespoke card
+                 (CLAUDE.md modularity rule). It opens the identical modal
+                 the header button above already opens. */ ?>
+        <?= ihymns_wizard_empty_state([
+            'icon'        => 'bi-magic',
+            'heading'     => 'New to this install? Start here.',
+            'body'        => 'A short, guided walkthrough of connecting the database, bringing it '
+                            . 'up to date, and what to do next — one step at a time.',
+            'modalId'     => 'setupWizardModal',
+            'buttonLabel' => 'Guided setup',
+            'wrap'        => 'bare',
+            'hint'        => 'Or fill in the connection details yourself below.',
+        ]) ?>
+    <?php endif; ?>
 
     <?php if ($action === '' && $showCredForm): ?>
         <!-- ============================================================
@@ -3918,6 +3978,80 @@ if ($hasCredentials && defined('DB_HOST')) {
 })();
 </script>
 
+<?php
+    /* #2005 — Guided environment setup wizard: the modal SHELL.
+       ELI5: this is the pop-up window frame the "Guided setup" button (and
+       the "Get started" card) opens — the actual step-by-step content
+       inside it lives in a separate, smaller file we `require` below, once
+       we've computed everything that content needs to display.
+       Detailed: rendered here, DELIBERATELY, rather than inside the
+       required `includes/setup-wizard-modal.php` partial — this is the ONE
+       reason the partial exists at all: `tests/php/test-wizard-empty-state.php`
+       (the standing #1999 guard) checks, PER FILE, that a call to
+       `ihymns_wizard_empty_state` (with `modalId` set to `setupWizardModal`)
+       and the real `<div class="modal fade" id="setupWizardModal">` it
+       points at live in the SAME source file — it reads raw file text, so
+       it cannot "see" what a `require`d file contributes. Both the header
+       trigger button and the empty-state launcher call above are in THIS
+       file, so the modal shell has to be too. Bootstrap doesn't care where
+       in the page a modal element physically sits (it's a fixed overlay
+       shown/hidden by JS, @see
+       https://getbootstrap.com/docs/5.3/components/modal/), so placing it
+       here — after every dashboard status variable it needs is already
+       computed — costs nothing.
+       Every value written onto `data-*` below is escaped and is a plain
+       snapshot of page-load state; `js/modules/setup-wizard.js` reads them
+       once at boot. */
+    $_wizDbStatusToken = 'none';
+    if ($dbStatus === 'connected') {
+        $_wizDbStatusToken = 'connected';
+    } elseif ($dbStatus !== null) {
+        $_wizDbStatusToken = 'error';
+    }
+    $_wizDbErrorTail = '';
+    if (is_string($dbStatus) && strncmp($dbStatus, 'error: ', 7) === 0) {
+        $_wizDbErrorTail = substr($dbStatus, 7);
+    }
+    $_wizHasTablesFlag = (count($dbTables) > 0) ? '1' : '0';
+
+    /* Cache-busted import path for the shared stepper (#1992) + this
+       wizard's own wiring module — same filemtime-as-version-query
+       pattern the bulk-runner boot just below already uses (#1196). */
+    $_setupWizardJsPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-wizard.js';
+    $_setupWizardJsVer  = is_file($_setupWizardJsPath) ? (string)filemtime($_setupWizardJsPath) : '1';
+?>
+<div class="modal fade" id="setupWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="setupWizardModalLabel" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <?php /* The wizard's server-seeded state lives on THIS element
+                 (#setupWizardRoot, the .modal-content), not on the outer
+                 .modal — createWizard(rootEl, …) in setup-wizard.js is
+                 called with THIS element as rootEl, and it is that same
+                 rootEl.dataset the JS reads for db-status/has-tables/
+                 open-step. Every value is a plain, HTML-escaped snapshot
+                 of page-load state (never re-read live by the client). */ ?>
+        <div class="modal-content" id="setupWizardRoot"
+             data-db-status="<?= htmlspecialchars($_wizDbStatusToken, ENT_QUOTES) ?>"
+             data-db-error="<?= htmlspecialchars($_wizDbErrorTail, ENT_QUOTES) ?>"
+             data-has-credentials="<?= $hasCredentials ? '1' : '0' ?>"
+             data-initial-setup="<?= $isInitialSetup ? '1' : '0' ?>"
+             data-has-tables="<?= $_wizHasTablesFlag ?>"
+             data-pending-auto="<?= (int)$_pendingCardCount ?>"
+             data-open-step="<?= htmlspecialchars($wizardOpenStep, ENT_QUOTES) ?>">
+            <div class="modal-header">
+                <h2 class="modal-title h5 mb-0" id="setupWizardModalLabel">Guided environment setup</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setup-wizard-modal.php'; ?>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                <button type="button" class="btn btn-primary" data-wiz-next>Next</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- #869 — Per-migration AJAX bulk runner. Replaces the legacy
      full-page "Apply All" redirect with a sequential fetch loop on
      the dashboard, so no single request hits a server-level
@@ -3933,6 +4067,19 @@ if ($hasCredentials && defined('DB_HOST')) {
     import { bootSetupBulkRunner }
         from '/js/modules/setup-bulk-runner.js?v=<?= htmlspecialchars($_bulkRunnerVersion, ENT_QUOTES) ?>';
     bootSetupBulkRunner();
+</script>
+
+<?php /* #2005 — Guided setup wizard boot, deliberately AFTER
+         bootSetupBulkRunner() just above: `setup-wizard.js` reads the
+         `[data-bulk-runner-trigger]` element's `data-pending-migrations`
+         list at RUN time (each button click), not at import time, so the
+         order here isn't load-bearing either way — kept after purely so
+         the two boots read top-to-bottom in the same order the page uses
+         them (bulk grid first, guided wizard second). */ ?>
+<script type="module">
+    import { bootSetupWizard }
+        from '/js/modules/setup-wizard.js?v=<?= htmlspecialchars($_setupWizardJsVer, ENT_QUOTES) ?>';
+    bootSetupWizard();
 </script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

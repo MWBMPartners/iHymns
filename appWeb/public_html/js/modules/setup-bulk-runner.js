@@ -202,9 +202,22 @@ function addRefreshButton(panel) {
 
 /**
  * Run one migration via the text-format endpoint.
+ *
+ * ELI5: this is the one function that actually "presses the button" for a
+ * single migration and reads back whether it worked.
+ *
+ * Detailed: exported (#2005) so the guided setup wizard (setup-wizard.js)
+ * can drive the SAME migrations one at a time, in the SAME way, instead of
+ * re-implementing its own copy of "fetch this URL, parse this envelope"
+ * (CLAUDE.md rule #22 — delegate, never fork). Nothing about the function's
+ * own behaviour changes; it is still called by `runSequence()` above exactly
+ * as before. The wizard supplies its OWN pending-migration list read from
+ * the very same `[data-bulk-runner-trigger]` attribute this file's own
+ * `bootSetupBulkRunner()` reads, so both callers always agree on what
+ * "pending" means.
  * @returns {Promise<{ok:boolean, output:string, elapsedMs:number, error?:string}>}
  */
-async function runOne(action) {
+export async function runOne(action) {
     const url = `${ENDPOINT}?action=${encodeURIComponent(action)}&format=text`;
     const res = await apiFetch(url, {
         credentials: 'same-origin',
@@ -216,8 +229,19 @@ async function runOne(action) {
 
 /**
  * Parse the server's `STATUS / ACTION / ... --- output` envelope.
+ *
+ * ELI5: turns the plain-text reply the server sends back into a normal
+ * JavaScript object we can check ("did it work?", "what did it print?").
+ *
+ * Detailed: exported alongside `runOne()` (#2005) for the same reason —
+ * `runOne()` already calls this internally, and the guided setup wizard
+ * needs the identical parsing so a `STATUS: error` (including a 403
+ * rendered in envelope form by the per-action entitlement gate) reads the
+ * same way everywhere it is handled, rather than a second regex living in
+ * a second file (rule #35 — cross-file agreement needs a shared function,
+ * not a repeated pattern that could quietly drift).
  */
-function parseEnvelope(text, httpOk) {
+export function parseEnvelope(text, httpOk) {
     const sepIdx = text.indexOf('\n---\n');
     let header = '';
     let output = '';
