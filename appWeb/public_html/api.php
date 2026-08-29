@@ -17869,6 +17869,25 @@ if ($action !== null) {
                     break;
                 }
 
+                /* Cross-tenant IDOR guard (security audit 2026-08-29, F1):
+                   on an UPDATE, the existing schedule may belong to a DIFFERENT
+                   org than the posted venue. Re-check the caller against the
+                   EXISTING row's current owning org too — otherwise an admin of
+                   org A could re-parent org B's schedule onto their own venue.
+                   Mirrors org_admin_venue_save's existing-venue double-check. */
+                $existingScheduleId = (int)($body['schedule_id'] ?? 0);
+                if ($existingScheduleId > 0) {
+                    $existingSchedule = venueAdminGetSchedule($db, $existingScheduleId);
+                    if ($existingSchedule === null) {
+                        sendJson(['error' => 'Schedule not found.'], 404);
+                        break;
+                    }
+                    if (!userCanActOnOrg($authUser, (int)$existingSchedule['OrgId'])) {
+                        sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                        break;
+                    }
+                }
+
                 $result   = venueAdminSaveSchedule($db, $body);
                 $schedule = venueAdminGetSchedule($db, $result['id']);
 
